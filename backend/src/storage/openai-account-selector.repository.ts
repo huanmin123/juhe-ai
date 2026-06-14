@@ -8,7 +8,8 @@ import { isAccountAvailabilityScheduleAllowed } from './account-availability-sch
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
-import { accountApiKeyEntries } from './account-api-key-rotation.js'
+import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
+import { loadAccountApiKeyRuntimeStatesByAccountIds } from './account-api-key-runtime-state.repository.js'
 import {
   gatewayDispatchAccountCandidateLimit,
   gatewayDispatchAccountCandidateScanLimit
@@ -122,9 +123,11 @@ export function findOpenAIAccountForGroup(
   if (!forceAvailability && !isOpenAIAccountAvailableForSelection(row, groupAccount, accountAccess, now, options.includeUnavailable === true)) {
     return undefined
   }
+  const resourceAccountId = openAIAccountResourceAccountId(row)
   return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount, {
-    supportedModelsByAccountId: new Map([[openAIAccountResourceAccountId(row), loadSupportedModelsForAccount(openAIAccountResourceAccountId(row))]]),
-    modelMappingsByAccountId: new Map([[openAIAccountResourceAccountId(row), loadModelMappingsForAccount(openAIAccountResourceAccountId(row))]]),
+    supportedModelsByAccountId: new Map([[resourceAccountId, loadSupportedModelsForAccount(resourceAccountId)]]),
+    modelMappingsByAccountId: new Map([[resourceAccountId, loadModelMappingsForAccount(resourceAccountId)]]),
+    apiKeyRuntimeStatesByAccountId: loadAccountApiKeyRuntimeStatesByAccountIds([resourceAccountId]),
     accountAccess
   })
 }
@@ -232,9 +235,10 @@ export function listOpenAIAccountsForGroupResult(
     const resourceAccountIds = hydrationRows.map((item) => openAIAccountResourceAccountId(item.row))
     const supportedModelsByAccountId = loadSupportedModelsByAccountIds(resourceAccountIds)
     const modelMappingsByAccountId = loadModelMappingsByAccountIds(resourceAccountIds)
+    const apiKeyRuntimeStatesByAccountId = loadAccountApiKeyRuntimeStatesByAccountIds(resourceAccountIds)
     const proxyProfilesById = loadProxyProfilesForSelection(hydrationRows.map((item) => item.row))
     for (const { row, accountAccess } of hydrationRows) {
-      const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, modelMappingsByAccountId, accountAccess })
+      const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, modelMappingsByAccountId, apiKeyRuntimeStatesByAccountId, accountAccess })
       if (account) {
         accounts.push(account)
         if (accounts.length >= gatewayDispatchAccountCandidateLimit) {
@@ -535,16 +539,22 @@ function openAIAccountSecretFromRow(
   } catch {
     return undefined
   }
+  const apiKeyEntries = accountApiKeyEntries(credentials)
   const apiKey = resourceType === 'oauth'
     ? typeof credentials.access_token === 'string' ? credentials.access_token : ''
-    : accountApiKeyEntries(credentials)[0]?.key ?? ''
+    : apiKeyEntries[0]?.key ?? ''
   if (!apiKey) {
     return undefined
   }
   const apiKeys = resourceType === 'api_key'
-    ? accountApiKeyEntries(credentials).map((entry) => entry.key)
+    ? apiKeyEntries.map((entry) => entry.key)
     : undefined
   const resourceAccountId = openAIAccountResourceAccountId(row)
+  const apiKeyPoolEnabled = isAccountApiKeyPoolIsolationEnabled({
+    providerCode: openAIAccountResourceProviderCode(row),
+    type: resourceType,
+    credentials
+  })
   const resourceProxyProfileId = openAIAccountResourceProxyProfileId(row)
   const proxyProfile = resolveOpenAIAccountProxyUrl(resourceProxyProfileId, options.proxyProfilesById)
   const isAccountAuthorized = accountAccess.accountAccessType === 'account_authorized'
@@ -600,6 +610,9 @@ function openAIAccountSecretFromRow(
     baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
     apiKey,
     apiKeys,
+    apiKeyRuntimeStates: apiKeyPoolEnabled
+      ? [...(options.apiKeyRuntimeStatesByAccountId?.get(resourceAccountId) ?? [])]
+      : undefined,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
     clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
     credentialSourceAccountId: resourceAccountId !== row.id ? resourceAccountId : undefined,

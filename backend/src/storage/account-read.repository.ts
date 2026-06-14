@@ -7,6 +7,7 @@ import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, getStatsDatabase, statsDatabasePath } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { ensureRequestQuotaDatabaseAttached, requestQuotaExceededSql, type RequestQuotaSqlExpression } from './request-quota-sql.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export interface AccountRowsPage {
@@ -20,11 +21,17 @@ type AccountRowQuerySettings = {
   includeCredentials?: boolean
   includeTotal?: boolean
 }
+type AccountFilterExpression = {
+  sql: string
+  params: AccountFilterValue[]
+}
 const accountQualityDatabaseAlias = 'account_quality_records'
 const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
-function authorizedAccountEffectiveStatusExpression(): string {
-  return `CASE
+function authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota = false): AccountFilterExpression {
+  const quotaExpression = includeAuthorizationQuota ? authorizedAccountQuotaExceededExpression() : undefined
+  return {
+    sql: `CASE
     WHEN ${authorizedBindingUnavailableExpression()} THEN 'disabled'
     WHEN account_rows.authorization_status IS NULL
       OR account_rows.authorization_status <> 'active'
@@ -41,15 +48,22 @@ function authorizedAccountEffectiveStatusExpression(): string {
     WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    ${quotaExpression ? `WHEN ${quotaExpression.sql} THEN 'rate_limited'` : ''}
     ELSE account_rows.status
-  END`
+  END`,
+    params: quotaExpression?.params ?? []
+  }
 }
 
-function accountEffectiveStatusFilterExpression(): string {
-  return `CASE
-    WHEN account_rows.access_type = 'authorized' THEN ${authorizedAccountEffectiveStatusExpression()}
+function accountEffectiveStatusFilterExpression(includeAuthorizationQuota = false): AccountFilterExpression {
+  const authorizedExpression = authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota)
+  return {
+    sql: `CASE
+    WHEN account_rows.access_type = 'authorized' THEN ${authorizedExpression.sql}
     ELSE account_rows.status
-  END`
+  END`,
+    params: authorizedExpression.params
+  }
 }
 
 function authorizedBindingAvailableExpression(): string {
@@ -108,14 +122,59 @@ function authorizedBindingUnavailableExpression(): string {
     OR group_bindings.account_authorization_id <> account_rows.authorization_id`
 }
 
-function accountEffectiveSchedulableExpression(): string {
-  return `CASE
+function authorizedAccountQuotaExceededExpression(): AccountFilterExpression {
+  const directQuota = requestQuotaExceededSql({
+    limitsSql: 'account_rows.authorization_limits_json',
+    systemAccountSql: 'account_rows.system_account_id',
+    scopeType: 'account_authorization',
+    scopeIdSql: 'account_rows.authorization_id'
+  })
+  const teamQuota = requestQuotaExceededSql({
+    limitsSql: authorizedTeamGrantLimitsSql(),
+    systemAccountSql: 'account_rows.system_account_id',
+    scopeType: 'account_authorization_team',
+    scopeIdSql: "account_rows.id || ':' || account_rows.authorization_effective_source_team_id"
+  })
+  return mergeQuotaExpressions(directQuota, teamQuota, 'account_rows.authorization_effective_source_team_id IS NOT NULL')
+}
+
+function authorizedTeamGrantLimitsSql(): string {
+  return `(SELECT grant_rows.limits_json
+    FROM resource_authorization_grants grant_rows
+    WHERE grant_rows.resource_type = 'account'
+      AND grant_rows.resource_id = account_rows.authorization_resource_id
+      AND grant_rows.resource_owner_system_account_id = account_rows.authorization_resource_owner_system_account_id
+      AND grant_rows.grantee_type = 'team'
+      AND grant_rows.grantee_team_id = account_rows.authorization_effective_source_team_id
+      AND grant_rows.status = 'active'
+      AND (grant_rows.expires_at IS NULL OR grant_rows.expires_at > ${currentIsoSql})
+    LIMIT 1)`
+}
+
+function mergeQuotaExpressions(
+  directQuota: RequestQuotaSqlExpression,
+  teamQuota: RequestQuotaSqlExpression,
+  teamGuardSql: string
+): AccountFilterExpression {
+  return {
+    sql: `(account_rows.authorization_id IS NOT NULL
+      AND (${directQuota.sql}
+        OR (${teamGuardSql} AND ${teamQuota.sql})))`,
+    params: [...directQuota.params, ...teamQuota.params]
+  }
+}
+
+function accountEffectiveSchedulableExpression(includeAuthorizationQuota = false): AccountFilterExpression {
+  const quotaExpression = includeAuthorizationQuota ? authorizedAccountQuotaExceededExpression() : undefined
+  return {
+    sql: `CASE
     WHEN account_rows.access_type = 'authorized' THEN
       CASE
         WHEN ${authorizedBindingAvailableExpression()}
           AND ${authorizedAuthorizationAvailableExpression()}
           AND ${authorizedSourceAccountAvailableExpression()}
           AND ${authorizedAccountAvailableExpression()}
+          ${quotaExpression ? `AND NOT (${quotaExpression.sql})` : ''}
         THEN 1
         ELSE 0
       END
@@ -124,7 +183,9 @@ function accountEffectiveSchedulableExpression(): string {
       AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ${currentIsoSql})
     THEN 1
     ELSE 0
-  END`
+  END`,
+    params: quotaExpression?.params ?? []
+  }
 }
 
 function accountCoolingFilterExpression(): string {
@@ -182,6 +243,9 @@ function queryAccountRowsForAccess(
   const includeQualityInQuery = hasAccountQualityScoreSort(options)
   if (includeQualityInQuery) {
     ensureAccountQualityDatabaseAttached(database)
+  }
+  if (accountListNeedsQuotaDatabase(options)) {
+    ensureRequestQuotaDatabaseAttached(database)
   }
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
@@ -269,6 +333,14 @@ function queryAccountRowsForAccess(
 
 function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
   return options.sorts.some((sort) => sort.field === 'qualityScore')
+}
+
+function accountListNeedsQuotaDatabase(options: Pick<NormalizedAccountListOptions, 'status' | 'schedulable'>): boolean {
+  const statuses = accountStatusFilterValues(options.status)
+  return statuses.includes('active')
+    || statuses.includes('rate_limited')
+    || options.schedulable === 'enabled'
+    || options.schedulable === 'disabled'
 }
 
 function ensureAccountQualityDatabaseAttached(database: ReturnType<typeof getBusinessDatabase>): void {
@@ -691,24 +763,35 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
     params.push(options.type)
   }
   const statuses = accountStatusFilterValues(options.status)
+  const includeAuthorizationQuotaStatus = statuses.includes('active') || statuses.includes('rate_limited')
   if (statuses.length === 1) {
-    clauses.push(`${accountEffectiveStatusFilterExpression()} = ?`)
+    const statusExpression = accountEffectiveStatusFilterExpression(includeAuthorizationQuotaStatus)
+    clauses.push(`${statusExpression.sql} = ?`)
+    params.push(...statusExpression.params)
     params.push(statuses[0])
   } else if (statuses.length > 1) {
-    clauses.push(`${accountEffectiveStatusFilterExpression()} IN (${statuses.map(() => '?').join(', ')})`)
+    const statusExpression = accountEffectiveStatusFilterExpression(includeAuthorizationQuotaStatus)
+    clauses.push(`${statusExpression.sql} IN (${statuses.map(() => '?').join(', ')})`)
+    params.push(...statusExpression.params)
     params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
-    clauses.push(`${accountEffectiveSchedulableExpression()} = 1`)
+    const schedulableExpression = accountEffectiveSchedulableExpression(true)
+    clauses.push(`${schedulableExpression.sql} = 1`)
+    params.push(...schedulableExpression.params)
   } else if (options.schedulable === 'disabled') {
+    const statusExpression = accountEffectiveStatusFilterExpression(false)
+    const quotaExpression = authorizedAccountQuotaExceededExpression()
     clauses.push(`(
       (account_rows.access_type = 'authorized' AND (
         ${authorizedBindingUnavailableExpression()}
         OR ${authorizedSourceAccountHardUnavailableExpression()}
-        OR ${accountEffectiveStatusFilterExpression()} IN ('disabled', 'error')
+        OR ${statusExpression.sql} IN ('disabled', 'error')
+        OR ${quotaExpression.sql}
       ))
       OR (account_rows.access_type <> 'authorized' AND (account_rows.status = 'disabled' OR account_rows.schedulable <> 1))
     )`)
+    params.push(...statusExpression.params, ...quotaExpression.params)
   } else if (options.schedulable === 'cooling') {
     clauses.push(`${accountCoolingFilterExpression()} = 1`)
   }

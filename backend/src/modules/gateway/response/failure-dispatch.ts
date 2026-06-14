@@ -19,6 +19,7 @@ import {
   applyAccountErrorHandlingWithCacheInvalidation,
   persistOpenAICodexHeadersIfNeeded
 } from '../runtime/account-effects.js'
+import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import {
@@ -248,10 +249,21 @@ export async function handleFailedUpstreamResponse(
 
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
+  const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
+  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && isRealUpstreamUrl(upstreamUrl)) {
+    recordGatewayAccountApiKeyFailure(account, {
+      status: accountApiKeyFailureStatusFromPolicyDecision(policyDecision),
+      statusCode: response.status,
+      errorCode: stringValue(parsedError.code) || undefined,
+      errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
+      cooldownUntil: policyDecision?.cooldownUntil,
+      source: 'upstream_response_failed'
+    })
+  }
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
     recordGatewayUpstreamBucketFailure(account, '上游响应失败')
   }
-  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource)) {
+  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
       : errorPolicyFailureReason(response.status, policyDecision, parsedErrorMessage || diagnosticErrorMessage)
@@ -298,6 +310,18 @@ function errorPolicyFailureReason(
     return accountErrorPolicyReason(statusCode, decision, fallbackMessage)
   }
   return fallbackMessage || `上游账号返回非成功状态：HTTP ${statusCode}`
+}
+
+function accountApiKeyFailureStatusFromPolicyDecision(
+  decision: AccountErrorPolicyDecision | undefined
+): 'temporary_unavailable' | 'rate_limited' | 'error' {
+  if (decision?.action === 'disable') {
+    return 'error'
+  }
+  if (decision?.action === 'cooldown' && decision.cooldownStatus === 'rate_limited') {
+    return 'rate_limited'
+  }
+  return 'temporary_unavailable'
 }
 
 export async function handleUpstreamRequestError(
@@ -404,12 +428,20 @@ export async function handleUpstreamRequestError(
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
+  const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
+  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && isRealUpstreamUrl(upstreamUrl)) {
+    recordGatewayAccountApiKeyFailure(account, {
+      status: 'temporary_unavailable',
+      errorMessage: message,
+      source: 'upstream_request_failed'
+    })
+  }
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
     recordGatewayUpstreamBucketFailure(account, '上游请求异常', {
       bucketScope: gatewayProxyKey(account) ? 'proxy' : 'upstream'
     })
   }
-  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource)) {
+  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = `上游账号请求异常：${message}`
     const localSuppression = suppressGatewayAccountLocally(account, settings, reason)
     if (usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {

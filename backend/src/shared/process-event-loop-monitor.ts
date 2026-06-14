@@ -2,7 +2,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 
 import { runtimeConfig, type ProcessRole } from '../config/runtime.js'
 
-export type ProcessEventLoopRole = ProcessRole | 'metrics-worker' | 'ingest-worker'
+export type ProcessEventLoopRole = ProcessRole | 'metrics-worker' | 'ingest-worker' | 'temporary-maintenance-worker'
 
 export interface ProcessEventLoopSample {
   processRole: ProcessEventLoopRole
@@ -46,7 +46,7 @@ function currentProcessEventLoopRole(): ProcessEventLoopRole {
   if (runtimeConfig.processRole !== 'worker') {
     return runtimeConfig.processRole
   }
-  return runtimeConfig.workerRole === 'metrics-worker' || runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.workerRole === 'metrics-worker' || runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'temporary-maintenance-worker'
     ? runtimeConfig.workerRole
     : 'worker'
 }

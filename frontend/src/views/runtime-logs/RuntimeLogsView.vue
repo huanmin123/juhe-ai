@@ -79,15 +79,11 @@
         </template>
       </ResponsiveListToolbar>
 
-      <RuntimeAvailabilityAlert
-        :visible="runtimeLogsAlertVisible"
-        message="日志运行态暂时不可观测"
-        :description="runtimeLogsAlertDescription"
-      />
-      <RuntimeAvailabilityAlert
-        :visible="queueHealthAlertVisible"
-        message="后台队列存在积压或丢弃"
-        :description="queueHealthAlertDescription"
+      <RuntimeLogStatusAlerts
+        :runtime-logs-alert-visible="runtimeLogsAlertVisible"
+        :runtime-logs-alert-description="runtimeLogsAlertDescription"
+        :queue-health-alert-visible="queueHealthAlertVisible"
+        :queue-health-alert-description="queueHealthAlertDescription"
       />
 
       <RuntimeLogDataList
@@ -160,15 +156,11 @@
         </template>
       </ResponsiveListToolbar>
 
-      <RuntimeAvailabilityAlert
-        :visible="runtimeLogsAlertVisible"
-        message="日志运行态暂时不可观测"
-        :description="runtimeLogsAlertDescription"
-      />
-      <RuntimeAvailabilityAlert
-        :visible="queueHealthAlertVisible"
-        message="后台队列存在积压或丢弃"
-        :description="queueHealthAlertDescription"
+      <RuntimeLogStatusAlerts
+        :runtime-logs-alert-visible="runtimeLogsAlertVisible"
+        :runtime-logs-alert-description="runtimeLogsAlertDescription"
+        :queue-health-alert-visible="queueHealthAlertVisible"
+        :queue-health-alert-description="queueHealthAlertDescription"
       />
 
       <a-alert
@@ -194,36 +186,14 @@
       />
     </template>
 
-    <a-drawer v-model:open="detailOpen" width="min(920px, 96vw)" title="运行日志详情" :body-style="{ padding: '18px' }">
-      <template v-if="selectedLog">
-        <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
-          <a-descriptions-item label="时间">{{ formatDateTime(selectedLog.time) }}</a-descriptions-item>
-          <a-descriptions-item label="级别">{{ levelText(selectedLog.level) }}</a-descriptions-item>
-          <a-descriptions-item label="traceId" :span="2">{{ selectedLog.traceId ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="事件" :span="selectedLog.event ? 1 : 2">{{ eventText(selectedLog.event) }}</a-descriptions-item>
-          <a-descriptions-item v-if="selectedLog.event" label="事件原值">{{ selectedLog.event }}</a-descriptions-item>
-          <a-descriptions-item label="消息" :span="2">{{ runtimeLogMessageText(selectedLog) }}</a-descriptions-item>
-        </a-descriptions>
-        <pre class="raw-block">{{ prettyRawJson(selectedLog.rawJson) }}</pre>
-      </template>
-    </a-drawer>
-
-    <a-drawer v-model:open="grepDetailOpen" width="min(920px, 96vw)" title="grep 匹配行" :body-style="{ padding: '18px' }">
-      <template v-if="selectedGrepItem">
-        <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
-          <a-descriptions-item label="时间">{{ formatDateTime(selectedGrepItem.time) }}</a-descriptions-item>
-          <a-descriptions-item label="级别">{{ levelText(selectedGrepItem.level) }}</a-descriptions-item>
-          <a-descriptions-item label="traceId" :span="2">{{ selectedGrepItem.traceId ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="事件">{{ eventText(selectedGrepItem.event) }}</a-descriptions-item>
-          <a-descriptions-item v-if="selectedGrepItem.event" label="事件原值">{{ selectedGrepItem.event }}</a-descriptions-item>
-          <a-descriptions-item label="消息">{{ runtimeLogMessageText(selectedGrepItem) }}</a-descriptions-item>
-          <a-descriptions-item label="文件">{{ selectedGrepItem.fileName || selectedGrepItem.file }}</a-descriptions-item>
-          <a-descriptions-item label="位置" :span="selectedGrepItem.event ? 2 : 1">{{ grepLinePositionText(selectedGrepItem) }}</a-descriptions-item>
-          <a-descriptions-item label="完整路径" :span="2">{{ selectedGrepItem.file }}</a-descriptions-item>
-        </a-descriptions>
-        <pre class="raw-block">{{ prettyRawJson(selectedGrepItem.rawJson || selectedGrepItem.line) }}</pre>
-      </template>
-    </a-drawer>
+    <RuntimeLogDetailDrawer
+      v-model:grep-open="grepDetailOpen"
+      v-model:index-open="detailOpen"
+      :grep-item="selectedGrepItem"
+      :log="selectedLog"
+      @copy-text="copyDetailText"
+      @search-trace="searchTrace"
+    />
   </a-card>
 </template>
 
@@ -235,27 +205,41 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
-import { formatDateTime } from '@/shared/formatters'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { copyTextToClipboard } from '@/shared/clipboard'
+import { splitGrepKeywords } from './runtimeLogFormatters'
 import {
-  eventText,
-  grepLinePositionText,
-  levelText,
-  prettyRawJson,
-  runtimeLogMessageText,
-  splitGrepKeywords
-} from './runtimeLogFormatters'
+  buildRuntimeLogEventOptions,
+  filterRuntimeLogEventOption,
+  isRuntimeLogQueueHealthAlertVisible,
+  isRuntimeLogsAlertVisible,
+  runtimeLogGrepRangeLimitText,
+  runtimeLogQueueHealthAlertDescription,
+  runtimeLogsAlertDescription as buildRuntimeLogsAlertDescription
+} from './runtimeLogFacets'
 import {
   runtimeLogColumns,
   runtimeLogLevelOptions,
   runtimeLogViewModeOptions
 } from './runtimeLogTableColumns'
+import {
+  defaultGrepRange as defaultRuntimeLogGrepRange,
+  isDefaultGrepRange as isDefaultRuntimeLogGrepRange,
+  isGrepDateDisabled,
+  isIndexDateDisabled,
+  normalizeGrepRange as normalizeRuntimeLogGrepRange,
+  normalizeOptionalTimeRange,
+  parseOptionalTimeRange,
+  parseStoredGrepRangeWithoutRuntime,
+  type RuntimeLogTimeRangeValue
+} from './runtimeLogTimeRanges'
 import RuntimeLogDataList from './RuntimeLogDataList.vue'
+import RuntimeLogDetailDrawer from './RuntimeLogDetailDrawer.vue'
+import RuntimeLogStatusAlerts from './RuntimeLogStatusAlerts.vue'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 
 type RuntimeLogViewMode = 'index' | 'grep'
@@ -271,7 +255,6 @@ type RuntimeLogsPageState = {
   traceIdFilter: string
   viewMode: RuntimeLogViewMode
 }
-type RuntimeLogTimeRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
 const pageSize = 100
 const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
   return {
@@ -375,57 +358,13 @@ const {
   minVisible: 1
 })
 
-const eventOptions = computed(() => (facets.value?.events ?? []).map((event) => ({ label: eventText(event), value: event, rawEvent: event })))
+const eventOptions = computed(() => buildRuntimeLogEventOptions(facets.value?.events))
 const grepRuntime = computed(() => facets.value?.grep)
-const grepRangeLimitText = computed(() => {
-  const runtime = grepRuntime.value
-  if (!runtime) return '按文件时间筛选，默认最近 3 天，单次最多 7 天'
-  return `按文件时间筛选，默认最近 ${runtime.defaultRangeDays} 天，单次最多 ${runtime.maxRangeDays} 天`
-})
-const runtimeLogsAlertVisible = computed(() => Boolean(facets.value && (
-  !facets.value.runtimeAvailable
-  || !facets.value.workerSnapshotAvailable
-  || !facets.value.runtimeLogIndexQueueAvailable
-  || !facets.value.dbService.statusAvailable
-  || !facets.value.dbService.stateAvailable
-  || !facets.value.gatewayAccountSideEffectsAvailable
-)))
-const runtimeLogsAlertDescription = computed(() => {
-  const info = facets.value
-  if (!info) return ''
-  const reasons: string[] = []
-  if (!info.runtimeAvailable) {
-    reasons.push('服务运行态不可用')
-  } else {
-    if (!info.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
-    if (!info.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
-    if (!info.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
-  }
-  if (!info.dbService.statusAvailable) {
-    reasons.push('本地数据库服务状态不可用')
-  } else if (!info.dbService.stateAvailable) {
-    reasons.push('本地数据库服务父进程状态不可用')
-  }
-  return `${reasons.join('；') || '运行态状态未知'}。`
-})
-const queueHealthAlertVisible = computed(() => {
-  const status = facets.value?.queueHealth?.status
-  return status === 'degraded' || status === 'backlogged'
-})
-const queueHealthAlertDescription = computed(() => {
-  const health = facets.value?.queueHealth
-  if (!health) return ''
-  const parts: string[] = []
-  if (health.summary.degradedCount > 0) parts.push(`${formatRuntimeCount(health.summary.degradedCount)} 个队列出现丢弃、拒绝或写入失败`)
-  if (health.summary.backloggedCount > 0) parts.push(`${formatRuntimeCount(health.summary.backloggedCount)} 个队列明显积压`)
-  if (health.summary.droppedCount > 0) parts.push(`累计丢弃 ${formatRuntimeCount(health.summary.droppedCount)} 条`)
-  if (health.summary.rejectedCount > 0) parts.push(`IPC 拒绝 ${formatRuntimeCount(health.summary.rejectedCount)} 次`)
-  if (health.summary.flushFailureCount > 0) parts.push(`落库失败 ${formatRuntimeCount(health.summary.flushFailureCount)} 次`)
-  if (health.summary.queuedCount > 0) parts.push(`当前排队 ${formatRuntimeCount(health.summary.queuedCount)} 条`)
-  const affectedQueues = queueHealthAffectedQueuesText(health)
-  if (affectedQueues) parts.push(`受影响队列：${affectedQueues}`)
-  return `${parts.join('；') || '队列状态异常'}。`
-})
+const grepRangeLimitText = computed(() => runtimeLogGrepRangeLimitText(grepRuntime.value))
+const runtimeLogsAlertVisible = computed(() => isRuntimeLogsAlertVisible(facets.value))
+const runtimeLogsAlertDescription = computed(() => buildRuntimeLogsAlertDescription(facets.value))
+const queueHealthAlertVisible = computed(() => isRuntimeLogQueueHealthAlertVisible(facets.value))
+const queueHealthAlertDescription = computed(() => runtimeLogQueueHealthAlertDescription(facets.value))
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -444,37 +383,12 @@ const advancedFilterCount = computed(() => {
 })
 const grepActiveFilterCount = computed(() => isDefaultGrepRange() ? 0 : 1)
 
-function parseStoredGrepRangeWithoutRuntime(value?: [string, string]): [Dayjs, Dayjs] | undefined {
-  if (!value) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  return start.isValid() && end.isValid() ? [start, end] : undefined
-}
-
 function defaultGrepRange(): [Dayjs, Dayjs] {
-  const runtime = grepRuntime.value
-  const end = dayjs(runtime?.defaultEndAt ?? new Date())
-  const start = dayjs(runtime?.defaultStartAt ?? end.subtract(3, 'day'))
-  return normalizeGrepRange([start, end])
+  return defaultRuntimeLogGrepRange(grepRuntime.value)
 }
 
 function normalizeGrepRange(value?: [Dayjs, Dayjs]): [Dayjs, Dayjs] {
-  const runtime = grepRuntime.value
-  const now = dayjs()
-  const earliest = runtime?.earliestFileTime ? dayjs(runtime.earliestFileTime) : now.subtract(runtime?.fileRetentionDays ?? 30, 'day')
-  const maxRangeDays = runtime?.maxRangeDays ?? 7
-  let end = value?.[1]?.isValid() ? value[1] : now
-  if (end.isAfter(now)) end = now
-  if (end.isBefore(earliest)) end = earliest
-
-  let start = value?.[0]?.isValid() ? value[0] : end.subtract(runtime?.defaultRangeDays ?? 3, 'day')
-  if (start.isBefore(earliest)) start = earliest
-  if (start.isAfter(end)) start = end.subtract(runtime?.defaultRangeDays ?? 3, 'day')
-  if (end.diff(start, 'millisecond') > maxRangeDays * 24 * 60 * 60 * 1000) {
-    start = end.subtract(maxRangeDays, 'day')
-  }
-  if (start.isBefore(earliest)) start = earliest
-  return [start, end]
+  return normalizeRuntimeLogGrepRange(value, grepRuntime.value)
 }
 
 function ensureGrepTimeRange(): [Dayjs, Dayjs] {
@@ -484,22 +398,15 @@ function ensureGrepTimeRange(): [Dayjs, Dayjs] {
 }
 
 function isDefaultGrepRange(): boolean {
-  const range = grepTimeRange.value
-  if (!range) return true
-  const defaults = defaultGrepRange()
-  return Math.abs(range[0].diff(defaults[0], 'minute')) <= 1
-    && Math.abs(range[1].diff(defaults[1], 'minute')) <= 1
+  return isDefaultRuntimeLogGrepRange(grepTimeRange.value, grepRuntime.value)
 }
 
 function disabledGrepDate(current: Dayjs): boolean {
-  const runtime = grepRuntime.value
-  const earliest = runtime?.earliestFileTime ? dayjs(runtime.earliestFileTime).startOf('day') : dayjs().subtract(runtime?.fileRetentionDays ?? 30, 'day').startOf('day')
-  return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
+  return isGrepDateDisabled(current, grepRuntime.value)
 }
 
 function disabledIndexDate(current: Dayjs): boolean {
-  const earliest = facets.value?.earliestIndexedAt ? dayjs(facets.value.earliestIndexedAt).startOf('day') : dayjs().subtract(facets.value?.retentionDays ?? 3, 'day').startOf('day')
-  return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
+  return isIndexDateDisabled(current, facets.value)
 }
 
 function handleIndexRangeChange(): void {
@@ -575,21 +482,7 @@ function resetGrepSearch(): void {
 }
 
 function filterEventOption(input: string, option?: { label?: string; rawEvent?: string; value?: string }): boolean {
-  const keyword = input.trim().toLowerCase()
-  if (!keyword) return true
-  return [option?.label, option?.rawEvent, option?.value].some((item) => String(item ?? '').toLowerCase().includes(keyword))
-}
-
-function queueHealthAffectedQueuesText(health: RuntimeLogFacets['queueHealth']): string {
-  const queues = [...health.workerQueues, ...health.serverIpcQueues]
-    .filter((queue) => queue.status === 'degraded' || queue.status === 'backlogged')
-    .map((queue) => queue.label)
-  if (queues.length <= 5) return queues.join('、')
-  return `${queues.slice(0, 5).join('、')} 等 ${formatRuntimeCount(queues.length)} 个`
-}
-
-function formatRuntimeCount(value: number): string {
-  return Number.isFinite(value) ? value.toLocaleString('zh-CN') : '0'
+  return filterRuntimeLogEventOption(input, option)
 }
 
 function refreshIndexLogs(): void {
@@ -700,6 +593,10 @@ function searchTrace(traceId?: string): void {
   void loadData()
 }
 
+function copyDetailText(value: string, successMessage?: string): void {
+  void copyTextToClipboard(value, successMessage)
+}
+
 function applyRouteTraceId(traceId: string): void {
   pageStateCache.flushPendingWrite()
   applyPageState({ ...defaultRuntimeLogsPageState(), traceIdFilter: traceId })
@@ -738,20 +635,6 @@ function snapshotPageState(): RuntimeLogsPageState {
     traceIdFilter: traceIdFilter.value,
     viewMode: viewMode.value
   }
-}
-
-function parseOptionalTimeRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
-  if (!value) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  return normalizeOptionalTimeRange(start.isValid() && end.isValid() ? [start, end] : undefined)
-}
-
-function normalizeOptionalTimeRange(value: RuntimeLogTimeRangeValue): [Dayjs, Dayjs] | undefined {
-  const start = value?.[0]
-  const end = value?.[1]
-  if (!start?.isValid() || !end?.isValid()) return undefined
-  return start.isAfter(end) ? [end, start] : [start, end]
 }
 
 watch(snapshotPageState, () => {
@@ -841,22 +724,4 @@ onBeforeUnmount(cancelRuntimeLogFacetsRequest)
   margin-bottom: 14px;
 }
 
-.detail-descriptions {
-  margin-bottom: 16px;
-}
-
-.raw-block {
-  max-height: 520px;
-  margin: 0;
-  padding: 12px;
-  overflow: auto;
-  color: #0f172a;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 </style>

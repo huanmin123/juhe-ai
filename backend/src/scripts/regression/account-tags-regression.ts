@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import type { Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -47,6 +47,26 @@ app.use(requestContextMiddleware)
 app.use(express.json({ limit: '1mb' }))
 app.use('/__aisys__/api', requireAuth)
 app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
+
+function assertAccountTagsRouteBoundary(): void {
+  const mainRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
+  const tagsRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-tags.routes.ts'), 'utf8')
+
+  assert(
+    mainRouteSource.includes('registerAccountTagsRoutes(accountsRouter)'),
+    '账户主路由必须通过 registerAccountTagsRoutes 注册标签路由'
+  )
+  assert(!mainRouteSource.includes("accountsRouter.get('/tags'"), '账户标签列表路由不应回退到 accounts.routes.ts')
+  assert(!mainRouteSource.includes("accountsRouter.delete('/tags/:tagId'"), '账户标签删除路由不应回退到 accounts.routes.ts')
+  assert(!mainRouteSource.includes('listAccountTags'), '账户主路由不应直接读取账户标签')
+  assert(!mainRouteSource.includes('deleteAccountTag'), '账户主路由不应直接删除账户标签')
+  assert(!mainRouteSource.includes('AccountTagInUseError'), '账户主路由不应处理账户标签删除约束')
+  assert(tagsRouteSource.includes("router.get('/tags'"), '账户标签子路由必须保留标签列表入口')
+  assert(tagsRouteSource.includes("router.delete('/tags/:tagId'"), '账户标签子路由必须保留标签删除入口')
+  assert(tagsRouteSource.includes('AccountTagInUseError'), '账户标签子路由必须保留绑定标签删除约束错误处理')
+}
+
+assertAccountTagsRouteBoundary()
 
 try {
   server = app.listen(0, '127.0.0.1')

@@ -276,6 +276,33 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
     );
 
+    CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      key_fingerprint TEXT NOT NULL,
+      key_index INTEGER NOT NULL DEFAULT 0,
+      credential_revision TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      cooldown_until TEXT,
+      next_probe_at TEXT,
+      probe_backoff_seconds INTEGER NOT NULL DEFAULT 0,
+      recovery_started_at TEXT,
+      last_attempt_at TEXT,
+      last_success_at TEXT,
+      last_failure_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      last_probe_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
@@ -636,6 +663,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_api_key_runtime_unique
+      ON account_api_key_runtime_states(account_id, key_fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_status
+      ON account_api_key_runtime_states(account_id, status, cooldown_until);
+    CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe
+      ON account_api_key_runtime_states(next_probe_at, status);
+    CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_owner
+      ON account_api_key_runtime_states(system_account_id, account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique_lower
       ON custom_provider_models(provider_code, lower(model))
       WHERE scope = 'global';

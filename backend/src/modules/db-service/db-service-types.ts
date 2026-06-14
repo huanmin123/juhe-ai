@@ -1,5 +1,6 @@
 import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput } from '../../storage/repositories.js'
+import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
@@ -10,6 +11,7 @@ import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
+import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -311,6 +313,21 @@ export type DbServiceOperation =
     }
   }
   | {
+    type: 'record_account_api_key_failure'
+    account: OpenAIAccountSecret
+    input: {
+      status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+      statusCode?: number
+      errorCode?: string
+      errorMessage?: string
+      cooldownUntil?: string
+    }
+  }
+  | {
+    type: 'record_account_api_key_success'
+    account: OpenAIAccountSecret
+  }
+  | {
     type: 'record_account_stream_failure'
     input: {
       accountId: string
@@ -390,6 +407,8 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'find_openai_oauth_account_for_refresh' } ? DbServiceOpenAIOAuthRefreshAccount | undefined :
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
+  T extends { type: 'record_account_api_key_failure' } ? { changed: boolean; skippedReason?: string } :
+  T extends { type: 'record_account_api_key_success' } ? { changed: boolean; skippedReason?: string } :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
@@ -485,6 +504,10 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_operation_logs'
     items: OperationLogInput[]
+  }
+  | {
+    type: 'background_worker_public_api_logs'
+    items: PublicApiLogInput[]
   }
   | {
     type: 'background_worker_record_maintenance'

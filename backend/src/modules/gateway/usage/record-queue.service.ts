@@ -33,6 +33,7 @@ let droppedDispatchCount = 0
 let droppedOverflowCount = 0
 let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
+let allowDbServiceLocalUsageRecordWriteForTest = false
 
 interface UsageRecordFlushOptions {
   drain?: boolean
@@ -80,7 +81,7 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
 }
 
 export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): void {
-  if (!isUsageRecordIngestWorker()) {
+  if (!isLocalUsageRecordWriteAllowed()) {
     return
   }
   if (flushing || pendingUsageRecords.length === 0) {
@@ -169,7 +170,7 @@ export function installUsageRecordQueueShutdownHooks(): void {
 }
 
 function scheduleUsageRecordFlush(delayMs: number): void {
-  if (!isUsageRecordIngestWorker()) {
+  if (!isLocalUsageRecordWriteAllowed()) {
     return
   }
   if (flushTimer || flushing) {
@@ -228,6 +229,11 @@ export function clearUsageRecordQueueForTest(): void {
   droppedOverflowCount = 0
   droppedOversizeCount = 0
   shutdownHooksInstalled = false
+  allowDbServiceLocalUsageRecordWriteForTest = false
+}
+
+export function setDbServiceUsageRecordLocalWriteAllowedForTest(value: boolean): void {
+  allowDbServiceLocalUsageRecordWriteForTest = value
 }
 
 function sanitizeUsageRecordSnapshot(value: unknown): unknown {
@@ -443,13 +449,21 @@ function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' 
 }
 
 function assertLocalUsageRecordWriteAllowed(operation: string): void {
-  if (!isUsageRecordIngestWorker()) {
+  if (!isLocalUsageRecordWriteAllowed()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入使用记录：${operation} 必须投递 ingest-worker`)
   }
 }
 
+function isLocalUsageRecordWriteAllowed(): boolean {
+  return isUsageRecordIngestWorker() || isDbServiceLocalUsageRecordWriteAllowedForTest()
+}
+
 function isUsageRecordIngestWorker(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function isDbServiceLocalUsageRecordWriteAllowedForTest(): boolean {
+  return allowDbServiceLocalUsageRecordWriteForTest && runtimeConfig.processRole === 'db-service'
 }
 
 function shouldDispatchUsageRecordToIngestWorker(): boolean {

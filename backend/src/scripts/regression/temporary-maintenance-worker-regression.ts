@@ -53,8 +53,9 @@ try {
   assert.equal(Number(completed.result.deletedRows ?? 0), 1, `临时维护任务应实际删除 1 条记录：${JSON.stringify(completed)}`)
   assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, '临时维护 worker 应删除符合条件的使用记录')
   assert.equal(activeLeaseCount(runId), 0, '临时维护 worker 完成后应释放租约')
+  assert(eventLoopSampleCount('temporary-maintenance-worker') > 0, '临时维护 worker 运行期间应写入自身事件循环采样')
 
-  console.log('临时维护 worker 回归通过：常驻 worker 只投递任务，临时进程执行、记录状态并释放租约')
+  console.log('临时维护 worker 回归通过：常驻 worker 只投递任务，临时进程执行、记录状态、释放租约并写入事件循环采样')
 } finally {
   await databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
@@ -90,6 +91,15 @@ function activeLeaseCount(runId: string): number {
     FROM background_job_leases
     WHERE run_id = ?
   `).get(runId) as { count?: number } | undefined
+  return Number(row?.count ?? 0)
+}
+
+function eventLoopSampleCount(processRole: string): number {
+  const row = databaseModule.getStatsDatabase().prepare(`
+    SELECT COUNT(*) AS count
+    FROM process_event_loop_samples
+    WHERE process_role = ?
+  `).get(processRole) as { count?: number } | undefined
   return Number(row?.count ?? 0)
 }
 

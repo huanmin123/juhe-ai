@@ -220,6 +220,18 @@ try {
   insertUsageDaily(statsDatabase, grantee.id, 'account_authorization', runtimeAccountAuthorizationId, statDate, 12)
   const quotaExceededAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === quotaAuthorizedAccount.id)
   assert.equal(quotaExceededAccount?.authorizationQuotaExceeded, true, '授权额度用完时被授权账户列表应返回超限标记')
+  assert.equal(quotaExceededAccount?.status, 'active', '授权额度用完不应覆盖被授权账户自身状态')
+  assert.equal(quotaExceededAccount?.schedulable, false, '授权额度用完账户列表应返回实际不可调度')
+  assert.equal(quotaExceededAccount?.effectiveAvailability.status, 'authorization_quota_exceeded', '授权额度用完时被授权账户实际状态应归类为授权额度耗尽')
+  const activeAfterQuotaIds = repositories.listAccountsPage(granteeAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!activeAfterQuotaIds.includes(quotaAuthorizedAccount.id), '授权额度用完账户不应被账户列表正常状态筛选命中')
+  assert(activeAfterQuotaIds.includes(migrationSourceAuthorizedAccount.id), '未超限授权账户仍应被账户列表正常状态筛选命中')
+  const rateLimitedStatusIds = repositories.listAccountsPage(granteeAccess, { status: 'rate_limited', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(rateLimitedStatusIds.includes(quotaAuthorizedAccount.id), '授权额度用完账户应归入限流中状态筛选')
+  const enabledOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'active', schedulable: 'enabled', limit: 50 }).map((item) => item.id)
+  assert(!enabledOptionIds.includes(quotaAuthorizedAccount.id), '授权额度用完账户不应进入正常且可调度 options')
+  const rateLimitedOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'rate_limited', limit: 50 }).map((item) => item.id)
+  assert(rateLimitedOptionIds.includes(quotaAuthorizedAccount.id), '授权额度用完账户 options 应归入限流中状态筛选')
   assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(quotaAuthorizedAccount.id, {
     superPriorityEnabled: true
   }, granteeAccess), /授权额度已用完/, '授权额度用完后不应允许开启本地调度标记')
@@ -344,6 +356,13 @@ try {
   insertUsageDaily(statsDatabase, teamMember.id, 'account_authorization_team', `${teamAuthorizedAccount.id}:${team.id}`, statDate, 5)
   const teamQuotaExceededAccount = repositories.listAccounts(teamMemberAccess).find((item) => item.id === teamAuthorizedAccount?.id)
   assert.equal(teamQuotaExceededAccount?.authorizationQuotaExceeded, true, '团队来源授权额度用完时列表应返回超限标记')
+  assert.equal(teamQuotaExceededAccount?.status, 'active', '团队来源授权额度用完不应覆盖被授权账户自身状态')
+  assert.equal(teamQuotaExceededAccount?.schedulable, false, '团队来源授权额度用完账户列表应返回实际不可调度')
+  assert.equal(teamQuotaExceededAccount?.effectiveAvailability.status, 'authorization_quota_exceeded', '团队来源授权额度用完时实际状态应归类为授权额度耗尽')
+  const teamActiveAfterQuotaIds = repositories.listAccountsPage(teamMemberAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!teamActiveAfterQuotaIds.includes(teamAuthorizedAccount.id), '团队来源授权额度用完账户不应被正常状态筛选命中')
+  const teamRateLimitedStatusIds = repositories.listAccountsPage(teamMemberAccess, { status: 'rate_limited', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(teamRateLimitedStatusIds.includes(teamAuthorizedAccount.id), '团队来源授权额度用完账户应归入限流中状态筛选')
 
   console.log('资源授权有效期清空回归通过：grant 和 runtime 过期时间保持一致')
 } finally {

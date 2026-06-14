@@ -19,6 +19,10 @@ const queueFiles = [
     required: ['peekRuntimeLogFlushBatch', 'removeRuntimeLogFlushBatch']
   },
   {
+    path: '../../modules/public-api-logs/public-api-log-queue.service.ts',
+    required: ['publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)', 'publicApiLogQueue.splice(0, batch.length)']
+  },
+  {
     path: '../../modules/record-maintenance/record-maintenance-queue.service.ts',
     required: ['pendingJobs.slice(0, recordMaintenanceBatchSize)', 'removeRecordMaintenanceJobsFromHead']
   }

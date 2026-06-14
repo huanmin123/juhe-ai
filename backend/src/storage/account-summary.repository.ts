@@ -25,6 +25,7 @@ import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './us
 import { loadAccountUsageSummariesForScopes } from './usage-summary-loaders.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import { optionalString } from './value-utils.js'
+import { loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
 
 export interface AccountListResult {
   items: AccountSummary[]
@@ -98,6 +99,7 @@ function accountSummariesFromRows(
   const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row)))
+  const apiKeyRuntimeByAccount = loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows
     ? loadSystemAccountNameMapByIds(rows.flatMap((row) => [
@@ -150,6 +152,7 @@ function accountSummariesFromRows(
       ? isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json, currentNowDate)
       : undefined
     const authorizationSources = row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : []
+    const authorizationQuotaExceeded = row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -186,7 +189,7 @@ function accountSummariesFromRows(
       qualityLastErrorMessage: row.quality_last_error_message ?? undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
-      schedulable: effectiveAuthorizedSchedulable,
+      schedulable: isAuthorizedView ? effectiveAuthorizedSchedulable && authorizationQuotaExceeded !== true : effectiveAuthorizedSchedulable,
       availabilitySchedule,
       availabilityScheduleActive,
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -197,6 +200,7 @@ function accountSummariesFromRows(
       cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
+      apiKeyRuntime: apiKeyRuntimeByAccount.get(row.id),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? undefined,
@@ -222,7 +226,7 @@ function accountSummariesFromRows(
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationExpiresAt: row.authorization_expires_at ?? undefined,
       authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
-      authorizationQuotaExceeded: row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined,
+      authorizationQuotaExceeded,
       authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(authorizationSources, isAuthorizedView) : undefined,
       permissions: isAuthorizedView ? authorizedAccountPermissions(hasActiveManualAuthorizationSource(authorizationSources)) : ownerPermissions(),
       authorizationUsageAvailable: !isAuthorizedView && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),

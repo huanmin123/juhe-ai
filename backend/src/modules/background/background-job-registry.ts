@@ -298,6 +298,19 @@ export const backgroundScheduledJobs = [
     writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
   }),
   scheduled({
+    jobName: 'account-api-key-cooldown-retest',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records', 'dataset:audit_logs']
+  }),
+  scheduled({
     jobName: 'runtime-log-index-maintenance',
     category: 'scheduled',
     kind: 'log',
@@ -393,6 +406,19 @@ export const backgroundWorkerRegistry = [
     leaseRequired: false,
     blocksUserVisibleFreshness: false,
     writes: ['dataset:operation_logs']
+  }),
+  entry({
+    jobName: 'background_worker_public_api_logs',
+    category: 'ipc-queue',
+    kind: 'log',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['dataset:public_api_logs']
   }),
   entry({
     jobName: 'background_worker_record_maintenance',
@@ -617,6 +643,19 @@ export const backgroundWorkerRegistry = [
     writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
   }),
   entry({
+    jobName: 'account-api-key-cooldown-retest-queue',
+    category: 'local-queue',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:account_api_key_runtime_states', 'usage-shards:usage_records', 'dataset:audit_logs']
+  }),
+  entry({
     jobName: 'account-quality-failure-precheck-queue',
     category: 'local-queue',
     kind: 'probe',
@@ -634,7 +673,7 @@ export const backgroundWorkerRegistry = [
     category: 'local-queue',
     kind: 'log',
     lifecycle: 'persistent',
-    defaultRole: 'log-worker',
+    defaultRole: 'ingest-worker',
     hotspot: true,
     singleOwner: false,
     shardable: true,

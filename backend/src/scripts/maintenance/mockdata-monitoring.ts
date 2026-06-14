@@ -31,7 +31,7 @@ export function createMonitoringMockdata(options: MockdataOptions): void {
       id, sampled_at, process_role, process_pid, event_loop_lag_ms, created_at
     ) VALUES (?, ?, ?, ?, ?, ?)
   `)
-  const roles = ['server', 'worker', 'metrics-worker', 'ingest-worker', 'db-service'] as const
+  const roles = ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'] as const
   let metricIndex = 0
   database.exec('BEGIN')
   try {

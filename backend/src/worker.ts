@@ -19,7 +19,7 @@ import {
 } from './modules/operation-logs/operation-log-queue.service.js'
 import {
   enqueuePublicApiLogsLocal,
-  flushPublicApiLogQueueForTest,
+  flushPublicApiLogQueueForShutdown,
   getPublicApiLogQueueRuntime,
   installPublicApiLogQueueShutdownHooks
 } from './modules/public-api-logs/public-api-log-queue.service.js'
@@ -297,7 +297,7 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
   if (isIngestWorker()) {
     flushUsageRecordQueueForShutdown()
     flushOperationLogQueueForShutdown()
-    flushPublicApiLogQueueForTest()
+    flushPublicApiLogQueueForShutdown()
     flushRuntimeLogIndexQueueForShutdown()
     await flushAuditLogQueueForShutdown()
     return

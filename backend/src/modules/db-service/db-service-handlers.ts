@@ -43,6 +43,10 @@ import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuot
 import { applyAccountErrorHandling } from '../gateway/policy/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
+import {
+  recordAccountApiKeyRuntimeFailure,
+  recordAccountApiKeyRuntimeSuccess
+} from '../../storage/account-api-key-runtime-state.repository.js'
 import type {
   DbServiceGatewayRuntime,
   DbServiceOperation,
@@ -147,6 +151,23 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
     case 'apply_account_error_handling': {
       const result = applyAccountErrorHandling(operation.account, operation.input)
+      if (result.changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'record_account_api_key_failure': {
+      const result = recordAccountApiKeyRuntimeFailure({
+        account: operation.account,
+        ...operation.input
+      })
+      if (result.changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'record_account_api_key_success': {
+      const result = recordAccountApiKeyRuntimeSuccess(operation.account)
       if (result.changed) {
         clearGatewayRuntimeCacheLocal()
       }

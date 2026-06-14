@@ -78,6 +78,7 @@
     "test:operation-log-queue": "tsx src/scripts/regression/operation-log-queue-regression.ts",
     "test:operation-log-db-service-ipc": "tsx src/scripts/regression/operation-log-db-service-ipc-regression.ts",
     "test:public-api-logs": "tsx src/scripts/regression/public-api-logs-regression.ts",
+    "test:public-api-log-db-service-ipc": "tsx src/scripts/regression/public-api-log-db-service-ipc-regression.ts",
     "test:background-parent-ipc-event-loop": "tsx src/scripts/regression/background-parent-ipc-event-loop-regression.ts",
     "test:background-ipc-protected-queue": "tsx src/scripts/regression/background-ipc-protected-queue-regression.ts",
     "test:background-queue-health": "tsx src/scripts/regression/background-queue-health-regression.ts",

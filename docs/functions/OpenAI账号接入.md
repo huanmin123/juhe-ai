@@ -112,7 +112,7 @@ type GptAccountType = 'api_key' | 'oauth'
 
 - API Key 加密存储；单 Key 账户保存 `credentials.api_key`，多 Key 账户额外保存 `credentials.api_keys`、`credentials.api_key_strategy` 和可选 `credentials.api_key_weights`
 - 新增 API Key 账户时默认展示一个 API Key 输入框；可继续添加输入框，也可粘贴多行文本，前端会提取 `sk-` 开头的密钥并生成多条输入。多个密钥只创建一个账户，复用同一 Base URL、分组、代理、支持模型、时间计划和错误处理策略。
-- 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发、冷却、授权和错误处理逻辑。
+- 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发和授权边界。后续 Key 级故障隔离按 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 落地：Key 失败后只摘除当前 Key 并让当前请求切后续账户，不在同一请求内遍历账户内全部 Key。
 - 新建 API Key 账户默认写入 `status = pending_test` 且 `schedulable = false`，不参与调度；只有在创建前对同一份草稿完成账户测试且测试成功，创建请求才可以携带该测试任务 ID 直接落成正常账户。
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改

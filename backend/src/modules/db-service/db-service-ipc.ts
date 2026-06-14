@@ -468,6 +468,11 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardOperationLogsToWorker(record.items)
       }
       break
+    case 'background_worker_public_api_logs':
+      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
+        void forwardPublicApiLogsToWorker(record.items)
+      }
+      break
     case 'background_worker_record_maintenance':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
         void forwardRecordMaintenanceJobsToWorker(record.items)
@@ -942,6 +947,18 @@ async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
       event: 'db_service_operation_logs_forward_failed',
       itemCount: operationLogs.length
     }, 'DB service 转发操作日志到后台 worker 失败')
+  }
+}
+
+async function forwardPublicApiLogsToWorker(items: unknown[]): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const publicApiLogQueue = await import('../public-api-logs/public-api-log-queue.service.js')
+  const publicApiLogs = items.filter(publicApiLogQueue.isPublicApiLogInput)
+  if (publicApiLogs.length > 0 && !backgroundIpc.sendPublicApiLogsToWorker(publicApiLogs)) {
+    logger.warn({
+      event: 'db_service_public_api_logs_forward_failed',
+      itemCount: publicApiLogs.length
+    }, 'DB service 转发公开接口日志到后台 worker 失败')
   }
 }
 

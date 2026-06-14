@@ -17,12 +17,14 @@ const [
   operationLogQueue,
   recordMaintenanceQueue,
   auditLogQueue,
+  publicApiLogQueue,
   runtimeLogIndexQueue
 ] = await Promise.all([
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../modules/record-maintenance/record-maintenance-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/public-api-logs/public-api-log-queue.service.js'),
   import('../../modules/runtime-logs/runtime-log-index-queue.service.js')
 ])
 
@@ -84,6 +86,17 @@ try {
   assert.equal(auditAfterOverflow.droppedOverflowCount, 1, '审计日志 worker 本地队列满后应记录溢出丢弃')
   auditLogQueue.clearAuditLogQueueForTest()
 
+  publicApiLogQueue.clearPublicApiLogQueueForTest()
+  for (let index = 0; index < 5000; index += 1) {
+    publicApiLogQueue.enqueuePublicApiLogsLocal([buildPublicApiLog(index)])
+  }
+  assert.equal(publicApiLogQueue.getPublicApiLogQueueRuntime().queueLength, 5000, '公开接口日志 worker 本地队列应达到硬上限')
+  publicApiLogQueue.enqueuePublicApiLogsLocal([buildPublicApiLog(5000)])
+  const publicApiAfterOverflow = publicApiLogQueue.getPublicApiLogQueueRuntime()
+  assert.equal(publicApiAfterOverflow.queueLength, 5000, '公开接口日志 worker 本地队列满后不应继续增长')
+  assert.equal(publicApiAfterOverflow.droppedCount, 1, '公开接口日志 worker 本地队列满后应记录丢弃')
+  publicApiLogQueue.clearPublicApiLogQueueForTest()
+
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
   for (let index = 0; index < 5000; index += 1) {
     runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(index), { sourceKey: `worker-local-rtlog-${index}` })
@@ -95,12 +108,13 @@ try {
   assert.equal(runtimeLogAfterOverflow.droppedOverflowCount, 1, '运行日志索引 worker 本地队列满后应记录溢出丢弃')
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
 
-  console.log('worker 本地队列回归通过：使用记录、操作日志、数据维护、审计和运行日志索引队列均有硬上限，用量快照任务可合并')
+  console.log('worker 本地队列回归通过：使用记录、操作日志、数据维护、审计、公开接口日志和运行日志索引队列均有硬上限，用量快照任务可合并')
 } finally {
   usageRecordQueue.clearUsageRecordQueueForTest()
   operationLogQueue.clearOperationLogQueueForTest()
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
+  publicApiLogQueue.clearPublicApiLogQueueForTest()
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
 }
 
@@ -181,6 +195,22 @@ function buildAuditLog(index: number, success: boolean) {
   }
 }
 
+function buildPublicApiLog(index: number) {
+  return {
+    traceId: `trace-worker-local-public-api-${index}`,
+    method: 'GET',
+    path: '/__aipublic__/demo/source-auth',
+    statusCode: 200,
+    success: true,
+    durationMs: 1,
+    requestData: {},
+    responseData: {},
+    startedAt: '2000-01-01T00:00:00.000Z',
+    endedAt: '2000-01-01T00:00:00.000Z',
+    createdAt: '2000-01-01T00:00:00.000Z'
+  }
+}
+
 function runtimeLogLine(index: number): string {
   return JSON.stringify({
     time: '2000-01-01T00:00:00.000Z',
@@ -195,6 +225,7 @@ function assertQueueShutdownFlushIsBounded(): void {
     '../../modules/gateway/usage/record-queue.service.ts',
     '../../modules/operation-logs/operation-log-queue.service.ts',
     '../../modules/record-maintenance/record-maintenance-queue.service.ts',
+    '../../modules/public-api-logs/public-api-log-queue.service.ts',
     '../../modules/runtime-logs/runtime-log-index-queue.service.ts',
     '../../modules/audit-logs/audit-log-queue.service.ts'
   ]

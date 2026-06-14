@@ -180,16 +180,21 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
   displayAuditGroupName,
   displayName,
   formatDateTime,
-  normalizedStatusCode,
   statusColor,
   trafficSourceText
 } from './auditLogFormatters'
+import {
+  auditLogFilterCounts,
+  auditLogHotSearchActiveFilterCount,
+  auditLogListParams,
+  normalizeHotSearchKeywordInput
+} from './auditLogFilters'
 import {
   auditLogColumns,
   auditOutcomeOptions
@@ -341,18 +346,18 @@ const {
   requiredKeys: ['traceId'],
   minVisible: 1
 })
-const activeFilterCount = computed(() => {
-  let count = 0
-  if (traceIdFilter.value.trim()) count += 1
-  if (accountIdFilter.value) count += 1
-  if (outcomeFilter.value !== 'all') count += 1
-  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
-  if (pathFilter.value.trim()) count += 1
-  if (statusCodeFilter.value.trim()) count += 1
-  if (trafficSourceFilter.value !== 'all') count += 1
-  return count
-})
-const hotSearchActiveFilterCount = computed(() => normalizeHotSearchKeywordInput(hotSearchKeywordFilter.value) ? 1 : 0)
+const currentFilterValues = computed(() => ({
+  accountIdFilter: accountIdFilter.value,
+  outcomeFilter: outcomeFilter.value,
+  pathFilter: pathFilter.value,
+  statusCodeFilter: statusCodeFilter.value,
+  systemAccountFilter: systemAccountFilter.value,
+  traceIdFilter: traceIdFilter.value,
+  trafficSourceFilter: trafficSourceFilter.value
+}))
+const filterCounts = computed(() => auditLogFilterCounts(currentFilterValues.value))
+const activeFilterCount = computed(() => filterCounts.value.active)
+const hotSearchActiveFilterCount = computed(() => auditLogHotSearchActiveFilterCount(hotSearchKeywordFilter.value))
 const toolbarKeyword = computed({
   get: () => viewMode.value === 'search' ? hotSearchKeywordFilter.value : traceIdFilter.value,
   set: (value: string) => {
@@ -368,16 +373,7 @@ const toolbarSearchPlaceholder = computed(() => viewMode.value === 'search'
   : '搜索 traceId')
 const toolbarFilterTitle = computed(() => viewMode.value === 'search' ? '最近内容搜索' : '审计筛选')
 const toolbarActiveFilterCount = computed(() => viewMode.value === 'search' ? hotSearchActiveFilterCount.value : activeFilterCount.value)
-const advancedFilterCount = computed(() => {
-  let count = 0
-  if (outcomeFilter.value !== 'all') count += 1
-  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
-  if (accountIdFilter.value) count += 1
-  if (pathFilter.value.trim()) count += 1
-  if (statusCodeFilter.value.trim()) count += 1
-  if (trafficSourceFilter.value !== 'all') count += 1
-  return count
-})
+const advancedFilterCount = computed(() => filterCounts.value.advanced)
 const toolbarAdvancedFilterCount = computed(() => viewMode.value === 'search' ? 0 : advancedFilterCount.value)
 const currentRecords = computed(() => viewMode.value === 'search' ? hotSearchRecords.value : records.value)
 const currentLoading = computed(() => viewMode.value === 'search' ? hotSearchLoading.value : loading.value)
@@ -537,10 +533,6 @@ async function searchHotAuditLogs(): Promise<void> {
   }
 }
 
-function normalizeHotSearchKeywordInput(value: string): string {
-  return value.trim()
-}
-
 function applyPageState(state: AuditLogsPageState): void {
   traceIdFilter.value = state.traceIdFilter
   hotSearchKeywordFilter.value = state.hotSearchKeywordFilter
@@ -599,18 +591,7 @@ function resetFilters(): void {
 }
 
 function fetchRecords(pageState: { current: number; pageSize: number }) {
-  const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, true)
-  return api.auditLogs.list({
-    page: pageState.current,
-    pageSize: pageState.pageSize,
-    traceId: traceIdFilter.value.trim() || undefined,
-    accountId: accountIdFilter.value || undefined,
-    outcome: outcomeFilter.value,
-    path: pathFilter.value || undefined,
-    statusCode: normalizedStatusCode(statusCodeFilter.value),
-    systemAccountId,
-    trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value
-  })
+  return api.auditLogs.list(auditLogListParams(currentFilterValues.value, pageState))
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {

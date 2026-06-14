@@ -105,143 +105,27 @@
       <a-col :xs="24" :xl="14">
         <StatsChartCard
           :title="`进程事件循环延迟（${currentWindowLabel}）`"
-          description="主进程、后台 worker、监控 worker、写入 worker 和 DB service 独立采样，按后台窗口缓存展示峰值；上方为最近 24 小时最大值。单位为秒。"
+          description="主进程、常驻 worker、临时维护 worker 和 DB service 独立采样；下方趋势按后台窗口缓存展示。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
         >
-          <div v-if="processEventLoopPeakRows.length > 0" class="process-event-loop-peak">
-            <div v-for="item in processEventLoopPeakRows" :key="item.processRole" class="process-event-loop-peak-item" :class="{ unavailable: !item.sampleAvailable }">
-              <span class="process-event-loop-peak-role">{{ processRoleLabel(item.processRole) }}</span>
-              <span class="process-event-loop-peak-value">{{ item.sampleAvailable ? formatJobDuration(item.eventLoopLagMs ?? undefined) : '未知' }}</span>
-              <span class="process-event-loop-peak-meta">{{ item.sampleAvailable ? `PID ${item.processPid ?? '-'} · ${formatDateTime(item.sampledAt ?? undefined)}` : '最近 24 小时暂无采样' }}</span>
-            </div>
-          </div>
+          <StatsProcessEventLoopTable :rows="processEventLoopRows" />
           <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
           <a-empty v-else class="process-event-loop-trend-empty" :description="processEventLoopTrendEmptyDescription" />
         </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="10">
-        <StatsChartCard
-          title="后台任务运行状态"
-          description="展示默认 worker、监控 worker 和写入 worker 内各定时任务的最近耗时、失败和跳过情况。"
-          :loading="systemInitialLoading"
-          :has-data="hasBackgroundJobs"
+        <StatsBackgroundJobsCard
           :empty-description="backgroundJobEmptyDescription"
-        >
-          <RuntimeAvailabilityAlert
-            :visible="systemRuntimeAlertVisible"
-            message="后台运行态暂时不可观测"
-            :description="systemRuntimeAlertDescription"
-          />
-          <ResponsiveDataList
-            table-class="stats-background-jobs-table"
-            :columns="backgroundJobColumns"
-            :data-source="backgroundJobRows"
-            :mobile-data-source="backgroundJobRows"
-            :pagination="backgroundJobPagination"
-            row-key="name"
-            size="small"
-            :scroll-x="860"
-            :table-scroll-y="240"
-            :table-scroll-enabled="false"
-            :lock-body-scroll="false"
-            :adaptive-column-width="false"
-            @change="handleBackgroundJobTableChange"
-          >
-            <template #emptyText>
-              <a-empty :description="backgroundJobEmptyDescription" />
-            </template>
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'name'">
-                <span class="background-job-name-cell">
-                  <span class="background-job-name">
-                    <span>{{ record.name }}</span>
-                    <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
-                      <InfoCircleOutlined class="background-job-info-icon" />
-                    </a-tooltip>
-                  </span>
-                  <span v-if="backgroundJobRetryQueueSummary(record)" class="background-job-queue-summary">
-                    {{ backgroundJobRetryQueueSummary(record) }}
-                  </span>
-                </span>
-              </template>
-              <template v-else-if="column.key === 'running'">
-                <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
-                  {{ record.running ? '运行中' : '空闲' }}
-                </a-tag>
-              </template>
-              <template v-else-if="column.key === 'workerRole'">
-                <a-tag>{{ processRoleLabel(record.workerRole || 'worker') }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'lastDurationMs'">
-                {{ formatJobDuration(record.lastDurationMs) }}
-              </template>
-              <template v-else-if="column.key === 'maxDurationMs'">
-                {{ formatJobDuration(record.maxDurationMs) }}
-              </template>
-              <template v-else-if="column.key === 'counts'">
-                {{ formatJobCounts(record) }}
-              </template>
-              <template v-else-if="column.key === 'lastFinishedAt'">
-                {{ formatDateTime(record.lastFinishedAt) }}
-              </template>
-              <template v-else-if="column.key === 'lastError'">
-                <a-tooltip v-if="record.lastError" :title="record.lastError">
-                  <span class="stats-job-error">{{ record.lastError }}</span>
-                </a-tooltip>
-                <span v-else>-</span>
-              </template>
-            </template>
-            <template #card="{ record }">
-              <article class="background-job-card">
-                <div class="background-job-card-head">
-                  <strong class="background-job-name-cell">
-                    <span class="background-job-name">
-                      <span>{{ record.name }}</span>
-                      <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
-                        <InfoCircleOutlined class="background-job-info-icon" />
-                      </a-tooltip>
-                    </span>
-                  </strong>
-                  <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
-                    {{ record.running ? '运行中' : '空闲' }}
-                  </a-tag>
-                </div>
-                <div class="mobile-list-meta-grid">
-                  <div class="mobile-list-meta-item">
-                    <span>所属 worker</span>
-                    <strong>{{ processRoleLabel(record.workerRole || 'worker') }}</strong>
-                  </div>
-                  <div class="mobile-list-meta-item">
-                    <span>最近耗时</span>
-                    <strong>{{ formatJobDuration(record.lastDurationMs) }}</strong>
-                  </div>
-                  <div class="mobile-list-meta-item">
-                    <span>最长耗时</span>
-                    <strong>{{ formatJobDuration(record.maxDurationMs) }}</strong>
-                  </div>
-                  <div class="mobile-list-meta-item">
-                    <span>成功 / 失败 / 跳过</span>
-                    <strong>{{ formatJobCounts(record) }}</strong>
-                  </div>
-                  <div class="mobile-list-meta-item">
-                    <span>最近完成</span>
-                    <strong>{{ formatDateTime(record.lastFinishedAt) }}</strong>
-                  </div>
-                  <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
-                    <span>最近错误</span>
-                    <strong>{{ record.lastError }}</strong>
-                  </div>
-                  <div v-if="backgroundJobRetryQueueSummary(record)" class="mobile-list-meta-item mobile-list-meta-wide">
-                    <span>复活队列</span>
-                    <strong>{{ backgroundJobRetryQueueSummary(record) }}</strong>
-                  </div>
-                </div>
-              </article>
-            </template>
-          </ResponsiveDataList>
-        </StatsChartCard>
+          :has-data="hasBackgroundJobs"
+          :loading="systemInitialLoading"
+          :pagination="backgroundJobPagination"
+          :rows="backgroundJobRows"
+          :runtime-alert-description="systemRuntimeAlertDescription"
+          :runtime-alert-visible="systemRuntimeAlertVisible"
+          @change="handleBackgroundJobTableChange"
+        />
       </a-col>
     </a-row>
   </div>
@@ -250,26 +134,26 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
-import { InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
-import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import StatsBackgroundJobsCard from './StatsBackgroundJobsCard.vue'
 import StatsChartCard from './StatsChartCard.vue'
+import StatsProcessEventLoopTable from './StatsProcessEventLoopTable.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
-import { buildErrorOption, buildModelDistributionOption, buildProcessEventLoopOption, buildSystemMetricsOption, buildUsageTrendOption, processRoleLabel } from './statsChartOptions'
-import { formatCompactInteger, formatCost, formatDuration, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
+import { buildErrorOption, buildModelDistributionOption, buildProcessEventLoopOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
+import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
+import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
 
 const MAX_RANGE_DAYS = 31
 type StatsPageState = {
@@ -341,15 +225,8 @@ const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
 const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasSystemTrend.value)
 const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend.length ?? 0) > 0)
-const processEventLoopPeakRows = computed(() => {
-  const statusRows = systemMetrics.value?.processEventLoopPeakStatus
-  const order = new Map([['server', 0], ['worker', 1], ['metrics-worker', 2], ['ingest-worker', 3], ['db-service', 4]])
-  if (statusRows?.length) {
-    return [...statusRows].sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
-  }
-  return []
-})
-const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || processEventLoopPeakRows.value.some((item) => item.sampleAvailable))
+const processEventLoopRows = computed(() => buildProcessEventLoopRows(systemMetrics.value))
+const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || hasProcessEventLoopRowSample(processEventLoopRows.value))
 const backgroundJobRows = computed(() => {
   return [...(systemMetrics.value?.backgroundJobs ?? [])].sort((left, right) => {
     const leftDuration = left.maxDurationMs ?? -1
@@ -403,17 +280,6 @@ const processEventLoopEmptyDescription = computed(() => '等待进程事件循�
 const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无事件循环趋势，等待后台窗口缓存刷新`)
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
-const backgroundJobColumns = [
-  { title: '任务', dataIndex: 'name', key: 'name', width: 220 },
-  { title: '所属 worker', key: 'workerRole', width: 112 },
-  { title: '状态', key: 'running', width: 86 },
-  { title: '最近耗时', key: 'lastDurationMs', width: 96 },
-  { title: '最长耗时', key: 'maxDurationMs', width: 96 },
-  { title: '成功 / 失败 / 跳过', key: 'counts', width: 138 },
-  { title: '最近完成', key: 'lastFinishedAt', width: 168 },
-  { title: '最近错误', key: 'lastError', ellipsis: true }
-]
-
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary
   return [
@@ -617,38 +483,6 @@ function disposeCharts() {
   disposeChart(processEventLoopChart)
 }
 
-function formatJobDuration(value?: number) {
-  return value === undefined ? '-' : formatDuration(value)
-}
-
-function formatJobCounts(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
-  return `${formatInteger(row.successCount)} / ${formatInteger(row.failureCount)} / ${formatInteger(row.skippedCount)}`
-}
-
-function backgroundJobRetryQueueSummary(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
-  const queue = row.name === 'cooldown-account-retest' ? row.retryQueue : undefined
-  if (!queue) return undefined
-  const nextRunAt = formatRetryQueueNextRunAt(queue.nextRunAt)
-  return `复活队列：待执行 ${formatInteger(queue.pendingCount)} / 运行中 ${formatInteger(queue.runningCount)}${nextRunAt ? ` / 下次 ${nextRunAt}` : ''}`
-}
-
-function formatRetryQueueNextRunAt(value?: string) {
-  if (!value) return undefined
-  const timestamp = serverDateTimeTimestamp(value)
-  if (timestamp === undefined) return undefined
-  return new Intl.DateTimeFormat('zh-CN', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  }).format(timestamp)
-}
-
-function backgroundJobDurationNote(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
-  if (row.name !== 'cooldown-account-retest') return undefined
-  return '该任务会在冷却到期后按真实网关链路复测账号；失败后由 cooldown_until 推进下一次复测，先 3 秒起步并翻倍，达到最大暂停时间后进入慢速恢复。'
-}
-
 function snapshotPageState(): StatsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
@@ -740,131 +574,12 @@ watch(() => backgroundJobRows.value.length, (total) => {
   height: 340px;
 }
 
-.process-event-loop-peak {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.process-event-loop-peak-item {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid #e8edf5;
-  border-radius: 6px;
-  background: #fbfcff;
-}
-
-.process-event-loop-peak-item.unavailable {
-  border-color: #ffd591;
-  background: #fff7e6;
-}
-
-.process-event-loop-peak-role {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.process-event-loop-peak-value {
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.process-event-loop-peak-item.unavailable .process-event-loop-peak-value {
-  color: #ad6800;
-}
-
-.process-event-loop-peak-meta {
-  overflow: hidden;
-  color: #94a3b8;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .process-event-loop-trend-empty {
   display: flex;
   flex: 1;
   flex-direction: column;
   justify-content: center;
   min-height: 220px;
-}
-
-.stats-background-jobs-table {
-  min-height: 0;
-}
-
-.background-job-name-cell {
-  display: inline-grid;
-  min-width: 0;
-  max-width: 100%;
-  gap: 3px;
-}
-
-.background-job-name {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-}
-
-.background-job-name span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.background-job-queue-summary {
-  min-width: 0;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.background-job-info-icon {
-  flex: none;
-  color: #64748b;
-  cursor: help;
-  font-size: 14px;
-}
-
-.stats-job-error {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  color: #cf1322;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  white-space: nowrap;
-}
-
-.background-job-card {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.background-job-card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.background-job-card-head strong {
-  min-width: 0;
-  color: #0f172a;
-  font-weight: 400;
-  overflow-wrap: anywhere;
 }
 
 :global(.stats-error-tooltip) {
@@ -940,9 +655,6 @@ watch(() => backgroundJobRows.value.length, (total) => {
     height: 280px;
   }
 
-  .process-event-loop-peak {
-    grid-template-columns: 1fr;
-  }
 }
 </style>
 

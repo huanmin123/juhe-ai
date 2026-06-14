@@ -37,6 +37,46 @@ const schedule = {
 }
 const importGroupName = '导入回归分组'
 
+function assertAccountImportRouteBoundary(): void {
+  const mainRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
+  const importRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-import.routes.ts'), 'utf8')
+  const importServiceSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-import.service.ts'), 'utf8')
+  const resourceResolverSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-import-resource-resolver.ts'), 'utf8')
+
+  assert(
+    mainRouteSource.includes('registerAccountImportRoutes(accountsRouter)'),
+    '账户主路由必须只通过 registerAccountImportRoutes 注册导入路由'
+  )
+  assert(
+    !mainRouteSource.includes("accountsRouter.post('/import/preview'") &&
+      !mainRouteSource.includes("accountsRouter.post('/import/confirm'"),
+    '账户导入 preview/confirm 路由不应回退到 accounts.routes.ts'
+  )
+  assert(importRouteSource.includes("router.post('/import/preview'"), '账户导入子路由必须保留 preview 入口')
+  assert(importRouteSource.includes("router.post('/import/confirm'"), '账户导入子路由必须保留 confirm 入口')
+  assert(importRouteSource.includes('accountImportRequestSchema.safeParse'), '账户导入子路由必须负责请求体 schema 校验')
+  assert(importRouteSource.includes('previewAccountImport'), '账户导入子路由必须调用导入预览服务')
+  assert(importRouteSource.includes('executeAccountImport'), '账户导入子路由必须调用导入执行服务')
+  assert(importRouteSource.includes("operationKey: 'accounts.import'"), '账户导入确认必须保留幂等与操作日志 key')
+  assert(importRouteSource.includes('runLoggedOperation'), '账户导入确认必须保留操作日志记录边界')
+  assert(!importRouteSource.includes('createAccount('), '账户导入子路由不应直接创建账户')
+  assert(!importRouteSource.includes('updateAccount('), '账户导入子路由不应包含普通账户编辑逻辑')
+  assert(!importRouteSource.includes('deleteAccountWithRelatedCleanup('), '账户导入子路由不应包含普通账户删除逻辑')
+  assert(importServiceSource.includes("from './account-import-resource-resolver.js'"), '账户导入 service 必须使用资源解析 helper')
+  assert(!importServiceSource.includes('function resolveAccountGroup('), '账户导入分组解析不应回退到 service')
+  assert(!importServiceSource.includes('function resolveAccountProxy('), '账户导入代理解析不应回退到 service')
+  assert(!importServiceSource.includes('listGroupOptions('), '账户导入 service 不应直接扫描分组选项')
+  assert(!importServiceSource.includes('listProxyOptions('), '账户导入 service 不应直接扫描代理选项')
+  assert(!importServiceSource.includes('findGroupSummary('), '账户导入 service 不应直接读取分组摘要')
+  assert(!importServiceSource.includes('findProxy('), '账户导入 service 不应直接读取代理详情')
+  assert(resourceResolverSource.includes('export function resolveAccountGroup'), '账户导入资源解析 helper 必须承接分组解析')
+  assert(resourceResolverSource.includes('export function resolveAccountProxy'), '账户导入资源解析 helper 必须承接代理解析')
+  assert(resourceResolverSource.includes('listGroupOptions('), '账户导入资源解析 helper 必须保留分组选项查找')
+  assert(resourceResolverSource.includes('listProxyOptions('), '账户导入资源解析 helper 必须保留代理选项查找')
+}
+
+assertAccountImportRouteBoundary()
+
 try {
   repositories.createGroup({
     name: importGroupName,

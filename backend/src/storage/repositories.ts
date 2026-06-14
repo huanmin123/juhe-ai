@@ -4225,7 +4225,7 @@ function preserveApiKeyRoutesBeforeGroupDelete(
   if (blockers.length) {
     const names = blockers.slice(0, 3).map((apiKey) => apiKey.name).join('、')
     const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`删除分组前，请先为以下 API Key 添加或启用其他分组：${names}${suffix}`)
+    throw new Error(`无法删除分组：该分组仍是以下 API Key 的唯一启用号池：${names}${suffix}。请先到 API Key 管理中为这些 Key 新增并启用其他分组，或删除这些 API Key 后再删除分组。`)
   }
 
   return affectedApiKeys.map((apiKey) => {

@@ -15,6 +15,7 @@ import {
   refreshAccountQualityFromUsage,
   syncApiKeyAvailabilityScheduleStatuses
 } from '../../storage/repositories.js'
+import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
 import {
   aggregateUsageStatsBatch,
   checkUsageStatsConsistency,
@@ -43,6 +44,7 @@ import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-clean
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
+import { enqueueAccountApiKeyCooldownRetest, getAccountApiKeyCooldownRetestQueueSnapshot } from './account-api-key-cooldown-retest.service.js'
 import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
 import { WorkerScheduler } from './worker-scheduler.js'
@@ -107,6 +109,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: runAccountQualityRefresh })
   scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
   scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
+  scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: runAccountApiKeyCooldownRetest })
   scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
   scheduler.schedule({ name: backgroundScheduledJobName('data-retention-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 13 * minuteMs, task: runDataRetentionCleanup })
   scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
@@ -469,6 +472,35 @@ async function runCooldownAccountRetest(): Promise<void> {
       retryQueueNextRunAt: queue.nextRunAt,
       elapsedMs: Date.now() - startedAtMs
     }, '冷却账户复测候选已加入异步队列')
+  }
+}
+
+async function runAccountApiKeyCooldownRetest(): Promise<void> {
+  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
+  const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
+  const candidates = listAccountApiKeyRuntimeStatesDueForProbe(batchSize)
+  const startedAtMs = Date.now()
+  let enqueuedCount = 0
+  let skippedQueuedCount = 0
+  for (const candidate of candidates) {
+    if (enqueueAccountApiKeyCooldownRetest(candidate, { maxRecoveryHours })) {
+      enqueuedCount += 1
+    } else {
+      skippedQueuedCount += 1
+    }
+  }
+  if (candidates.length > 0) {
+    const queue = getAccountApiKeyCooldownRetestQueueSnapshot()
+    logger.info({
+      event: 'background_account_api_key_cooldown_retest_completed',
+      candidateCount: candidates.length,
+      enqueuedCount,
+      skippedQueuedCount,
+      retryQueuePendingCount: queue.pendingCount,
+      retryQueueRunningCount: queue.runningCount,
+      retryQueueNextRunAt: queue.nextRunAt,
+      elapsedMs: Date.now() - startedAtMs
+    }, '账户内 API Key 复测候选已加入异步队列')
   }
 }
 

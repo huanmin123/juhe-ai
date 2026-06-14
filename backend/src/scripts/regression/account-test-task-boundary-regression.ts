@@ -8,6 +8,8 @@ const backendSrc = resolve(currentDir, '../..')
 const projectRoot = resolve(backendSrc, '../..')
 
 const accountsRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/accounts.routes.ts'), 'utf8')
+const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-session.routes.ts'), 'utf8')
+const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
 const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
 const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storage/account-test-tasks.repository.ts'), 'utf8')
 const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
@@ -42,26 +44,40 @@ assert(
   '草稿测试接口应创建携带草稿快照的后台任务'
 )
 
-const taskReadRouteIndex = accountsRoutesSource.indexOf("accountsRouter.get('/test-tasks/:taskId'")
+const taskReadRouteIndex = accountTestStatusRoutesSource.indexOf("router.get('/test-tasks/:taskId'")
 const draftTestRouteIndex = accountsRoutesSource.indexOf("accountsRouter.post('/test-draft'")
 const accountReadRouteIndex = accountsRoutesSource.indexOf("accountsRouter.get('/:id'")
+const accountTestSessionRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestSessionRoutes(accountsRouter)')
+const accountTestStatusRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestStatusRoutes(accountsRouter)')
 assert(taskReadRouteIndex >= 0, '应提供账号测试任务查询接口')
 assert(draftTestRouteIndex >= 0, '应提供账号草稿测试任务创建接口')
 assert(accountReadRouteIndex >= 0, '应保留账号详情接口')
 assert(
-  taskReadRouteIndex < accountReadRouteIndex,
-  'GET /test-tasks/:taskId 必须定义在 GET /:id 之前，避免被参数路由吞掉'
+  accountTestSessionRouteRegistrationIndex >= 0,
+  '账户路由应注册账号测试 session 写入子路由'
+)
+assert(
+  accountTestStatusRouteRegistrationIndex >= 0,
+  '账户路由应注册账号测试状态读取子路由'
+)
+assert(
+  accountTestSessionRouteRegistrationIndex < accountReadRouteIndex,
+  '账号测试 session 写入子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
+)
+assert(
+  accountTestStatusRouteRegistrationIndex < accountReadRouteIndex,
+  '账号测试状态读取子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
 )
 assert(
   draftTestRouteIndex < accountReadRouteIndex,
   'POST /test-draft 必须定义在 GET /:id 之前，避免被参数路由吞掉'
 )
 assert(
-  accountsRoutesSource.includes("accountsRouter.get('/test-tasks',"),
+  accountTestStatusRoutesSource.includes("router.get('/test-tasks',"),
   '应提供账号测试任务批量查询接口，避免批量测试逐个任务轮询'
 )
 assert(
-  accountsRoutesSource.includes("accountsRouter.post('/test-tasks/:taskId/cancel'"),
+  accountTestSessionRoutesSource.includes("router.post('/test-tasks/:taskId/cancel'"),
   '应提供账号测试任务取消接口'
 )
 
@@ -90,10 +106,21 @@ assert(
   '手动账号测试队列应持续从 DB 补拉 queued 任务，避免 worker 重启后只执行首批任务'
 )
 assert(
-  accountsRoutesSource.includes("accountsRouter.post('/test-sessions'")
-    && accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/heartbeat'")
-    && accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/cancel'"),
+  accountTestSessionRoutesSource.includes("router.post('/test-sessions'")
+    && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/heartbeat'")
+    && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/cancel'"),
   '账号测试应提供 session 创建、心跳和批量取消接口'
+)
+assert(
+  !accountsRoutesSource.includes("accountsRouter.post('/test-sessions'")
+    && !accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/heartbeat'")
+    && !accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/cancel'")
+    && !accountsRoutesSource.includes("accountsRouter.post('/test-tasks/:taskId/cancel'"),
+  '账号测试 session 写入路由不应继续放在账户主路由文件中'
+)
+assert(
+  accountTestStatusRoutesSource.includes("router.get('/test-sessions/:sessionId'"),
+  '账号测试状态子路由应提供 session 查询接口'
 )
 assert(
   accountTestTaskRepositorySource.includes('account_test_sessions')

@@ -204,7 +204,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后；`event_loop_lag_ms` 保存后台 worker 采样值，用于主机级概览。多进程事件循环趋势以 `process_event_loop_samples` 为准。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `system_metrics_trend_windows`：按统计概览日期范围预生成系统性能 / 网络吞吐趋势，接口只按范围窗口直读。
-- `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟，当前角色为 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service`，用于区分主 Web 进程、默认后台 worker、监控 worker、写入 worker 和本地 DB service 哪个进程卡顿。
+- `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟，当前角色为 `server`、`worker`、`metrics-worker`、`ingest-worker`、`temporary-maintenance-worker`、`db-service`，用于区分主 Web 进程、默认后台 worker、监控 worker、写入 worker、临时维护 worker 和本地 DB service 哪个进程卡顿。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟样本数、平均值和最大值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势展示固定读取最近 24 小时 `process_event_loop_samples` 并按分钟聚合，避免长范围窗口膨胀，也避免把卡顿尖峰压成天级趋势。
 - `database_storage_snapshots`：按采样时间保存业务库、数据集目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
@@ -447,7 +447,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 | `system_metrics_samples` | 主机监控原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只用于最新状态和短期排障 |
 | `system_metrics_hourly` | 主机监控小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供 worker 刷新 `system_metrics_trend_windows`；API 不在请求时聚合这些小时桶 |
 | `system_metrics_trend_windows` | 系统监控窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 每天在 worker 内清理；刷新任务会覆盖当前窗口 | 供概览接口直读 |
-| `process_event_loop_samples` | 进程事件循环原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在默认 worker 内清理 | 按 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service` 分进程角色保存，用于短期定位哪个进程卡顿 |
+| `process_event_loop_samples` | 进程事件循环原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在默认 worker 内清理 | 按 `server`、`worker`、`metrics-worker`、`ingest-worker`、`temporary-maintenance-worker`、`db-service` 分进程角色保存，用于短期定位哪个进程卡顿 |
 | `process_event_loop_hourly` | 进程事件循环小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 长期粗粒度排障缓存；管理页趋势不再用小时桶 |
 | `process_event_loop_trend_windows` | 进程事件循环窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 每天在 worker 内清理；刷新任务会覆盖当前窗口 | 供进程事件循环趋势接口直读；管理页固定展示最近 24 小时分钟桶 |
 | `database_storage_snapshots`、`table_storage_snapshots` | 表监控采样历史 | 默认最近一月，最多最近一月 | 是，`data-retention-cleanup` 每天在 worker 内清理，采样写入时也会轻量兜底清理 | 用于管理员表监控页面展示业务库、数据集目录库和统计结果库容量趋势，不纳入默认业务备份 |

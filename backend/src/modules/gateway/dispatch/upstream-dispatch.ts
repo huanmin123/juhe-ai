@@ -447,6 +447,9 @@ function shouldRetrySameAccountAfterFailure(
   attemptIndex: number,
   sameAccountRetryPolicy: RetryPolicy
 ): boolean {
+  if (account.selectedApiKeyFingerprint) {
+    return false
+  }
   if (!shouldRetryPolicyAttempt(attemptIndex, sameAccountRetryPolicy)) {
     return false
   }

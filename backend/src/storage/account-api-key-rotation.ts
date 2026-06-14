@@ -1,9 +1,25 @@
-export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
+import { createHmac } from 'node:crypto'
 
-interface AccountApiKeyEntry {
+import { runtimeConfig } from '../config/runtime.js'
+import { isOpenAICompatibleProviderCode } from '../domain/provider-protocol.js'
+
+export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
+export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
+
+export interface AccountApiKeyEntry {
   id: string
   key: string
+  fingerprint: string
+  index: number
   weight: number
+}
+
+export interface AccountApiKeyRuntimeSelectionState {
+  keyFingerprint: string
+  status: AccountApiKeyRuntimeStatus
+  keyIndex?: number
+  cooldownUntil?: string
+  nextProbeAt?: string
 }
 
 interface RoundRobinState {
@@ -20,14 +36,25 @@ const weightedStates = new Map<string, WeightedState>()
 export function selectAccountRuntimeApiKey(input: {
   accountId: string
   credentials: Record<string, unknown>
+  runtimeStates?: AccountApiKeyRuntimeSelectionState[]
 }): string | undefined {
+  return selectAccountRuntimeApiKeyEntry(input)?.key
+}
+
+export function selectAccountRuntimeApiKeyEntry(input: {
+  accountId: string
+  credentials: Record<string, unknown>
+  runtimeStates?: AccountApiKeyRuntimeSelectionState[]
+}): AccountApiKeyEntry | undefined {
   const entries = accountApiKeyEntries(input.credentials)
   if (!entries.length) return undefined
-  if (entries.length === 1) return entries[0].key
+  if (entries.length === 1) return entries[0]
+  const availableEntries = accountApiKeyEntriesAvailableForDispatch(entries, input.runtimeStates)
+  if (!availableEntries.length) return undefined
   const strategy = accountApiKeyStrategy(input.credentials)
   return strategy === 'weighted_round_robin'
-    ? selectWeightedApiKey(input.accountId, entries)
-    : selectRoundRobinApiKey(input.accountId, entries)
+    ? selectWeightedApiKey(input.accountId, availableEntries)
+    : selectRoundRobinApiKey(input.accountId, availableEntries)
 }
 
 export function accountApiKeyEntries(credentials: Record<string, unknown>): AccountApiKeyEntry[] {
@@ -42,27 +69,48 @@ export function accountApiKeyEntries(credentials: Record<string, unknown>): Acco
     const key = value.trim()
     if (!key || seen.has(key)) continue
     seen.add(key)
+    const fingerprint = fingerprintAccountApiKey(key)
     entries.push({
-      id: `${index}:${key}`,
+      id: fingerprint,
       key,
+      fingerprint,
+      index,
       weight: normalizeApiKeyWeight(weights[index])
     })
   }
   return entries
 }
 
+export function isAccountApiKeyPoolIsolationEnabled(input: {
+  providerCode?: unknown
+  type?: unknown
+  credentials?: Record<string, unknown>
+  apiKeys?: string[]
+}): boolean {
+  const keyCount = input.credentials
+    ? accountApiKeyEntries(input.credentials).length
+    : Array.isArray(input.apiKeys) ? new Set(input.apiKeys.map((key) => key.trim()).filter(Boolean)).size : 0
+  return input.type === 'api_key'
+    && isOpenAICompatibleProviderCode(input.providerCode)
+    && keyCount > 1
+}
+
+export function fingerprintAccountApiKey(key: string): string {
+  return createHmac('sha256', runtimeConfig.secret).update(key).digest('hex')
+}
+
 function accountApiKeyStrategy(credentials: Record<string, unknown>): AccountApiKeyStrategy {
   return credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin'
 }
 
-function selectRoundRobinApiKey(accountId: string, entries: AccountApiKeyEntry[]): string {
+function selectRoundRobinApiKey(accountId: string, entries: AccountApiKeyEntry[]): AccountApiKeyEntry {
   const state = roundRobinStates.get(accountId) ?? { nextIndex: 0 }
   const index = state.nextIndex % entries.length
   roundRobinStates.set(accountId, { nextIndex: (index + 1) % entries.length })
-  return entries[index].key
+  return entries[index]
 }
 
-function selectWeightedApiKey(accountId: string, entries: AccountApiKeyEntry[]): string {
+function selectWeightedApiKey(accountId: string, entries: AccountApiKeyEntry[]): AccountApiKeyEntry {
   const state = weightedStates.get(accountId) ?? { currentWeights: new Map<string, number>() }
   cleanupWeightedState(state, entries)
   const totalWeight = entries.reduce((sum, entry) => sum + entry.weight, 0)
@@ -78,7 +126,7 @@ function selectWeightedApiKey(accountId: string, entries: AccountApiKeyEntry[]):
   }
   state.currentWeights.set(selected.id, (state.currentWeights.get(selected.id) ?? 0) - totalWeight)
   weightedStates.set(accountId, state)
-  return selected.key
+  return selected
 }
 
 function cleanupWeightedState(state: WeightedState, entries: AccountApiKeyEntry[]): void {
@@ -92,4 +140,19 @@ function cleanupWeightedState(state: WeightedState, entries: AccountApiKeyEntry[
 
 function normalizeApiKeyWeight(value: unknown): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 1
+}
+
+function accountApiKeyEntriesAvailableForDispatch(
+  entries: AccountApiKeyEntry[],
+  runtimeStates: AccountApiKeyRuntimeSelectionState[] | undefined
+): AccountApiKeyEntry[] {
+  if (!runtimeStates?.length) return entries
+  const unavailableFingerprints = new Set(
+    runtimeStates
+      .filter((state) => state.status !== 'active')
+      .map((state) => state.keyFingerprint)
+      .filter(Boolean)
+  )
+  if (!unavailableFingerprints.size) return entries
+  return entries.filter((entry) => !unavailableFingerprints.has(entry.fingerprint))
 }

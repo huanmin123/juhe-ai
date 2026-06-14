@@ -17,7 +17,7 @@ import {
   trendBucketHours
 } from './usage-stats-window-helpers.js'
 
-const PROCESS_EVENT_LOOP_ROLES: ProcessEventLoopRole[] = ['server', 'worker', 'metrics-worker', 'ingest-worker', 'db-service']
+const PROCESS_EVENT_LOOP_ROLES: ProcessEventLoopRole[] = ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service']
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
 
 export interface SystemMetricsTrendWindowSnapshotContext {

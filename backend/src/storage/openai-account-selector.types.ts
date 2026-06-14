@@ -10,6 +10,7 @@ import type {
 } from '../domain/types.js'
 import type { ProxyProfileUrlResolution } from './proxy.repository.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
+import type { AccountApiKeyRuntimeSelectionState } from './account-api-key-rotation.js'
 
 export interface OpenAIAccountSecret {
   id: string
@@ -52,6 +53,9 @@ export interface OpenAIAccountSecret {
   baseUrl: string
   apiKey: string
   apiKeys?: string[]
+  apiKeyRuntimeStates?: AccountApiKeyRuntimeSelectionState[]
+  selectedApiKeyFingerprint?: string
+  selectedApiKeyIndex?: number
   refreshToken?: string
   clientId?: string
   credentialSourceAccountId?: string
@@ -187,6 +191,7 @@ export type OpenAIAccountSecretOptions = {
   proxyProfilesById?: Map<string, ProxyProfileUrlResolution>
   supportedModelsByAccountId?: Map<string, string[]>
   modelMappingsByAccountId?: Map<string, AccountModelMapping[]>
+  apiKeyRuntimeStatesByAccountId?: Map<string, AccountApiKeyRuntimeSelectionState[]>
   accountAccess?: OpenAIAccountAccess
 }
 

@@ -96,6 +96,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'instance_unschedulable'
   | 'instance_schedule_inactive'
   | 'binding_missing'
+  | 'api_key_pool_unavailable'
   | 'runtime_local_suppressed'
   | 'runtime_half_open'
   | 'runtime_precheck_pending'
@@ -108,6 +109,7 @@ export type AccountEffectiveAvailabilityBlockerScope =
   | 'account'
   | 'authorized_instance'
   | 'binding'
+  | 'api_key_pool'
   | 'runtime'
 
 export interface AccountEffectiveAvailability {
@@ -231,6 +233,7 @@ export interface AccountSummary {
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
+  apiKeyRuntime?: AccountApiKeyRuntimeSummary
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
   lastUsedAt?: string
@@ -264,6 +267,18 @@ export interface AccountSummary {
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
   authorizationTeamCount?: number
+}
+
+export interface AccountApiKeyRuntimeSummary {
+  total: number
+  active: number
+  temporaryUnavailable: number
+  rateLimited: number
+  error: number
+  disabled: number
+  unavailable: number
+  allUnavailable: boolean
+  nextProbeAt?: string
 }
 
 export interface AccountListResult {

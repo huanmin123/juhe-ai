@@ -47,134 +47,31 @@
       </template>
     </UsageRecordsFilterToolbar>
 
-    <ResponsiveDataList
-      table-class="page-table usage-table"
+    <UsageRecordsTable
       :columns="managedColumns"
-      :data-source="filteredRecords"
-      :mobile-data-source="mobileRecords"
-      row-key="id"
+      :is-management-view="isManagementView"
       :loading="loading"
-      :loading-more="mobileLoadingMore"
       :mobile-has-more="mobileHasMore"
+      :mobile-records="mobileRecords"
+      :loading-more="mobileLoadingMore"
       :pagination="tablePagination"
-      :scroll-x="isManagementView ? 2460 : 2280"
-      mobile-pagination
-      pull-refresh-enabled
-      :refreshing="loading"
+      :records="filteredRecords"
       @change="handleTableChange"
+      @copy-trace-id="copyTraceId"
       @mobile-load-more="loadMoreMobileRecords"
       @mobile-refresh="refreshMobileRecords"
-    >
-      <template #emptyText>
-        <a-empty class="page-empty-card" description="当前条件下没有使用记录。" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'traceId'">
-          <div class="trace-id-cell">
-            <span class="trace-id-text">{{ record.traceId }}</span>
-            <span class="trace-id-actions">
-              <a-tooltip title="复制 traceId">
-                <a-button size="small" type="text" @click.stop="copyTraceId(record.traceId)">
-                  <template #icon><copy-outlined /></template>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip v-if="isManagementView" title="查看运行日志">
-                <a-button size="small" type="text" @click.stop="openTraceTarget(record.traceId, 'runtime')">
-                  <template #icon><search-outlined /></template>
-                </a-button>
-              </a-tooltip>
-              <a-tooltip v-if="isManagementView" title="查看审计日志">
-                <a-button size="small" type="text" @click.stop="openTraceTarget(record.traceId, 'audit')">
-                  <template #icon><file-search-outlined /></template>
-                </a-button>
-              </a-tooltip>
-            </span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'apiKey'">
-          <span :class="record.apiKeyName ? 'name-cell' : 'muted-cell'">{{ displayName(record.apiKeyName, record.apiKeyId) }}</span>
-        </template>
-        <template v-else-if="column.key === 'group'">
-          <span :class="record.groupName ? 'name-cell' : 'muted-cell'">{{ displayUsageRecordGroupName(record.groupName, record.groupId) }}</span>
-        </template>
-        <template v-else-if="column.key === 'account'">
-          <span :class="record.accountName || record.accountId ? 'name-cell' : 'muted-cell'">{{ accountDisplayText(record) }}</span>
-        </template>
-        <template v-else-if="column.key === 'systemAccount'">
-          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
-            {{ usageRecordSystemAccountText(record) }}
-          </span>
-        </template>
-        <template v-else-if="column.key === 'clientIp'">
-          <span :class="record.clientIp ? 'ip-cell' : 'muted-cell'">{{ record.clientIp ?? '-' }}</span>
-        </template>
-        <template v-else-if="column.key === 'endpoint'">
-          <span :class="record.endpoint ? 'endpoint-cell' : 'muted-cell'">{{ formatEndpoint(record.endpoint) }}</span>
-        </template>
-        <template v-else-if="column.key === 'model'">
-          <span v-if="record.model" class="model-cell">
-            <a-tag color="blue">{{ record.model }}</a-tag>
-            <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
-          </span>
-          <span v-else class="muted-cell">-</span>
-        </template>
-        <template v-else-if="column.key === 'stream'">
-          <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'statusCode'">
-          <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'success'">
-          <UsageRecordResultCell :record="record" />
-        </template>
-        <template v-else-if="column.key === 'trafficSource'">
-          <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'tokens'">
-          <div class="token-cell">
-            <span>输入 {{ formatTokens(record.inputTokens) }}</span>
-            <span>输出 {{ formatTokens(record.outputTokens) }}</span>
-            <span>缓存 {{ formatTokens(record.cacheReadTokens) }}</span>
-            <span v-if="(record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0) > 0">
-              图片 {{ formatTokens((record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)) }}
-            </span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'cost'">
-          <UsageRecordCostCell :record="record" />
-        </template>
-        <template v-else-if="column.key === 'firstTokenMs'">
-          <span>{{ formatDuration(record.firstTokenMs) }}</span>
-        </template>
-        <template v-else-if="column.key === 'durationMs'">
-          <span>{{ formatDuration(record.durationMs) }}</span>
-        </template>
-        <template v-else-if="column.key === 'createdAt'">
-          <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
-        </template>
-      </template>
-      <template #card="{ record }">
-        <UsageRecordMobileCard
-          :is-management-view="isManagementView"
-          :record="record"
-          @copy-trace-id="copyTraceId"
-          @open-audit-logs="openTraceTarget(record.traceId, 'audit')"
-          @open-runtime-logs="openTraceTarget(record.traceId, 'runtime')"
-        />
-      </template>
-    </ResponsiveDataList>
+      @open-trace-target="openTraceTarget"
+    />
   </a-card>
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, FileSearchOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api, type UsageRecordListParams } from '@/api/client'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -190,25 +87,9 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import type { ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import UsageRecordCostCell from './UsageRecordCostCell.vue'
-import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
-import UsageRecordResultCell from './UsageRecordResultCell.vue'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
+import UsageRecordsTable from './UsageRecordsTable.vue'
 import { useUsageRecordGroupOptions } from './useUsageRecordGroupOptions'
-import {
-  accountDisplayText,
-  displayName,
-  displayUsageRecordGroupName,
-  formatDateTime,
-  formatDuration,
-  formatEndpoint,
-  formatTokens,
-  statusCodeColor,
-  statusCodeText,
-  trafficSourceColor,
-  trafficSourceText,
-  usageRecordSystemAccountText
-} from './usageRecordFormatters'
 
 type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 type TableSortOrder = 'ascend' | 'descend' | null
@@ -436,78 +317,6 @@ const {
   minVisible: 1
 })
 
-function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const group = groups.value.find((item) => item.id === normalizedId)
-  if (group) return { id: group.id, name: group.name }
-  if (groupFilterSelection.value?.id === normalizedId) return groupFilterSelection.value
-  return undefined
-}
-
-async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
-  groupOptionsKeyword = keyword
-  const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
-  const requestKeyword = normalizeOptionKeyword(keyword)
-  const requestKey = JSON.stringify([
-    isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self',
-    requestKeyword ?? '',
-    groupFilter.value ?? ''
-  ])
-  if (!force && groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
-    return groupOptionsLoadingPromise
-  }
-  const requestId = ++groupOptionsRequestId
-  const optionWindowKey = groupOptionWindowKey(systemAccountId, requestKeyword)
-  const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
-  if (localWindowGroups?.length) {
-    groupOptionsLoading.value = false
-    rememberGroupLabels(localWindowGroups)
-    syncSelectedGroupSelection(localWindowGroups)
-    groups.value = localWindowGroups
-  }
-  if (!force) {
-    const cachedGroups = groupOptionsCache.get(requestKey)
-    if (cachedGroups) {
-      groupOptionsLoadingKey = undefined
-      groupOptionsLoadingPromise = undefined
-      groupOptionsLoading.value = false
-      rememberGroupLabels(cachedGroups)
-      syncSelectedGroupSelection(cachedGroups)
-      writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
-      groups.value = cachedGroups
-      return
-    }
-  }
-  groupOptionsLoading.value = !localWindowGroups?.length
-  groupOptionsLoadingKey = requestKey
-  groupOptionsLoadingPromise = (async () => {
-    try {
-      let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId, optionWindowKey)
-      rememberGroupLabels(nextGroups)
-      syncSelectedGroupSelection(nextGroups)
-      groupOptionsCache.set(requestKey, nextGroups)
-      writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
-      if (requestId !== groupOptionsRequestId) return
-      groups.value = nextGroups
-    } catch (error) {
-      if (requestId !== groupOptionsRequestId) return
-      console.error(error)
-      message.error(extractApiErrorMessage(error, '加载分组选项失败'))
-    } finally {
-      if (groupOptionsLoadingKey === requestKey) {
-        groupOptionsLoadingKey = undefined
-        groupOptionsLoadingPromise = undefined
-      }
-      if (requestId === groupOptionsRequestId) {
-        groupOptionsLoading.value = false
-      }
-    }
-  })()
-  return groupOptionsLoadingPromise
-}
-
 async function loadModelOptions(force = false): Promise<void> {
   if (!force && (modelOptionsLoaded || modelOptionsLoadingPromise)) {
     return modelOptionsLoadingPromise
@@ -527,98 +336,6 @@ async function loadModelOptions(force = false): Promise<void> {
     }
   })()
   return modelOptionsLoadingPromise
-}
-
-function handleGroupOptionsDropdown(open: boolean): void {
-  if (open) {
-    void loadGroupOptions()
-  }
-}
-
-function handleGroupOptionsSearch(value: string): void {
-  groupOptionsKeyword = value
-  clearGroupOptionsSearchTimer()
-  groupOptionsSearchTimer = window.setTimeout(() => {
-    groupOptionsSearchTimer = undefined
-    void loadGroupOptions(groupOptionsKeyword)
-  }, 250)
-}
-
-function resetGroupOptionsSearch(): void {
-  groupOptionsKeyword = ''
-  clearGroupOptionsSearchTimer()
-}
-
-function clearGroupOptionsSearchTimer(): void {
-  if (groupOptionsSearchTimer && typeof window !== 'undefined') {
-    window.clearTimeout(groupOptionsSearchTimer)
-    groupOptionsSearchTimer = undefined
-  }
-}
-
-async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined, optionWindowKey: string): Promise<GroupOptionSummary[]> {
-  const selectedIds = [groupFilter.value].filter((id): id is string => Boolean(id))
-  const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
-  if (!missingIds.length) return nextGroups
-  const selectedGroups = await Promise.all(missingIds.map(async (id) => {
-    try {
-      return await groupsApi.options({ systemAccountId, ids: [id], limit: 1 })
-    } catch {
-      return []
-    }
-  }))
-  const foundIds = new Set(selectedGroups.flat().map((group) => group.id))
-  handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)), optionWindowKey)
-  return mergeOptionsById(selectedGroups.flat(), nextGroups)
-}
-
-function handleMissingGroupOptions(ids: string[], optionWindowKey: string): void {
-  const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
-  if (!missingIds.length) return
-  removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
-  removeLocalSelectPreferenceValues('groups', missingIds)
-  if (groupFilter.value && missingIds.includes(groupFilter.value)) {
-    groupFilterSelection.value = undefined
-    resetPagination()
-    void loadData({ forceOptions: true })
-  }
-  message.warning('已移除不存在或无权访问的分组，请重新选择')
-}
-
-function groupOptionWindowKey(systemAccountId: string | undefined, requestKeyword: string | undefined): string {
-  return localSelectStorageKey([
-    'group-options',
-    isManagementView.value ? 'management' : 'self',
-    systemAccountId ?? 'all',
-    'usage-records',
-    requestKeyword ?? ''
-  ])
-}
-
-function syncSelectedGroupSelection(nextGroups = groups.value): void {
-  if (!groupFilter.value) return
-  groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
-}
-
-function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const group = nextGroups.find((item) => item.id === normalizedId)
-  if (group) return { id: group.id, name: group.name }
-  return fallback?.id === normalizedId ? fallback : undefined
-}
-
-function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const item of [...leading, ...trailing]) {
-    merged.set(item.id, item)
-  }
-  return [...merged.values()]
-}
-
-function normalizeOptionKeyword(value?: string): string | undefined {
-  const keyword = value?.trim()
-  return keyword ? keyword : undefined
 }
 
 function resetFilters(): void {
@@ -873,87 +590,4 @@ onBeforeUnmount(clearGroupOptionsSearchTimer)
 
 onMounted(loadData)
 </script>
-
-<style scoped>
-.usage-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.usage-table :deep(.ant-empty) {
-  margin: 12px 0;
-}
-
-.token-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.model-cell {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  max-width: 260px;
-  vertical-align: bottom;
-}
-
-.trace-id-cell {
-  display: inline-flex;
-  align-items: center;
-  max-width: 290px;
-  gap: 4px;
-  vertical-align: bottom;
-}
-
-.trace-id-actions {
-  display: inline-flex;
-  flex: none;
-  gap: 2px;
-}
-
-.trace-id-text {
-  min-width: 0;
-  overflow: hidden;
-  color: #334155;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.name-cell {
-  display: inline-block;
-  max-width: 160px;
-  overflow: hidden;
-  color: #0f172a;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-
-.ip-cell {
-  color: #334155;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-}
-
-.endpoint-cell {
-  display: inline-block;
-  max-width: 140px;
-  overflow: hidden;
-  color: #334155;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-
-</style>
-
-
-
 

@@ -142,15 +142,16 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 
 | 队列 / 入口 | 初始角色 | 边界 |
 | --- | --- | --- |
-| `background_worker_usage_records` | `usage-ingest-worker` 或 `ingest-worker` | 高频 append-only，优先级高于聚合读取 |
-| `background_worker_audit_logs` | `log-worker` 或当前合并到 `ingest-worker` | append-only，不能 LWW |
-| `background_worker_operation_logs` | `log-worker` 或当前合并到 `ingest-worker` | append-only |
+| `background_worker_usage_records` | `usage-ingest-worker` 或当前 `ingest-worker` | 高频 append-only，优先级高于聚合读取 |
+| `background_worker_audit_logs` | `log-worker` 或当前 `ingest-worker` | append-only，不能 LWW |
+| `background_worker_operation_logs` | `log-worker` 或当前 `ingest-worker` | append-only |
+| `background_worker_public_api_logs` | `log-worker` 或当前 `ingest-worker` | 公开接口调用明细，append-only，不能被统计窗口拖住 |
 | `background_worker_runtime_log_line` | `log-worker` 或当前合并到 `ingest-worker` | 不能被统计重活拖住 |
 | `startRuntimeLogFileImport()` | `log-worker` 或当前合并到 `ingest-worker` | 按 cursor / offset 追增量 |
 | `background_worker_record_maintenance` | `maintenance-worker` / `temporary-maintenance-worker` | 快照类可合并；`usage_records_cleanup`、`api_key_related_cleanup`、`account_related_cleanup` 单 owner；`non_business_data_cleanup` 优先临时 worker |
 | `background_worker_account_test_tasks` | `probe-worker` | 外部请求 |
 | `gateway-account-side-effects` | `maintenance-worker` 或独立 `account-state-worker` | 状态写入，需继续保持合并和上限 |
-| `public-api-log-queue` | `log-worker` | 当前不走 background IPC，后续纳入统一角色 |
+| `public-api-log-queue` | 当前 `ingest-worker`；后续可拆 `log-worker` | 已走 `background_worker_public_api_logs` IPC，公开接口日志本地队列只在 ingest-worker 内落库 |
 | `client-ip-policy-hit-buffer` | `ingest-worker` | 当前网关本地 flush，后续评估迁移 |
 
 ## 6. 实施阶段
@@ -182,7 +183,7 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 - 仍由 `server` 作为唯一需要外部进程管理器守护的入口，`background-worker-supervisor` 固定拉起默认 `worker`、`metrics-worker` 和 `ingest-worker` 三个 `worker.ts` 子进程。
 - 子进程统一保持 `JUHE_AI_PROCESS_ROLE=worker`，并通过 `JUHE_AI_WORKER_ROLE=worker | metrics-worker | ingest-worker` 区分内部职责；这样不破坏既有 `processRole === 'worker'` 的运行时边界。
 - 默认 `worker` 继续承载统计、维护、探测、账号测试队列和退出 flush；`metrics-worker` 跳过这些业务队列，只注册 `system-metrics-sample` 和进程事件循环采样响应；`ingest-worker` 承接阶段 3 已剥离的 append-only 写入队列。
-- `background-ipc` 按消息类型路由：统计 / 维护 / 探测类业务 IPC 投递默认 `worker`，使用记录、审计、操作日志和运行日志投递 `ingest-worker`；metrics-worker 只接收快照和事件循环采样控制消息。
+- `background-ipc` 按消息类型路由：统计 / 维护 / 探测类业务 IPC 投递默认 `worker`，使用记录、审计、操作日志、公开接口日志和运行日志投递 `ingest-worker`；metrics-worker 只接收快照和事件循环采样控制消息。
 - 运行态快照和系统指标接口必须能区分 `server`、`db-service`、`worker`、`metrics-worker`、`ingest-worker`，缺样本继续用 `sampleAvailable=false` 表达未知。
 
 ### 阶段 3：append-only 写入隔离
@@ -193,13 +194,13 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 
 当前落地方式：
 
-- `ingest-worker` 已作为第三个常驻 worker 由 supervisor 拉起，专门承接 `background_worker_usage_records`、`background_worker_audit_logs`、`background_worker_operation_logs` 和 `background_worker_runtime_log_line` 四类 background IPC append-only 写入。
-- `ingest-worker` 打开数据集目录库，安装使用记录、审计日志、操作日志、运行日志索引四类本地队列 shutdown hook，接管 `startRuntimeLogFileImport()` 和 `runtime-log-index-maintenance`；默认 `worker` 不再启动这些 append-only 本地写队列。
-- `background-ipc` 将 usage 写入放入 ingest 专用 usage 队列，将审计 / 操作 / 运行日志放入 ingest regular 队列；两类队列分别有消息数和字节上限，拒绝计数进入运行态。
+- `ingest-worker` 已作为第三个常驻 worker 由 supervisor 拉起，专门承接 `background_worker_usage_records`、`background_worker_audit_logs`、`background_worker_operation_logs`、`background_worker_public_api_logs` 和 `background_worker_runtime_log_line` 五类 background IPC append-only 写入。
+- `ingest-worker` 打开数据集目录库，安装使用记录、审计日志、操作日志、公开接口日志、运行日志索引五类本地队列 shutdown hook，接管 `startRuntimeLogFileImport()` 和 `runtime-log-index-maintenance`；默认 `worker` 不再启动这些 append-only 本地写队列。
+- `background-ipc` 将 usage 写入放入 ingest 专用 usage 队列，将审计 / 操作 / 公开接口 / 运行日志放入 ingest regular 队列；两类队列分别有消息数和字节上限，拒绝计数进入运行态。
 - 默认 `worker` 仍承载统计聚合、窗口刷新、账号质量、账号测试、复测和记录维护；收到 append-only 写入消息会拒绝，避免错误地在默认 worker 本地写数据集域。
 - 统计聚合和账号质量刷新在读取事实前会请求 ingest drain 状态；如果 server 到 ingest IPC 仍有使用记录积压、ingest 本地 usage 队列未清空或 flush 有失败，本轮统计跳过，避免日用量统计读到未落地的事实。
-- 运行态快照、队列健康和系统指标接口补充 `ingestWorker` / `ingestWorkerSnapshotAvailable`，进程事件循环样本覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`db-service` 五类角色。
-- 公开接口日志当前仍保持既有 DB service 本地队列，已在 registry 中登记为 `log-worker` 后续候选；若公开接口日志写入成为热点，再迁入 `log-worker` 或继续拆分 ingest 类 worker。
+- 运行态快照、队列健康和系统指标接口补充 `ingestWorker` / `ingestWorkerSnapshotAvailable`，进程事件循环样本覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`temporary-maintenance-worker`、`db-service` 六类角色；临时维护 worker 只有任务运行期间写入样本，平时显示缺样本。
+- 公开接口日志当前已合并到 `ingest-worker`；若公开接口日志写入成为热点，再从 `ingest-worker` 拆出 `log-worker` 或更细的公开接口日志 worker。
 
 ### 阶段 4：临时维护 Worker
 
@@ -244,7 +245,7 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 | 重启稳定性 | 子进程异常退出后的退避重启、重复退出次数和最近错误 | 禁止无退避重启风暴；反复退出时管理页必须显示 snapshot 不可用 |
 | IPC 队列 | 业务消息 owner、队列上限、超时、拒绝和丢弃计数 | 统计 / 维护 / 探测类业务 IPC 投递默认 worker，append-only 写入 IPC 投递 ingest-worker；metrics-worker 不能接业务消息 |
 | SQLite 锁 | 写事务耗时、busy / locked 错误、统计滞后和 DB service 事件循环延迟 | 新 worker 不能靠增加并发写来压 SQLite；先短事务、索引和单 owner |
-| 观测准确性 | 系统指标、事件循环趋势、后台任务表和模拟数据是否覆盖五类角色 | 缺样本必须显示未知，不能用 0、空数组或默认时间伪装正常 |
+| 观测准确性 | 系统指标、事件循环趋势、后台任务表和模拟数据是否覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`temporary-maintenance-worker`、`db-service` 六类角色 | 临时维护 worker 平时可缺样本；所有缺样本必须显示未知，不能用 0、空数组或默认时间伪装正常 |
 | 资源占用 | Node heap、RSS、SQLite 连接、文件句柄、日志输出和定时器数量 | 轻角色只打开必需资源，不能启动无关队列或无关数据库 |
 | 临时 worker | runId、参数快照、状态、超时、退出码、失败重试和人工取消 | 临时任务跑完退出，不能替代常驻队列消费者 |
 | 回滚路径 | 发布包入口、环境变量、数据 schema 和单 worker 合并承载能力 | 回滚不依赖临时 schema；必要时先把角色合并回默认 worker |

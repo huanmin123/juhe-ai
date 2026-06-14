@@ -46,119 +46,20 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table groups-table" :columns="managedColumns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1610 : 1430" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
-      <template #emptyText>
-        <a-empty class="page-empty-card" description="先创建一个分组，再到账户页把账户加入对应分组。" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'name'">
-          <div class="group-name-cell">
-            <span class="group-name-line">
-              <span class="group-name-text">{{ record.name }}</span>
-              <a-tooltip v-if="groupInfoTooltip(record)">
-                <template #title>
-                  <span class="authorized-tooltip-text">{{ groupInfoTooltip(record) }}</span>
-                </template>
-                <InfoCircleOutlined class="authorized-group-icon" :class="groupInfoIconClass(record)" />
-              </a-tooltip>
-            </span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'providerCode'">
-          <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'groupType'">
-          <a-tooltip :title="groupPolicySummary(record)">
-            <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
-          </a-tooltip>
-        </template>
-        <template v-else-if="column.key === 'systemAccount'">
-          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ groupSystemAccountText(record) }}</span>
-        </template>
-        <template v-else-if="column.key === 'description'">
-          <span class="group-description-column-text">{{ groupDisplayDescription(record) || '-' }}</span>
-        </template>
-        <template v-else-if="column.key === 'accountCount'">
-          <a-tooltip :title="groupAccountStatsTooltip(record)">
-            <div class="account-count-cell">
-              <span class="account-count-row">
-                <span class="account-count-label">可用:</span>
-                <span class="account-count-value available">{{ groupStats(record).available }}</span>
-                <span class="account-count-unit">个账号</span>
-              </span>
-              <span class="account-count-row">
-                <span class="account-count-label">总量:</span>
-                <span class="account-count-value">{{ groupStats(record).total }}</span>
-                <span class="account-count-unit">个账号</span>
-              </span>
-            </div>
-          </a-tooltip>
-        </template>
-        <template v-else-if="column.key === 'concurrency'">
-          <a-tooltip :title="groupConcurrencyTooltip(record)">
-            <a-tag :color="groupConcurrencyAvailable(record) ? 'blue' : 'default'">{{ groupConcurrencyText(record) }}</a-tag>
-          </a-tooltip>
-        </template>
-        <template v-else-if="column.key === 'usage'">
-          <UsageSummaryTags :usage="groupStats(record).todayUsage" />
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <RowActions v-if="groupRowActions(record).length || groupMoreActions(record).length" :actions="groupRowActions(record)" :more-actions="groupMoreActions(record)" @action-click="handleGroupAction($event, record)" />
-        </template>
-      </template>
-      <template #card="{ record }">
-        <article class="mobile-list-card">
-          <div class="mobile-list-card-head">
-            <div class="mobile-list-card-title">
-              <div class="mobile-list-card-name-row">
-                <span>{{ record.name }}</span>
-                <a-tooltip v-if="groupInfoTooltip(record)">
-                  <template #title>
-                    <span class="authorized-tooltip-text">{{ groupInfoTooltip(record) }}</span>
-                  </template>
-                  <InfoCircleOutlined class="authorized-group-icon" :class="groupInfoIconClass(record)" />
-                </a-tooltip>
-              </div>
-            </div>
-            <div class="mobile-list-card-tags">
-              <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
-              <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
-              <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
-            </div>
-          </div>
-          <div class="mobile-list-meta-grid">
-            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>系统账户</span>
-              <strong>{{ groupSystemAccountText(record) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>说明</span>
-              <strong>{{ groupDisplayDescription(record) || '-' }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>可用账号</span>
-              <strong>{{ groupStats(record).available }} / {{ groupStats(record).total }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>并发</span>
-              <a-tooltip :title="groupConcurrencyTooltip(record)">
-                <strong>{{ groupConcurrencyText(record) }}</strong>
-              </a-tooltip>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>用量(日)</span>
-              <strong>{{ formatUsageSummary(groupStats(record).todayUsage) }}</strong>
-            </div>
-          </div>
-          <div v-if="groupRowActions(record).length || groupMoreActions(record).length" class="mobile-list-card-actions">
-            <RowActions variant="button" :actions="groupRowActions(record)" :more-actions="groupMoreActions(record)" @action-click="handleGroupAction($event, record)" />
-          </div>
-        </article>
-      </template>
-    </ResponsiveDataList>
+    <GroupsList
+      :columns="managedColumns"
+      :groups="groups"
+      :is-management-view="isManagementView"
+      :loading="loading"
+      :mobile-has-more="mobileHasMore"
+      :mobile-loading-more="mobileLoadingMore"
+      :provider-name="providerName"
+      :table-pagination="tablePagination"
+      @action="handleGroupAction"
+      @change="handleTableChange"
+      @mobile-load-more="loadMoreMobileGroups"
+      @mobile-refresh="refreshMobileGroups"
+    />
 
     <GroupEditModal
       v-model:open="modalOpen"
@@ -183,47 +84,37 @@
 </template>
 
 <script setup lang="ts">
-import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import RowActions from '@/components/RowActions.vue'
-import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatCompactUsageAmount, formatDateTime, formatNumber, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
+import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountUsageSummary, GroupAccountStats, GroupSummary, ProviderDefinition } from '@/types/domain'
-import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
-import { hasQuotaLimits } from '../shared/requestQuotaForm'
-import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
+import type { GroupSummary, ProviderDefinition } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
 import {
-  groupPolicySummary,
-  groupTypeColor,
-  groupTypeText
-} from './groupSchedulingPolicy'
+  groupStats
+} from './groupDisplay'
 import GroupEditModal from './GroupEditModal.vue'
+import GroupsList from './GroupsList.vue'
 import { useGroupFormModel } from './groupFormModel'
 import {
   canDeleteGroup,
   canEditGroup,
   canReturnAuthorizedGroup,
-  groupMoreActions,
-  groupRowActions,
   isAuthorizedGroup
 } from './groupRowActions'
 
@@ -363,155 +254,8 @@ const targetSystemAccountLabel = computed(() => {
     || ''
 })
 
-function groupStats(group?: GroupSummary): GroupAccountStats {
-  const stats = group?.accountStats
-  return {
-    total: normalizedNumber(stats?.total),
-    available: normalizedNumber(stats?.available),
-    active: normalizedNumber(stats?.active),
-    disabled: normalizedNumber(stats?.disabled),
-    error: normalizedNumber(stats?.error),
-    rateLimited: normalizedNumber(stats?.rateLimited),
-    currentConcurrency: normalizedNumber(stats?.currentConcurrency),
-    currentConcurrencyAvailable: stats?.currentConcurrencyAvailable,
-    concurrencyLimit: normalizedNumber(stats?.concurrencyLimit),
-    todayUsage: stats?.todayUsage ?? emptyUsageSummary(),
-    usage: stats?.usage ?? emptyUsageSummary()
-  }
-}
-
-function normalizedNumber(value: unknown): number {
-  const numberValue = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(numberValue) ? numberValue : 0
-}
-
-function emptyUsageSummary(): AccountUsageSummary {
-  return {
-    requestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheReadCost: 0,
-    totalTokens: 0,
-    totalCost: 0
-  }
-}
-
-function groupAccountStatsTooltip(group: GroupSummary): string {
-  const stats = groupStats(group)
-  return [
-    `可用账号：${formatNumber(stats.available)}`,
-    `总账号：${formatNumber(stats.total)}`,
-    `正常：${formatNumber(stats.active)}`,
-    `停用：${formatNumber(stats.disabled)}`,
-    `异常：${formatNumber(stats.error)}`,
-    `限流：${formatNumber(stats.rateLimited)}`
-  ].join('\n')
-}
-
-function groupConcurrencyAvailable(group: GroupSummary): boolean {
-  return groupStats(group).currentConcurrencyAvailable !== false
-}
-
-function groupConcurrencyText(group: GroupSummary): string {
-  return groupConcurrencyAvailable(group) ? String(groupStats(group).currentConcurrency) : '暂不可用'
-}
-
-function groupConcurrencyTooltip(group: GroupSummary): string {
-  return groupConcurrencyAvailable(group) ? '当前正在转发的请求数' : '实时并发快照暂不可用'
-}
-
-function groupStatusText(group: GroupSummary) {
-  const stats = groupStats(group)
-  if (isAuthorizedGroup(group) && group.authorizationStatus === 'paused') return '授权暂停'
-  if (isAuthorizedGroup(group) && group.authorizationStatus === 'expired') return '授权到期'
-  if (!group.enabled) return '停用'
-  if (stats.total === 0) return '未绑定'
-  if (stats.available === 0) return '无可用账户'
-  return '启用'
-}
-
-function groupStatusColor(group: GroupSummary) {
-  const stats = groupStats(group)
-  if (isAuthorizedGroup(group) && group.authorizationStatus === 'paused') return 'orange'
-  if (isAuthorizedGroup(group) && group.authorizationStatus === 'expired') return 'default'
-  if (!group.enabled || stats.total === 0) return 'default'
-  if (stats.available === 0) return 'orange'
-  return 'green'
-}
-
 function providerName(providerCode?: string) {
   return providerDisplayName(providerCode, availableProviders.value)
-}
-
-function groupSystemAccountText(group: GroupSummary) {
-  return systemAccountDisplayText(group)
-}
-
-function authorizedGroupTooltip(group: GroupSummary): string {
-  const ownerName = group.ownerSystemAccountName || '其他用户'
-  const expiresText = group.authorizationExpiresAt ? formatDateTime(group.authorizationExpiresAt) : '长期有效'
-  const limitsText = quotaLimitSummaryText(group.authorizationLimits)
-  const lines = [
-    `授权自 ${ownerName}。`,
-    `授权来源：${authorizedGroupSourceText(group)}`,
-    `授权到期：${expiresText}`,
-    `授权限额：${limitsText}`
-  ]
-  if (group.authorizationStatus === 'expired') {
-    lines.push('授权已到期，当前不可用。')
-  } else if (group.authorizationStatus === 'paused') {
-    lines.push('授权已暂停，当前不可用。')
-  }
-  return lines.join('\n')
-}
-
-function groupInfoTooltip(group: GroupSummary): string {
-  if (!isAuthorizedGroup(group)) return ''
-  return authorizedGroupTooltip(group)
-}
-
-function groupDisplayDescription(group: GroupSummary): string {
-  return group.description?.trim() ?? ''
-}
-
-function authorizedGroupSourceText(group: GroupSummary): string {
-  const activeSources = group.authorizationSources?.filter((source) => source.status === 'active') ?? []
-  if (!activeSources.length && group.authorizationSources?.some((source) => source.sourceType === 'team')) {
-    return '团队授权'
-  }
-  const hasManual = activeSources.some((source) => source.sourceType === 'manual')
-  const teamSources = activeSources.filter((source) => source.sourceType === 'team')
-  const teamNames = teamSources.map((source) => source.sourceTeamName).filter((name): name is string => Boolean(name))
-  if (hasManual && teamSources.length) {
-    return teamNames.length ? `个人授权 + 团队授权（${teamNames.join('、')}）` : '个人授权 + 团队授权'
-  }
-  if (teamSources.length) {
-    return teamNames.length ? `团队授权（${teamNames.join('、')}）` : '团队授权'
-  }
-  return '个人授权'
-}
-
-function authorizedGroupIconClass(group: GroupSummary): string {
-  return `source-${authorizedGroupSourceTone(group)}`
-}
-
-function groupInfoIconClass(group: GroupSummary): string {
-  return isAuthorizedGroup(group) ? authorizedGroupIconClass(group) : 'source-normal'
-}
-
-function authorizedGroupSourceTone(group: GroupSummary): 'normal' | 'warning' | 'danger' {
-  if (group.authorizationStatus && group.authorizationStatus !== 'active') return 'danger'
-  if (isAuthorizationExpiringSoon(group) || hasQuotaLimits(group.authorizationLimits)) return 'warning'
-  return 'normal'
-}
-
-function isAuthorizationExpiringSoon(group: GroupSummary): boolean {
-  if (!group.authorizationExpiresAt) return false
-  const timestamp = serverDateTimeTimestamp(group.authorizationExpiresAt)
-  if (timestamp === undefined) return false
-  const remainingMs = timestamp - Date.now()
-  return remainingMs > 0 && remainingMs <= 3 * 24 * 60 * 60 * 1000
 }
 
 function handleGroupAction(key: string, group: GroupSummary) {
@@ -533,18 +277,6 @@ function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' 
     ? groupScopeParams.value?.systemAccountId
     : group?.systemAccountId?.trim() || groupScopeParams.value?.systemAccountId
   return systemAccountId ? { systemAccountId } : undefined
-}
-
-function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
-  return `${formatNumber(usage.requestCount)}req/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
-}
-
-function formatUsageAmount(value?: number): string {
-  return formatCompactUsageAmount(value)
-}
-
-function formatCost(value?: number): string {
-  return formatUsd(value)
 }
 
 function groupListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -735,124 +467,6 @@ onMounted(() => {
   color: #334155;
   font-size: 13px;
   font-weight: 600;
-}
-
-.groups-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.groups-table :deep(.ant-empty) {
-  margin: 12px 0;
-}
-
-.groups-table :deep(.group-name-header-cell),
-.groups-table :deep(.group-name-header-cell .ant-table-column-title) {
-  font-weight: 400;
-}
-
-.group-name-cell {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.group-name-line,
-.mobile-list-card-name-row,
-.account-count-cell,
-.account-count-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #475569;
-}
-
-.group-name-text,
-.group-description-column-text,
-.mobile-list-card-name-row span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.group-name-text {
-  color: #0f172a;
-  font-weight: 400;
-}
-
-.groups-page-card .mobile-list-card-title {
-  font-weight: 400;
-}
-
-.group-description-column-text {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.account-count-cell {
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-.account-count-label {
-  min-width: 38px;
-  text-align: right;
-}
-
-.account-count-value {
-  color: #334155;
-  font-family: Consolas, 'Courier New', monospace;
-  font-weight: 400;
-}
-
-.account-count-value.available {
-  color: #0891b2;
-}
-
-.account-count-value.limited {
-  color: #f59e0b;
-}
-
-.account-count-unit {
-  padding: 1px 6px;
-  color: #334155;
-  background: #f1f5f9;
-  border-radius: 4px;
-}
-
-.account-count-row,
-.account-count-unit {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.usage-label {
-  display: inline-block;
-  min-width: 38px;
-  color: #64748b;
-}
-
-.status-tag {
-  width: fit-content;
-}
-
-.authorized-group-icon {
-  flex: none;
-  color: #08979c;
-  cursor: help;
-  font-size: 14px;
-}
-
-.authorized-group-icon.source-danger {
-  color: #cf1322;
-}
-
-.authorized-group-icon.source-warning {
-  color: #d48806;
-}
-
-.authorized-tooltip-text {
-  white-space: pre-line;
 }
 
 </style>

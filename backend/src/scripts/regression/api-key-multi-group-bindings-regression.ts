@@ -428,7 +428,7 @@ try {
   )
   assert.throws(() => {
     repositories.deleteGroup(deleteFallbackGroup.id, access)
-  }, /添加或启用其他分组/, '不能删除 API Key 的最后一个启用分组')
+  }, /唯一启用号池/, '不能删除 API Key 的最后一个启用分组')
 
   assertGroupDeleteAffectedApiKeyWindowQueryPlan()
   const overLimitDeleteGroup = repositories.createGroup({

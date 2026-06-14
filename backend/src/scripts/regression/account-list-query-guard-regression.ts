@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -25,6 +25,8 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 try {
+  assertAccountListRouteBoundary()
+
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const matchedGroup = repositories.createGroup({
     name: '账户绑定前缀分组',
@@ -215,6 +217,38 @@ function createGuardAccount(
     groupId,
     status
   }, { systemAccountId: 'sys_admin', role: 'admin' as const })
+}
+
+function assertAccountListRouteBoundary(): void {
+  const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
+  assert(
+    accountsRoutesSource.includes('registerAccountListRoutes(accountsRouter)'),
+    '账户主路由应注册账户列表只读子路由'
+  )
+  assert(
+    !accountsRoutesSource.includes('listAccountsPage(') && !accountsRoutesSource.includes('listAccountOptions('),
+    '账户主路由不应直接承载列表 / options 查询'
+  )
+  assert(
+    accountListRoutesSource.includes("router.get('/',")
+      && accountListRoutesSource.includes("router.get('/options'")
+      && accountListRoutesSource.includes('listAccountsPage(')
+      && accountListRoutesSource.includes('listAccountOptions('),
+    '账户列表只读子路由应承接列表和 options 查询'
+  )
+  assert(
+    accountListRoutesSource.includes('applyServerAccountConcurrencyToAccountList')
+      && accountListRoutesSource.includes('Server-Timing')
+      && accountListRoutesSource.includes('sanitizeAccountListResponse'),
+    '账户列表只读子路由应保留并发水合、Server-Timing 和响应脱敏'
+  )
+  assert(
+    !accountListRoutesSource.includes('mutationGuard(')
+      && !accountListRoutesSource.includes('recordOperationLog(')
+      && !accountListRoutesSource.includes('createAccount('),
+    '账户列表只读子路由不应引入写操作、操作日志或 mutation guard'
+  )
 }
 
 function assertBusinessIndexExists(indexName: string): void {

@@ -4,10 +4,15 @@ import { accountStatusFilterValues, normalizeAccountOptionListOptions, type Acco
 import { authorizationRuntimeBlockingStatus, currentIsoSql, disableExpiredAccounts } from './account-runtime-status.js'
 import { getBusinessDatabase } from './database.js'
 import { escapeLikePrefix, sqlPlaceholders } from './query-utils.js'
+import { ensureRequestQuotaDatabaseAttached, requestQuotaExceededSql, type RequestQuotaSqlExpression } from './request-quota-sql.js'
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 
 type AccountOptionFilterValue = string | number
+type AccountOptionFilterExpression = {
+  sql: string
+  params: AccountOptionFilterValue[]
+}
 
 interface AccountOptionRow {
   id: string
@@ -115,8 +120,13 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   }
 
   const ownerId = ownerSystemAccountId ?? viewerSystemAccountId
+  const includeAuthorizationQuotaFilter = accountOptionQuotaFilterRequested(options)
+    && visibleAuthorizedAccountQuotaLimitsMayExist(database, ownerId, viewerSystemAccountId)
+  if (includeAuthorizationQuotaFilter) {
+    ensureRequestQuotaDatabaseAttached(database)
+  }
   const ownerFilters = buildAccountOptionFilters(options, 'accounts.system_account_id')
-  const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId], true)
+  const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId], true, includeAuthorizationQuotaFilter)
   return queryRows(`
       SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
       NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at,
@@ -143,6 +153,53 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
       AND ra.status IN ('active', 'paused', 'expired')
       AND accounts.authorization_instance_authorization_id IS NOT NULL${authorizedFilters.clause}
   `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
+}
+
+function accountOptionQuotaFilterRequested(options: ReturnType<typeof normalizeAccountOptionListOptions>): boolean {
+  const statuses = accountStatusFilterValues(options.status)
+  return statuses.includes('active')
+    || statuses.includes('rate_limited')
+    || options.schedulable === 'enabled'
+    || options.schedulable === 'disabled'
+}
+
+function visibleAuthorizedAccountQuotaLimitsMayExist(
+  database: ReturnType<typeof getBusinessDatabase>,
+  ownerSystemAccountId: string,
+  viewerSystemAccountId: string
+): boolean {
+  const row = database.prepare(`
+    SELECT accounts.id
+    FROM accounts
+    INNER JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+    WHERE accounts.system_account_id = ?
+      AND accounts.deleted_at IS NULL
+      AND ra.resource_type = 'account'
+      AND ra.grantee_system_account_id = ?
+      AND ra.status IN ('active', 'paused', 'expired')
+      AND accounts.authorization_instance_authorization_id IS NOT NULL
+      AND (
+        ra.limits_json IS NOT NULL
+        OR (
+          ra.effective_source_team_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM resource_authorization_grants grant_rows
+            WHERE grant_rows.resource_type = 'account'
+              AND grant_rows.resource_id = ra.resource_id
+              AND grant_rows.resource_owner_system_account_id = ra.resource_owner_system_account_id
+              AND grant_rows.grantee_type = 'team'
+              AND grant_rows.grantee_team_id = ra.effective_source_team_id
+              AND grant_rows.status = 'active'
+              AND grant_rows.limits_json IS NOT NULL
+              AND (grant_rows.expires_at IS NULL OR grant_rows.expires_at > ${currentIsoSql})
+            LIMIT 1
+          )
+        )
+      )
+    LIMIT 1
+  `).get(ownerSystemAccountId, viewerSystemAccountId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
 }
 
 function accountOptionSelectColumns(): string {
@@ -173,7 +230,8 @@ function buildAccountOptionFilters(
   options: ReturnType<typeof normalizeAccountOptionListOptions>,
   groupBindingSystemAccountExpression: string,
   groupBindingSystemAccountParams: string[] = [],
-  authorizedView = false
+  authorizedView = false,
+  includeAuthorizationQuota = false
 ): { clause: string; params: AccountOptionFilterValue[] } {
   const clauses: string[] = []
   const params: AccountOptionFilterValue[] = []
@@ -220,6 +278,10 @@ function buildAccountOptionFilters(
     params.push(options.type)
   }
   const statuses = accountStatusFilterValues(options.status)
+  const includeAuthorizationQuotaStatus = authorizedView
+    && includeAuthorizationQuota
+    && (statuses.includes('active') || statuses.includes('rate_limited'))
+  const quotaStatusExpression = includeAuthorizationQuotaStatus ? authorizedOptionQuotaExceededExpression() : undefined
   const authorizedStatusExpression = `CASE
     WHEN ra.status <> 'active'
       OR (ra.expires_at IS NOT NULL AND ra.expires_at <= ${currentIsoSql})
@@ -228,6 +290,7 @@ function buildAccountOptionFilters(
     WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    ${quotaStatusExpression ? `WHEN ${quotaStatusExpression.sql} THEN 'rate_limited'` : ''}
     ELSE accounts.status
   END`
   const authorizedBindingAvailableExpression = `option_group_bindings.group_id IS NOT NULL
@@ -249,18 +312,23 @@ function buildAccountOptionFilters(
     OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql})`
   if (statuses.length === 1) {
     clauses.push(authorizedView ? `${authorizedStatusExpression} = ?` : 'accounts.status = ?')
+    if (authorizedView && quotaStatusExpression) params.push(...quotaStatusExpression.params)
     params.push(statuses[0])
   } else if (statuses.length > 1) {
     clauses.push(authorizedView
       ? `${authorizedStatusExpression} IN (${statuses.map(() => '?').join(', ')})`
       : `accounts.status IN (${statuses.map(() => '?').join(', ')})`)
+    if (authorizedView && quotaStatusExpression) params.push(...quotaStatusExpression.params)
     params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
     if (authorizedView) {
+      const quotaExpression = includeAuthorizationQuota ? authorizedOptionQuotaExceededExpression() : undefined
       clauses.push(`${authorizedBindingAvailableExpression}
         AND ${authorizedAuthorizationAvailableExpression}
-        AND ${authorizedAccountAvailableExpression}`)
+        AND ${authorizedAccountAvailableExpression}
+        ${quotaExpression ? `AND NOT (${quotaExpression.sql})` : ''}`)
+      if (quotaExpression) params.push(...quotaExpression.params)
     } else {
       clauses.push(`accounts.status = 'active'
         AND accounts.schedulable = 1
@@ -268,9 +336,13 @@ function buildAccountOptionFilters(
     }
   } else if (options.schedulable === 'disabled') {
     if (authorizedView) {
+      const quotaExpression = includeAuthorizationQuota ? authorizedOptionQuotaExceededExpression() : undefined
       clauses.push(`(${authorizedBindingUnavailableExpression}
         OR ${authorizedStatusExpression} IN ('disabled', 'error')
+        ${quotaExpression ? `OR ${quotaExpression.sql}` : ''}
       )`)
+      if (quotaStatusExpression) params.push(...quotaStatusExpression.params)
+      if (quotaExpression) params.push(...quotaExpression.params)
     } else {
       clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
     }
@@ -288,5 +360,47 @@ function buildAccountOptionFilters(
   return {
     clause: clauses.length ? ` AND ${clauses.join(' AND ')}` : '',
     params
+  }
+}
+
+function authorizedOptionQuotaExceededExpression(): AccountOptionFilterExpression {
+  const directQuota = requestQuotaExceededSql({
+    limitsSql: 'ra.limits_json',
+    systemAccountSql: 'accounts.system_account_id',
+    scopeType: 'account_authorization',
+    scopeIdSql: 'ra.id'
+  })
+  const teamQuota = requestQuotaExceededSql({
+    limitsSql: authorizedOptionTeamGrantLimitsSql(),
+    systemAccountSql: 'accounts.system_account_id',
+    scopeType: 'account_authorization_team',
+    scopeIdSql: "accounts.id || ':' || ra.effective_source_team_id"
+  })
+  return mergeOptionQuotaExpressions(directQuota, teamQuota, 'ra.effective_source_team_id IS NOT NULL')
+}
+
+function authorizedOptionTeamGrantLimitsSql(): string {
+  return `(SELECT grant_rows.limits_json
+    FROM resource_authorization_grants grant_rows
+    WHERE grant_rows.resource_type = 'account'
+      AND grant_rows.resource_id = ra.resource_id
+      AND grant_rows.resource_owner_system_account_id = ra.resource_owner_system_account_id
+      AND grant_rows.grantee_type = 'team'
+      AND grant_rows.grantee_team_id = ra.effective_source_team_id
+      AND grant_rows.status = 'active'
+      AND (grant_rows.expires_at IS NULL OR grant_rows.expires_at > ${currentIsoSql})
+    LIMIT 1)`
+}
+
+function mergeOptionQuotaExpressions(
+  directQuota: RequestQuotaSqlExpression,
+  teamQuota: RequestQuotaSqlExpression,
+  teamGuardSql: string
+): AccountOptionFilterExpression {
+  return {
+    sql: `(ra.id IS NOT NULL
+      AND (${directQuota.sql}
+        OR (${teamGuardSql} AND ${teamQuota.sql})))`,
+    params: [...directQuota.params, ...teamQuota.params]
   }
 }

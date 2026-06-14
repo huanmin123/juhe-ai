@@ -78,6 +78,11 @@ try {
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 10_000, '操作日志不应突破 ingest regular IPC 队列上限继续排队')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.operationLogs.rejectedCount, 1, 'server IPC runtime 应记录操作日志拒绝次数')
 
+  const publicApiLogOverflow = backgroundIpc.sendPublicApiLogsToWorker([buildPublicApiLog(0)])
+  assert.equal(publicApiLogOverflow, false, '超过 ingest regular IPC 队列上限后公开接口日志应快速拒绝')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 10_000, '公开接口日志不应突破 ingest regular IPC 队列上限继续排队')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.publicApiLogs.rejectedCount, 1, 'server IPC runtime 应记录公开接口日志拒绝次数')
+
   const auditDroppedBefore = auditLogQueue.getAuditLogQueueRuntime().droppedFailureCount
   auditLogQueue.enqueueAuditLog({
     traceId: 'trace-background-ipc-protected-audit',
@@ -143,6 +148,22 @@ function buildUsageRecord(index: number) {
     inputTokens: 1,
     outputTokens: 1,
     costUsd: 0,
+    createdAt: '2000-01-01T00:00:00.000Z'
+  }
+}
+
+function buildPublicApiLog(index: number) {
+  return {
+    traceId: `trace-background-ipc-public-api-${index}`,
+    method: 'GET',
+    path: '/__aipublic__/demo/source-auth',
+    statusCode: 200,
+    success: true,
+    durationMs: 1,
+    requestData: {},
+    responseData: {},
+    startedAt: '2000-01-01T00:00:00.000Z',
+    endedAt: '2000-01-01T00:00:00.000Z',
     createdAt: '2000-01-01T00:00:00.000Z'
   }
 }

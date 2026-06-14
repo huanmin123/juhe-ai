@@ -188,7 +188,7 @@ try {
   assert.equal(systemMetrics.backgroundJobs, null, '后台任务不可用时不能伪装成空数组')
   assert.deepEqual(
     systemMetrics.processEventLoopLatestStatus.map((item) => item.processRole),
-    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'db-service'],
+    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'],
     '系统指标应固定返回所有进程角色的采样可用性'
   )
   for (const item of systemMetrics.processEventLoopLatestStatus) {
@@ -199,7 +199,7 @@ try {
   }
   assert.deepEqual(
     systemMetrics.processEventLoopPeakStatus.map((item) => item.processRole),
-    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'db-service'],
+    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'],
     '系统指标应固定返回所有进程角色的 24 小时峰值可用性'
   )
   for (const item of systemMetrics.processEventLoopPeakStatus) {

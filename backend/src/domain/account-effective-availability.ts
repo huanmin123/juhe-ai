@@ -30,6 +30,7 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'cooldownUntil'
   | 'lastErrorCode'
   | 'lastErrorMessage'
+  | 'apiKeyRuntime'
   | 'runtimeAvailability'
 >
 
@@ -68,6 +69,9 @@ export function accountEffectiveAvailability(
 
   const instanceBlocker = instanceAccountAvailability(account, now)
   if (instanceBlocker) return instanceBlocker
+
+  const apiKeyPoolBlocker = apiKeyPoolAvailability(account)
+  if (apiKeyPoolBlocker) return apiKeyPoolBlocker
 
   const runtimeBlocker = runtimeAvailability(account)
   if (runtimeBlocker) return runtimeBlocker
@@ -190,6 +194,19 @@ function runtimeAvailability(account: AccountEffectiveAvailabilityInput): Accoun
     return blocked('runtime_precheck_failed', '探针确认失败', 'gold', 'runtime', runtime.reason || '最近事前探针确认失败，当前网关暂不调度该账户', runtime.until)
   }
   return undefined
+}
+
+function apiKeyPoolAvailability(account: AccountEffectiveAvailabilityInput): AccountEffectiveAvailability | undefined {
+  const runtime = account.apiKeyRuntime
+  if (!runtime?.allUnavailable) return undefined
+  return blocked(
+    'api_key_pool_unavailable',
+    'Key 全部不可用',
+    'red',
+    'api_key_pool',
+    `账户内 ${runtime.total} 个 API Key 均不可用，后台探测恢复前不会参与调度`,
+    runtime.nextProbeAt
+  )
 }
 
 function sourceReason(account: AccountEffectiveAvailabilityInput, fallback: string): string {

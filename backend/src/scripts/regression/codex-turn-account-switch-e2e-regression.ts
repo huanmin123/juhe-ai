@@ -94,6 +94,8 @@ async function main(): Promise<void> {
   }
 
   try {
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     codexTurnRetry.clearCodexTurnRetryStateForTest()
     settingsRepository.updateSettings({
       streamCircuitBreakerEnabled: true,
@@ -146,6 +148,8 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     auditLogQueue.flushAllAuditLogQueue()
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {

@@ -16,6 +16,7 @@ import { headersToObject } from '../upstream/headers.js'
 import { recordGatewayUpstreamBucketFailure } from './proxy-health.service.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import type { GatewayUsageContext } from '../usage/records.js'
+import { recordGatewayAccountApiKeyFailure } from './account-api-key-effects.service.js'
 
 export function applyAccountErrorHandlingWithCacheInvalidation(
   account: UpstreamAccount,
@@ -83,6 +84,16 @@ export function handleStreamFailure(
 
   recordGatewayUpstreamBucketFailure(account, '流式响应失败')
   const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
+  const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
+  recordGatewayAccountApiKeyFailure(account, {
+    status: 'temporary_unavailable',
+    errorCode,
+    errorMessage: reasonWithCode,
+    source: 'stream_failure'
+  })
+  if (isolateAccountApiKeyFailure) {
+    return
+  }
   if (usageContext?.trafficSource === 'gateway') {
     if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {
       getRequestLogger().info({

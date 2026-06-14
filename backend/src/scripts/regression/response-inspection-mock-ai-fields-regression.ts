@@ -133,6 +133,8 @@ app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 
 try {
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined

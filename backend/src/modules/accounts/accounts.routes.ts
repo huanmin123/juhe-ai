@@ -3,113 +3,50 @@ import { Router } from 'express'
 import { isAdminRole, type AccountStatus, type AccountSummary } from '../../domain/types.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { queryTextList } from '../../shared/query-values.js'
-import { AccountTagInUseError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountTag, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountTags, listAccountsPage, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccountWithRelatedCleanup, findAccountForTest, findAccountSummary, findGroupSummary, listProviders, migrateAccountTraffic, returnAccountAuthorizationInstanceForGrantee, setAccountGroup, updateAccount, updateAccountTags, updateAuthorizedAccountBindingDispatch } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { applyServerAccountConcurrencyToAccountList, applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
+import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/runtime/session-affinity.service.js'
 import { diffSafeFields, operationMode, ownerTarget, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import {
-  cancelAccountTestSession,
-  cancelAccountTestTask,
-  createAccountTestSession,
   createAccountTestTask,
   failAccountTestTask,
-  getAccountTestSession,
-  getAccountTestTask,
-  heartbeatAccountTestSession,
-  listAccountTestTasks
 } from '../../storage/account-test-tasks.repository.js'
 import {
   accountCreateStatusFromActivationTest,
   prepareAccountDraftTestSnapshot,
   savedAccountDraftTestSnapshot
 } from './account-draft-test.service.js'
-import { accountImportMaxAccounts, executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
+import { accountImportMaxAccounts } from './account-import.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import {
   accountCreateSchema,
   accountDraftTestSchema,
   accountGroupSchema,
-  accountImportRequestSchema,
   accountTagsUpdateSchema,
   accountTestSchema,
   accountTrafficMigrationSchema,
   accountUpdateSchema,
   authorizedAccountDispatchSchema
 } from './account-request.schemas.js'
-import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountCredentialsResponseInspectionRules } from './account-response-inspection-policy-validation.js'
-import { sanitizeAccountListResponse, sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
-import { dispatchAccountTestCancel, dispatchAccountTestTasks } from './account-test-task-queue.service.js'
+import { sanitizeAccountResponse, sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
+import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
 import { accountExportRequestSchema, exportAccountsForRequest } from './account-export-request.js'
+import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
+import { registerAccountTestStatusRoutes } from './account-test-status.routes.js'
+import { registerAccountListRoutes } from './account-list.routes.js'
+import { registerAccountImportRoutes } from './account-import.routes.js'
+import { registerAccountTagsRoutes } from './account-tags.routes.js'
 
 export const accountsRouter = Router()
 
-accountsRouter.get('/', async (req, res, next) => {
-  try {
-    const listStartedAt = performance.now()
-    const result = listAccountsPage(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))
-    const listDurationMs = performance.now() - listStartedAt
-    const concurrencyStartedAt = performance.now()
-    const hydratedResult = await applyServerAccountConcurrencyToAccountList(result)
-    const concurrencyDurationMs = performance.now() - concurrencyStartedAt
-    res.setHeader('Server-Timing', [
-      serverTimingMetric('account-list', listDurationMs),
-      serverTimingMetric('account-concurrency', concurrencyDurationMs)
-    ].join(', '))
-    res.json(ok(sanitizeAccountListResponse(hydratedResult)))
-  } catch (error) {
-    next(error)
-  }
-})
-
-accountsRouter.get('/options', (req, res, next) => {
-  try {
-    const options = listAccountOptions(getRequestAccessScope(req.query.systemAccountId), parseAccountOptionsQuery(req.query))
-    res.json(ok(options))
-  } catch (error) {
-    next(error)
-  }
-})
-
-accountsRouter.get('/tags', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  try {
-    res.json(ok(listAccountTags(getRequestAccessScope(scopeQuery.data.systemAccountId))))
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '加载账户标签失败'))
-  }
-})
-
-accountsRouter.delete('/tags/:tagId', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  try {
-    if (!deleteAccountTag(req.params.tagId, getRequestAccessScope(scopeQuery.data.systemAccountId))) {
-      res.status(404).json({ message: '标签不存在' })
-      return
-    }
-    res.status(204).send()
-  } catch (error) {
-    if (error instanceof AccountTagInUseError) {
-      res.status(400).json(badRequest(error.message))
-      return
-    }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '删除账户标签失败'))
-  }
-})
+registerAccountListRoutes(accountsRouter)
+registerAccountTagsRoutes(accountsRouter)
 
 accountsRouter.post('/export', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -161,113 +98,7 @@ accountsRouter.post('/export', (req, res) => {
   }
 })
 
-accountsRouter.get('/test-tasks', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const taskIds = queryTextList(req.query.ids, 200)
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  res.json(ok(listAccountTestTasks(taskIds, requestAccess)))
-})
-
-accountsRouter.post('/test-sessions', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  if (!requestAccess) {
-    res.status(403).json({ message: '缺少系统账户上下文' })
-    return
-  }
-  try {
-    res.status(201).json(ok(createAccountTestSession(requestAccess)))
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户测试会话失败'))
-  }
-})
-
-accountsRouter.get('/test-sessions/:sessionId', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const session = getAccountTestSession(req.params.sessionId, requestAccess)
-  if (!session) {
-    res.status(404).json({ message: '账户测试会话不存在' })
-    return
-  }
-  res.json(ok(session))
-})
-
-accountsRouter.post('/test-sessions/:sessionId/heartbeat', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const session = heartbeatAccountTestSession(req.params.sessionId, requestAccess)
-  if (!session) {
-    res.status(404).json({ message: '账户测试会话不存在' })
-    return
-  }
-  res.json(ok(session))
-})
-
-accountsRouter.post('/test-sessions/:sessionId/cancel', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const result = cancelAccountTestSession(req.params.sessionId, requestAccess)
-  if (!result) {
-    res.status(404).json({ message: '账户测试会话不存在' })
-    return
-  }
-  for (const taskId of result.taskIds) {
-    dispatchAccountTestCancel(taskId)
-  }
-  res.json(ok(result.session))
-})
-
-accountsRouter.get('/test-tasks/:taskId', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const task = getAccountTestTask(req.params.taskId, requestAccess)
-  if (!task) {
-    res.status(404).json({ message: '账户测试任务不存在' })
-    return
-  }
-  res.json(ok(task))
-})
-
-accountsRouter.post('/test-tasks/:taskId/cancel', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const task = cancelAccountTestTask(req.params.taskId, requestAccess)
-  if (!task) {
-    res.status(404).json({ message: '账户测试任务不存在' })
-    return
-  }
-  dispatchAccountTestCancel(task.id)
-  res.json(ok(task))
-})
+registerAccountTestSessionRoutes(accountsRouter)
 
 accountsRouter.post('/test-draft', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -311,6 +142,9 @@ accountsRouter.post('/test-draft', async (req, res) => {
   }
 })
 
+registerAccountTestStatusRoutes(accountsRouter)
+registerAccountImportRoutes(accountsRouter)
+
 accountsRouter.get('/:id', async (req, res, next) => {
   try {
     const scopeQuery = parseRequestScopeQuery(req.query)
@@ -343,78 +177,6 @@ accountsRouter.get('/:id', async (req, res, next) => {
   } catch (error) {
     next(error)
   }
-})
-
-function serverTimingMetric(name: string, durationMs: number): string {
-  return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
-}
-
-accountsRouter.post('/import/preview', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const parsed = accountImportRequestSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('账户导入参数无效'))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  res.json(ok(previewAccountImport(parsed.data.data, parsed.data.options, requestAccess)))
-})
-
-accountsRouter.post('/import/confirm', mutationGuard({
-  operationKey: 'accounts.import',
-  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
-  fingerprint: (req) => ({
-    owner: normalizedText(queryField(req, 'systemAccountId')),
-    data: bodyField(req, 'data'),
-    options: bodyField(req, 'options')
-  })
-}), (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    res.status(400).json(badRequest(scopeQuery.message))
-    return
-  }
-  const parsed = accountImportRequestSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('账户导入参数无效'))
-    return
-  }
-  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  if (!requestAccess) {
-    res.status(401).json(badRequest('缺少系统账户上下文'))
-    return
-  }
-  const importOptions: AccountImportOptions = parsed.data.options ?? {}
-  const result = runLoggedOperation(() => {
-    const result = executeAccountImport(parsed.data.data, importOptions, requestAccess)
-    const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
-    return {
-      result,
-      log: {
-        operationScopeSystemAccountId: ownerSystemAccountId,
-        mode: operationMode(requestAccess),
-        module: 'accounts',
-        action: 'import',
-        operationKey: 'accounts.import',
-        resourceType: 'account',
-        resourceName: 'AI 账户导入',
-        summary: `导入 AI 账户：创建 ${result.summary.accounts.create} 个，跳过 ${result.summary.accounts.skip} 个，失败 ${result.summary.accounts.failed} 个`,
-        changes: [
-          safeChange('accountCreated', '创建账户数', undefined, result.summary.accounts.create),
-          safeChange('accountSkipped', '跳过账户数', undefined, result.summary.accounts.skip),
-          safeChange('accountFailed', '失败账户数', undefined, result.summary.accounts.failed),
-          safeChange('proxyCreated', '创建代理数', undefined, result.summary.proxies.create),
-          safeChange('groupCreated', '创建分组数', undefined, result.summary.groups.create)
-        ],
-        viewers: viewer(ownerSystemAccountId, 'resource_owner')
-      }
-    }
-  }, req)
-  res.json(ok(result))
 })
 
 accountsRouter.post('/', mutationGuard({

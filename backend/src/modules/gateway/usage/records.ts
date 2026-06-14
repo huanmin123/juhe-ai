@@ -31,6 +31,7 @@ import type { GatewayErrorPayload } from '../response/responses.js'
 import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './traffic-source.js'
 import { GPT_VENDOR_CODE } from '../../../domain/provider-protocol.js'
+import { recordGatewayAccountApiKeySuccess } from '../runtime/account-api-key-effects.service.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -193,6 +194,9 @@ export function recordCompletedUpstreamAttempt(
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
 ): void {
+  if (input.success) {
+    recordGatewayAccountApiKeySuccess(input.account, 'upstream_attempt_completed')
+  }
   const model = requestModel(req)
   const modelMapping = resolveOpenAIAccountModelMapping(input.account, model)
   const upstreamModel = modelMapping?.upstreamModel ?? model

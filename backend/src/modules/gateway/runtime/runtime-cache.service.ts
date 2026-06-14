@@ -1,6 +1,9 @@
 import { createAppCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-concurrency.js'
-import { selectAccountRuntimeApiKey } from '../../../storage/account-api-key-rotation.js'
+import {
+  isAccountApiKeyPoolIsolationEnabled,
+  selectAccountRuntimeApiKeyEntry
+} from '../../../storage/account-api-key-rotation.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
@@ -353,6 +356,9 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
     currentConcurrency: undefined,
     supportedModels: [...(account.supportedModels ?? [])],
     apiKeys: account.apiKeys ? [...account.apiKeys] : undefined,
+    apiKeyRuntimeStates: account.apiKeyRuntimeStates ? account.apiKeyRuntimeStates.map((state) => ({ ...state })) : undefined,
+    selectedApiKeyFingerprint: undefined,
+    selectedApiKeyIndex: undefined,
     modelMappings: (account.modelMappings ?? []).map((mapping) => ({ ...mapping })),
     credentials: { ...account.credentials }
   }
@@ -360,23 +366,51 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
 
 function cloneOpenAIAccountsWithCurrentConcurrency(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
   const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
-  return accounts.map((account) => ({
-    ...cloneOpenAIAccountSecretForDispatch(account),
-    currentConcurrency: concurrency.get(account.id) ?? 0
-  }))
+  const output: OpenAIAccountSecret[] = []
+  for (const account of accounts) {
+    const cloned = cloneOpenAIAccountSecretForDispatch(account)
+    if (!cloned) {
+      continue
+    }
+    output.push({
+      ...cloned,
+      currentConcurrency: concurrency.get(account.id) ?? 0
+    })
+  }
+  return output
 }
 
-function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): OpenAIAccountSecret {
+function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): OpenAIAccountSecret | undefined {
   const cloned = cloneStaticOpenAIAccountSecret(account)
   if (cloned.type === 'api_key') {
-    cloned.apiKey = selectAccountRuntimeApiKey({
+    const credentials = {
+      ...cloned.credentials,
+      api_key: cloned.apiKey,
+      ...(cloned.apiKeys?.length ? { api_keys: cloned.apiKeys } : {})
+    }
+    const selected = selectAccountRuntimeApiKeyEntry({
       accountId: cloned.credentialSourceAccountId ?? cloned.id,
-      credentials: {
-        ...cloned.credentials,
-        api_key: cloned.apiKey,
-        ...(cloned.apiKeys?.length ? { api_keys: cloned.apiKeys } : {})
+      credentials,
+      runtimeStates: cloned.apiKeyRuntimeStates
+    })
+    if (!selected && isAccountApiKeyPoolIsolationEnabled({
+      providerCode: cloned.providerCode,
+      type: cloned.type,
+      credentials
+    })) {
+      return undefined
+    }
+    if (selected) {
+      cloned.apiKey = selected.key
+      if (isAccountApiKeyPoolIsolationEnabled({
+        providerCode: cloned.providerCode,
+        type: cloned.type,
+        credentials
+      })) {
+        cloned.selectedApiKeyFingerprint = selected.fingerprint
+        cloned.selectedApiKeyIndex = selected.index
       }
-    }) ?? cloned.apiKey
+    }
   }
   return cloned
 }

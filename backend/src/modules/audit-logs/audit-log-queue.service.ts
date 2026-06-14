@@ -27,6 +27,7 @@ let lastFlushSuccessAt: string | undefined
 let lastFlushError: string | undefined
 let asyncFlushPromise: Promise<void> | undefined
 let shutdownHooksInstalled = false
+let allowDbServiceLocalAuditLogWriteForTest = false
 
 interface QueuedAuditLog {
   input: AuditLogInput
@@ -160,7 +161,7 @@ function enqueueAuditLogLocal(input: AuditLogInput): void {
 }
 
 export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
-  if (!isAuditLogIngestWorker()) {
+  if (!isLocalAuditLogWriteAllowed()) {
     return
   }
   if (flushing || pendingAuditLogs.length === 0) return
@@ -228,7 +229,7 @@ export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}
 }
 
 async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}): Promise<void> {
-  if (!isAuditLogIngestWorker()) {
+  if (!isLocalAuditLogWriteAllowed()) {
     return
   }
   if (flushing || pendingAuditLogs.length === 0) return
@@ -330,6 +331,11 @@ export function clearAuditLogQueueForTest(): void {
   lastFlushError = undefined
   asyncFlushPromise = undefined
   shutdownHooksInstalled = false
+  allowDbServiceLocalAuditLogWriteForTest = false
+}
+
+export function setDbServiceAuditLogLocalWriteAllowedForTest(value: boolean): void {
+  allowDbServiceLocalAuditLogWriteForTest = value
 }
 
 export async function flushAuditLogQueueForShutdown(): Promise<void> {
@@ -492,13 +498,21 @@ function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {
 }
 
 function assertLocalAuditLogWriteAllowed(operation: string): void {
-  if (!isAuditLogIngestWorker()) {
+  if (!isLocalAuditLogWriteAllowed()) {
     throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接写入审计日志：${operation} 必须投递 ingest-worker`)
   }
 }
 
+function isLocalAuditLogWriteAllowed(): boolean {
+  return isAuditLogIngestWorker() || isDbServiceLocalAuditLogWriteAllowedForTest()
+}
+
 function isAuditLogIngestWorker(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function isDbServiceLocalAuditLogWriteAllowedForTest(): boolean {
+  return allowDbServiceLocalAuditLogWriteForTest && runtimeConfig.processRole === 'db-service'
 }
 
 function shouldDispatchAuditLogToIngestWorker(): boolean {
