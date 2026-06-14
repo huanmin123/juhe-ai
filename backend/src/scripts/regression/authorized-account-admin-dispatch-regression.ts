@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -48,6 +48,42 @@ app.use(express.json({ limit: '1mb' }))
 app.use('/__aisys__/api', requireAuth)
 app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
 app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
+
+const accountsRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
+const accountAuthorizedDispatchRoutesSource = readFileSync(new URL('../../modules/accounts/account-authorized-dispatch.routes.ts', import.meta.url), 'utf8')
+const accountTrafficMigrationRoutesSource = readFileSync(new URL('../../modules/accounts/account-traffic-migration.routes.ts', import.meta.url), 'utf8')
+assert(
+  accountsRoutesSource.includes('registerAccountAuthorizedDispatchRoutes(accountsRouter)'),
+  '账户主路由必须通过 registerAccountAuthorizedDispatchRoutes 注册授权调度路由'
+)
+assert(
+  !accountsRoutesSource.includes("accountsRouter.patch('/:id/authorized-dispatch'"),
+  '账户主路由不应直接承载授权调度路由实现'
+)
+assert(
+  accountAuthorizedDispatchRoutesSource.includes("operationKey: 'accounts.authorized_dispatch'"),
+  '账户授权调度子路由必须保留操作日志 operationKey'
+)
+assert(
+  accountAuthorizedDispatchRoutesSource.includes('clearServerAccountRuntimeAvailability'),
+  '账户授权调度子路由必须保留恢复调度时的网关运行态清理逻辑'
+)
+assert(
+  accountsRoutesSource.includes('registerAccountTrafficMigrationRoutes(accountsRouter)'),
+  '账户主路由必须通过 registerAccountTrafficMigrationRoutes 注册流量迁移路由'
+)
+assert(
+  !accountsRoutesSource.includes("accountsRouter.post('/:id/traffic-migration'"),
+  '账户主路由不应直接承载流量迁移路由实现'
+)
+assert(
+  accountTrafficMigrationRoutesSource.includes("operationKey: 'accounts.traffic_migration'"),
+  '账户流量迁移子路由必须保留操作日志 operationKey'
+)
+assert(
+  accountTrafficMigrationRoutesSource.includes('migrateOpenAIAccountSessionAffinity'),
+  '账户流量迁移子路由必须同步迁移 OpenAI 会话亲和'
+)
 
 interface ApiEnvelope<T> {
   data: T

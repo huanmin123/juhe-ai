@@ -25,8 +25,12 @@ const processEventLoopRoleOrder = new Map([
   ['worker', 1],
   ['metrics-worker', 2],
   ['ingest-worker', 3],
-  ['temporary-maintenance-worker', 4],
-  ['db-service', 5]
+  ['stats-worker', 4],
+  ['snapshot-worker', 5],
+  ['probe-worker', 6],
+  ['maintenance-worker', 7],
+  ['temporary-maintenance-worker', 8],
+  ['db-service', 9]
 ])
 
 export function buildProcessEventLoopRows(metrics?: SystemMetricsOverview): ProcessEventLoopRow[] {

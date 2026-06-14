@@ -1,0 +1,38 @@
+import type {
+  BackgroundWorkerIpcQueuesRuntime,
+  BackgroundWorkerRoleState,
+  BackgroundWorkerRuntimeSnapshot
+} from './background-ipc.types.js'
+
+export interface BackgroundWorkerRoleStateInput {
+  pid?: number
+  ready: boolean
+  lastSnapshot?: BackgroundWorkerRuntimeSnapshot
+  pendingMessageCount?: number
+  pendingMessageBytes?: number
+  pendingQueues?: BackgroundWorkerIpcQueuesRuntime
+  pendingSnapshotRequestCount: number
+  timedOutSnapshotRequestCount: number
+  rejectedSnapshotRequestCount: number
+}
+
+export function buildBackgroundWorkerRoleState(input: BackgroundWorkerRoleStateInput): BackgroundWorkerRoleState {
+  const state: BackgroundWorkerRoleState = {
+    pid: input.pid,
+    ready: input.ready,
+    lastSnapshot: input.lastSnapshot,
+    pendingSnapshotRequestCount: input.pendingSnapshotRequestCount,
+    timedOutSnapshotRequestCount: input.timedOutSnapshotRequestCount,
+    rejectedSnapshotRequestCount: input.rejectedSnapshotRequestCount
+  }
+  if (input.pendingMessageCount !== undefined) {
+    state.pendingMessageCount = input.pendingMessageCount
+  }
+  if (input.pendingMessageBytes !== undefined) {
+    state.pendingMessageBytes = input.pendingMessageBytes
+  }
+  if (input.pendingQueues) {
+    state.pendingQueues = input.pendingQueues
+  }
+  return state
+}

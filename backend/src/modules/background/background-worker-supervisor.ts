@@ -13,12 +13,21 @@ interface SupervisedWorkerState {
   restartAttempts: number
 }
 
-const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = ['worker', 'metrics-worker', 'ingest-worker']
+const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = [
+  'worker',
+  'metrics-worker',
+  'ingest-worker',
+  'stats-worker',
+  'snapshot-worker',
+  'probe-worker',
+  'maintenance-worker'
+]
 const supervisedWorkers = new Map<BackgroundWorkerProcessRole, SupervisedWorkerState>(
   supervisedWorkerRoles.map((role) => [role, { restartAttempts: 0 }])
 )
 let stopping = false
 let shutdownHooksInstalled = false
+let startupSequenceRunning = false
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -27,6 +36,8 @@ const workerSourcePath = resolve(sourceRoot, 'worker.ts')
 const workerDistPath = resolve(sourceRoot, 'worker.js')
 const workerRestartBaseDelayMs = 1000
 const workerRestartMaxDelayMs = 30_000
+const workerStartupReadyTimeoutMs = 1_500
+const workerStartupStaggerMs = 250
 
 export function startBackgroundWorkerSupervisor(): void {
   if (runtimeConfig.processRole !== 'server') {
@@ -34,19 +45,63 @@ export function startBackgroundWorkerSupervisor(): void {
   }
 
   stopping = false
-  for (const role of supervisedWorkerRoles) {
-    startWorkerProcess(role)
-  }
+  startWorkerProcessesInSequence()
   installSupervisorShutdownHooks()
 }
 
-function startWorkerProcess(role: BackgroundWorkerProcessRole): void {
+function startWorkerProcessesInSequence(): void {
+  if (startupSequenceRunning) {
+    return
+  }
+  startupSequenceRunning = true
+  let index = 0
+  const startNext = () => {
+    if (stopping) {
+      startupSequenceRunning = false
+      return
+    }
+    const role = supervisedWorkerRoles[index]
+    index += 1
+    if (!role) {
+      startupSequenceRunning = false
+      return
+    }
+    startWorkerProcess(role, {
+      onStartupSettled: () => {
+        const timer = setTimeout(startNext, workerStartupStaggerMs)
+        timer.unref()
+      }
+    })
+  }
+  startNext()
+}
+
+function startWorkerProcess(
+  role: BackgroundWorkerProcessRole,
+  options: { onStartupSettled?: () => void } = {}
+): void {
   const state = supervisedWorkerState(role)
   if (state.process) {
+    options.onStartupSettled?.()
     return
   }
 
   const entry = resolveWorkerEntry()
+  let startupSettled = false
+  const startupTimeout = options.onStartupSettled
+    ? setTimeout(() => settleStartup(), workerStartupReadyTimeoutMs)
+    : undefined
+  startupTimeout?.unref()
+  const settleStartup = () => {
+    if (startupSettled) {
+      return
+    }
+    startupSettled = true
+    if (startupTimeout) {
+      clearTimeout(startupTimeout)
+    }
+    options.onStartupSettled?.()
+  }
   const child = fork(entry.modulePath, [], {
     cwd: backendRoot,
     env: {
@@ -64,6 +119,7 @@ function startWorkerProcess(role: BackgroundWorkerProcessRole): void {
     role,
     onReady: () => {
       state.restartAttempts = 0
+      settleStartup()
     }
   })
   pipeWorkerOutput(child)
@@ -77,6 +133,7 @@ function startWorkerProcess(role: BackgroundWorkerProcessRole): void {
   }, backgroundWorkerRoleMessage(role, '已创建'))
 
   child.once('exit', (code, signal) => {
+    settleStartup()
     logger.warn({
       event: 'background_worker_exited',
       workerRole: role,
@@ -95,6 +152,7 @@ function startWorkerProcess(role: BackgroundWorkerProcessRole): void {
   })
 
   child.once('error', (error) => {
+    settleStartup()
     logger.error(errorLogFields(error, {
       event: 'background_worker_spawn_failed',
       workerRole: role
@@ -187,5 +245,9 @@ function supervisedWorkerState(role: BackgroundWorkerProcessRole): SupervisedWor
 function backgroundWorkerRoleMessage(role: BackgroundWorkerProcessRole, action: string): string {
   if (role === 'metrics-worker') return `后台 metrics-worker ${action}`
   if (role === 'ingest-worker') return `后台 ingest-worker ${action}`
+  if (role === 'stats-worker') return `后台 stats-worker ${action}`
+  if (role === 'snapshot-worker') return `后台 snapshot-worker ${action}`
+  if (role === 'probe-worker') return `后台 probe-worker ${action}`
+  if (role === 'maintenance-worker') return `后台 maintenance-worker ${action}`
   return `后台 worker ${action}`
 }

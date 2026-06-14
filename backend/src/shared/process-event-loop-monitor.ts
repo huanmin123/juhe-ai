@@ -2,7 +2,15 @@ import { monitorEventLoopDelay } from 'node:perf_hooks'
 
 import { runtimeConfig, type ProcessRole } from '../config/runtime.js'
 
-export type ProcessEventLoopRole = ProcessRole | 'metrics-worker' | 'ingest-worker' | 'temporary-maintenance-worker'
+export type ProcessEventLoopRole =
+  | ProcessRole
+  | 'metrics-worker'
+  | 'ingest-worker'
+  | 'stats-worker'
+  | 'snapshot-worker'
+  | 'probe-worker'
+  | 'maintenance-worker'
+  | 'temporary-maintenance-worker'
 
 export interface ProcessEventLoopSample {
   processRole: ProcessEventLoopRole
@@ -46,9 +54,18 @@ function currentProcessEventLoopRole(): ProcessEventLoopRole {
   if (runtimeConfig.processRole !== 'worker') {
     return runtimeConfig.processRole
   }
-  return runtimeConfig.workerRole === 'metrics-worker' || runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'temporary-maintenance-worker'
-    ? runtimeConfig.workerRole
-    : 'worker'
+  if (
+    runtimeConfig.workerRole === 'metrics-worker'
+    || runtimeConfig.workerRole === 'ingest-worker'
+    || runtimeConfig.workerRole === 'stats-worker'
+    || runtimeConfig.workerRole === 'snapshot-worker'
+    || runtimeConfig.workerRole === 'probe-worker'
+    || runtimeConfig.workerRole === 'maintenance-worker'
+    || runtimeConfig.workerRole === 'temporary-maintenance-worker'
+  ) {
+    return runtimeConfig.workerRole
+  }
+  return 'worker'
 }
 
 function roundMetricMs(value: number): number | undefined {

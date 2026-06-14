@@ -119,11 +119,14 @@ export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
   if (shouldDispatchAuditLogToIngestWorker()) {
     if (!sendAuditLogsToWorker([queuedInput])) {
-      recordDrop({
-        input: queuedInput,
-        bytes: estimateAuditLogBytes(queuedInput),
-        success: queuedInput.success
-      }, 'overflow')
+      recordAuditLogDispatchFailure(queuedInput)
+    }
+    return
+  }
+
+  if (runtimeConfig.processRole === 'db-service' && !isDbServiceLocalAuditLogWriteAllowedForTest()) {
+    if (!sendAuditLogFromDbServiceToServer(queuedInput)) {
+      recordAuditLogDispatchFailure(queuedInput)
     }
     return
   }
@@ -409,6 +412,50 @@ function recordDrop(item: QueuedAuditLog, reason: 'overflow' | 'oversize'): void
     droppedOverflowCount,
     droppedOversizeCount
   }, '审计日志已丢弃')
+}
+
+function recordAuditLogDispatchFailure(input: AuditLogInput): void {
+  recordDrop({
+    input,
+    bytes: estimateAuditLogBytes(input),
+    success: input.success
+  }, 'overflow')
+}
+
+function sendAuditLogFromDbServiceToServer(input: AuditLogInput): boolean {
+  if (typeof process.send !== 'function' || process.connected === false) {
+    return false
+  }
+  try {
+    process.send({
+      type: 'background_worker_audit_logs',
+      items: [input]
+    }, (error) => {
+      if (error) {
+        recordAuditLogDispatchFailure(input)
+      }
+    })
+    return true
+  } catch {
+    recordAuditLogDispatchFailure(input)
+    return true
+  }
+}
+
+export function isAuditLogInput(value: unknown): value is AuditLogInput {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return typeof record.traceId === 'string'
+    && typeof record.method === 'string'
+    && typeof record.path === 'string'
+    && typeof record.auditOutcome === 'string'
+    && typeof record.success === 'boolean'
+    && typeof record.sampleBucket === 'number'
+    && typeof record.sampleReason === 'string'
+    && Array.isArray(record.attempts)
+    && Array.isArray(record.payloads)
 }
 
 function scheduleAuditLogFlush(delayMs: number): void {

@@ -24,7 +24,7 @@ const seenResponsesPayloads: Record<string, unknown>[] = []
 const [
   { preferredSystemAccountTestModel, testOpenAIAccount },
   { flushGatewayAccountSideEffects },
-  { flushAllUsageRecordQueue },
+  { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
   repositories,
   { createAccountTestTask }
@@ -40,6 +40,7 @@ const [
 let mockOpenAIServer: http.Server | undefined
 
 try {
+  setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   mockOpenAIServer = createMockOpenAIServer()
   mockOpenAIServer.listen(0, '127.0.0.1')
   await onceListening(mockOpenAIServer)
@@ -134,6 +135,7 @@ try {
 
   console.log('账户测试 Responses 当前契约回归通过：API Key 测试不发送 max_output_tokens')
 } finally {
+  setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
   try {
     databaseModule.closeStorageDatabases()

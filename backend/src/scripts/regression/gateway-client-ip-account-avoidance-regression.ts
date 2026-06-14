@@ -75,6 +75,8 @@ async function main(): Promise<void> {
   const upstreamState: MockUpstreamState = { requests: [] }
 
   try {
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     assertSourceAvoidsPendingFailureArrayRebuilds()
     clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
     settingsRepository.updateSettings({
@@ -115,6 +117,8 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     auditLogQueue.flushAllAuditLogQueue()
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {
@@ -585,12 +589,27 @@ function bearerToken(value: unknown): string {
 }
 
 function requestScenario(body: Record<string, unknown>): string {
-  if (typeof body.input === 'string') {
-    return body.input
-  }
+  const inputScenario = scenarioTextFromOpenAIInput(body.input)
+  if (inputScenario) return inputScenario
   const messages = Array.isArray(body.messages) ? body.messages : []
   const firstMessage = messages.find((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
   return typeof firstMessage?.content === 'string' ? firstMessage.content : 'unknown'
+}
+
+function scenarioTextFromOpenAIInput(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const text = scenarioTextFromOpenAIInput(item)
+      if (text) return text
+    }
+    return undefined
+  }
+  if (typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.text === 'string') return record.text
+  if (typeof record.content === 'string') return record.content
+  return scenarioTextFromOpenAIInput(record.content)
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {

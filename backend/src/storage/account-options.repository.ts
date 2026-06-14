@@ -1,6 +1,7 @@
 import type { AccountOptionSummary, AccountStatus, AuthorizationStatus } from '../domain/types.js'
 import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountOptionListOptions, type AccountOptionListOptions } from './account-list-options.js'
+import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
 import { authorizationRuntimeBlockingStatus, currentIsoSql, disableExpiredAccounts } from './account-runtime-status.js'
 import { getBusinessDatabase } from './database.js'
 import { escapeLikePrefix, sqlPlaceholders } from './query-utils.js'
@@ -26,7 +27,9 @@ interface AccountOptionRow {
   status: AccountStatus
   schedulable: number
   account_expires_at: string | null
+  availability_schedule_json?: string | null
   cooldown_until?: string | null
+  last_error_code?: string | null
   priority: number
   created_at: string
   authorization_instance_source_account_id?: string | null
@@ -36,8 +39,18 @@ interface AccountOptionRow {
   authorization_id: string | null
   authorization_status: AuthorizationStatus | null
   authorization_expires_at?: string | null
+  authorization_limits_json?: string | null
+  authorization_effective_source_team_id?: string | null
   authorization_resource_owner_system_account_id?: string | null
   authorization_resource_id?: string | null
+  bound_group_id?: string | null
+  bound_group_account_authorization_id?: string | null
+  source_status?: AccountStatus | null
+  source_schedulable?: number | null
+  source_availability_schedule_json?: string | null
+  source_account_expires_at?: string | null
+  source_cooldown_until?: string | null
+  source_last_error_code?: string | null
 }
 
 export function listAccountOptions(access?: AccessScope, options?: AccountOptionListOptions): AccountOptionSummary[] {
@@ -90,6 +103,9 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
 
 function queryAccountOptionRowsForAccess(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountOptionListOptions>): AccountOptionRow[] {
   const database = getBusinessDatabase()
+  if (accountOptionNeedsDerivedStatusFunctions(options)) {
+    ensureAccountDerivedStatusSqlFunctions(database)
+  }
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const limit = options.pageSize
@@ -110,7 +126,12 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   if (!ownerSystemAccountId && canAccessAll(access)) {
     const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
     return queryRows(`
-      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
+        NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at,
+        NULL AS authorization_limits_json, NULL AS authorization_effective_source_team_id,
+        NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id,
+        ${emptyAccountOptionBindingColumns()},
+        ${emptySourceAccountOptionColumns()}
       FROM accounts
       WHERE accounts.deleted_at IS NULL${filters.clause}
     `, filters.params)
@@ -130,7 +151,10 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
   return queryRows(`
       SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type,
       NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at,
-      NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id
+      NULL AS authorization_limits_json, NULL AS authorization_effective_source_team_id,
+      NULL AS authorization_resource_owner_system_account_id, NULL AS authorization_resource_id,
+      ${emptyAccountOptionBindingColumns()},
+      ${emptySourceAccountOptionColumns()}
     FROM accounts
     WHERE accounts.system_account_id = ?
       AND accounts.deleted_at IS NULL
@@ -138,10 +162,18 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
     UNION ALL
     SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type,
       ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
+      ra.limits_json AS authorization_limits_json,
+      ra.effective_source_team_id AS authorization_effective_source_team_id,
       ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-      ra.resource_id AS authorization_resource_id
+      ra.resource_id AS authorization_resource_id,
+      option_group_bindings.group_id AS bound_group_id,
+      option_group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+      ${sourceAccountOptionColumns()}
     FROM accounts
     INNER JOIN resource_authorizations ra ON ra.id = accounts.authorization_instance_authorization_id
+    LEFT JOIN accounts source_accounts
+      ON source_accounts.id = accounts.authorization_instance_source_account_id
+      AND source_accounts.deleted_at IS NULL
     LEFT JOIN group_accounts option_group_bindings
       ON option_group_bindings.account_id = accounts.id
       AND option_group_bindings.system_account_id = ?
@@ -153,6 +185,29 @@ function queryAccountOptionRowsForAccess(access: AccessScope | undefined, option
       AND ra.status IN ('active', 'paused', 'expired')
       AND accounts.authorization_instance_authorization_id IS NOT NULL${authorizedFilters.clause}
   `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, ownerId, viewerSystemAccountId, ...authorizedFilters.params])
+}
+
+function emptyAccountOptionBindingColumns(): string {
+  return `NULL AS bound_group_id,
+      NULL AS bound_group_account_authorization_id`
+}
+
+function emptySourceAccountOptionColumns(): string {
+  return `NULL AS source_status,
+      NULL AS source_schedulable,
+      NULL AS source_availability_schedule_json,
+      NULL AS source_account_expires_at,
+      NULL AS source_cooldown_until,
+      NULL AS source_last_error_code`
+}
+
+function sourceAccountOptionColumns(): string {
+  return `source_accounts.status AS source_status,
+      source_accounts.schedulable AS source_schedulable,
+      source_accounts.availability_schedule_json AS source_availability_schedule_json,
+      source_accounts.account_expires_at AS source_account_expires_at,
+      source_accounts.cooldown_until AS source_cooldown_until,
+      source_accounts.last_error_code AS source_last_error_code`
 }
 
 function accountOptionQuotaFilterRequested(options: ReturnType<typeof normalizeAccountOptionListOptions>): boolean {
@@ -202,6 +257,12 @@ function visibleAuthorizedAccountQuotaLimitsMayExist(
   return Boolean(row?.id)
 }
 
+function accountOptionNeedsDerivedStatusFunctions(options: ReturnType<typeof normalizeAccountOptionListOptions>): boolean {
+  const statuses = accountStatusFilterValues(options.status)
+  return statuses.length > 0
+    || options.schedulable === 'disabled'
+}
+
 function accountOptionSelectColumns(): string {
   return [
     'accounts.id',
@@ -215,7 +276,9 @@ function accountOptionSelectColumns(): string {
     'accounts.status',
     'accounts.schedulable',
     'accounts.account_expires_at',
+    'accounts.availability_schedule_json',
     'accounts.cooldown_until',
+    'accounts.last_error_code',
     'accounts.priority',
     'accounts.created_at',
     'accounts.authorization_instance_source_account_id',
@@ -282,15 +345,28 @@ function buildAccountOptionFilters(
     && includeAuthorizationQuota
     && (statuses.includes('active') || statuses.includes('rate_limited'))
   const quotaStatusExpression = includeAuthorizationQuotaStatus ? authorizedOptionQuotaExceededExpression() : undefined
+  const ownerStatusExpression = ownerOptionStatusExpression()
   const authorizedStatusExpression = `CASE
     WHEN ra.status <> 'active'
       OR (ra.expires_at IS NOT NULL AND ra.expires_at <= ${currentIsoSql})
     THEN 'disabled'
-    WHEN accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql} THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
-    WHEN accounts.schedulable <> 1 THEN 'disabled'
-    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     ${quotaStatusExpression ? `WHEN ${quotaStatusExpression.sql} THEN 'rate_limited'` : ''}
+    WHEN source_accounts.id IS NULL THEN 'disabled'
+    WHEN source_accounts.last_error_code = 'account_expired'
+      OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= ${currentIsoSql})
+    THEN 'disabled'
+    WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN source_accounts.status
+    WHEN source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    WHEN source_accounts.schedulable <> 1 THEN 'disabled'
+    WHEN account_schedule_allowed(source_accounts.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN accounts.last_error_code = 'account_expired'
+      OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})
+    THEN 'disabled'
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN accounts.schedulable <> 1 THEN 'disabled'
+    WHEN ${authorizedOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
     ELSE accounts.status
   END`
   const authorizedBindingAvailableExpression = `option_group_bindings.group_id IS NOT NULL
@@ -301,23 +377,36 @@ function buildAccountOptionFilters(
     OR option_group_bindings.account_authorization_id <> ra.id`
   const authorizedAuthorizationAvailableExpression = `ra.status = 'active'
     AND (ra.expires_at IS NULL OR ra.expires_at > ${currentIsoSql})`
+  const authorizedSourceAccountAvailableExpression = `source_accounts.id IS NOT NULL
+    AND source_accounts.status = 'active'
+    AND source_accounts.schedulable = 1
+    AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ${currentIsoSql})
+    AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ${currentIsoSql})
+    AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')`
   const authorizedAccountAvailableExpression = `accounts.schedulable = 1
     AND accounts.status = 'active'
     AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})
-    AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})`
+    AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})
+    AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')`
   const authorizedAccountHardUnavailableExpression = `accounts.schedulable <> 1
     OR accounts.status IN ('pending_test', 'disabled', 'error')
+    OR accounts.last_error_code = 'account_expired'
     OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})`
+  const authorizedSourceAccountHardUnavailableExpression = `source_accounts.id IS NULL
+    OR source_accounts.schedulable <> 1
+    OR source_accounts.status IN ('pending_test', 'disabled', 'error')
+    OR source_accounts.last_error_code = 'account_expired'
+    OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= ${currentIsoSql})`
   const authorizedAccountCoolingExpression = `accounts.status IN ('rate_limited', 'temporary_unavailable')
     OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql})`
+  const authorizedSourceAccountCoolingExpression = `source_accounts.status IN ('rate_limited', 'temporary_unavailable')
+    OR (source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until > ${currentIsoSql})`
   if (statuses.length === 1) {
-    clauses.push(authorizedView ? `${authorizedStatusExpression} = ?` : 'accounts.status = ?')
+    clauses.push(`${authorizedView ? authorizedStatusExpression : ownerStatusExpression} = ?`)
     if (authorizedView && quotaStatusExpression) params.push(...quotaStatusExpression.params)
     params.push(statuses[0])
   } else if (statuses.length > 1) {
-    clauses.push(authorizedView
-      ? `${authorizedStatusExpression} IN (${statuses.map(() => '?').join(', ')})`
-      : `accounts.status IN (${statuses.map(() => '?').join(', ')})`)
+    clauses.push(`${authorizedView ? authorizedStatusExpression : ownerStatusExpression} IN (${statuses.map(() => '?').join(', ')})`)
     if (authorizedView && quotaStatusExpression) params.push(...quotaStatusExpression.params)
     params.push(...statuses)
   }
@@ -326,13 +415,16 @@ function buildAccountOptionFilters(
       const quotaExpression = includeAuthorizationQuota ? authorizedOptionQuotaExceededExpression() : undefined
       clauses.push(`${authorizedBindingAvailableExpression}
         AND ${authorizedAuthorizationAvailableExpression}
+        AND ${authorizedSourceAccountAvailableExpression}
         AND ${authorizedAccountAvailableExpression}
         ${quotaExpression ? `AND NOT (${quotaExpression.sql})` : ''}`)
       if (quotaExpression) params.push(...quotaExpression.params)
     } else {
       clauses.push(`accounts.status = 'active'
         AND accounts.schedulable = 1
-        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})`)
+        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ${currentIsoSql})
+        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})
+        AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')`)
     }
   } else if (options.schedulable === 'disabled') {
     if (authorizedView) {
@@ -344,14 +436,18 @@ function buildAccountOptionFilters(
       if (quotaStatusExpression) params.push(...quotaStatusExpression.params)
       if (quotaExpression) params.push(...quotaExpression.params)
     } else {
-      clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
+      clauses.push(`(accounts.status = 'disabled'
+        OR accounts.schedulable <> 1
+        OR accounts.last_error_code = 'account_expired'
+        OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql}))`)
     }
   } else if (options.schedulable === 'cooling') {
     if (authorizedView) {
       clauses.push(`${authorizedBindingAvailableExpression}
         AND ${authorizedAuthorizationAvailableExpression}
+        AND NOT (${authorizedSourceAccountHardUnavailableExpression})
         AND NOT (${authorizedAccountHardUnavailableExpression})
-        AND (${authorizedAccountCoolingExpression})`)
+        AND (${authorizedSourceAccountCoolingExpression} OR ${authorizedAccountCoolingExpression})`)
     } else {
       clauses.push(`(accounts.status IN ('rate_limited', 'temporary_unavailable')
         OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql}))`)
@@ -361,6 +457,36 @@ function buildAccountOptionFilters(
     clause: clauses.length ? ` AND ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function ownerOptionStatusExpression(): string {
+  return `CASE
+    WHEN accounts.last_error_code = 'account_expired'
+      OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})
+    THEN 'disabled'
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN accounts.schedulable <> 1 THEN 'disabled'
+    WHEN ${ownerOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
+    ELSE accounts.status
+  END`
+}
+
+function ownerOptionApiKeyPoolAllUnavailableExpression(): string {
+  return accountApiKeyPoolAllUnavailableSql({
+    accountIdSql: 'accounts.id',
+    providerCodeSql: 'accounts.provider_code',
+    typeSql: 'accounts.type'
+  })
+}
+
+function authorizedOptionApiKeyPoolAllUnavailableExpression(): string {
+  return accountApiKeyPoolAllUnavailableSql({
+    accountIdSql: 'COALESCE(source_accounts.id, accounts.id)',
+    providerCodeSql: 'COALESCE(source_accounts.provider_code, accounts.provider_code)',
+    typeSql: 'COALESCE(source_accounts.type, accounts.type)'
+  })
 }
 
 function authorizedOptionQuotaExceededExpression(): AccountOptionFilterExpression {

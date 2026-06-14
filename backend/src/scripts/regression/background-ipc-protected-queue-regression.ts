@@ -31,7 +31,7 @@ try {
     const result = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildUsageRecordsCleanupJob(index))
     assert.equal(result.queued, true, `数据维护任务 ${index} 应被 server IPC 队列保留`)
   }
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, 'regular IPC 队列达到保护上限前应全部保留')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, 'maintenance IPC 队列达到保护上限前应全部保留')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, 'server IPC runtime 应按类型展示维护任务排队数')
 
   const droppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
@@ -43,9 +43,9 @@ try {
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, 1, 'server IPC runtime 应记录维护任务拒绝次数')
 
   const runtimeLogAccepted = backgroundIpc.sendRuntimeLogLineToWorker('{"level":"info","event":"runtime_log_after_default_queue_limit"}')
-  assert.equal(runtimeLogAccepted, true, '默认 worker regular IPC 队列满时运行日志仍应进入 ingest-worker 队列')
+  assert.equal(runtimeLogAccepted, true, 'maintenance-worker IPC 队列满时运行日志仍应进入 ingest-worker 队列')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5001, '运行日志进入独立 ingest 队列后总 pending 数应增长')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, '运行日志不应挤掉默认 worker 维护任务')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, '运行日志不应挤掉 maintenance-worker 维护任务')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.queueLength, 1, 'server IPC runtime 应按类型展示 ingest 运行日志排队数')
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
   runtimeLogIndexQueue.enqueueRuntimeLogLine('{"level":"info","event":"runtime_log_server_dispatch_to_ingest"}')
@@ -114,7 +114,7 @@ try {
   assert.equal(usageOverflowAccepted, false, '超过 usage IPC 队列上限后使用记录应快速拒绝')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.rejectedCount, 1, 'server IPC runtime 应记录使用记录拒绝次数')
 
-  console.log('后台 IPC 队列回归通过：server 到默认 worker 与 ingest-worker 的 regular/usage IPC 队列达到上限后会快速拒绝并记录指标，避免请求侧副作用无限堆积')
+  console.log('后台 IPC 队列回归通过：server 到 maintenance-worker 与 ingest-worker 的 regular/usage IPC 队列达到上限后会快速拒绝并记录指标，避免请求侧副作用无限堆积')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

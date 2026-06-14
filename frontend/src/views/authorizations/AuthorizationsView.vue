@@ -114,8 +114,6 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import dayjs from 'dayjs'
-import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -137,6 +135,16 @@ import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
 import AuthorizationHelpModal from './AuthorizationHelpModal.vue'
 import AuthorizationList from './AuthorizationList.vue'
+import {
+  authorizationCreateExcludedGranteeIds,
+  authorizationCreateHasGranteeOptions,
+  authorizationCreateResourceOptions,
+  authorizationCreateResourcePlaceholder,
+  authorizationCreateResourceSelectDisabled,
+  authorizationCreateTargetGroupDisabled,
+  authorizationCreateTargetGroupPlaceholder,
+  authorizationCreateTargetGroupTip
+} from './authorizationCreateState'
 import { hasManualSource } from './authorizationFormatters'
 import {
   createAuthorizationCreateFormModel,
@@ -145,6 +153,21 @@ import {
   type AuthorizationCreateFormModel,
   type AuthorizationExpireFormModel
 } from './authorizationFormModel'
+import {
+  activeAuthorizationFilterCount,
+  advancedAuthorizationFilterCount,
+  authorizationEmptyDescription as createAuthorizationEmptyDescription,
+  authorizationListParams
+} from './authorizationListFilters'
+import {
+  authorizationColumnStorageKey,
+  authorizationListFilterContext as createAuthorizationListFilterContext,
+  authorizationListFilterValues as createAuthorizationListFilterValues,
+  authorizationListTotalText,
+  authorizationVisibleColumns,
+  authorizationsPageSize,
+  disabledAuthorizationExpireDate
+} from './authorizationPageConfig'
 import {
   authorizationFiltersFromRouteQuery,
   authorizationRouteFilterValues as routeAuthorizationFilterValues,
@@ -155,7 +178,6 @@ import {
   type AuthorizationsPageState
 } from './authorizationPageState'
 import {
-  authorizationColumns,
   authorizationDirectionOptions,
   authorizationResourceTypeOptions,
   authorizationSourceOptions,
@@ -165,7 +187,6 @@ import {
 import { useAuthorizationActions } from './useAuthorizationActions'
 import { useAuthorizationOptionState } from './useAuthorizationOptionState'
 
-const pageSize = 50
 const createModalOpen = ref(false)
 const helpOpen = ref(false)
 const expireModalOpen = ref(false)
@@ -174,10 +195,10 @@ const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
 
-const defaultAuthorizationsPageState = (): AuthorizationsPageState => createDefaultAuthorizationsPageState(pageSize)
+const defaultAuthorizationsPageState = (): AuthorizationsPageState => createDefaultAuthorizationsPageState(authorizationsPageSize)
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
   version: 8,
-  sanitize: (value, fallback) => sanitizeAuthorizationsPageState(value, fallback, pageSize)
+  sanitize: (value, fallback) => sanitizeAuthorizationsPageState(value, fallback, authorizationsPageSize)
 })
 const initialPageState = pageStateCache.read()
 
@@ -210,13 +231,11 @@ const {
   resetPagination,
   updateItems: updateAuthorizationItems
 } = useResponsivePagedList<ResourceAuthorizationSummary>({
-  pageSize,
+  pageSize: authorizationsPageSize,
   initialPagination: initialPageState.pagination,
-  showTotal: (total, range, context) => context?.hasMore
-    ? `已加载到第 ${range?.[1] ?? total - 1} 条授权，还有更多`
-    : `共 ${total} 条授权`,
+  showTotal: authorizationListTotalText,
   fetchPage: async (_options, pageState) => {
-    const params = authorizationListParams(pageState)
+    const params = createAuthorizationListParams(pageState)
     return isManagementView.value
       ? await api.authorizations.listPage(params)
       : await api.myAuthorizations.listPage(params)
@@ -230,7 +249,7 @@ const {
 const createForm = reactive<AuthorizationCreateFormModel>(createAuthorizationCreateFormModel())
 
 const expireForm = reactive<AuthorizationExpireFormModel>(createAuthorizationExpireFormModel())
-const createExcludedGranteeIds = computed(() => createForm.ownerSystemAccountId ? [createForm.ownerSystemAccountId] : [])
+const createExcludedGranteeIds = computed(() => authorizationCreateExcludedGranteeIds(createForm.ownerSystemAccountId))
 const {
   accounts,
   groups,
@@ -310,66 +329,57 @@ const filterResourcePlaceholder = computed(() => {
   return filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'
 })
 
-const createResourceOptions = computed(() => {
-  if (createForm.resourceType === 'account') {
-    return createOwnedAccounts.value.map((account) => ({ label: account.name, value: account.id }))
-  }
-  return mergeSelectedGroupOptions(createOwnedGroups.value.map((group) => ({ label: group.name, value: group.id })), [createForm.resourceId], [createForm.resourceGroup])
-})
-const createResourceSelectDisabled = computed(() => {
-  if (isManagementView.value && !createForm.ownerSystemAccountId) return true
-  return false
-})
-const createResourcePlaceholder = computed(() => {
-  if (isManagementView.value && !createForm.ownerSystemAccountId) return '请先选择授权人'
-  if (createForm.resourceType === 'account') return '输入 AI 账户名称搜索'
-  return '输入分组名称搜索'
+const createResourceOptions = computed(() => authorizationCreateResourceOptions({
+  form: createForm,
+  accounts: createOwnedAccounts.value,
+  groups: createOwnedGroups.value
+}))
+const createResourceSelectDisabled = computed(() => authorizationCreateResourceSelectDisabled({
+  isManagementView: isManagementView.value,
+  ownerSystemAccountId: createForm.ownerSystemAccountId
+}))
+const createResourcePlaceholder = computed(() => authorizationCreateResourcePlaceholder({
+  isManagementView: isManagementView.value,
+  ownerSystemAccountId: createForm.ownerSystemAccountId,
+  resourceType: createForm.resourceType
+}))
+
+const hasCreateGranteeOptions = computed(() => authorizationCreateHasGranteeOptions({
+  granteeType: createForm.granteeType,
+  users: createUsers.value,
+  teams: createTeams.value,
+  excludedGranteeIds: createExcludedGranteeIds.value
+}))
+const createTargetGroupDisabled = computed(() => authorizationCreateTargetGroupDisabled({
+  resourceId: createForm.resourceId,
+  granteeId: createForm.granteeId,
+  selectedAccountProviderCode: selectedCreateAccount.value?.providerCode
+}))
+const createTargetGroupPlaceholder = computed(() => authorizationCreateTargetGroupPlaceholder({
+  resourceId: createForm.resourceId,
+  granteeId: createForm.granteeId
+}))
+const createTargetGroupTip = computed(() => authorizationCreateTargetGroupTip(createTargetGroups.value.length))
+const authorizationListFilterValues = () => createAuthorizationListFilterValues(filters)
+const authorizationListFilterContext = () => createAuthorizationListFilterContext({
+  filters,
+  keyword: keywordFilter.value,
+  isManagementView: isManagementView.value,
+  filterResourceDisabled: filterResourceDisabled.value
 })
 
-const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
-  ? createUsers.value.some((user) => user.status === 'active' && !createExcludedGranteeIds.value.includes(user.id))
-  : createTeams.value.some((team) => team.status === 'active'))
-const createTargetGroupDisabled = computed(() => !createForm.resourceId || !createForm.granteeId || !selectedCreateAccount.value?.providerCode)
-const createTargetGroupPlaceholder = computed(() => {
-  if (!createForm.resourceId) return '请先选择 AI 账户'
-  if (!createForm.granteeId) return '请先选择被授权用户'
-  return '选择目标用户分组'
-})
-const createTargetGroupTip = computed(() => createTargetGroups.value.length
-  ? '默认选择目标用户的默认分组；授权创建后会直接把账户加入该分组。'
-  : '目标用户暂无可选兼容分组，请先为目标用户准备分组。')
 const activeFilterCount = computed(() => {
-  let count = 0
-  if (keywordFilter.value.trim()) count += 1
-  if (!isManagementView.value && filters.direction !== 'outbound') count += 1
-  if (!isManagementView.value && filters.sourceType !== 'all') count += 1
-  if (filters.status !== 'all') count += 1
-  if (isManagementView.value && filters.resourceOwnerSystemAccountId !== allSystemAccountsValue) count += 1
-  if (filters.resourceType !== 'all') count += 1
-  if (!filterResourceDisabled.value && filters.resourceId) count += 1
-  if (isManagementView.value && filters.teamId) count += 1
-  if (isManagementView.value && filters.granteeSystemAccountId) count += 1
-  return count
+  return activeAuthorizationFilterCount(authorizationListFilterContext())
 })
 const advancedFilterCount = computed(() => {
-  let count = 0
-  if (!isManagementView.value && filters.sourceType !== 'all') count += 1
-  if (filters.status !== 'all') count += 1
-  if (isManagementView.value && filters.resourceType !== 'all') count += 1
-  if (isManagementView.value && filters.resourceOwnerSystemAccountId !== allSystemAccountsValue) count += 1
-  if (!filterResourceDisabled.value && filters.resourceId) count += 1
-  if (isManagementView.value && filters.teamId) count += 1
-  if (isManagementView.value && filters.granteeSystemAccountId) count += 1
-  return count
+  return advancedAuthorizationFilterCount(authorizationListFilterContext())
 })
 const authorizationEmptyDescription = computed(() => {
-  if (isManagementView.value) {
-    return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无授权记录。'
-  }
-  if (filters.direction === 'inbound') {
-    return '暂无授权给我的记录；获得授权后的资源会在对应使用菜单中显示。'
-  }
-  return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无我授权出去的记录，可新增授权给其他用户或团队。'
+  return createAuthorizationEmptyDescription({
+    filters: authorizationListFilterValues(),
+    isManagementView: isManagementView.value,
+    activeFilterCount: activeFilterCount.value
+  })
 })
 const createAuthorizationScopeParams = computed(() => {
   const systemAccountId = createForm.ownerSystemAccountId
@@ -414,12 +424,10 @@ const {
   updateAuthorizationItems
 })
 const rawColumns = computed(() => {
-  const showActions = isManagementView.value || filters.direction === 'outbound' || hasReturnableInboundAuthorization.value
-  return authorizationColumns.filter((column) => {
-    if (isManagementView.value && column.key === 'direction') return false
-    if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
-    if (!showActions && column.key === 'actions') return false
-    return true
+  return authorizationVisibleColumns({
+    isManagementView: isManagementView.value,
+    direction: filters.direction,
+    hasReturnableInboundAuthorization: hasReturnableInboundAuthorization.value
   })
 })
 const {
@@ -427,14 +435,10 @@ const {
   columnSettings,
   updateColumnSettings,
   resetColumnSettings
-} = useTableColumnSettings(() => `authorizations:${isManagementView.value ? 'management' : 'self'}:${filters.direction}`, rawColumns, {
+} = useTableColumnSettings(() => authorizationColumnStorageKey(isManagementView.value, filters.direction), rawColumns, {
   requiredKeys: ['resource'],
   minVisible: 1
 })
-
-function disabledAuthorizationExpireDate(date: Dayjs): boolean {
-  return date.isBefore(dayjs().startOf('day'))
-}
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
@@ -471,20 +475,12 @@ function resetFilterOptionSearchState() {
   resetRemoteFilterOptionSearchState()
 }
 
-function authorizationListParams(pageState: { current: number; pageSize: number }) {
-  return {
-    keyword: keywordFilter.value.trim() || undefined,
-    resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-    resourceId: filters.resourceType === 'all' || filterResourceDisabled.value ? undefined : filters.resourceId,
-    resourceOwnerSystemAccountId: isManagementView.value ? selectedFilterOwnerSystemAccountId.value : undefined,
-    teamId: isManagementView.value ? filters.teamId : undefined,
-    granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
-    status: filters.status === 'all' ? undefined : filters.status,
-    direction: isManagementView.value ? undefined : filters.direction,
-    sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
-    page: pageState.current,
-    pageSize: pageState.pageSize
-  }
+function createAuthorizationListParams(pageState: { current: number; pageSize: number }) {
+  return authorizationListParams({
+    ...authorizationListFilterContext(),
+    selectedResourceOwnerSystemAccountId: selectedFilterOwnerSystemAccountId.value,
+    pageState
+  })
 }
 
 function refreshData() {
@@ -682,7 +678,7 @@ function applyAuthorizationsPageState(state: AuthorizationsPageState): void {
     ...state.filters
   })
   pagination.current = state.pagination?.current ?? fallback.pagination?.current ?? 1
-  pagination.pageSize = state.pagination?.pageSize ?? fallback.pagination?.pageSize ?? pageSize
+  pagination.pageSize = state.pagination?.pageSize ?? fallback.pagination?.pageSize ?? authorizationsPageSize
   resetFilterOptionSearchState()
 }
 

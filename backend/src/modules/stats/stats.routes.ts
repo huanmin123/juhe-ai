@@ -127,33 +127,33 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   const workerSnapshot = runtime?.worker?.snapshot
   const metricsWorkerSnapshot = runtime?.metricsWorker?.snapshot
   const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
-  const workerJobs = workerSnapshot?.jobs?.map((job) => {
-    const roleAwareJob = {
-      ...job,
-      workerRole: workerSnapshot.workerRole
-    }
-    if (job.name !== 'cooldown-account-retest' || !workerSnapshot.cooldownAccountRetestQueue) {
+  const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
+  const snapshotWorkerSnapshot = runtime?.snapshotWorker?.snapshot
+  const probeWorkerSnapshot = runtime?.probeWorker?.snapshot
+  const maintenanceWorkerSnapshot = runtime?.maintenanceWorker?.snapshot
+  const backgroundJobGroups = [
+    workerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: workerSnapshot.workerRole })),
+    metricsWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: metricsWorkerSnapshot.workerRole })),
+    ingestWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: ingestWorkerSnapshot.workerRole })),
+    statsWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: statsWorkerSnapshot.workerRole })),
+    snapshotWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: snapshotWorkerSnapshot.workerRole })),
+    probeWorkerSnapshot?.jobs?.map((job) => {
+      const roleAwareJob = { ...job, workerRole: probeWorkerSnapshot.workerRole }
+      if (job.name === 'cooldown-account-retest' && probeWorkerSnapshot.cooldownAccountRetestQueue) {
+        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.cooldownAccountRetestQueue }
+      }
+      if (job.name === 'account-api-key-cooldown-retest' && probeWorkerSnapshot.accountApiKeyCooldownRetestQueue) {
+        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountApiKeyCooldownRetestQueue }
+      }
+      if (job.name === 'account-quality-refresh' && probeWorkerSnapshot.accountQualityFailurePrecheckQueue) {
+        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountQualityFailurePrecheckQueue }
+      }
       return roleAwareJob
-    }
-    return {
-      ...roleAwareJob,
-      retryQueue: workerSnapshot.cooldownAccountRetestQueue
-    }
-  })
-  const metricsWorkerJobs = metricsWorkerSnapshot?.jobs?.map((job) => ({
-    ...job,
-    workerRole: metricsWorkerSnapshot.workerRole
-  }))
-  const ingestWorkerJobs = ingestWorkerSnapshot?.jobs?.map((job) => ({
-    ...job,
-    workerRole: ingestWorkerSnapshot.workerRole
-  }))
-  const backgroundJobs = workerJobs || metricsWorkerJobs || ingestWorkerJobs
-    ? [
-      ...(workerJobs ?? []),
-      ...(metricsWorkerJobs ?? []),
-      ...(ingestWorkerJobs ?? [])
-    ]
+    }),
+    maintenanceWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: maintenanceWorkerSnapshot.workerRole }))
+  ]
+  const backgroundJobs = backgroundJobGroups.some(Array.isArray)
+    ? backgroundJobGroups.flatMap((items) => items ?? [])
     : undefined
   res.json(ok({
     ...overview,
@@ -161,6 +161,10 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
     workerSnapshotAvailable: Boolean(workerSnapshot),
     metricsWorkerSnapshotAvailable: Boolean(metricsWorkerSnapshot),
     ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
+    statsWorkerSnapshotAvailable: Boolean(statsWorkerSnapshot),
+    snapshotWorkerSnapshotAvailable: Boolean(snapshotWorkerSnapshot),
+    probeWorkerSnapshotAvailable: Boolean(probeWorkerSnapshot),
+    maintenanceWorkerSnapshotAvailable: Boolean(maintenanceWorkerSnapshot),
     metricsWorker: runtime?.metricsWorker
       ? {
         pid: runtime.metricsWorker.pid ?? null,
@@ -173,6 +177,34 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
         pid: runtime.ingestWorker.pid ?? null,
         ready: runtime.ingestWorker.ready,
         snapshotAvailable: Boolean(ingestWorkerSnapshot)
+      }
+      : null,
+    statsWorker: runtime?.statsWorker
+      ? {
+        pid: runtime.statsWorker.pid ?? null,
+        ready: runtime.statsWorker.ready,
+        snapshotAvailable: Boolean(statsWorkerSnapshot)
+      }
+      : null,
+    snapshotWorker: runtime?.snapshotWorker
+      ? {
+        pid: runtime.snapshotWorker.pid ?? null,
+        ready: runtime.snapshotWorker.ready,
+        snapshotAvailable: Boolean(snapshotWorkerSnapshot)
+      }
+      : null,
+    probeWorker: runtime?.probeWorker
+      ? {
+        pid: runtime.probeWorker.pid ?? null,
+        ready: runtime.probeWorker.ready,
+        snapshotAvailable: Boolean(probeWorkerSnapshot)
+      }
+      : null,
+    maintenanceWorker: runtime?.maintenanceWorker
+      ? {
+        pid: runtime.maintenanceWorker.pid ?? null,
+        ready: runtime.maintenanceWorker.ready,
+        snapshotAvailable: Boolean(maintenanceWorkerSnapshot)
       }
       : null,
     backgroundJobsAvailable: Array.isArray(backgroundJobs),

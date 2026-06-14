@@ -107,6 +107,32 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         }
       }
     },
+    maintenanceWorker: {
+      pid: 1005,
+      ready: true,
+      pendingMessageCount: 0,
+      pendingMessageBytes: 0,
+      pendingQueues: {
+        usageRecords: queue(),
+        auditLogs: queue(),
+        operationLogs: queue(),
+        publicApiLogs: queue(),
+        recordMaintenance: queue(),
+        runtimeLogLines: queue(),
+        statusRequests: queue(),
+        processEventLoopRequests: queue(),
+        processEventLoopResponses: queue(),
+        gatewayRuntimeCacheInvalidations: queue(),
+        other: queue()
+      },
+      snapshot: {
+        pid: 1006,
+        ready: true,
+        workerRole: 'maintenance-worker',
+        jobs: [],
+        recordMaintenanceQueue: queue()
+      }
+    },
     ingestWorker: {
       pid: 1003,
       ready: true,

@@ -73,6 +73,7 @@
     "test:audit-log-async-flush": "tsx src/scripts/regression/audit-log-async-flush-regression.ts",
     "test:audit-log-dispatch-estimate-boundary": "tsx src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts",
     "test:gateway-audit-payload-storage": "tsx src/scripts/regression/gateway-audit-payload-storage-regression.ts",
+    "test:gateway-db-service-append-ipc": "tsx src/scripts/regression/gateway-db-service-append-ipc-regression.ts",
     "test:audit-payload-large-window": "tsx src/scripts/regression/audit-payload-large-window-regression.ts",
     "test:audit-log-batch-existing-lookup": "tsx src/scripts/regression/audit-log-batch-existing-lookup-regression.ts",
     "test:operation-log-queue": "tsx src/scripts/regression/operation-log-queue-regression.ts",

@@ -1,7 +1,7 @@
 <template>
   <StatsChartCard
     title="后台任务运行状态"
-    description="展示默认 worker、监控 worker 和写入 worker 内各定时任务的最近耗时、失败和跳过情况。"
+    description="展示各后台 worker 内定时任务的最近耗时、失败、跳过和复测队列情况。"
     :loading="loading"
     :has-data="hasData"
     :empty-description="emptyDescription"
@@ -172,10 +172,10 @@ function formatJobCounts(row: BackgroundJobRow): string {
 }
 
 function backgroundJobRetryQueueSummary(row: BackgroundJobRow): string | undefined {
-  const queue = row.name === 'cooldown-account-retest' ? row.retryQueue : undefined
+  const queue = row.retryQueue
   if (!queue) return undefined
   const nextRunAt = formatRetryQueueNextRunAt(queue.nextRunAt)
-  return `复活队列：待执行 ${formatInteger(queue.pendingCount)} / 运行中 ${formatInteger(queue.runningCount)}${nextRunAt ? ` / 下次 ${nextRunAt}` : ''}`
+  return `队列：待执行 ${formatInteger(queue.pendingCount)} / 运行中 ${formatInteger(queue.runningCount)}${nextRunAt ? ` / 下次 ${nextRunAt}` : ''}`
 }
 
 function formatRetryQueueNextRunAt(value?: string): string | undefined {
@@ -191,8 +191,13 @@ function formatRetryQueueNextRunAt(value?: string): string | undefined {
 }
 
 function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {
-  if (row.name !== 'cooldown-account-retest') return undefined
-  return '该任务会在冷却到期后按真实网关链路复测账号；失败后由 cooldown_until 推进下一次复测，先 3 秒起步并翻倍，达到最大暂停时间后进入慢速恢复。'
+  if (row.name === 'cooldown-account-retest') {
+    return '该任务会在冷却到期后按真实网关链路复测账号；失败后由 cooldown_until 推进下一次复测，先 3 秒起步并翻倍，达到最大暂停时间后进入慢速恢复。'
+  }
+  if (row.name === 'account-api-key-cooldown-retest') {
+    return '该任务会在冷却到期后按真实网关链路复测账户内 API Key；队列堆积表示 Key 级恢复探测仍在排队。'
+  }
+  return undefined
 }
 </script>
 

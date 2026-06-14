@@ -85,6 +85,7 @@ try {
   })
   const session = repositories.createSession(admin.id, 1)
   const cookie = `juhe_ai_session=${session.token}`
+  databaseModule.closeStorageDatabases()
 
   backendProcess = startBackendServer(backendPort)
   await waitForHealth(backendBaseUrl, backendProcess)

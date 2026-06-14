@@ -46,7 +46,7 @@
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
 | `backend/src/modules/gateway/` | OpenAI 兼容中转、请求侧入口保护、账号选择、上游请求准备、账户错误处理策略、SSE 透传和用量解析 | 请求进入上游前的新增处理先按 [请求处理分层设计](../../functions/请求处理分层设计.md) 判断落点；不把网关细节泄漏成前端多套复杂选项 |
-| `backend/src/modules/background/` | 默认 worker 内的统计聚合、账号质量缓存、冷却账号复测和数据清理，metrics-worker 内的系统采样和事件循环采样协调，以及 ingest-worker 内的 append-only 写入隔离 | 任务注册和执行只允许在对应 worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
+| `backend/src/modules/background/` | worker 多角色调度、系统采样、append-only 写入、增量统计、重窗口快照、外部探测、维护清理和 IPC 队列隔离 | 任务注册和执行只允许在对应 worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
 | `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与高频 SQLite 读写只在 DB service 或 worker 内执行，主 Web 进程不能回退同步访问 SQLite |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
@@ -138,7 +138,7 @@ flowchart LR
 - OAuth Access Token 请求前懒刷新是正确性兜底，只允许在命中已选 OAuth 账号且 token 缺失 / 临期时发生；同账号刷新在进程内串行，成功后写入短 TTL 最近刷新缓存，后续同一波请求复用新凭据，不能把每个并发请求都放大成重复的 DB service 重读和写回。OAuth token endpoint 响应体必须有固定字节上限，超限主动中断，不能在刷新路径无界累积 chunk 或拼接完整异常响应。
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
-- 使用记录、原始审计、操作日志、运行日志索引和账号状态副作用都必须异步投递到 worker 或 DB service；server 到默认 worker / ingest-worker 的 IPC、worker 本地落库队列、运行日志索引队列和账号状态副作用本地队列都必须有数量或字节上限。投递失败或队列满时按各自策略降级、合并或丢弃新副作用，不能反向阻塞已经可返回的网关响应，也不能在 worker / DB service 慢或不可用时无限堆积内存。
+- 使用记录、原始审计、操作日志、运行日志索引和账号状态副作用都必须异步投递到 worker 或 DB service；server 到 ingest / probe / maintenance worker 的 IPC、worker 本地落库队列、运行日志索引队列和账号状态副作用本地队列都必须有数量或字节上限。投递失败或队列满时按各自策略降级、合并或丢弃新副作用，不能反向阻塞已经可返回的网关响应，也不能在 worker / DB service 慢或不可用时无限堆积内存。
 - 真实上游派发开始后，网关可以在已选分组内按账号切换和账户级错误处理策略处理；普通上游失败和已写下游输出后的失败不能因为另一个分组可能可用而跨分组透明重放请求。配置化流式拦截在写下游前命中并耗尽当前号池时，可以按 API Key 绑定优先级尝试后续分组。
 
 ## 6. 数据库设计
@@ -262,7 +262,7 @@ erDiagram
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
 - 涉及多 worker、worker 角色、job registry、任务租约、热点隔离或进程拓扑调整时，先按 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md) 执行；worker 数量不设固定上限，但必须有明确隔离域、队列上限、租约边界和健康指标。
 - 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
-- 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、授权到期扫描、系统指标采样、小时级指标聚合、OpenAI OAuth Access Token 保活、冷却账号复测、运行日志索引 flush、公开接口日志写入、原始审计日志批量落库和统一表数据保留期清理；其中系统指标采样固定在 `metrics-worker`，使用记录 / 审计 / 操作日志 / 公开接口日志 / 运行日志索引写入固定在 `ingest-worker`。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
+- 当前后台任务按角色隔离：系统指标采样固定在 `metrics-worker`；使用记录 / 审计 / 操作日志 / 公开接口日志 / 运行日志索引写入固定在 `ingest-worker`；使用记录增量聚合、IP 聚合和分组账户统计缓存固定在 `stats-worker`；TopN、概览、范围窗口、授权窗口和系统趋势窗口固定在 `snapshot-worker`；OpenAI OAuth Access Token 保活、账号质量、账号测试、冷却复测和代理检测固定在 `probe-worker`；授权到期扫描、表空间监控、维护重试和统一表数据保留期清理固定在 `maintenance-worker`。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
 - 请求链路产生的审计、运行日志索引、操作日志或使用记录批量写入数据如需异步处理，应通过有界 IPC 或等价轻量通道投递到 `ingest-worker`；队列上限和丢弃策略不能反向阻塞网关请求。
 - 原始审计日志队列是 best-effort 队列，不要求系统重启后恢复；队列溢出和进程重启允许丢失待落库审计记录，但必须不阻塞网关请求。

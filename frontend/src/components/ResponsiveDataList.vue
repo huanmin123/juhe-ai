@@ -106,21 +106,34 @@
 <script setup lang="ts" generic="T extends Record<string, any>">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import DeferredRender from './DeferredRender.vue'
+import { changeResponsiveDataListBodyScrollLock } from './responsiveDataListBodyScrollLock'
 import { normalizeResponsiveTableColumns } from './responsiveDataListColumns'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 import {
-  adjustTableScrollY,
+  buildResponsiveDataListTablePagination,
+  buildResponsiveDataListTableScroll,
+  hasResponsiveDataListTablePagination,
+  resolveResponsiveDataListMobileFooterText,
+  resolveResponsiveDataListTablePlaceholderMinHeight,
+  resolveResponsiveDataListTableScrollY,
+  type ResponsiveDataListTablePagination
+} from './responsiveDataListTableLayout'
+import {
   buildMobileVirtualItems,
   buildMobileVirtualWindow,
   defaultMobileItemHeight,
   normalizeMobileItemHeightKey,
-  numberFromPagination,
   type MobileVirtualItem
 } from './responsiveDataListVirtualization'
+import {
+  normalizeResponsiveDataListPullDistance,
+  resolveResponsiveDataListPullRefreshText,
+  shouldTriggerResponsiveDataListPullRefresh
+} from './responsiveDataListPullRefresh'
 import { rowActionColumnWidth } from './rowActions'
 
 type RowKey = string | ((record: T) => string | number)
-type TablePagination = false | Record<string, any>
+type TablePagination = ResponsiveDataListTablePagination
 
 const props = withDefaults(defineProps<{
   columns: Array<Record<string, any>>
@@ -190,8 +203,6 @@ defineSlots<{
   card?: (props: { record: T; index: number }) => any
 }>()
 
-const scrollLockClassName = 'responsive-data-list-scroll-lock'
-const scrollLockCountKey = '__responsiveDataListScrollLockCount'
 const isMobile = ref(initialMobileState())
 const listRootRef = ref<HTMLElement>()
 const listHeight = ref(0)
@@ -203,11 +214,6 @@ const pullDistance = ref(0)
 const pullRefreshRequested = ref(false)
 const touchStartY = ref(0)
 const touchStartedAtTop = ref(false)
-const pullThreshold = 64
-const defaultPageSize = 20
-const tableHeaderHeight = 47
-const tablePaginationHeight = 56
-const minTableBodyHeight = 160
 let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
 let mobileItemResizeObserver: ResizeObserver | undefined
@@ -240,67 +246,42 @@ const tableClassNames = computed(() => [
 const tableStyleVars = computed(() => ({
   '--responsive-data-list-scrollbar-placeholder-width': `${scrollbarPlaceholderWidth.value}px`
 }))
-const tablePagination = computed<TablePagination>(() => {
-  if (props.pagination === false) return false
-  const mergedPagination: Record<string, any> = {
-    pageSize: defaultPageSize,
-    hideOnSinglePage: true,
-    showSizeChanger: false,
-    showTotal: (total: number) => `共 ${total} 条`,
-    ...(props.pagination ?? {})
-  }
-  if (!props.paginationSummary || mergedPagination.showTotal === false) {
-    const paginationWithoutTotal = { ...mergedPagination }
-    delete paginationWithoutTotal.showTotal
-    return paginationWithoutTotal
-  }
-  return mergedPagination
-})
+const tablePagination = computed<TablePagination>(() => buildResponsiveDataListTablePagination(
+  props.pagination,
+  props.paginationSummary
+))
 
-const hasTablePagination = computed(() => {
-  const pagination = tablePagination.value
-  if (pagination === false) return false
-  const pageSize = numberFromPagination(pagination.pageSize) ?? defaultPageSize
-  const total = numberFromPagination(pagination.total) ?? props.dataSource.length
-  return pagination.hideOnSinglePage === false || total > pageSize
-})
+const hasTablePagination = computed(() => hasResponsiveDataListTablePagination(
+  tablePagination.value,
+  props.dataSource.length
+))
 
-const tableScroll = computed(() => {
-  if (!props.tableScrollEnabled) {
-    return props.scrollX ? { x: props.adaptiveColumnWidth ? 'max-content' : props.scrollX } : undefined
-  }
-  const scroll: Record<string, number | string> = { y: tableScrollY.value }
-  if (props.scrollX) scroll.x = props.adaptiveColumnWidth ? 'max-content' : props.scrollX
-  return scroll
-})
+const tableScroll = computed(() => buildResponsiveDataListTableScroll({
+  tableScrollEnabled: props.tableScrollEnabled,
+  scrollX: props.scrollX,
+  adaptiveColumnWidth: props.adaptiveColumnWidth,
+  tableScrollY: tableScrollY.value
+}))
 
 const tableLayout = computed(() => props.adaptiveColumnWidth ? 'auto' : undefined)
-const tablePlaceholderMinHeight = computed(() => {
-  const height = tableScrollY.value
-  return typeof height === 'number' ? height + tableHeaderHeight : 220
-})
+const tablePlaceholderMinHeight = computed(() => resolveResponsiveDataListTablePlaceholderMinHeight(tableScrollY.value))
 
-const tableScrollY = computed(() => {
-  if (listHeight.value > 0) {
-    const paginationHeight = hasTablePagination.value ? tablePaginationHeight : 0
-    return Math.max(minTableBodyHeight, listHeight.value - tableHeaderHeight - paginationHeight)
-  }
-  return adjustTableScrollY(props.tableScrollY, tableHeaderHeight + (hasTablePagination.value ? tablePaginationHeight : 0))
-})
-
-const pullRefreshText = computed(() => {
-  if (pullRefreshing.value) return '正在刷新...'
-  if (pullDistance.value >= pullThreshold) return '松开刷新'
-  if (pullDistance.value > 0) return '下拉刷新'
-  return '下拉刷新'
-})
+const tableScrollY = computed(() => resolveResponsiveDataListTableScrollY({
+  listHeight: listHeight.value,
+  hasPagination: hasTablePagination.value,
+  tableScrollY: props.tableScrollY
+}))
 
 const pullRefreshing = computed(() => props.refreshing && pullRefreshRequested.value)
+const pullRefreshText = computed(() => resolveResponsiveDataListPullRefreshText(
+  pullDistance.value,
+  pullRefreshing.value
+))
 
-const mobileFooterText = computed(() => {
-  if (props.loadingMore) return '正在加载更多...'
-  return props.mobileHasMore ? '上拉或点击加载更多' : '没有更多了'
-})
+const mobileFooterText = computed(() => resolveResponsiveDataListMobileFooterText({
+  loadingMore: props.loadingMore,
+  mobileHasMore: props.mobileHasMore
+}))
 
 const mobileFooterInteractive = computed(() => props.mobilePagination && props.mobileHasMore && !props.loadingMore && !props.refreshing)
 
@@ -364,24 +345,16 @@ function updateMobileViewportMetrics() {
   mobileScrollTop.value = list.scrollTop
 }
 
-function changeBodyScrollLock(delta: number) {
-  if (typeof document === 'undefined') return
-  const body = document.body as HTMLBodyElement & Record<string, any>
-  const nextCount = Math.max(0, Number(body[scrollLockCountKey] ?? 0) + delta)
-  body[scrollLockCountKey] = nextCount
-  body.classList.toggle(scrollLockClassName, nextCount > 0)
-}
-
 function lockBodyScroll() {
   if (!props.lockBodyScroll || bodyScrollLocked) return
   bodyScrollLocked = true
-  changeBodyScrollLock(1)
+  changeResponsiveDataListBodyScrollLock(1)
 }
 
 function unlockBodyScroll() {
   if (!bodyScrollLocked) return
   bodyScrollLocked = false
-  changeBodyScrollLock(-1)
+  changeResponsiveDataListBodyScrollLock(-1)
 }
 
 function queueTableScrollbarPlaceholderUpdate() {
@@ -700,12 +673,12 @@ function handleTouchMove(event: TouchEvent) {
   if (!props.pullRefreshEnabled || !touchStartedAtTop.value || props.refreshing || props.loadingMore) return
   const currentY = event.touches[0]?.clientY ?? 0
   const distance = currentY - touchStartY.value
-  pullDistance.value = distance > 0 ? Math.min(distance, 96) : 0
+  pullDistance.value = normalizeResponsiveDataListPullDistance(distance)
 }
 
 function handleTouchEnd() {
   if (!props.pullRefreshEnabled) return
-  if (pullDistance.value >= pullThreshold && !props.refreshing && !props.loadingMore) {
+  if (shouldTriggerResponsiveDataListPullRefresh(pullDistance.value, props.refreshing, props.loadingMore)) {
     pullRefreshRequested.value = true
     emit('mobile-refresh')
   }

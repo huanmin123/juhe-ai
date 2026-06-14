@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -16,6 +16,15 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const mainAccountRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
+const deleteAccountRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-delete.routes.ts'), 'utf8')
+assert(mainAccountRouteSource.includes("from './account-delete.routes.js'"), '账户主路由必须导入删除账户子路由')
+assert(mainAccountRouteSource.includes('registerAccountDeleteRoutes(accountsRouter)'), '账户主路由必须注册删除账户子路由')
+assert(!mainAccountRouteSource.includes("accountsRouter.delete('/:id'"), '账户主路由不应内联删除账户 HTTP 路由')
+assert(!mainAccountRouteSource.includes('deleteAccountWithRelatedCleanup('), '账户主路由不应直接调用账户删除关联清理')
+assert(deleteAccountRouteSource.includes('deleteAccountWithRelatedCleanup'), '删除账户子路由必须调用账户删除关联清理')
+assert(deleteAccountRouteSource.includes("operationKey: 'accounts.delete'"), '删除账户子路由必须保留账户删除操作日志 key')
 
 const [databaseModule, repositories, usageStatsRepository, usageRecordShards, usageStatsHelpers] = await Promise.all([
   import('../../storage/database.js'),

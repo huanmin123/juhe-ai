@@ -50,6 +50,13 @@ export function enqueueUsageRecord(input: UsageRecordInput): void {
     return
   }
 
+  if (runtimeConfig.processRole === 'db-service' && !isDbServiceLocalUsageRecordWriteAllowedForTest()) {
+    if (!sendUsageRecordFromDbServiceToServer(queuedInput)) {
+      recordUsageRecordDispatchFailure(new Error('DB service 无父进程 IPC'), queuedInput)
+    }
+    return
+  }
+
   enqueueUsageRecordLocal(queuedInput)
 }
 
@@ -198,6 +205,26 @@ function recordUsageRecordDispatchFailure(error: unknown, input: UsageRecordInpu
   }), '使用记录投递后台 worker 失败，已跳过投递')
 }
 
+function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): boolean {
+  if (typeof process.send !== 'function' || process.connected === false) {
+    return false
+  }
+  try {
+    process.send({
+      type: 'background_worker_usage_records',
+      items: [input]
+    }, (error) => {
+      if (error) {
+        recordUsageRecordDispatchFailure(error, input)
+      }
+    })
+    return true
+  } catch (error) {
+    recordUsageRecordDispatchFailure(error, input)
+    return true
+  }
+}
+
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
   const createdAt = input.createdAt ?? nowIso()
   return {
@@ -213,6 +240,16 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
 
 export function pendingUsageRecordCount(): number {
   return pendingUsageRecords.length
+}
+
+export function isUsageRecordInput(value: unknown): value is UsageRecordInput {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return typeof record.traceId === 'string'
+    && typeof record.trafficSource === 'string'
+    && typeof record.success === 'boolean'
 }
 
 export function clearUsageRecordQueueForTest(): void {

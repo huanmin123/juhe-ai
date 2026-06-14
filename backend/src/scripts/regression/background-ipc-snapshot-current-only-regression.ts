@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { BackgroundWorkerRuntimeSnapshot } from '../../modules/background/background-ipc.js'
+import type { BackgroundWorkerProcessRole, BackgroundWorkerRuntimeSnapshot } from '../../modules/background/background-ipc.js'
 
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -20,10 +20,12 @@ class FakeWorkerProcess extends EventEmitter {
   pid: number
   respondToStatus = true
   failSend = false
+  role: BackgroundWorkerProcessRole
 
-  constructor(pid: number) {
+  constructor(pid: number, role: BackgroundWorkerProcessRole = 'worker') {
     super()
     this.pid = pid
+    this.role = role
   }
 
   send(message: WorkerMessage, callback?: (error?: Error | null) => void): boolean {
@@ -37,7 +39,7 @@ class FakeWorkerProcess extends EventEmitter {
         this.emit('message', {
           type: 'background_worker_status_response',
           requestId: (message as StatusRequest).requestId,
-          snapshot: buildWorkerSnapshot(this.pid)
+          snapshot: buildWorkerSnapshot(this.pid, this.role)
         })
       })
     }
@@ -56,7 +58,7 @@ class FakeWorkerProcess extends EventEmitter {
   }
 
   ready(): void {
-    this.emit('message', { type: 'background_worker_ready', pid: this.pid })
+    this.emit('message', { type: 'background_worker_ready', pid: this.pid, workerRole: this.role })
   }
 }
 
@@ -83,8 +85,15 @@ const brokenSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(50)
 assert.equal(brokenSnapshot, undefined, 'worker IPC 发送失败断开时不能返回留存 lastSnapshot')
 brokenWorker.exit()
 
-const saturatedWorker = new FakeWorkerProcess(41004)
-backgroundIpc.attachBackgroundWorkerProcess(saturatedWorker as unknown as ChildProcess)
+const maintenanceWorker = attachReadyWorker(42001, 'maintenance-worker')
+const maintenanceSnapshot = await backgroundIpc.requestMaintenanceWorkerSnapshot(50)
+assert.equal(maintenanceSnapshot?.pid, maintenanceWorker.pid, 'maintenance-worker 正常 IPC 回包应返回当前 snapshot')
+assert.equal(backgroundIpc.getBackgroundWorkerState().maintenanceWorker?.lastSnapshot?.pid, maintenanceWorker.pid, 'maintenance-worker 正常回包可以更新 lastSnapshot')
+maintenanceWorker.exit()
+const missingMaintenanceSnapshot = await backgroundIpc.requestMaintenanceWorkerSnapshot(50)
+assert.equal(missingMaintenanceSnapshot, undefined, 'maintenance-worker 不存在时不能把 lastSnapshot 当作当前 snapshot 返回')
+assert.equal(backgroundIpc.getBackgroundWorkerState().maintenanceWorker?.lastSnapshot?.pid, maintenanceWorker.pid, 'maintenance-worker lastSnapshot 可留存但不能作为当前请求结果')
+
 let acceptedFillCount = 0
 for (let index = 0; index < 6000; index += 1) {
   if (!backgroundIpc.sendRecordMaintenanceJobsToWorker([recordMaintenanceJob(index)])) {
@@ -93,29 +102,28 @@ for (let index = 0; index < 6000; index += 1) {
   acceptedFillCount += 1
 }
 assert(acceptedFillCount > 0, '队列饱和前应至少接受一条维护任务')
-assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, 'regular IPC 队列应填充到当前保护上限')
-const rejectedSnapshotRequestCountBeforeSaturation = backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount
-const queuedSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(10)
-assert.equal(queuedSnapshot, undefined, 'regular IPC 队列饱和时 snapshot 请求不能返回留存 lastSnapshot')
-assert.equal(backgroundIpc.getBackgroundWorkerState().rejectedSnapshotRequestCount, rejectedSnapshotRequestCountBeforeSaturation + 1, '队列饱和应计入 snapshot 请求拒绝指标')
-saturatedWorker.exit()
+assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, 'maintenance-worker IPC 队列应填充到当前保护上限')
+const rejectedMaintenanceCountBeforeSaturation = backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount ?? 0
+const rejectedMaintenanceJob = backgroundIpc.sendRecordMaintenanceJobsToWorker([recordMaintenanceJob(6001)])
+assert.equal(rejectedMaintenanceJob, false, 'maintenance-worker IPC 队列饱和时维护任务应快速拒绝')
+assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, rejectedMaintenanceCountBeforeSaturation + 1, 'maintenance-worker 队列饱和应计入维护任务拒绝指标')
 
 console.log('后台 worker snapshot current-only 回归通过：不可观测时返回 undefined，不复用留存快照')
 
-function attachReadyWorker(pid: number): FakeWorkerProcess {
-  const worker = new FakeWorkerProcess(pid)
-  backgroundIpc.attachBackgroundWorkerProcess(worker as unknown as ChildProcess)
+function attachReadyWorker(pid: number, role: BackgroundWorkerProcessRole = 'worker'): FakeWorkerProcess {
+  const worker = new FakeWorkerProcess(pid, role)
+  backgroundIpc.attachBackgroundWorkerProcess(worker as unknown as ChildProcess, { role })
   worker.ready()
   return worker
 }
 
-function buildWorkerSnapshot(pid: number): BackgroundWorkerRuntimeSnapshot {
+function buildWorkerSnapshot(pid: number, workerRole: BackgroundWorkerProcessRole): BackgroundWorkerRuntimeSnapshot {
   const queue = { queueLength: 0, queueBytes: 0 }
   return {
     pid,
     ready: true,
     processRole: 'worker',
-    workerRole: 'worker',
+    workerRole,
     jobs: [],
     usageRecordQueue: { ...queue },
     operationLogQueue: { ...queue },

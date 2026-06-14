@@ -1,9 +1,13 @@
 import type { Router } from 'express'
 
+import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { AccountTagInUseError, deleteAccountTag, listAccountTags } from '../../storage/repositories.js'
-import { getRequestAccessScope } from '../auth/request-context.js'
+import { AccountTagInUseError, deleteAccountTag, findAccountSummary, listAccountTags, updateAccountTags } from '../../storage/repositories.js'
+import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { accountTagsUpdateSchema } from './account-request.schemas.js'
+import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountTagsRoutes(router: Router): void {
   router.get('/tags', (req, res) => {
@@ -39,4 +43,70 @@ export function registerAccountTagsRoutes(router: Router): void {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '删除账户标签失败'))
     }
   })
+
+  router.patch('/:id/tags', (req, res) => {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const parsed = accountTagsUpdateSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户标签参数无效'))
+      return
+    }
+    const before = findAccountSummary(req.params.id, requestAccess)
+    if (!before) {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    try {
+      const account = runLoggedOperation(() => {
+        const tags = updateAccountTags(req.params.id, parsed.data.tags, requestAccess)
+        if (!tags) {
+          throw new Error('账户不存在')
+        }
+        const account = findAccountSummary(req.params.id, requestAccess)
+        if (!account) {
+          throw new Error('账户不存在')
+        }
+        const ownerSystemAccountId = authorizedLocalOperationOwner(account, requestAccess)
+          ?? resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+        return {
+          result: { ...account, tags },
+          log: {
+            operationScopeSystemAccountId: ownerSystemAccountId,
+            mode: operationMode(requestAccess),
+            module: 'accounts',
+            action: 'update_tags',
+            operationKey: 'accounts.update_tags',
+            resourceType: 'account',
+            resourceId: account.id,
+            resourceName: account.name,
+            summary: `更新账户标签：${account.name}`,
+            changes: [
+              safeChange('tags', '标签', before?.tags, tags)
+            ],
+            viewers: viewer(ownerSystemAccountId, 'resource_owner')
+          }
+        }
+      }, req)
+      res.json(ok(sanitizeAccountResponse(account)))
+    } catch (error) {
+      if (error instanceof Error && error.message === '账户不存在') {
+        res.status(404).json({ message: '账户不存在' })
+        return
+      }
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户标签失败'))
+    }
+  })
+}
+
+function authorizedLocalOperationOwner(account: AccountSummary, access?: RequestAccessScope): string | undefined {
+  return account.accessType === 'authorized' ? effectiveRequestSystemAccountId(access) : undefined
+}
+
+function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
+  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }

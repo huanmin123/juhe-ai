@@ -12,6 +12,8 @@ let restartTimer: NodeJS.Timeout | undefined
 let restartAttempts = 0
 let stopping = false
 let shutdownHooksInstalled = false
+let dbServiceReady = false
+const dbServiceReadyCallbacks = new Set<() => void>()
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -21,8 +23,20 @@ const dbServiceDistPath = resolve(sourceRoot, 'db-service.js')
 const dbServiceRestartBaseDelayMs = 1000
 const dbServiceRestartMaxDelayMs = 30_000
 
-export function startDbServiceSupervisor(): void {
-  if (runtimeConfig.processRole !== 'server' || dbServiceProcess) {
+interface DbServiceSupervisorOptions {
+  onReady?: () => void
+}
+
+export function startDbServiceSupervisor(options: DbServiceSupervisorOptions = {}): void {
+  if (runtimeConfig.processRole !== 'server') {
+    return
+  }
+
+  if (options.onReady) {
+    registerDbServiceReadyCallback(options.onReady)
+  }
+
+  if (dbServiceProcess) {
     return
   }
 
@@ -33,6 +47,7 @@ export function startDbServiceSupervisor(): void {
 
 function startDbServiceProcess(): void {
   const entry = resolveDbServiceEntry()
+  dbServiceReady = false
   const child = fork(entry.modulePath, [], {
     cwd: backendRoot,
     env: {
@@ -48,6 +63,8 @@ function startDbServiceProcess(): void {
   attachDbServiceProcess(child, {
     onReady: () => {
       restartAttempts = 0
+      dbServiceReady = true
+      notifyDbServiceReadyCallbacks()
     }
   })
   pipeDbServiceOutput(child)
@@ -71,6 +88,7 @@ function startDbServiceProcess(): void {
       return
     }
     dbServiceProcess = undefined
+    dbServiceReady = false
     if (!stopping) {
       scheduleDbServiceRestart()
     }
@@ -84,10 +102,35 @@ function startDbServiceProcess(): void {
       return
     }
     dbServiceProcess = undefined
+    dbServiceReady = false
     if (!stopping) {
       scheduleDbServiceRestart()
     }
   })
+}
+
+function registerDbServiceReadyCallback(callback: () => void): void {
+  dbServiceReadyCallbacks.add(callback)
+  if (dbServiceReady) {
+    const timer = setTimeout(() => runDbServiceReadyCallback(callback), 0)
+    timer.unref()
+  }
+}
+
+function notifyDbServiceReadyCallbacks(): void {
+  for (const callback of dbServiceReadyCallbacks) {
+    runDbServiceReadyCallback(callback)
+  }
+}
+
+function runDbServiceReadyCallback(callback: () => void): void {
+  try {
+    callback()
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'db_service_ready_callback_failed'
+    }), 'DB service ready 回调执行失败')
+  }
 }
 
 function resolveDbServiceEntry(): { modulePath: string; execArgv: string[] } {

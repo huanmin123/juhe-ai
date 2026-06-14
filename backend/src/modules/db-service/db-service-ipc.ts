@@ -463,6 +463,16 @@ function handleDbServiceMessage(message: unknown): void {
         void clearServerClientIpPolicyCache()
       }
       break
+    case 'background_worker_usage_records':
+      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
+        void forwardUsageRecordsToWorker(record.items)
+      }
+      break
+    case 'background_worker_audit_logs':
+      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
+        void forwardAuditLogsToWorker(record.items)
+      }
+      break
     case 'background_worker_operation_logs':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
         void forwardOperationLogsToWorker(record.items)
@@ -728,15 +738,31 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     import('../gateway/audit/capture.service.js'),
     import('../../shared/account-concurrency.js')
   ])
-  const [workerSnapshot, metricsWorkerSnapshot, ingestWorkerSnapshot] = await Promise.all([
+  const [
+    workerSnapshot,
+    metricsWorkerSnapshot,
+    ingestWorkerSnapshot,
+    statsWorkerSnapshot,
+    snapshotWorkerSnapshot,
+    probeWorkerSnapshot,
+    maintenanceWorkerSnapshot
+  ] = await Promise.all([
     backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined),
     backgroundIpc.requestMetricsWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestIngestWorkerSnapshot(1000).catch(() => undefined)
+    backgroundIpc.requestIngestWorkerSnapshot(1000).catch(() => undefined),
+    backgroundIpc.requestStatsWorkerSnapshot(1000).catch(() => undefined),
+    backgroundIpc.requestSnapshotWorkerSnapshot(1000).catch(() => undefined),
+    backgroundIpc.requestProbeWorkerSnapshot(1000).catch(() => undefined),
+    backgroundIpc.requestMaintenanceWorkerSnapshot(1000).catch(() => undefined)
   ])
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
   const metricsWorkerState = workerState.metricsWorker
   const ingestWorkerState = workerState.ingestWorker
+  const statsWorkerState = workerState.statsWorker
+  const snapshotWorkerState = workerState.snapshotWorker
+  const probeWorkerState = workerState.probeWorker
+  const maintenanceWorkerState = workerState.maintenanceWorker
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
@@ -766,6 +792,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue },
           cooldownAccountRetestQueue: workerSnapshot.cooldownAccountRetestQueue
             ? { ...workerSnapshot.cooldownAccountRetestQueue }
+            : undefined,
+          accountApiKeyCooldownRetestQueue: workerSnapshot.accountApiKeyCooldownRetestQueue
+            ? { ...workerSnapshot.accountApiKeyCooldownRetestQueue }
             : undefined,
           manualAccountTestQueue: workerSnapshot.manualAccountTestQueue
             ? { ...workerSnapshot.manualAccountTestQueue }
@@ -810,6 +839,89 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           publicApiLogQueue: { ...ingestWorkerSnapshot.publicApiLogQueue },
           auditLogQueue: { ...ingestWorkerSnapshot.auditLogQueue },
           runtimeLogIndexQueue: { ...ingestWorkerSnapshot.runtimeLogIndexQueue }
+        }
+        : undefined
+    },
+    statsWorker: {
+      pid: statsWorkerSnapshot?.pid ?? statsWorkerState?.pid,
+      ready: statsWorkerSnapshot?.ready ?? statsWorkerState?.ready ?? false,
+      pendingSnapshotRequestCount: statsWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: statsWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: statsWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: statsWorkerSnapshot
+        ? {
+          pid: statsWorkerSnapshot.pid,
+          ready: statsWorkerSnapshot.ready,
+          workerRole: statsWorkerSnapshot.workerRole,
+          jobs: statsWorkerSnapshot.jobs.map((job) => ({ ...job }))
+        }
+        : undefined
+    },
+    snapshotWorker: {
+      pid: snapshotWorkerSnapshot?.pid ?? snapshotWorkerState?.pid,
+      ready: snapshotWorkerSnapshot?.ready ?? snapshotWorkerState?.ready ?? false,
+      pendingSnapshotRequestCount: snapshotWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: snapshotWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: snapshotWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: snapshotWorkerSnapshot
+        ? {
+          pid: snapshotWorkerSnapshot.pid,
+          ready: snapshotWorkerSnapshot.ready,
+          workerRole: snapshotWorkerSnapshot.workerRole,
+          jobs: snapshotWorkerSnapshot.jobs.map((job) => ({ ...job }))
+        }
+        : undefined
+    },
+    probeWorker: {
+      pid: probeWorkerSnapshot?.pid ?? probeWorkerState?.pid,
+      ready: probeWorkerSnapshot?.ready ?? probeWorkerState?.ready ?? false,
+      pendingMessageCount: probeWorkerState?.pendingMessageCount,
+      pendingMessageBytes: probeWorkerState?.pendingMessageBytes,
+      pendingQueues: probeWorkerState?.pendingQueues
+        ? backgroundPendingQueuesSnapshot(probeWorkerState.pendingQueues)
+        : undefined,
+      pendingSnapshotRequestCount: probeWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: probeWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: probeWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: probeWorkerSnapshot
+        ? {
+          pid: probeWorkerSnapshot.pid,
+          ready: probeWorkerSnapshot.ready,
+          workerRole: probeWorkerSnapshot.workerRole,
+          jobs: probeWorkerSnapshot.jobs.map((job) => ({ ...job })),
+          cooldownAccountRetestQueue: probeWorkerSnapshot.cooldownAccountRetestQueue
+            ? { ...probeWorkerSnapshot.cooldownAccountRetestQueue }
+            : undefined,
+          accountApiKeyCooldownRetestQueue: probeWorkerSnapshot.accountApiKeyCooldownRetestQueue
+            ? { ...probeWorkerSnapshot.accountApiKeyCooldownRetestQueue }
+            : undefined,
+          accountQualityFailurePrecheckQueue: probeWorkerSnapshot.accountQualityFailurePrecheckQueue
+            ? { ...probeWorkerSnapshot.accountQualityFailurePrecheckQueue }
+            : undefined,
+          manualAccountTestQueue: probeWorkerSnapshot.manualAccountTestQueue
+            ? { ...probeWorkerSnapshot.manualAccountTestQueue }
+            : undefined
+        }
+        : undefined
+    },
+    maintenanceWorker: {
+      pid: maintenanceWorkerSnapshot?.pid ?? maintenanceWorkerState?.pid,
+      ready: maintenanceWorkerSnapshot?.ready ?? maintenanceWorkerState?.ready ?? false,
+      pendingMessageCount: maintenanceWorkerState?.pendingMessageCount,
+      pendingMessageBytes: maintenanceWorkerState?.pendingMessageBytes,
+      pendingQueues: maintenanceWorkerState?.pendingQueues
+        ? backgroundPendingQueuesSnapshot(maintenanceWorkerState.pendingQueues)
+        : undefined,
+      pendingSnapshotRequestCount: maintenanceWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: maintenanceWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: maintenanceWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: maintenanceWorkerSnapshot
+        ? {
+          pid: maintenanceWorkerSnapshot.pid,
+          ready: maintenanceWorkerSnapshot.ready,
+          workerRole: maintenanceWorkerSnapshot.workerRole,
+          jobs: maintenanceWorkerSnapshot.jobs.map((job) => ({ ...job })),
+          recordMaintenanceQueue: { ...maintenanceWorkerSnapshot.recordMaintenanceQueue }
         }
         : undefined
     },
@@ -937,6 +1049,30 @@ async function clearServerClientIpPolicyCache(): Promise<void> {
 }
 
 registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)
+
+async function forwardUsageRecordsToWorker(items: unknown[]): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const usageRecordQueue = await import('../gateway/usage/record-queue.service.js')
+  const usageRecords = items.filter(usageRecordQueue.isUsageRecordInput)
+  if (usageRecords.length > 0 && !backgroundIpc.sendUsageRecordsToWorker(usageRecords)) {
+    logger.warn({
+      event: 'db_service_usage_records_forward_failed',
+      itemCount: usageRecords.length
+    }, 'DB service 转发使用记录到后台 worker 失败')
+  }
+}
+
+async function forwardAuditLogsToWorker(items: unknown[]): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const auditLogQueue = await import('../audit-logs/audit-log-queue.service.js')
+  const auditLogs = items.filter(auditLogQueue.isAuditLogInput)
+  if (auditLogs.length > 0 && !backgroundIpc.sendAuditLogsToWorker(auditLogs)) {
+    logger.warn({
+      event: 'db_service_audit_logs_forward_failed',
+      itemCount: auditLogs.length
+    }, 'DB service 转发审计日志到后台 worker 失败')
+  }
+}
 
 async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
   const backgroundIpc = await import('../background/background-ipc.js')

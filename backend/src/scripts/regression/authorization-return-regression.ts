@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -36,6 +36,8 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
+
+assertAccountAuthorizationReturnRouteBoundary()
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -430,4 +432,29 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
     })
     listeningServer.closeIdleConnections?.()
   })
+}
+
+function assertAccountAuthorizationReturnRouteBoundary(): void {
+  const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  const authorizationReturnRoutesSource = readFileSync(resolve('src/modules/accounts/account-authorization-return.routes.ts'), 'utf8')
+  assert.match(
+    accountsRoutesSource,
+    /registerAccountAuthorizationReturnRoutes\(accountsRouter\)/,
+    '账户主路由必须注册授权归还子路由'
+  )
+  assert.equal(
+    accountsRoutesSource.includes("accountsRouter.post('/:id/return-authorization'"),
+    false,
+    '账户授权归还路由不应继续内联在账户主路由'
+  )
+  assert.match(
+    authorizationReturnRoutesSource,
+    /operationKey:\s*'accounts\.return_authorization'/,
+    '账户授权归还子路由必须保留 operationKey'
+  )
+  assert.match(
+    authorizationReturnRoutesSource,
+    /returnAccountAuthorizationInstanceForGrantee/,
+    '账户授权归还子路由必须调用归还授权实例仓储方法'
+  )
 }

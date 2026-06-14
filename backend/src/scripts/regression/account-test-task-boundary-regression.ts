@@ -8,6 +8,8 @@ const backendSrc = resolve(currentDir, '../..')
 const projectRoot = resolve(backendSrc, '../..')
 
 const accountsRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/accounts.routes.ts'), 'utf8')
+const accountDetailRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-detail.routes.ts'), 'utf8')
+const accountTestDispatchRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-dispatch.routes.ts'), 'utf8')
 const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-session.routes.ts'), 'utf8')
 const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
 const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
@@ -18,21 +20,39 @@ const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'fronte
 const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
 
 assert.equal(
-  accountsRoutesSource.includes('testOpenAIAccount('),
+  accountTestDispatchRoutesSource.includes('testOpenAIAccount('),
   false,
   '账户路由不应直接等待 OpenAI 测试，应只创建后台任务'
 )
 assert(
-  accountsRoutesSource.includes('createAccountTestTask({'),
+  accountTestDispatchRoutesSource.includes('createAccountTestTask({'),
   'POST /accounts/:id/test 应创建账号测试任务'
 )
 assert(
-  accountsRoutesSource.includes('dispatchAccountTestTasks([task.id])'),
+  accountTestDispatchRoutesSource.includes('dispatchAccountTestTasks([task.id])'),
   'POST /accounts/:id/test 应把测试任务投递到后台 worker'
 )
 assert(
-  accountsRoutesSource.includes('res.status(202).json(ok(task))'),
+  accountTestDispatchRoutesSource.includes('res.status(202).json(ok(task))'),
   'POST /accounts/:id/test 应返回 202 和任务对象，而不是同步测试结果'
+)
+assert(
+  accountsRoutesSource.includes('registerAccountTestDispatchRoutes(accountsRouter)'),
+  '账户主路由应注册账号测试调度子路由'
+)
+assert(
+  accountTestDispatchRoutesSource.includes("router.post('/:id/test'")
+    && accountTestDispatchRoutesSource.includes('parseRequestScopeQuery(req.query)')
+    && accountTestDispatchRoutesSource.includes("res.status(403).json({ message: '缺少系统账户上下文' })")
+    && accountTestDispatchRoutesSource.includes('accountTestSchema.safeParse(req.body)')
+    && accountTestDispatchRoutesSource.includes('findAccountForTest(req.params.id, requestAccess)')
+    && accountTestDispatchRoutesSource.includes('isOpenAIProtocolProfile(account)')
+    && accountTestDispatchRoutesSource.includes('accountTestUnavailableMessage(account)')
+    && accountTestDispatchRoutesSource.includes("isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'")
+    && accountTestDispatchRoutesSource.includes('savedAccountDraftTestSnapshot(account, accountSnapshot, requestAccess)')
+    && accountTestDispatchRoutesSource.includes("failAccountTestTask(task.id, '后台 worker 暂不可用，账号测试任务未能投递')")
+    && accountTestDispatchRoutesSource.includes("res.status(503).json({ message: '后台 worker 暂不可用，账号测试任务未能投递' })"),
+  '账号测试调度子路由应保留 scope、权限、协议校验、诊断范围、草稿快照、任务失败和 503 边界'
 )
 assert(
   accountsRoutesSource.includes("accountsRouter.post('/test-draft'"),
@@ -46,12 +66,30 @@ assert(
 
 const taskReadRouteIndex = accountTestStatusRoutesSource.indexOf("router.get('/test-tasks/:taskId'")
 const draftTestRouteIndex = accountsRoutesSource.indexOf("accountsRouter.post('/test-draft'")
-const accountReadRouteIndex = accountsRoutesSource.indexOf("accountsRouter.get('/:id'")
+const accountReadRouteIndex = accountsRoutesSource.indexOf('registerAccountDetailRoutes(accountsRouter)')
+const accountCreateRouteIndex = accountsRoutesSource.indexOf("accountsRouter.post('/',")
+const accountImportRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountImportRoutes(accountsRouter)')
+const accountTrafficMigrationRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTrafficMigrationRoutes(accountsRouter)')
+const accountGroupBindingRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountGroupBindingRoutes(accountsRouter)')
 const accountTestSessionRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestSessionRoutes(accountsRouter)')
 const accountTestStatusRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestStatusRoutes(accountsRouter)')
+const accountTestDispatchRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestDispatchRoutes(accountsRouter)')
 assert(taskReadRouteIndex >= 0, '应提供账号测试任务查询接口')
 assert(draftTestRouteIndex >= 0, '应提供账号草稿测试任务创建接口')
-assert(accountReadRouteIndex >= 0, '应保留账号详情接口')
+assert(accountReadRouteIndex >= 0, '账户主路由应注册账号详情子路由')
+assert(accountCreateRouteIndex >= 0, '应保留账号创建接口')
+assert.equal(
+  accountsRoutesSource.includes("accountsRouter.get('/:id'"),
+  false,
+  '账号详情 GET /:id 不应继续内联在账户主路由文件中'
+)
+assert(
+  accountDetailRoutesSource.includes("router.get('/:id'")
+    && accountDetailRoutesSource.includes('findAccountSummary')
+    && accountDetailRoutesSource.includes('findAccountForTest')
+    && accountDetailRoutesSource.includes('applyServerAccountRuntimeToAccount'),
+  '账号详情子路由应保留可见性、凭据权限和运行态 hydrate 逻辑'
+)
 assert(
   accountTestSessionRouteRegistrationIndex >= 0,
   '账户路由应注册账号测试 session 写入子路由'
@@ -59,6 +97,22 @@ assert(
 assert(
   accountTestStatusRouteRegistrationIndex >= 0,
   '账户路由应注册账号测试状态读取子路由'
+)
+assert(
+  accountTestDispatchRouteRegistrationIndex >= 0,
+  '账户路由应注册账号测试调度子路由'
+)
+assert(
+  accountImportRouteRegistrationIndex >= 0,
+  '账户路由应注册账号导入子路由'
+)
+assert(
+  accountTrafficMigrationRouteRegistrationIndex >= 0,
+  '账户路由应注册账号流量迁移子路由'
+)
+assert(
+  accountGroupBindingRouteRegistrationIndex >= 0,
+  '账户路由应注册账号分组绑定子路由'
 )
 assert(
   accountTestSessionRouteRegistrationIndex < accountReadRouteIndex,
@@ -71,6 +125,26 @@ assert(
 assert(
   draftTestRouteIndex < accountReadRouteIndex,
   'POST /test-draft 必须定义在 GET /:id 之前，避免被参数路由吞掉'
+)
+assert(
+  accountImportRouteRegistrationIndex < accountReadRouteIndex,
+  '账号导入子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
+)
+assert(
+  accountTrafficMigrationRouteRegistrationIndex < accountReadRouteIndex,
+  '账号流量迁移子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
+)
+assert(
+  accountGroupBindingRouteRegistrationIndex < accountReadRouteIndex,
+  '账号分组绑定子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
+)
+assert(
+  accountReadRouteIndex < accountCreateRouteIndex,
+  'GET /:id 详情子路由注册必须位于 POST / 创建路由之前'
+)
+assert(
+  accountCreateRouteIndex < accountTestDispatchRouteRegistrationIndex,
+  'POST /:id/test 账号测试调度子路由注册必须位于 POST / 创建路由之后'
 )
 assert(
   accountTestStatusRoutesSource.includes("router.get('/test-tasks',"),

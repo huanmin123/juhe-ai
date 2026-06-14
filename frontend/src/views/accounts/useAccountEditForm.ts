@@ -1,11 +1,10 @@
 import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import { api, type AccountDraftTestPayload } from '@/api/client'
+import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import { providerDisplayName } from '@/shared/providerDisplay'
 import type {
   AccountSummary,
   AccountTagSummary,
@@ -13,7 +12,6 @@ import type {
   GroupOptionSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
-  ProviderModelPricing,
   SystemAccountPrincipalSummary
 } from '@/types/domain'
 import {
@@ -30,12 +28,15 @@ import {
   loadAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
+import {
+  accountEditAccountTypeTitle,
+  accountEditModalTitle,
+  accountEditProviderName,
+  accountTypeChoicesForProfile
+} from './accountEditFormDisplay'
 import { defaultAccountClientCompatibility, defaultAccountForm } from './accountFormDefaults'
 import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import {
-  accountTypeDescription,
-  accountTypeText,
-  accountTypeTitle as buildAccountTypeTitle,
   asString,
   isAuthorizedAccount,
   parseStrictDatePickerValue
@@ -46,15 +47,22 @@ import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm, type AccountSavePayload } from './accountSavePayload'
+import {
+  accountApiKeysForForm,
+  accountApiKeyWeightsForForm,
+  accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload,
+  accountTagNames,
+  cloneAccountModelMappings,
+  cloneAccountName,
+  normalizeFormTagNames,
+  providerModelsToOptions,
+  sameTagNames,
+  type AccountModelSelectOption
+} from './accountEditFormPayload'
 import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 
 type ReadonlyValue<T> = {
   readonly value: T
-}
-
-interface SelectOption {
-  label: string
-  value: string
 }
 
 interface UseAccountEditFormOptions {
@@ -89,14 +97,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
   const accountResponseInspectionRules = ref<AccountResponseInspectionRuleForm[]>(loadAccountResponseInspectionRules())
-  const providerModelOptions = ref<SelectOption[]>([])
-  const mappingTargetModelOptions = ref<SelectOption[]>([])
+  const providerModelOptions = ref<AccountModelSelectOption[]>([])
+  const mappingTargetModelOptions = ref<AccountModelSelectOption[]>([])
   const providerModelsLoading = ref(false)
   const accountTagOptions = ref<AccountTagSummary[]>([])
   const accountTagOptionsLoading = ref(false)
   const deletingAccountTagId = ref<string>()
-  const providerModelOptionsCache = new Map<string, SelectOption[]>()
-  const mappingTargetModelOptionsCache = new Map<string, SelectOption[]>()
+  const providerModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
+  const mappingTargetModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
   let formOpenRequestToken = 0
 
   const createScopeParams = computed<AccountScopeParams>(() => creatingAccountScopeParams.value ?? options.accountScopeParams.value)
@@ -114,12 +122,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       ?? selectedProvider.value.protocolProfiles.find((profile) => profile.id === selectedProvider.value?.defaultProtocolProfileId)
       ?? selectedProvider.value.protocolProfiles[0]
     : undefined)
-  const accountTypeChoices = computed(() => (selectedProtocolProfile.value?.accountTypes ?? []).map((type) => ({
-    value: type,
-    label: accountTypeTitle(selectedProvider.value?.code ?? form.providerCode, type),
-    description: accountTypeDescription(selectedProvider.value?.code ?? form.providerCode, type),
-    tag: accountTypeText(type)
-  })).sort((left, right) => accountTypeSortWeight(left.value) - accountTypeSortWeight(right.value)))
+  const accountTypeChoices = computed(() => accountTypeChoicesForProfile(
+    selectedProtocolProfile.value,
+    selectedProvider.value?.code ?? form.providerCode,
+    availableProviders.value
+  ))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
@@ -134,15 +141,17 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!systemAccountId) return ''
     return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId)
   })
-  const modalTitle = computed(() => {
-    if (editingAuthorizedAccount.value) return editingModalTitle('编辑授权账户')
-    if (editingId.value) return editingModalTitle('编辑账户')
-    if (cloningSourceId.value) return '克隆账户'
-    if (!form.providerCode) return createModalTitle('添加账户')
-    if (!form.providerProtocolProfileId) return createModalTitle(`添加 ${providerName(form.providerCode)} 账户`)
-    if (!form.type) return createModalTitle(`添加 ${providerName(form.providerCode)} 账户`)
-    return createModalTitle(`添加 ${accountTypeTitle(form.providerCode, form.type)} 账户`)
-  })
+  const modalTitle = computed(() => accountEditModalTitle({
+    cloningSourceId: cloningSourceId.value,
+    editingAuthorizedAccount: editingAuthorizedAccount.value,
+    editingId: editingId.value,
+    editingSystemAccountLabel: editingSystemAccountLabel.value,
+    providerCode: form.providerCode,
+    providerProtocolProfileId: form.providerProtocolProfileId,
+    providers: availableProviders.value,
+    targetSystemAccountLabel: targetSystemAccountLabel.value,
+    type: form.type
+  }))
   const modalConfirmLoading = computed(() => saving.value)
   const modalOkButtonProps = computed(() => ({
     type: 'primary' as const,
@@ -170,34 +179,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function accountTypeTitle(providerCode: string, type: AccountType) {
-    return buildAccountTypeTitle(providerName(providerCode), type)
-  }
-
-  function createModalTitle(baseTitle: string) {
-    const targetLabel = targetSystemAccountLabel.value
-    return targetLabel ? `${baseTitle}（${targetLabel}）` : baseTitle
-  }
-
-  function editingModalTitle(baseTitle: string) {
-    const accountLabel = editingSystemAccountLabel.value
-    return accountLabel ? `${baseTitle}（系统账户：${accountLabel}）` : baseTitle
-  }
-
-  function accountTypeSortWeight(type: AccountType): number {
-    if (type === 'api_key') return 0
-    if (type === 'oauth') return 1
-    return 2
+    return accountEditAccountTypeTitle(providerCode, type, availableProviders.value)
   }
 
   function providerName(providerCode?: string) {
-    return providerDisplayName(providerCode, availableProviders.value)
-  }
-
-  function providerModelsToOptions(models: ProviderModelPricing[]): SelectOption[] {
-    return models.map((item) => ({
-      label: item.visibility === 'mapping_target_only' ? `${item.model}（仅映射）` : item.model,
-      value: item.model
-    }))
+    return accountEditProviderName(providerCode, availableProviders.value)
   }
 
   function defaultGroupForProvider(providerCode: string, providerProtocolProfileId?: string) {
@@ -758,19 +744,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return true
   }
 
-  function cloneAccountName(name: string): string {
-    const trimmed = name.trim()
-    return trimmed ? `${trimmed} - 克隆` : ''
-  }
-
-  function cloneAccountModelMappings(value: AccountSummary['modelMappings']): AccountFormModel['modelMappings'] {
-    return (value ?? []).map((item) => ({ ...item }))
-  }
-
-  function accountTagNames(value: AccountSummary['tags']): string[] {
-    return (value ?? []).map((tag) => tag.name).filter(Boolean)
-  }
-
   async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
     if (accountTagOptionsLoading.value && !force) return
     accountTagOptionsLoading.value = true
@@ -813,28 +786,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
-  function sameTagNames(left: string[], right: AccountSummary['tags']): boolean {
-    return stableTagKey(normalizeFormTagNames(left)) === stableTagKey(accountTagNames(right))
-  }
-
-  function normalizeFormTagNames(value: string[]): string[] {
-    const output: string[] = []
-    const seen = new Set<string>()
-    for (const item of value ?? []) {
-      const name = item.replace(/\s+/g, ' ').trim()
-      if (!name) continue
-      const key = name.toLocaleLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
-      output.push(name)
-    }
-    return output
-  }
-
-  function stableTagKey(value: string[]): string {
-    return normalizeFormTagNames(value).map((item) => item.toLocaleLowerCase()).sort().join('\n')
-  }
-
   function setFormGroup(group: GroupSelection | undefined): void {
     form.groupId = group?.id
     form.group = group
@@ -861,74 +812,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return editingId.value ? editingAccountScopeParams() : createScopeParams.value
   }
 
-  function accountApiKeysForForm(credentials: Record<string, unknown>): string[] {
-    const values = Array.isArray(credentials.api_keys)
-      ? credentials.api_keys
-      : [credentials.api_key]
-    const keys = values.map((value) => asString(value) ?? '').filter(Boolean)
-    return keys.length ? keys : ['']
-  }
-
-  function accountApiKeyWeightsForForm(credentials: Record<string, unknown>): number[] {
-    const keys = accountApiKeysForForm(credentials)
-    const rawWeights = Array.isArray(credentials.api_key_weights) ? credentials.api_key_weights : []
-    return keys.map((_, index) => {
-      const value = Number(rawWeights[index] ?? 1)
-      return Number.isInteger(value) ? Math.min(100, Math.max(1, value)) : 1
-    })
-  }
-
   function accountCreatePayloadWithActivationTest(payload: AccountSavePayload): AccountSavePayload & { status?: 'active'; activationTestTaskId?: string } {
-    const activationTest = options.successfulDraftActivationTest?.value
-    if (!activationTest || !isActivationTestForPayload(activationTest, payload)) {
-      return payload
-    }
-    return {
-      ...payload,
-      status: 'active',
-      activationTestTaskId: activationTest.taskId
-    }
-  }
-
-  function isActivationTestForPayload(activationTest: SuccessfulDraftActivationTest, payload: AccountSavePayload): boolean {
-    return stablePayloadFingerprint(activationTest.account) === stablePayloadFingerprint(accountDraftPayloadFromSavePayload(payload))
-  }
-
-  function accountDraftPayloadFromSavePayload(payload: AccountSavePayload): AccountDraftTestPayload['account'] {
-    return {
-      providerCode: payload.providerCode,
-      providerProtocolProfileId: payload.providerProtocolProfileId,
-      name: payload.name ?? form.name.trim(),
-      type: payload.type,
-      credentials: payload.credentials,
-      concurrencyLimit: payload.concurrencyLimit,
-      priority: payload.priority,
-      clientCompatibility: payload.clientCompatibility,
-      supportedModels: payload.supportedModels,
-      modelMappings: payload.modelMappings,
-      proxyProfileId: payload.proxyProfileId,
-      groupId: payload.groupId ?? '',
-      accountExpiresAt: payload.accountExpiresAt,
-      availabilitySchedule: payload.availabilitySchedule as AccountDraftTestPayload['account']['availabilitySchedule'],
-      notes: payload.notes
-    }
-  }
-
-  function stablePayloadFingerprint(value: unknown): string {
-    return JSON.stringify(stablePayloadValue(value))
-  }
-
-  function stablePayloadValue(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map(stablePayloadValue)
-    if (!value || typeof value !== 'object') return value
-    const output: Record<string, unknown> = {}
-    for (const key of Object.keys(value).sort()) {
-      const item = (value as Record<string, unknown>)[key]
-      if (item !== undefined) {
-        output[key] = stablePayloadValue(item)
-      }
-    }
-    return output
+    return applyActivationTestToCreatePayload(payload, options.successfulDraftActivationTest?.value, form.name.trim())
   }
 
   function clearSuccessfulDraftActivationTest(): void {

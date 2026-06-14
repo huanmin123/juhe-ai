@@ -103,13 +103,22 @@ import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type { GroupSummary, ProviderDefinition } from '@/types/domain'
-import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
 import {
   groupStats
 } from './groupDisplay'
 import GroupEditModal from './GroupEditModal.vue'
 import GroupsList from './GroupsList.vue'
+import {
+  defaultGroupsPageState,
+  groupsActiveFilterCount,
+  groupsListParams,
+  groupsPageSize,
+  groupsProviderOptions,
+  groupsTableColumns,
+  isAllGroupsSystemAccountFilter,
+  type GroupsPageState
+} from './groupPageConfig'
 import { useGroupFormModel } from './groupFormModel'
 import {
   canDeleteGroup,
@@ -118,7 +127,6 @@ import {
   isAuthorizedGroup
 } from './groupRowActions'
 
-const pageSize = 50
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
@@ -127,16 +135,6 @@ const providers = ref<ProviderDefinition[]>([])
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
-type GroupsPageState = {
-  pagination?: { current: number; pageSize: number }
-  systemAccountFilter: string
-  systemAccountFilterSelection?: PrincipalSelection
-}
-const defaultGroupsPageState = (): GroupsPageState => ({
-  pagination: { current: 1, pageSize },
-  systemAccountFilter: allSystemAccountsValue,
-  systemAccountFilterSelection: undefined
-})
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -180,14 +178,14 @@ const {
   resetPagination,
   updateItems: updateGroupItems
 } = useResponsivePagedList<GroupSummary, { forceOptions?: boolean }>({
-  pageSize,
+  pageSize: groupsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 个分组，还有更多`
     : `共 ${formatNumber(total)} 个分组`,
   fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    return groupsApi.listPage(groupListParams(systemAccountId, pageState))
+    return groupsApi.listPage(groupsListParams(systemAccountId, pageState))
   },
   onError: (error) => {
     console.error(error)
@@ -195,25 +193,7 @@ const {
   }
 })
 
-const rawColumns = computed(() => {
-  const baseColumns: Array<Record<string, unknown>> = [
-    { title: '分组名称', dataIndex: 'name', key: 'name', width: 240, fixed: 'left', customHeaderCell: () => ({ class: 'group-name-header-cell' }) },
-    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
-    { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130 }
-  ]
-  if (isManagementView.value) {
-    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
-  }
-  baseColumns.push(
-    { title: '账户数', key: 'accountCount', width: 130 },
-    { title: '当前并发', key: 'concurrency', width: 100 },
-    { title: '用量(日)', key: 'usage', width: 180 },
-    { title: '状态', key: 'status', width: 100 },
-    { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-    { title: '操作', key: 'actions', fixed: 'right' }
-  )
-  return baseColumns
-})
+const rawColumns = computed(() => groupsTableColumns(isManagementView.value))
 const columnStorageKey = computed(() => (isManagementView.value ? 'groups:management' : 'groups:self'))
 const {
   managedColumns,
@@ -229,11 +209,7 @@ const groupScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
-const providerOptions = computed(() => availableProviders.value.map((provider) => ({
-  label: provider.name,
-  value: provider.code,
-  disabled: !provider.enabled
-})))
+const providerOptions = computed(() => groupsProviderOptions(availableProviders.value))
 const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))
 const editingAuthorizedGroup = computed(() => Boolean(editingGroup.value && isAuthorizedGroup(editingGroup.value)))
 const groupModalTitle = computed(() => {
@@ -241,7 +217,7 @@ const groupModalTitle = computed(() => {
   return editingAuthorizedGroup.value ? '编辑授权分组使用配置' : '编辑分组'
 })
 const providerLocked = computed(() => Boolean(editingId.value && groupStats(editingGroup.value).total))
-const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
+const activeFilterCount = computed(() => groupsActiveFilterCount(systemAccountFilter.value))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = groupScopeParams.value?.systemAccountId
@@ -279,14 +255,6 @@ function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' 
   return systemAccountId ? { systemAccountId } : undefined
 }
 
-function groupListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
-  return {
-    systemAccountId,
-    page: pageState.current,
-    pageSize: pageState.pageSize
-  }
-}
-
 async function loadGroupOptions(force = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
   if (!force && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
@@ -313,7 +281,7 @@ function refreshMobileGroups() {
 }
 
 function handleSystemAccountFilterChange() {
-  if (systemAccountFilter.value === allSystemAccountsValue) {
+  if (isAllGroupsSystemAccountFilter(systemAccountFilter.value)) {
     systemAccountFilterSelection.value = undefined
   }
   resetSystemAccountOptionsSearch()
@@ -322,7 +290,7 @@ function handleSystemAccountFilterChange() {
 }
 
 function resetFilters() {
-  systemAccountFilter.value = allSystemAccountsValue
+  systemAccountFilter.value = defaultGroupsPageState().systemAccountFilter
   systemAccountFilterSelection.value = undefined
   resetSystemAccountOptionsSearch()
   resetPagination()

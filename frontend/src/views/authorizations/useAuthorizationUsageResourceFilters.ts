@@ -7,15 +7,7 @@ import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection,
 import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary } from '@/types/domain'
-import type { AuthorizationFilterResourceType } from './authorizationTableColumns'
-
-export type AuthorizationUsageResourceFilters = {
-  resourceOwnerSystemAccountId: string
-  resourceType: AuthorizationFilterResourceType
-  resourceId?: string
-  resourceAccount?: AccountSelection
-  resourceGroup?: GroupSelection
-}
+import type { AuthorizationUsageResourceFilters } from './authorizationUsageFilters'
 
 export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsageResourceFilters) {
   const { isManagementView, scopedSystemAccountId } = useScopedMenuView()

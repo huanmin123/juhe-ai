@@ -8,7 +8,10 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import {
+  GPT_VENDOR_CODE,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 interface MockUpstreamHit {
@@ -52,6 +55,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const mockHits: MockUpstreamHit[] = []
+const forcedFailureAuthorizations = new Set<string>()
 
 let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
@@ -76,7 +80,28 @@ try {
     strategy: 'weighted_round_robin',
     weights: [3, 1]
   })
+  const openAICompatibleGatewayApiKey = createGatewayApiKeyScenario({
+    name: 'OpenAI兼容 Key 池网关轮询',
+    upstreamBaseUrl,
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    apiKeys: ['sk-gateway-openai-compatible-a', 'sk-gateway-openai-compatible-b'],
+    strategy: 'round_robin'
+  })
   const failoverGatewayApiKey = createGatewayApiKeyFailoverScenario(upstreamBaseUrl)
+  const oauthNonIsolationScenario = createGptOAuthNonIsolationScenario(upstreamBaseUrl)
+  const authorizedScenario = createAuthorizedApiKeyScenario(upstreamBaseUrl)
+  const allBadScenario = createGatewayApiKeyAllBadScenario(upstreamBaseUrl)
+  const oauthCandidate = repositories.selectOpenAIAccountForGroup(oauthNonIsolationScenario.groupId, access.systemAccountId)
+  assert.equal(oauthCandidate?.type, 'oauth', 'GPT OAuth 非 Key 隔离场景应优先读到 OAuth 候选账户')
+  assert.equal(oauthCandidate?.apiKeyRuntimeStates, undefined, 'GPT OAuth 候选账户不应挂载 API Key 运行态')
+  assert.equal(apiKeyRotation.isAccountApiKeyPoolIsolationEnabled({
+    providerCode: GPT_VENDOR_CODE,
+    type: 'oauth',
+    credentials: {
+      access_token: 'sk-gateway-oauth-bad',
+      base_url: upstreamBaseUrl
+    }
+  }), false, 'GPT OAuth 不应启用账户内 API Key 池隔离')
   assert.equal(
     repositories.listAccounts(access, { page: 1, pageSize: 20 }).filter((account) => account.name.includes('单账户多 Key 网关')).length,
     2,
@@ -127,6 +152,18 @@ try {
     '权重 1 的 API Key 在 8 次真实网关请求中应命中 2 次'
   )
 
+  await postChatCompletions(backendBaseUrl, openAICompatibleGatewayApiKey, 3)
+  const openAICompatibleAuthorizations = lastAuthorizations(3)
+  assert.deepEqual(
+    openAICompatibleAuthorizations,
+    [
+      'Bearer sk-gateway-openai-compatible-a',
+      'Bearer sk-gateway-openai-compatible-b',
+      'Bearer sk-gateway-openai-compatible-a'
+    ],
+    'OpenAI 兼容供应商的 API Key 账户也应在单个账户内按 Key 轮询'
+  )
+
   const failoverStartHitCount = mockHits.length
   await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 1)
   const firstFailoverAuthorizations = mockHits.slice(failoverStartHitCount).map((hit) => hit.authorization)
@@ -156,7 +193,49 @@ try {
   assert(probeCandidate, '坏 Key 到期后应进入 Key 级后台复测候选')
   assert(apiKeyCooldownRetestService.enqueueAccountApiKeyCooldownRetest(probeCandidate, { maxRecoveryHours: 24 }), 'Key 级后台复测候选应成功入队')
   await waitForApiKeyRuntimeState('sk-gateway-failover-bad', 'active')
-  assert.equal(mockHits.length, 18, '真实 mock 上游应收到 18 次网关请求')
+
+  const authorizedStartHitCount = mockHits.length
+  await postChatCompletions(backendBaseUrl, authorizedScenario.apiKey, 1)
+  const authorizedAuthorizations = mockHits.slice(authorizedStartHitCount).map((hit) => hit.authorization)
+  assert.deepEqual(
+    authorizedAuthorizations,
+    ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-rescue'],
+    '被授权实例命中来源账户坏 Key 后，本次请求应切到被授权人同组后备账户'
+  )
+  await waitForApiKeyRuntimeState('sk-gateway-authorized-bad', 'temporary_unavailable')
+  const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountId('sk-gateway-authorized-bad')
+  assert.equal(authorizedRuntimeTarget, authorizedScenario.sourceAccountId, '授权实例触发的 Key 运行态必须写入来源账户')
+  assert.notEqual(authorizedRuntimeTarget, authorizedScenario.authorizedInstanceAccountId, '授权实例触发的 Key 运行态不能写入被授权实例账户')
+  const authorizedInstanceSummary = repositories.findAccountForTest(authorizedScenario.authorizedInstanceAccountId, authorizedScenario.granteeAccess)
+  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable, 1, '被授权实例列表摘要应能读取来源账户的 Key 运行态')
+
+  const allBadStartHitCount = mockHits.length
+  await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
+  await waitForApiKeyRuntimeState('sk-gateway-allbad-a', 'temporary_unavailable')
+  await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
+  await waitForApiKeyRuntimeState('sk-gateway-allbad-b', 'temporary_unavailable')
+  await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
+  const allBadAuthorizations = mockHits.slice(allBadStartHitCount).map((hit) => hit.authorization)
+  assert.deepEqual(
+    allBadAuthorizations,
+    [
+      'Bearer sk-gateway-allbad-a',
+      'Bearer sk-gateway-allbad-rescue',
+      'Bearer sk-gateway-allbad-b',
+      'Bearer sk-gateway-allbad-rescue',
+      'Bearer sk-gateway-allbad-rescue'
+    ],
+    '账户内全部 Key 被摘除后，后续请求应跳过该账户并直接切到后备账户'
+  )
+  const allBadSourceSummary = repositories.findAccountForTest(allBadScenario.sourceAccountId, access)
+  assert.equal(allBadSourceSummary?.apiKeyRuntime?.allUnavailable, true, '全部 Key 摘除后账户摘要应标记 Key 全部不可用')
+  assert.equal(allBadSourceSummary?.effectiveAvailability?.status, 'api_key_pool_unavailable', '全部 Key 摘除后账户有效可用性应显示 Key 池不可用')
+  const allBadTemporaryStatusIds = repositories.listAccountsPage(access, { status: 'temporary_unavailable', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(allBadTemporaryStatusIds.includes(allBadScenario.sourceAccountId), '全部 Key 摘除后账户应归入临时不可调用状态筛选')
+  const allBadActiveStatusIds = repositories.listAccountsPage(access, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!allBadActiveStatusIds.includes(allBadScenario.sourceAccountId), '全部 Key 摘除后账户不应归入正常状态筛选')
+  const allBadTemporaryOptionIds = repositories.listAccountOptions(access, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
+  assert(allBadTemporaryOptionIds.includes(allBadScenario.sourceAccountId), '全部 Key 摘除后账户 options 应归入临时不可调用状态筛选')
 
   console.log(JSON.stringify({
     message: '单账户多 API Key 网关 mock AI 回归通过',
@@ -164,11 +243,18 @@ try {
     mockUpstreamBaseUrl: upstreamBaseUrl,
     roundRobin: roundRobinAuthorizations,
     weighted: weightedAuthorizations,
+    openAICompatible: openAICompatibleAuthorizations,
     failover: {
       first: firstFailoverAuthorizations,
       afterKeyIsolation: recoveredAccountAuthorizations,
       backgroundRetest: 'active'
-    }
+    },
+    oauthNonIsolation: 'excluded_from_api_key_pool',
+    authorizedSourceRuntime: {
+      authorizations: authorizedAuthorizations,
+      runtimeStateAccountId: authorizedRuntimeTarget
+    },
+    allBad: allBadAuthorizations
   }, null, 2))
 } finally {
   await stopBackendServer(backendProcess)
@@ -183,17 +269,19 @@ try {
 function createGatewayApiKeyScenario(input: {
   apiKeys: string[]
   name: string
+  providerCode?: string
   strategy: ApiKeyStrategy
   upstreamBaseUrl: string
   weights?: number[]
 }): string {
+  const providerCode = input.providerCode ?? GPT_VENDOR_CODE
   const group = repositories.createGroup({
     name: `${input.name} 分组`,
-    providerCode: GPT_VENDOR_CODE,
+    providerCode,
     enabled: true
   }, access)
   const account = repositories.createAccount({
-    providerCode: GPT_VENDOR_CODE,
+    providerCode,
     name: `${input.name} 账户`,
     type: 'api_key',
     credentials: {
@@ -215,6 +303,131 @@ function createGatewayApiKeyScenario(input: {
   }, access)
   assert(apiKey.key, `${input.name} 未返回网关 API Key 明文`)
   return apiKey.key
+}
+
+function createGptOAuthNonIsolationScenario(upstreamBaseUrl: string): { groupId: string } {
+  const group = repositories.createGroup({
+    name: 'GPT OAuth 非 Key 隔离分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A GPT OAuth 非 Key 隔离账户',
+    type: 'oauth',
+    credentials: {
+      access_token: 'sk-gateway-oauth-bad',
+      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B GPT OAuth 非 Key 隔离救援账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-oauth-rescue',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 10
+  }, access)
+  return { groupId: group.id }
+}
+
+function createAuthorizedApiKeyScenario(upstreamBaseUrl: string): {
+  apiKey: string
+  authorizedInstanceAccountId: string
+  granteeAccess: { systemAccountId: string; role: 'user' }
+  sourceAccountId: string
+} {
+  const owner = repositories.createSystemAccount({
+    username: `api_key_authorized_owner_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+    displayName: 'Key隔离授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const grantee = repositories.createSystemAccount({
+    username: `api_key_authorized_grantee_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+    displayName: 'Key隔离被授权人',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const ownerGroup = repositories.createGroup({
+    name: '授权 Key 隔离来源分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, ownerAccess)
+  const granteeGroup = repositories.createGroup({
+    name: '授权 Key 隔离被授权分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, granteeAccess)
+  const sourceAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A 授权 Key 隔离来源账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-authorized-bad',
+      api_keys: ['sk-gateway-authorized-bad', 'sk-gateway-authorized-good'],
+      api_key_strategy: 'round_robin',
+      base_url: upstreamBaseUrl
+    },
+    groupId: ownerGroup.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: sourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: 'Key 隔离授权实例来源账户回归'
+  }, ownerAccess)
+  const authorizedInstance = databaseModule.getBusinessDatabase()
+    .prepare('SELECT id FROM accounts WHERE authorization_instance_source_account_id = ? AND system_account_id = ? AND deleted_at IS NULL LIMIT 1')
+    .get(sourceAccount.id, grantee.id) as unknown as { id?: string } | undefined
+  assert(authorizedInstance?.id, '授权 Key 隔离场景需要被授权实例账户')
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B 授权 Key 隔离被授权人救援账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-authorized-rescue',
+      base_url: upstreamBaseUrl
+    },
+    groupId: granteeGroup.id,
+    status: 'active',
+    schedulable: true,
+    priority: 10
+  }, granteeAccess)
+  forcedFailureAuthorizations.add('Bearer sk-gateway-authorized-bad')
+  const apiKey = repositories.createApiKeyRecord({
+    name: '授权 Key 隔离网关 Key',
+    groupBindings: [{ groupId: granteeGroup.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, granteeAccess)
+  assert(apiKey.key, '授权 Key 隔离场景未返回网关 API Key 明文')
+  return {
+    apiKey: apiKey.key,
+    authorizedInstanceAccountId: authorizedInstance.id,
+    granteeAccess,
+    sourceAccountId: sourceAccount.id
+  }
 }
 
 function createGatewayApiKeyFailoverScenario(upstreamBaseUrl: string): string {
@@ -260,6 +473,51 @@ function createGatewayApiKeyFailoverScenario(upstreamBaseUrl: string): string {
   return apiKey.key
 }
 
+function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: string; sourceAccountId: string } {
+  const group = repositories.createGroup({
+    name: '全部 Key 摘除切号分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  const sourceAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A 全部 Key 摘除来源账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-allbad-a',
+      api_keys: ['sk-gateway-allbad-a', 'sk-gateway-allbad-b'],
+      api_key_strategy: 'round_robin',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B 全部 Key 摘除救援账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-allbad-rescue',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 10
+  }, access)
+  forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-a')
+  forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-b')
+  const apiKey = repositories.createApiKeyRecord({
+    name: '全部 Key 摘除切号网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '全部 Key 摘除切号场景未返回网关 API Key 明文')
+  return { apiKey: apiKey.key, sourceAccountId: sourceAccount.id }
+}
+
 async function postChatCompletions(backendBaseUrl: string, apiKey: string, count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
     const response = await fetch(`${backendBaseUrl}/v1/chat/completions`, {
@@ -297,14 +555,22 @@ function createMockOpenAIUpstream(): http.Server {
         authorization: String(req.headers.authorization ?? ''),
         path: requestPath
       })
-      if (req.headers.authorization === 'Bearer sk-gateway-failover-bad' && !failoverBadKeyRecovered) {
-        sendJsonError(res, 503, 'mock failover key unavailable')
+      const authorization = String(req.headers.authorization ?? '')
+      if (shouldFailAuthorization(authorization)) {
+        sendJsonError(res, 503, 'mock upstream key unavailable')
         return
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify(successPayloadForPath(requestPath)))
     })
   })
+}
+
+function shouldFailAuthorization(authorization: string): boolean {
+  if (authorization === 'Bearer sk-gateway-failover-bad') {
+    return !failoverBadKeyRecovered
+  }
+  return forcedFailureAuthorizations.has(authorization)
 }
 
 function successPayloadForPath(requestPath: string): Record<string, unknown> {
@@ -366,6 +632,14 @@ function makeApiKeyRuntimeStateDueForProbe(key: string): void {
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE account_api_key_runtime_states SET next_probe_at = ?, cooldown_until = ?, updated_at = ? WHERE key_fingerprint = ?')
     .run(dueAt, dueAt, dueAt, fingerprint)
+}
+
+function apiKeyRuntimeStateTargetAccountId(key: string): string | undefined {
+  const fingerprint = apiKeyRotation.fingerprintAccountApiKey(key)
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT account_id FROM account_api_key_runtime_states WHERE key_fingerprint = ? LIMIT 1')
+    .get(fingerprint) as unknown as { account_id?: string } | undefined
+  return row?.account_id
 }
 
 function sendJsonError(res: http.ServerResponse, statusCode: number, message: string): void {

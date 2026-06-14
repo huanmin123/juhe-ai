@@ -32,6 +32,9 @@ const publicApiPrefix = '/__aipublic__'
 const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
+const backgroundWorkerStartupFallbackMs = 15_000
+let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
+let backgroundWorkerSupervisorStarted = false
 
 type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
 
@@ -85,8 +88,27 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
 setRuntimeLogLineSink((line, options) => sendRuntimeLogLineToWorker(line, options))
-startDbServiceSupervisor()
-startBackgroundWorkerSupervisor()
+startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
+backgroundWorkerStartupFallbackTimer = setTimeout(() => {
+  logger.warn({
+    event: 'background_worker_start_before_db_service_ready',
+    timeoutMs: backgroundWorkerStartupFallbackMs
+  }, 'DB service ready 等待超时，后台 worker 将按错峰兜底启动')
+  startBackgroundWorkerSupervisorAfterDbServiceReady()
+}, backgroundWorkerStartupFallbackMs)
+backgroundWorkerStartupFallbackTimer.unref()
+
+function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
+  if (backgroundWorkerSupervisorStarted) {
+    return
+  }
+  backgroundWorkerSupervisorStarted = true
+  if (backgroundWorkerStartupFallbackTimer) {
+    clearTimeout(backgroundWorkerStartupFallbackTimer)
+    backgroundWorkerStartupFallbackTimer = undefined
+  }
+  startBackgroundWorkerSupervisor()
+}
 
 if (runtimeConfig.httpSecurity.trustProxy !== false) {
   app.set('trust proxy', runtimeConfig.httpSecurity.trustProxy)

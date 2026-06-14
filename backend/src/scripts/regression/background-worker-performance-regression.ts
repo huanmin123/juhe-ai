@@ -218,14 +218,14 @@ function startEventLoopGapMonitor(): { stop: () => { maxGapMs: number; ticks: nu
 }
 
 function assertSourceGuards(): void {
-  const usageStatsSource = readFileSync(resolve('src/storage/usage-stats.repository.ts'), 'utf8')
+  const rangeWindowSource = readFileSync(resolve('src/storage/usage-range-windows.repository.ts'), 'utf8')
   assert.match(
-    usageStatsSource,
+    rangeWindowSource,
     /DELETE FROM usage_scope_range_windows WHERE end_date = \? AND start_date = \?/,
     'usage scope 范围窗口发布必须按 start_date/end_date 分片删除'
   )
   assert.match(
-    usageStatsSource,
+    rangeWindowSource,
     /WHERE end_date = \? AND start_date = \?/,
     'usage scope 范围窗口发布必须按 start_date/end_date 分片插入'
   )

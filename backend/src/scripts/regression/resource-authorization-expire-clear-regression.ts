@@ -273,9 +273,50 @@ try {
   assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
     fallbackEnabled: true
   }, granteeAccess), /授权方原账户已关闭调度/, '所有者停调后不应允许被授权用户开启调度标记')
+  const ownerDisabledStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'disabled', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(ownerDisabledStatusIds.includes(ownerPausedAccount.id), '自有账户关闭调度应归入停用状态筛选')
+  const ownerActiveAfterPausedIds = repositories.listAccountsPage(ownerAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!ownerActiveAfterPausedIds.includes(ownerPausedAccount.id), '自有账户关闭调度不应归入正常状态筛选')
+  const ownerDisabledOptionIds = repositories.listAccountOptions(ownerAccess, { status: 'disabled', limit: 50 }).map((item) => item.id)
+  assert(ownerDisabledOptionIds.includes(ownerPausedAccount.id), '自有账户关闭调度 options 应归入停用状态筛选')
+  const sourceUnschedulableDisabledIds = repositories.listAccountsPage(granteeAccess, { status: 'disabled', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(sourceUnschedulableDisabledIds.includes(ownerPausedAuthorizedInstance.id), '来源停调的授权账户应归入停用状态筛选')
+  const sourceUnschedulableActiveIds = repositories.listAccountsPage(granteeAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!sourceUnschedulableActiveIds.includes(ownerPausedAuthorizedInstance.id), '来源停调的授权账户不应归入正常状态筛选')
+  const sourceUnschedulableDisabledOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'disabled', limit: 50 }).map((item) => item.id)
+  assert(sourceUnschedulableDisabledOptionIds.includes(ownerPausedAuthorizedInstance.id), '来源停调的授权账户 options 应归入停用状态筛选')
   const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAuthorizedInstance.id, granteeAccess)
   assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
   assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), '授权方原账户已关闭调度，当前账户不能调用', '测试接口应因所有者停调拦截被授权账户')
+
+  const ownerCooldownAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '授权所有者冷却账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-resource-authorization-owner-cooldown', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
+    groupId: ownerAccountGroup.id
+  }, ownerAccess)
+  const ownerCooldownUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ?, updated_at = ? WHERE id = ?')
+    .run(ownerCooldownUntil, ownerCooldownUntil, ownerCooldownAccount.id)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: ownerCooldownAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeQuotaGroup.id,
+    expiresAt: validAuthorizationExpiresAt
+  }, ownerAccess)
+  const ownerCooldownAuthorizedInstance = authorizedInstanceForSource(ownerCooldownAccount.id, granteeAccess)
+  repositories.setAccountGroup(ownerCooldownAuthorizedInstance.id, granteeQuotaGroup.id, granteeAccess)
+  const ownerTemporaryStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'temporary_unavailable', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(ownerTemporaryStatusIds.includes(ownerCooldownAccount.id), '自有账户冷却中应归入临时不可调用状态筛选')
+  const sourceCooldownTemporaryIds = repositories.listAccountsPage(granteeAccess, { status: 'temporary_unavailable', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(sourceCooldownTemporaryIds.includes(ownerCooldownAuthorizedInstance.id), '来源冷却的授权账户应归入临时不可调用状态筛选')
+  const sourceCooldownTemporaryOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
+  assert(sourceCooldownTemporaryOptionIds.includes(ownerCooldownAuthorizedInstance.id), '来源冷却的授权账户 options 应归入临时不可调用状态筛选')
 
   const ownerScheduleInactiveAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -300,6 +341,18 @@ try {
   assert.equal(ownerScheduleInactiveAuthorizedAccount?.schedulable, false, '所有者时段外应阻断被授权实例实际调度')
   assert.equal(ownerScheduleInactiveAuthorizedAccount?.effectiveAvailability.status, 'source_schedule_inactive', '所有者时段外时授权实例实际状态应标记来源时段外')
   assert.equal(ownerScheduleInactiveAuthorizedAccount?.authorizationInstanceSourceAccountScheduleActive, false, '授权实例列表应返回来源账户计划当前不可用提示字段')
+  const ownerScheduleTemporaryStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'temporary_unavailable', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(ownerScheduleTemporaryStatusIds.includes(ownerScheduleInactiveAccount.id), '自有账户时段外应归入临时不可调用状态筛选')
+  const ownerScheduleActiveStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!ownerScheduleActiveStatusIds.includes(ownerScheduleInactiveAccount.id), '自有账户时段外不应归入正常状态筛选')
+  const ownerScheduleTemporaryOptionIds = repositories.listAccountOptions(ownerAccess, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
+  assert(ownerScheduleTemporaryOptionIds.includes(ownerScheduleInactiveAccount.id), '自有账户时段外 options 应归入临时不可调用状态筛选')
+  const sourceScheduleTemporaryStatusIds = repositories.listAccountsPage(granteeAccess, { status: 'temporary_unavailable', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(sourceScheduleTemporaryStatusIds.includes(ownerScheduleInactiveAuthorizedInstance.id), '来源时段外的授权账户应归入临时不可调用状态筛选')
+  const sourceScheduleActiveStatusIds = repositories.listAccountsPage(granteeAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!sourceScheduleActiveStatusIds.includes(ownerScheduleInactiveAuthorizedInstance.id), '来源时段外的授权账户不应归入正常状态筛选')
+  const sourceScheduleTemporaryOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
+  assert(sourceScheduleTemporaryOptionIds.includes(ownerScheduleInactiveAuthorizedInstance.id), '来源时段外的授权账户 options 应归入临时不可调用状态筛选')
   assert.equal(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id), false, '所有者时段外后授权实例不应进入网关候选')
   assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerScheduleInactiveAuthorizedInstance.id, {
     fallbackEnabled: true
@@ -331,6 +384,12 @@ try {
   assert.equal(ownerDisabledAuthorizedAccount?.effectiveAvailability.status, 'source_disabled', '所有者停用时授权实例实际状态应标记为来源停用')
   assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'disabled', '授权实例列表应返回来源账户停用状态供页面提示')
   assert.equal(ownerDisabledAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '来源账户停用时应返回来源调度不可用提示字段')
+  const sourceDisabledStatusIds = repositories.listAccountsPage(granteeAccess, { status: 'disabled', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(sourceDisabledStatusIds.includes(ownerDisabledAuthorizedInstance.id), '来源停用的授权账户应归入停用状态筛选')
+  const sourceDisabledActiveIds = repositories.listAccountsPage(granteeAccess, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
+  assert(!sourceDisabledActiveIds.includes(ownerDisabledAuthorizedInstance.id), '来源停用的授权账户不应归入正常状态筛选')
+  const sourceDisabledOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'disabled', limit: 50 }).map((item) => item.id)
+  assert(sourceDisabledOptionIds.includes(ownerDisabledAuthorizedInstance.id), '来源停用的授权账户 options 应归入停用状态筛选')
 
   const teamQuotaAccount = repositories.createAccount({
     providerCode: 'gpt',

@@ -31,7 +31,8 @@ const [
   { probeCodexSwitchCandidateAccount },
   { readGatewaySettings },
   { flushGatewayAccountSideEffects },
-  { flushAllUsageRecordQueue },
+  { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
+  auditLogQueue,
   databaseModule,
   repositories
 ] = await Promise.all([
@@ -40,6 +41,7 @@ const [
   import('../../modules/gateway/policy/account-error-policy.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
@@ -48,6 +50,8 @@ let upstream: http.Server | undefined
 const originalAbortSignalTimeout = AbortSignal.timeout
 
 try {
+  setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   upstream = createMockAIUpstream()
   await listen(upstream)
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}`
@@ -113,6 +117,9 @@ try {
   console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号和本地超时三档递进')
 } finally {
   AbortSignal.timeout = originalAbortSignalTimeout
+  auditLogQueue.flushAllAuditLogQueue()
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+  setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(upstream)
   try {
     databaseModule.closeStorageDatabases()

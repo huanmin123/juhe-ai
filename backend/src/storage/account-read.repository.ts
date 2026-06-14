@@ -1,6 +1,7 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
+import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
 import { loadModelMappingsByAccountIds } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
@@ -37,18 +38,29 @@ function authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota = 
       OR account_rows.authorization_status <> 'active'
       OR (account_rows.authorization_expires_at IS NOT NULL AND account_rows.authorization_expires_at <= ${currentIsoSql})
     THEN 'disabled'
+    ${quotaExpression ? `WHEN ${quotaExpression.sql} THEN 'rate_limited'` : ''}
     WHEN account_rows.source_status IS NULL THEN 'disabled'
     WHEN account_rows.source_last_error_code = 'account_expired'
       OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
     WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
-    WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
     WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
+    WHEN account_schedule_allowed(account_rows.source_availability_schedule_json) = 0 THEN 'temporary_unavailable'
     WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql} THEN 'disabled'
     WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
-    WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    ${quotaExpression ? `WHEN ${quotaExpression.sql} THEN 'rate_limited'` : ''}
+    WHEN account_schedule_allowed(account_rows.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN account_rows.schedulable <> 1 THEN 'disabled'
+    WHEN ${accountApiKeyPoolAllUnavailableSql({
+      accountIdSql: `CASE
+        WHEN account_rows.access_type = 'authorized' AND account_rows.authorization_instance_source_account_id IS NOT NULL
+        THEN account_rows.authorization_instance_source_account_id
+        ELSE account_rows.id
+      END`,
+      providerCodeSql: 'COALESCE(account_rows.source_provider_code, account_rows.provider_code)',
+      typeSql: 'COALESCE(account_rows.source_type, account_rows.type)'
+    })} THEN 'temporary_unavailable'
     ELSE account_rows.status
   END`,
     params: quotaExpression?.params ?? []
@@ -60,10 +72,28 @@ function accountEffectiveStatusFilterExpression(includeAuthorizationQuota = fals
   return {
     sql: `CASE
     WHEN account_rows.access_type = 'authorized' THEN ${authorizedExpression.sql}
-    ELSE account_rows.status
+    ELSE ${ownerAccountEffectiveStatusExpression()}
   END`,
     params: authorizedExpression.params
   }
+}
+
+function ownerAccountEffectiveStatusExpression(): string {
+  return `CASE
+    WHEN account_rows.last_error_code = 'account_expired'
+      OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql})
+    THEN 'disabled'
+    WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+    WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
+    WHEN account_schedule_allowed(account_rows.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN account_rows.schedulable <> 1 THEN 'disabled'
+    WHEN ${accountApiKeyPoolAllUnavailableSql({
+      accountIdSql: 'account_rows.id',
+      providerCodeSql: 'account_rows.provider_code',
+      typeSql: 'account_rows.type'
+    })} THEN 'temporary_unavailable'
+    ELSE account_rows.status
+  END`
 }
 
 function authorizedBindingAvailableExpression(): string {
@@ -181,6 +211,8 @@ function accountEffectiveSchedulableExpression(includeAuthorizationQuota = false
     WHEN account_rows.status = 'active'
       AND account_rows.schedulable = 1
       AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ${currentIsoSql})
+      AND (account_rows.account_expires_at IS NULL OR account_rows.account_expires_at > ${currentIsoSql})
+      AND (account_rows.last_error_code IS NULL OR account_rows.last_error_code <> 'account_expired')
     THEN 1
     ELSE 0
   END`,
@@ -246,6 +278,9 @@ function queryAccountRowsForAccess(
   }
   if (accountListNeedsQuotaDatabase(options)) {
     ensureRequestQuotaDatabaseAttached(database)
+  }
+  if (accountListNeedsDerivedStatusFunctions(options)) {
+    ensureAccountDerivedStatusSqlFunctions(database)
   }
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
@@ -340,6 +375,12 @@ function accountListNeedsQuotaDatabase(options: Pick<NormalizedAccountListOption
   return statuses.includes('active')
     || statuses.includes('rate_limited')
     || options.schedulable === 'enabled'
+    || options.schedulable === 'disabled'
+}
+
+function accountListNeedsDerivedStatusFunctions(options: Pick<NormalizedAccountListOptions, 'status' | 'schedulable'>): boolean {
+  const statuses = accountStatusFilterValues(options.status)
+  return statuses.length > 0
     || options.schedulable === 'disabled'
 }
 

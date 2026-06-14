@@ -91,6 +91,10 @@ interface SystemMetricsResponse {
   workerSnapshotAvailable: boolean
   metricsWorkerSnapshotAvailable: boolean
   ingestWorkerSnapshotAvailable: boolean
+  statsWorkerSnapshotAvailable: boolean
+  snapshotWorkerSnapshotAvailable: boolean
+  probeWorkerSnapshotAvailable: boolean
+  maintenanceWorkerSnapshotAvailable: boolean
   backgroundJobsAvailable: boolean
   backgroundJobs: unknown
   processEventLoopLatestStatus: Array<{
@@ -184,11 +188,15 @@ try {
   assert.equal(systemMetrics.workerSnapshotAvailable, false, '系统指标应标记 worker snapshot 不可用')
   assert.equal(systemMetrics.metricsWorkerSnapshotAvailable, false, '系统指标应标记 metrics-worker snapshot 不可用')
   assert.equal(systemMetrics.ingestWorkerSnapshotAvailable, false, '系统指标应标记 ingest-worker snapshot 不可用')
+  assert.equal(systemMetrics.statsWorkerSnapshotAvailable, false, '系统指标应标记 stats-worker snapshot 不可用')
+  assert.equal(systemMetrics.snapshotWorkerSnapshotAvailable, false, '系统指标应标记 snapshot-worker snapshot 不可用')
+  assert.equal(systemMetrics.probeWorkerSnapshotAvailable, false, '系统指标应标记 probe-worker snapshot 不可用')
+  assert.equal(systemMetrics.maintenanceWorkerSnapshotAvailable, false, '系统指标应标记 maintenance-worker snapshot 不可用')
   assert.equal(systemMetrics.backgroundJobsAvailable, false, '后台任务不可用时应有显式标记')
   assert.equal(systemMetrics.backgroundJobs, null, '后台任务不可用时不能伪装成空数组')
   assert.deepEqual(
     systemMetrics.processEventLoopLatestStatus.map((item) => item.processRole),
-    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'],
+    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'],
     '系统指标应固定返回所有进程角色的采样可用性'
   )
   for (const item of systemMetrics.processEventLoopLatestStatus) {
@@ -199,7 +207,7 @@ try {
   }
   assert.deepEqual(
     systemMetrics.processEventLoopPeakStatus.map((item) => item.processRole),
-    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'],
+    ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'],
     '系统指标应固定返回所有进程角色的 24 小时峰值可用性'
   )
   for (const item of systemMetrics.processEventLoopPeakStatus) {

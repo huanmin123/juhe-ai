@@ -385,7 +385,7 @@ function processEventLoopTooltip(params: unknown) {
 
 function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
   const roles = new Set(trend.map((item) => item.processRole))
-  return (['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'] as const).filter((role) => roles.has(role))
+  return (['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'] as const).filter((role) => roles.has(role))
 }
 
 function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopTrend']) {
@@ -406,6 +406,10 @@ export function processRoleLabel(processRole: string) {
   if (processRole === 'worker') return '后台 worker'
   if (processRole === 'metrics-worker') return '监控 worker'
   if (processRole === 'ingest-worker') return '写入 worker'
+  if (processRole === 'stats-worker') return '统计 worker'
+  if (processRole === 'snapshot-worker') return '快照 worker'
+  if (processRole === 'probe-worker') return '探测 worker'
+  if (processRole === 'maintenance-worker') return '维护 worker'
   if (processRole === 'temporary-maintenance-worker') return '临时维护 worker'
   if (processRole === 'db-service') return 'DB service'
   return processRole

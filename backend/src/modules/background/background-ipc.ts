@@ -3,154 +3,61 @@ import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
-import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
-import { auditWorkerMessageMaxBytes, estimateAuditLogBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
+import { auditWorkerMessageMaxBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
+import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
+import {
+  clonePendingQueueRuntime,
+  emptyIpcQueuesRuntime,
+  ipcQueueKeyForMessage,
+  mergePendingQueuesRuntime,
+  type IpcQueueKey
+} from './background-ipc-queue-runtime.js'
+import type {
+  BackgroundWorkerIngestDrainStatus,
+  BackgroundWorkerIpcQueuesRuntime,
+  BackgroundWorkerMessage,
+  BackgroundWorkerProcessRole,
+  BackgroundWorkerRuntimeSnapshot,
+  BackgroundWorkerState,
+  PendingIngestStatusRequest,
+  PendingProcessEventLoopRequest,
+  PendingRequest
+} from './background-ipc.types.js'
+import { failIpcPendingRequests, finishIpcPendingRequest, timeoutIpcPendingRequest } from './background-ipc-pending-requests.js'
+import { buildBackgroundWorkerStateSnapshot } from './background-ipc-state-snapshot.js'
+import {
+  roleForBackgroundWorkerChild,
+  terminateBrokenWorkerIpc,
+  workerPidFromBrokenChild,
+  workerPidFromReadyRecord,
+  writeParentIpcBrokenLog
+} from './background-ipc-worker-runtime.js'
+import {
+  isSnapshotRoleWorker,
+  nonMetricsProcessEventLoopWorkerRoles,
+  workerMessageTargetRole,
+  type BackgroundWorkerQueueTargetRole,
+  type BackgroundWorkerSnapshotRole
+} from './background-ipc-worker-roles.js'
 import { HeadIndexedQueue } from './ipc-head-queue.js'
 
-export type BackgroundWorkerProcessRole = 'worker' | 'metrics-worker' | 'ingest-worker'
-
-export interface BackgroundWorkerQueueRuntime {
-  queueLength: number
-  queueBytes?: number
-  flushLastSuccessAt?: string
-  flushLastError?: string
-  droppedCount?: number
-  droppedSuccessCount?: number
-  droppedFailureCount?: number
-  droppedOverflowCount?: number
-  droppedOversizeCount?: number
-  retainedOverflowWarningCount?: number
-  flushFailureCount?: number
-  successHotRetentionHours?: number
-  successRetentionDays?: number
-  failureRetentionDays?: number
-  errorGroupRetentionDays?: number
-}
-
-export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorkerQueueRuntime {
-  retentionDays: number
-}
-
-export interface BackgroundWorkerRetryQueueRuntime {
-  name: string
-  pendingCount: number
-  runningCount: number
-  nextRunAt?: string
-}
-
-export interface BackgroundWorkerIpcQueueRuntime extends BackgroundWorkerQueueRuntime {
-  rejectedCount?: number
-}
-
-export interface BackgroundWorkerIpcQueuesRuntime {
-  usageRecords: BackgroundWorkerIpcQueueRuntime
-  auditLogs: BackgroundWorkerIpcQueueRuntime
-  operationLogs: BackgroundWorkerIpcQueueRuntime
-  publicApiLogs: BackgroundWorkerIpcQueueRuntime
-  recordMaintenance: BackgroundWorkerIpcQueueRuntime
-  runtimeLogLines: BackgroundWorkerIpcQueueRuntime
-  statusRequests: BackgroundWorkerIpcQueueRuntime
-  processEventLoopRequests: BackgroundWorkerIpcQueueRuntime
-  processEventLoopResponses: BackgroundWorkerIpcQueueRuntime
-  gatewayRuntimeCacheInvalidations: BackgroundWorkerIpcQueueRuntime
-  other: BackgroundWorkerIpcQueueRuntime
-}
-
-export interface BackgroundWorkerRuntimeSnapshot {
-  pid: number
-  ready: boolean
-  processRole: 'worker'
-  workerRole: BackgroundWorkerProcessRole
-  jobs: WorkerScheduledJobRuntimeSnapshot[]
-  usageRecordQueue: BackgroundWorkerQueueRuntime
-  operationLogQueue: BackgroundWorkerQueueRuntime
-  publicApiLogQueue: BackgroundWorkerQueueRuntime
-  recordMaintenanceQueue: BackgroundWorkerQueueRuntime
-  auditLogQueue: BackgroundWorkerQueueRuntime
-  runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
-  cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
-  accountQualityFailurePrecheckQueue?: BackgroundWorkerRetryQueueRuntime
-  manualAccountTestQueue?: BackgroundWorkerRetryQueueRuntime
-}
-
-export interface BackgroundWorkerRoleState {
-  pid?: number
-  ready: boolean
-  lastSnapshot?: BackgroundWorkerRuntimeSnapshot
-  pendingMessageCount?: number
-  pendingMessageBytes?: number
-  pendingQueues?: BackgroundWorkerIpcQueuesRuntime
-  pendingSnapshotRequestCount: number
-  timedOutSnapshotRequestCount: number
-  rejectedSnapshotRequestCount: number
-}
-
-export interface BackgroundWorkerIngestDrainStatus {
-  pid?: number
-  ready: boolean
-  snapshot?: BackgroundWorkerRuntimeSnapshot
-  pendingQueues: BackgroundWorkerIpcQueuesRuntime
-}
-
-type BackgroundWorkerMessage =
-  | { type: 'background_worker_ready'; pid: number; workerRole?: BackgroundWorkerProcessRole }
-  | { type: 'background_worker_usage_records'; items: UsageRecordInput[] }
-  | { type: 'background_worker_audit_logs'; items: AuditLogInput[] }
-  | { type: 'background_worker_operation_logs'; items: OperationLogInput[] }
-  | { type: 'background_worker_public_api_logs'; items: PublicApiLogInput[] }
-  | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
-  | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
-  | { type: 'background_worker_account_test_cancel'; taskId: string }
-  | ({ type: 'background_worker_runtime_log_line'; line: string } & RuntimeLogLineIndexOptions)
-  | { type: 'background_worker_status_request'; requestId: string }
-  | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
-  | { type: 'background_worker_ingest_status_request'; requestId: string }
-  | { type: 'background_worker_ingest_status_response'; requestId: string; status?: BackgroundWorkerIngestDrainStatus }
-  | { type: 'background_worker_process_event_loop_request'; requestId: string }
-  | { type: 'background_worker_process_event_loop_response'; requestId: string; samples: ProcessEventLoopSample[] }
-  | { type: 'server_account_runtime_clear'; target: AccountRuntimeAvailabilityClearTarget }
-  | { type: 'gateway_runtime_cache_invalidate' }
-  | { type: 'gateway_quota_snapshot_update'; snapshot: GatewayQuotaSnapshot }
-
-interface PendingRequest {
-  resolve: (snapshot: BackgroundWorkerRuntimeSnapshot | undefined) => void
-  reject: (error: Error) => void
-  timeout: NodeJS.Timeout
-}
-
-interface PendingIngestStatusRequest {
-  resolve: (status: BackgroundWorkerIngestDrainStatus | undefined) => void
-  timeout: NodeJS.Timeout
-}
-
-interface PendingProcessEventLoopRequest {
-  resolve: (samples: ProcessEventLoopSample[] | undefined) => void
-  timeout: NodeJS.Timeout
-}
-
-interface BackgroundWorkerState {
-  pid?: number
-  ready: boolean
-  metricsWorker?: BackgroundWorkerRoleState
-  ingestWorker?: BackgroundWorkerRoleState
-  lastSnapshot?: BackgroundWorkerRuntimeSnapshot
-  pendingMessageCount: number
-  pendingMessageBytes: number
-  pendingQueues: BackgroundWorkerIpcQueuesRuntime
-  pendingSnapshotRequestCount: number
-  timedOutSnapshotRequestCount: number
-  rejectedSnapshotRequestCount: number
-  pendingProcessEventLoopRequestCount: number
-  timedOutProcessEventLoopRequestCount: number
-  failedProcessEventLoopRequestCount: number
-}
+export type {
+  BackgroundWorkerIngestDrainStatus,
+  BackgroundWorkerIpcQueueRuntime,
+  BackgroundWorkerIpcQueuesRuntime,
+  BackgroundWorkerProcessRole,
+  BackgroundWorkerQueueRuntime,
+  BackgroundWorkerRetryQueueRuntime,
+  BackgroundWorkerRoleState,
+  BackgroundWorkerRuntimeLogQueueRuntime,
+  BackgroundWorkerRuntimeSnapshot
+} from './background-ipc.types.js'
 
 let workerProcess: ChildProcess | undefined
 let workerReady = false
@@ -161,30 +68,51 @@ let metricsWorkerPid: number | undefined
 let ingestWorkerProcess: ChildProcess | undefined
 let ingestWorkerReady = false
 let ingestWorkerPid: number | undefined
+let statsWorkerProcess: ChildProcess | undefined
+let statsWorkerReady = false
+let statsWorkerPid: number | undefined
+let snapshotWorkerProcess: ChildProcess | undefined
+let snapshotWorkerReady = false
+let snapshotWorkerPid: number | undefined
+let probeWorkerProcess: ChildProcess | undefined
+let probeWorkerReady = false
+let probeWorkerPid: number | undefined
+let maintenanceWorkerProcess: ChildProcess | undefined
+let maintenanceWorkerReady = false
+let maintenanceWorkerPid: number | undefined
 const usageRecordMessageQueueMaxMessages = 10_000
 const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
 const regularWorkerMessageQueueMaxMessages = 5_000
 const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
-const usageRecordWorkerMessageMaxBytes = 8 * 1024 * 1024
-const regularWorkerMessageMaxBytes = 8 * 1024 * 1024
-const workerMessageEstimateMaxBytes = Math.max(usageRecordWorkerMessageMaxBytes, regularWorkerMessageMaxBytes) + 1
-const workerMessageEstimateMaxNodes = 20_000
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const ingestUsageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const ingestRegularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
+const probeWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
+const maintenanceWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let regularWorkerMessageQueueBytes = 0
 let ingestUsageRecordMessageQueueBytes = 0
 let ingestRegularWorkerMessageQueueBytes = 0
+let probeWorkerMessageQueueBytes = 0
+let maintenanceWorkerMessageQueueBytes = 0
 let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
 let sendingIngestMessage = false
 let sendingIngestWorkerMessage: BackgroundWorkerMessage | undefined
+let sendingProbeMessage = false
+let sendingProbeWorkerMessage: BackgroundWorkerMessage | undefined
+let sendingMaintenanceMessage = false
+let sendingMaintenanceWorkerMessage: BackgroundWorkerMessage | undefined
 const pendingQueueRuntime = emptyIpcQueuesRuntime()
 const ingestPendingQueueRuntime = emptyIpcQueuesRuntime()
-const workerMessageBytesCache = new WeakMap<object, number>()
+const probePendingQueueRuntime = emptyIpcQueuesRuntime()
+const maintenancePendingQueueRuntime = emptyIpcQueuesRuntime()
 let pendingRequests = new Map<string, PendingRequest>()
 let metricsPendingRequests = new Map<string, PendingRequest>()
 let ingestPendingRequests = new Map<string, PendingRequest>()
+let statsPendingRequests = new Map<string, PendingRequest>()
+let snapshotPendingRequests = new Map<string, PendingRequest>()
+let probePendingRequests = new Map<string, PendingRequest>()
+let maintenancePendingRequests = new Map<string, PendingRequest>()
 let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutSnapshotRequestCount = 0
@@ -193,14 +121,30 @@ let metricsTimedOutSnapshotRequestCount = 0
 let metricsRejectedSnapshotRequestCount = 0
 let ingestTimedOutSnapshotRequestCount = 0
 let ingestRejectedSnapshotRequestCount = 0
+let statsTimedOutSnapshotRequestCount = 0
+let statsRejectedSnapshotRequestCount = 0
+let snapshotTimedOutSnapshotRequestCount = 0
+let snapshotRejectedSnapshotRequestCount = 0
+let probeTimedOutSnapshotRequestCount = 0
+let probeRejectedSnapshotRequestCount = 0
+let maintenanceTimedOutSnapshotRequestCount = 0
+let maintenanceRejectedSnapshotRequestCount = 0
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 let metricsLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 let ingestLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
+let statsLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
+let snapshotLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
+let probeLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
+let maintenanceLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 let backgroundWorkerReadyHandler: (() => void) | undefined
 let metricsWorkerReadyHandler: (() => void) | undefined
 let ingestWorkerReadyHandler: (() => void) | undefined
+let statsWorkerReadyHandler: (() => void) | undefined
+let snapshotWorkerReadyHandler: (() => void) | undefined
+let probeWorkerReadyHandler: (() => void) | undefined
+let maintenanceWorkerReadyHandler: (() => void) | undefined
 
 if (runtimeConfig.processRole === 'worker') {
   process.on('message', handleParentMessage)
@@ -217,6 +161,22 @@ export function attachBackgroundWorkerProcess(child: ChildProcess, options: { ro
   }
   if (role === 'ingest-worker') {
     attachIngestWorkerProcess(child, options)
+    return
+  }
+  if (role === 'stats-worker') {
+    attachStatsWorkerProcess(child, options)
+    return
+  }
+  if (role === 'snapshot-worker') {
+    attachSnapshotWorkerProcess(child, options)
+    return
+  }
+  if (role === 'probe-worker') {
+    attachProbeWorkerProcess(child, options)
+    return
+  }
+  if (role === 'maintenance-worker') {
+    attachMaintenanceWorkerProcess(child, options)
     return
   }
 
@@ -286,6 +246,92 @@ function attachIngestWorkerProcess(child: ChildProcess, options: { onReady?: () 
   })
 
   flushIngestWorkerMessageQueue()
+}
+
+function attachStatsWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
+  statsWorkerProcess = child
+  statsWorkerPid = child.pid ?? undefined
+  statsWorkerReady = false
+  statsWorkerReadyHandler = options.onReady
+
+  child.removeAllListeners('message')
+  child.on('message', (message: unknown) => handleWorkerMessage(message, 'stats-worker', child))
+  child.once('exit', () => {
+    if (statsWorkerProcess === child) {
+      statsWorkerProcess = undefined
+      statsWorkerReady = false
+      statsWorkerPid = undefined
+      failStatsPendingRequests()
+    }
+  })
+}
+
+function attachSnapshotWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
+  snapshotWorkerProcess = child
+  snapshotWorkerPid = child.pid ?? undefined
+  snapshotWorkerReady = false
+  snapshotWorkerReadyHandler = options.onReady
+
+  child.removeAllListeners('message')
+  child.on('message', (message: unknown) => handleWorkerMessage(message, 'snapshot-worker', child))
+  child.once('exit', () => {
+    if (snapshotWorkerProcess === child) {
+      snapshotWorkerProcess = undefined
+      snapshotWorkerReady = false
+      snapshotWorkerPid = undefined
+      failSnapshotPendingRequests()
+    }
+  })
+}
+
+function attachProbeWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
+  probeWorkerProcess = child
+  probeWorkerPid = child.pid ?? undefined
+  probeWorkerReady = false
+  probeWorkerReadyHandler = options.onReady
+
+  child.removeAllListeners('message')
+  child.on('message', (message: unknown) => handleWorkerMessage(message, 'probe-worker', child))
+  child.once('exit', () => {
+    if (probeWorkerProcess === child) {
+      probeWorkerProcess = undefined
+      probeWorkerReady = false
+      probeWorkerPid = undefined
+      sendingProbeMessage = false
+      if (sendingProbeWorkerMessage) {
+        requeueProbeWorkerMessageFirst(sendingProbeWorkerMessage)
+        sendingProbeWorkerMessage = undefined
+      }
+      failProbePendingRequests()
+    }
+  })
+
+  flushProbeWorkerMessageQueue()
+}
+
+function attachMaintenanceWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
+  maintenanceWorkerProcess = child
+  maintenanceWorkerPid = child.pid ?? undefined
+  maintenanceWorkerReady = false
+  maintenanceWorkerReadyHandler = options.onReady
+
+  child.removeAllListeners('message')
+  child.on('message', (message: unknown) => handleWorkerMessage(message, 'maintenance-worker', child))
+  child.once('exit', () => {
+    if (maintenanceWorkerProcess === child) {
+      maintenanceWorkerProcess = undefined
+      maintenanceWorkerReady = false
+      maintenanceWorkerPid = undefined
+      sendingMaintenanceMessage = false
+      if (sendingMaintenanceWorkerMessage) {
+        requeueMaintenanceWorkerMessageFirst(sendingMaintenanceWorkerMessage)
+        sendingMaintenanceWorkerMessage = undefined
+      }
+      failMaintenancePendingRequests()
+    }
+  })
+
+  flushMaintenanceWorkerMessageQueue()
 }
 
 export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
@@ -441,9 +487,9 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
   const requestId = randomUUID()
   return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      pendingRequests.delete(requestId)
-      timedOutSnapshotRequestCount += 1
-      resolve(undefined)
+      if (timeoutIpcPendingRequest(pendingRequests, requestId)) {
+        timedOutSnapshotRequestCount += 1
+      }
     }, timeoutMs)
     pendingRequests.set(requestId, { resolve, reject, timeout })
     const queued = queueWorkerMessage({
@@ -480,9 +526,9 @@ export async function requestMetricsWorkerSnapshot(timeoutMs = 5000): Promise<Ba
   const requestId = randomUUID()
   return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      metricsPendingRequests.delete(requestId)
-      metricsTimedOutSnapshotRequestCount += 1
-      resolve(undefined)
+      if (timeoutIpcPendingRequest(metricsPendingRequests, requestId)) {
+        metricsTimedOutSnapshotRequestCount += 1
+      }
     }, timeoutMs)
     metricsPendingRequests.set(requestId, { resolve, reject, timeout })
     try {
@@ -517,9 +563,9 @@ export async function requestIngestWorkerSnapshot(timeoutMs = 5000): Promise<Bac
   const requestId = randomUUID()
   return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      ingestPendingRequests.delete(requestId)
-      ingestTimedOutSnapshotRequestCount += 1
-      resolve(undefined)
+      if (timeoutIpcPendingRequest(ingestPendingRequests, requestId)) {
+        ingestTimedOutSnapshotRequestCount += 1
+      }
     }, timeoutMs)
     ingestPendingRequests.set(requestId, { resolve, reject, timeout })
     try {
@@ -541,6 +587,63 @@ export async function requestIngestWorkerSnapshot(timeoutMs = 5000): Promise<Bac
   })
 }
 
+export async function requestStatsWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
+  return await requestRoleWorkerSnapshot('stats-worker', timeoutMs)
+}
+
+export async function requestSnapshotWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
+  return await requestRoleWorkerSnapshot('snapshot-worker', timeoutMs)
+}
+
+export async function requestProbeWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
+  return await requestRoleWorkerSnapshot('probe-worker', timeoutMs)
+}
+
+export async function requestMaintenanceWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
+  return await requestRoleWorkerSnapshot('maintenance-worker', timeoutMs)
+}
+
+async function requestRoleWorkerSnapshot(
+  role: BackgroundWorkerSnapshotRole,
+  timeoutMs: number
+): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
+  if (runtimeConfig.processRole === 'worker') {
+    return runtimeConfig.workerRole === role ? lastSnapshotForRole(role) : undefined
+  }
+
+  const child = processForRole(role)
+  if (!child || !child.connected || !readyForRole(role)) {
+    return undefined
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve) => {
+    const rolePendingRequests = pendingRequestsForRole(role)
+    const timeout = setTimeout(() => {
+      if (timeoutIpcPendingRequest(rolePendingRequests, requestId)) {
+        incrementTimedOutSnapshotRequestCount(role)
+      }
+    }, timeoutMs)
+    rolePendingRequests.set(requestId, { resolve, reject: () => undefined, timeout })
+    try {
+      child.send({
+        type: 'background_worker_status_request',
+        requestId
+      } satisfies BackgroundWorkerMessage, (error) => {
+        if (error) {
+          incrementRejectedSnapshotRequestCount(role)
+          finishRolePendingRequest(role, requestId, undefined)
+          markRoleWorkerIpcBroken(role, error, child)
+        }
+      })
+    } catch (error) {
+      incrementRejectedSnapshotRequestCount(role)
+      finishRolePendingRequest(role, requestId, undefined)
+      markRoleWorkerIpcBroken(role, error, child)
+    }
+  })
+}
+
 export async function requestIngestWorkerDrainStatus(timeoutMs = 1000): Promise<BackgroundWorkerIngestDrainStatus | undefined> {
   if (runtimeConfig.processRole === 'server') {
     return await buildIngestWorkerDrainStatus(timeoutMs)
@@ -553,8 +656,7 @@ export async function requestIngestWorkerDrainStatus(timeoutMs = 1000): Promise<
   const sendToParent = process.send.bind(process)
   return await new Promise<BackgroundWorkerIngestDrainStatus | undefined>((resolve) => {
     const timeout = setTimeout(() => {
-      pendingParentIngestStatusRequests.delete(requestId)
-      resolve(undefined)
+      timeoutIpcPendingRequest(pendingParentIngestStatusRequests, requestId)
     }, timeoutMs)
     pendingParentIngestStatusRequests.set(requestId, { resolve, timeout })
     try {
@@ -583,13 +685,9 @@ export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Pr
   const requestId = randomUUID()
   return await new Promise<ProcessEventLoopSample[] | undefined>((resolve) => {
     const timeout = setTimeout(() => {
-      const pending = pendingProcessEventLoopRequests.get(requestId)
-      if (!pending) {
-        return
+      if (timeoutIpcPendingRequest(pendingProcessEventLoopRequests, requestId)) {
+        timedOutProcessEventLoopRequestCount += 1
       }
-      timedOutProcessEventLoopRequestCount += 1
-      pendingProcessEventLoopRequests.delete(requestId)
-      pending.resolve(undefined)
     }, timeoutMs)
     pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
     try {
@@ -612,58 +710,28 @@ export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Pr
 }
 
 async function requestWorkerProcessEventLoopSamples(timeoutMs = 800): Promise<ProcessEventLoopSample[] | undefined> {
-  const child = workerProcess
-  if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !workerReady) {
-    return undefined
-  }
-
-  const requestId = randomUUID()
-  return await new Promise<ProcessEventLoopSample[] | undefined>((resolve) => {
-    const timeout = setTimeout(() => {
-      const pending = pendingProcessEventLoopRequests.get(requestId)
-      if (!pending) {
-        return
-      }
-      timedOutProcessEventLoopRequestCount += 1
-      pendingProcessEventLoopRequests.delete(requestId)
-      pending.resolve(undefined)
-    }, timeoutMs)
-    pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
-    try {
-      child.send({
-        type: 'background_worker_process_event_loop_request',
-        requestId
-      } satisfies BackgroundWorkerMessage, (error) => {
-        if (error) {
-          failedProcessEventLoopRequestCount += 1
-          finishProcessEventLoopRequest(requestId, undefined)
-          markWorkerIpcBroken(error, child)
-        }
-      })
-    } catch (error) {
-      failedProcessEventLoopRequestCount += 1
-      finishProcessEventLoopRequest(requestId, undefined)
-      markWorkerIpcBroken(error, child)
-    }
-  })
+  return await requestChildProcessEventLoopSamples('worker', timeoutMs)
 }
 
 async function requestIngestWorkerProcessEventLoopSamples(timeoutMs = 800): Promise<ProcessEventLoopSample[] | undefined> {
-  const child = ingestWorkerProcess
-  if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !ingestWorkerReady) {
+  return await requestChildProcessEventLoopSamples('ingest-worker', timeoutMs)
+}
+
+async function requestChildProcessEventLoopSamples(
+  role: Exclude<BackgroundWorkerProcessRole, 'metrics-worker'>,
+  timeoutMs = 800
+): Promise<ProcessEventLoopSample[] | undefined> {
+  const child = processForRole(role)
+  if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !readyForRole(role)) {
     return undefined
   }
 
   const requestId = randomUUID()
   return await new Promise<ProcessEventLoopSample[] | undefined>((resolve) => {
     const timeout = setTimeout(() => {
-      const pending = pendingProcessEventLoopRequests.get(requestId)
-      if (!pending) {
-        return
+      if (timeoutIpcPendingRequest(pendingProcessEventLoopRequests, requestId)) {
+        timedOutProcessEventLoopRequestCount += 1
       }
-      timedOutProcessEventLoopRequestCount += 1
-      pendingProcessEventLoopRequests.delete(requestId)
-      pending.resolve(undefined)
     }, timeoutMs)
     pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
     try {
@@ -674,59 +742,103 @@ async function requestIngestWorkerProcessEventLoopSamples(timeoutMs = 800): Prom
         if (error) {
           failedProcessEventLoopRequestCount += 1
           finishProcessEventLoopRequest(requestId, undefined)
-          markIngestWorkerIpcBroken(error, child)
+          markIpcBrokenForChild(role, error, child)
         }
       })
     } catch (error) {
       failedProcessEventLoopRequestCount += 1
       finishProcessEventLoopRequest(requestId, undefined)
-      markIngestWorkerIpcBroken(error, child)
+      markIpcBrokenForChild(role, error, child)
     }
   })
 }
 
 export function getBackgroundWorkerState(): BackgroundWorkerState {
-  return {
+  return buildBackgroundWorkerStateSnapshot({
     pid: workerPid,
     ready: workerReady,
-    metricsWorker: getMetricsWorkerState(),
-    ingestWorker: getIngestWorkerState(),
     lastSnapshot,
-    pendingMessageCount: regularWorkerMessageQueue.length + ingestUsageRecordMessageQueue.length + ingestRegularWorkerMessageQueue.length,
-    pendingMessageBytes: regularWorkerMessageQueueBytes + ingestUsageRecordMessageQueueBytes + ingestRegularWorkerMessageQueueBytes,
+    pendingMessageCounts: {
+      regularWorker: regularWorkerMessageQueue.length,
+      ingestUsageRecord: ingestUsageRecordMessageQueue.length,
+      ingestRegularWorker: ingestRegularWorkerMessageQueue.length,
+      probeWorker: probeWorkerMessageQueue.length,
+      maintenanceWorker: maintenanceWorkerMessageQueue.length
+    },
+    pendingMessageBytes: {
+      regularWorker: regularWorkerMessageQueueBytes,
+      ingestUsageRecord: ingestUsageRecordMessageQueueBytes,
+      ingestRegularWorker: ingestRegularWorkerMessageQueueBytes,
+      probeWorker: probeWorkerMessageQueueBytes,
+      maintenanceWorker: maintenanceWorkerMessageQueueBytes
+    },
     pendingQueues: buildAggregatePendingQueuesRuntime(),
     pendingSnapshotRequestCount: pendingRequests.size,
     timedOutSnapshotRequestCount,
     rejectedSnapshotRequestCount,
     pendingProcessEventLoopRequestCount: pendingProcessEventLoopRequests.size,
     timedOutProcessEventLoopRequestCount,
-    failedProcessEventLoopRequestCount
-  }
-}
-
-function getMetricsWorkerState(): BackgroundWorkerRoleState {
-  return {
-    pid: metricsWorkerPid,
-    ready: metricsWorkerReady,
-    lastSnapshot: metricsLastSnapshot,
-    pendingSnapshotRequestCount: metricsPendingRequests.size,
-    timedOutSnapshotRequestCount: metricsTimedOutSnapshotRequestCount,
-    rejectedSnapshotRequestCount: metricsRejectedSnapshotRequestCount
-  }
-}
-
-function getIngestWorkerState(): BackgroundWorkerRoleState {
-  return {
-    pid: ingestWorkerPid,
-    ready: ingestWorkerReady,
-    lastSnapshot: ingestLastSnapshot,
-    pendingMessageCount: ingestUsageRecordMessageQueue.length + ingestRegularWorkerMessageQueue.length,
-    pendingMessageBytes: ingestUsageRecordMessageQueueBytes + ingestRegularWorkerMessageQueueBytes,
-    pendingQueues: buildIngestPendingQueuesRuntime(),
-    pendingSnapshotRequestCount: ingestPendingRequests.size,
-    timedOutSnapshotRequestCount: ingestTimedOutSnapshotRequestCount,
-    rejectedSnapshotRequestCount: ingestRejectedSnapshotRequestCount
-  }
+    failedProcessEventLoopRequestCount,
+    roles: {
+      metricsWorker: {
+        pid: metricsWorkerPid,
+        ready: metricsWorkerReady,
+        lastSnapshot: metricsLastSnapshot,
+        pendingSnapshotRequestCount: metricsPendingRequests.size,
+        timedOutSnapshotRequestCount: metricsTimedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: metricsRejectedSnapshotRequestCount
+      },
+      ingestWorker: {
+        pid: ingestWorkerPid,
+        ready: ingestWorkerReady,
+        lastSnapshot: ingestLastSnapshot,
+        pendingMessageCount: ingestUsageRecordMessageQueue.length + ingestRegularWorkerMessageQueue.length,
+        pendingMessageBytes: ingestUsageRecordMessageQueueBytes + ingestRegularWorkerMessageQueueBytes,
+        pendingQueues: buildIngestPendingQueuesRuntime(),
+        pendingSnapshotRequestCount: ingestPendingRequests.size,
+        timedOutSnapshotRequestCount: ingestTimedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: ingestRejectedSnapshotRequestCount
+      },
+      statsWorker: {
+        pid: statsWorkerPid,
+        ready: statsWorkerReady,
+        lastSnapshot: statsLastSnapshot,
+        pendingSnapshotRequestCount: statsPendingRequests.size,
+        timedOutSnapshotRequestCount: statsTimedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: statsRejectedSnapshotRequestCount
+      },
+      snapshotWorker: {
+        pid: snapshotWorkerPid,
+        ready: snapshotWorkerReady,
+        lastSnapshot: snapshotLastSnapshot,
+        pendingSnapshotRequestCount: snapshotPendingRequests.size,
+        timedOutSnapshotRequestCount: snapshotTimedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: snapshotRejectedSnapshotRequestCount
+      },
+      probeWorker: {
+        pid: probeWorkerPid,
+        ready: probeWorkerReady,
+        lastSnapshot: probeLastSnapshot,
+        pendingMessageCount: probeWorkerMessageQueue.length,
+        pendingMessageBytes: probeWorkerMessageQueueBytes,
+        pendingQueues: buildProbePendingQueuesRuntime(),
+        pendingSnapshotRequestCount: probePendingRequests.size,
+        timedOutSnapshotRequestCount: probeTimedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: probeRejectedSnapshotRequestCount
+      },
+      maintenanceWorker: {
+        pid: maintenanceWorkerPid,
+        ready: maintenanceWorkerReady,
+        lastSnapshot: maintenanceLastSnapshot,
+        pendingMessageCount: maintenanceWorkerMessageQueue.length,
+        pendingMessageBytes: maintenanceWorkerMessageQueueBytes,
+        pendingQueues: buildMaintenancePendingQueuesRuntime(),
+        pendingSnapshotRequestCount: maintenancePendingRequests.size,
+        timedOutSnapshotRequestCount: maintenanceTimedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: maintenanceRejectedSnapshotRequestCount
+      }
+    }
+  })
 }
 
 function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole = 'worker', child: ChildProcess | undefined = workerProcess): void {
@@ -823,6 +935,12 @@ function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
       ingestRegularWorkerMessageQueue.push(message)
       ingestRegularWorkerMessageQueueBytes += messageBytes
     }
+  } else if (targetRole === 'probe-worker') {
+    probeWorkerMessageQueue.push(message)
+    probeWorkerMessageQueueBytes += messageBytes
+  } else if (targetRole === 'maintenance-worker') {
+    maintenanceWorkerMessageQueue.push(message)
+    maintenanceWorkerMessageQueueBytes += messageBytes
   } else {
     regularWorkerMessageQueue.push(message)
     regularWorkerMessageQueueBytes += messageBytes
@@ -875,14 +993,14 @@ function coalesceRecordMaintenanceJobIntoPendingQueue(job: RecordMaintenanceJob)
   if (!key) {
     return false
   }
-  const queueIndex = regularWorkerMessageQueue.findIndex((queued) => (
+  const queueIndex = maintenanceWorkerMessageQueue.findIndex((queued) => (
     queued.type === 'background_worker_record_maintenance'
     && queued.items.some((item) => recordMaintenanceJobCoalescingKey(item) === key)
   ))
   if (queueIndex < 0) {
     return false
   }
-  const current = regularWorkerMessageQueue.at(queueIndex)
+  const current = maintenanceWorkerMessageQueue.at(queueIndex)
   if (!current || current.type !== 'background_worker_record_maintenance') {
     return false
   }
@@ -892,13 +1010,13 @@ function coalesceRecordMaintenanceJobIntoPendingQueue(job: RecordMaintenanceJob)
   )))
   const nextMessage: BackgroundWorkerMessage = { ...current, items: nextItems }
   const nextBytes = estimateWorkerMessageBytes(nextMessage)
-  const nextQueueBytes = regularWorkerMessageQueueBytes - currentBytes + nextBytes
+  const nextQueueBytes = maintenanceWorkerMessageQueueBytes - currentBytes + nextBytes
   if (nextBytes > regularWorkerMessageMaxBytes || nextQueueBytes > regularWorkerMessageQueueMaxBytes) {
     return false
   }
-  regularWorkerMessageQueue.set(queueIndex, nextMessage)
-  regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - currentBytes + nextBytes)
-  const runtime = pendingQueueRuntime.recordMaintenance
+  maintenanceWorkerMessageQueue.set(queueIndex, nextMessage)
+  maintenanceWorkerMessageQueueBytes = Math.max(0, maintenanceWorkerMessageQueueBytes - currentBytes + nextBytes)
+  const runtime = maintenancePendingQueueRuntime.recordMaintenance
   runtime.queueBytes = Math.max(0, (runtime.queueBytes ?? 0) - currentBytes + nextBytes)
   return true
 }
@@ -909,7 +1027,11 @@ function recordMaintenanceJobCoalescingKey(job: RecordMaintenanceJob): string | 
     : undefined
 }
 
-function canQueueWorkerMessage(targetRole: 'worker' | 'ingest-worker', message: BackgroundWorkerMessage, messageBytes: number): boolean {
+function canQueueWorkerMessage(
+  targetRole: BackgroundWorkerQueueTargetRole,
+  message: BackgroundWorkerMessage,
+  messageBytes: number
+): boolean {
   if (message.type === 'background_worker_usage_records') {
     return targetRole === 'ingest-worker'
       && ingestUsageRecordMessageQueue.length < usageRecordMessageQueueMaxMessages
@@ -918,9 +1040,17 @@ function canQueueWorkerMessage(targetRole: 'worker' | 'ingest-worker', message: 
   }
   const regularQueueLength = targetRole === 'ingest-worker'
     ? ingestRegularWorkerMessageQueue.length
+    : targetRole === 'probe-worker'
+      ? probeWorkerMessageQueue.length
+      : targetRole === 'maintenance-worker'
+        ? maintenanceWorkerMessageQueue.length
     : regularWorkerMessageQueue.length
   const regularQueueBytes = targetRole === 'ingest-worker'
     ? ingestRegularWorkerMessageQueueBytes
+    : targetRole === 'probe-worker'
+      ? probeWorkerMessageQueueBytes
+      : targetRole === 'maintenance-worker'
+        ? maintenanceWorkerMessageQueueBytes
     : regularWorkerMessageQueueBytes
   if (message.type === 'background_worker_audit_logs') {
     return regularQueueLength < regularWorkerMessageQueueMaxMessages
@@ -937,22 +1067,17 @@ function canQueueWorkerMessage(targetRole: 'worker' | 'ingest-worker', message: 
     && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
 }
 
-function workerMessageTargetRole(message: BackgroundWorkerMessage): 'worker' | 'ingest-worker' {
-  switch (message.type) {
-    case 'background_worker_usage_records':
-    case 'background_worker_audit_logs':
-    case 'background_worker_operation_logs':
-    case 'background_worker_public_api_logs':
-    case 'background_worker_runtime_log_line':
-      return 'ingest-worker'
-    default:
-      return 'worker'
-  }
-}
-
-function flushTargetWorkerMessageQueue(role: 'worker' | 'ingest-worker'): void {
+function flushTargetWorkerMessageQueue(role: BackgroundWorkerQueueTargetRole): void {
   if (role === 'ingest-worker') {
     flushIngestWorkerMessageQueue()
+    return
+  }
+  if (role === 'probe-worker') {
+    flushProbeWorkerMessageQueue()
+    return
+  }
+  if (role === 'maintenance-worker') {
+    flushMaintenanceWorkerMessageQueue()
     return
   }
   flushWorkerMessageQueue()
@@ -1044,6 +1169,86 @@ function flushIngestWorkerMessageQueue(): void {
   }
 }
 
+function flushProbeWorkerMessageQueue(): void {
+  const child = probeWorkerProcess
+  if (sendingProbeMessage || !child || !probeWorkerReady) {
+    return
+  }
+
+  const message = shiftProbeWorkerMessage()
+  if (!message) {
+    return
+  }
+
+  sendingProbeMessage = true
+  sendingProbeWorkerMessage = message
+  try {
+    child.send(message, (error) => {
+      const stillSendingThisMessage = sendingProbeWorkerMessage === message
+      if (stillSendingThisMessage) {
+        sendingProbeMessage = false
+        sendingProbeWorkerMessage = undefined
+      }
+      if (error) {
+        if (stillSendingThisMessage) {
+          requeueProbeWorkerMessageFirst(message)
+        }
+        markRoleWorkerIpcBroken('probe-worker', error, child)
+        return
+      }
+      if (stillSendingThisMessage) {
+        flushProbeWorkerMessageQueue()
+      }
+    })
+  } catch (error) {
+    sendingProbeMessage = false
+    sendingProbeWorkerMessage = undefined
+    requeueProbeWorkerMessageFirst(message)
+    markRoleWorkerIpcBroken('probe-worker', error, child)
+    process.stderr.write(`[background-worker] 向 probe-worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
+function flushMaintenanceWorkerMessageQueue(): void {
+  const child = maintenanceWorkerProcess
+  if (sendingMaintenanceMessage || !child || !maintenanceWorkerReady) {
+    return
+  }
+
+  const message = shiftMaintenanceWorkerMessage()
+  if (!message) {
+    return
+  }
+
+  sendingMaintenanceMessage = true
+  sendingMaintenanceWorkerMessage = message
+  try {
+    child.send(message, (error) => {
+      const stillSendingThisMessage = sendingMaintenanceWorkerMessage === message
+      if (stillSendingThisMessage) {
+        sendingMaintenanceMessage = false
+        sendingMaintenanceWorkerMessage = undefined
+      }
+      if (error) {
+        if (stillSendingThisMessage) {
+          requeueMaintenanceWorkerMessageFirst(message)
+        }
+        markRoleWorkerIpcBroken('maintenance-worker', error, child)
+        return
+      }
+      if (stillSendingThisMessage) {
+        flushMaintenanceWorkerMessageQueue()
+      }
+    })
+  } catch (error) {
+    sendingMaintenanceMessage = false
+    sendingMaintenanceWorkerMessage = undefined
+    requeueMaintenanceWorkerMessageFirst(message)
+    markRoleWorkerIpcBroken('maintenance-worker', error, child)
+    process.stderr.write(`[background-worker] 向 maintenance-worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
 function shiftWorkerMessage(): BackgroundWorkerMessage | undefined {
   let queueKey: IpcQueueKey | undefined
   const message = regularWorkerMessageQueue.shift()
@@ -1073,6 +1278,28 @@ function shiftIngestWorkerMessage(): BackgroundWorkerMessage | undefined {
   return message
 }
 
+function shiftProbeWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const message = probeWorkerMessageQueue.shift()
+  if (message) {
+    const queueKey = ipcQueueKeyForMessage(message)
+    const messageBytes = estimateWorkerMessageBytes(message)
+    probeWorkerMessageQueueBytes = Math.max(0, probeWorkerMessageQueueBytes - messageBytes)
+    removePendingQueueRuntimeMessage('probe-worker', queueKey, messageBytes)
+  }
+  return message
+}
+
+function shiftMaintenanceWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const message = maintenanceWorkerMessageQueue.shift()
+  if (message) {
+    const queueKey = ipcQueueKeyForMessage(message)
+    const messageBytes = estimateWorkerMessageBytes(message)
+    maintenanceWorkerMessageQueueBytes = Math.max(0, maintenanceWorkerMessageQueueBytes - messageBytes)
+    removePendingQueueRuntimeMessage('maintenance-worker', queueKey, messageBytes)
+  }
+  return message
+}
+
 function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
@@ -1094,214 +1321,244 @@ function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void
   addPendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
 }
 
+function requeueProbeWorkerMessageFirst(message: BackgroundWorkerMessage): void {
+  const messageBytes = estimateWorkerMessageBytes(message)
+  const queueKey = ipcQueueKeyForMessage(message)
+  probeWorkerMessageQueue.unshift(message)
+  probeWorkerMessageQueueBytes += messageBytes
+  addPendingQueueRuntimeMessage('probe-worker', queueKey, messageBytes)
+}
+
+function requeueMaintenanceWorkerMessageFirst(message: BackgroundWorkerMessage): void {
+  const messageBytes = estimateWorkerMessageBytes(message)
+  const queueKey = ipcQueueKeyForMessage(message)
+  maintenanceWorkerMessageQueue.unshift(message)
+  maintenanceWorkerMessageQueueBytes += messageBytes
+  addPendingQueueRuntimeMessage('maintenance-worker', queueKey, messageBytes)
+}
+
 function buildIngestPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
   return clonePendingQueueRuntime(ingestPendingQueueRuntime)
 }
 
-function buildAggregatePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
-  return mergePendingQueuesRuntime(pendingQueueRuntime, ingestPendingQueueRuntime)
+function buildProbePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
+  return clonePendingQueueRuntime(probePendingQueueRuntime)
 }
 
-function addPendingQueueRuntimeMessage(targetRole: 'worker' | 'ingest-worker', key: IpcQueueKey, bytes: number): void {
+function buildMaintenancePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
+  return clonePendingQueueRuntime(maintenancePendingQueueRuntime)
+}
+
+function buildAggregatePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
+  return mergePendingQueuesRuntime(
+    mergePendingQueuesRuntime(pendingQueueRuntime, ingestPendingQueueRuntime),
+    mergePendingQueuesRuntime(probePendingQueueRuntime, maintenancePendingQueueRuntime)
+  )
+}
+
+function addPendingQueueRuntimeMessage(targetRole: BackgroundWorkerQueueTargetRole, key: IpcQueueKey, bytes: number): void {
   const queue = pendingQueueRuntimeForTarget(targetRole)[key]
   queue.queueLength += 1
   queue.queueBytes = (queue.queueBytes ?? 0) + bytes
 }
 
-function removePendingQueueRuntimeMessage(targetRole: 'worker' | 'ingest-worker', key: IpcQueueKey, bytes: number): void {
+function removePendingQueueRuntimeMessage(targetRole: BackgroundWorkerQueueTargetRole, key: IpcQueueKey, bytes: number): void {
   const queue = pendingQueueRuntimeForTarget(targetRole)[key]
   queue.queueLength = Math.max(0, queue.queueLength - 1)
   queue.queueBytes = Math.max(0, (queue.queueBytes ?? 0) - bytes)
 }
 
-function pendingQueueRuntimeForTarget(targetRole: 'worker' | 'ingest-worker'): BackgroundWorkerIpcQueuesRuntime {
-  return targetRole === 'ingest-worker' ? ingestPendingQueueRuntime : pendingQueueRuntime
+function pendingQueueRuntimeForTarget(targetRole: BackgroundWorkerQueueTargetRole): BackgroundWorkerIpcQueuesRuntime {
+  if (targetRole === 'ingest-worker') return ingestPendingQueueRuntime
+  if (targetRole === 'probe-worker') return probePendingQueueRuntime
+  if (targetRole === 'maintenance-worker') return maintenancePendingQueueRuntime
+  return pendingQueueRuntime
 }
 
-function clonePendingQueueRuntime(input: BackgroundWorkerIpcQueuesRuntime): BackgroundWorkerIpcQueuesRuntime {
-  return {
-    usageRecords: { ...input.usageRecords },
-    auditLogs: { ...input.auditLogs },
-    operationLogs: { ...input.operationLogs },
-    publicApiLogs: { ...input.publicApiLogs },
-    recordMaintenance: { ...input.recordMaintenance },
-    runtimeLogLines: { ...input.runtimeLogLines },
-    statusRequests: { ...input.statusRequests },
-    processEventLoopRequests: { ...input.processEventLoopRequests },
-    processEventLoopResponses: { ...input.processEventLoopResponses },
-    gatewayRuntimeCacheInvalidations: { ...input.gatewayRuntimeCacheInvalidations },
-    other: { ...input.other }
-  }
-}
-
-type IpcQueueKey = keyof BackgroundWorkerIpcQueuesRuntime
-
-function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
-  switch (message.type) {
-    case 'background_worker_usage_records':
-      return 'usageRecords'
-    case 'background_worker_audit_logs':
-      return 'auditLogs'
-    case 'background_worker_operation_logs':
-      return 'operationLogs'
-    case 'background_worker_public_api_logs':
-      return 'publicApiLogs'
-    case 'background_worker_record_maintenance':
-      return 'recordMaintenance'
-    case 'background_worker_account_test_tasks':
-    case 'background_worker_account_test_cancel':
-      return 'other'
-    case 'background_worker_runtime_log_line':
-      return 'runtimeLogLines'
-    case 'background_worker_status_request':
-      return 'statusRequests'
-    case 'background_worker_process_event_loop_request':
-      return 'processEventLoopRequests'
-    case 'background_worker_process_event_loop_response':
-      return 'processEventLoopResponses'
-    case 'server_account_runtime_clear':
-      return 'other'
-    case 'gateway_runtime_cache_invalidate':
-      return 'gatewayRuntimeCacheInvalidations'
-    case 'gateway_quota_snapshot_update':
-      return 'other'
+function processForRole(role: BackgroundWorkerProcessRole): ChildProcess | undefined {
+  switch (role) {
+    case 'metrics-worker':
+      return metricsWorkerProcess
+    case 'ingest-worker':
+      return ingestWorkerProcess
+    case 'stats-worker':
+      return statsWorkerProcess
+    case 'snapshot-worker':
+      return snapshotWorkerProcess
+    case 'probe-worker':
+      return probeWorkerProcess
+    case 'maintenance-worker':
+      return maintenanceWorkerProcess
     default:
-      return 'other'
+      return workerProcess
   }
 }
 
-function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
-  const emptyQueueRuntime = (): BackgroundWorkerIpcQueueRuntime => ({
-    queueLength: 0,
-    queueBytes: 0,
-    droppedCount: 0,
-    rejectedCount: 0
-  })
-  return {
-    usageRecords: emptyQueueRuntime(),
-    auditLogs: emptyQueueRuntime(),
-    operationLogs: emptyQueueRuntime(),
-    publicApiLogs: emptyQueueRuntime(),
-    recordMaintenance: emptyQueueRuntime(),
-    runtimeLogLines: emptyQueueRuntime(),
-    statusRequests: emptyQueueRuntime(),
-    processEventLoopRequests: emptyQueueRuntime(),
-    processEventLoopResponses: emptyQueueRuntime(),
-    gatewayRuntimeCacheInvalidations: emptyQueueRuntime(),
-    other: emptyQueueRuntime()
+function readyForRole(role: BackgroundWorkerProcessRole): boolean {
+  switch (role) {
+    case 'metrics-worker':
+      return metricsWorkerReady
+    case 'ingest-worker':
+      return ingestWorkerReady
+    case 'stats-worker':
+      return statsWorkerReady
+    case 'snapshot-worker':
+      return snapshotWorkerReady
+    case 'probe-worker':
+      return probeWorkerReady
+    case 'maintenance-worker':
+      return maintenanceWorkerReady
+    default:
+      return workerReady
   }
 }
 
-function ipcQueueKeys(): IpcQueueKey[] {
-  return [
-    'usageRecords',
-    'auditLogs',
-    'operationLogs',
-    'publicApiLogs',
-    'recordMaintenance',
-    'runtimeLogLines',
-    'statusRequests',
-    'processEventLoopRequests',
-    'processEventLoopResponses',
-    'gatewayRuntimeCacheInvalidations',
-    'other'
-  ]
-}
-
-function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
-  if (typeof message === 'object' && message !== null) {
-    const cached = workerMessageBytesCache.get(message)
-    if (cached !== undefined) {
-      return cached
-    }
-  }
-
-  let bytes: number
-  switch (message.type) {
-    case 'background_worker_runtime_log_line':
-      bytes = Buffer.byteLength(message.line, 'utf8')
-        + Buffer.byteLength(message.sourceKey ?? '', 'utf8')
-        + Buffer.byteLength(message.logFile ?? '', 'utf8')
-        + 192
+function setReadyForRole(role: BackgroundWorkerProcessRole, ready: boolean): void {
+  switch (role) {
+    case 'stats-worker':
+      statsWorkerReady = ready
       break
-    case 'background_worker_usage_records':
-      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
+    case 'snapshot-worker':
+      snapshotWorkerReady = ready
       break
-    case 'background_worker_audit_logs':
-      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateAuditLogBytes(item)), 128)
+    case 'probe-worker':
+      probeWorkerReady = ready
       break
-    case 'background_worker_operation_logs':
-      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
-      break
-    case 'background_worker_public_api_logs':
-      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
-      break
-    case 'background_worker_record_maintenance':
-      bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
-      break
-    case 'background_worker_account_test_tasks':
-      bytes = message.taskIds.reduce((sum, taskId) => Math.min(workerMessageEstimateMaxBytes, sum + Buffer.byteLength(taskId, 'utf8') + 64), 128)
-      break
-    case 'background_worker_account_test_cancel':
-      bytes = Buffer.byteLength(message.taskId, 'utf8') + 128
-      break
-    case 'background_worker_status_request':
-    case 'background_worker_status_response':
-    case 'background_worker_ready':
-    case 'server_account_runtime_clear':
-    case 'gateway_runtime_cache_invalidate':
-    case 'gateway_quota_snapshot_update':
-      bytes = 512
+    case 'maintenance-worker':
+      maintenanceWorkerReady = ready
       break
     default:
-      bytes = 512
       break
   }
-  if (typeof message === 'object' && message !== null) {
-    workerMessageBytesCache.set(message, bytes)
-  }
-  return bytes
 }
 
-function estimateJsonBytes(value: unknown): number {
-  return estimateJsonLikeBytes(value, {
-    maxBytes: workerMessageEstimateMaxBytes,
-    maxNodes: workerMessageEstimateMaxNodes
-  })
+function setPidForRole(role: BackgroundWorkerProcessRole, pid: number | undefined): void {
+  switch (role) {
+    case 'stats-worker':
+      statsWorkerPid = pid ?? statsWorkerPid
+      break
+    case 'snapshot-worker':
+      snapshotWorkerPid = pid ?? snapshotWorkerPid
+      break
+    case 'probe-worker':
+      probeWorkerPid = pid ?? probeWorkerPid
+      break
+    case 'maintenance-worker':
+      maintenanceWorkerPid = pid ?? maintenanceWorkerPid
+      break
+    default:
+      break
+  }
+}
+
+function pendingRequestsForRole(
+  role: BackgroundWorkerSnapshotRole
+): Map<string, PendingRequest> {
+  if (role === 'stats-worker') return statsPendingRequests
+  if (role === 'snapshot-worker') return snapshotPendingRequests
+  if (role === 'probe-worker') return probePendingRequests
+  return maintenancePendingRequests
+}
+
+function failPendingRequestsForRole(
+  role: BackgroundWorkerSnapshotRole
+): void {
+  if (role === 'stats-worker') return failStatsPendingRequests()
+  if (role === 'snapshot-worker') return failSnapshotPendingRequests()
+  if (role === 'probe-worker') return failProbePendingRequests()
+  return failMaintenancePendingRequests()
+}
+
+function lastSnapshotForRole(
+  role: BackgroundWorkerSnapshotRole
+): BackgroundWorkerRuntimeSnapshot | undefined {
+  if (role === 'stats-worker') return statsLastSnapshot
+  if (role === 'snapshot-worker') return snapshotLastSnapshot
+  if (role === 'probe-worker') return probeLastSnapshot
+  return maintenanceLastSnapshot
+}
+
+function setLastSnapshotForRole(
+  role: BackgroundWorkerSnapshotRole,
+  snapshot: BackgroundWorkerRuntimeSnapshot | undefined
+): void {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return
+  }
+  if (role === 'stats-worker') {
+    statsLastSnapshot = snapshot
+  } else if (role === 'snapshot-worker') {
+    snapshotLastSnapshot = snapshot
+  } else if (role === 'probe-worker') {
+    probeLastSnapshot = snapshot
+  } else {
+    maintenanceLastSnapshot = snapshot
+  }
+}
+
+function incrementTimedOutSnapshotRequestCount(
+  role: BackgroundWorkerSnapshotRole
+): void {
+  if (role === 'stats-worker') statsTimedOutSnapshotRequestCount += 1
+  else if (role === 'snapshot-worker') snapshotTimedOutSnapshotRequestCount += 1
+  else if (role === 'probe-worker') probeTimedOutSnapshotRequestCount += 1
+  else maintenanceTimedOutSnapshotRequestCount += 1
+}
+
+function incrementRejectedSnapshotRequestCount(
+  role: BackgroundWorkerSnapshotRole
+): void {
+  if (role === 'stats-worker') statsRejectedSnapshotRequestCount += 1
+  else if (role === 'snapshot-worker') snapshotRejectedSnapshotRequestCount += 1
+  else if (role === 'probe-worker') probeRejectedSnapshotRequestCount += 1
+  else maintenanceRejectedSnapshotRequestCount += 1
 }
 
 function markWorkerReady(role: BackgroundWorkerProcessRole, record: Partial<BackgroundWorkerMessage> & Record<string, unknown>): void {
   if (role === 'metrics-worker') {
     metricsWorkerReady = true
-    metricsWorkerPid = typeof record.pid === 'number' ? record.pid : metricsWorkerPid
+    metricsWorkerPid = workerPidFromReadyRecord(record, metricsWorkerPid)
     metricsWorkerReadyHandler?.()
     return
   }
   if (role === 'ingest-worker') {
     ingestWorkerReady = true
-    ingestWorkerPid = typeof record.pid === 'number' ? record.pid : ingestWorkerPid
+    ingestWorkerPid = workerPidFromReadyRecord(record, ingestWorkerPid)
     ingestWorkerReadyHandler?.()
     flushIngestWorkerMessageQueue()
     return
   }
+  if (role === 'stats-worker') {
+    statsWorkerReady = true
+    statsWorkerPid = workerPidFromReadyRecord(record, statsWorkerPid)
+    statsWorkerReadyHandler?.()
+    return
+  }
+  if (role === 'snapshot-worker') {
+    snapshotWorkerReady = true
+    snapshotWorkerPid = workerPidFromReadyRecord(record, snapshotWorkerPid)
+    snapshotWorkerReadyHandler?.()
+    return
+  }
+  if (role === 'probe-worker') {
+    probeWorkerReady = true
+    probeWorkerPid = workerPidFromReadyRecord(record, probeWorkerPid)
+    probeWorkerReadyHandler?.()
+    flushProbeWorkerMessageQueue()
+    return
+  }
+  if (role === 'maintenance-worker') {
+    maintenanceWorkerReady = true
+    maintenanceWorkerPid = workerPidFromReadyRecord(record, maintenanceWorkerPid)
+    maintenanceWorkerReadyHandler?.()
+    flushMaintenanceWorkerMessageQueue()
+    return
+  }
 
   workerReady = true
-  workerPid = typeof record.pid === 'number' ? record.pid : workerPid
+  workerPid = workerPidFromReadyRecord(record, workerPid)
   backgroundWorkerReadyHandler?.()
   flushWorkerMessageQueue()
-}
-
-function mergePendingQueuesRuntime(left: BackgroundWorkerIpcQueuesRuntime, right: BackgroundWorkerIpcQueuesRuntime): BackgroundWorkerIpcQueuesRuntime {
-  const output = emptyIpcQueuesRuntime()
-  for (const key of ipcQueueKeys()) {
-    output[key] = {
-      queueLength: left[key].queueLength + right[key].queueLength,
-      queueBytes: (left[key].queueBytes ?? 0) + (right[key].queueBytes ?? 0),
-      droppedCount: (left[key].droppedCount ?? 0) + (right[key].droppedCount ?? 0),
-      rejectedCount: (left[key].rejectedCount ?? 0) + (right[key].rejectedCount ?? 0)
-    }
-  }
-  return output
 }
 
 function finishWorkerStatusResponse(role: BackgroundWorkerProcessRole, requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
@@ -1319,6 +1576,11 @@ function finishWorkerStatusResponse(role: BackgroundWorkerProcessRole, requestId
     }
     return
   }
+  if (isSnapshotRoleWorker(role)) {
+    finishRolePendingRequest(role, requestId, snapshot)
+    setLastSnapshotForRole(role, snapshot)
+    return
+  }
 
   finishPendingRequest(requestId, snapshot)
   if (snapshot && typeof snapshot === 'object') {
@@ -1327,91 +1589,68 @@ function finishWorkerStatusResponse(role: BackgroundWorkerProcessRole, requestId
 }
 
 function finishPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  const pending = pendingRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-
-  clearTimeout(pending.timeout)
-  pendingRequests.delete(requestId)
-  pending.resolve(snapshot)
+  finishIpcPendingRequest(pendingRequests, requestId, snapshot)
 }
 
 function finishMetricsPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  const pending = metricsPendingRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-
-  clearTimeout(pending.timeout)
-  metricsPendingRequests.delete(requestId)
-  pending.resolve(snapshot)
+  finishIpcPendingRequest(metricsPendingRequests, requestId, snapshot)
 }
 
 function finishIngestPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  const pending = ingestPendingRequests.get(requestId)
-  if (!pending) {
-    return
-  }
+  finishIpcPendingRequest(ingestPendingRequests, requestId, snapshot)
+}
 
-  clearTimeout(pending.timeout)
-  ingestPendingRequests.delete(requestId)
-  pending.resolve(snapshot)
+function finishRolePendingRequest(
+  role: BackgroundWorkerSnapshotRole,
+  requestId: string,
+  snapshot: BackgroundWorkerRuntimeSnapshot | undefined
+): void {
+  finishIpcPendingRequest(pendingRequestsForRole(role), requestId, snapshot)
 }
 
 function finishParentIngestStatusRequest(requestId: string, status: BackgroundWorkerIngestDrainStatus | undefined): void {
-  const pending = pendingParentIngestStatusRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-
-  clearTimeout(pending.timeout)
-  pendingParentIngestStatusRequests.delete(requestId)
-  pending.resolve(status)
+  finishIpcPendingRequest(pendingParentIngestStatusRequests, requestId, status)
 }
 
 function failPendingRequests(): void {
-  for (const [requestId, pending] of pendingRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    pendingRequests.delete(requestId)
-  }
+  failIpcPendingRequests(pendingRequests)
   failPendingProcessEventLoopRequests()
 }
 
 function failMetricsPendingRequests(): void {
-  for (const [requestId, pending] of metricsPendingRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    metricsPendingRequests.delete(requestId)
-  }
+  failIpcPendingRequests(metricsPendingRequests)
 }
 
 function failIngestPendingRequests(): void {
-  for (const [requestId, pending] of ingestPendingRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    ingestPendingRequests.delete(requestId)
-  }
+  failIpcPendingRequests(ingestPendingRequests)
+}
+
+function failStatsPendingRequests(): void {
+  failRolePendingRequests(statsPendingRequests)
+}
+
+function failSnapshotPendingRequests(): void {
+  failRolePendingRequests(snapshotPendingRequests)
+}
+
+function failProbePendingRequests(): void {
+  failRolePendingRequests(probePendingRequests)
+}
+
+function failMaintenancePendingRequests(): void {
+  failRolePendingRequests(maintenancePendingRequests)
+}
+
+function failRolePendingRequests(requests: Map<string, PendingRequest>): void {
+  failIpcPendingRequests(requests)
 }
 
 function failPendingProcessEventLoopRequests(): void {
-  for (const [requestId, pending] of pendingProcessEventLoopRequests) {
-    clearTimeout(pending.timeout)
-    pending.resolve(undefined)
-    pendingProcessEventLoopRequests.delete(requestId)
-  }
+  failIpcPendingRequests(pendingProcessEventLoopRequests)
 }
 
 function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventLoopSample[] | undefined): void {
-  const pending = pendingProcessEventLoopRequests.get(requestId)
-  if (!pending) {
-    return
-  }
-
-  clearTimeout(pending.timeout)
-  pendingProcessEventLoopRequests.delete(requestId)
-  pending.resolve(samples)
+  finishIpcPendingRequest(pendingProcessEventLoopRequests, requestId, samples)
 }
 
 function nonEmptyProcessEventLoopSamples(samples: unknown[]): ProcessEventLoopSample[] | undefined {
@@ -1422,62 +1661,76 @@ function markWorkerIpcBroken(error: unknown, child = workerProcess): void {
   const isCurrentChild = child === undefined || workerProcess === child
   if (isCurrentChild) {
     workerReady = false
-    workerPid = child?.pid ?? workerPid
+    workerPid = workerPidFromBrokenChild(child, workerPid)
     failPendingRequests()
   }
-  if (child && !child.killed) {
-    try {
-      child.kill('SIGTERM')
-    } catch (killError) {
-      process.stderr.write(`[background-worker] 终止 IPC 异常 worker 失败：${killError instanceof Error ? killError.message : String(killError)}\n`)
-    }
-  }
-  if (error) {
-    process.stderr.write(`[background-worker] worker IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
-  }
+  terminateBrokenWorkerIpc('worker', error, child)
 }
 
 function markMetricsWorkerIpcBroken(error: unknown, child = metricsWorkerProcess): void {
   const isCurrentChild = child === undefined || metricsWorkerProcess === child
   if (isCurrentChild) {
     metricsWorkerReady = false
-    metricsWorkerPid = child?.pid ?? metricsWorkerPid
+    metricsWorkerPid = workerPidFromBrokenChild(child, metricsWorkerPid)
     failMetricsPendingRequests()
   }
-  if (child && !child.killed) {
-    try {
-      child.kill('SIGTERM')
-    } catch (killError) {
-      process.stderr.write(`[background-worker] 终止 IPC 异常 metrics-worker 失败：${killError instanceof Error ? killError.message : String(killError)}\n`)
-    }
-  }
-  if (error) {
-    process.stderr.write(`[background-worker] metrics-worker IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
-  }
+  terminateBrokenWorkerIpc('metrics-worker', error, child)
 }
 
 function markIngestWorkerIpcBroken(error: unknown, child = ingestWorkerProcess): void {
   const isCurrentChild = child === undefined || ingestWorkerProcess === child
   if (isCurrentChild) {
     ingestWorkerReady = false
-    ingestWorkerPid = child?.pid ?? ingestWorkerPid
+    ingestWorkerPid = workerPidFromBrokenChild(child, ingestWorkerPid)
     failIngestPendingRequests()
   }
-  if (child && !child.killed) {
-    try {
-      child.kill('SIGTERM')
-    } catch (killError) {
-      process.stderr.write(`[background-worker] 终止 IPC 异常 ingest-worker 失败：${killError instanceof Error ? killError.message : String(killError)}\n`)
-    }
+  terminateBrokenWorkerIpc('ingest-worker', error, child)
+}
+
+function markRoleWorkerIpcBroken(
+  role: BackgroundWorkerSnapshotRole,
+  error: unknown,
+  child = processForRole(role)
+): void {
+  const isCurrentChild = child === undefined || processForRole(role) === child
+  if (isCurrentChild) {
+    setReadyForRole(role, false)
+    setPidForRole(role, workerPidFromBrokenChild(child, undefined))
+    failPendingRequestsForRole(role)
   }
-  if (error) {
-    process.stderr.write(`[background-worker] ingest-worker IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
+  terminateBrokenWorkerIpc(role, error, child)
+}
+
+function roleForChild(child: ChildProcess | undefined): BackgroundWorkerProcessRole {
+  return roleForBackgroundWorkerChild(child, {
+    metricsWorkerProcess,
+    ingestWorkerProcess,
+    statsWorkerProcess,
+    snapshotWorkerProcess,
+    probeWorkerProcess,
+    maintenanceWorkerProcess
+  })
+}
+
+function markIpcBrokenForChild(role: BackgroundWorkerProcessRole, error: unknown, child: ChildProcess | undefined): void {
+  if (role === 'metrics-worker') {
+    markMetricsWorkerIpcBroken(error, child)
+    return
   }
+  if (role === 'ingest-worker') {
+    markIngestWorkerIpcBroken(error, child)
+    return
+  }
+  if (isSnapshotRoleWorker(role)) {
+    markRoleWorkerIpcBroken(role, error, child)
+    return
+  }
+  markWorkerIpcBroken(error, child)
 }
 
 function markParentIpcBroken(error: unknown): void {
   failPendingProcessEventLoopRequests()
-  process.stderr.write(`[background-worker] 父进程 IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
+  writeParentIpcBrokenLog(error)
   process.exit(1)
 }
 
@@ -1516,23 +1769,11 @@ async function respondToIngestStatusRequest(requestId: string, targetChild: Chil
       status
     } satisfies BackgroundWorkerMessage, (error) => {
       if (error) {
-        if (child === ingestWorkerProcess) {
-          markIngestWorkerIpcBroken(error, child)
-        } else if (child === metricsWorkerProcess) {
-          markMetricsWorkerIpcBroken(error, child)
-        } else {
-          markWorkerIpcBroken(error, child)
-        }
+        markIpcBrokenForChild(roleForChild(child), error, child)
       }
     })
   } catch (error) {
-    if (child === ingestWorkerProcess) {
-      markIngestWorkerIpcBroken(error, child)
-    } else if (child === metricsWorkerProcess) {
-      markMetricsWorkerIpcBroken(error, child)
-    } else {
-      markWorkerIpcBroken(error, child)
-    }
+    markIpcBrokenForChild(roleForChild(child), error, child)
   }
 }
 
@@ -1589,16 +1830,13 @@ async function respondToProcessEventLoopRequest(requestId: string, targetChild =
   if (dbServiceSample) {
     samples.push(dbServiceSample)
   }
-  if (targetChild !== workerProcess) {
-    const workerSamples = await requestWorkerProcessEventLoopSamples()
+  for (const role of nonMetricsProcessEventLoopWorkerRoles()) {
+    if (targetChild === processForRole(role)) {
+      continue
+    }
+    const workerSamples = await requestChildProcessEventLoopSamples(role)
     if (workerSamples) {
       samples.push(...workerSamples)
-    }
-  }
-  if (targetChild !== ingestWorkerProcess) {
-    const ingestWorkerSamples = await requestIngestWorkerProcessEventLoopSamples()
-    if (ingestWorkerSamples) {
-      samples.push(...ingestWorkerSamples)
     }
   }
 
@@ -1613,23 +1851,11 @@ async function respondToProcessEventLoopRequest(requestId: string, targetChild =
       samples
     } satisfies BackgroundWorkerMessage, (error) => {
       if (error) {
-        if (child === metricsWorkerProcess) {
-          markMetricsWorkerIpcBroken(error, child)
-        } else if (child === ingestWorkerProcess) {
-          markIngestWorkerIpcBroken(error, child)
-        } else {
-          markWorkerIpcBroken(error, child)
-        }
+        markIpcBrokenForChild(roleForChild(child), error, child)
       }
     })
   } catch (error) {
-    if (child === metricsWorkerProcess) {
-      markMetricsWorkerIpcBroken(error, child)
-    } else if (child === ingestWorkerProcess) {
-      markIngestWorkerIpcBroken(error, child)
-    } else {
-      markWorkerIpcBroken(error, child)
-    }
+    markIpcBrokenForChild(roleForChild(child), error, child)
   }
 }
 

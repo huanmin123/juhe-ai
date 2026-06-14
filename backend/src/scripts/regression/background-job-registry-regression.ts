@@ -10,6 +10,8 @@ import {
 const backgroundJobsSource = readSource('../../modules/background/background-jobs.ts')
 const workerSource = readSource('../../worker.ts')
 const backgroundIpcSource = readSource('../../modules/background/background-ipc.ts')
+const backgroundIpcTypesSource = readSource('../../modules/background/background-ipc.types.ts')
+const backgroundIpcContractSource = `${backgroundIpcSource}\n${backgroundIpcTypesSource}`
 const recordMaintenanceSource = readSource('../../modules/record-maintenance/record-maintenance-queue.service.ts')
 
 const registryByName = new Map<string, BackgroundJobRegistryEntry>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
@@ -74,14 +76,14 @@ function assertWorkerIpcMessagesAreRegistered(): void {
 }
 
 function assertBackgroundIpcMessagesAreRegistered(): void {
-  const ipcNames = collectMatches(backgroundIpcSource, /type: '([^']+)'/g)
+  const ipcNames = collectMatches(backgroundIpcContractSource, /type: '([^']+)'/g)
     .filter(isBackgroundIpcRegistryName)
 
-  assert(ipcNames.length > 0, 'background-ipc.ts 应包含 IPC 消息类型')
+  assert(ipcNames.length > 0, 'background-ipc.ts / background-ipc.types.ts 应包含 IPC 消息类型')
   for (const name of new Set(ipcNames)) {
     const entry = registryByName.get(name)
-    assert(entry, `background-ipc.ts 消息 ${name} 未登记到 registry`)
-    assert(entry.category === 'ipc-queue' || entry.category === 'control-ipc', `background-ipc.ts 消息 ${name} registry category 应为 ipc-queue/control-ipc`)
+    assert(entry, `background-ipc 消息 ${name} 未登记到 registry`)
+    assert(entry.category === 'ipc-queue' || entry.category === 'control-ipc', `background-ipc 消息 ${name} registry category 应为 ipc-queue/control-ipc`)
   }
 }
 

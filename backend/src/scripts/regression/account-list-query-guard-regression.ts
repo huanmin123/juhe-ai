@@ -222,6 +222,9 @@ function createGuardAccount(
 function assertAccountListRouteBoundary(): void {
   const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
   const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
+  const accountSummaryRepositorySource = readFileSync(resolve('src/storage/account-summary.repository.ts'), 'utf8')
+  const accountOptionsRepositorySource = readFileSync(resolve('src/storage/account-options.repository.ts'), 'utf8')
+  const accountReadRepositorySource = readFileSync(resolve('src/storage/account-read.repository.ts'), 'utf8')
   assert(
     accountsRoutesSource.includes('registerAccountListRoutes(accountsRouter)'),
     '账户主路由应注册账户列表只读子路由'
@@ -239,15 +242,28 @@ function assertAccountListRouteBoundary(): void {
   )
   assert(
     accountListRoutesSource.includes('applyServerAccountConcurrencyToAccountList')
+      && accountListRoutesSource.includes('applyAccountListRuntimeStatusFilter')
       && accountListRoutesSource.includes('Server-Timing')
       && accountListRoutesSource.includes('sanitizeAccountListResponse'),
-    '账户列表只读子路由应保留并发水合、Server-Timing 和响应脱敏'
+    '账户列表只读子路由应保留并发水合、运行态状态后置归类、Server-Timing 和响应脱敏'
   )
   assert(
     !accountListRoutesSource.includes('mutationGuard(')
       && !accountListRoutesSource.includes('recordOperationLog(')
       && !accountListRoutesSource.includes('createAccount('),
     '账户列表只读子路由不应引入写操作、操作日志或 mutation guard'
+  )
+  assert(
+    !accountSummaryRepositorySource.includes('listAccountsPageWithDerivedStatusFilter')
+      && !accountOptionsRepositorySource.includes('queryAccountOptionRowsForAccessWithDerivedStatusFilter'),
+    '账户列表和 options 状态归类不应通过仓储层无界翻页后过滤实现'
+  )
+  assert(
+    accountReadRepositorySource.includes('account_schedule_allowed')
+      && accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
+      && accountOptionsRepositorySource.includes('account_schedule_allowed')
+      && accountOptionsRepositorySource.includes('accountApiKeyPoolAllUnavailableSql'),
+    '账户列表和 options 派生状态应下推时间计划与 Key 池 SQL 判断'
   )
 }
 

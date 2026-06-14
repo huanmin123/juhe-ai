@@ -46,8 +46,8 @@ interface WorkerQueueSpec {
   snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue' | 'runtimeLogIndexQueue'
 }
 
-type WorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['worker']>['snapshot']>
 type IngestWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['ingestWorker']>['snapshot']>
+type MaintenanceWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['maintenanceWorker']>['snapshot']>
 
 interface IpcQueueSpec {
   key: string
@@ -95,16 +95,16 @@ const ipcQueueSpecs: IpcQueueSpec[] = [
 export function buildBackgroundQueueHealthSnapshot(
   serverRuntime: DbServiceServerRuntimeSnapshot | undefined
 ): BackgroundQueueHealthSnapshot {
-  const workerSnapshot = serverRuntime?.worker?.snapshot
   const ingestWorkerSnapshot = serverRuntime?.ingestWorker?.snapshot
+  const maintenanceWorkerSnapshot = serverRuntime?.maintenanceWorker?.snapshot
   const serverIpcQueues = serverRuntime?.worker?.pendingQueues
   const workerQueues = workerQueueSpecs.map((spec) => buildQueueHealthItem({
     key: spec.key,
     label: spec.label,
     source: 'worker_local',
     snapshot: workerQueueSnapshot(spec.snapshotKey, {
-      workerSnapshot,
-      ingestWorkerSnapshot
+      ingestWorkerSnapshot,
+      maintenanceWorkerSnapshot
     })
   }))
   const ipcQueues = ipcQueueSpecs.map((spec) => buildQueueHealthItem({
@@ -116,12 +116,12 @@ export function buildBackgroundQueueHealthSnapshot(
   const allQueues = [...workerQueues, ...ipcQueues]
   const summary = summarizeQueueHealthItems(allQueues)
   const available = Boolean(serverRuntime)
-  const workerSnapshotAvailable = Boolean(workerSnapshot && ingestWorkerSnapshot)
+  const workerSnapshotAvailable = Boolean(ingestWorkerSnapshot && maintenanceWorkerSnapshot)
   const serverIpcQueueAvailable = Boolean(serverIpcQueues)
   const reasons: string[] = []
   if (!available) reasons.push('server_runtime_unavailable')
-  if (available && !workerSnapshot) reasons.push('worker_snapshot_unavailable')
   if (available && !ingestWorkerSnapshot) reasons.push('ingest_worker_snapshot_unavailable')
+  if (available && !maintenanceWorkerSnapshot) reasons.push('maintenance_worker_snapshot_unavailable')
   if (available && !serverIpcQueueAvailable) reasons.push('server_ipc_queue_unavailable')
   if (summary.degradedCount > 0) reasons.push('queue_degraded')
   if (summary.backloggedCount > 0) reasons.push('queue_backlogged')
@@ -142,12 +142,12 @@ export function buildBackgroundQueueHealthSnapshot(
 function workerQueueSnapshot(
   snapshotKey: WorkerQueueSpec['snapshotKey'],
   input: {
-    workerSnapshot?: WorkerRuntimeSnapshot
     ingestWorkerSnapshot?: IngestWorkerRuntimeSnapshot
+    maintenanceWorkerSnapshot?: MaintenanceWorkerRuntimeSnapshot
   }
 ): DbServiceRuntimeQueueSnapshot | undefined {
   if (snapshotKey === 'recordMaintenanceQueue') {
-    return input.workerSnapshot?.recordMaintenanceQueue
+    return input.maintenanceWorkerSnapshot?.recordMaintenanceQueue
   }
   return input.ingestWorkerSnapshot?.[snapshotKey]
 }

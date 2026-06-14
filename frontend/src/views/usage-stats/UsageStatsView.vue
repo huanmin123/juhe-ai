@@ -135,11 +135,10 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
-import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
-import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
+import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, ProviderDefinition } from '@/types/domain'
+import type { AccountUsageStatsOverview, AccountUsageStatsRow, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -152,49 +151,34 @@ import {
   buildAccountUsageSummaryCards,
   cacheReadRate,
   dedupeRowsById,
-  mergeOptionsById,
   metricText,
   metricValue,
   placeholderTrendRow,
   usageTrendDateKeys
 } from './usageStatsHelpers'
+import {
+  accountUsageStatsParams as buildAccountUsageStatsParams,
+  accountUsageStatsTableColumns,
+  accountUsageStatsTableScrollX,
+  type AccountUsagePageState
+} from './usageStatsPageConfig'
+import {
+  accountUsagePageSize,
+  defaultUsageStatsPageState,
+  initialUsageStatsMetric,
+  isUsageStatsDateDisabled,
+  maxAddedTrendAccounts,
+  normalizeUsageStatsDateRange,
+  parseUsageStatsDateRange,
+  responseUsageStatsDateRange,
+  usageStatsMetricOptions,
+  type UsageStatsFilters,
+  type UsageStatsPageState
+} from './usageStatsPageState'
+import { useUsageStatsAccountOptions } from './useUsageStatsAccountOptions'
 import { buildAccountUsageTrendOption, chartColors, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
-interface UsageStatsFilters {
-  systemAccountId: string
-  systemAccount?: PrincipalSelection
-}
-
-type UsageStatsPageState = {
-  filters: UsageStatsFilters
-  metric: UsageTrendMetric
-  range?: {
-    startDate: string
-    endDate: string
-  }
-}
-type AccountUsagePageState = { current: number; pageSize: number }
-
-const MAX_RANGE_DAYS = 31
-const accountUsagePageSize = 10
-const maxAddedTrendAccounts = 20
-const metricOptions: Array<{ label: string; value: UsageTrendMetric }> = [
-  { label: '成本', value: 'cost' },
-  { label: 'Token', value: 'tokens' },
-  { label: '请求', value: 'requests' }
-]
-
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-
-const defaultDateRange = (): [Dayjs, Dayjs] => {
-  return recentDateRange(MAX_RANGE_DAYS)
-}
-const defaultUsageStatsPageState = (): UsageStatsPageState => {
-  return {
-    filters: { systemAccountId: allSystemAccountsValue, systemAccount: undefined },
-    metric: 'cost'
-  }
-}
 
 const overview = ref<AccountUsageStatsOverview>()
 const providers = ref<ProviderDefinition[]>([])
@@ -213,21 +197,14 @@ const {
   enabled: () => isManagementView.value,
   selectedIds: () => [filters.systemAccountId]
 })
-const selectedMetric = ref<UsageTrendMetric>(metricOptions.some((item) => item.value === initialPageState.metric) ? initialPageState.metric : 'cost')
-const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
+const metricOptions = usageStatsMetricOptions
+const selectedMetric = ref<UsageTrendMetric>(initialUsageStatsMetric(initialPageState.metric))
+const dateRange = ref<[Dayjs, Dayjs]>(parseUsageStatsDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountSelections = ref<AccountSelection[]>([])
-const accountOptionRows = ref<AccountOptionSummary[]>([])
-const accountOptionsLoading = ref(false)
-const accountOptionsKeyword = ref('')
-let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
-let accountOptionsRequestSeq = 0
-let accountOptionsLoadingKey: string | undefined
-let accountOptionsLoadingPromise: Promise<void> | undefined
-const accountOptionsCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
 const {
   items: accountUsageRows,
   loading,
@@ -279,15 +256,29 @@ const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
   onMounted: () => {
     void loadData()
   },
-  onDeactivate: clearAccountOptionsSearchTimer,
-  onBeforeUnmount: clearAccountOptionsSearchTimer
+  onDeactivate: () => clearAccountOptionsSearchTimer(),
+  onBeforeUnmount: () => clearAccountOptionsSearchTimer()
+})
+const {
+  accountOptionRows,
+  accountOptionsLoading,
+  accountOptionsKeyword,
+  clearAccountOptionsSearchTimer,
+  handleAccountOptionsDropdown,
+  handleAccountOptionsSearch,
+  loadAccountOptions
+} = useUsageStatsAccountOptions({
+  isManagementView: () => isManagementView.value,
+  systemAccountId: () => scopedSystemAccountId(filters.systemAccountId),
+  selectedIds: () => addedTrendAccountIds.value,
+  pageActive
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const rows = computed(() => orderedUsageRows(accountUsageRows.value))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
-const selectedRange = computed(() => normalizedDateRange(dateRange.value))
+const selectedRange = computed(() => normalizeUsageStatsDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const rowsById = computed(() => new Map(rows.value.map((row) => [row.id, row])))
@@ -331,28 +322,8 @@ const accountUsageEmptyDescription = computed(() => hasSelectedTrendAccounts.val
   : '当前日期范围暂无账户用量，等待后台聚合后会显示结果。')
 const trendEmptyDescription = computed(() => visibleTrendRows.value.length ? `${rangeLabel.value} 暂无${metricText(selectedMetric.value)}消耗趋势` : '暂无可展示账户')
 const hasTrendData = computed(() => visibleTrendRows.value.some((row) => row.dailyUsage.some((point) => metricValue(point, selectedMetric.value) > 0)))
-const tableScrollX = computed(() => isManagementView.value ? 1620 : 1450)
-const columns = computed(() => {
-  const baseColumns: Array<Record<string, unknown>> = [
-    { title: '排名', key: 'rank', width: 76 },
-    { title: 'AI账户名称', dataIndex: 'name', key: 'name', width: 240 },
-    { title: '账户类型', dataIndex: 'type', key: 'type', width: 110 },
-    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 },
-    { title: '状态', key: 'status', width: 110 }
-  ]
-  if (isManagementView.value) {
-    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 170 })
-  }
-  baseColumns.push(
-    { title: '请求', key: 'requests', width: 120, align: 'right' },
-    { title: 'Token', key: 'tokens', width: 130, align: 'right' },
-    { title: '缓存率', key: 'cacheRate', width: 120, align: 'right' },
-    { title: '缓存成本', key: 'cacheCost', width: 130, align: 'right' },
-    { title: '成本', key: 'cost', width: 130, align: 'right' },
-    { title: '最后使用', key: 'lastUsedAt', width: 180 }
-  )
-  return baseColumns
-})
+const tableScrollX = computed(() => accountUsageStatsTableScrollX(isManagementView.value))
+const columns = computed(() => accountUsageStatsTableColumns(isManagementView.value))
 const accountFilterItems = computed(() => {
   const selectedIds = new Set(selectedTrendAccountIds.value)
   return trendAccountRows.value.map((account, index) => ({
@@ -395,7 +366,7 @@ function resetFilters() {
   const defaults = defaultUsageStatsPageState()
   Object.assign(filters, defaults.filters)
   selectedMetric.value = defaults.metric
-  dateRange.value = parseDateRange(defaults.range)
+  dateRange.value = parseUsageStatsDateRange(defaults.range)
   dateRangeExplicit.value = false
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
@@ -424,27 +395,16 @@ async function refreshMobileRows() {
 }
 
 function accountUsageParams(systemAccountId: string | undefined, pageState: AccountUsagePageState) {
-  const [startDate, endDate] = selectedRange.value
-  const params: {
-    systemAccountId?: string
-    startDate?: string
-    endDate?: string
-    accountIds?: string[]
-    page: number
-    pageSize: number
-  } = {
+  return buildAccountUsageStatsParams({
     systemAccountId,
+    dateRange: selectedRange.value,
     accountIds: addedTrendAccountIds.value,
-    page: pageState.current,
-    pageSize: pageState.pageSize
-  }
-  params.startDate = startDate
-  params.endDate = endDate
-  return params
+    pageState
+  })
 }
 
 function handleDateRangeChange() {
-  dateRange.value = parseDateRange({
+  dateRange.value = parseUsageStatsDateRange({
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
@@ -504,91 +464,6 @@ function removeAddedTrendAccount(id: string) {
   renderChart()
 }
 
-async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
-  accountOptionsKeyword.value = keyword
-  const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
-  const requestKeyword = keyword.trim() || undefined
-  const selectedIds = [...addedTrendAccountIds.value].sort()
-  const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', selectedIds])
-  if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
-    return accountOptionsLoadingPromise
-  }
-  const requestSeq = ++accountOptionsRequestSeq
-  if (!force) {
-    const cachedOptions = accountOptionsCache.get(requestKey)
-    if (cachedOptions) {
-      accountOptionsLoadingKey = undefined
-      accountOptionsLoadingPromise = undefined
-      accountOptionsLoading.value = false
-      accountOptionRows.value = cachedOptions
-      return
-    }
-  }
-  accountOptionsLoading.value = true
-  accountOptionsLoadingKey = requestKey
-  accountOptionsLoadingPromise = (async () => {
-    try {
-      let nextOptions = isManagementView.value
-        ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-        : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
-      nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
-      accountOptionsCache.set(requestKey, nextOptions)
-      if (requestSeq !== accountOptionsRequestSeq) return
-      accountOptionRows.value = nextOptions
-    } catch (error) {
-      if (requestSeq !== accountOptionsRequestSeq) return
-      console.error(error)
-      message.error('账户筛选项加载失败')
-    } finally {
-      if (accountOptionsLoadingKey === requestKey) {
-        accountOptionsLoadingKey = undefined
-        accountOptionsLoadingPromise = undefined
-      }
-      if (requestSeq === accountOptionsRequestSeq) {
-        accountOptionsLoading.value = false
-      }
-    }
-  })()
-  return accountOptionsLoadingPromise
-}
-
-async function ensureSelectedAccountOptions(nextOptions: AccountOptionSummary[], systemAccountId: string | undefined): Promise<AccountOptionSummary[]> {
-  const selectedIds = [...new Set(addedTrendAccountIds.value)]
-  const missingIds = selectedIds.filter((id) => !nextOptions.some((account) => account.id === id))
-  if (!missingIds.length) return nextOptions
-  try {
-    const selectedOptions = isManagementView.value
-      ? await api.accounts.options({ systemAccountId, ids: missingIds, limit: 50 })
-      : await api.myAccounts.options({ ids: missingIds, limit: 50 })
-    return mergeOptionsById(selectedOptions, nextOptions)
-  } catch {
-    return nextOptions
-  }
-}
-
-function handleAccountOptionsSearch(value: string) {
-  accountOptionsKeyword.value = value
-  clearAccountOptionsSearchTimer()
-  accountOptionsSearchTimer = window.setTimeout(() => {
-    accountOptionsSearchTimer = undefined
-    if (!pageActive.value) return
-    void loadAccountOptions(accountOptionsKeyword.value)
-  }, 250)
-}
-
-function handleAccountOptionsDropdown(open: boolean) {
-  if (open) {
-    void loadAccountOptions()
-  }
-}
-
-function clearAccountOptionsSearchTimer() {
-  if (accountOptionsSearchTimer && typeof window !== 'undefined') {
-    window.clearTimeout(accountOptionsSearchTimer)
-    accountOptionsSearchTimer = undefined
-  }
-}
-
 function clearTrendAccountState() {
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
@@ -599,7 +474,7 @@ function clearTrendAccountState() {
 }
 
 function disabledDate(current: Dayjs) {
-  return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
+  return isUsageStatsDateDisabled(current, calendarRange.value)
 }
 
 function providerName(providerCode?: string) {
@@ -645,19 +520,10 @@ function snapshotPageState(): UsageStatsPageState {
   }
 }
 
-function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
-  return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
-}
-
 function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
-  const start = parseDateKey(value?.startDate)
-  const end = parseDateKey(value?.endDate)
-  if (!start || !end || start.isAfter(end, 'day')) return
-  dateRange.value = [start.startOf('day'), end.startOf('day')]
-}
-
-function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
-  return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
+  const responseRange = responseUsageStatsDateRange(value)
+  if (!responseRange) return
+  dateRange.value = responseRange
 }
 
 function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {

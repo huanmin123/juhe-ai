@@ -71,6 +71,21 @@ try {
   assert.equal(weightedSequence.filter((key) => key === 'sk-weight-a').length, 6, '权重 3 的 Key 在 8 次选择中应命中 6 次')
   assert.equal(weightedSequence.filter((key) => key === 'sk-weight-b').length, 2, '权重 1 的 Key 在 8 次选择中应命中 2 次')
 
+  const weightedAvailableAfterIsolation = Array.from({ length: 3 }, () => rotation.selectAccountRuntimeApiKey({
+    accountId: weightedAccount.id,
+    credentials: weightedAccount.credentials,
+    runtimeStates: [{
+      keyFingerprint: rotation.fingerprintAccountApiKey('sk-weight-a'),
+      status: 'temporary_unavailable',
+      keyIndex: 0
+    }]
+  }))
+  assert.deepEqual(
+    weightedAvailableAfterIsolation,
+    ['sk-weight-b', 'sk-weight-b', 'sk-weight-b'],
+    '权重模式下不可用 Key 应从候选集中剔除，不能因为权重大继续被调度'
+  )
+
   console.log('账户内 API Key 轮询回归通过：多个上游 Key 保存为单个 AI 账户，并按轮询或权重在账户内部选择')
 } finally {
   databaseModule.closeStorageDatabases()

@@ -8,6 +8,7 @@ import net from 'node:net'
 import { DatabaseSync } from 'node:sqlite'
 
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+const serverEntryMode = process.env.JUHE_AI_WORKER_TOPOLOGY_ENTRY === 'dist' ? 'dist' : 'source'
 const tempRoot = mkdtempSync(resolve(tmpdir(), 'juhe-ai-worker-topology-'))
 const dataRoot = resolve(tempRoot, 'data')
 const logRoot = resolve(tempRoot, 'logs')
@@ -31,21 +32,22 @@ try {
   await waitForHealth(`http://127.0.0.1:${port}/__aisys__/health`, child)
   await waitForHealth(`http://127.0.0.1:${port}/__aisys__/api/health`, child)
 
-  const children = listChildProcesses(child.pid)
-  const workerChildren = children.filter((processInfo) => /(?:^|\b)worker\.(?:js|ts)\b/i.test(processInfo.commandLine))
-  const dbServiceChildren = children.filter((processInfo) => /(?:^|\b)db-service\.(?:js|ts)\b/i.test(processInfo.commandLine))
-  assert.equal(workerChildren.length, 3, `server 必须拉起默认 worker、metrics-worker 和 ingest-worker 三个子进程，实际 worker 子进程数：${workerChildren.length}`)
+  const { workerChildren, dbServiceChildren } = await waitForChildProcessTopology(child, 7, 1)
+  assert.equal(workerChildren.length, 7, `server 必须拉起默认 worker、metrics-worker、ingest-worker、stats-worker、snapshot-worker、probe-worker 和 maintenance-worker 七个子进程，实际 worker 子进程数：${workerChildren.length}`)
   assert.equal(dbServiceChildren.length, 1, `server 必须拉起一个 db-service 子进程，实际 db-service 子进程数：${dbServiceChildren.length}`)
 
-  const rows = await waitForProcessEventLoopRoles(statsDatabasePath, ['server', 'worker', 'metrics-worker', 'ingest-worker', 'db-service'])
-  console.log(`后台 worker 拓扑 smoke 通过：serverPid=${child.pid} workerChildren=${workerChildren.length} dbServiceChildren=${dbServiceChildren.length} roles=${rows.map((row) => `${row.processRole}:${row.count}`).join(',')}`)
+  const rows = await waitForProcessEventLoopRoles(statsDatabasePath, ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'db-service'])
+  console.log(`后台 worker 拓扑 smoke 通过：entry=${serverEntryMode} serverPid=${child.pid} workerChildren=${workerChildren.length} dbServiceChildren=${dbServiceChildren.length} roles=${rows.map((row) => `${row.processRole}:${row.count}`).join(',')}`)
 } finally {
   await stopProcessTree(child)
   removeTempRoot(tempRoot)
 }
 
 function startBackendServer(port: number): ChildProcess {
-  return spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
+  const args = serverEntryMode === 'dist'
+    ? ['dist/server.js']
+    : ['--import', 'tsx', 'src/server.ts']
+  return spawn(process.execPath, args, {
     cwd: backendRoot,
     env: {
       ...process.env,
@@ -65,6 +67,38 @@ function startBackendServer(port: number): ChildProcess {
     },
     stdio: ['ignore', 'pipe', 'pipe']
   })
+}
+
+async function waitForChildProcessTopology(
+  child: ChildProcess,
+  expectedWorkerCount: number,
+  expectedDbServiceCount: number
+): Promise<{
+  workerChildren: Array<{ processId: number; parentProcessId: number; commandLine: string }>
+  dbServiceChildren: Array<{ processId: number; parentProcessId: number; commandLine: string }>
+}> {
+  const startedAt = Date.now()
+  let lastWorkerChildren: Array<{ processId: number; parentProcessId: number; commandLine: string }> = []
+  let lastDbServiceChildren: Array<{ processId: number; parentProcessId: number; commandLine: string }> = []
+  while (Date.now() - startedAt < 30_000) {
+    if (child.exitCode !== null) {
+      throw new Error(`临时后端提前退出，exitCode=${child.exitCode}\nstdout=${childStdout}\nstderr=${childStderr}`)
+    }
+    const children = listChildProcesses(child.pid)
+    lastWorkerChildren = children.filter((processInfo) => /(?:^|\b)worker\.(?:js|ts)\b/i.test(processInfo.commandLine))
+    lastDbServiceChildren = children.filter((processInfo) => /(?:^|\b)db-service\.(?:js|ts)\b/i.test(processInfo.commandLine))
+    if (lastWorkerChildren.length === expectedWorkerCount && lastDbServiceChildren.length === expectedDbServiceCount) {
+      return {
+        workerChildren: lastWorkerChildren,
+        dbServiceChildren: lastDbServiceChildren
+      }
+    }
+    await sleep(250)
+  }
+  return {
+    workerChildren: lastWorkerChildren,
+    dbServiceChildren: lastDbServiceChildren
+  }
 }
 
 async function waitForHealth(url: string, child: ChildProcess): Promise<void> {

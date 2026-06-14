@@ -51,19 +51,32 @@ app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
 function assertAccountTagsRouteBoundary(): void {
   const mainRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
   const tagsRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-tags.routes.ts'), 'utf8')
+  const exportRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-export.routes.ts'), 'utf8')
 
   assert(
     mainRouteSource.includes('registerAccountTagsRoutes(accountsRouter)'),
     '账户主路由必须通过 registerAccountTagsRoutes 注册标签路由'
   )
+  assert(
+    mainRouteSource.includes('registerAccountExportRoutes(accountsRouter)'),
+    '账户主路由必须通过 registerAccountExportRoutes 注册导出路由'
+  )
   assert(!mainRouteSource.includes("accountsRouter.get('/tags'"), '账户标签列表路由不应回退到 accounts.routes.ts')
   assert(!mainRouteSource.includes("accountsRouter.delete('/tags/:tagId'"), '账户标签删除路由不应回退到 accounts.routes.ts')
+  assert(!mainRouteSource.includes("accountsRouter.patch('/:id/tags'"), '账户标签更新路由不应回退到 accounts.routes.ts')
+  assert(!mainRouteSource.includes("accountsRouter.post('/export'"), '账户导出路由不应回退到 accounts.routes.ts')
   assert(!mainRouteSource.includes('listAccountTags'), '账户主路由不应直接读取账户标签')
   assert(!mainRouteSource.includes('deleteAccountTag'), '账户主路由不应直接删除账户标签')
+  assert(!mainRouteSource.includes('updateAccountTags'), '账户主路由不应直接更新账户标签')
+  assert(!mainRouteSource.includes('accountTagsUpdateSchema'), '账户主路由不应直接校验账户标签更新参数')
   assert(!mainRouteSource.includes('AccountTagInUseError'), '账户主路由不应处理账户标签删除约束')
   assert(tagsRouteSource.includes("router.get('/tags'"), '账户标签子路由必须保留标签列表入口')
   assert(tagsRouteSource.includes("router.delete('/tags/:tagId'"), '账户标签子路由必须保留标签删除入口')
+  assert(tagsRouteSource.includes("router.patch('/:id/tags'"), '账户标签子路由必须保留标签更新入口')
   assert(tagsRouteSource.includes('AccountTagInUseError'), '账户标签子路由必须保留绑定标签删除约束错误处理')
+  assert(tagsRouteSource.includes("operationKey: 'accounts.update_tags'"), '账户标签子路由必须保留标签更新操作日志 key')
+  assert(exportRouteSource.includes("operationKey: 'accounts.export'"), '账户导出子路由必须保留操作日志 key')
+  assert(exportRouteSource.includes('exportAccountsForRequest'), '账户导出子路由必须调用导出服务')
 }
 
 assertAccountTagsRouteBoundary()

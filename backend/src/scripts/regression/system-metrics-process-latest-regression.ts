@@ -36,6 +36,10 @@ try {
       { processRole: 'worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'metrics-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'ingest-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'stats-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'snapshot-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'probe-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'temporary-maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'db-service', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null }
     ],
@@ -48,6 +52,10 @@ try {
       { processRole: 'worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'metrics-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'ingest-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'stats-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'snapshot-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'probe-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'temporary-maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
       { processRole: 'db-service', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null }
     ],
@@ -79,9 +87,33 @@ try {
     eventLoopLagMs: 9
   })
   usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'stats-worker',
+    processPid: 5101,
+    sampledAt: '2026-01-01T00:00:04.000Z',
+    eventLoopLagMs: 10
+  })
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'snapshot-worker',
+    processPid: 5201,
+    sampledAt: '2026-01-01T00:00:05.000Z',
+    eventLoopLagMs: 12
+  })
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'probe-worker',
+    processPid: 5301,
+    sampledAt: '2026-01-01T00:00:06.000Z',
+    eventLoopLagMs: 14
+  })
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'maintenance-worker',
+    processPid: 5401,
+    sampledAt: '2026-01-01T00:00:07.000Z',
+    eventLoopLagMs: 16
+  })
+  usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'temporary-maintenance-worker',
     processPid: 6001,
-    sampledAt: '2026-01-01T00:00:04.000Z',
+    sampledAt: '2026-01-01T00:00:08.000Z',
     eventLoopLagMs: 13
   })
   for (let index = 0; index < 125; index += 1) {
@@ -100,7 +132,7 @@ try {
     maxDays: 31
   })
   const latestStatusByRole = new Map(overview.processEventLoopLatestStatus.map((row) => [row.processRole, row]))
-  assert.deepEqual([...latestStatusByRole.keys()], ['server', 'worker', 'metrics-worker', 'ingest-worker', 'temporary-maintenance-worker', 'db-service'], '最新进程样本可用性应固定覆盖所有角色')
+  assert.deepEqual([...latestStatusByRole.keys()], ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'], '最新进程样本可用性应固定覆盖所有角色')
   assert.equal(latestStatusByRole.get('server')?.sampleAvailable, true, 'server 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 最新样本不应被 worker 连续样本挤掉')
   assert.equal(latestStatusByRole.get('worker')?.sampleAvailable, true, 'worker 有最新采样时应显式标记可用')
@@ -109,6 +141,14 @@ try {
   assert.equal(latestStatusByRole.get('metrics-worker')?.eventLoopLagMs, 7, 'metrics-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('ingest-worker')?.sampleAvailable, true, 'ingest-worker 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('ingest-worker')?.eventLoopLagMs, 9, 'ingest-worker 应返回自身最新样本')
+  assert.equal(latestStatusByRole.get('stats-worker')?.sampleAvailable, true, 'stats-worker 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('stats-worker')?.eventLoopLagMs, 10, 'stats-worker 应返回自身最新样本')
+  assert.equal(latestStatusByRole.get('snapshot-worker')?.sampleAvailable, true, 'snapshot-worker 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('snapshot-worker')?.eventLoopLagMs, 12, 'snapshot-worker 应返回自身最新样本')
+  assert.equal(latestStatusByRole.get('probe-worker')?.sampleAvailable, true, 'probe-worker 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('probe-worker')?.eventLoopLagMs, 14, 'probe-worker 应返回自身最新样本')
+  assert.equal(latestStatusByRole.get('maintenance-worker')?.sampleAvailable, true, 'maintenance-worker 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('maintenance-worker')?.eventLoopLagMs, 16, 'maintenance-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('temporary-maintenance-worker')?.sampleAvailable, true, 'temporary-maintenance-worker 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('temporary-maintenance-worker')?.eventLoopLagMs, 13, 'temporary-maintenance-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
@@ -156,6 +196,10 @@ try {
   assert.equal(peakStatusByRole.get('worker')?.sampledAt, workerPeakAt, 'worker 峰值状态应返回对应采样时间')
   assert.equal(peakStatusByRole.get('metrics-worker')?.sampleAvailable, false, 'metrics-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
   assert.equal(peakStatusByRole.get('ingest-worker')?.sampleAvailable, false, 'ingest-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
+  assert.equal(peakStatusByRole.get('stats-worker')?.sampleAvailable, false, 'stats-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
+  assert.equal(peakStatusByRole.get('snapshot-worker')?.sampleAvailable, false, 'snapshot-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
+  assert.equal(peakStatusByRole.get('probe-worker')?.sampleAvailable, false, 'probe-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
+  assert.equal(peakStatusByRole.get('maintenance-worker')?.sampleAvailable, false, 'maintenance-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
   assert.equal(peakStatusByRole.get('temporary-maintenance-worker')?.sampleAvailable, false, 'temporary-maintenance-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
   assert.equal(peakStatusByRole.get('db-service')?.sampleAvailable, false, 'db-service 无最近 24 小时采样时不应使用过期样本伪装峰值')
   const serverMinuteBucket = minuteOverview.processEventLoopTrend.find((row) => row.processRole === 'server' && row.sampleCount === 2)

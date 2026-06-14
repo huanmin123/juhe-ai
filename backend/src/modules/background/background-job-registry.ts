@@ -263,7 +263,7 @@ export const backgroundScheduledJobs = [
     category: 'scheduled',
     kind: 'stats',
     lifecycle: 'persistent',
-    defaultRole: 'stats-worker',
+    defaultRole: 'probe-worker',
     hotspot: false,
     singleOwner: true,
     shardable: false,

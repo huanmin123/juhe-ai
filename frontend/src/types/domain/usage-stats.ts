@@ -186,12 +186,36 @@ export interface SystemMetricsOverview {
   workerSnapshotAvailable: boolean
   metricsWorkerSnapshotAvailable?: boolean
   ingestWorkerSnapshotAvailable?: boolean
+  statsWorkerSnapshotAvailable?: boolean
+  snapshotWorkerSnapshotAvailable?: boolean
+  probeWorkerSnapshotAvailable?: boolean
+  maintenanceWorkerSnapshotAvailable?: boolean
   metricsWorker?: {
     pid: number | null
     ready: boolean
     snapshotAvailable: boolean
   } | null
   ingestWorker?: {
+    pid: number | null
+    ready: boolean
+    snapshotAvailable: boolean
+  } | null
+  statsWorker?: {
+    pid: number | null
+    ready: boolean
+    snapshotAvailable: boolean
+  } | null
+  snapshotWorker?: {
+    pid: number | null
+    ready: boolean
+    snapshotAvailable: boolean
+  } | null
+  probeWorker?: {
+    pid: number | null
+    ready: boolean
+    snapshotAvailable: boolean
+  } | null
+  maintenanceWorker?: {
     pid: number | null
     ready: boolean
     snapshotAvailable: boolean

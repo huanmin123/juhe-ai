@@ -76,6 +76,8 @@ async function main(): Promise<void> {
   const upstreamState: MockUpstreamState = { requests: [] }
 
   try {
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     settingsRepository.updateSettings({
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0,
@@ -113,6 +115,8 @@ async function main(): Promise<void> {
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     auditLogQueue.flushAllAuditLogQueue()
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await gatewayJsonParser.stopGatewayJsonParseWorker()
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)

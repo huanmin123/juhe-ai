@@ -71,42 +71,25 @@
         </template>
         <template #advanced-filters>
           <a-form layout="vertical" class="advanced-filter-form">
-            <a-form-item label="授权内容">
-              <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
-            </a-form-item>
-            <a-form-item label="授权资源">
-              <GroupSelect
-                v-if="filters.resourceType === 'group'"
-                v-model:value="filters.resourceId"
-                v-model:selected-group="filters.resourceGroup"
-                allow-clear
-                :disabled="resourceGroupDisabled"
-                option-filter-prop="label"
-                :options="resourceOptions"
-                :filter-option="false"
-                :loading="resourceOptionsLoading"
-                :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选授权资源'"
-                @change="handleResourceChange"
-                @dropdown-visible-change="handleResourceOptionsDropdown"
-                @search="handleResourceOptionsSearch"
-              />
-              <AccountSelect
-                v-else
-                v-model:value="filters.resourceId"
-                v-model:selected-account="filters.resourceAccount"
-                allow-clear
-                cache-key="accounts"
-                option-filter-prop="label"
-                :options="resourceOptions"
-                :disabled="filters.resourceType === 'all'"
-                :filter-option="false"
-                :loading="resourceOptionsLoading"
-                :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-                @change="handleResourceChange"
-                @dropdown-visible-change="handleResourceOptionsDropdown"
-                @search="handleResourceOptionsSearch"
-              />
-            </a-form-item>
+            <AuthorizationUsageResourceFilterFields
+              v-model:resource-type="filters.resourceType"
+              v-model:resource-id="filters.resourceId"
+              v-model:resource-account="filters.resourceAccount"
+              v-model:resource-group="filters.resourceGroup"
+              variant="advanced"
+              type-label="授权内容"
+              resource-label="授权资源"
+              resource-placeholder="筛选授权资源"
+              empty-type-placeholder="先选择授权内容"
+              :resource-type-options="resourceTypeOptions"
+              :resource-options="resourceOptions"
+              :resource-options-loading="resourceOptionsLoading"
+              :resource-group-disabled="resourceGroupDisabled"
+              @resource-type-change="handleResourceTypeChange"
+              @resource-change="handleResourceChange"
+              @resource-options-dropdown="handleResourceOptionsDropdown"
+              @resource-options-search="handleResourceOptionsSearch"
+            />
           </a-form>
         </template>
         <template #filters>
@@ -156,61 +139,45 @@
               @search="handleGranteeUserOptionsSearch"
             />
           </label>
-          <label class="mobile-filter-field">
-            <span>授权内容</span>
-            <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
-          </label>
-          <label v-if="isManagementView" class="mobile-filter-field">
-            <span>资源归属用户</span>
-            <SystemPrincipalSelect
-              v-model:value="filters.resourceOwnerSystemAccountId"
-              v-model:selected-principal="filters.resourceOwnerSystemAccount"
-              :accounts="resourceOwnerUsers"
-              :active-only="false"
-              :filter-option="false"
-              :loading="resourceOwnerUserOptionsLoading"
-              include-all
-              all-label="全部资源归属用户"
-              placeholder="筛选资源归属用户"
-              @change="handleResourceOwnerChange"
-              @dropdown-visible-change="handleResourceOwnerUserOptionsDropdown"
-              @search="handleResourceOwnerUserOptionsSearch"
-            />
-          </label>
-          <label class="mobile-filter-field">
-            <span>授权资源</span>
-            <GroupSelect
-              v-if="filters.resourceType === 'group'"
-              v-model:value="filters.resourceId"
-              v-model:selected-group="filters.resourceGroup"
-              allow-clear
-              :disabled="resourceGroupDisabled"
-              option-filter-prop="label"
-              :options="resourceOptions"
-              :filter-option="false"
-              :loading="resourceOptionsLoading"
-              :placeholder="resourceGroupDisabled ? '请先选择资源归属用户' : '筛选授权资源'"
-              @change="handleResourceChange"
-              @dropdown-visible-change="handleResourceOptionsDropdown"
-              @search="handleResourceOptionsSearch"
-            />
-            <AccountSelect
-              v-else
-              v-model:value="filters.resourceId"
-              v-model:selected-account="filters.resourceAccount"
-              allow-clear
-              cache-key="accounts"
-              option-filter-prop="label"
-              :options="resourceOptions"
-              :disabled="filters.resourceType === 'all'"
-              :filter-option="false"
-              :loading="resourceOptionsLoading"
-              :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-              @change="handleResourceChange"
-              @dropdown-visible-change="handleResourceOptionsDropdown"
-              @search="handleResourceOptionsSearch"
-            />
-          </label>
+          <AuthorizationUsageResourceFilterFields
+            v-model:resource-type="filters.resourceType"
+            v-model:resource-id="filters.resourceId"
+            v-model:resource-account="filters.resourceAccount"
+            v-model:resource-group="filters.resourceGroup"
+            variant="mobile"
+            type-label="授权内容"
+            resource-label="授权资源"
+            resource-placeholder="筛选授权资源"
+            empty-type-placeholder="先选择授权内容"
+            :resource-type-options="resourceTypeOptions"
+            :resource-options="resourceOptions"
+            :resource-options-loading="resourceOptionsLoading"
+            :resource-group-disabled="resourceGroupDisabled"
+            @resource-type-change="handleResourceTypeChange"
+            @resource-change="handleResourceChange"
+            @resource-options-dropdown="handleResourceOptionsDropdown"
+            @resource-options-search="handleResourceOptionsSearch"
+          >
+            <template #between>
+              <label v-if="isManagementView" class="mobile-filter-field">
+                <span>资源归属用户</span>
+                <SystemPrincipalSelect
+                  v-model:value="filters.resourceOwnerSystemAccountId"
+                  v-model:selected-principal="filters.resourceOwnerSystemAccount"
+                  :accounts="resourceOwnerUsers"
+                  :active-only="false"
+                  :filter-option="false"
+                  :loading="resourceOwnerUserOptionsLoading"
+                  include-all
+                  all-label="全部资源归属用户"
+                  placeholder="筛选资源归属用户"
+                  @change="handleResourceOwnerChange"
+                  @dropdown-visible-change="handleResourceOwnerUserOptionsDropdown"
+                  @search="handleResourceOwnerUserOptionsSearch"
+                />
+              </label>
+            </template>
+          </AuthorizationUsageResourceFilterFields>
         </template>
       </ResponsiveListToolbar>
     </a-card>
@@ -316,8 +283,6 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
-import AccountSelect from '@/components/AccountSelect.vue'
-import GroupSelect from '@/components/GroupSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
@@ -325,35 +290,28 @@ import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useRemoteAuthorizationPrincipalOptions } from '@/composables/useRemoteAuthorizationPrincipalOptions'
 import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
 import { isDateKey } from '@/shared/dateRange'
-import type { AccountSelection } from '@/shared/accountLabelCache'
-import type { GroupSelection } from '@/shared/groupLabelCache'
-import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
-import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import type { AuthorizationUserUsageOverview, AuthorizationUserUsageRow, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
+import { formatDateTime } from './authorizationFormatters'
 import {
-  emptyUsageSummary,
-  formatCost,
-  formatDateTime,
-  formatNumber,
-  formatUsageAmount
-} from './authorizationFormatters'
-import { authorizationResourceTypeOptions, type AuthorizationFilterResourceType } from './authorizationTableColumns'
+  buildAuthorizationUserUsageSummaryCards,
+  createAuthorizationUsageShowTotal,
+  resourceDisplayName,
+  resourceTypeTag,
+  teamDisplayName
+} from './authorizationUsageDisplay'
+import {
+  countAuthorizationUsageAdvancedFilters,
+  countAuthorizationUserUsageActiveFilters,
+  defaultAuthorizationUserUsageFilters,
+  type AuthorizationUserUsageFilters
+} from './authorizationUsageFilters'
+import AuthorizationUsageResourceFilterFields from './AuthorizationUsageResourceFilterFields.vue'
+import { authorizationUserUsageColumns } from './authorizationUsageTableConfig'
+import { authorizationResourceTypeOptions } from './authorizationTableColumns'
 import { useAuthorizationUsageDateRange } from './useAuthorizationUsageDateRange'
 import { useAuthorizationUsageResourceFilters } from './useAuthorizationUsageResourceFilters'
 
-type UserUsageFilters = {
-  teamId?: string
-  team?: PrincipalSelection
-  granteeSystemAccountId?: string
-  granteeSystemAccount?: PrincipalSelection
-  resourceOwnerSystemAccountId: string
-  resourceOwnerSystemAccount?: PrincipalSelection
-  resourceType: AuthorizationFilterResourceType
-  resourceId?: string
-  resourceAccount?: AccountSelection
-  resourceGroup?: GroupSelection
-}
 const route = useRoute()
 const authorizationUsagePageSize = 20
 const overview = ref<AuthorizationUserUsageOverview>()
@@ -361,7 +319,7 @@ let optionsLoaded = false
 let optionsLoading: Promise<void> | undefined
 let usageRequestSeq = 0
 
-const filters = reactive<UserUsageFilters>(defaultFilters())
+const filters = reactive<AuthorizationUserUsageFilters>(defaultAuthorizationUserUsageFilters())
 const {
   isManagementView,
   selectedResourceOwnerSystemAccountId,
@@ -441,10 +399,7 @@ const {
   resetPagination
 } = useResponsivePagedList<AuthorizationUserUsageRow, { forceOptions?: boolean }>({
   pageSize: authorizationUsagePageSize,
-  showTotal: (total, _range, context) => {
-    const loaded = context ? (context.current - 1) * context.pageSize + context.currentPageCount : total
-    return context?.hasMore ? `已加载到第 ${formatNumber(loaded)} 条用户消耗，还有更多` : `共 ${formatNumber(total)} 条用户消耗`
-  },
+  showTotal: createAuthorizationUsageShowTotal('用户消耗'),
   fetchPage: fetchUserUsagePage,
   onError: (error) => {
     console.error(error)
@@ -452,39 +407,21 @@ const {
   }
 })
 const resourceTypeOptions = authorizationResourceTypeOptions
-const columns = [
-  { title: '资源名称', key: 'account', width: 220 },
-  { title: '资源归属人', key: 'accountOwner', width: 180 },
-  { title: '被授权用户', key: 'user', width: 230 },
-  { title: '所属团队', key: 'teams', width: 180 },
-  { title: '范围消耗', key: 'usage', width: 220 },
-  { title: '最后使用', key: 'lastUsedAt', width: 180 }
-]
+const columns = authorizationUserUsageColumns
 
 const initialLoading = computed(() => loading.value && !overview.value)
-const activeFilterCount = computed(() => {
-  let count = 0
-  if (filters.teamId) count += 1
-  if (filters.granteeSystemAccountId) count += 1
-  if (selectedResourceOwnerSystemAccountId.value) count += 1
-  if (filters.resourceType !== 'all') count += 1
-  if (!resourceGroupDisabled.value && filters.resourceId) count += 1
-  if (dateRangeExplicit.value) count += 1
-  return count
-})
-const advancedFilterCount = computed(() => {
-  let count = 0
-  if (filters.resourceType !== 'all') count += 1
-  if (!resourceGroupDisabled.value && filters.resourceId) count += 1
-  return count
-})
-const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
-const summaryCards = computed(() => [
-  { key: 'users', label: overview.value?.hasMore ? '已加载用户' : '被授权用户', value: formatNumber(overview.value?.userCount ?? 0), extra: overview.value?.hasMore ? '还有更多用户消耗' : `范围 ${rangeLabel.value}` },
-  { key: 'requests', label: '范围请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
-  { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(totalUsage.value.totalTokens), extra: `输入 ${formatUsageAmount(totalUsage.value.inputTokens)}` },
-  { key: 'cost', label: '成本', value: formatCost(totalUsage.value.totalCost), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` }
-])
+const activeFilterCount = computed(() => countAuthorizationUserUsageActiveFilters(filters, {
+  dateRangeExplicit: dateRangeExplicit.value,
+  resourceGroupDisabled: resourceGroupDisabled.value,
+  selectedResourceOwnerSystemAccountId: selectedResourceOwnerSystemAccountId.value
+}))
+const advancedFilterCount = computed(() => countAuthorizationUsageAdvancedFilters(filters, resourceGroupDisabled.value))
+const summaryCards = computed(() => buildAuthorizationUserUsageSummaryCards({
+  hasMore: overview.value?.hasMore,
+  rangeLabel: rangeLabel.value,
+  summary: overview.value?.summary,
+  userCount: overview.value?.userCount
+}))
 
 async function loadOptions(options: { force?: boolean } = {}) {
   if (options.force) {
@@ -583,20 +520,6 @@ function handleResourceChange() {
   reloadFromFirstPage()
 }
 
-function resourceTypeTag(resourceType: AuthorizationResourceType) {
-  return resourceType === 'group'
-    ? { text: '分组', color: 'purple' }
-    : { text: 'AI账户', color: 'blue' }
-}
-
-function resourceDisplayName(row: AuthorizationUserUsageRow): string {
-  return row.resourceName || row.accountName || '-'
-}
-
-function teamDisplayName(row: AuthorizationUserUsageRow): string {
-  return row.teamNames?.filter(Boolean).join('、') ?? ''
-}
-
 function handleResourceTypeChange() {
   resetResourceId()
   resetResourceOptionsSearch()
@@ -611,7 +534,7 @@ function handleResourceOwnerChange() {
 }
 
 function resetFilters() {
-  Object.assign(filters, defaultFilters())
+  Object.assign(filters, defaultAuthorizationUserUsageFilters())
   resetTeamOptionsSearch()
   resetGranteeUserOptionsSearch()
   resetResourceOwnerUserOptionsSearch()
@@ -629,7 +552,7 @@ function applyRouteFilters() {
   const resourceType = route.query.resourceType === 'account' || route.query.resourceType === 'group' ? route.query.resourceType : undefined
   const startDate = singleQueryValue(route.query.startDate)
   const endDate = singleQueryValue(route.query.endDate)
-  Object.assign(filters, defaultFilters())
+  Object.assign(filters, defaultAuthorizationUserUsageFilters())
   resetDateRange()
   filters.teamId = teamId
   filters.granteeSystemAccountId = granteeSystemAccountId
@@ -665,20 +588,6 @@ function hasRouteFilters(): boolean {
 function singleQueryValue(value: unknown): string | undefined {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined
   return typeof value === 'string' ? value : undefined
-}
-
-function defaultFilters(): UserUsageFilters {
-  return {
-    resourceOwnerSystemAccountId: allSystemAccountsValue,
-    resourceOwnerSystemAccount: undefined,
-    resourceType: 'all',
-    resourceId: undefined,
-    resourceAccount: undefined,
-    team: undefined,
-    teamId: undefined,
-    granteeSystemAccount: undefined,
-    granteeSystemAccountId: undefined
-  }
 }
 
 onMounted(() => {
