@@ -160,9 +160,7 @@ import { message } from '@/lib/antd'
 import { api } from '@/api/client'
 import type {
   AuditLogDetail,
-  AuditLogHotSearchResult,
   AuditLogPayloadDetail,
-  AuditLogRuntime,
   AuditLogSummary,
   AuditOutcome,
   AuditTrafficSource
@@ -191,9 +189,7 @@ import {
 } from './auditLogFormatters'
 import {
   auditLogFilterCounts,
-  auditLogHotSearchActiveFilterCount,
-  auditLogListParams,
-  normalizeHotSearchKeywordInput
+  auditLogListParams
 } from './auditLogFilters'
 import {
   auditLogColumns,
@@ -205,15 +201,13 @@ import {
 } from './auditPayloadDetails'
 import AuditLogDetailDrawer from './AuditLogDetailDrawer.vue'
 import { useAuditLogAccountOptions } from './useAuditLogAccountOptions'
+import { useAuditLogHotSearchState } from './useAuditLogHotSearchState'
+import { useAuditLogRuntimeAlert } from './useAuditLogRuntimeAlert'
 
 type AuditLogViewMode = 'list' | 'search'
 
 const detailLoading = ref(false)
 const payloadLoadingId = ref('')
-const runtime = ref<AuditLogRuntime>()
-const hotSearchResult = ref<AuditLogHotSearchResult>()
-const hotSearchRecords = ref<AuditLogSummary[]>([])
-const hotSearchLoading = ref(false)
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
@@ -228,8 +222,12 @@ const {
 } = useRemoteSystemAccountOptions({
   selectedIds: () => [systemAccountFilter.value]
 })
-let auditRuntimeRequestSeq = 0
-let hotSearchRequestSeq = 0
+const {
+  auditRuntimeAlertDescription,
+  auditRuntimeAlertVisible,
+  cancelAuditRuntimeRequest,
+  refreshAuditRuntimeQuietly
+} = useAuditLogRuntimeAlert()
 
 const pageSize = 100
 const auditPayloadFullReadWindowBytes = 768 * 1024
@@ -271,7 +269,6 @@ const effectiveInitialPageState: AuditLogsPageState = initialTraceId
   : initialPageState
 
 const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
-const hotSearchKeywordFilter = ref(effectiveInitialPageState.hotSearchKeywordFilter)
 const accountIdFilter = ref(effectiveInitialPageState.accountIdFilter)
 const accountSelection = ref<AccountSelection | undefined>(effectiveInitialPageState.accountSelection)
 const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcomeFilter)
@@ -325,6 +322,21 @@ const {
     message.error('加载审计日志失败')
   }
 })
+const {
+  cancelHotSearchRequest,
+  hotSearchActiveFilterCount,
+  hotSearchKeywordFilter,
+  hotSearchLoading,
+  hotSearchRecords,
+  hotSearchResult,
+  hotSearchTablePagination,
+  resetHotSearch,
+  searchHotAuditLogs
+} = useAuditLogHotSearchState({
+  initialKeyword: effectiveInitialPageState.hotSearchKeywordFilter,
+  pageSize: () => pagination.pageSize,
+  onSearchCompleted: refreshAuditRuntimeQuietly
+})
 
 const outcomeOptions = auditOutcomeOptions
 const viewModeOptions = [
@@ -357,7 +369,6 @@ const currentFilterValues = computed(() => ({
 }))
 const filterCounts = computed(() => auditLogFilterCounts(currentFilterValues.value))
 const activeFilterCount = computed(() => filterCounts.value.active)
-const hotSearchActiveFilterCount = computed(() => auditLogHotSearchActiveFilterCount(hotSearchKeywordFilter.value))
 const toolbarKeyword = computed({
   get: () => viewMode.value === 'search' ? hotSearchKeywordFilter.value : traceIdFilter.value,
   set: (value: string) => {
@@ -379,57 +390,8 @@ const currentRecords = computed(() => viewMode.value === 'search' ? hotSearchRec
 const currentLoading = computed(() => viewMode.value === 'search' ? hotSearchLoading.value : loading.value)
 const currentMobileHasMore = computed(() => viewMode.value === 'search' ? false : mobileHasMore.value)
 const currentMobileLoadingMore = computed(() => viewMode.value === 'search' ? false : mobileLoadingMore.value)
-const hotSearchTablePagination = computed(() => {
-  const hasMore = hotSearchResult.value?.hasMore === true
-  const count = hotSearchRecords.value.length
-  return {
-    current: 1,
-    pageSize: pagination.pageSize,
-    total: hasMore ? count + 1 : count,
-    showSizeChanger: false,
-    showTotal: () => hasMore
-      ? `已显示前 ${count} 条匹配审计，还有更多`
-      : `共 ${count} 条匹配审计`
-  }
-})
 const currentTablePagination = computed(() => viewMode.value === 'search' ? hotSearchTablePagination.value : tablePagination.value)
-const auditRuntimeRiskReasons = computed(() => {
-  const info = runtime.value
-  if (!info) return []
-  const reasons: string[] = []
-  if (info.flushLastError) reasons.push(`最近写入失败：${info.flushLastError}`)
-  if (positiveRuntimeCount(info.droppedSuccessCount)) reasons.push(`成功审计丢弃 ${info.droppedSuccessCount} 条`)
-  if (positiveRuntimeCount(info.droppedFailureCount)) reasons.push(`失败审计丢弃 ${info.droppedFailureCount} 条`)
-  if (positiveRuntimeCount(info.droppedOverflowCount)) reasons.push(`队列溢出丢弃 ${info.droppedOverflowCount} 条`)
-  if (positiveRuntimeCount(info.droppedOversizeCount)) reasons.push(`超限审计丢弃 ${info.droppedOversizeCount} 条`)
-  return reasons
-})
-const auditRuntimeAlertVisible = computed(() => auditRuntimeRiskReasons.value.length > 0)
-const auditRuntimeAlertDescription = computed(() => {
-  const info = runtime.value
-  if (!info) return ''
-  const reasons = auditRuntimeRiskReasons.value
-  const workerText = info.worker.available
-    ? `后台进程${runtimeReadyText(info.worker.ready)}`
-    : '后台进程状态不可用'
-  return `${reasons.join('；')}。${workerText}。`
-})
 let skipNextRouteTraceRestore = false
-async function refreshAuditRuntimeQuietly(): Promise<void> {
-  const requestSeq = ++auditRuntimeRequestSeq
-  try {
-    const runtimeInfo = await api.auditLogs.runtime()
-    if (requestSeq !== auditRuntimeRequestSeq) return
-    runtime.value = runtimeInfo
-  } catch (error) {
-    if (requestSeq !== auditRuntimeRequestSeq) return
-    console.error(error)
-  }
-}
-
-function cancelAuditRuntimeRequest(): void {
-  auditRuntimeRequestSeq += 1
-}
 
 watch(records, rememberAuditRecordGroupLabels, { immediate: true })
 watch(hotSearchRecords, rememberAuditRecordGroupLabels, { immediate: true })
@@ -458,9 +420,7 @@ function refreshCurrentMode(): void {
 function resetCurrentMode(): void {
   if (viewMode.value === 'search') {
     clearRouteTraceIdForManualState()
-    hotSearchKeywordFilter.value = ''
-    hotSearchRecords.value = []
-    hotSearchResult.value = undefined
+    resetHotSearch()
     return
   }
   resetFilters()
@@ -499,38 +459,6 @@ function applyFilters(): void {
   clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
-}
-
-async function searchHotAuditLogs(): Promise<void> {
-  const keyword = normalizeHotSearchKeywordInput(hotSearchKeywordFilter.value)
-  if (hotSearchKeywordFilter.value !== keyword) {
-    hotSearchKeywordFilter.value = keyword
-  }
-  const requestId = ++hotSearchRequestSeq
-  if (!keyword) {
-    hotSearchRecords.value = []
-    hotSearchResult.value = undefined
-    return
-  }
-  hotSearchLoading.value = true
-  try {
-    const result = await api.auditLogs.searchHot({
-      keywords: keyword,
-      limit: pagination.pageSize
-    })
-    if (requestId !== hotSearchRequestSeq) return
-    hotSearchResult.value = result
-    hotSearchRecords.value = result.items
-    void refreshAuditRuntimeQuietly()
-  } catch (error) {
-    if (requestId !== hotSearchRequestSeq) return
-    console.error(error)
-    message.error('搜索最近审计内容失败')
-  } finally {
-    if (requestId === hotSearchRequestSeq) {
-      hotSearchLoading.value = false
-    }
-  }
 }
 
 function applyPageState(state: AuditLogsPageState): void {
@@ -694,16 +622,6 @@ function closeTransientDetails(): void {
   selectedPayload.value = undefined
 }
 
-function runtimeReadyText(value: boolean | null): string {
-  if (value === true) return '已就绪'
-  if (value === false) return '未就绪'
-  return '状态未知'
-}
-
-function positiveRuntimeCount(value: number | null): boolean {
-  return typeof value === 'number' && value > 0
-}
-
 function snapshotPageState(): AuditLogsPageState {
   return {
     accountIdFilter: accountIdFilter.value,
@@ -761,12 +679,12 @@ onMounted(loadInitialModeData)
 onBeforeUnmount(() => {
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
-  hotSearchRequestSeq += 1
+  cancelHotSearchRequest()
 })
 onDeactivated(() => {
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
-  hotSearchRequestSeq += 1
+  cancelHotSearchRequest()
   closeTransientDetails()
 })
 </script>

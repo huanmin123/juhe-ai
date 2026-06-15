@@ -37,8 +37,6 @@ import {
   forgetOpenAIAccountForSession
 } from '../runtime/session-affinity.service.js'
 import {
-  gatewayStreamClientRetryErrorCode,
-  gatewayStreamFailureCode,
   gatewayErrorPayload,
   isOpenAIJsonResponseContentType,
   sendGatewayErrorResponse,
@@ -51,7 +49,6 @@ import {
 } from './stream.js'
 import {
   inspectResponseSemanticFrames,
-  isCodexRetryableAfterOutputResponseFailureCode,
   resolveRuntimeResponseInspectionPolicies,
   type ResponseInspectionDecision
 } from './inspection.js'
@@ -93,11 +90,18 @@ import {
   recordCompletedUpstreamAttempt,
   type GatewayUsageContext
 } from '../usage/records.js'
+import {
+  preCommitStreamServerRetryErrorCode,
+  shouldExcludeCurrentAccountForStreamServerRetry,
+  shouldRememberCodexTurnStreamFailure,
+  shouldRetryCodexPreCommitStreamFailureOnServer,
+  shouldRetryPreCommitStreamFailureOnServer,
+  shouldRetryResponseInspectionDecisionOnServer,
+  shouldRetryResponseInspectionOnServer,
+  type StreamServerRetryReason
+} from './stream-finalization-retry-decision.js'
 
-export type StreamServerRetryReason =
-  | 'response_inspection'
-  | 'pre_commit_stream_failure'
-  | 'codex_pre_commit_stream_failure'
+export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
@@ -562,88 +566,6 @@ async function applyResponseInspectionObservationDecisions(
       observations: observations.map(responseInspectionAuditMetadata)
     }
   })
-}
-
-function shouldRetryResponseInspectionOnServer(
-  streamResult: GatewayStreamPipeResult,
-  res: Response
-): streamResult is GatewayStreamPipeResult & { responseInspection: ResponseInspectionDecision } {
-  const decision = streamResult.responseInspection
-  return shouldRetryResponseInspectionDecisionOnServer(decision, res)
-}
-
-function shouldRetryResponseInspectionDecisionOnServer(
-  decision: ResponseInspectionDecision | undefined,
-  res: Response
-): decision is ResponseInspectionDecision {
-  return decision?.reason === 'configured_response_policy'
-    && decision.retryEnabled === true
-    && decision.policySource !== 'system_default'
-    && !res.headersSent
-    && !res.writableEnded
-    && !res.destroyed
-}
-
-function shouldRetryCodexPreCommitStreamFailureOnServer(
-  streamResult: GatewayStreamPipeResult,
-  clientStrategy: OpenAIGatewayClientStrategyContext | undefined,
-  res: Response
-): boolean {
-  const retryableAfterOutput = isCodexRetryableAfterOutputResponseFailureCode(streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode)
-  return !streamResult.completed
-    && streamResult.downstreamBytesWritten === 0
-    && (!streamResult.outputReceived || retryableAfterOutput)
-    && clientStrategy?.allowCodexTurnAccountAvoidance === true
-    && (
-      streamResult.errorCode === gatewayStreamClientRetryErrorCode
-      || streamResult.responseInspection?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
-    )
-    && !res.headersSent
-    && !res.writableEnded
-    && !res.destroyed
-}
-
-function shouldRetryPreCommitStreamFailureOnServer(
-  streamResult: GatewayStreamPipeResult,
-  res: Response
-): boolean {
-  return !streamResult.completed
-    && streamResult.downstreamBytesWritten === 0
-    && !streamResult.outputReceived
-    && streamResult.errorCode !== undefined
-    && !res.headersSent
-    && !res.writableEnded
-    && !res.destroyed
-}
-
-function preCommitStreamServerRetryErrorCode(
-  streamResult: GatewayStreamPipeResult,
-  clientStrategy: OpenAIGatewayClientStrategyContext | undefined
-): string | undefined {
-  return clientStrategy?.allowCodexStreamClientRetry === true
-    ? gatewayStreamClientRetryErrorCode
-    : gatewayStreamFailureCode(streamResult.message)
-}
-
-function shouldExcludeCurrentAccountForStreamServerRetry(decision: ResponseInspectionDecision): boolean {
-  return decision.accountSwitch === 'request_next_account'
-    || decision.accountSwitch === 'avoid_account_ttl'
-    || decision.accountSwitch === 'avoid_upstream_bucket_ttl'
-    || decision.accountState === 'runtime_avoidance'
-}
-
-function shouldRememberCodexTurnStreamFailure(
-  streamResult: GatewayStreamPipeResult,
-  clientStrategy: OpenAIGatewayClientStrategyContext | undefined
-): clientStrategy is OpenAIGatewayClientStrategyContext {
-  const retryableAfterOutput = isCodexRetryableAfterOutputResponseFailureCode(streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode)
-  return !streamResult.completed
-    && (!streamResult.outputReceived || retryableAfterOutput)
-    && clientStrategy?.allowCodexTurnAccountAvoidance === true
-    && (
-      streamResult.errorCode === gatewayStreamClientRetryErrorCode
-      || streamResult.responseInspection?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
-    )
 }
 
 function usageRequestSnapshotWithBodyOmission(

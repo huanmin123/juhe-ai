@@ -587,7 +587,8 @@ assert.match(usageStatsTypesSource, /traffic_source: string\r?\n/)
 assert.doesNotMatch(usageStatsTypesSource, /traffic_source: string \| null/)
 
 const openAIAccountSelectorSource = readSource('storage/openai-account-selector.repository.ts')
-assert.doesNotMatch(openAIAccountSelectorSource, /COALESCE\(source_accounts\.type, accounts\.type\)/)
+const gatewayDispatchCandidateWindowSource = readSource('storage/gateway-dispatch-candidate-window.repository.ts')
+assert.doesNotMatch(gatewayDispatchCandidateWindowSource, /COALESCE\(source_accounts\.type, accounts\.type\)/)
 assert.match(openAIAccountSelectorSource, /accountAccess\.accountAccessType === 'account_authorized' && !row\.resource_account_id/)
 
 const accountRequestSchemasSource = readSource('modules/accounts/account-request.schemas.ts')
@@ -601,9 +602,6 @@ assert.match(accountsRoutesSource, /accountUpdateSchema\.safeParse\(req\.body\)/
 
 const repositoriesSource = readSource('storage/repositories.ts')
 assert.doesNotMatch(repositoriesSource, /SET type = \?,\s*credentials_encrypted = \?/s)
-assert.match(repositoriesSource, /function logicallyDeleteSourceAccountWithInstances/)
-assert.match(repositoriesSource, /WHERE authorization_instance_source_account_id = \?/)
-assert.doesNotMatch(repositoriesSource, /authorization_instance_source_account_id = NULL/)
 assert.match(repositoriesSource, /function normalizedAccountType\(value: unknown\): string/)
 assert.match(repositoriesSource, /function normalizedAccountStatusInput\(value: unknown, fallback: AccountStatus\): AccountStatus/)
 assert.match(repositoriesSource, /function normalizedPositiveIntegerInput\(value: unknown, fallback: number, label: string\): number/)
@@ -612,6 +610,11 @@ assert.doesNotMatch(repositoriesSource, /Number\(input\.concurrencyLimit \?\? cu
 assert.doesNotMatch(repositoriesSource, /Number\(input\.priority \?\? current\.priority\)/)
 assert.doesNotMatch(repositoriesSource, /value === 1 \|\| value === '1'/)
 assert.doesNotMatch(repositoriesSource, /typeof value === 'string' \? Number\(value\)/)
+
+const accountDeleteCleanupRepositorySource = readSource('storage/account-delete-cleanup.repository.ts')
+assert.match(accountDeleteCleanupRepositorySource, /function logicallyDeleteSourceAccountWithInstances/)
+assert.match(accountDeleteCleanupRepositorySource, /WHERE authorization_instance_source_account_id = \?/)
+assert.doesNotMatch(accountDeleteCleanupRepositorySource, /authorization_instance_source_account_id = NULL/)
 
 const frontendSettingsFormSource = readProjectFile('frontend/src/views/settings/settingsForm.ts')
 assert.doesNotMatch(frontendSettingsFormSource, /typeof value === 'string' \? Number\(value\)/)

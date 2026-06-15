@@ -104,6 +104,8 @@ async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
   try {
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     settingsRepository.updateSettings({
       streamCircuitBreakerEnabled: true,
       streamRequestTimeoutSeconds: 10,
@@ -435,6 +437,8 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     auditLogQueue.flushAllAuditLogQueue()
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
@@ -463,7 +467,8 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
     },
     groupId: group.id,
     status: 'active',
-    schedulable: true
+    schedulable: true,
+    clientCompatibility: 'openai_standard'
   }, access)
   const apiKey = apiKeyRepository.createApiKeyRecord({
     name: `流式超时回归 Key-${label}`,
@@ -495,7 +500,8 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0
+    priority: 0,
+    clientCompatibility: 'openai_standard'
   }, access)
   const backupAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -508,7 +514,8 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10
+    priority: 10,
+    clientCompatibility: 'openai_standard'
   }, access)
   const apiKey = apiKeyRepository.createApiKeyRecord({
     name: `流式超时回归双账号 Key-${label}`,

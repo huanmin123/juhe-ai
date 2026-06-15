@@ -17,10 +17,10 @@ import {
   readStreamChunkWithTimeout
 } from '../upstream/request.js'
 import {
-  gatewayStreamClientRetryErrorCode,
   gatewayStreamFailureCode,
   writeGatewayStreamFailureEvent
 } from './responses.js'
+import { buildStreamReadPlan } from './stream-read-plan.js'
 import {
   closeAsyncIterator,
   endResponse,
@@ -38,6 +38,19 @@ import {
   type ResponseInspectionSseResult
 } from '../protocols/openai-v1/response-inspection-buffer.js'
 import type { OpenAIResponseEndpointFamily } from '../protocols/openai-v1/response-semantics.js'
+import {
+  appendStreamPreCommitChunk,
+  canKeepStreamPreCommitChunk,
+  createStreamPreCommitBufferState,
+  shouldFailBeforeStreamDownstreamCommit,
+  takeStreamPreCommitChunks,
+  uncommittedStreamResponseBody
+} from './stream-pre-commit-buffer.js'
+import {
+  shouldInterruptCommittedGenericStream,
+  shouldReturnResponseInspectionBeforeDownstreamWrite,
+  streamClientFailureCode
+} from './stream-retry-decision.js'
 
 export interface StreamPipeResult {
   completed: boolean
@@ -96,7 +109,6 @@ const streamTerminalKeepAliveDrainMs = 50
 const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
-const streamPreCommitBufferMaxBytes = 256 * 1024
 
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
@@ -137,9 +149,7 @@ export async function pipeUpstreamStream(
   let terminalEventWritten = false
   let bodyCaptureOmitted = false
   let downstreamPrepared = false
-  let preCommitBuffering = options.retryBeforeDownstreamWriteUntilOutput === true
-  let preCommitBufferedBytes = 0
-  const preCommitChunks: Buffer[] = []
+  const preCommitBuffer = createStreamPreCommitBufferState(options.retryBeforeDownstreamWriteUntilOutput === true)
   const responseInspectionObservations: ResponseInspectionDecision[] = []
   let responseInspectionObservationOmittedCount = 0
   const prepareDownstreamForWrite = () => {
@@ -161,33 +171,27 @@ export async function pipeUpstreamStream(
     return writeResult
   }
   const canKeepPreCommitBuffered = (inspection: OpenAIStreamInspection, chunk: Buffer) => {
-    return preCommitBuffering
-      && totalResponseBytes === 0
-      && !inspection.outputReceived
-      && !inspection.terminalReceived
-      && !inspection.failedReceived
-      && !inspection.skipped
-      && preCommitBufferedBytes + chunk.length <= streamPreCommitBufferMaxBytes
-      && !res.headersSent
-      && !res.writableEnded
-      && !res.destroyed
+    return canKeepStreamPreCommitChunk(preCommitBuffer, {
+      inspection,
+      chunk,
+      totalResponseBytes,
+      response: res
+    })
   }
   const flushPreCommitChunks = async () => {
-    if (preCommitChunks.length === 0) {
-      preCommitBuffering = false
+    const chunks = takeStreamPreCommitChunks(preCommitBuffer)
+    if (chunks.length === 0) {
       return
     }
-    preCommitBuffering = false
-    for (const buffered of preCommitChunks.splice(0)) {
+    for (const buffered of chunks) {
       await writeDownstreamChunk(buffered)
     }
   }
   const shouldFailBeforeDownstreamCommit = () => {
-    return preCommitBuffering
-      && totalResponseBytes === 0
-      && !res.headersSent
-      && !res.writableEnded
-      && !res.destroyed
+    return shouldFailBeforeStreamDownstreamCommit(preCommitBuffer, {
+      totalResponseBytes,
+      response: res
+    })
   }
   const recordResponseInspectionObservations = (observations: ResponseInspectionDecision[] | undefined) => {
     if (!observations?.length) return
@@ -263,7 +267,7 @@ export async function pipeUpstreamStream(
     responseInspectionObservations,
     responseInspectionObservationOmittedCount,
     totalResponseBytes,
-    preCommitChunks.length > 0 ? Buffer.concat(preCommitChunks) : undefined
+    uncommittedStreamResponseBody(preCommitBuffer)
   )
   const finishTerminalSuccess = (
     inspection: OpenAIStreamInspection,
@@ -412,8 +416,7 @@ export async function pipeUpstreamStream(
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
-          preCommitChunks.push(outbound)
-          preCommitBufferedBytes += outbound.length
+          appendStreamPreCommitChunk(preCommitBuffer, outbound)
           continue
         }
         const writeStartedAt = Date.now()
@@ -591,8 +594,7 @@ export async function pipeUpstreamStream(
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
-          preCommitChunks.push(outbound)
-          preCommitBufferedBytes += outbound.length
+          appendStreamPreCommitChunk(preCommitBuffer, outbound)
           continue
         }
         await flushPreCommitChunks()
@@ -1003,68 +1005,6 @@ async function readIteratorNextWithTimeout(
   }
 }
 
-interface StreamReadPlan {
-  phase: 'first_chunk' | 'active_stream' | 'no_circuit_breaker'
-  timeoutMs?: number
-  rawTimeoutMs?: number
-  timeoutKind?: 'first_chunk' | 'upstream_activity'
-  timeoutMessage: string
-  deadlineExceeded: boolean
-}
-
-function buildStreamReadPlan(
-  settings: GatewaySettings,
-  startedAt: number,
-  status: {
-    waitingForFirstChunk: boolean
-    lastUpstreamActivityAt: number
-    lastSseEventActivityAt?: number
-    upstreamChunkReceived: boolean
-  }
-): StreamReadPlan {
-  if (!settings.streamCircuitBreakerEnabled) {
-    return {
-      phase: 'no_circuit_breaker',
-      timeoutMessage: '',
-      deadlineExceeded: false
-    }
-  }
-
-  if (!status.waitingForFirstChunk || status.upstreamChunkReceived) {
-    const streamIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
-    const now = Date.now()
-    const rawTimeoutMs = streamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
-    // Raw upstream activity is the hard timeout. Incomplete SSE events are diagnostic only:
-    // large or fragmented events can stay valid while bytes continue to arrive.
-    return {
-      phase: 'active_stream',
-      timeoutMs: rawTimeoutMs,
-      rawTimeoutMs,
-      timeoutKind: 'upstream_activity',
-      timeoutMessage: streamIdleTimeoutMessage(streamIdleTimeoutSeconds),
-      deadlineExceeded: rawTimeoutMs <= 0
-    }
-  }
-
-  const firstChunkTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
-  const timeoutMs = firstChunkTimeoutSeconds * 1000 - (Date.now() - startedAt)
-  return {
-    phase: 'first_chunk',
-    timeoutMs,
-    timeoutKind: 'first_chunk',
-    timeoutMessage: firstChunkTimeoutMessage(firstChunkTimeoutSeconds),
-    deadlineExceeded: timeoutMs <= 0
-  }
-}
-
-function firstChunkTimeoutMessage(timeoutSeconds: number): string {
-  return `上游流式请求 ${timeoutSeconds}s 内未返回首段数据`
-}
-
-function streamIdleTimeoutMessage(timeoutSeconds: number): string {
-  return `上游流式响应 ${timeoutSeconds}s 内未返回任何新数据`
-}
-
 function streamFailureContext(downstreamBytesWritten: number, outputReceived: boolean): StreamFailureContext {
   return {
     downstreamBytesWritten,
@@ -1104,31 +1044,6 @@ function mergeResponseInspectionSseResults(
       : undefined,
     parserSkipped: left.parserSkipped || right.parserSkipped
   }
-}
-
-function streamClientFailureCode(
-  errorCode: string,
-  outputReceived: boolean,
-  clientRetryEnabled: boolean,
-  downstreamBytesWritten: number
-): string {
-  return clientRetryEnabled && (!outputReceived || downstreamBytesWritten > 0)
-    ? gatewayStreamClientRetryErrorCode
-    : errorCode
-}
-
-function shouldReturnResponseInspectionBeforeDownstreamWrite(
-  decision: ResponseInspectionDecision | undefined,
-  res: Response,
-  totalResponseBytes: number
-): boolean {
-  return decision?.reason === 'configured_response_policy'
-    && decision.retryEnabled === true
-    && decision.policySource !== 'system_default'
-    && totalResponseBytes === 0
-    && !res.headersSent
-    && !res.writableEnded
-    && !res.destroyed
 }
 
 function streamResult(
@@ -1217,10 +1132,6 @@ function streamBodyOmissionSummary(
     terminalReceived: inspection.terminalReceived,
     failedReceived: inspection.failedReceived
   }
-}
-
-function shouldInterruptCommittedGenericStream(clientRetryEnabled: boolean, downstreamBytesWritten: number): boolean {
-  return !clientRetryEnabled && downstreamBytesWritten > 0
 }
 
 function interruptResponse(res: Response): void {

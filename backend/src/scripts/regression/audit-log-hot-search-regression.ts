@@ -248,7 +248,13 @@ function cleanupTemporaryAuditBlobs(): void {
 }
 
 function assertAuditHotCleanupIsScheduledEveryMinute(): void {
-  const source = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
-  assert(source.includes("name: 'audit-hot-retention-cleanup'"), '后台 worker 必须注册审计热窗口清理任务')
-  assert(source.includes("name: 'audit-hot-retention-cleanup', intervalMs: minuteMs"), '审计热窗口清理任务必须按分钟级频率执行，不能只挂在 daily 保留清理里')
+  const jobsSource = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
+  const registrySource = readFileSync(new URL('../../modules/background/background-job-registry.ts', import.meta.url), 'utf8')
+  assert(jobsSource.includes("name: backgroundScheduledJobName('audit-hot-retention-cleanup')"), '后台 worker 必须注册审计热窗口清理任务')
+  assert(
+    jobsSource.includes("name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs"),
+    '审计热窗口清理任务必须按分钟级频率执行，不能只挂在 daily 保留清理里'
+  )
+  assert(registrySource.includes("jobName: 'audit-hot-retention-cleanup'"), '后台任务注册表必须声明审计热窗口清理任务')
+  assert(registrySource.includes("defaultRole: 'maintenance-worker'"), '审计热窗口清理任务必须归属 maintenance-worker')
 }

@@ -108,6 +108,10 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import DeferredRender from './DeferredRender.vue'
 import { changeResponsiveDataListBodyScrollLock } from './responsiveDataListBodyScrollLock'
 import { normalizeResponsiveTableColumns } from './responsiveDataListColumns'
+import {
+  measureResponsiveDataListActionColumnWidth,
+  measureResponsiveDataListScrollbarPlaceholder
+} from './responsiveDataListDomMeasurement'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 import {
   buildResponsiveDataListTablePagination,
@@ -130,7 +134,6 @@ import {
   resolveResponsiveDataListPullRefreshText,
   shouldTriggerResponsiveDataListPullRefresh
 } from './responsiveDataListPullRefresh'
-import { rowActionColumnWidth } from './rowActions'
 
 type RowKey = string | ((record: T) => string | number)
 type TablePagination = ResponsiveDataListTablePagination
@@ -390,40 +393,13 @@ function cancelActionColumnMeasure() {
 }
 
 function measureActionColumnSlots() {
-  if (isMobile.value) return
   const root = listRootRef.value
   if (!root) return
-  const actionRoots = root.querySelectorAll<HTMLElement>('.responsive-data-list-actions-column .row-actions[data-row-action-slots]')
-  let nextSlotCount = 0
-  actionRoots.forEach((element) => {
-    const slotCount = Number.parseInt(element.dataset.rowActionSlots ?? '', 10)
-    if (Number.isFinite(slotCount) && slotCount > nextSlotCount) {
-      nextSlotCount = slotCount
-    }
-  })
-  const nextWidth = Math.max(
-    nextSlotCount > 0 ? rowActionColumnWidth(nextSlotCount) : 0,
-    measureActionColumnContentWidth(root)
-  )
+  const nextWidth = measureResponsiveDataListActionColumnWidth(root, isMobile.value)
   if (nextWidth > 0 && nextWidth !== measuredActionColumnWidth.value) {
     measuredActionColumnWidth.value = nextWidth
     nextTick(queueTableScrollbarPlaceholderUpdate)
   }
-}
-
-function measureActionColumnContentWidth(root: HTMLElement): number {
-  const cells = root.querySelectorAll<HTMLElement>('.ant-table-tbody .responsive-data-list-actions-column')
-  let maxContentWidth = 0
-  cells.forEach((cell) => {
-    const rects = Array.from(cell.children)
-      .map((child) => child.getBoundingClientRect())
-      .filter((rect) => rect.width > 0)
-    if (!rects.length) return
-    const left = Math.min(...rects.map((rect) => rect.left))
-    const right = Math.max(...rects.map((rect) => rect.right))
-    maxContentWidth = Math.max(maxContentWidth, Math.ceil(right - left) + 16)
-  })
-  return maxContentWidth
 }
 
 function cancelTableScrollbarPlaceholderUpdate() {
@@ -436,30 +412,14 @@ function cancelTableScrollbarPlaceholderUpdate() {
 }
 
 function updateTableScrollbarPlaceholderState() {
-  if (!props.tableScrollEnabled) {
-    hasOverlayScrollbarPlaceholder.value = false
-    scrollbarPlaceholderWidth.value = 0
-    return
-  }
-  if (isMobile.value) {
-    hasOverlayScrollbarPlaceholder.value = false
-    scrollbarPlaceholderWidth.value = 0
-    return
-  }
-  const root = listRootRef.value
-  const body = root?.querySelector<HTMLElement>('.ant-table-body')
-  const scrollbarCell = root?.querySelector<HTMLElement>('.ant-table-cell-scrollbar')
-  if (!body || !scrollbarCell) {
-    hasOverlayScrollbarPlaceholder.value = false
-    scrollbarPlaceholderWidth.value = 0
-    return
-  }
-
-  const actualScrollbarWidth = Math.max(0, body.offsetWidth - body.clientWidth)
-  const measuredPlaceholderWidth = Math.round(scrollbarCell.getBoundingClientRect().width)
-  const placeholderWidth = measuredPlaceholderWidth > 0 ? measuredPlaceholderWidth : scrollbarPlaceholderWidth.value
-  hasOverlayScrollbarPlaceholder.value = placeholderWidth > 0 && actualScrollbarWidth <= 1
-  scrollbarPlaceholderWidth.value = hasOverlayScrollbarPlaceholder.value ? placeholderWidth : 0
+  const state = measureResponsiveDataListScrollbarPlaceholder({
+    tableScrollEnabled: props.tableScrollEnabled,
+    isMobile: isMobile.value,
+    root: listRootRef.value,
+    currentPlaceholderWidth: scrollbarPlaceholderWidth.value
+  })
+  hasOverlayScrollbarPlaceholder.value = state.hasOverlayScrollbarPlaceholder
+  scrollbarPlaceholderWidth.value = state.scrollbarPlaceholderWidth
 }
 
 function observeTableMutations() {

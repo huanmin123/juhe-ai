@@ -127,7 +127,7 @@
           :data-source="filteredTables"
           :loading="loading"
           :pagination="tablePagination"
-          :row-key="tableKey"
+          :row-key="tableMonitorRowKey"
           :scroll-x="1180"
           :table-scroll-enabled="false"
           :lock-body-scroll="false"
@@ -226,20 +226,25 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatServerDateTimeInput, serverDateTimeTimestamp } from '@/shared/formatters'
-import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, NonBusinessDataCleanupResult, TableStorageOverview, TableStorageSnapshotSummary } from '@/types/domain'
+import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
+import type { DatabaseStorageSnapshotSummary, NonBusinessDataCleanupResult, TableStorageOverview } from '@/types/domain'
+import {
+  buildTableMonitorHistoryChartOption,
+  databaseRoleColor,
+  databaseRoleLabel,
+  formatBytes,
+  formatGrowthBytes,
+  formatGrowthRows,
+  formatInteger,
+  growthColor,
+  matchesTableNameKeyword,
+  tableMonitorColumns,
+  tableMonitorDatabaseRoles,
+  tableMonitorRowKey,
+  totalDatabaseBytes
+} from './tableMonitorDisplay'
 
-const columns = [
-  { title: '库', key: 'databaseRole', width: 92, fixed: 'left' },
-  { title: '表名', key: 'tableName', width: 240, fixed: 'left' },
-  { title: '行数', key: 'rowCount', align: 'right', width: 120 },
-  { title: '表大小', key: 'tableBytes', align: 'right', width: 120 },
-  { title: '索引大小', key: 'indexBytes', align: 'right', width: 120 },
-  { title: '总大小', key: 'totalBytes', align: 'right', width: 120 },
-  { title: '1 小时增长', key: 'growth1h', width: 150 },
-  { title: '24 小时增长', key: 'growth24h', width: 150 },
-  { title: '采样时间', key: 'sampledAt', width: 190 }
-]
+const columns = tableMonitorColumns
 
 const loading = ref(false)
 const keyword = ref('')
@@ -249,7 +254,7 @@ const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
 const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<NonBusinessDataCleanupResult>()
-const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
+const databaseSummaryRoles = tableMonitorDatabaseRoles
 const historyChartPointLimit = 720
 const databaseHistoryRows = ref<DatabaseStorageSnapshotSummary[]>([])
 const historyChartElement = ref<HTMLDivElement>()
@@ -406,12 +411,6 @@ function resetFilters() {
   void loadData()
 }
 
-function matchesTableNameKeyword(tableName: string, keyword: string): boolean {
-  if (!keyword) return true
-  const normalizedTableName = tableName.toLowerCase()
-  return normalizedTableName === keyword || normalizedTableName.startsWith(keyword)
-}
-
 function historyRangeParams() {
   return {
     startAt: formatServerDateTimeInput(historyRange.value?.[0]?.startOf('day')) ?? undefined,
@@ -474,170 +473,11 @@ function renderHistoryChart() {
     }
     const chart = ensureChartFromElement(historyChartElement.value, historyChart)
     if (!chart) return
-    const buckets = historyTimeBuckets()
-    chart.setOption({
-      color: ['#1677ff', '#fa8c16', '#722ed1'],
-      tooltip: {
-        trigger: 'axis',
-        formatter: (params: unknown) => historyTooltip(params)
-      },
-      legend: {
-        top: 4,
-        data: databaseSummaryRoles.map(databaseRoleLabel)
-      },
-      grid: { left: 56, right: 24, top: 48, bottom: 42 },
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: buckets.map((bucket) => formatSampleTime(bucket))
-      },
-      yAxis: {
-        type: 'value',
-        name: '大小',
-        axisLabel: { formatter: (value: number) => formatBytes(value) },
-        splitLine: { lineStyle: { color: '#edf2f7' } }
-      },
-      series: databaseSummaryRoles.map((role) => historySeries(role, buckets))
-    }, { notMerge: true })
+    chart.setOption(buildTableMonitorHistoryChartOption({
+      rows: databaseHistoryRows.value,
+      roles: databaseSummaryRoles
+    }), { notMerge: true })
   })
-}
-
-function historyTimeBuckets() {
-  return [...new Set(databaseHistoryRows.value.map((row) => row.sampledAt))].sort()
-}
-
-function historySeries(role: MonitoredDatabaseRole, buckets: string[]) {
-  const rowsByTime = new Map(databaseHistoryRows.value
-    .filter((row) => row.databaseRole === role)
-    .map((row) => [row.sampledAt, row]))
-  return {
-    name: databaseRoleLabel(role),
-    type: 'line',
-    smooth: true,
-    showSymbol: false,
-    connectNulls: false,
-    data: buckets.map((bucket) => {
-      const row = rowsByTime.get(bucket)
-      const totalBytes = totalDatabaseBytes(row)
-      return totalBytes === undefined
-        ? null
-        : {
-            value: totalBytes,
-            fileBytes: row?.fileBytes,
-            walBytes: row?.walBytes,
-            freeBytes: row?.freeBytes,
-            tableCount: row?.tableCount,
-            sampledAt: row?.sampledAt
-          }
-    })
-  }
-}
-
-function tableKey(row: TableStorageSnapshotSummary) {
-  return `${row.databaseRole}:${row.tableName}`
-}
-
-function databaseRoleLabel(role: MonitoredDatabaseRole) {
-  return {
-    business: '业务库',
-    dataset: '数据集目录库',
-    stats: '统计结果库'
-  }[role]
-}
-
-function databaseRoleColor(role: MonitoredDatabaseRole) {
-  return {
-    business: 'blue',
-    dataset: 'orange',
-    stats: 'purple'
-  }[role]
-}
-
-function totalDatabaseBytes(database?: DatabaseStorageSnapshotSummary): number | undefined {
-  if (!database) return undefined
-  const total = (database.fileBytes ?? 0) + (database.walBytes ?? 0) + (database.shmBytes ?? 0)
-  return total > 0 ? total : undefined
-}
-
-function growthColor(value?: number) {
-  if (value === undefined || value === 0) return 'default'
-  return value > 0 ? 'orange' : 'green'
-}
-
-function formatGrowthBytes(value?: number) {
-  if (value === undefined) return '-'
-  if (value === 0) return '0 B'
-  return `${value > 0 ? '+' : ''}${formatBytes(value)}`
-}
-
-function formatGrowthRows(value?: number) {
-  if (value === undefined) return ''
-  if (value === 0) return '0 行'
-  return `${value > 0 ? '+' : ''}${formatInteger(value)} 行`
-}
-
-function formatBytes(value?: number) {
-  if (value === undefined || !Number.isFinite(value)) return '-'
-  const sign = value < 0 ? '-' : ''
-  const absolute = Math.abs(value)
-  if (absolute >= 1024 ** 3) return `${sign}${(absolute / 1024 ** 3).toFixed(2)} GB`
-  if (absolute >= 1024 ** 2) return `${sign}${(absolute / 1024 ** 2).toFixed(1)} MB`
-  if (absolute >= 1024) return `${sign}${(absolute / 1024).toFixed(1)} KB`
-  return `${sign}${Math.round(absolute)} B`
-}
-
-function formatInteger(value?: number) {
-  return value === undefined ? '-' : new Intl.NumberFormat('zh-CN').format(Math.round(value))
-}
-
-function historyTooltip(params: unknown) {
-  const points = Array.isArray(params) ? params as HistoryTooltipPoint[] : [params as HistoryTooltipPoint]
-  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
-  const lines = [`<strong>${escapeHtml(title)}</strong>`]
-  for (const point of points) {
-    const data = point.data && typeof point.data === 'object' ? point.data as HistoryTooltipData : undefined
-    if (!data || !Number.isFinite(data.value)) continue
-    const details = [
-      `主库 ${formatBytes(data.fileBytes)}`,
-      `WAL ${formatBytes(data.walBytes)}`,
-      `空闲 ${formatBytes(data.freeBytes)}`,
-      `表 ${formatInteger(data.tableCount)}`
-    ].join(' / ')
-    lines.push(`${point.marker ?? ''}${escapeHtml(point.seriesName ?? '')}: ${formatBytes(data.value)} · ${details}`)
-  }
-  return lines.join('<br/>')
-}
-
-interface HistoryTooltipPoint {
-  marker?: string
-  seriesName?: string
-  name?: string
-  axisValueLabel?: string
-  data?: unknown
-}
-
-interface HistoryTooltipData {
-  value: number
-  fileBytes?: number
-  walBytes?: number
-  freeBytes?: number
-  tableCount?: number
-}
-
-function escapeHtml(value: unknown) {
-  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  }[character] ?? character))
-}
-
-function formatSampleTime(value: string) {
-  const timestamp = serverDateTimeTimestamp(value)
-  if (timestamp === undefined) return '时间格式异常'
-  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(timestamp)
 }
 
 function renderHistoryCharts() {

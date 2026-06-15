@@ -181,13 +181,11 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime } from '@/shared/formatters'
 import type {
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceStatus,
-  ExternalIntegrationSourceSummary,
-  ExternalIntegrationSourceTokenSummary
+  ExternalIntegrationSourceSummary
 } from '@/types/domain'
 import ExternalSourceApiDocsModal from './ExternalSourceApiDocsModal.vue'
 import ExternalSourceCreatedTokenModal from './ExternalSourceCreatedTokenModal.vue'
@@ -201,6 +199,7 @@ import {
   formatRateLimits,
   type ExternalSourceForm
 } from './externalSourceFormModel'
+import { useExternalSourceTokenActions } from './useExternalSourceTokenActions'
 
 const pageSize = 20
 const loading = ref(false)
@@ -215,16 +214,30 @@ const apiDocsOpen = ref(false)
 const publicApiBaseUrl = computed(() => resolvePublicApiBaseUrl())
 
 const sourceModalOpen = ref(false)
-const createdTokenOpen = ref(false)
 const sourceSaving = ref(false)
-const generatingTokenSourceId = ref('')
 const editingSourceId = ref<string>()
 const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
 
-const createdTokenPlain = ref('')
-const tokenCopyingKey = ref('')
 const builtInSourceShortDescription = '系统内置联调用来源'
 const builtInSourceDescription = '系统内置联调用来源，已授权全部公开接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
+const {
+  createdTokenOpen,
+  createdTokenPlain,
+  generatingTokenSourceId,
+  tokenCopyingKey,
+  showCreatedToken,
+  clearCreatedToken,
+  closeCreatedTokenModal,
+  resetBuiltInTestToken,
+  generateSourceToken,
+  copyTokenPreview,
+  formatTokenPreview,
+  tokenDisplayTitle,
+  primaryToken,
+  tokenCopyKey
+} = useExternalSourceTokenActions({
+  reload: loadData
+})
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -323,8 +336,7 @@ function handleTableChange(nextPagination: unknown): void {
 
 function openCreateSource(): void {
   editingSourceId.value = undefined
-  createdTokenPlain.value = ''
-  createdTokenOpen.value = false
+  clearCreatedToken()
   Object.assign(sourceForm, createEmptySourceForm(scopeOptions.value))
   sourceModalOpen.value = true
 }
@@ -338,8 +350,7 @@ function openEditSource(record: ExternalIntegrationSourceSummary): void {
     return
   }
   editingSourceId.value = record.id
-  createdTokenPlain.value = ''
-  createdTokenOpen.value = false
+  clearCreatedToken()
   Object.assign(sourceForm, nextForm)
   sourceModalOpen.value = true
 }
@@ -358,9 +369,8 @@ async function saveSource(): Promise<void> {
       sourceModalOpen.value = false
     } else {
       const result = await api.externalIntegrationSources.create(payload)
-      createdTokenPlain.value = result.token.token
       sourceModalOpen.value = false
-      createdTokenOpen.value = true
+      showCreatedToken(result.token.token)
       message.success('来源授权已创建')
     }
     await loadData()
@@ -460,62 +470,6 @@ async function deleteSource(record: ExternalIntegrationSourceSummary): Promise<v
   }
 }
 
-async function resetBuiltInTestToken(): Promise<void> {
-  try {
-    const result = await api.externalIntegrationSources.resetBuiltInTestToken()
-    await copyTextToClipboard(result.token.token, '内置测试 Token 已重置并复制')
-    await loadData()
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '重置内置测试 Token 失败'))
-  }
-}
-
-async function generateSourceToken(record: ExternalIntegrationSourceSummary): Promise<void> {
-  if (record.isBuiltIn || primaryToken(record) || generatingTokenSourceId.value) return
-  generatingTokenSourceId.value = record.id
-  try {
-    const result = await api.externalIntegrationSources.createToken(record.id, {
-      name: `${record.name} 生产 Token`,
-      status: 'active',
-      scopes: [...record.scopes],
-      expiresAt: record.expiresAt ?? null
-    })
-    createdTokenPlain.value = result.token.token
-    createdTokenOpen.value = true
-    message.success('生产 Token 已生成')
-    await loadData()
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '生成生产 Token 失败'))
-  } finally {
-    if (generatingTokenSourceId.value === record.id) {
-      generatingTokenSourceId.value = ''
-    }
-  }
-}
-
-function closeCreatedTokenModal(): void {
-  createdTokenOpen.value = false
-  createdTokenPlain.value = ''
-}
-
-async function copyTokenPreview(record: ExternalIntegrationSourceSummary): Promise<void> {
-  const token = primaryToken(record)
-  if (!token || tokenCopyingKey.value) return
-  const copyingKey = tokenCopyKey(record)
-  tokenCopyingKey.value = copyingKey
-  try {
-    const result = await api.externalIntegrationSources.tokenSecret(record.id, token.id)
-    await copyTextToClipboard(result.token, '完整 Token 已复制')
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '复制完整 Token 失败'))
-  } finally {
-    if (tokenCopyingKey.value === copyingKey) {
-      tokenCopyingKey.value = ''
-    }
-  }
-}
-
 function sourceNotes(record: ExternalIntegrationSourceSummary): string {
   if (record.isBuiltIn) {
     return builtInSourceDescription
@@ -535,34 +489,6 @@ function scopeLabel(scope: string): string {
   return scopeOptions.value.find((item) => item.value === scope)?.label ?? scope
 }
 
-function formatTokenPreview(token: ExternalIntegrationSourceTokenSummary | undefined): string {
-  if (!token) return '未生成'
-  return maskSecretPreview('', token.tokenPrefix, token.tokenSuffix)
-}
-
-function tokenDisplayTitle(token: ExternalIntegrationSourceTokenSummary | undefined): string {
-  return token ? '列表仅显示 Token 标识，点击复制按钮复制完整 Token' : '未生成'
-}
-
-function maskSecretPreview(value: string | undefined, prefix?: string, suffix?: string): string {
-  if (value) {
-    return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
-  }
-  const head = prefix?.slice(0, 8) ?? ''
-  const tail = suffix?.slice(-8) ?? ''
-  if (head && tail) return `${head}...${tail}`
-  if (head) return `${head}...`
-  return '未生成'
-}
-
-function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegrationSourceTokenSummary | undefined {
-  return record.tokens[0]
-}
-
-function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
-  const token = primaryToken(record)
-  return token ? `${record.id}:${token.id}` : ''
-}
 </script>
 
 <style scoped>

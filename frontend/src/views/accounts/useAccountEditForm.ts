@@ -7,7 +7,6 @@ import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCach
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   AccountSummary,
-  AccountTagSummary,
   AccountType,
   GroupOptionSummary,
   OpenAIAuthURLResult,
@@ -55,11 +54,11 @@ import {
   cloneAccountModelMappings,
   cloneAccountName,
   normalizeFormTagNames,
-  providerModelsToOptions,
-  sameTagNames,
-  type AccountModelSelectOption
+  sameTagNames
 } from './accountEditFormPayload'
 import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
+import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
+import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -97,17 +96,33 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
   const accountResponseInspectionRules = ref<AccountResponseInspectionRuleForm[]>(loadAccountResponseInspectionRules())
-  const providerModelOptions = ref<AccountModelSelectOption[]>([])
-  const mappingTargetModelOptions = ref<AccountModelSelectOption[]>([])
-  const providerModelsLoading = ref(false)
-  const accountTagOptions = ref<AccountTagSummary[]>([])
-  const accountTagOptionsLoading = ref(false)
-  const deletingAccountTagId = ref<string>()
-  const providerModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
-  const mappingTargetModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
   let formOpenRequestToken = 0
 
   const createScopeParams = computed<AccountScopeParams>(() => creatingAccountScopeParams.value ?? options.accountScopeParams.value)
+  const {
+    loadProviderModelOptions,
+    mappingTargetModelOptions,
+    providerModelOptions,
+    providerModelsLoading,
+    resetProviderModelOptions
+  } = useAccountProviderModelOptions({
+    createScopeParams,
+    currentProviderCode: () => form.providerCode,
+    extractApiErrorMessage: options.extractApiErrorMessage,
+    isManagementView: options.isManagementView
+  })
+  const {
+    accountTagOptions,
+    accountTagOptionsLoading,
+    deleteAccountTag,
+    deletingAccountTagId,
+    loadAccountTagOptions
+  } = useAccountEditTagOptions({
+    accountTagOperationScopeParams,
+    extractApiErrorMessage: options.extractApiErrorMessage,
+    form,
+    isManagementView: options.isManagementView
+  })
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined
     const systemAccountId = createScopeParams.value?.systemAccountId
@@ -169,9 +184,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningScheduleFingerprint.value = undefined
     clearSuccessfulDraftActivationTest()
     Object.assign(form, defaultForm(providerCode, type))
-    providerModelOptions.value = []
-    mappingTargetModelOptions.value = []
-    providerModelsLoading.value = false
+    resetProviderModelOptions()
     ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
@@ -368,48 +381,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadAccountTagOptions(cloneScopeParams, true)
     void loadProviderModelOptions(sourceAccount.providerCode)
-  }
-
-  async function loadProviderModelOptions(providerCode: string): Promise<void> {
-    const code = providerCode.trim()
-    providerModelOptions.value = []
-    mappingTargetModelOptions.value = []
-    if (!code) return
-    const cacheKey = providerModelCacheKey(code)
-    const cachedPublic = providerModelOptionsCache.get(cacheKey)
-    const cachedMappingTargets = mappingTargetModelOptionsCache.get(cacheKey)
-    if (cachedPublic && cachedMappingTargets) {
-      providerModelOptions.value = cachedPublic
-      mappingTargetModelOptions.value = cachedMappingTargets
-      providerModelsLoading.value = false
-      return
-    }
-    providerModelsLoading.value = true
-    try {
-      const [models, mappingTargetModels] = await Promise.all([
-        cachedPublic ? Promise.resolve(undefined) : api.providers.models(code),
-        cachedMappingTargets ? Promise.resolve(undefined) : api.providers.models(code, { includeMappingTargets: true })
-      ])
-      const modelOptions = cachedPublic ?? providerModelsToOptions(models ?? [])
-      const mappingTargetOptions = cachedMappingTargets ?? providerModelsToOptions(mappingTargetModels ?? [])
-      providerModelOptionsCache.set(cacheKey, modelOptions)
-      mappingTargetModelOptionsCache.set(cacheKey, mappingTargetOptions)
-      if (form.providerCode === code) {
-        providerModelOptions.value = modelOptions
-        mappingTargetModelOptions.value = mappingTargetOptions
-      }
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '加载供应商模型失败'))
-    } finally {
-      if (form.providerCode === code) {
-        providerModelsLoading.value = false
-      }
-    }
-  }
-
-  function providerModelCacheKey(providerCode: string): string {
-    return `${providerCode}:${createScopeParams.value?.systemAccountId ?? 'self'}:${options.isManagementView.value ? 'management' : 'self'}`
   }
 
   async function loadProviderGroupOptions(providerCode: string): Promise<void> {
@@ -742,48 +713,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountResponseInspectionRules.value = responseInspectionRules
     authResult.value = undefined
     return true
-  }
-
-  async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
-    if (accountTagOptionsLoading.value && !force) return
-    accountTagOptionsLoading.value = true
-    try {
-      accountTagOptions.value = options.isManagementView.value
-        ? await api.accounts.tags(scopeParams)
-        : await api.myAccounts.tags()
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '加载账户标签失败'))
-    } finally {
-      accountTagOptionsLoading.value = false
-    }
-  }
-
-  async function deleteAccountTag(tagId: string): Promise<void> {
-    const tag = accountTagOptions.value.find((item) => item.id === tagId)
-    if (!tag) return
-    if ((tag.accountCount ?? 0) > 0) {
-      message.warning('标签已绑定账户，不能删除')
-      return
-    }
-    deletingAccountTagId.value = tagId
-    try {
-      const scopeParams = accountTagOperationScopeParams()
-      if (options.isManagementView.value) {
-        await api.accounts.deleteTag(tagId, scopeParams)
-      } else {
-        await api.myAccounts.deleteTag(tagId)
-      }
-      form.tags = form.tags.filter((name) => name.trim().toLocaleLowerCase() !== tag.name.toLocaleLowerCase())
-      accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
-      message.success('标签已删除')
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '删除标签失败'))
-      await loadAccountTagOptions(accountTagOperationScopeParams(), true)
-    } finally {
-      deletingAccountTagId.value = undefined
-    }
   }
 
   function setFormGroup(group: GroupSelection | undefined): void {

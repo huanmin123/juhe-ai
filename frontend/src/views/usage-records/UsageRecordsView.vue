@@ -71,7 +71,7 @@ import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { api, type UsageRecordListParams } from '@/api/client'
+import { api } from '@/api/client'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -81,7 +81,6 @@ import { useScopedGroupsApi, useScopedUsageRecordsApi } from '@/composables/useS
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
@@ -89,43 +88,25 @@ import type { ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource 
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
+import { usageRecordActiveFilterCount, usageRecordAdvancedFilterCount, usageRecordListParams } from './usageRecordFilters'
+import {
+  defaultUsageRecordsPageState,
+  parseUsageRecordDateRange,
+  usageRecordDateRangeParam,
+  usageRecordsPageSize,
+  type UsageRecordSortField,
+  type UsageRecordsPageState,
+  type UsageRecordTableSortOrder
+} from './usageRecordPageState'
+import {
+  normalizeUsageRecordTableSorter,
+  usageRecordColumnStorageKey,
+  usageRecordPaginationFromTable,
+  usageRecordTableColumns
+} from './usageRecordTableConfig'
 import { useUsageRecordGroupOptions } from './useUsageRecordGroupOptions'
 
-type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
-type TableSortOrder = 'ascend' | 'descend' | null
 type TraceTarget = 'audit' | 'runtime'
-type UsageRecordsPageState = {
-  accountNameFilter: string
-  clientIpFilter: string
-  dateRangeFilter?: [string, string]
-  groupFilter?: GroupSelection
-  modelFilter: string
-  pagination: { current: number; pageSize: number }
-  resultFilter: 'all' | 'success' | 'failed'
-  sortState: { field: UsageRecordSortField; order: TableSortOrder }
-  statusCodeFilter: string
-  systemAccountFilter: string
-  systemAccountFilterSelection?: PrincipalSelection
-  traceIdFilter: string
-  trafficSourceFilter: UsageRecordTrafficSource | 'all'
-}
-
-const pageSize = 20
-const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
-  accountNameFilter: '',
-  clientIpFilter: '',
-  dateRangeFilter: undefined,
-  groupFilter: undefined,
-  modelFilter: '',
-  pagination: { current: 1, pageSize },
-  resultFilter: 'all',
-  sortState: { field: 'createdAt', order: 'descend' },
-  statusCodeFilter: '',
-  systemAccountFilter: allSystemAccountsValue,
-  systemAccountFilterSelection: undefined,
-  traceIdFilter: '',
-  trafficSourceFilter: 'all'
-})
 const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 8 })
 const route = useRoute()
 const initialRouteTraceId = routeTraceId()
@@ -136,7 +117,7 @@ const initialPageState = initialRouteTraceId
 
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const clientIpFilter = ref(initialPageState.clientIpFilter ?? '')
-const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPageState.dateRangeFilter))
+const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseUsageRecordDateRange(initialPageState.dateRangeFilter))
 const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
 const modelFilter = ref(initialPageState.modelFilter ?? '')
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
@@ -149,7 +130,7 @@ const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
 const router = useRouter()
-const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
+const sortState = ref<{ field: UsageRecordSortField; order: UsageRecordTableSortOrder }>(initialPageState.sortState)
 const groupFilter = computed({
   get: () => groupFilterSelection.value?.id,
   set: (id: string | undefined) => {
@@ -215,7 +196,7 @@ const {
   refreshMobile: refreshMobileRecords,
   resetPagination
 } = useResponsivePagedList<UsageRecordSummary, { forceOptions?: boolean }>({
-  pageSize,
+  pageSize: usageRecordsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条使用记录，还有更多`
@@ -250,63 +231,38 @@ const trafficSourceOptions = [
 ] satisfies Array<{ label: string; value: UsageRecordTrafficSource | 'all' }>
 
 const activeFilterCount = computed(() => {
-  let count = 0
-  if (accountNameFilter.value.trim()) count += 1
-  if (clientIpFilter.value.trim()) count += 1
-  if (dateRangeFilter.value) count += 1
-  if (groupFilter.value) count += 1
-  if (modelFilter.value.trim()) count += 1
-  if (resultFilter.value !== 'all') count += 1
-  if (statusCodeFilter.value) count += 1
-  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
-  if (traceIdFilter.value.trim()) count += 1
-  if (trafficSourceFilter.value !== 'all') count += 1
-  return count
+  return usageRecordActiveFilterCount(filterCountInput())
 })
 const advancedFilterCount = computed(() => {
-  let count = 0
-  if (dateRangeFilter.value) count += 1
-  if (resultFilter.value !== 'all') count += 1
-  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
-  if (groupFilter.value) count += 1
-  if (clientIpFilter.value.trim()) count += 1
-  if (modelFilter.value.trim()) count += 1
-  if (statusCodeFilter.value) count += 1
-  if (traceIdFilter.value.trim()) count += 1
-  if (trafficSourceFilter.value !== 'all') count += 1
-  return count
+  return usageRecordAdvancedFilterCount(filterCountInput())
 })
+
+function filterCountInput() {
+  return {
+    accountName: accountNameFilter.value,
+    clientIp: clientIpFilter.value,
+    dateRangeSelected: Boolean(dateRangeFilter.value),
+    groupId: groupFilter.value,
+    model: modelFilter.value,
+    result: resultFilter.value,
+    statusCode: statusCodeFilter.value,
+    systemAccountId: systemAccountFilter.value,
+    allSystemAccountsValue,
+    traceId: traceIdFilter.value,
+    trafficSource: trafficSourceFilter.value
+  }
+}
 
 const filteredRecords = computed(() => records.value)
 const mobileRecords = computed(() => records.value)
 
 const rawColumns = computed(() => {
-  const baseColumns: Array<Record<string, unknown>> = [
-    { title: 'AI账户名称', dataIndex: 'accountName', key: 'account', width: 170, fixed: 'left' }
-  ]
-  if (isManagementView.value) {
-    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
-  }
-  baseColumns.push(
-    { title: '接口', dataIndex: 'endpoint', key: 'endpoint', width: 150 },
-    { title: '模型', dataIndex: 'model', key: 'model', width: 170 },
-    { title: '类型', key: 'stream', width: 90 },
-    { title: '状态', key: 'success', width: 90 },
-    { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
-    { title: '请求来源', key: 'trafficSource', width: 110 },
-    { title: 'Token 用量', key: 'tokens', width: 150 },
-    { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: columnSortOrder('costUsd') },
-    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100, sorter: true, sortOrder: columnSortOrder('firstTokenMs') },
-    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100, sorter: true, sortOrder: columnSortOrder('durationMs') },
-    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, sorter: true, sortOrder: columnSortOrder('createdAt') },
-    { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
-    { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
-    { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 },
-    { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 300 }
-  )
-  return baseColumns
+  return usageRecordTableColumns({
+    isManagementView: isManagementView.value,
+    columnSortOrder
+  })
 })
-const columnStorageKey = computed(() => (isManagementView.value ? 'usage-records:management' : 'usage-records:self'))
+const columnStorageKey = computed(() => usageRecordColumnStorageKey(isManagementView.value))
 const {
   managedColumns,
   columnSettings,
@@ -343,7 +299,7 @@ function resetFilters(): void {
   const defaults = defaultUsageRecordsPageState()
   accountNameFilter.value = defaults.accountNameFilter
   clientIpFilter.value = defaults.clientIpFilter
-  dateRangeFilter.value = parseDateRange(defaults.dateRangeFilter)
+  dateRangeFilter.value = parseUsageRecordDateRange(defaults.dateRangeFilter)
   groupFilterSelection.value = defaults.groupFilter
   modelFilter.value = defaults.modelFilter
   resultFilter.value = defaults.resultFilter
@@ -362,37 +318,20 @@ function resetFilters(): void {
 
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
   updatePaginationFromTable(paginationInfo)
-  const normalized = normalizeTableSorter(sorter)
+  const normalized = normalizeUsageRecordTableSorter(sorter)
   sortState.value = normalized ?? { field: 'createdAt', order: 'descend' }
   await loadData()
 }
 
-function columnSortOrder(field: UsageRecordSortField): TableSortOrder {
+function columnSortOrder(field: UsageRecordSortField): UsageRecordTableSortOrder {
   return sortState.value.field === field ? sortState.value.order : null
 }
 
-function normalizeTableSorter(sorter: unknown): { field: UsageRecordSortField; order: TableSortOrder } | undefined {
-  const item = Array.isArray(sorter) ? sorter[0] : sorter
-  if (!item || typeof item !== 'object') return undefined
-  const record = item as Record<string, unknown>
-  const field = sortFieldFromColumn(record.columnKey ?? record.field)
-  const order = record.order === 'ascend' || record.order === 'descend' ? record.order : null
-  return field && order ? { field, order } : undefined
-}
-
-function sortFieldFromColumn(value: unknown): UsageRecordSortField | undefined {
-  if (value === 'cost') return 'costUsd'
-  if (value === 'costUsd' || value === 'firstTokenMs' || value === 'durationMs' || value === 'createdAt') return value
-  return undefined
-}
-
 function updatePaginationFromTable(paginationInfo: unknown): void {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
+  const next = usageRecordPaginationFromTable(paginationInfo, usageRecordsPageSize)
+  if (!next) return
+  pagination.current = next.current
+  pagination.pageSize = next.pageSize
 }
 
 function applyFilters(): void {
@@ -423,7 +362,7 @@ function restorePageStateAfterRouteTraceCleared(): void {
 function applyPageState(state: UsageRecordsPageState): void {
   accountNameFilter.value = state.accountNameFilter
   clientIpFilter.value = state.clientIpFilter
-  dateRangeFilter.value = parseDateRange(state.dateRangeFilter)
+  dateRangeFilter.value = parseUsageRecordDateRange(state.dateRangeFilter)
   groupFilterSelection.value = state.groupFilter
   modelFilter.value = state.modelFilter
   resultFilter.value = state.resultFilter
@@ -458,37 +397,23 @@ function handleSystemAccountFilterChange(): void {
 async function fetchRecords(pageState: { current: number; pageSize: number }) {
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
   const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
-  const dateRange = dateRangeParam(dateRangeFilter.value)
-  const params: UsageRecordListParams = {
+  const params = usageRecordListParams({
     page: pageState.current,
     pageSize: pageState.pageSize,
-    accountKeyword: accountNameFilter.value.trim() || undefined,
-    clientIp: clientIpFilter.value.trim() || undefined,
-    startDate: dateRange?.[0],
-    endDate: dateRange?.[1],
+    accountName: accountNameFilter.value,
+    clientIp: clientIpFilter.value,
+    dateRange: usageRecordDateRangeParam(dateRangeFilter.value),
     groupId: groupFilter.value,
-    model: modelFilter.value.trim() || undefined,
+    model: modelFilter.value,
     result: resultFilter.value,
-    statusCode: normalizedStatusCode(statusCodeFilter.value),
+    statusCode: statusCodeFilter.value,
     systemAccountId,
-    traceId: traceIdFilter.value.trim() || undefined,
-    trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value,
+    traceId: traceIdFilter.value,
+    trafficSource: trafficSourceFilter.value,
     sortBy: sortState.value.field,
     sortOrder
-  }
+  })
   return usageRecordsApi.list(params)
-}
-
-function normalizedStatusCode(value: string): number | undefined {
-  const text = value.trim()
-  if (!text) return undefined
-  const statusCode = Number(text)
-  return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
-}
-
-function dateRangeParam(value?: [Dayjs, Dayjs]): [string, string] | undefined {
-  const normalized = normalizeDayjsDateRange(value)
-  return normalized ? [formatDateKey(normalized[0]), formatDateKey(normalized[1])] : undefined
 }
 
 async function copyTraceId(traceId?: string): Promise<void> {
@@ -513,7 +438,7 @@ function snapshotPageState(): UsageRecordsPageState {
   return {
     accountNameFilter: accountNameFilter.value,
     clientIpFilter: clientIpFilter.value,
-    dateRangeFilter: dateRangeParam(dateRangeFilter.value),
+    dateRangeFilter: usageRecordDateRangeParam(dateRangeFilter.value),
     groupFilter: groupFilterSelection.value,
     modelFilter: modelFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
@@ -525,13 +450,6 @@ function snapshotPageState(): UsageRecordsPageState {
     traceIdFilter: traceIdFilter.value,
     trafficSourceFilter: trafficSourceFilter.value
   }
-}
-
-function parseDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
-  if (!value) return undefined
-  const start = parseDateKey(value[0])
-  const end = parseDateKey(value[1])
-  return start && end ? normalizeDayjsDateRange([start, end]) : undefined
 }
 
 function routeTraceId(): string | undefined {
