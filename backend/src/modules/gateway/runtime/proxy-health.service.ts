@@ -48,7 +48,7 @@ const upstreamBucketHalfOpenLeaseMs = 60_000
 const upstreamBucketFailureDistinctAccountThreshold = 2
 let gatewayUpstreamBucketHealthNowForTest: number | undefined
 
-export function orderOpenAIAccountsByGatewayUpstreamBucketHealth(accounts: UpstreamAccount[]): GatewayProxyHealthOrderResult {
+export function orderGatewayAccountsByUpstreamBucketHealth(accounts: UpstreamAccount[]): GatewayProxyHealthOrderResult {
   if (accounts.length === 0) {
     return {
       accounts,
@@ -117,7 +117,7 @@ export function orderOpenAIAccountsByGatewayUpstreamBucketHealth(accounts: Upstr
 }
 
 export function orderOpenAIAccountsByGatewayProxyHealth(accounts: UpstreamAccount[]): GatewayProxyHealthOrderResult {
-  return orderOpenAIAccountsByGatewayUpstreamBucketHealth(accounts)
+  return orderGatewayAccountsByUpstreamBucketHealth(accounts)
 }
 
 function orderAccountsByActiveBucketScope(

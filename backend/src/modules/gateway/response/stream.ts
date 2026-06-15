@@ -51,40 +51,13 @@ import {
   shouldReturnResponseInspectionBeforeDownstreamWrite,
   streamClientFailureCode
 } from './stream-retry-decision.js'
-
-export interface StreamPipeResult {
-  completed: boolean
-  message: string
-  errorCode?: string
-  firstTokenMs?: number
-  usage: ParsedUsage
-  outputReceived: boolean
-  imageOutputReceived: boolean
-  estimatedOutputTokens?: number
-  responseBodyText?: string
-  auditResponseBody?: Buffer
-  auditUpstreamBody?: Buffer
-  downstreamBytesWritten: number
-  uncommittedResponseBody?: Buffer
-  responseInspection?: ResponseInspectionDecision
-  responseInspectionObservations?: ResponseInspectionDecision[]
-  responseInspectionObservationOmittedCount?: number
-  bodyOmission?: StreamBodyOmissionSummary
-}
-
-export interface StreamBodyOmissionSummary {
-  omitted: true
-  reason: 'image_stream_payload'
-  message: string
-  totalUpstreamBytes: number
-  totalResponseBytes: number
-  sseEventCount: number
-  lastSseEventType?: string
-  recentSseEventTypes: string[]
-  imageOutputReceived: boolean
-  terminalReceived: boolean
-  failedReceived: boolean
-}
+import {
+  streamBodyOmissionSummary,
+  streamResult,
+  type StreamBodyOmissionSummary,
+  type StreamPipeResult
+} from './stream-result.js'
+export type { StreamBodyOmissionSummary, StreamPipeResult } from './stream-result.js'
 
 export interface StreamFailureContext {
   downstreamBytesWritten: number
@@ -1043,94 +1016,6 @@ function mergeResponseInspectionSseResults(
       ? [...(left.observations ?? []), ...(right.observations ?? [])]
       : undefined,
     parserSkipped: left.parserSkipped || right.parserSkipped
-  }
-}
-
-function streamResult(
-  completed: boolean,
-  message: string,
-  errorCode: string | undefined,
-  firstTokenMs: number | undefined,
-  usage: ParsedUsage,
-  responseCapture: LimitedBufferCapture,
-  upstreamCapture: LimitedBufferCapture,
-  diagnosticCapture: LimitedBufferCapture,
-  responseInspection?: ResponseInspectionDecision,
-  outputReceived = false,
-  estimatedOutputTokens?: number,
-  imageOutputReceived = false,
-  captureSuccessPayloads = true,
-  bodyOmission?: StreamBodyOmissionSummary,
-  responseInspectionObservations: ResponseInspectionDecision[] = [],
-  responseInspectionObservationOmittedCount = 0,
-  downstreamBytesWritten = 0,
-  uncommittedResponseBody?: Buffer
-): StreamPipeResult {
-  const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
-    ? undefined
-    : diagnosticCapture.toDiagnosticText()
-  const auditResponseBody = bodyOmission
-    ? undefined
-    : captureSuccessPayloads
-      ? responseCapture.completeBuffer()
-      : completed ? undefined : diagnosticCapture.completeBuffer()
-  return {
-    completed,
-    message,
-    errorCode,
-    firstTokenMs,
-    usage,
-    outputReceived,
-    imageOutputReceived,
-    estimatedOutputTokens,
-    responseBodyText,
-    auditResponseBody,
-    auditUpstreamBody: auditUpstreamBodyForResult(upstreamCapture, completed, captureSuccessPayloads, bodyOmission),
-    downstreamBytesWritten,
-    uncommittedResponseBody,
-    responseInspection,
-    responseInspectionObservations: responseInspectionObservations.length ? [...responseInspectionObservations] : undefined,
-    responseInspectionObservationOmittedCount: responseInspectionObservationOmittedCount > 0 ? responseInspectionObservationOmittedCount : undefined,
-    bodyOmission
-  }
-}
-
-function auditUpstreamBodyForResult(
-  upstreamCapture: LimitedBufferCapture,
-  completed: boolean,
-  captureSuccessPayloads: boolean,
-  bodyOmission?: StreamBodyOmissionSummary
-): Buffer | undefined {
-  if (bodyOmission) {
-    return undefined
-  }
-  if (captureSuccessPayloads) {
-    return upstreamCapture.completeBuffer()
-  }
-  if (completed) {
-    return undefined
-  }
-  const buffer = upstreamCapture.buffer()
-  return buffer.byteLength > 0 ? buffer : undefined
-}
-
-function streamBodyOmissionSummary(
-  inspection: OpenAIStreamInspection,
-  totalUpstreamBytes: number,
-  totalResponseBytes: number
-): StreamBodyOmissionSummary {
-  return {
-    omitted: true,
-    reason: 'image_stream_payload',
-    message: '图像流正文已省略，避免在日志和审计中保存图片字节',
-    totalUpstreamBytes,
-    totalResponseBytes,
-    sseEventCount: inspection.eventCount,
-    lastSseEventType: inspection.lastEventType,
-    recentSseEventTypes: inspection.recentEventTypes,
-    imageOutputReceived: inspection.imageOutputReceived,
-    terminalReceived: inspection.terminalReceived,
-    failedReceived: inspection.failedReceived
   }
 }
 

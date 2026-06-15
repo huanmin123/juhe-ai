@@ -1,14 +1,11 @@
-import type { DatabaseSync } from 'node:sqlite'
-
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
-import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrency.js'
-import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
@@ -24,7 +21,7 @@ import {
   isAccountAvailabilityScheduleInputPresent,
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
-import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
+import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess } from './account-read.repository.js'
 import { deleteAccountWithRelatedCleanup } from './account-delete-cleanup.repository.js'
 import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
 import {
@@ -55,16 +52,14 @@ import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
 } from './account-usage.repository.js'
+import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
-import { maxGroupDeleteAffectedApiKeyRoutes } from './api-key-group-binding-limits.js'
 import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, listApiKeys, listApiKeysPage, refreshApiKeySecret, updateApiKey } from './api-key.repository.js'
-import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
+import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { emptyGroupAccountStats } from './group-account-stats.mapper.js'
-import { loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
+import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
 import {
-  findGroupSummary,
   listAccountGroupOptions,
   listGroupOptions,
   listGroups,
@@ -79,51 +74,50 @@ export {
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
-import { defaultProviderProtocolProfile, findProviderProtocolProfile, listOpenAIProtocolProfileIds, listProviders } from './provider.repository.js'
+import { listOpenAIProtocolProfileIds } from './provider.repository.js'
+import { requireEnabledProviderProtocolProfile } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
-import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import {
   accountSystemAccountId,
   activeAccountAuthorization,
   activeGroupAuthorization,
-  activeResourceAuthorization,
   activeResourceAuthorizationById,
   canManageResourceOwner,
   groupOwnerAndProvider,
   isResourceAuthorizationExpired,
-  resourceAuthorizationSelectColumns,
   sanitizeAuthorizationSourcesForViewer,
-  usageScope
 } from './resource-authorization-helpers.js'
-import {
-  normalizeResourceType
-} from './resource-authorization-list-helpers.js'
 import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
 import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+export {
+  returnAccountAuthorizationInstanceForGrantee,
+  returnGroupAuthorizationForGrantee,
+  returnResourceAuthorizationForGrantee
+} from './resource-authorization-return.repository.js'
+export {
+  createResourceAuthorization,
+  revokeResourceAuthorization,
+  updateResourceAuthorization
+} from './resource-authorization-write.repository.js'
+export {
+  getResourceAuthorizationUsage,
+  type ResourceAuthorizationUsageOptions
+} from './resource-authorization-usage.repository.js'
 import {
-  activeTeamMemberRows,
-  assertActiveTeamGrantFanoutWithinLimit,
-  cleanupInactiveAuthorizationBindings,
   deactivateAuthorizationIfNoActiveSources,
   expireDueResourceAuthorizations,
-  revokeResourceAuthorizationGrant,
-  returnResourceAuthorizationGrant,
-  syncAccountAuthorizationInstanceNamesForSourceAccount,
-  syncResourceAuthorizationGrantRuntime,
-  upsertResourceAuthorizationForUser,
-  upsertResourceAuthorizationGrant
+  syncAccountAuthorizationInstanceNamesForSourceAccount
 } from './resource-authorization-write-state.repository.js'
 import {
   invalidateAccountLookupCache,
   invalidateGroupLookupCache,
   loadSystemAccountNameMapByIds,
-  loadSystemAccountPrincipalMapByIds
 } from './repository-lookups.js'
-import { hasEnabledRequestQuotaLimit, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
-import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamRow } from './repository-row-types.js'
+import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
+import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationSourceRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
-import { findSystemAccountById } from './system-accounts.repository.js'
 export type { SystemTeamListOptions } from './system-team.repository.js'
 export {
   addSystemTeamMembers,
@@ -136,20 +130,26 @@ export {
 } from './system-team.repository.js'
 import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
-import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { loadAccountUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { loadAccountUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
+  assertKnownInputKeys,
+  hasOwnInput,
+  normalizeNullableIdInput,
+  normalizeNullableTextInput,
+  normalizeOptionalBooleanInput,
+  normalizeOptionalRequiredTextInput,
+  requiredTextInput
+} from './repository-input-normalization.js'
+import {
   nullableServerDateTimeIso,
-  optionalNullableServerDateTimeIso,
-  optionalNullableString,
   optionalServerDateTimeIso,
   optionalString
 } from './value-utils.js'
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
-const defaultResourceAuthorizationUsageDetailPageSize = 200
 const temporaryUnavailableInitialBackoffSeconds = 3
 const temporaryUnavailableFastThresholdSeconds = 60
 const temporaryUnavailableBackoffMultiplier = 2
@@ -164,32 +164,6 @@ function findInternalAccountSummary(accountId: string): AccountSummary | undefin
 function openAIProtocolProfileIdsForQuery(): string[] {
   const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
   return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
-}
-
-function requireEnabledProvider(providerCode: string): ReturnType<typeof listProviders>[number] {
-  const provider = listProviders().find((item) => item.code === providerCode)
-  if (!provider) {
-    throw new Error(`不支持的供应商：${providerCode}`)
-  }
-  if (!provider.enabled) {
-    throw new Error(`供应商已停用：${providerCode}`)
-  }
-  return provider
-}
-
-function requireEnabledProviderProtocolProfile(providerCode: string, profileIdInput: unknown): NonNullable<ReturnType<typeof defaultProviderProtocolProfile>> {
-  const provider = requireEnabledProvider(providerCode)
-  const profileId = typeof profileIdInput === 'string' && profileIdInput.trim()
-    ? profileIdInput.trim()
-    : provider.defaultProtocolProfileId
-  const profile = profileId ? findProviderProtocolProfile(profileId) : defaultProviderProtocolProfile(providerCode)
-  if (!profile || profile.providerCode !== providerCode) {
-    throw new Error(`供应商协议档案无效：${profileId || providerCode}`)
-  }
-  if (!profile.enabled) {
-    throw new Error(`供应商协议档案已停用：${profile.name}`)
-  }
-  return profile
 }
 
 interface OpenAIOAuthRefreshCandidateRow {
@@ -220,18 +194,20 @@ interface OpenAIOAuthRefreshCandidateRow {
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 export { normalizeAccountCredentialsForWrite } from './account-credentials-normalization.js'
 
-export class DefaultGroupReadonlyError extends Error {
-  constructor() {
-    super('默认分组不允许修改')
-    this.name = 'DefaultGroupReadonlyError'
-  }
-}
-
-export interface ResourceAuthorizationUsageOptions {
-  range?: AccountUsageStatsRange
-  page?: number
-  pageSize?: number
-}
+export {
+  DefaultGroupReadonlyError,
+  createGroup,
+  deleteGroup,
+  updateGroup
+} from './group-write.repository.js'
+export type {
+  DeletedGroupApiKeyRouteChange,
+  DeleteGroupResult
+} from './group-write.repository.js'
+export {
+  addAccountToGroup,
+  setAccountGroup
+} from './account-group-binding-write.repository.js'
 
 export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 export {
@@ -535,74 +511,12 @@ export {
   type AccountQualityFailurePrecheckCandidate,
   type AccountQualityRealtimeRefreshResult
 } from './account-quality.repository.js'
-function canUseAccount(accountId: string, systemAccountId: string): boolean {
-  const row = getBusinessDatabase()
-    .prepare('SELECT system_account_id, authorization_instance_authorization_id FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
-    .get(accountId) as unknown as { system_account_id?: string; authorization_instance_authorization_id?: string | null } | undefined
-  if (!row?.system_account_id) return false
-  if (row.authorization_instance_authorization_id) {
-    return Boolean(activeResourceAuthorizationById(row.authorization_instance_authorization_id, systemAccountId))
-  }
-  if (row.system_account_id === systemAccountId) return true
-  return Boolean(activeResourceAuthorization('account', accountId, systemAccountId))
-}
-
-function authorizationInstanceRuntimeAuthorization(accountId: string, systemAccountId: string, database = getBusinessDatabase()): ResourceAuthorizationRow | undefined {
-  const row = database
-    .prepare('SELECT authorization_instance_authorization_id FROM accounts WHERE id = ? AND system_account_id = ? AND deleted_at IS NULL LIMIT 1')
-    .get(accountId, systemAccountId) as unknown as { authorization_instance_authorization_id?: string | null } | undefined
-  return row?.authorization_instance_authorization_id
-    ? activeResourceAuthorizationById(row.authorization_instance_authorization_id, systemAccountId)
-    : undefined
-}
-
-function accountBindingAuthorizationId(accountId: string, systemAccountId: string, account?: AccountSummary): string | undefined {
-  if (account?.accountAuthorizationId) {
-    return activeResourceAuthorizationById(account.accountAuthorizationId, systemAccountId)?.id
-  }
-  const instanceAuthorization = authorizationInstanceRuntimeAuthorization(accountId, systemAccountId)
-  if (instanceAuthorization?.id) {
-    return instanceAuthorization.id
-  }
-  const ownerId = accountSystemAccountId(accountId)
-  if (ownerId && ownerId !== systemAccountId) {
-    return activeAccountAuthorization(accountId, systemAccountId)?.id
-  }
-  return undefined
-}
-
-function accountBindingRequiresAuthorization(accountId: string, systemAccountId: string, account?: AccountSummary): boolean {
-  if (account?.accessType === 'authorized' || account?.accountAuthorizationId || account?.authorizationInstanceSourceAccountId) {
-    return true
-  }
-  const row = getBusinessDatabase()
-    .prepare('SELECT system_account_id, authorization_instance_authorization_id FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
-    .get(accountId) as unknown as { system_account_id?: string; authorization_instance_authorization_id?: string | null } | undefined
-  if (!row?.system_account_id) return false
-  return row.system_account_id !== systemAccountId || Boolean(row.authorization_instance_authorization_id)
-}
-
 function accountRowForManage(accountId: string, access?: AccessScope): AccountRow | undefined {
   const row = getBusinessDatabase().prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL').get(accountId) as unknown as AccountRow | undefined
   if (!row || !canManageResourceOwner(row.system_account_id, access)) {
     return undefined
   }
   return row
-}
-
-function accountEnabledGroupId(accountId: string, systemAccountId: string): string | undefined {
-  const row = getBusinessDatabase()
-    .prepare(`
-      SELECT group_id
-      FROM group_accounts
-      WHERE account_id = ?
-        AND system_account_id = ?
-        AND enabled = 1
-      ORDER BY updated_at DESC, group_id ASC, account_id ASC
-      LIMIT 1
-    `)
-    .get(accountId, systemAccountId) as unknown as { group_id?: string } | undefined
-  return row?.group_id
 }
 
 function accountRuntimeCredentialsFromRow(row: AccountListRow): Record<string, unknown> {
@@ -741,45 +655,6 @@ function normalizeBooleanDispatchInput(value: unknown, fallback: boolean, label:
   throw new Error(`${label}必须是布尔值`)
 }
 
-function hasOwnInput(input: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(input, key)
-}
-
-function normalizeOptionalBooleanInput(input: Record<string, unknown>, key: string, fallback: boolean, label: string): boolean {
-  if (!hasOwnInput(input, key)) return fallback
-  const value = input[key]
-  if (typeof value === 'boolean') return value
-  throw new Error(`${label}必须是布尔值`)
-}
-
-function normalizeOptionalRequiredTextInput(input: Record<string, unknown>, key: string, fallback: string, label: string): string {
-  if (!hasOwnInput(input, key)) return fallback
-  return requiredTextInput(input[key], label)
-}
-
-function normalizeNullableTextInput(value: unknown, label: string): string | undefined {
-  try {
-    return optionalNullableString(value) ?? undefined
-  } catch {
-    throw new Error(`${label}必须是字符串`)
-  }
-}
-
-function normalizeNullableIdInput(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${label}无效`)
-  }
-  return value.trim()
-}
-
-function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
-  const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.has(key))
-  if (unknownKeys.length) {
-    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
-  }
-}
-
 function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean {
   return normalizeBooleanDispatchInput(value, fallback, '超级优先')
 }
@@ -821,41 +696,9 @@ function writeSystemAccountId(access?: AccessScope): string {
   return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
 }
 
-function validAccountIdsForGroup(providerCode: string, providerProtocolProfileId: string, accountIds: string[], systemAccountId: string): string[] {
-  const uniqueIds = [...new Set(accountIds)]
-  const accountsById = new Map<string, { provider_code?: string; provider_protocol_profile_id?: string }>()
-  const database = getBusinessDatabase()
-  for (const chunk of chunkValues(uniqueIds, 900)) {
-    const rows = database.prepare(`
-      SELECT id, provider_code, provider_protocol_profile_id
-      FROM accounts
-      WHERE system_account_id = ?
-        AND id IN (${sqlPlaceholders(chunk.length)})
-    `).all(systemAccountId, ...chunk) as Array<{ id?: string; provider_code?: string; provider_protocol_profile_id?: string }>
-    for (const row of rows) {
-      if (row.id) {
-        accountsById.set(row.id, row)
-      }
-    }
-  }
-  return uniqueIds.filter((accountId) => {
-    const account = accountsById.get(accountId)
-    return account?.provider_code === providerCode
-      && account.provider_protocol_profile_id === providerProtocolProfileId
-      && canUseAccount(accountId, systemAccountId)
-  })
-}
-
 function runDelete(sql: string, id: string): boolean {
   const result = getBusinessDatabase().prepare(sql).run(id)
   return result.changes > 0
-}
-
-function requiredTextInput(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${label}不能为空`)
-  }
-  return value.trim()
 }
 
 function isDuplicateAccountNameError(error: unknown): boolean {
@@ -875,25 +718,6 @@ function assertAccountNameAvailable(systemAccountId: string, name: string, exclu
     .get(...params) as { id?: string } | undefined
   if (row?.id) {
     throw new Error(`同一用户下账户名称已存在：${name}`)
-  }
-}
-
-function isDuplicateGroupNameError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return error.message.includes('idx_groups_owner_protocol_profile_name_unique_lower')
-}
-
-function assertGroupNameAvailable(systemAccountId: string, providerProtocolProfileId: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, providerProtocolProfileId, name]
-  const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
-  const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
-    .get(...params) as { id?: string } | undefined
-  if (row?.id) {
-    throw new Error(`同一协议档案下分组名称已存在：${name}`)
   }
 }
 
@@ -937,35 +761,8 @@ function cooldownRetestObservationStartedAtForStatus(status: AccountStatus, nowM
   return isCoolingAccountStatus(status) ? new Date(nowMs).toISOString() : undefined
 }
 
-function refreshGroupAccountStatsAfterWrite(input: {
-  groupIds?: Array<string | null | undefined>
-  accountIds?: Array<string | null | undefined>
-  all?: boolean
-  reason?: string
-} = {}): void {
-  const reason = input.reason ?? 'business_write'
-  if (input.all) {
-    markAllGroupAccountStatsDirty(reason)
-    return
-  }
-  if (input.groupIds?.length) {
-    markGroupAccountStatsDirty(input.groupIds, reason)
-  }
-  if (input.accountIds?.length) {
-    markGroupAccountStatsDirtyByAccountIds(input.accountIds, reason)
-  }
-  if (!input.groupIds?.length && !input.accountIds?.length) {
-    markAllGroupAccountStatsDirty(reason)
-  }
-}
-
 function invalidateGatewayRuntimeAfterBusinessWrite(reason: string): void {
   notifyGatewayRuntimeCacheInvalidation(reason)
-}
-
-function invalidateAuthorizationRuntimeAfterBusinessWrite(reason: string): void {
-  notifyGatewayRuntimeCacheInvalidation(reason)
-  notifyAuthorizationQuotaCacheInvalidation(reason)
 }
 
 export function getAccountUsageStatsOverview(access?: AccessScope, range?: AccountUsageStatsRange): AccountUsageStatsOverview {
@@ -3253,495 +3050,6 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
   }
 }
 
-function hasGroupSchedulingPolicyInput(input: Record<string, unknown>): boolean {
-  return hasOwnInput(input, 'schedulingPolicy')
-}
-
-function groupSchedulingPolicyInput(input: Record<string, unknown>): unknown {
-  return input.schedulingPolicy
-}
-
-const groupCreateInputKeys = new Set([
-  'name',
-  'providerCode',
-  'providerProtocolProfileId',
-  'description',
-  'enabled',
-  'groupType',
-  'schedulingPolicy'
-])
-
-const groupUpdateInputKeys = new Set([
-  'name',
-  'providerCode',
-  'providerProtocolProfileId',
-  'description',
-  'enabled',
-  'groupType',
-  'schedulingPolicy'
-])
-
-const authorizedGroupSettingsInputKeys = new Set([
-  'enabled',
-  'groupType',
-  'schedulingPolicy'
-])
-
-export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
-  assertKnownInputKeys(input, groupCreateInputKeys, '分组创建参数')
-  const now = nowIso()
-  const systemAccountId = writeSystemAccountId(access)
-  const providerCode = requiredTextInput(input.providerCode, '供应商')
-  const providerProfile = requireEnabledProviderProtocolProfile(providerCode, input.providerProtocolProfileId)
-  const groupType = normalizeGroupType(input.groupType)
-  const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
-  const name = requiredTextInput(input.name, '分组名称')
-  const enabled = normalizeOptionalBooleanInput(input, 'enabled', true, '分组启用状态')
-  assertGroupNameAvailable(systemAccountId, providerProfile.id, name)
-  const group: GroupSummary = {
-    id: newId('grp'),
-    systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
-    name,
-    providerCode,
-    providerProtocolProfileId: providerProfile.id,
-    protocolCode: providerProfile.protocolCode,
-    protocolVersion: providerProfile.protocolVersion,
-    description: normalizeNullableTextInput(input.description, '分组说明'),
-    enabled,
-    isDefault: false,
-    groupType,
-    schedulingPolicy: parseGroupSchedulingPolicyJson(schedulingPolicyJson, groupType),
-    accountIds: [],
-    accountStats: emptyGroupAccountStats()
-  }
-  try {
-    getBusinessDatabase()
-      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
-      .run(group.id, systemAccountId, group.name, group.providerCode, providerProfile.id, providerProfile.protocolCode, providerProfile.protocolVersion, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
-  } catch (error) {
-    if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一协议档案下分组名称已存在：${group.name}`)
-    }
-    throw error
-  }
-  invalidateGroupLookupCache(group.id)
-  invalidateGatewayRuntimeAfterBusinessWrite('group_created')
-  return group
-}
-
-export function updateGroup(id: string, input: Record<string, unknown>, access?: AccessScope): GroupSummary | undefined {
-  assertKnownInputKeys(input, groupUpdateInputKeys, '分组更新参数')
-  const current = findGroupSummary(id, access)
-  if (!current) {
-    return undefined
-  }
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  if (current.accessType === 'authorized' && current.ownerSystemAccountId !== viewerSystemAccountId) {
-    return updateAuthorizedGroupSettings(id, input, current, access)
-  }
-  if (current.isDefault) {
-    throw new DefaultGroupReadonlyError()
-  }
-  const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId
-  if (!systemAccountId) {
-    throw new Error('分组归属数据异常，请清理后再编辑')
-  }
-  if (!canManageResourceOwner(systemAccountId, access)) {
-    return undefined
-  }
-  const hasDescriptionInput = hasOwnInput(input, 'description')
-  const hasProviderCodeInput = hasOwnInput(input, 'providerCode')
-  const hasProviderProtocolProfileInput = hasOwnInput(input, 'providerProtocolProfileId')
-  const hasGroupTypeInput = hasOwnInput(input, 'groupType')
-  const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
-  const nextProviderCode = hasProviderCodeInput
-    ? normalizeOptionalRequiredTextInput(input, 'providerCode', current.providerCode, '供应商')
-    : current.providerCode
-  const nextProviderProtocolProfileId = hasProviderProtocolProfileInput
-    ? normalizeOptionalRequiredTextInput(input, 'providerProtocolProfileId', current.providerProtocolProfileId ?? '', '供应商协议档案')
-    : nextProviderCode === current.providerCode
-      ? current.providerProtocolProfileId
-      : undefined
-  const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
-  const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : current.schedulingPolicy
-  const next: GroupSummary = {
-    ...current,
-    name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '分组名称'),
-    providerCode: nextProviderCode,
-    providerProtocolProfileId: nextProviderProtocolProfileId,
-    description: hasDescriptionInput ? normalizeNullableTextInput(input.description, '分组说明') : current.description,
-    enabled: normalizeOptionalBooleanInput(input, 'enabled', current.enabled, '分组启用状态'),
-    groupType: nextGroupType,
-    schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
-  }
-  if ((next.providerCode !== current.providerCode || next.providerProtocolProfileId !== current.providerProtocolProfileId) && current.accountStats.total > 0) {
-    throw new Error('已有账户的分组不允许修改供应商或协议档案')
-  }
-  const providerProfile = requireEnabledProviderProtocolProfile(next.providerCode, next.providerProtocolProfileId)
-  next.providerProtocolProfileId = providerProfile.id
-  next.protocolCode = providerProfile.protocolCode
-  next.protocolVersion = providerProfile.protocolVersion
-  assertGroupNameAvailable(systemAccountId, providerProfile.id, next.name, id)
-  const database = getBusinessDatabase()
-  try {
-    database
-      .prepare('UPDATE groups SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.providerCode, next.providerProtocolProfileId, next.protocolCode, next.protocolVersion, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
-  } catch (error) {
-    if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一协议档案下分组名称已存在：${next.name}`)
-    }
-    throw error
-  }
-  invalidateGroupLookupCache(id)
-  invalidateGatewayRuntimeAfterBusinessWrite('group_updated')
-  return findGroupSummary(id, access)
-}
-
-function updateAuthorizedGroupSettings(
-  id: string,
-  input: Record<string, unknown>,
-  current: GroupSummary,
-  access?: AccessScope
-): GroupSummary | undefined {
-  assertKnownInputKeys(input, authorizedGroupSettingsInputKeys, '授权分组使用配置')
-  const granteeSystemAccountId = userVisibleSystemAccountId(access)
-  if (!granteeSystemAccountId || !current.groupAuthorizationId) {
-    return undefined
-  }
-  const database = getBusinessDatabase()
-  const authorization = database
-    .prepare(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM resource_authorizations
-      WHERE id = ?
-        AND resource_type = 'group'
-        AND resource_id = ?
-        AND grantee_system_account_id = ?
-        AND status IN ('active', 'paused', 'expired')
-      LIMIT 1
-    `)
-    .get(current.groupAuthorizationId, id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
-    return undefined
-  }
-  const existing = database
-    .prepare('SELECT enabled FROM group_authorization_settings WHERE authorization_id = ? LIMIT 1')
-    .get(authorization.id) as unknown as { enabled?: number } | undefined
-  const hasGroupTypeInput = hasOwnInput(input, 'groupType')
-  const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
-  const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType) : current.groupType
-  const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : current.schedulingPolicy
-  const nextSchedulingPolicyJson = groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType)
-  const nextEnabled = normalizeOptionalBooleanInput(input, 'enabled', existing?.enabled === 0 ? false : true, '授权分组启用状态')
-  const now = nowIso()
-  database
-    .prepare(`
-      INSERT INTO group_authorization_settings (
-        authorization_id, system_account_id, group_id, enabled, group_type,
-        scheduling_policy_json, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(authorization_id) DO UPDATE SET
-        system_account_id = excluded.system_account_id,
-        group_id = excluded.group_id,
-        enabled = excluded.enabled,
-        group_type = excluded.group_type,
-        scheduling_policy_json = excluded.scheduling_policy_json,
-        updated_at = excluded.updated_at
-    `)
-    .run(
-      authorization.id,
-      granteeSystemAccountId,
-      id,
-      nextEnabled ? 1 : 0,
-      nextGroupType,
-      nextSchedulingPolicyJson,
-      now,
-      now
-    )
-  invalidateGatewayRuntimeAfterBusinessWrite('group_authorization_settings_updated')
-  return findGroupSummary(id, access)
-}
-
-export interface DeletedGroupApiKeyRouteChange {
-  apiKeyId: string
-  apiKeyName: string
-  removedGroupId: string
-  removedGroupName?: string
-  removedBindingStatus?: string
-}
-
-export interface DeleteGroupResult {
-  deleted: boolean
-  affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[]
-}
-
-export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult {
-  const current = findGroupSummary(id, access)
-  if (current?.isDefault) {
-    throw new Error('默认分组不能删除')
-  }
-  const owner = groupOwnerAndProvider(id)
-  if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
-    return { deleted: false, affectedApiKeyRoutes: [] }
-  }
-  const database = getBusinessDatabase()
-  let deleted = false
-  const affectedApiKeyRoutes = preserveApiKeyRoutesBeforeGroupDelete(database, id, owner.systemAccountId, current?.name)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
-    const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
-    deleted = Number(result.changes ?? 0) > 0
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  if (deleted) {
-    refreshGroupAccountStatsAfterWrite({ groupIds: [id], reason: 'group_deleted' })
-    invalidateGroupLookupCache(id)
-    invalidateGroupAccountIdsCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
-  }
-  return { deleted, affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : [] }
-}
-
-type ApiKeyAffectedByGroupDeleteRow = {
-  id: string
-  name: string
-  systemAccountId: string
-  targetBindingStatus?: string | null
-}
-
-function preserveApiKeyRoutesBeforeGroupDelete(
-  database: DatabaseSync,
-  groupId: string,
-  systemAccountId: string,
-  groupName?: string
-): DeletedGroupApiKeyRouteChange[] {
-  const affectedApiKeys = database
-    .prepare(`
-      SELECT
-        api_key_group_bindings.api_key_id AS id,
-        api_keys.name,
-        api_keys.system_account_id AS systemAccountId,
-        api_key_group_bindings.status AS targetBindingStatus
-      FROM api_key_group_bindings
-      INNER JOIN api_keys
-        ON api_keys.id = api_key_group_bindings.api_key_id
-        AND api_keys.system_account_id = api_key_group_bindings.system_account_id
-      WHERE api_key_group_bindings.group_id = ?
-      ORDER BY api_key_group_bindings.api_key_id ASC
-      LIMIT ?
-    `)
-    .all(groupId, maxGroupDeleteAffectedApiKeyRoutes + 1) as unknown as ApiKeyAffectedByGroupDeleteRow[]
-  if (!affectedApiKeys.length) return []
-  if (affectedApiKeys.length > maxGroupDeleteAffectedApiKeyRoutes) {
-    throw new Error(`该分组关联的 API Key 超过 ${maxGroupDeleteAffectedApiKeyRoutes} 个，请先分批解除绑定后再删除分组`)
-  }
-
-  const activeBindingCountByApiKeyId = loadActiveApiKeyGroupCountExcludingGroup(
-    database,
-    groupId,
-    affectedApiKeys.map((apiKey) => apiKey.id)
-  )
-  const blockers = affectedApiKeys.filter((apiKey) => {
-    if (apiKey.systemAccountId !== systemAccountId) return false
-    if (apiKey.targetBindingStatus !== 'active') return false
-    return (activeBindingCountByApiKeyId.get(apiKey.id) ?? 0) === 0
-  })
-  if (blockers.length) {
-    const names = blockers.slice(0, 3).map((apiKey) => apiKey.name).join('、')
-    const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`无法删除分组：该分组仍是以下 API Key 的唯一启用号池：${names}${suffix}。请先到 API Key 管理中为这些 Key 新增并启用其他分组，或删除这些 API Key 后再删除分组。`)
-  }
-
-  return affectedApiKeys.map((apiKey) => {
-    return {
-      apiKeyId: apiKey.id,
-      apiKeyName: apiKey.name,
-      removedGroupId: groupId,
-      removedGroupName: groupName,
-      removedBindingStatus: apiKey.targetBindingStatus ?? undefined
-    }
-  })
-}
-
-function loadActiveApiKeyGroupCountExcludingGroup(
-  database: DatabaseSync,
-  groupId: string,
-  apiKeyIds: string[]
-): Map<string, number> {
-  const result = new Map<string, number>()
-  const uniqueIds = [...new Set(apiKeyIds.filter(Boolean))]
-  const now = nowIso()
-  for (const chunk of chunkValues(uniqueIds, 500)) {
-    const rows = database
-      .prepare(`
-        SELECT
-          api_key_group_bindings.api_key_id AS apiKeyId,
-          COUNT(*) AS activeBindingCount
-        FROM api_key_group_bindings
-        INNER JOIN groups
-          ON groups.id = api_key_group_bindings.group_id
-          AND groups.enabled = 1
-        LEFT JOIN resource_authorizations group_authorization
-          ON group_authorization.resource_type = 'group'
-          AND group_authorization.resource_id = groups.id
-          AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
-          AND group_authorization.status = 'active'
-          AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
-        LEFT JOIN group_authorization_settings
-          ON group_authorization_settings.authorization_id = group_authorization.id
-          AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
-          AND group_authorization_settings.group_id = groups.id
-        WHERE api_key_group_bindings.status = 'active'
-          AND (
-            groups.system_account_id = api_key_group_bindings.system_account_id
-            OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
-          )
-          AND api_key_group_bindings.group_id <> ?
-          AND api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
-        GROUP BY api_key_group_bindings.api_key_id
-    `)
-      .all(now, groupId, ...chunk) as unknown as Array<{ apiKeyId: string; activeBindingCount: number }>
-    for (const row of rows) {
-      result.set(row.apiKeyId, Number(row.activeBindingCount) || 0)
-    }
-  }
-  return result
-}
-
-export function setAccountGroup(
-  accountId: string,
-  groupId: string | null,
-  access?: AccessScope
-): AccountSummary | undefined {
-  const database = getBusinessDatabase()
-  if (!groupId) {
-    return undefined
-  }
-  const group = groupOwnerAndProvider(groupId)
-  if (!group || !canManageResourceOwner(group.systemAccountId, access)) {
-    return undefined
-  }
-  const current = findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
-  if (!current) {
-    return undefined
-  }
-  if (!canUseAccount(accountId, group.systemAccountId)) {
-    return undefined
-  }
-  if (group.providerCode !== current.providerCode) {
-    return undefined
-  }
-  const accountAuthorizationId = accountBindingAuthorizationId(accountId, group.systemAccountId, current)
-  if (accountBindingRequiresAuthorization(accountId, group.systemAccountId, current) && !accountAuthorizationId) {
-    return undefined
-  }
-
-  const previousGroupId = accountEnabledGroupId(accountId, group.systemAccountId)
-  database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, group.systemAccountId)
-  const now = nowIso()
-  database
-    .prepare(`
-      INSERT INTO group_accounts (
-        system_account_id, group_id, account_id, account_authorization_id,
-        local_priority, local_super_priority_enabled, local_fallback_enabled,
-        enabled, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-      ON CONFLICT(group_id, account_id) DO UPDATE SET
-        account_authorization_id = excluded.account_authorization_id,
-        local_priority = excluded.local_priority,
-        local_super_priority_enabled = excluded.local_super_priority_enabled,
-        local_fallback_enabled = excluded.local_fallback_enabled,
-        enabled = 1,
-        updated_at = excluded.updated_at
-    `)
-    .run(
-      group.systemAccountId,
-      groupId,
-      accountId,
-      accountAuthorizationId ?? null,
-      current.priority,
-      current.superPriorityEnabled ? 1 : 0,
-      current.fallbackEnabled ? 1 : 0,
-      now,
-      now
-    )
-  refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
-  if (previousGroupId && previousGroupId !== groupId) {
-    invalidateGroupAccountIdsCache(previousGroupId)
-  }
-  invalidateGroupAccountIdsCache(groupId)
-  invalidateGatewayRuntimeAfterBusinessWrite('group_account_binding')
-
-  return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
-}
-
-export function addAccountToGroup(groupId: string, accountId: string): GroupSummary | undefined {
-  const database = getBusinessDatabase()
-  const current = groupOwnerAndProvider(groupId)
-  if (!current) {
-    return undefined
-  }
-  if (!canManageResourceOwner(current.systemAccountId)) {
-    return undefined
-  }
-  if (!validAccountIdsForGroup(current.providerCode, current.providerProtocolProfileId ?? '', [accountId], current.systemAccountId).includes(accountId)) {
-    return undefined
-  }
-  const account = findAccountSummary(accountId, { systemAccountId: current.systemAccountId, role: 'user' })
-  if (!account) {
-    return undefined
-  }
-  const accountAuthorizationId = accountBindingAuthorizationId(accountId, current.systemAccountId)
-  if (accountBindingRequiresAuthorization(accountId, current.systemAccountId) && !accountAuthorizationId) {
-    return undefined
-  }
-  const now = nowIso()
-  const previousGroupId = accountEnabledGroupId(accountId, current.systemAccountId)
-  database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, current.systemAccountId)
-  database
-    .prepare(`
-      INSERT INTO group_accounts (
-        system_account_id, group_id, account_id, account_authorization_id,
-        local_priority, local_super_priority_enabled, local_fallback_enabled,
-        enabled, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-      ON CONFLICT(group_id, account_id) DO UPDATE SET
-        account_authorization_id = excluded.account_authorization_id,
-        local_priority = excluded.local_priority,
-        local_super_priority_enabled = excluded.local_super_priority_enabled,
-        local_fallback_enabled = excluded.local_fallback_enabled,
-        enabled = 1,
-        updated_at = excluded.updated_at
-    `)
-    .run(
-      current.systemAccountId,
-      groupId,
-      accountId,
-      accountAuthorizationId ?? null,
-      account.priority,
-      account.superPriorityEnabled ? 1 : 0,
-      account.fallbackEnabled ? 1 : 0,
-      now,
-      now
-    )
-  refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
-  if (previousGroupId && previousGroupId !== groupId) {
-    invalidateGroupAccountIdsCache(previousGroupId)
-  }
-  invalidateGroupAccountIdsCache(groupId)
-  invalidateGatewayRuntimeAfterBusinessWrite('group_account_binding')
-  return findGroupSummary(groupId)
-}
-
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()
   return listResourceAuthorizationSummaries(filters, access, options)
@@ -3757,650 +3065,3 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
   return findResourceAuthorizationSummary(authorizationId, access, options)
 }
 
-const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits'])
-const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'limits'])
-
-export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
-  assertKnownInputKeys(input, resourceAuthorizationCreateInputKeys, '资源授权')
-  const resourceType = normalizeResourceType(input.resourceType)
-  const resourceId = normalizeRequiredTextInput(input.resourceId, '授权资源')
-  if (!resourceType || !resourceId) throw new Error('请选择授权资源')
-  const ownerSystemAccountId = resourceOwnerSystemAccountId(resourceType, resourceId)
-  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) throw new Error('授权资源不存在')
-  const granteeType = normalizeResourceAuthorizationGranteeType(input.granteeType)
-  const granteeId = normalizeRequiredTextInput(input.granteeId, '被授权对象')
-  if (!granteeId) throw new Error('请选择被授权对象')
-  const database = getBusinessDatabase()
-  const now = nowIso()
-  const expiresAt = normalizeResourceAuthorizationExpiresAtInput(input.expiresAt)
-  validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
-  const actor = currentSystemAccountId(access)
-  const targetGroupId = normalizeOptionalTextInput(input.targetGroupId, '目标分组')
-  const remark = normalizeOptionalTextInput(input.remark, '授权备注', { allowBlank: true })
-  if (!targetGroupId && resourceType === 'account' && granteeType === 'system_account') {
-    throw new Error('授权 AI 账户给个人时必须选择目标分组')
-  }
-  if (targetGroupId && (resourceType !== 'account' || granteeType !== 'system_account')) {
-    throw new Error('只有授权 AI 账户给个人时可以指定目标分组')
-  }
-  let createdGrantId: string | undefined
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    if (granteeType === 'team') {
-      const team = database.prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(granteeId) as unknown as SystemTeamRow | undefined
-      if (!team) throw new Error('团队不存在或已停用')
-      const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
-      if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
-      assertActiveTeamGrantFanoutWithinLimit(granteeId, database)
-      createdGrantId = grant.id
-      for (const member of members) {
-        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
-      }
-    } else {
-      const grantee = findSystemAccountById(granteeId)
-      if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
-      if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
-      createdGrantId = grant.id
-      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, actor, now, database })
-    }
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_created' })
-  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_created')
-  const created = createdGrantId ? findResourceAuthorization(createdGrantId, access) : undefined
-  if (created) return created
-  throw new Error('创建资源授权失败')
-}
-
-export function revokeResourceAuthorization(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
-  const database = getBusinessDatabase()
-  const grant = database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationGrantRow | undefined
-  if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return undefined
-  const now = nowIso()
-  const actor = currentSystemAccountId(access)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    revokeResourceAuthorizationGrant(grant, actor, database, now)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_revoked' })
-  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_revoked')
-  return findResourceAuthorization(authorizationId, access)
-}
-
-export function returnResourceAuthorizationForGrantee(authorizationId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
-  expireDueResourceAuthorizations()
-  const granteeSystemAccountId = userVisibleSystemAccountId(access)
-  if (!granteeSystemAccountId) return undefined
-  const database = getBusinessDatabase()
-  const grant = findReturnableDirectGrantForGrantee(authorizationId, granteeSystemAccountId, database)
-  if (!grant) return undefined
-  const authorization = findRuntimeAuthorizationForDirectGrant(grant, granteeSystemAccountId, database)
-  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
-    return undefined
-  }
-  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
-    return undefined
-  }
-  const now = nowIso()
-  const actor = currentSystemAccountId(access)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    returnResourceAuthorizationGrant(grant, actor, database, now)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshAfterResourceAuthorizationReturnedWrite()
-  return database
-    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
-    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
-}
-
-export function returnAccountAuthorizationInstanceForGrantee(accountId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
-  expireDueResourceAuthorizations()
-  const granteeSystemAccountId = userVisibleSystemAccountId(access)
-  if (!granteeSystemAccountId) return undefined
-  const database = getBusinessDatabase()
-  const row = database
-    .prepare(`
-      SELECT id, system_account_id, authorization_instance_authorization_id
-      FROM accounts
-      WHERE id = ?
-        AND system_account_id = ?
-        AND deleted_at IS NULL
-        AND authorization_instance_authorization_id IS NOT NULL
-      LIMIT 1
-    `)
-    .get(accountId, granteeSystemAccountId) as unknown as { id?: string; system_account_id?: string; authorization_instance_authorization_id?: string | null } | undefined
-  if (!row?.authorization_instance_authorization_id) return undefined
-  const authorization = database
-    .prepare(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM resource_authorizations
-      WHERE id = ?
-        AND grantee_system_account_id = ?
-      LIMIT 1
-    `)
-    .get(row.authorization_instance_authorization_id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
-    return undefined
-  }
-  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
-    return undefined
-  }
-  const grant = findReturnableDirectGrantForRuntimeAuthorization(authorization, granteeSystemAccountId, database)
-  if (!grant) return undefined
-  const now = nowIso()
-  const actor = currentSystemAccountId(access)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    returnResourceAuthorizationGrant(grant, actor, database, now)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshAfterResourceAuthorizationReturnedWrite()
-  return database
-    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
-    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
-}
-
-export function returnGroupAuthorizationForGrantee(groupId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
-  expireDueResourceAuthorizations()
-  const granteeSystemAccountId = userVisibleSystemAccountId(access)
-  if (!granteeSystemAccountId) return undefined
-  const database = getBusinessDatabase()
-  const authorization = database
-    .prepare(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM resource_authorizations
-      WHERE resource_type = 'group'
-        AND resource_id = ?
-        AND grantee_system_account_id = ?
-      LIMIT 1
-    `)
-    .get(groupId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
-    return undefined
-  }
-  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
-    return undefined
-  }
-  const grant = findReturnableDirectGrantForRuntimeAuthorization(authorization, granteeSystemAccountId, database)
-  if (!grant) return undefined
-  const now = nowIso()
-  const actor = currentSystemAccountId(access)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    returnResourceAuthorizationGrant(grant, actor, database, now)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  refreshAfterResourceAuthorizationReturnedWrite()
-  return database
-    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
-    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
-}
-
-function findReturnableDirectGrantForGrantee(authorizationId: string, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
-  return database
-    .prepare(`
-      SELECT *
-      FROM resource_authorization_grants
-      WHERE id = ?
-        AND grantee_type = 'system_account'
-        AND grantee_system_account_id = ?
-        AND status NOT IN ('revoked', 'returned')
-      LIMIT 1
-    `)
-    .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
-}
-
-function findReturnableDirectGrantForRuntimeAuthorization(authorization: ResourceAuthorizationRow, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
-  return database
-    .prepare(`
-      SELECT *
-      FROM resource_authorization_grants
-      WHERE resource_type = ?
-        AND resource_id = ?
-        AND resource_owner_system_account_id = ?
-        AND grantee_type = 'system_account'
-        AND grantee_system_account_id = ?
-        AND status NOT IN ('revoked', 'returned')
-      LIMIT 1
-    `)
-    .get(authorization.resource_type, authorization.resource_id, authorization.resource_owner_system_account_id, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
-}
-
-function findRuntimeAuthorizationForDirectGrant(grant: ResourceAuthorizationGrantRow, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationRow | undefined {
-  return database
-    .prepare(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM resource_authorizations
-      WHERE resource_type = ?
-        AND resource_id = ?
-        AND resource_owner_system_account_id = ?
-        AND grantee_system_account_id = ?
-      LIMIT 1
-    `)
-    .get(grant.resource_type, grant.resource_id, grant.resource_owner_system_account_id, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-}
-
-function hasActiveManualRuntimeAuthorizationSource(authorizationId: string, database: DatabaseSync): boolean {
-  const row = database
-    .prepare(`
-      SELECT id
-      FROM resource_authorization_sources
-      WHERE authorization_id = ?
-        AND source_type = 'manual'
-        AND status = 'active'
-      LIMIT 1
-    `)
-    .get(authorizationId) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
-}
-
-function refreshAfterResourceAuthorizationReturnedWrite(): void {
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_returned' })
-  invalidateGroupAccountIdsCache()
-  clearResourceAuthorizationLookupCaches()
-  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_returned')
-}
-
-export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
-  assertKnownInputKeys(input, resourceAuthorizationUpdateInputKeys, '资源授权')
-  expireDueResourceAuthorizations()
-  const database = getBusinessDatabase()
-  const grant = database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationGrantRow | undefined
-  if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return undefined
-  const now = nowIso()
-  const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
-  const hasLimitsInput = Object.prototype.hasOwnProperty.call(input, 'limits')
-  const nextExpiresAt = hasExpiresAtInput
-    ? normalizeResourceAuthorizationExpiresAtInput(input.expiresAt)
-    : grant.expires_at
-  const nextLimits = hasLimitsInput
-    ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
-    : grant.limits_json
-  const requestedStatus = Object.prototype.hasOwnProperty.call(input, 'status')
-    ? normalizeResourceAuthorizationStatus(input.status)
-    : undefined
-  validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, nextExpiresAt, Date.parse(now), { allowExpired: requestedStatus === 'expired' })
-  if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
-    throw new Error('到期授权恢复时请同时调整过期时间')
-  }
-  const expiredByTime = isResourceAuthorizationExpired(nextExpiresAt)
-  const nextStatus: AuthorizationStatus = expiredByTime
-    ? 'expired'
-    : requestedStatus === 'active' || requestedStatus === 'paused' || requestedStatus === 'revoked' || requestedStatus === 'returned'
-      ? requestedStatus
-      : grant.status === 'expired' && hasExpiresAtInput
-        ? 'active'
-        : grant.status === 'paused'
-          ? 'paused'
-        : grant.status
-  const nextRevokedAt = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_at ?? now
-  const nextRevokedBy = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_by ?? currentSystemAccountId(access)
-
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database
-      .prepare(`
-        UPDATE resource_authorization_grants
-        SET status = ?,
-            expires_at = ?,
-            revoked_by = ?,
-            revoked_at = ?,
-            limits_json = ?,
-            updated_at = ?
-        WHERE id = ?
-      `)
-      .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextLimits, now, authorizationId)
-    syncResourceAuthorizationGrantRuntime({ ...grant, status: nextStatus, expires_at: nextExpiresAt, limits_json: nextLimits, revoked_by: nextRevokedBy, revoked_at: nextRevokedAt, updated_at: now }, currentSystemAccountId(access), database, now)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-  cleanupInactiveAuthorizationBindings(database)
-  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_updated' })
-  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_updated')
-  return findResourceAuthorization(authorizationId, access)
-}
-
-export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
-  const authorization = findResourceAuthorization(authorizationId, access, { includeUsage: false })
-  if (!authorization) return undefined
-  const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
-  const detail = loadResourceAuthorizationUsageDetail(authorization, range, options)
-  return {
-    ...authorization,
-    usage: detail.usage,
-    lastUsedAt: detail.usage.lastUsedAt,
-    usageBySystemAccount: detail.usageBySystemAccount,
-    usageBySystemAccountTotal: detail.usageBySystemAccountTotal,
-    usageBySystemAccountPage: detail.usageBySystemAccountPage,
-    usageBySystemAccountPageSize: detail.usageBySystemAccountPageSize,
-    usageBySystemAccountHasMore: detail.usageBySystemAccountHasMore,
-    usageRange: range
-  }
-}
-
-function normalizeRequiredTextInput(value: unknown, label: string): string {
-  if (typeof value !== 'string') {
-    throw new Error(`${label}不能为空`)
-  }
-  const text = value.trim()
-  if (!text) {
-    throw new Error(`${label}不能为空`)
-  }
-  return text
-}
-
-function normalizeOptionalTextInput(value: unknown, label: string, options: { allowBlank?: boolean } = {}): string | undefined {
-  if (value === undefined) {
-    return undefined
-  }
-  if (value === null) {
-    throw new Error(`${label}不能为空`)
-  }
-  if (typeof value !== 'string') {
-    throw new Error(`${label}必须是字符串`)
-  }
-  const text = value.trim()
-  if (!text) {
-    if (options.allowBlank) return undefined
-    throw new Error(`${label}不能为空`)
-  }
-  return text
-}
-
-function normalizeResourceAuthorizationGranteeType(value: unknown): 'team' | 'system_account' {
-  if (value === 'team' || value === 'system_account') {
-    return value
-  }
-  throw new Error('被授权对象类型无效')
-}
-
-function normalizeResourceAuthorizationStatus(value: unknown): AuthorizationStatus {
-  if (value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked' || value === 'returned') {
-    return value
-  }
-  throw new Error('授权状态无效')
-}
-
-function normalizeResourceAuthorizationExpiresAtInput(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null
-  }
-  if (typeof value !== 'string') {
-    throw new Error('过期时间格式不正确')
-  }
-  const text = value.trim()
-  if (!text) {
-    throw new Error('过期时间格式不正确')
-  }
-  const normalized = optionalNullableServerDateTimeIso(text)
-  if (!normalized) {
-    throw new Error('过期时间格式不正确')
-  }
-  return normalized
-}
-
-function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
-  if (resourceType !== 'account') return groupOwnerAndProvider(resourceId)?.systemAccountId
-  const row = getBusinessDatabase()
-    .prepare('SELECT system_account_id, authorization_instance_authorization_id FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
-    .get(resourceId) as unknown as { system_account_id?: string; authorization_instance_authorization_id?: string | null } | undefined
-  if (!row?.system_account_id || row.authorization_instance_authorization_id) return undefined
-  return row.system_account_id
-}
-
-function validateResourceAuthorizationExpiresAt(
-  resourceType: ResourceAuthorizationResourceType,
-  resourceId: string,
-  expiresAt: string | null,
-  now = Date.now(),
-  options: { allowExpired?: boolean } = {}
-): void {
-  if (!expiresAt) return
-  const expiresAtMs = Date.parse(expiresAt)
-  if (!Number.isFinite(expiresAtMs)) throw new Error('授权到期时间格式不正确')
-  if (!options.allowExpired && expiresAtMs <= now) throw new Error('授权到期时间不能早于当前时间')
-  if (resourceType !== 'account') return
-  const account = getBusinessDatabase()
-    .prepare('SELECT account_expires_at FROM accounts WHERE id = ? AND deleted_at IS NULL')
-    .get(resourceId) as unknown as { account_expires_at?: string | null } | undefined
-  if (!account?.account_expires_at) return
-  const accountExpiresAtMs = Date.parse(account.account_expires_at)
-  if (Number.isFinite(accountExpiresAtMs) && expiresAtMs > accountExpiresAtMs) {
-    throw new Error('授权到期时间不能晚于账户到期时间')
-  }
-}
-
-function loadResourceAuthorizationUsageDetail(
-  authorization: ResourceAuthorizationSummary,
-  range: AccountUsageStatsRange,
-  options: ResourceAuthorizationUsageOptions = {}
-): {
-  usage: AccountUsageSummary
-  usageBySystemAccount: ResourceAuthorizationUsageDetail[]
-  usageBySystemAccountTotal: number
-  usageBySystemAccountPage: number
-  usageBySystemAccountPageSize: number
-  usageBySystemAccountHasMore: boolean
-} {
-  const pageOptions = normalizeResourceAuthorizationUsagePageOptions(options)
-  if (authorization.granteeType === 'team') {
-    return loadResourceAuthorizationGrantUsageDetailForTeam(authorization, range, pageOptions)
-  }
-  const granteeSystemAccountId = authorization.granteeSystemAccountId
-  if (!granteeSystemAccountId) {
-    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
-  }
-  const runtime = getBusinessDatabase().prepare(`
-    SELECT ${resourceAuthorizationSelectColumns()}
-    FROM resource_authorizations
-    WHERE resource_type = ?
-      AND resource_id = ?
-      AND grantee_system_account_id = ?
-    LIMIT 1
-  `).get(authorization.resourceType, authorization.resourceId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-  if (!runtime) {
-    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
-  }
-  const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
-  const rangeUsage = loadUsageRangeSummaryForScope({
-    systemAccountId: authorizationUsageStatsSystemAccountId(authorization.resourceType, authorization.resourceOwnerSystemAccountId, granteeSystemAccountId),
-    scopeType,
-    scopeId: runtime.id,
-    range
-  })
-  const account = loadSystemAccountPrincipalMapByIds([granteeSystemAccountId]).get(granteeSystemAccountId)
-  const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
-    systemAccountId: granteeSystemAccountId,
-    systemAccountName: account?.displayName ?? authorization.granteeSystemAccountName,
-    username: account?.username ?? authorization.granteeUsername,
-    ...rangeUsage,
-    rangeUsage
-  }]
-
-  return {
-    usage: rangeUsage,
-    usageBySystemAccount: pageOptions.page === 1 ? usageBySystemAccount.sort((left, right) => {
-      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
-      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
-      if (rightTime !== leftTime) {
-        return rightTime - leftTime
-      }
-      return left.systemAccountId.localeCompare(right.systemAccountId)
-    }) : [],
-    usageBySystemAccountTotal: 1,
-    usageBySystemAccountPage: pageOptions.page,
-    usageBySystemAccountPageSize: pageOptions.pageSize,
-    usageBySystemAccountHasMore: false
-  }
-}
-
-function loadResourceAuthorizationGrantUsageDetailForTeam(
-  authorization: ResourceAuthorizationSummary,
-  range: AccountUsageStatsRange,
-  pageOptions: { page: number; pageSize: number }
-): {
-  usage: AccountUsageSummary
-  usageBySystemAccount: ResourceAuthorizationUsageDetail[]
-  usageBySystemAccountTotal: number
-  usageBySystemAccountPage: number
-  usageBySystemAccountPageSize: number
-  usageBySystemAccountHasMore: boolean
-} {
-  const teamId = authorization.granteeTeamId
-  if (!teamId) {
-    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
-  }
-  const database = getBusinessDatabase()
-  const rows = database.prepare(`
-    SELECT DISTINCT ra.*
-    FROM resource_authorizations ra
-    INNER JOIN resource_authorization_sources ras
-      ON ras.authorization_id = ra.id
-      AND ras.source_type = 'team'
-      AND ras.source_team_id = ?
-    WHERE ra.resource_type = ?
-      AND ra.resource_id = ?
-      AND ra.resource_owner_system_account_id = ?
-    ORDER BY ra.created_at ASC, ra.id ASC
-    LIMIT ? OFFSET ?
-  `).all(
-    teamId,
-    authorization.resourceType,
-    authorization.resourceId,
-    authorization.resourceOwnerSystemAccountId,
-    pageOptions.pageSize + 1,
-    (pageOptions.page - 1) * pageOptions.pageSize
-  ) as unknown as ResourceAuthorizationRow[]
-  const pageRows = takePageRows(rows, pageOptions.pageSize)
-  const usageBySystemAccount = buildRuntimeAuthorizationUsageDetails(authorization, pageRows.rows, range)
-  const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
-  const rangeUsage = loadAuthorizationTeamUsageRangeSummary(authorization, teamId, range)
-    ?? loadUsageRangeSummaryForScope({
-      systemAccountId: authorization.resourceOwnerSystemAccountId,
-      scopeType,
-      scopeId: `${authorization.resourceId}:${teamId}`,
-      range
-    })
-  return {
-    usage: rangeUsage,
-    usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
-      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
-      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
-      if (rightTime !== leftTime) {
-        return rightTime - leftTime
-      }
-      return left.systemAccountId.localeCompare(right.systemAccountId)
-    }),
-    usageBySystemAccountTotal: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, usageBySystemAccount.length, pageRows.hasMore),
-    usageBySystemAccountPage: pageOptions.page,
-    usageBySystemAccountPageSize: pageOptions.pageSize,
-    usageBySystemAccountHasMore: pageRows.hasMore
-  }
-}
-
-function buildRuntimeAuthorizationUsageDetails(
-  authorization: ResourceAuthorizationSummary,
-  rows: ResourceAuthorizationRow[],
-  range: AccountUsageStatsRange
-): ResourceAuthorizationUsageDetail[] {
-  if (!rows.length) return []
-  const scopes = rows.map((row) => usageScope(
-    row.id,
-    authorizationUsageStatsSystemAccountId(row.resource_type, row.resource_owner_system_account_id, row.grantee_system_account_id ?? undefined),
-    row.id
-  ))
-  const usageByAuthorization = authorization.resourceType === 'account'
-    ? loadAccountAuthorizationUsageSummaries(scopes, range)
-    : loadGroupAuthorizationUsageSummaries(scopes, range)
-  const accounts = loadSystemAccountPrincipalMapByIds(rows.map((row) => row.grantee_system_account_id ?? ''))
-  return rows.flatMap((row) => {
-    const systemAccountId = row.grantee_system_account_id
-    if (!systemAccountId) return []
-    const account = accounts.get(systemAccountId)
-    const rangeUsage = usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary()
-    return [{
-      systemAccountId,
-      systemAccountName: account?.displayName,
-      username: account?.username,
-      ...rangeUsage,
-      rangeUsage
-    }]
-  })
-}
-
-function authorizationUsageStatsSystemAccountId(
-  resourceType: ResourceAuthorizationResourceType,
-  resourceOwnerSystemAccountId: string,
-  granteeSystemAccountId?: string
-): string {
-  return resourceType === 'account'
-    ? granteeSystemAccountId ?? resourceOwnerSystemAccountId
-    : resourceOwnerSystemAccountId
-}
-
-function loadAuthorizationTeamUsageRangeSummary(
-  authorization: ResourceAuthorizationSummary,
-  teamId: string,
-  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
-): AccountUsageSummary | undefined {
-  const row = getStatsDatabase().prepare(`
-    SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
-    FROM authorization_team_usage_range_windows
-    WHERE system_account_id = ?
-      AND start_date = ?
-      AND end_date = ?
-      AND team_filter_id = ?
-      AND resource_filter_type = ?
-      AND resource_filter_id = ?
-    LIMIT 1
-  `).get(
-    authorization.resourceOwnerSystemAccountId,
-    range.startDate,
-    range.endDate,
-    teamId,
-    authorization.resourceType,
-    authorization.resourceId
-  ) as unknown as Parameters<typeof usageSummaryFromAggregate>[0] | undefined
-  return row ? usageSummaryFromAggregate(row) : undefined
-}
-
-function normalizeResourceAuthorizationUsagePageOptions(options: ResourceAuthorizationUsageOptions): { page: number; pageSize: number } {
-  const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
-    ? Math.min(200, Math.max(1, options.pageSize))
-    : defaultResourceAuthorizationUsageDetailPageSize
-  const page = normalizeListPage(options.page, pageSize)
-  return { page, pageSize }
-}
-
-function emptyResourceAuthorizationUsageDetailPage(pageOptions: { page: number; pageSize: number }) {
-  return {
-    usage: emptyAccountUsageSummary(),
-    usageBySystemAccount: [],
-    usageBySystemAccountTotal: 0,
-    usageBySystemAccountPage: pageOptions.page,
-    usageBySystemAccountPageSize: pageOptions.pageSize,
-    usageBySystemAccountHasMore: false
-  }
-}

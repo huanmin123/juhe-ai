@@ -29,7 +29,7 @@ import { sendGatewayFailureResponse, sendQuotaExceededResponse } from '../respon
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
 import { resolveLocalSuppressionFilter } from '../runtime/local-suppression-preflight.js'
 import {
-  orderOpenAIAccountsByGatewayUpstreamBucketHealth
+  orderGatewayAccountsByUpstreamBucketHealth
 } from '../runtime/proxy-health.service.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { gatewayErrorPayload } from '../response/responses.js'
@@ -129,7 +129,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  const proxyHealthOrder = orderOpenAIAccountsByGatewayUpstreamBucketHealth(localSuppressionFilter.accounts)
+  const proxyHealthOrder = orderGatewayAccountsByUpstreamBucketHealth(localSuppressionFilter.accounts)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied

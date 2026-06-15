@@ -142,6 +142,21 @@ export function defaultProviderProtocolProfile(providerCode: string): ProviderPr
   return listProviderProtocolProfiles([code]).find((profile) => profile.providerCode === code)
 }
 
+export function requireEnabledProviderProtocolProfile(providerCode: string, profileIdInput: unknown): ProviderProtocolProfileDefinition {
+  const provider = requireEnabledProvider(providerCode)
+  const profileId = typeof profileIdInput === 'string' && profileIdInput.trim()
+    ? profileIdInput.trim()
+    : provider.defaultProtocolProfileId
+  const profile = profileId ? findProviderProtocolProfile(profileId) : defaultProviderProtocolProfile(providerCode)
+  if (!profile || profile.providerCode !== providerCode) {
+    throw new Error(`供应商协议档案无效：${profileId || providerCode}`)
+  }
+  if (!profile.enabled) {
+    throw new Error(`供应商协议档案已停用：${profile.name}`)
+  }
+  return profile
+}
+
 function listProviderProtocolProfiles(providerCodes?: string[]): ProviderProtocolProfileDefinition[] {
   const normalizedProviderCodes = [...new Set((providerCodes ?? []).map((code) => code.trim()).filter(Boolean))]
   const providerFilter = normalizedProviderCodes.length
@@ -172,6 +187,17 @@ function listProviderProtocolProfiles(providerCodes?: string[]): ProviderProtoco
     capabilities: parseJsonArray(row.capabilities_json),
     endpointFamilies: familiesByProfileId.get(row.id) ?? []
   }))
+}
+
+function requireEnabledProvider(providerCode: string): ProviderDefinition {
+  const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
+  return provider
 }
 
 function providerProtocolProfilesByProviderCode(providerCodes: ProviderCode[]): Map<ProviderCode, ProviderProtocolProfileDefinition[]> {

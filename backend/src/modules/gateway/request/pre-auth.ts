@@ -41,7 +41,7 @@ interface ResolveGatewayRuntimeOptions {
   loadClientIpPolicy?: boolean
 }
 
-export async function preResolveOpenAIGatewayRuntime(
+export async function preResolveGatewayRuntime(
   req: GatewayRuntimeRequest,
   res: Response,
   next: NextFunction

@@ -196,7 +196,7 @@ function seedGatewayRuntime(): { id: string; key: string } {
 async function listen(): Promise<Server> {
   const app = express()
   app.use(requestContext.requestContextMiddleware)
-  app.use(gatewayRequest.preResolveOpenAIGatewayRuntime)
+  app.use(gatewayRequest.preResolveGatewayRuntime)
   app.use(gatewayRoutes.handleGatewayDbServiceUnavailable)
   app.use(express.raw({ type: () => true, limit: gatewayRequestBody.gatewayRawBodyHardLimit }))
   app.use(handleRawBodyErrorForTest)

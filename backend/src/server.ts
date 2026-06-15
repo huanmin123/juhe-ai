@@ -10,7 +10,7 @@ import { startDbServiceSupervisor } from './modules/db-service/db-service-superv
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/routes.js'
 import { captureGatewayRawBody } from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit } from './modules/gateway/request/body.js'
-import { preResolveOpenAIGatewayRuntime } from './modules/gateway/request/pre-auth.js'
+import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
@@ -160,7 +160,7 @@ app.use(systemPrefix, (_req, res) => {
 })
 
 app.use(
-  preResolveOpenAIGatewayRuntime,
+  preResolveGatewayRuntime,
   handleGatewayDbServiceUnavailable,
   express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
   handleGatewayRawBodyError,

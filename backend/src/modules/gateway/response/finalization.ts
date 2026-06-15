@@ -8,7 +8,6 @@ import {
   applyAccountErrorHandlingWithCacheInvalidation,
   clearAccountStreamFailureStateWithCacheInvalidation,
   handleStreamFailure,
-  markGatewayAccountTemporaryUnavailableWithCacheInvalidation
 } from '../runtime/account-effects.js'
 import { rememberCodexTurnStreamFailure } from '../client-profiles/codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
@@ -32,7 +31,9 @@ import {
   nonStreamResponseCaptureBytes,
   readUpstreamBodyLimited
 } from '../upstream/body.js'
-import { responseInspectionAuditMetadata } from '../audit/metadata.js'
+import {
+  responseInspectionAuditMetadata
+} from '../audit/metadata.js'
 import {
   forgetOpenAIAccountForSession
 } from '../runtime/session-affinity.service.js'
@@ -53,7 +54,6 @@ import {
   type ResponseInspectionDecision
 } from './inspection.js'
 import {
-  extractOpenAIJsonSemanticFrames,
   openAIResponseEndpointFamilyFromRequest
 } from '../protocols/openai-v1/response-semantics.js'
 import {
@@ -96,34 +96,18 @@ import {
   shouldRememberCodexTurnStreamFailure,
   shouldRetryCodexPreCommitStreamFailureOnServer,
   shouldRetryPreCommitStreamFailureOnServer,
-  shouldRetryResponseInspectionDecisionOnServer,
   shouldRetryResponseInspectionOnServer,
   type StreamServerRetryReason
 } from './stream-finalization-retry-decision.js'
+import {
+  applyResponseInspectionObservationDecisions,
+  applyResponseInspectionPolicyRuntimeSideEffects
+} from './inspection-runtime-effects.js'
+import type { UpstreamResponseHandlingResult } from './response-handling-result.js'
+import { inspectBufferedOpenAIJsonResponse } from './non-stream-json-inspection.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
-
-export type UpstreamResponseHandlingResult =
-  | { alreadyFinalized: true }
-  | {
-    alreadyFinalized: false
-    retryUpstream: true
-    retryReason: StreamServerRetryReason
-    responseInspection?: ResponseInspectionDecision
-    excludeCurrentAccount: boolean
-    message: string
-    errorCode?: string
-    uncommittedResponseBody?: Buffer
-  }
-  | {
-    alreadyFinalized: false
-    retryUpstream?: false
-    usage: ParsedUsage
-    firstTokenMs?: number
-    responseBodyText?: string
-    bodyOmission?: StreamBodyOmissionSummary
-    errorPayload: Record<string, unknown>
-  }
+export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
 
 interface HandleUpstreamResponseInput {
   req: Request
@@ -505,25 +489,6 @@ function writePreCommitStreamFailureToClient(
   return chunks.length > 0 ? Buffer.concat(chunks) : undefined
 }
 
-async function applyResponseInspectionPolicyRuntimeSideEffects(
-  decision: ResponseInspectionDecision,
-  account: UpstreamAccount,
-  settings: GatewaySettings,
-  accountStateMutationEnabled: boolean
-): Promise<void> {
-  if (!accountStateMutationEnabled || decision.reason !== 'configured_response_policy' || decision.action === 'dry_run') {
-    return
-  }
-  const reason = `响应检查策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
-  if (decision.accountState === 'runtime_avoidance' || decision.accountSwitch === 'avoid_account_ttl') {
-    await markGatewayAccountTemporaryUnavailableWithCacheInvalidation(account, reason, 'response_inspection_policy')
-  }
-  if (decision.accountSwitch === 'avoid_upstream_bucket_ttl') {
-    const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
-    suppressGatewayUpstreamBucketLocallyForSeconds(account, ttlSeconds, reason)
-  }
-}
-
 type GatewayStreamPipeResult = Awaited<ReturnType<typeof pipeUpstreamStream>>
 
 async function applyResponseInspectionObservationHandling(
@@ -541,31 +506,6 @@ async function applyResponseInspectionObservationHandling(
     auditCapture,
     accountStateMutationEnabled
   )
-}
-
-async function applyResponseInspectionObservationDecisions(
-  observations: ResponseInspectionDecision[] | undefined,
-  omittedCount: number | undefined,
-  account: UpstreamAccount,
-  settings: GatewaySettings,
-  auditCapture: AuditCaptureContext,
-  accountStateMutationEnabled: boolean
-): Promise<void> {
-  observations = observations ?? []
-  if (observations.length === 0) {
-    return
-  }
-  for (const observation of observations) {
-    await applyResponseInspectionPolicyRuntimeSideEffects(observation, account, settings, accountStateMutationEnabled)
-  }
-  auditCapture.addGatewayMetadata({
-    label: 'response_inspection_observations',
-    metadata: {
-      count: observations.length,
-      omittedCount,
-      observations: observations.map(responseInspectionAuditMetadata)
-    }
-  })
 }
 
 function usageRequestSnapshotWithBodyOmission(
@@ -888,130 +828,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     errorPayload
   }
-}
-
-async function inspectBufferedOpenAIJsonResponse(input: {
-  req: Request
-  res: Response
-  account: UpstreamAccount
-  upstreamResponse: GatewayUpstreamResponse
-  upstreamUrl: string
-  auditAttemptId: string
-  auditCapture: AuditCaptureContext
-  settings: GatewaySettings
-  usageContext: GatewayUsageContext
-  startedAt: number
-  responseBody: Buffer
-  responseBodyText: string
-  firstTokenMs?: number
-  responseInspectionPolicies?: ResponseInspectionPolicySummary[]
-  accountStateMutationEnabled: boolean
-  sessionAffinityKey?: string
-}): Promise<UpstreamResponseHandlingResult | undefined> {
-  let parsedJson: unknown
-  try {
-    parsedJson = input.responseBody.length > 0
-      ? JSON.parse(input.responseBodyText) as unknown
-      : undefined
-  } catch {
-    return undefined
-  }
-  const endpointFamily = openAIResponseEndpointFamilyFromRequest(input.req)
-  const frames = extractOpenAIJsonSemanticFrames(parsedJson, endpointFamily)
-  if (frames.length === 0) return undefined
-
-  const policies = resolveRuntimeResponseInspectionPolicies({
-    account: input.account,
-    managementPolicies: input.responseInspectionPolicies
-  })
-  const inspection = inspectResponseSemanticFrames({
-    frames,
-    policies,
-    downstreamWritten: false,
-    transport: 'json'
-  })
-  await applyResponseInspectionObservationDecisions(
-    inspection.observations,
-    undefined,
-    input.account,
-    input.settings,
-    input.auditCapture,
-    input.accountStateMutationEnabled
-  )
-  if (!inspection.decision) return undefined
-
-  const decision = inspection.decision
-  await applyResponseInspectionPolicyRuntimeSideEffects(decision, input.account, input.settings, input.accountStateMutationEnabled)
-  input.auditCapture.addGatewayMetadata({
-    label: 'response_inspection',
-    metadata: responseInspectionAuditMetadata(decision)
-  })
-  const usage = parseOpenAIUsageFromJsonBuffer(input.responseBody)
-  const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
-  const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
-  forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
-  input.auditCapture.completeAttempt(input.auditAttemptId, {
-    statusCode: input.upstreamResponse.status,
-    responseHeaders: input.upstreamResponse.headers,
-    responseBody: input.responseBody,
-    success: false,
-    errorPhase: 'response_inspection',
-    errorCode,
-    errorMessage: message
-  })
-  recordCompletedUpstreamAttempt(input.req, {
-    ...input.usageContext,
-    account: input.account,
-    statusCode: input.upstreamResponse.status,
-    success: false,
-    stream: isEffectiveOpenAIStreamRequest(input.req, input.account),
-    firstTokenMs: input.firstTokenMs,
-    startedAt: input.startedAt,
-    usage,
-    errorCode,
-    requestSnapshot: input.usageContext.requestSnapshot,
-    responseSnapshot: buildUsageResponseSnapshot({
-      upstreamUrl: input.upstreamUrl,
-      statusCode: input.upstreamResponse.status,
-      headers: input.upstreamResponse.headers,
-      bodyText: input.responseBodyText,
-      errorMessage: message
-    }),
-    errorMessage: message
-  })
-
-  if (shouldRetryResponseInspectionDecisionOnServer(decision, input.res)) {
-    input.auditCapture.addGatewayMetadata({
-      label: 'response_inspection_server_retry',
-      metadata: responseInspectionAuditMetadata(decision)
-    })
-    return {
-      alreadyFinalized: false,
-      retryUpstream: true,
-      retryReason: 'response_inspection',
-      responseInspection: decision,
-      excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(decision),
-      message,
-      errorCode
-    }
-  }
-
-  const responsePayload = gatewayErrorPayload(message, 'response_inspection_failed', errorCode)
-  sendGatewayErrorResponse(input.res, 503, responsePayload)
-  input.auditCapture.finalize({
-    outcome: 'upstream_failed',
-    success: false,
-    statusCode: 503,
-    responseHeaders: responseHeadersToObject(input.res),
-    responseBody: JSON.stringify(responsePayload),
-    responsePartType: 'gateway_error',
-    errorPhase: 'response_inspection',
-    errorCode,
-    errorMessage: message,
-    accountId: input.account.id,
-    firstTokenMs: input.firstTokenMs
-  })
-  return { alreadyFinalized: true }
 }
 
 export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): void {

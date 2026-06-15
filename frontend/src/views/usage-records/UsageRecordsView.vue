@@ -71,7 +71,6 @@ import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { api } from '@/api/client'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -83,8 +82,8 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
-import type { ProviderModelOption, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import { trimmedRouteQueryValue } from '@/shared/routeQuery'
+import type { UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
@@ -105,11 +104,13 @@ import {
   usageRecordTableColumns
 } from './usageRecordTableConfig'
 import { useUsageRecordGroupOptions } from './useUsageRecordGroupOptions'
+import { useUsageRecordModelOptions } from './useUsageRecordModelOptions'
+import { useUsageRecordTraceRoute } from './useUsageRecordTraceRoute'
 
 type TraceTarget = 'audit' | 'runtime'
 const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 8 })
 const route = useRoute()
-const initialRouteTraceId = routeTraceId()
+const initialRouteTraceId = trimmedRouteQueryValue(route.query.traceId)
 const cachedInitialPageState = pageStateCache.read()
 const initialPageState = initialRouteTraceId
   ? { ...defaultUsageRecordsPageState(), traceIdFilter: initialRouteTraceId }
@@ -138,8 +139,7 @@ const groupFilter = computed({
   }
 })
 const groupFilterDisabled = computed(() => false)
-const modelOptions = ref<ProviderModelOption[]>([])
-const modelOptionsLoading = ref(false)
+const { loadModelOptions, modelOptions, modelOptionsLoading } = useUsageRecordModelOptions()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -160,9 +160,6 @@ const {
   },
   selectedIds: () => [systemAccountFilter.value]
 })
-let modelOptionsLoaded = false
-let modelOptionsLoadingPromise: Promise<void> | undefined
-let skipNextRouteTraceRestore = false
 const {
   clearSearchTimer: clearGroupOptionsSearchTimer,
   groups,
@@ -272,30 +269,17 @@ const {
   requiredKeys: ['account'],
   minVisible: 1
 })
-
-async function loadModelOptions(force = false): Promise<void> {
-  if (!force && (modelOptionsLoaded || modelOptionsLoadingPromise)) {
-    return modelOptionsLoadingPromise
-  }
-  modelOptionsLoading.value = true
-  modelOptionsLoadingPromise = (async () => {
-    try {
-      modelOptions.value = await api.providers.modelOptions()
-      modelOptionsLoaded = true
-    } catch (error) {
-      console.error(error)
-      modelOptionsLoaded = true
-      message.warning('加载模型筛选选项失败')
-    } finally {
-      modelOptionsLoading.value = false
-      modelOptionsLoadingPromise = undefined
-    }
-  })()
-  return modelOptionsLoadingPromise
-}
+const traceRoute = useUsageRecordTraceRoute({
+  applyRouteTraceId,
+  currentTraceId: () => traceIdFilter.value,
+  onManualRouteTraceCleared: () => pageStateCache.scheduleWrite(snapshotPageState),
+  restoreAfterRouteTraceCleared: restorePageStateAfterRouteTraceCleared,
+  route,
+  router
+})
 
 function resetFilters(): void {
-  clearRouteTraceIdForManualState()
+  traceRoute.clearRouteTraceIdForManualState()
   const defaults = defaultUsageRecordsPageState()
   accountNameFilter.value = defaults.accountNameFilter
   clientIpFilter.value = defaults.clientIpFilter
@@ -335,7 +319,7 @@ function updatePaginationFromTable(paginationInfo: unknown): void {
 }
 
 function applyFilters(): void {
-  clearRouteTraceIdForManualState()
+  traceRoute.clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
 }
@@ -452,43 +436,13 @@ function snapshotPageState(): UsageRecordsPageState {
   }
 }
 
-function routeTraceId(): string | undefined {
-  return trimmedRouteQueryValue(route.query.traceId)
-}
-
-function clearRouteTraceIdForManualState(): void {
-  if (!routeTraceId()) return
-  skipNextRouteTraceRestore = true
-  void removeRouteTraceIdQuery(router, route).catch((error) => {
-    skipNextRouteTraceRestore = false
-    console.error(error)
-  })
-}
-
 watch(snapshotPageState, () => {
-  if (routeTraceId()) {
+  if (traceRoute.routeTraceId()) {
     pageStateCache.cancelPendingWrite()
     return
   }
   pageStateCache.scheduleWrite(snapshotPageState)
 }, { deep: true })
-watch(
-  () => route.query.traceId,
-  () => {
-    const traceId = routeTraceId()
-    if (!traceId) {
-      if (skipNextRouteTraceRestore) {
-        skipNextRouteTraceRestore = false
-        pageStateCache.scheduleWrite(snapshotPageState)
-        return
-      }
-      restorePageStateAfterRouteTraceCleared()
-      return
-    }
-    if (traceId === traceIdFilter.value.trim()) return
-    applyRouteTraceId(traceId)
-  }
-)
 watch(groupFilterDisabled, (disabled) => {
   if (!disabled) return
   groupFilterSelection.value = undefined
@@ -504,7 +458,10 @@ watch(records, (items) => {
 }, { immediate: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
-onBeforeUnmount(clearGroupOptionsSearchTimer)
+onBeforeUnmount(() => {
+  clearGroupOptionsSearchTimer()
+  traceRoute.stop()
+})
 
 onMounted(loadData)
 </script>

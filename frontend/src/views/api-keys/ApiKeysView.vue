@@ -87,146 +87,31 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 2120 : 1940" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
-      <template #emptyText>
-        <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'status'">
-          <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
-        </template>
-        <template v-else-if="column.key === 'availabilitySchedule'">
-          <a-tag class="schedule-tag" :color="apiKeyScheduleTagColor(record)">
-            {{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}
-          </a-tag>
-        </template>
-        <template v-else-if="column.key === 'usage'">
-          <UsageSummaryTags :usage="record.usage" />
-        </template>
-        <template v-else-if="column.key === 'key'">
-          <div class="key-preview-cell">
-            <span class="key-preview" :title="keyDisplayTitle(record)">{{ formatKeyPreview(record) }}</span>
-            <a-tooltip title="复制完整密钥">
-              <span class="key-copy-button-wrap">
-                <a-button
-                  class="key-copy-button"
-                  type="text"
-                  size="small"
-                  :loading="keyCopyingId === record.id"
-                  :disabled="Boolean(keyCopyingId) && keyCopyingId !== record.id"
-                  @click="copyKeyPreview(record)"
-                >
-                  <template #icon><copy-outlined /></template>
-                </a-button>
-              </span>
-            </a-tooltip>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'group'">
-          <div class="group-route-tags">
-            <a-tag
-              v-for="(binding, index) in apiKeyGroupBindings(record)"
-              :key="binding.id"
-              :color="apiKeyGroupBindingTagColor(binding)"
-            >
-              {{ apiKeyGroupBindingTagText(record, binding, index) }}
-            </a-tag>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'systemAccount'">
-          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
-        </template>
-        <template v-else-if="column.key === 'quotaLimits'">
-          <span>{{ quotaLimitSummaryText(record.quotaLimits) }}</span>
-        </template>
-        <template v-else-if="column.key === 'description'">
-          <span>{{ record.description || '-' }}</span>
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <RowActions :actions="apiKeyPrimaryActions(record)" :more-actions="apiKeyMoreActions(record)" @action-click="handleApiKeyAction($event, record)" />
-        </template>
-      </template>
-      <template #card="{ record }">
-        <article class="mobile-list-card">
-          <div class="mobile-list-card-head">
-            <div class="mobile-list-card-title">{{ record.name }}</div>
-            <div class="mobile-list-card-tags">
-              <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
-              <a-tag
-                v-for="(binding, index) in apiKeyGroupBindings(record).slice(0, 2)"
-                :key="binding.id"
-                :color="apiKeyGroupBindingTagColor(binding)"
-              >
-                {{ apiKeyGroupBindingTagText(record, binding, index) }}
-              </a-tag>
-              <a-tag v-if="apiKeyGroupBindings(record).length > 2">+{{ apiKeyGroupBindings(record).length - 2 }}</a-tag>
-            </div>
-          </div>
-          <div class="mobile-list-meta-grid">
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>API Key</span>
-              <strong>{{ formatKeyPreview(record) }}</strong>
-            </div>
-            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>系统账户</span>
-              <strong>{{ apiKeySystemAccountText(record) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>过期时间</span>
-              <strong>{{ formatDateTime(record.expiresAt) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>时间计划</span>
-              <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule, record.availabilityScheduleActive) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>累计用量</span>
-              <strong>{{ formatUsageSummary(record.usage) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>美元额度</span>
-              <strong>{{ quotaLimitSummaryText(record.quotaLimits) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>绑定分组</span>
-              <strong>{{ apiKeyGroupRouteText(record) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>说明</span>
-              <strong>{{ record.description || '-' }}</strong>
-            </div>
-          </div>
-          <div class="mobile-list-card-actions">
-            <RowActions variant="button" :actions="apiKeyPrimaryActions(record)" :more-actions="apiKeyMoreActions(record)" @action-click="handleApiKeyAction($event, record)" />
-          </div>
-        </article>
-      </template>
-    </ResponsiveDataList>
+    <ApiKeyResponsiveList
+      :columns="managedColumns"
+      :data-source="filteredApiKeys"
+      :mobile-data-source="mobileApiKeys"
+      :loading="loading"
+      :loading-more="mobileLoadingMore"
+      :mobile-has-more="mobileHasMore"
+      :pagination="tablePagination"
+      :is-management-view="isManagementView"
+      :key-copying-id="keyCopyingId"
+      :primary-actions="apiKeyPrimaryActions"
+      :more-actions="apiKeyMoreActions"
+      @action-click="handleApiKeyAction"
+      @change="handleTableChange"
+      @copy-key="copyKeyPreview"
+      @mobile-load-more="loadMoreMobileApiKeys"
+      @mobile-refresh="refreshMobileApiKeys"
+    />
 
-    <a-modal v-model:open="helpOpen" title="API Key 接入帮助" width="560px" :footer="null">
-      <div class="gateway-help-content">
-        <div class="gateway-help-section">
-          <span class="gateway-step-title">1. 复制 Base URL</span>
-          <div class="gateway-url-row">
-            <span class="gateway-url-label">Base URL</span>
-            <span class="gateway-url-value">{{ gatewayBaseUrl }}</span>
-            <a-button class="gateway-copy-button" type="text" size="small" @click="copyGatewayBaseUrl">
-              <template #icon><copy-outlined /></template>
-              复制
-            </a-button>
-          </div>
-        </div>
-        <div class="gateway-help-section">
-          <span class="gateway-step-title">2. 复制 API Key</span>
-          <span>列表显示前8位和后8位用于识别，可通过复制按钮复制完整密钥。</span>
-        </div>
-        <div class="gateway-help-section">
-          <span class="gateway-step-title">3. 填到客户端</span>
-          <pre class="gateway-code">{{ gatewayClientExample }}</pre>
-        </div>
-        <a-alert class="gateway-help-note" type="info" show-icon message="Responses 是连续会话入口；/chat/completions 按上游公开接口能力处理。统计、会话亲和和缓存不按 OAuth / API Key 类型拆分。" />
-      </div>
-    </a-modal>
+    <ApiKeyHelpModal
+      v-model:open="helpOpen"
+      :gateway-base-url="gatewayBaseUrl"
+      :gateway-client-example="gatewayClientExample"
+      @copy-base-url="copyGatewayBaseUrl"
+    />
 
     <ApiKeyEditModal
       ref="apiKeyEditModalRef"
@@ -240,35 +125,28 @@
       @updated="handleApiKeyUpdated"
     />
 
-    <a-modal v-model:open="createdKeyOpen" :title="createdKeyModalTitle" width="640px" :footer="null">
-      <a-alert :message="createdKeyModalMessage" type="info" show-icon />
-      <div class="created-key-base-url">
-        <span class="created-key-label">Base URL</span>
-        <span class="created-key-value">{{ gatewayBaseUrl }}</span>
-        <a-button type="link" size="small" @click="copyGatewayBaseUrl">复制</a-button>
-      </div>
-      <a-input-group compact class="created-key">
-        <a-input :value="createdKey" readonly style="width: calc(100% - 88px)" />
-        <a-button type="primary" @click="copyCreatedKey">复制</a-button>
-      </a-input-group>
-    </a-modal>
+    <ApiKeyCreatedSecretModal
+      v-model:open="createdKeyOpen"
+      :api-key="createdKey"
+      :gateway-base-url="gatewayBaseUrl"
+      :message="createdKeyModalMessage"
+      :title="createdKeyModalTitle"
+      @copy-api-key="copyCreatedKey"
+      @copy-gateway-base-url="copyGatewayBaseUrl"
+    />
   </a-card>
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import RowActions from '@/components/RowActions.vue'
-import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -276,25 +154,13 @@ import { useScopedApiKeysApi, useScopedGroupsApi } from '@/composables/useScoped
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatNumber } from '@/shared/formatters'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ApiKeySummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import {
-  apiKeyGroupBindingTagColor,
-  apiKeyGroupBindingTagText,
   apiKeyGroupBindings,
-  apiKeyGroupRouteText,
-  apiKeyScheduleSummary,
-  apiKeyScheduleTagColor,
-  apiKeyStatusTagColor,
-  apiKeyStatusTagLabel,
-  apiKeySystemAccountText,
-  formatKeyPreview,
-  formatUsageSummary,
-  keyDisplayTitle
 } from './apiKeyFormatters'
 import { defaultApiKeysPageState, type ApiKeysPageState } from './apiKeyPageState'
 import {
@@ -302,7 +168,10 @@ import {
   apiKeyListStatusOptions as listStatusOptions,
   buildApiKeyTableColumns
 } from './apiKeyTableConfig'
+import ApiKeyCreatedSecretModal from './ApiKeyCreatedSecretModal.vue'
 import ApiKeyEditModal from './ApiKeyEditModal.vue'
+import ApiKeyHelpModal from './ApiKeyHelpModal.vue'
+import ApiKeyResponsiveList from './ApiKeyResponsiveList.vue'
 import { useApiKeyGroupOptions, type ApiKeyScopeParams } from './useApiKeyGroupOptions'
 import { useApiKeyRowActions } from './useApiKeyRowActions'
 
@@ -638,152 +507,6 @@ onMounted(loadData)
 
 .advanced-filter-form :deep(.ant-select) {
   width: 100%;
-}
-
-.gateway-help-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.gateway-help-section {
-  padding: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #fbfdff;
-}
-
-.gateway-help-note {
-  border-radius: 8px;
-}
-
-.gateway-step-title {
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.gateway-url-row,
-.created-key-base-url {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.gateway-url-label,
-.created-key-label {
-  flex: none;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.gateway-url-value,
-.created-key-value {
-  min-width: 0;
-  padding: 4px 10px;
-  overflow: hidden;
-  color: #0f766e;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-radius: 6px;
-  background: #ecfeff;
-}
-
-.gateway-copy-button {
-  flex: none;
-}
-
-.gateway-code {
-  margin: 0;
-  padding: 10px 12px;
-  overflow-x: auto;
-  color: #334155;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.8);
-}
-
-.created-key {
-  margin-top: 16px;
-}
-
-.created-key-base-url {
-  margin-top: 16px;
-}
-
-.api-keys-table :deep(.ant-empty) {
-  margin: 12px 0;
-}
-
-.api-keys-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.group-route-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  max-width: 320px;
-}
-
-.group-route-tags :deep(.ant-tag) {
-  max-width: 280px;
-  margin-inline-end: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.schedule-tag {
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.key-preview-cell {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-width: 0;
-  gap: 8px;
-}
-
-.key-preview {
-  display: inline-flex;
-  align-items: center;
-  max-width: calc(100% - 32px);
-  box-sizing: border-box;
-  padding: 3px 8px;
-  overflow: hidden;
-  color: #008b8b;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-radius: 4px;
-  background: #eefafa;
-}
-
-.key-copy-button {
-  color: #94a3b8;
-}
-
-.key-copy-button-wrap {
-  flex: none;
-}
-
-.key-copy-button:hover:not(:disabled) {
-  color: #1677ff;
-  background: #eff6ff;
 }
 
 </style>

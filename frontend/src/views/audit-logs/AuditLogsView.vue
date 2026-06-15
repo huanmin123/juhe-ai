@@ -12,50 +12,29 @@
       @search="applyCurrentMode"
     >
       <template #advanced-filters>
-        <a-form v-if="viewMode === 'list'" layout="vertical" class="advanced-filter-form">
-          <a-form-item label="结果">
-            <a-select v-model:value="outcomeFilter" :options="outcomeOptions" @change="applyFilters" />
-          </a-form-item>
-          <a-form-item label="来源">
-            <a-select v-model:value="trafficSourceFilter" :options="trafficSourceOptions" @change="applyFilters" />
-          </a-form-item>
-          <a-form-item label="用户">
-            <SystemPrincipalSelect
-              v-model:value="systemAccountFilter"
-              :accounts="systemAccounts"
-              :active-only="false"
-              :filter-option="false"
-              :loading="systemAccountOptionsLoading"
-              v-model:selected-principal="systemAccountSelection"
-              include-all
-              all-label="全部用户"
-              placeholder="筛选用户"
-              @change="applyFilters"
-              @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-              @search="handleSystemAccountOptionsSearch"
-            />
-          </a-form-item>
-          <a-form-item label="AI账户">
-            <AccountSelect
-              v-model:value="accountIdFilter"
-              v-model:selected-account="accountSelection"
-              :accounts="accountOptions"
-              :filter-option="false"
-              :loading="accountOptionsLoading"
-              allow-clear
-              placeholder="选择 AI账户"
-              @change="applyFilters"
-              @dropdown-visible-change="handleAccountOptionsDropdown"
-              @search="handleAccountOptionsSearch"
-            />
-          </a-form-item>
-          <a-form-item label="接口路径">
-            <a-input v-model:value="pathFilter" allow-clear placeholder="/v1/responses" @press-enter="applyFilters" />
-          </a-form-item>
-          <a-form-item label="状态码">
-            <a-input v-model:value="statusCodeFilter" allow-clear placeholder="401 / 503" @press-enter="applyFilters" />
-          </a-form-item>
-        </a-form>
+        <AuditLogFilterForm
+          v-model:outcome="outcomeFilter"
+          v-model:traffic-source="trafficSourceFilter"
+          v-model:system-account="systemAccountFilter"
+          v-model:system-account-selection="systemAccountSelection"
+          v-model:account-id="accountIdFilter"
+          v-model:account-selection="accountSelection"
+          v-model:path="pathFilter"
+          v-model:status-code="statusCodeFilter"
+          mode="advanced"
+          :visible="viewMode === 'list'"
+          :outcome-options="outcomeOptions"
+          :traffic-source-options="trafficSourceOptions"
+          :system-accounts="systemAccounts"
+          :system-account-options-loading="systemAccountOptionsLoading"
+          :account-options="accountOptions"
+          :account-options-loading="accountOptionsLoading"
+          @apply="applyFilters"
+          @system-account-dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @system-account-search="handleSystemAccountOptionsSearch"
+          @account-dropdown-visible-change="handleAccountOptionsDropdown"
+          @account-search="handleAccountOptionsSearch"
+        />
       </template>
       <template #actions>
         <TableColumnManager
@@ -68,49 +47,29 @@
         <a-segmented v-model:value="viewMode" class="audit-mode-segmented" :options="viewModeOptions" @change="handleViewModeChange" />
       </template>
       <template #filters>
-        <a-form v-if="viewMode === 'list'" layout="vertical">
-          <a-form-item label="结果">
-            <a-select v-model:value="outcomeFilter" :options="outcomeOptions" />
-          </a-form-item>
-          <a-form-item label="来源">
-            <a-select v-model:value="trafficSourceFilter" :options="trafficSourceOptions" />
-          </a-form-item>
-          <a-form-item label="用户">
-            <SystemPrincipalSelect
-              v-model:value="systemAccountFilter"
-              :accounts="systemAccounts"
-              :active-only="false"
-              :filter-option="false"
-              :loading="systemAccountOptionsLoading"
-              v-model:selected-principal="systemAccountSelection"
-              include-all
-              all-label="全部用户"
-              placeholder="筛选用户"
-              @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-              @search="handleSystemAccountOptionsSearch"
-            />
-          </a-form-item>
-          <a-form-item label="AI账户">
-            <AccountSelect
-              v-model:value="accountIdFilter"
-              v-model:selected-account="accountSelection"
-              :accounts="accountOptions"
-              :filter-option="false"
-              :loading="accountOptionsLoading"
-              allow-clear
-              placeholder="选择 AI账户"
-              @change="applyFilters"
-              @dropdown-visible-change="handleAccountOptionsDropdown"
-              @search="handleAccountOptionsSearch"
-            />
-          </a-form-item>
-          <a-form-item label="接口路径">
-            <a-input v-model:value="pathFilter" allow-clear placeholder="/v1/responses" />
-          </a-form-item>
-          <a-form-item label="状态码">
-            <a-input v-model:value="statusCodeFilter" allow-clear placeholder="401 / 503" />
-          </a-form-item>
-        </a-form>
+        <AuditLogFilterForm
+          v-model:outcome="outcomeFilter"
+          v-model:traffic-source="trafficSourceFilter"
+          v-model:system-account="systemAccountFilter"
+          v-model:system-account-selection="systemAccountSelection"
+          v-model:account-id="accountIdFilter"
+          v-model:account-selection="accountSelection"
+          v-model:path="pathFilter"
+          v-model:status-code="statusCodeFilter"
+          mode="mobile"
+          :visible="viewMode === 'list'"
+          :outcome-options="outcomeOptions"
+          :traffic-source-options="trafficSourceOptions"
+          :system-accounts="systemAccounts"
+          :system-account-options-loading="systemAccountOptionsLoading"
+          :account-options="accountOptions"
+          :account-options-loading="accountOptionsLoading"
+          @apply="applyFilters"
+          @system-account-dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @system-account-search="handleSystemAccountOptionsSearch"
+          @account-dropdown-visible-change="handleAccountOptionsDropdown"
+          @account-search="handleAccountOptionsSearch"
+        />
       </template>
     </ResponsiveListToolbar>
 
@@ -159,19 +118,14 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type {
-  AuditLogDetail,
-  AuditLogPayloadDetail,
   AuditLogSummary,
   AuditOutcome,
   AuditTrafficSource
 } from '@/types/domain'
-import AccountSelect from '@/components/AccountSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
-import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
-import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import { rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
@@ -195,24 +149,30 @@ import {
   auditLogColumns,
   auditOutcomeOptions
 } from './auditLogTableColumns'
-import {
-  finalizeMergedPayloadBody,
-  mergeAuditPayloadWindow
-} from './auditPayloadDetails'
 import AuditLogDetailDrawer from './AuditLogDetailDrawer.vue'
+import AuditLogFilterForm from './AuditLogFilterForm.vue'
 import { useAuditLogAccountOptions } from './useAuditLogAccountOptions'
+import { useAuditLogDetailPayload } from './useAuditLogDetailPayload'
 import { useAuditLogHotSearchState } from './useAuditLogHotSearchState'
+import { useAuditLogModeBridge } from './useAuditLogModeBridge'
 import { useAuditLogRuntimeAlert } from './useAuditLogRuntimeAlert'
+import {
+  auditLogRouteTraceId,
+  useAuditLogTraceRoute
+} from './useAuditLogTraceRoute'
 
 type AuditLogViewMode = 'list' | 'search'
 
-const detailLoading = ref(false)
-const payloadLoadingId = ref('')
-const detail = ref<AuditLogDetail>()
-const selectedPayload = ref<AuditLogPayloadDetail>()
-const detailOpen = ref(false)
-let detailRequestId = 0
-let payloadRequestId = 0
+const {
+  closeTransientDetails,
+  detail,
+  detailLoading,
+  detailOpen,
+  loadPayload,
+  openDetail,
+  payloadLoadingId,
+  selectedPayload
+} = useAuditLogDetailPayload()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -230,7 +190,6 @@ const {
 } = useAuditLogRuntimeAlert()
 
 const pageSize = 100
-const auditPayloadFullReadWindowBytes = 768 * 1024
 type AuditLogsPageState = {
   accountIdFilter: string
   accountSelection?: AccountSelection
@@ -263,7 +222,7 @@ const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultA
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
-const initialTraceId = routeTraceId()
+const initialTraceId = auditLogRouteTraceId(route)
 const effectiveInitialPageState: AuditLogsPageState = initialTraceId
   ? { ...defaultAuditLogsPageState(), traceIdFilter: initialTraceId }
   : initialPageState
@@ -338,7 +297,7 @@ const {
   onSearchCompleted: refreshAuditRuntimeQuietly
 })
 
-const outcomeOptions = auditOutcomeOptions
+const outcomeOptions = auditOutcomeOptions as Array<{ label: string; value: AuditOutcome | 'all' }>
 const viewModeOptions = [
   { label: '审计列表', value: 'list' },
   { label: '最近内容搜索', value: 'search' }
@@ -369,91 +328,12 @@ const currentFilterValues = computed(() => ({
 }))
 const filterCounts = computed(() => auditLogFilterCounts(currentFilterValues.value))
 const activeFilterCount = computed(() => filterCounts.value.active)
-const toolbarKeyword = computed({
-  get: () => viewMode.value === 'search' ? hotSearchKeywordFilter.value : traceIdFilter.value,
-  set: (value: string) => {
-    if (viewMode.value === 'search') {
-      hotSearchKeywordFilter.value = value
-    } else {
-      traceIdFilter.value = value
-    }
-  }
-})
-const toolbarSearchPlaceholder = computed(() => viewMode.value === 'search'
-  ? '搜索最近1小时审计原始内容'
-  : '搜索 traceId')
-const toolbarFilterTitle = computed(() => viewMode.value === 'search' ? '最近内容搜索' : '审计筛选')
-const toolbarActiveFilterCount = computed(() => viewMode.value === 'search' ? hotSearchActiveFilterCount.value : activeFilterCount.value)
 const advancedFilterCount = computed(() => filterCounts.value.advanced)
-const toolbarAdvancedFilterCount = computed(() => viewMode.value === 'search' ? 0 : advancedFilterCount.value)
-const currentRecords = computed(() => viewMode.value === 'search' ? hotSearchRecords.value : records.value)
-const currentLoading = computed(() => viewMode.value === 'search' ? hotSearchLoading.value : loading.value)
-const currentMobileHasMore = computed(() => viewMode.value === 'search' ? false : mobileHasMore.value)
-const currentMobileLoadingMore = computed(() => viewMode.value === 'search' ? false : mobileLoadingMore.value)
-const currentTablePagination = computed(() => viewMode.value === 'search' ? hotSearchTablePagination.value : tablePagination.value)
-let skipNextRouteTraceRestore = false
-
 watch(records, rememberAuditRecordGroupLabels, { immediate: true })
 watch(hotSearchRecords, rememberAuditRecordGroupLabels, { immediate: true })
 watch(detail, (nextDetail) => {
   rememberGroupLabel(nextDetail?.groupId, nextDetail?.groupName)
 })
-
-function applyCurrentMode(): void {
-  if (viewMode.value === 'search') {
-    clearRouteTraceIdForManualState()
-    void searchHotAuditLogs()
-    return
-  }
-  applyFilters()
-}
-
-function refreshCurrentMode(): void {
-  if (viewMode.value === 'search') {
-    void searchHotAuditLogs()
-    void refreshAuditRuntimeQuietly()
-    return
-  }
-  refreshRecords()
-}
-
-function resetCurrentMode(): void {
-  if (viewMode.value === 'search') {
-    clearRouteTraceIdForManualState()
-    resetHotSearch()
-    return
-  }
-  resetFilters()
-}
-
-function handleViewModeChange(): void {
-  if (viewMode.value === 'search') {
-    clearRouteTraceIdForManualState()
-    if (hotSearchKeywordFilter.value.trim() && !hotSearchResult.value) {
-      void searchHotAuditLogs()
-    }
-    return
-  }
-  void loadData({ forceOptions: true })
-}
-
-function handleCurrentTableChange(paginationInfo: unknown): void {
-  if (viewMode.value === 'search') return
-  handleTableChange(paginationInfo)
-}
-
-function loadMoreCurrentMobileRecords(): void {
-  if (viewMode.value === 'search') return
-  loadMoreMobileRecords()
-}
-
-function refreshCurrentMobileRecords(): void {
-  if (viewMode.value === 'search') {
-    void searchHotAuditLogs()
-    return
-  }
-  refreshMobileRecords()
-}
 
 function applyFilters(): void {
   clearRouteTraceIdForManualState()
@@ -528,100 +408,6 @@ function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {
   }
 }
 
-function routeTraceId(): string | undefined {
-  return trimmedRouteQueryValue(route.query.traceId)
-}
-
-function clearRouteTraceIdForManualState(): void {
-  if (!routeTraceId()) return
-  skipNextRouteTraceRestore = true
-  void removeRouteTraceIdQuery(router, route).catch((error) => {
-    skipNextRouteTraceRestore = false
-    console.error(error)
-  })
-}
-
-async function openDetail(record: AuditLogSummary): Promise<void> {
-  const requestId = detailRequestId + 1
-  detailRequestId = requestId
-  detailOpen.value = true
-  detailLoading.value = true
-  selectedPayload.value = undefined
-  try {
-    const nextDetail = await api.auditLogs.detail(record.id)
-    if (requestId === detailRequestId) {
-      detail.value = nextDetail
-    }
-  } catch (error) {
-    console.error(error)
-    message.error('加载审计详情失败')
-  } finally {
-    if (requestId === detailRequestId) {
-      detailLoading.value = false
-    }
-  }
-}
-
-async function loadPayload(payloadId: string): Promise<void> {
-  if (!detail.value) return
-  const requestId = payloadRequestId + 1
-  payloadRequestId = requestId
-  payloadLoadingId.value = payloadId
-  selectedPayload.value = undefined
-  try {
-    const nextPayload = await loadCompletePayload(payloadId, requestId)
-    if (!nextPayload) return
-    if (requestId === payloadRequestId) {
-      selectedPayload.value = nextPayload
-    }
-  } catch (error) {
-    console.error(error)
-    message.error('加载原始内容失败')
-  } finally {
-    if (requestId === payloadRequestId) {
-      payloadLoadingId.value = ''
-    }
-  }
-}
-
-async function loadCompletePayload(payloadId: string, requestId: number): Promise<AuditLogPayloadDetail | undefined> {
-  if (!detail.value) return undefined
-  const auditLogId = detail.value.id
-  let mergedPayload = await api.auditLogs.payload(auditLogId, payloadId, {
-    offset: 0,
-    limit: auditPayloadFullReadWindowBytes
-  })
-  if (requestId !== payloadRequestId) return undefined
-  while (mergedPayload.bodyTruncated && mergedPayload.bodyNextOffset !== undefined) {
-    const requestedOffset = mergedPayload.bodyNextOffset
-    const nextPayload = await api.auditLogs.payload(auditLogId, payloadId, {
-      offset: requestedOffset,
-      limit: auditPayloadFullReadWindowBytes
-    })
-    if (requestId !== payloadRequestId) return undefined
-    if (nextPayload.bodyBytesReturned <= 0) break
-    mergedPayload = mergeAuditPayloadWindow(mergedPayload, nextPayload)
-    if (
-      nextPayload.bodyTruncated
-      && nextPayload.bodyNextOffset !== undefined
-      && nextPayload.bodyNextOffset <= requestedOffset
-    ) {
-      break
-    }
-  }
-  return finalizeMergedPayloadBody(mergedPayload)
-}
-
-function closeTransientDetails(): void {
-  detailRequestId += 1
-  payloadRequestId += 1
-  detailOpen.value = false
-  detailLoading.value = false
-  payloadLoadingId.value = ''
-  detail.value = undefined
-  selectedPayload.value = undefined
-}
-
 function snapshotPageState(): AuditLogsPageState {
   return {
     accountIdFilter: accountIdFilter.value,
@@ -639,6 +425,61 @@ function snapshotPageState(): AuditLogsPageState {
   }
 }
 
+const traceRoute = useAuditLogTraceRoute({
+  applyRouteTraceId,
+  currentTraceId: () => traceIdFilter.value,
+  onManualRouteTraceCleared: () => pageStateCache.scheduleWrite(snapshotPageState),
+  restoreAfterRouteTraceCleared: restorePageStateAfterRouteTraceCleared,
+  route,
+  router
+})
+const { clearRouteTraceIdForManualState, routeTraceId } = traceRoute
+const {
+  applyCurrentMode,
+  currentLoading,
+  currentMobileHasMore,
+  currentMobileLoadingMore,
+  currentRecords,
+  currentTablePagination,
+  handleCurrentTableChange,
+  handleViewModeChange,
+  loadMoreCurrentMobileRecords,
+  refreshCurrentMobileRecords,
+  refreshCurrentMode,
+  resetCurrentMode,
+  toolbarActiveFilterCount,
+  toolbarAdvancedFilterCount,
+  toolbarFilterTitle,
+  toolbarKeyword,
+  toolbarSearchPlaceholder
+} = useAuditLogModeBridge({
+  activeFilterCount,
+  advancedFilterCount,
+  applyFilters,
+  clearRouteTraceIdForManualState,
+  handleTableChange,
+  hotSearchActiveFilterCount,
+  hotSearchKeywordFilter,
+  hotSearchLoading,
+  hotSearchRecords,
+  hotSearchResult,
+  hotSearchTablePagination,
+  loadData,
+  loading,
+  loadMoreMobileRecords,
+  mobileHasMore,
+  mobileLoadingMore,
+  records,
+  refreshAuditRuntimeQuietly,
+  refreshMobileRecords,
+  resetFilters,
+  resetHotSearch,
+  searchHotAuditLogs,
+  tablePagination,
+  traceIdFilter,
+  viewMode
+})
+
 watch(snapshotPageState, () => {
   if (routeTraceId()) {
     pageStateCache.cancelPendingWrite()
@@ -648,23 +489,6 @@ watch(snapshotPageState, () => {
 }, { deep: true })
 watch(accountSelection, (selection) => rememberAccountSelection(selection), { deep: true, immediate: true })
 watch(systemAccountSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
-watch(
-  () => route.query.traceId,
-  () => {
-    const traceId = routeTraceId()
-    if (!traceId) {
-      if (skipNextRouteTraceRestore) {
-        skipNextRouteTraceRestore = false
-        pageStateCache.scheduleWrite(snapshotPageState)
-        return
-      }
-      restorePageStateAfterRouteTraceCleared()
-      return
-    }
-    if (traceId === traceIdFilter.value.trim()) return
-    applyRouteTraceId(traceId)
-  }
-)
 
 function loadInitialModeData(): void {
   if (viewMode.value === 'search') {
@@ -677,6 +501,7 @@ function loadInitialModeData(): void {
 
 onMounted(loadInitialModeData)
 onBeforeUnmount(() => {
+  traceRoute.stop()
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
   cancelHotSearchRequest()
@@ -732,10 +557,6 @@ onDeactivated(() => {
   color: #64748b;
   font-size: 12px;
   line-height: 1.6;
-}
-
-.advanced-filter-form :deep(.ant-input) {
-  width: 100%;
 }
 
 .mono-cell {
