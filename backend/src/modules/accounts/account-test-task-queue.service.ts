@@ -535,7 +535,6 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     proxyProfileUnavailable: proxy.unavailable,
     proxyProfileErrorMessage: proxy.errorMessage,
     streamFailureCount: 0,
-    availabilityScheduleJson: draft.availabilityScheduleJson,
     accountExpiresAt: draft.accountExpiresAt,
     expiresAt: stringCredential(credentials.expires_at) || undefined,
     credentials: runtimeOpenAIAccountCredentials(credentials)

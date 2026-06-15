@@ -18,6 +18,7 @@ runtimeConfig.secret = 'audit-log-retention-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 

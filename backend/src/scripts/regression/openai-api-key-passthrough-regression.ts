@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events'
 
 import { requestModel } from '../../modules/gateway/request/metadata.js'
 import {
+  buildOpenAIModelsResponse,
   buildOpenAICodexUpstreamUrls,
   buildUpstreamUrl,
   buildUpstreamUrlsForAccount,
+  isCodexModelsRequest,
   isOpenAIModelsRequest
 } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/upstream/request.js'
@@ -355,6 +357,14 @@ function testOpenAIUpstreamUrlNormalization(): void {
 function testOpenAIClientPathNormalization(): void {
   assert.equal(isOpenAIModelsRequest(createRequest(undefined, {}, undefined, '/models', 'GET')), true)
   assert.equal(isOpenAIModelsRequest(createRequest(undefined, {}, undefined, '/v1/models', 'GET')), true)
+  assert.equal(isCodexModelsRequest(createRequest(undefined, {}, undefined, '/v1/models?client_version=0.99.0', 'GET')), true)
+  assert.equal(isCodexModelsRequest(createRequest(undefined, { originator: 'codex_cli_rs' }, undefined, '/models', 'GET')), true)
+  assert.equal(isCodexModelsRequest(createRequest(undefined, {}, undefined, '/v1/models', 'GET')), false)
+  const openAIModels = buildOpenAIModelsResponse([modelCatalogItem('gpt-standard')])
+  assert.equal('data' in openAIModels, true, '普通 /models 响应应保持 OpenAI 标准 data 字段')
+  const codexModels = buildOpenAIModelsResponse([modelCatalogItem('gpt-codex')], createRequest(undefined, {}, undefined, '/v1/models?client_version=0.99.0', 'GET'))
+  assert.equal('models' in codexModels, true, 'Codex /models 响应应使用 models 字段')
+  assert.equal('data' in codexModels, false, 'Codex /models 响应不应返回 OpenAI 标准 data 字段')
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/models'), 'https://api.openai.com/v1/models')
   assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/models?limit=20'), 'https://api.openai.com/v1/models?limit=20')
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/chat/completions'), 'https://api.openai.com/v1/chat/completions')
@@ -371,6 +381,21 @@ function testOpenAIClientPathNormalization(): void {
     buildOpenAICodexUpstreamUrls(createRequest({ input: 'hello' }, {}, undefined, '/chat/completions')),
     []
   )
+}
+
+function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsResponse>[0][number] {
+  return {
+    providerCode: 'gpt',
+    model,
+    mode: 'text',
+    supportedApiProtocols: ['responses'],
+    supportsPromptCaching: false,
+    supportsServiceTier: false,
+    source: 'regression',
+    scope: 'built_in',
+    visibility: 'public',
+    status: 'active'
+  }
 }
 
 function testResponsesCompactRouteCapability(): void {

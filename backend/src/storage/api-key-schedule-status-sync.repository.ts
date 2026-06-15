@@ -1,5 +1,6 @@
 import {
-  dueApiKeyAvailabilityScheduleEvent,
+  apiKeyAvailabilityScheduleStatus,
+  latestApiKeyAvailabilityScheduleStartEvent,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
 import {
@@ -19,6 +20,12 @@ interface ScheduledApiKeyStatusRow {
 interface ScheduledApiKeyStatusUpdate {
   id: string
   status: 'active' | 'disabled'
+  eventKey?: string
+}
+
+interface ScheduledApiKeyStatusEvent {
+  id: string
+  status: 'active'
   eventKey: string
 }
 
@@ -55,28 +62,51 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
     invalidIds: []
   }
   const updates: ScheduledApiKeyStatusUpdate[] = []
+  const events: ScheduledApiKeyStatusEvent[] = []
 
   for (const row of rows) {
     try {
       const schedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
-      const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
-      if (!event) {
+      const status = apiKeyAvailabilityScheduleStatus(schedule, now)
+      if (!status) {
         result.unchanged += 1
         continue
       }
-      const eventKey = apiKeyScheduleStatusEventKey(row.id, row.availability_schedule_json, event.eventKey)
-      if (hasApiKeyScheduleStatusEvent(database, eventKey)) {
-        result.skipped += 1
+      if (status === 'active') {
+        const event = latestApiKeyAvailabilityScheduleStartEvent(schedule, now)
+        if (!event) {
+          result.unchanged += 1
+          continue
+        }
+        const eventKey = apiKeyScheduleStatusEventKey(row.id, row.availability_schedule_json, event.eventKey)
+        if (hasApiKeyScheduleStatusEvent(database, eventKey)) {
+          if (status === row.status) {
+            result.unchanged += 1
+          } else {
+            result.skipped += 1
+          }
+          continue
+        }
+        if (status === row.status) {
+          events.push({ id: row.id, status, eventKey })
+          result.unchanged += 1
+          continue
+        }
+        updates.push({ id: row.id, status, eventKey })
         continue
       }
-      updates.push({ id: row.id, status: event.status, eventKey })
+      if (status === row.status) {
+        result.unchanged += 1
+        continue
+      }
+      updates.push({ id: row.id, status })
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
     }
   }
 
-  if (!updates.length) {
+  if (!updates.length && !events.length) {
     return result
   }
 
@@ -94,11 +124,16 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
       INSERT OR IGNORE INTO api_key_schedule_status_events (event_key, api_key_id, status, executed_at)
       VALUES (?, ?, ?, ?)
     `)
+    for (const event of events) {
+      insertEvent.run(event.eventKey, event.id, event.status, updatedAt)
+    }
     for (const update of updates) {
-      const inserted = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
-      if (inserted <= 0) {
-        result.skipped += 1
-        continue
+      if (update.eventKey) {
+        const inserted = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
+        if (inserted <= 0) {
+          result.skipped += 1
+          continue
+        }
       }
       const changes = updateStatus.run(update.status, updatedAt, update.id, update.status).changes ?? 0
       if (changes <= 0) {

@@ -3,8 +3,8 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source-types.js'
 import {
-  type ExternalIntegrationSourceAuthContext,
   externalIntegrationAccessInfoReadScope,
   externalIntegrationAccountAddWriteScope,
   externalIntegrationAccountDeleteWriteScope,
@@ -22,7 +22,7 @@ import {
   externalIntegrationGroupUpdateWriteScope,
   externalIntegrationIpUsageReadScope,
   externalIntegrationSourceAuthDemoScope
-} from '../../storage/external-integration-source.repository.js'
+} from '../../storage/external-integration-source-constants.js'
 import { createOperationLog } from '../../storage/repositories.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from '../api-keys/api-key-availability-schedule.schema.js'

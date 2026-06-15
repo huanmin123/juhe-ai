@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { runtimeConfig } from '../../config/runtime.js'
 
 import {
   dueApiKeyAvailabilityScheduleEvent,
@@ -194,6 +199,137 @@ assert.equal(
   '合法允许例外应按例外时段放行'
 )
 
-console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外和非法参数校验符合预期')
+await assertApiKeyScheduleStatusSyncAndGatewayGuard()
+
+console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、错过边界补偿和热链路不解析计划符合预期')
+
+async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
+  const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-availability-schedule-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+  runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+  runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+  runtimeConfig.secret = 'api-key-availability-schedule-secret'
+  runtimeConfig.log.consoleEnabled = false
+  runtimeConfig.log.fileEnabled = false
+  runtimeConfig.processRole = 'worker'
+  mkdirSync(tempRoot, { recursive: true })
+
+  const [
+    { logger },
+    databaseModule,
+    repositories,
+    gatewayApiKeyRepository
+  ] = await Promise.all([
+    import('../../shared/logger.js'),
+    import('../../storage/database.js'),
+    import('../../storage/repositories.js'),
+    import('../../storage/gateway-api-key.repository.js')
+  ])
+  logger.level = 'silent'
+
+  try {
+    const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+    const group = repositories.createGroup({
+      name: 'API Key 时间计划补偿回归分组',
+      providerCode: 'gpt',
+      enabled: true
+    }, access)
+    const apiKey = repositories.createApiKeyRecord({
+      name: 'API Key 时间计划补偿回归 Key',
+      status: 'active',
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'Asia/Shanghai',
+        mode: 'allow_windows',
+        windows: [
+          { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '22:00', end: '23:55' }
+        ]
+      }
+    }, access)
+
+    const allowedAt = Date.parse('2026-05-31T14:30:00.000Z')
+    const missedEndBoundaryAt = Date.parse('2026-05-31T15:56:00.000Z')
+    assert.equal(
+      await withMockedNow(missedEndBoundaryAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
+      apiKey.id,
+      '后台尚未改写 status 前，网关热链路不解析时间计划，允许存在一个同步周期内的状态延迟'
+    )
+
+    const disabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(missedEndBoundaryAt))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert.equal(disabledResult.disabled, 1, '错过停止边界后下一轮同步也应补偿停用 API Key')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'disabled', '补偿停用后列表状态应变为停用')
+    assert.equal(
+      await withMockedNow(missedEndBoundaryAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      undefined,
+      '后台补偿停用并清缓存后，网关应只按 status 拒绝 API Key'
+    )
+
+    const activatedResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(allowedAt))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert.equal(activatedResult.activated, 1, '错过开启边界后下一轮同步也应补偿启用 API Key')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'active', '补偿启用后列表状态应变为启用')
+    assert.equal(
+      await withMockedNow(allowedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
+      apiKey.id,
+      'API Key 允许时段内应通过网关校验'
+    )
+
+    databaseModule.getBusinessDatabase().prepare("UPDATE api_keys SET status = 'disabled' WHERE id = ?").run(apiKey.id)
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    const manualDisabledAt = allowedAt + 10 * 60_000
+    const manualDisabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(manualDisabledAt))
+    assert.equal(manualDisabledResult.activated, 0, '开启事件已补执行后，窗口中间人工停用不应被同步任务再次启用')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'disabled', '窗口中间人工停用应保持停用状态')
+    assert.equal(
+      await withMockedNow(manualDisabledAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      undefined,
+      '窗口中间人工停用后，即使计划允许也不应通过网关校验'
+    )
+  } finally {
+    try {
+      databaseModule.getBusinessDatabase().close()
+      databaseModule.closeStorageDatabases()
+    } catch {
+    }
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T): Promise<T> {
+  const OriginalDate = Date
+  const MockedDate = class extends OriginalDate {
+    constructor(value?: string | number | Date, month?: number, date?: number, hours?: number, minutes?: number, seconds?: number, ms?: number) {
+      if (arguments.length === 0) {
+        super(nowMs)
+        return
+      }
+      if (arguments.length === 1) {
+        super(value as string | number | Date)
+        return
+      }
+      super(value as number, month as number, date, hours, minutes, seconds, ms)
+    }
+
+    static now(): number {
+      return nowMs
+    }
+  }
+  Object.defineProperty(globalThis, 'Date', {
+    configurable: true,
+    writable: true,
+    value: MockedDate
+  })
+  try {
+    return await operation()
+  } finally {
+    Object.defineProperty(globalThis, 'Date', {
+      configurable: true,
+      writable: true,
+      value: OriginalDate
+    })
+  }
+}
 
 

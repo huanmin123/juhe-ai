@@ -25,6 +25,23 @@ import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsW
 import { deleteAccountWithRelatedCleanup } from './account-delete-cleanup.repository.js'
 import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
 import {
+  isCoolingAccountStatus,
+  isHardUnavailableAccountStatus,
+  normalizeAccountStatus,
+  normalizedAccountStatusInput
+} from './account-status.js'
+import {
+  accountCreateInputKeys,
+  accountUpdateInputKeys,
+  normalizedAccountType,
+  normalizedDispatchPriority,
+  normalizedOptionalDispatchPriority,
+  normalizedPositiveIntegerInput,
+  normalizeFallbackInput,
+  normalizeSuperPriorityInput,
+  openAIOAuthRefreshMetadata
+} from './account-write-input.js'
+import {
   accountGroupBinding,
   accountResourceClientCompatibility,
   accountResourceConcurrencyLimit,
@@ -144,7 +161,6 @@ import {
 } from './repository-input-normalization.js'
 import {
   nullableServerDateTimeIso,
-  optionalServerDateTimeIso,
   optionalString
 } from './value-utils.js'
 
@@ -344,6 +360,10 @@ export {
   type ApiKeyScheduleStatusSyncResult
 } from './api-key-schedule-status-sync.repository.js'
 export {
+  syncAccountAvailabilityScheduleStatuses,
+  type AccountAvailabilityScheduleStatusSyncResult
+} from './account-availability-schedule-status-sync.repository.js'
+export {
   expireDueResourceAuthorizations
 } from './resource-authorization-write-state.repository.js'
 export {
@@ -473,7 +493,6 @@ export {
 } from './data-retention.repository.js'
 export {
   findOpenAIAccountForGroup,
-  hasOpenAIAccountAvailabilityScheduleForGroup,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   resolveGroupUsageAccessMetadata,
@@ -589,78 +608,8 @@ function canTestAuthorizedInstanceFailureState(account: AccountSummary): boolean
   return isAuthorizedInstanceAvailable(account)
 }
 
-const accountStatusValues: readonly AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
-const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
-
-function normalizeAccountStatus(value: unknown): AccountStatus {
-  if (typeof value === 'string' && accountStatusValues.includes(value as AccountStatus)) {
-    return value as AccountStatus
-  }
-  throw new Error('账户状态无效')
-}
-
-function normalizedAccountStatusInput(value: unknown, fallback: AccountStatus): AccountStatus {
-  if (value === undefined) return fallback
-  if (typeof value === 'string' && accountStatusValues.includes(value as AccountStatus)) {
-    return value as AccountStatus
-  }
-  throw new Error('账户状态无效')
-}
-
-function isCoolingAccountStatus(status: AccountStatus): boolean {
-  return coolingAccountStatusValues.includes(status)
-}
-
-function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
-  return status === 'disabled' || status === 'pending_test' || status === 'error'
-}
-
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function normalizedAccountType(value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new Error('账户类型不能为空')
-  }
-  const accountType = value.trim()
-  if (!accountType) {
-    throw new Error('账户类型不能为空')
-  }
-  return accountType
-}
-
-function normalizedDispatchPriority(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error('优先级必须是大于等于 0 的整数')
-  }
-  return value
-}
-
-function normalizedOptionalDispatchPriority(value: unknown, fallback: number): number {
-  return value === undefined ? fallback : normalizedDispatchPriority(value)
-}
-
-function normalizedPositiveIntegerInput(value: unknown, fallback: number, label: string): number {
-  if (value === undefined) return fallback
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error(`${label}必须是大于 0 的整数`)
-  }
-  return value
-}
-
-function normalizeBooleanDispatchInput(value: unknown, fallback: boolean, label: string): boolean {
-  if (value === undefined) return fallback
-  if (typeof value === 'boolean') return value
-  throw new Error(`${label}必须是布尔值`)
-}
-
-function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean {
-  return normalizeBooleanDispatchInput(value, fallback, '超级优先')
-}
-
-function normalizeFallbackInput(value: unknown, fallback: boolean): boolean {
-  return normalizeBooleanDispatchInput(value, fallback, '降级备用')
 }
 
 function authorizedAccountInstanceUnavailableMessage(account: AccountSummary, options: { includeRuntimeState?: boolean } = {}): string | undefined {
@@ -1191,64 +1140,6 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
   }))
 }
 
-function openAIOAuthRefreshMetadata(accountType: string, credentials: Record<string, unknown>): {
-  accessTokenExpiresAt: string | null
-  refreshTokenPresent: boolean
-} {
-  if (accountType !== 'oauth') {
-    return { accessTokenExpiresAt: null, refreshTokenPresent: false }
-  }
-  const refreshToken = optionalString(credentials.refresh_token)
-  const accessToken = optionalString(credentials.access_token)
-  const expiresAt = accessToken ? optionalServerDateTimeIso(credentials.expires_at) : undefined
-  return {
-    accessTokenExpiresAt: expiresAt ?? null,
-    refreshTokenPresent: Boolean(refreshToken)
-  }
-}
-
-const accountCreateInputKeys = new Set([
-  'providerCode',
-  'providerProtocolProfileId',
-  'name',
-  'type',
-  'credentials',
-  'supportedModels',
-  'modelMappings',
-  'tags',
-  'status',
-  'concurrencyLimit',
-  'priority',
-  'superPriorityEnabled',
-  'fallbackEnabled',
-  'clientCompatibility',
-  'proxyProfileId',
-  'schedulable',
-  'groupId',
-  'accountExpiresAt',
-  'availabilitySchedule',
-  'notes'
-])
-
-const accountUpdateInputKeys = new Set([
-  'name',
-  'credentials',
-  'supportedModels',
-  'modelMappings',
-  'tags',
-  'status',
-  'concurrencyLimit',
-  'priority',
-  'superPriorityEnabled',
-  'fallbackEnabled',
-  'clientCompatibility',
-  'proxyProfileId',
-  'schedulable',
-  'accountExpiresAt',
-  'availabilitySchedule',
-  'notes'
-])
-
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
   assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
@@ -1358,9 +1249,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
-          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_active, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1385,6 +1276,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.clientCompatibility,
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
+        account.availabilityScheduleActive ? 1 : 0,
         account.notes ?? null,
         account.accountExpiresAt ?? null,
         account.cooldownUntil ?? null,
@@ -1622,7 +1514,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_active = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -1643,6 +1535,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.clientCompatibility,
         next.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(next.availabilitySchedule),
+        next.availabilityScheduleActive ? 1 : 0,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
         next.lastErrorCode ?? null,

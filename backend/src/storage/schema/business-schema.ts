@@ -249,6 +249,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
       schedulable INTEGER NOT NULL DEFAULT 1,
       availability_schedule_json TEXT,
+      availability_schedule_active INTEGER NOT NULL DEFAULT 1,
       notes TEXT,
       account_expires_at TEXT,
       last_used_at TEXT,
@@ -656,6 +657,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_owner_expiry_sweep
       ON accounts(system_account_id, account_expires_at ASC, updated_at ASC, id ASC)
       WHERE account_expires_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_availability_schedule_status_sync
+      ON accounts(availability_schedule_active, id)
+      WHERE availability_schedule_json IS NOT NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due

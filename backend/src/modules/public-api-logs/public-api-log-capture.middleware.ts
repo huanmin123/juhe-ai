@@ -3,7 +3,7 @@ import type { NextFunction, Request, Response } from 'express'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRequestContext, getTraceId, sanitizeUrlForLog } from '../../shared/request-context.js'
 import type { PublicApiLogCaptureStatus, PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
-import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source.repository.js'
+import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source-types.js'
 import { enqueuePublicApiLog } from './public-api-log-queue.service.js'
 
 type ResponsePayload = string | Buffer | Record<string, unknown> | unknown[] | undefined

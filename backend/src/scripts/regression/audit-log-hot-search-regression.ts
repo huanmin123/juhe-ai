@@ -249,7 +249,7 @@ function cleanupTemporaryAuditBlobs(): void {
 
 function assertAuditHotCleanupIsScheduledEveryMinute(): void {
   const jobsSource = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
-  const registrySource = readFileSync(new URL('../../modules/background/background-job-registry.ts', import.meta.url), 'utf8')
+  const registrySource = readFileSync(new URL('../../modules/background/background-job-registry.entries.ts', import.meta.url), 'utf8')
   assert(jobsSource.includes("name: backgroundScheduledJobName('audit-hot-retention-cleanup')"), '后台 worker 必须注册审计热窗口清理任务')
   assert(
     jobsSource.includes("name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs"),

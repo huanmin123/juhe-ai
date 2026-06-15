@@ -42,15 +42,11 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
-  apiKeyRotation,
-  apiKeyRuntimeRepository,
-  apiKeyCooldownRetestService
+  apiKeyRotation
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-api-key-rotation.js'),
-  import('../../storage/account-api-key-runtime-state.repository.js'),
-  import('../../modules/background/account-api-key-cooldown-retest.service.js')
+  import('../../storage/account-api-key-rotation.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -172,27 +168,22 @@ try {
     ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
     '多 Key 账户当前 Key 失败后，本次请求应切到后续账户，不应继续尝试同账户其他 Key'
   )
-  await waitForApiKeyRuntimeState('sk-gateway-failover-bad', 'temporary_unavailable')
+  await sleep(200)
+  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-failover-bad'), undefined, '单来源坏 Key 首次失败不应写入全局 Key 运行态')
   const afterFailureStateHitCount = mockHits.length
   await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 2)
   const recoveredAccountAuthorizations = mockHits.slice(afterFailureStateHitCount).map((hit) => hit.authorization)
   assert.deepEqual(
     recoveredAccountAuthorizations,
     ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-good'],
-    '坏 Key 摘除后，后续请求回到同一账户时应持续使用剩余可用 Key'
+    '坏 Key 单来源失败后，后续请求应先使用剩余可用 Key 的本地短避让'
   )
   assert.equal(
     mockHits.filter((hit) => hit.authorization === 'Bearer sk-gateway-failover-bad').length,
     1,
-    '坏 Key 被摘除后不应在后续请求中再次被调度'
+    '坏 Key 进入本地短避让后不应在短窗口内再次被调度'
   )
   failoverBadKeyRecovered = true
-  makeApiKeyRuntimeStateDueForProbe('sk-gateway-failover-bad')
-  const probeCandidate = apiKeyRuntimeRepository.listAccountApiKeyRuntimeStatesDueForProbe(10)
-    .find((candidate) => candidate.keyFingerprint === apiKeyRotation.fingerprintAccountApiKey('sk-gateway-failover-bad'))
-  assert(probeCandidate, '坏 Key 到期后应进入 Key 级后台复测候选')
-  assert(apiKeyCooldownRetestService.enqueueAccountApiKeyCooldownRetest(probeCandidate, { maxRecoveryHours: 24 }), 'Key 级后台复测候选应成功入队')
-  await waitForApiKeyRuntimeState('sk-gateway-failover-bad', 'active')
 
   const authorizedStartHitCount = mockHits.length
   await postChatCompletions(backendBaseUrl, authorizedScenario.apiKey, 1)
@@ -202,18 +193,15 @@ try {
     ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-rescue'],
     '被授权实例命中来源账户坏 Key 后，本次请求应切到被授权人同组后备账户'
   )
-  await waitForApiKeyRuntimeState('sk-gateway-authorized-bad', 'temporary_unavailable')
-  const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountId('sk-gateway-authorized-bad')
-  assert.equal(authorizedRuntimeTarget, authorizedScenario.sourceAccountId, '授权实例触发的 Key 运行态必须写入来源账户')
-  assert.notEqual(authorizedRuntimeTarget, authorizedScenario.authorizedInstanceAccountId, '授权实例触发的 Key 运行态不能写入被授权实例账户')
+  await sleep(200)
+  const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountIdOrMissing('sk-gateway-authorized-bad')
+  assert.equal(authorizedRuntimeTarget, undefined, '授权实例单来源失败不应写入来源账户全局 Key 运行态')
   const authorizedInstanceSummary = repositories.findAccountForTest(authorizedScenario.authorizedInstanceAccountId, authorizedScenario.granteeAccess)
-  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable, 1, '被授权实例列表摘要应能读取来源账户的 Key 运行态')
+  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, '被授权实例单来源失败不应污染来源账户 Key 运行态摘要')
 
   const allBadStartHitCount = mockHits.length
   await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
-  await waitForApiKeyRuntimeState('sk-gateway-allbad-a', 'temporary_unavailable')
   await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
-  await waitForApiKeyRuntimeState('sk-gateway-allbad-b', 'temporary_unavailable')
   await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
   const allBadAuthorizations = mockHits.slice(allBadStartHitCount).map((hit) => hit.authorization)
   assert.deepEqual(
@@ -225,17 +213,17 @@ try {
       'Bearer sk-gateway-allbad-rescue',
       'Bearer sk-gateway-allbad-rescue'
     ],
-    '账户内全部 Key 被摘除后，后续请求应跳过该账户并直接切到后备账户'
+    '账户内全部 Key 被同一来源短避让后，后续请求应短期跳过该账户并直接切到后备账户'
   )
   const allBadSourceSummary = repositories.findAccountForTest(allBadScenario.sourceAccountId, access)
-  assert.equal(allBadSourceSummary?.apiKeyRuntime?.allUnavailable, true, '全部 Key 摘除后账户摘要应标记 Key 全部不可用')
-  assert.equal(allBadSourceSummary?.effectiveAvailability?.status, 'api_key_pool_unavailable', '全部 Key 摘除后账户有效可用性应显示 Key 池不可用')
+  assert.equal(allBadSourceSummary?.apiKeyRuntime?.allUnavailable ?? false, false, '单来源打穿全部 Key 不应写成全局 Key 池不可用')
+  assert.notEqual(allBadSourceSummary?.effectiveAvailability?.status, 'api_key_pool_unavailable', '单来源打穿全部 Key 不应让账户有效可用性变成 Key 池不可用')
   const allBadTemporaryStatusIds = repositories.listAccountsPage(access, { status: 'temporary_unavailable', page: 1, pageSize: 50 }).items.map((item) => item.id)
-  assert(allBadTemporaryStatusIds.includes(allBadScenario.sourceAccountId), '全部 Key 摘除后账户应归入临时不可调用状态筛选')
+  assert(!allBadTemporaryStatusIds.includes(allBadScenario.sourceAccountId), '单来源打穿全部 Key 不应让账户归入临时不可调用状态筛选')
   const allBadActiveStatusIds = repositories.listAccountsPage(access, { status: 'active', page: 1, pageSize: 50 }).items.map((item) => item.id)
-  assert(!allBadActiveStatusIds.includes(allBadScenario.sourceAccountId), '全部 Key 摘除后账户不应归入正常状态筛选')
+  assert(allBadActiveStatusIds.includes(allBadScenario.sourceAccountId), '单来源打穿全部 Key 后账户数据库状态仍应归入正常状态筛选')
   const allBadTemporaryOptionIds = repositories.listAccountOptions(access, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
-  assert(allBadTemporaryOptionIds.includes(allBadScenario.sourceAccountId), '全部 Key 摘除后账户 options 应归入临时不可调用状态筛选')
+  assert(!allBadTemporaryOptionIds.includes(allBadScenario.sourceAccountId), '单来源打穿全部 Key 后账户 options 不应归入临时不可调用状态筛选')
 
   console.log(JSON.stringify({
     message: '单账户多 API Key 网关 mock AI 回归通过',
@@ -247,12 +235,12 @@ try {
     failover: {
       first: firstFailoverAuthorizations,
       afterKeyIsolation: recoveredAccountAuthorizations,
-      backgroundRetest: 'active'
+      persistedState: 'not_written_for_single_source'
     },
     oauthNonIsolation: 'excluded_from_api_key_pool',
     authorizedSourceRuntime: {
       authorizations: authorizedAuthorizations,
-      runtimeStateAccountId: authorizedRuntimeTarget
+      runtimeStateAccountId: authorizedRuntimeTarget ?? 'not_written_for_single_source'
     },
     allBad: allBadAuthorizations
   }, null, 2))
@@ -609,32 +597,15 @@ function successPayloadForPath(requestPath: string): Record<string, unknown> {
   }
 }
 
-async function waitForApiKeyRuntimeState(key: string, status: string): Promise<void> {
+function apiKeyRuntimeStateStatus(key: string): string | undefined {
   const fingerprint = apiKeyRotation.fingerprintAccountApiKey(key)
-  const startedAt = Date.now()
-  let lastStatus: string | undefined
-  while (Date.now() - startedAt < 5000) {
-    const row = databaseModule.getBusinessDatabase()
-      .prepare('SELECT status FROM account_api_key_runtime_states WHERE key_fingerprint = ? LIMIT 1')
-      .get(fingerprint) as unknown as { status?: string } | undefined
-    lastStatus = row?.status
-    if (lastStatus === status) {
-      return
-    }
-    await sleep(100)
-  }
-  throw new Error(`等待 API Key 运行态超时：期望 ${status}，实际 ${lastStatus ?? 'missing'}`)
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT status FROM account_api_key_runtime_states WHERE key_fingerprint = ? LIMIT 1')
+    .get(fingerprint) as unknown as { status?: string } | undefined
+  return row?.status
 }
 
-function makeApiKeyRuntimeStateDueForProbe(key: string): void {
-  const fingerprint = apiKeyRotation.fingerprintAccountApiKey(key)
-  const dueAt = new Date(Date.now() - 1000).toISOString()
-  databaseModule.getBusinessDatabase()
-    .prepare('UPDATE account_api_key_runtime_states SET next_probe_at = ?, cooldown_until = ?, updated_at = ? WHERE key_fingerprint = ?')
-    .run(dueAt, dueAt, dueAt, fingerprint)
-}
-
-function apiKeyRuntimeStateTargetAccountId(key: string): string | undefined {
+function apiKeyRuntimeStateTargetAccountIdOrMissing(key: string): string | undefined {
   const fingerprint = apiKeyRotation.fingerprintAccountApiKey(key)
   const row = databaseModule.getBusinessDatabase()
     .prepare('SELECT account_id FROM account_api_key_runtime_states WHERE key_fingerprint = ? LIMIT 1')

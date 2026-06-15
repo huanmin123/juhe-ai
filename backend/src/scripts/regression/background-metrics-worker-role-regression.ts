@@ -43,7 +43,7 @@ assertRoleBlockContainsOnly('metrics-worker', ['system-metrics-sample'])
 assertRoleBlockContainsOnly('stats-worker', ['usage-stats-aggregation', 'client-ip-stats-aggregation', 'group-account-stats-refresh'])
 assertRoleBlockContainsOnly('snapshot-worker', ['usage-rank-snapshots-refresh', 'system-metrics-trend-windows-refresh', 'usage-overview-windows-refresh', 'usage-scope-range-windows-refresh', 'authorization-usage-range-windows-refresh'])
 assertRoleBlockContainsOnly('probe-worker', ['proxy-latency-refresh', 'account-quality-refresh', 'cooldown-account-retest', 'account-api-key-cooldown-retest', 'openai-oauth-access-token-refresh'])
-assertRoleBlockContainsOnly('maintenance-worker', ['api-key-record-cleanup-retry', 'api-key-availability-schedule-status-sync', 'account-record-cleanup-retry', 'resource-authorization-expiry-sweep', 'table-storage-monitor', 'usage-stats-consistency-check', 'audit-hot-retention-cleanup', 'data-retention-cleanup', 'expired-deleted-account-cleanup'])
+assertRoleBlockContainsOnly('maintenance-worker', ['api-key-record-cleanup-retry', 'api-key-availability-schedule-status-sync', 'account-availability-schedule-status-sync', 'account-record-cleanup-retry', 'resource-authorization-expiry-sweep', 'table-storage-monitor', 'usage-stats-consistency-check', 'audit-hot-retention-cleanup', 'data-retention-cleanup', 'expired-deleted-account-cleanup'])
 assert(!backgroundJobsSource.includes("buildProcessEventLoopSample('worker')"), 'system-metrics-sample 已在 metrics-worker 内运行，不能把本地事件循环样本硬编码成 worker')
 assert(backgroundJobsSource.includes('const localProcessEventLoopSample = buildProcessEventLoopSample()'), 'system-metrics-sample 本地事件循环样本必须使用当前 workerRole')
 

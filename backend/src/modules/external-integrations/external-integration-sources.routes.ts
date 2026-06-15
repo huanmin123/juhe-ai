@@ -2,13 +2,15 @@ import { Router, type Request } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import {
+  builtInExternalIntegrationTestSourceId,
+  externalIntegrationScopeOptions
+} from '../../storage/external-integration-source-constants.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
   createExternalIntegrationSourceAuthorization,
   createExternalIntegrationSourceToken,
-  builtInExternalIntegrationTestSourceId,
   deleteExternalIntegrationSource,
-  externalIntegrationScopeOptions,
   findExternalIntegrationSource,
   findExternalIntegrationSourceTokenSecret,
   listExternalIntegrationSources,

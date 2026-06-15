@@ -1,15 +1,17 @@
-import type { DatabaseSync } from 'node:sqlite'
-
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { cleanupAuditPayloadBlobsBeforeAsync } from './audit-log-payload-blobs.js'
+import {
+  cleanupDiscoveredHardCleanupTablesBefore,
+  deleteRowsBeforeByRowid,
+  hardCleanupCutoffs
+} from './data-retention-hard-cleanup.js'
 import {
   cleanupEmptyUsageRecordShardFilesBefore,
   deleteUsageRecordShardEntries,
   getUsageRecordShardDatabase,
   type UsageRecordShardLocation
 } from './usage-record-shards.js'
-import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 
 type CleanupRow = Record<string, unknown>
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
@@ -117,134 +119,6 @@ export interface NonBusinessDataHardCleanupResult {
   tableRows: Record<string, number>
   fileDeletes: Record<string, number>
 }
-
-type HardCleanupCutoffKey = 'iso' | 'minute' | 'hour' | 'date' | 'week' | 'month'
-type HardCleanupDatabaseRole = 'dataset' | 'stats'
-
-interface HardCleanupTableRule {
-  databaseRole: HardCleanupDatabaseRole
-  tableName: string
-  timeColumnName: string
-  cutoffKey: HardCleanupCutoffKey
-}
-
-interface HardCleanupCutoffs extends Record<HardCleanupCutoffKey, string> {}
-
-const nonBusinessDatasetCleanupTables: HardCleanupTableRule[] = [
-  { databaseRole: 'dataset', tableName: 'audit_payload_refs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'audit_log_attempts', timeColumnName: 'started_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'audit_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'audit_error_groups', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'model_check_items', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'model_check_runs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'operation_log_targets', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'operation_log_viewers', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'operation_log_summary_search_terms', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'operation_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'public_api_logs', timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_logs', timeColumnName: 'time', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_file_cursors', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_facet_summary', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_level_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'runtime_log_event_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'api_key_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'usage_record_account_shards', timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'usage_record_api_key_shards', timeColumnName: 'last_seen_at', cutoffKey: 'iso' }
-]
-
-const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
-  { databaseRole: 'stats', tableName: 'account_quality_minute_stats', timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { databaseRole: 'stats', tableName: 'group_account_stats', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'account_quality_scores', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'account_quality_dirty_accounts', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'account_usage_snapshots', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'usage_stats_totals', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'usage_stats_minute', timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { databaseRole: 'stats', tableName: 'usage_stats_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { databaseRole: 'stats', tableName: 'usage_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_stats_weekly', timeColumnName: 'stat_week', cutoffKey: 'week' },
-  { databaseRole: 'stats', tableName: 'usage_stats_monthly', timeColumnName: 'stat_month', cutoffKey: 'month' },
-  { databaseRole: 'stats', tableName: 'authorization_team_usage_summary_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'authorization_team_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'authorization_user_usage_summary_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'authorization_user_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_model_minute', timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { databaseRole: 'stats', tableName: 'usage_model_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { databaseRole: 'stats', tableName: 'usage_model_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_model_weekly', timeColumnName: 'stat_week', cutoffKey: 'week' },
-  { databaseRole: 'stats', tableName: 'usage_model_monthly', timeColumnName: 'stat_month', cutoffKey: 'month' },
-  { databaseRole: 'stats', tableName: 'usage_error_minute', timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { databaseRole: 'stats', tableName: 'usage_error_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { databaseRole: 'stats', tableName: 'usage_error_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_error_weekly', timeColumnName: 'stat_week', cutoffKey: 'week' },
-  { databaseRole: 'stats', tableName: 'usage_error_monthly', timeColumnName: 'stat_month', cutoffKey: 'month' },
-  { databaseRole: 'stats', tableName: 'usage_latency_minute', timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { databaseRole: 'stats', tableName: 'usage_latency_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { databaseRole: 'stats', tableName: 'usage_latency_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_latency_weekly', timeColumnName: 'stat_week', cutoffKey: 'week' },
-  { databaseRole: 'stats', tableName: 'usage_latency_monthly', timeColumnName: 'stat_month', cutoffKey: 'month' },
-  { databaseRole: 'stats', tableName: 'usage_rank_snapshots', timeColumnName: 'snapshot_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'usage_overview_summary_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_overview_trend_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_model_rank_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_error_rank_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'ai_performance_summary_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'usage_quota_hourly_windows', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'usage_scope_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'client_ip_registry', timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'client_ip_stats_daily', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'client_ip_usage_range_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'client_ip_range_window_dirty_ips', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'client_ip_policies', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'client_ip_policy_hits', timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'stats_job_state', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'usage_record_cleanup_deductions', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'system_metrics_samples', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'system_metrics_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { databaseRole: 'stats', tableName: 'system_metrics_trend_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'process_event_loop_samples', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'process_event_loop_hourly', timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { databaseRole: 'stats', tableName: 'process_event_loop_trend_windows', timeColumnName: 'end_date', cutoffKey: 'date' },
-  { databaseRole: 'stats', tableName: 'database_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-  { databaseRole: 'stats', tableName: 'table_storage_snapshots', timeColumnName: 'sampled_at', cutoffKey: 'iso' }
-]
-
-const hardCleanupSpecialTables: Record<HardCleanupDatabaseRole, Set<string>> = {
-  dataset: new Set([
-    'audit_payload_blobs',
-    'usage_record_shards',
-    'usage_record_shard_entries'
-  ]),
-  stats: new Set()
-}
-
-const hardCleanupPreferredRuleByTable = new Map(
-  [...nonBusinessDatasetCleanupTables, ...nonBusinessStatsCleanupTables]
-    .map((rule) => [hardCleanupTableKey(rule.databaseRole, rule.tableName), rule] as const)
-)
-
-const hardCleanupFallbackTimeColumns: Array<{ timeColumnName: string; cutoffKey: HardCleanupCutoffKey }> = [
-  { timeColumnName: 'stat_minute', cutoffKey: 'minute' },
-  { timeColumnName: 'stat_hour', cutoffKey: 'hour' },
-  { timeColumnName: 'stat_date', cutoffKey: 'date' },
-  { timeColumnName: 'stat_week', cutoffKey: 'week' },
-  { timeColumnName: 'stat_month', cutoffKey: 'month' },
-  { timeColumnName: 'end_date', cutoffKey: 'date' },
-  { timeColumnName: 'bucket_date', cutoffKey: 'date' },
-  { timeColumnName: 'sampled_at', cutoffKey: 'iso' },
-  { timeColumnName: 'snapshot_at', cutoffKey: 'iso' },
-  { timeColumnName: 'time', cutoffKey: 'iso' },
-  { timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
-  { timeColumnName: 'last_write_at', cutoffKey: 'iso' },
-  { timeColumnName: 'last_success_at', cutoffKey: 'iso' },
-  { timeColumnName: 'last_attempt_at', cutoffKey: 'iso' },
-  { timeColumnName: 'started_at', cutoffKey: 'iso' },
-  { timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { timeColumnName: 'created_at', cutoffKey: 'iso' },
-  { timeColumnName: 'indexed_at', cutoffKey: 'iso' },
-  { timeColumnName: 'first_seen_at', cutoffKey: 'iso' }
-]
 
 export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limit = 10000): number {
   return cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt, limit).deletedRows
@@ -384,14 +258,14 @@ export async function cleanupNonBusinessDataBeforeWithResult(input: { cutoffAt: 
   addRows('usage_shards.usage_records', usageRecords.deletedRows)
   hasMore = hasMore || usageRecords.hasMore
 
-  cleanupDiscoveredTablesBefore('dataset', cutoffs, batchLimit, addRows)
+  cleanupDiscoveredHardCleanupTablesBefore('dataset', cutoffs, batchLimit, addRows)
 
   const emptyUsageShards = await cleanupEmptyUsageRecordShardFilesBefore(cutoffs.iso, batchLimit)
   addRows('dataset.usage_record_shards', emptyUsageShards.usageRecordShards)
   addFiles('usage_shard_files', emptyUsageShards.usageShardFiles)
   hasMore = hasMore || emptyUsageShards.hasMore
 
-  cleanupDiscoveredTablesBefore('stats', cutoffs, batchLimit, addRows)
+  cleanupDiscoveredHardCleanupTablesBefore('stats', cutoffs, batchLimit, addRows)
 
   return {
     cutoffAt: cutoffs.iso,
@@ -731,124 +605,6 @@ function deleteUsageRecordShardRows(rows: UsageRecordShardCleanupRow[]): number 
   }
   deleteUsageRecordShardEntries(processedCatalogIds)
   return deletedRows
-}
-
-function cleanupDiscoveredTablesBefore(
-  databaseRole: HardCleanupDatabaseRole,
-  cutoffs: HardCleanupCutoffs,
-  limit: number,
-  addRows: (key: string, count: number) => void
-): void {
-  const database = databaseForHardCleanupRole(databaseRole)
-  for (const rule of discoverHardCleanupTableRules(database, databaseRole)) {
-    const deleted = deleteRowsBeforeByRowid(
-      database,
-      rule.tableName,
-      rule.timeColumnName,
-      cutoffs[rule.cutoffKey],
-      limit
-    )
-    addRows(`${rule.databaseRole}.${rule.tableName}`, deleted)
-  }
-}
-
-function discoverHardCleanupTableRules(database: DatabaseSync, databaseRole: HardCleanupDatabaseRole): HardCleanupTableRule[] {
-  const rows = database.prepare(`
-    SELECT name
-    FROM sqlite_schema
-    WHERE type = 'table'
-      AND name NOT LIKE 'sqlite_%'
-    ORDER BY name ASC
-  `).all() as Array<{ name?: unknown }>
-  const rules: HardCleanupTableRule[] = []
-  for (const row of rows) {
-    const tableName = typeof row.name === 'string' ? row.name.trim() : ''
-    if (!tableName || hardCleanupSpecialTables[databaseRole].has(tableName)) continue
-    const rule = hardCleanupRuleForTable(database, databaseRole, tableName)
-    if (rule) {
-      rules.push(rule)
-    }
-  }
-  return rules
-}
-
-function hardCleanupRuleForTable(
-  database: DatabaseSync,
-  databaseRole: HardCleanupDatabaseRole,
-  tableName: string
-): HardCleanupTableRule | undefined {
-  const columnNames = tableColumnNames(database, tableName)
-  const preferred = hardCleanupPreferredRuleByTable.get(hardCleanupTableKey(databaseRole, tableName))
-  if (preferred && columnNames.has(preferred.timeColumnName)) {
-    return preferred
-  }
-  const fallback = hardCleanupFallbackTimeColumns.find((candidate) => columnNames.has(candidate.timeColumnName))
-  if (!fallback) {
-    return undefined
-  }
-  return {
-    databaseRole,
-    tableName,
-    timeColumnName: fallback.timeColumnName,
-    cutoffKey: fallback.cutoffKey
-  }
-}
-
-function tableColumnNames(database: DatabaseSync, tableName: string): Set<string> {
-  const rows = database
-    .prepare(`PRAGMA table_info(${quoteSqliteIdentifier(tableName)})`)
-    .all() as Array<{ name?: unknown }>
-  return new Set(rows.map((row) => typeof row.name === 'string' ? row.name.trim() : '').filter(Boolean))
-}
-
-function databaseForHardCleanupRole(databaseRole: HardCleanupDatabaseRole): StatsDatabase {
-  return databaseRole === 'dataset' ? getDatasetDatabase() : getStatsDatabase()
-}
-
-function hardCleanupTableKey(databaseRole: HardCleanupDatabaseRole, tableName: string): string {
-  return `${databaseRole}.${tableName}`
-}
-
-function hardCleanupCutoffs(cutoffAt: string): HardCleanupCutoffs {
-  const cutoffDate = new Date(cutoffAt)
-  if (!Number.isFinite(cutoffDate.getTime())) {
-    throw new Error('非业务数据清理截止时间无效')
-  }
-  const timezone = usageStatsTimezone()
-  return {
-    iso: cutoffDate.toISOString(),
-    minute: minuteKey(cutoffDate, timezone),
-    hour: hourKey(cutoffDate, timezone),
-    date: dateKey(cutoffDate, timezone),
-    week: weekKey(cutoffDate, timezone),
-    month: monthKey(cutoffDate, timezone)
-  }
-}
-
-function deleteRowsBeforeByRowid(
-  database: StatsDatabase,
-  tableName: string,
-  timeColumnName: string,
-  cutoffValue: string,
-  limit: number
-): number {
-  const quotedTableName = quoteSqliteIdentifier(tableName)
-  const quotedTimeColumnName = quoteSqliteIdentifier(timeColumnName)
-  const result = database.prepare(`
-    DELETE FROM ${quotedTableName}
-    WHERE rowid IN (
-      SELECT rowid
-      FROM ${quotedTableName}
-      WHERE ${quotedTimeColumnName} < ?
-      ORDER BY ${quotedTimeColumnName} ASC, rowid ASC
-      LIMIT ?
-    )
-  `).run(cutoffValue, positiveLimit(limit))
-  return changed(result)
-}
-
-function quoteSqliteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`
 }
 
 function positiveLimit(value: number | undefined): number {

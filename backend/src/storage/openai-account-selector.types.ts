@@ -67,7 +67,6 @@ export interface OpenAIAccountSecret {
   lastErrorMessage?: string
   streamFailureCount: number
   streamFailureWindowStartedAt?: string
-  availabilityScheduleJson?: string
   accountExpiresAt?: string
   expiresAt?: string
   credentials: Record<string, unknown>
@@ -91,15 +90,13 @@ export interface GroupUsageAccessMetadata {
 
 export interface OpenAIAccountsForGroupResult {
   accounts: OpenAIAccountSecret[]
-  hasAccountAvailabilitySchedule: boolean
   diagnostics?: OpenAIAccountsForGroupDiagnostics
 }
 
 export interface OpenAIAccountsForGroupDiagnostics {
   scanLimit: number
   finalLimit: number
-  withoutScheduleRowCount: number
-  withScheduleRowCount: number
+  candidateRowCount: number
   scannedRowCount: number
   eligibleRowCount: number
   hydrationBatchCount: number
@@ -141,7 +138,7 @@ export interface OpenAIAccountRow {
   last_error_message: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
-  availability_schedule_json: string | null
+  availability_schedule_active: number
   account_expires_at: string | null
   last_successful_test_model: string | null
   authorization_instance_source_account_id?: string | null
@@ -155,7 +152,7 @@ export interface OpenAIAccountRow {
   resource_type?: AccountType | null
   resource_status?: AccountStatus | null
   resource_schedulable?: number | null
-  resource_availability_schedule_json?: string | null
+  resource_availability_schedule_active?: number | null
   resource_account_expires_at?: string | null
   resource_cooldown_until?: string | null
   resource_last_error_code?: string | null
@@ -197,5 +194,3 @@ export type OpenAIAccountSecretOptions = {
 
 export const gatewayDispatchAccountCandidateLimit = 256
 export const gatewayDispatchAccountCandidateScanLimit = gatewayDispatchAccountCandidateLimit * 2
-
-export type AccountAvailabilityScheduleCandidateFilter = 'without_schedule' | 'with_schedule'

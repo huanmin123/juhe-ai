@@ -80,6 +80,26 @@ try {
       createdAt: new Date(createdAtBase + index).toISOString()
     })),
     {
+      id: 'usage_stats_gateway_error_bucket',
+      traceId: 'trace-usage-stats-gateway-error-bucket',
+      trafficSource: 'gateway' as const,
+      systemAccountId: 'sys_admin',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: 'gpt-5.1',
+      success: false,
+      statusCode: 429,
+      errorCode: 'rate_limit_exceeded',
+      errorMessage: 'rate limited',
+      durationMs: 450,
+      inputTokens: 11,
+      outputTokens: 0,
+      costUsd: 0,
+      createdAt: new Date(createdAtBase + 9).toISOString()
+    },
+    {
       id: 'usage_stats_cooldown_retest_ignored',
       traceId: 'trace-usage-stats-cooldown-retest-ignored',
       trafficSource: 'cooldown_retest' as const,
@@ -154,7 +174,7 @@ try {
 
   try {
     const processed = usageStatsRepository.aggregateUsageStatsBatch(100)
-    assert.equal(processed, 10, '统计聚合应处理本批业务使用记录')
+    assert.equal(processed, 11, '统计聚合应处理本批业务使用记录')
   } finally {
     statsDatabase.prepare = originalPrepare
   }
@@ -166,9 +186,21 @@ try {
   const total = statsDatabase
     .prepare("SELECT request_count, input_tokens, output_tokens FROM usage_stats_totals WHERE system_account_id = 'sys_admin' AND scope_type = 'api_key' AND scope_id = ?")
     .get(apiKey.id) as { request_count?: number; input_tokens?: number; output_tokens?: number } | undefined
-  assert.equal(total?.request_count, 8, 'API Key 总量聚合应累计请求数')
-  assert.equal(total?.input_tokens, 828, 'API Key 总量聚合应累计输入 token')
+  assert.equal(total?.request_count, 9, 'API Key 总量聚合应累计请求数')
+  assert.equal(total?.input_tokens, 839, 'API Key 总量聚合应累计输入 token')
   assert.equal(total?.output_tokens, 188, 'API Key 总量聚合应累计输出 token')
+  const modelDaily = statsDatabase
+    .prepare("SELECT SUM(request_count) AS request_count FROM usage_model_daily WHERE system_account_id = 'sys_admin' AND provider_code = 'gpt' AND model = 'gpt-5.1'")
+    .get() as { request_count?: number } | undefined
+  assert.equal(modelDaily?.request_count, 11, '模型日统计应聚合本批业务使用记录')
+  const errorDaily = statsDatabase
+    .prepare("SELECT SUM(error_count) AS error_count FROM usage_error_daily WHERE system_account_id = 'sys_admin' AND provider_code = 'gpt' AND error_code = 'rate_limit_exceeded' AND status_code = 429")
+    .get() as { error_count?: number } | undefined
+  assert.equal(errorDaily?.error_count, 1, '错误日统计应聚合网关失败业务记录且忽略恢复探活')
+  const latencyDaily = statsDatabase
+    .prepare("SELECT SUM(sample_count) AS sample_count FROM usage_latency_daily WHERE system_account_id = 'sys_admin' AND scope_type = 'api_key' AND scope_id = ? AND metric_type = 'duration_ms'")
+    .get(apiKey.id) as { sample_count?: number } | undefined
+  assert.equal(latencyDaily?.sample_count, 9, '延迟日统计应按 API Key 维度聚合业务请求耗时样本')
   const jobState = statsDatabase
     .prepare("SELECT cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
     .get() as { cursor_id?: string; lag_seconds?: number } | undefined

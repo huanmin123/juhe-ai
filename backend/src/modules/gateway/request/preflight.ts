@@ -362,6 +362,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       endpoint
     })
     await sendOpenAIModelsGatewayResponse({
+      req,
       res,
       auditCapture,
       usageContext,

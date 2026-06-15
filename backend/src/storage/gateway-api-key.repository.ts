@@ -16,7 +16,6 @@ export interface GatewayApiKeyRow {
   expires_at: string | null
   quota_limits_json: string | null
   group_route_strategy: ApiKeyGroupRouteStrategy
-  availability_schedule_json?: string | null
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
@@ -78,7 +77,6 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       api_keys.expires_at,
       api_keys.quota_limits_json,
       api_keys.group_route_strategy,
-      api_keys.availability_schedule_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -123,7 +121,6 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       api_keys.expires_at,
       api_keys.quota_limits_json,
       api_keys.group_route_strategy,
-      api_keys.availability_schedule_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id

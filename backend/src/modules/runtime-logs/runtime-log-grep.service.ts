@@ -4,6 +4,17 @@ import { join } from 'node:path'
 import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import {
+  defaultGrepRangeDays,
+  earliestLogFileMs,
+  filterLogFilesByTimeRange,
+  maxGrepRangeDays,
+  minGrepKeywordLength,
+  normalizeGrepKeywords,
+  normalizeGrepLimit,
+  normalizeGrepTimeRange,
+  type RuntimeLogGrepTimeRange
+} from './runtime-log-grep-normalizers.js'
 
 export interface RuntimeLogGrepOptions {
   keywords: string[]
@@ -68,14 +79,6 @@ interface LogFileListing {
   truncatedReason?: 'entry_limit' | 'deadline'
 }
 
-interface RuntimeLogGrepTimeRange {
-  startMs: number
-  endMs: number
-  startAt: string
-  endAt: string
-  adjusted: boolean
-}
-
 interface RgMatchEvent {
   type?: string
   data?: {
@@ -98,11 +101,6 @@ type OrderedRuntimeLogGrepItem = RuntimeLogGrepItem & {
   sortTimeMs: number
 }
 
-const maxKeywords = 10
-const maxKeywordLength = 128
-const minKeywordLength = 3
-const defaultLimit = 100
-const maxLimit = 100
 const maxLineLength = 20_000
 const maxRgJsonLineLength = maxLineLength + 8_000
 const maxRgStderrLength = 2_000
@@ -112,9 +110,6 @@ const maxRgSearchMs = 15_000
 const maxConcurrentGrepSearches = 1
 const maxLogDirectoryScanEntries = 10_000
 const maxLogDirectoryScanMs = 2_000
-const dayMs = 24 * 60 * 60 * 1000
-const defaultGrepRangeDays = 3
-const maxGrepRangeDays = 7
 const logFileScanYieldEvery = 100
 let activeGrepSearches = 0
 
@@ -122,7 +117,7 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
   const startedAt = performance.now()
   const keywordInput = normalizeGrepKeywords(options.keywords)
   const keywords = keywordInput.keywords
-  const limit = normalizeLimit(options.limit)
+  const limit = normalizeGrepLimit(options.limit)
   let timeRange = normalizeGrepTimeRange(options, [])
   const baseResult = (): Omit<RuntimeLogGrepResult, 'available' | 'items' | 'truncated' | 'elapsedMs' | 'scannedFileCount'> => ({
     keywords,
@@ -142,7 +137,7 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
       truncated: false,
       scannedFileCount: 0,
       message: keywordInput.shortKeywordCount > 0
-        ? `grep 关键字至少需要 ${minKeywordLength} 个字符，请输入更具体的关键字。`
+        ? `grep 关键字至少需要 ${minGrepKeywordLength} 个字符，请输入更具体的关键字。`
         : '请输入要搜索的关键字'
     }
   }
@@ -208,7 +203,7 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
         warnings: [
           logFileListingWarning(fileListing),
           timeRange.adjusted ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天` : undefined,
-          keywordInput.shortKeywordCount > 0 ? `已忽略少于 ${minKeywordLength} 个字符的短关键字` : undefined
+          keywordInput.shortKeywordCount > 0 ? `已忽略少于 ${minGrepKeywordLength} 个字符的短关键字` : undefined
         ].filter((item): item is string => Boolean(item)),
         startedAt
       })
@@ -251,84 +246,6 @@ function acquireGrepSearchSlot(): boolean {
 
 function releaseGrepSearchSlot(): void {
   activeGrepSearches = Math.max(0, activeGrepSearches - 1)
-}
-
-function normalizeGrepKeywords(values: string[]): { keywords: string[]; shortKeywordCount: number } {
-  const seen = new Set<string>()
-  const keywords: string[] = []
-  let shortKeywordCount = 0
-  for (const value of values) {
-    for (const part of value.split(/[\s,;，；]+/)) {
-      const keyword = part.trim()
-      if (!keyword) continue
-      const normalized = keyword.slice(0, maxKeywordLength)
-      if ([...normalized].length < minKeywordLength) {
-        shortKeywordCount += 1
-        continue
-      }
-      const dedupeKey = normalized.toLowerCase()
-      if (seen.has(dedupeKey)) continue
-      seen.add(dedupeKey)
-      keywords.push(normalized)
-      if (keywords.length >= maxKeywords) return { keywords, shortKeywordCount }
-    }
-  }
-  return { keywords, shortKeywordCount }
-}
-
-function normalizeLimit(value: number | undefined): number {
-  if (!Number.isFinite(value)) return defaultLimit
-  return Math.min(Math.max(Math.trunc(value ?? defaultLimit), 1), maxLimit)
-}
-
-function normalizeGrepTimeRange(options: Pick<RuntimeLogGrepOptions, 'startAt' | 'endAt'>, files: LogFile[]): RuntimeLogGrepTimeRange {
-  const nowMs = Date.now()
-  const earliestFileMs = earliestLogFileMs(files)
-  let adjusted = false
-  let endMs = parseTimeMs(options.endAt) ?? nowMs
-  if (endMs > nowMs) {
-    endMs = nowMs
-    adjusted = true
-  }
-
-  if (earliestFileMs !== undefined && endMs < earliestFileMs) {
-    endMs = earliestFileMs
-    adjusted = true
-  }
-
-  let startMs = parseTimeMs(options.startAt) ?? endMs - defaultGrepRangeDays * dayMs
-  if (earliestFileMs !== undefined && startMs < earliestFileMs) {
-    startMs = earliestFileMs
-    adjusted = true
-  }
-
-  if (startMs > endMs) {
-    startMs = Math.max(endMs - defaultGrepRangeDays * dayMs, earliestFileMs ?? Number.NEGATIVE_INFINITY)
-    adjusted = true
-  }
-
-  if (endMs - startMs > maxGrepRangeDays * dayMs) {
-    startMs = endMs - maxGrepRangeDays * dayMs
-    adjusted = true
-  }
-
-  if (earliestFileMs !== undefined && startMs < earliestFileMs) {
-    startMs = earliestFileMs
-  }
-
-  return {
-    startMs,
-    endMs,
-    startAt: new Date(startMs).toISOString(),
-    endAt: new Date(endMs).toISOString(),
-    adjusted
-  }
-}
-
-function parseTimeMs(value: string | undefined): number | undefined {
-  if (!value) return undefined
-  const time = Date.parse(value)
-  return Number.isFinite(time) ? time : undefined
 }
 
 async function listLogFiles(): Promise<LogFileListing> {
@@ -402,23 +319,6 @@ function retainNewestLogFile<T extends { stats: Awaited<ReturnType<typeof stat>>
   if (files.length > maxFiles) {
     files.pop()
   }
-}
-
-function earliestLogFileMs(files: LogFile[]): number | undefined {
-  const values = files.map((file) => fileStartMs(file)).filter(Number.isFinite)
-  return values.length ? Math.min(...values) : undefined
-}
-
-function fileStartMs(file: LogFile): number {
-  const birthtimeMs = Number.isFinite(file.birthtimeMs) && file.birthtimeMs > 0 ? file.birthtimeMs : file.mtimeMs
-  return Math.min(birthtimeMs, file.mtimeMs)
-}
-
-function filterLogFilesByTimeRange(files: LogFile[], timeRange: RuntimeLogGrepTimeRange): LogFile[] {
-  return files.filter((file) => {
-    if (file.size <= 0) return false
-    return file.mtimeMs >= timeRange.startMs && fileStartMs(file) <= timeRange.endMs
-  })
 }
 
 async function resolveRgExecutable(): Promise<string | undefined> {

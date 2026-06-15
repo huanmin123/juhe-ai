@@ -287,7 +287,7 @@ CREATE INDEX idx_api_key_group_bindings_owner_group_key
 | `weight` | 权重分配策略下的分流权重，默认 `1`，范围 `1-100` |
 | `status` | `active` / `disabled`，disabled 不参与路由 |
 
-`api_keys` 增加 `group_route_strategy TEXT NOT NULL DEFAULT 'priority_failover'`：
+`api_keys` 增加 `group_route_strategy TEXT NOT NULL DEFAULT 'priority_failover'`，并使用 `availability_schedule_json` 保存 API Key 级时间计划：
 
 | 值 | 说明 |
 | --- | --- |
@@ -296,6 +296,8 @@ CREATE INDEX idx_api_key_group_bindings_owner_group_key
 | `weighted_round_robin` | 启用号池按绑定权重平滑轮询 |
 
 `api_keys` 不再保存单独的主号池字段。API Key 到分组的唯一事实来源是 `api_key_group_bindings`；列表、详情、筛选和网关运行态都从绑定表读取。网关运行态里的 `apiKey.selected_group_id` 表示本次已经选中的实际分组，避免把运行态选路结果伪装成 `api_keys` 表字段。
+
+API Key 时间计划是入口凭据级运行状态：后台 `api-key-availability-schedule-status-sync` 每轮按当前时间补偿 `api_keys.status`，时段外强制停用，时段内只补执行尚未执行过的开启事件，避免窗口中间人工停用被立即覆盖。网关热链路不解析 `availability_schedule_json`，只读取同步后的 `status`、过期时间和系统账户状态；计划切换允许一个后台同步周期的延迟，同步任务变更状态后必须清理 API Key 校验缓存和 runtime cache。
 
 分组删除规则：
 
@@ -328,6 +330,7 @@ type ApiKeyCreateOrUpdateInput = {
   groupBindings: ApiKeyGroupBindingInput[]
   expiresAt?: string | null
   quotaLimits?: Record<string, unknown> | null
+  availabilitySchedule?: Record<string, unknown> | null
 }
 ```
 
@@ -336,6 +339,7 @@ type ApiKeyCreateOrUpdateInput = {
 - 创建 API Key 必须显式提交 `groupBindings`，不能由数据层隐式绑定默认分组；这样前端、接口和存储层都能统一拦截“未选择号池”的配置。
 - 更新 API Key 未提交 `groupBindings` 时保留现有绑定；提交时按数组整体替换。
 - 刷新 API Key 密钥通过 `POST /api-keys/:id/refresh-key` 或用户侧 `POST /my-api-keys/:id/refresh-key` 执行，只更新本地密钥 hash、前后缀和加密明文，不改变绑定号池、状态、额度、时间计划和历史统计归属；旧密钥立即失效，刷新响应只在本次操作返回新明文密钥。
+- API Key 时间计划使用 `allow_windows` 语义；提交 `availabilitySchedule: null` 清空计划，未提交时保留现有计划。
 - 未提交 `groupRouteStrategy` 时默认 `priority_failover`。
 - 当前实现后端校验重复分组、active 绑定数量、优先级唯一、权重范围、分组归属、分组启用状态和供应商协议档案一致性。
 - 模型路由落地后，后端不再要求 API Key 绑定分组供应商协议档案一致；运行时必须按请求 `model` 先筛目标档案分组，再执行分组路由策略。
@@ -495,7 +499,7 @@ DB service 的 API Key 运行时快照应一次性带出：
 - A 分组只有 OAuth 账号且不支持当前公开路径时，应跳过 A 并尝试包含 API Key 账号的 B 分组。
 - A 分组内授权实例失效但自有账户可用时，仍可由 A 分组承接；如果 A 分组所有账户都被授权关系、来源账户可用性、实例状态或绑定状态过滤，则尝试 B 分组。
 - A 分组停用、无正常可调度账号、模型不匹配、授权账户失效或调度前已明确不可承接时，会尝试 B 分组。
-- API Key 停用、过期或额度耗尽时，不尝试任何分组。
+- API Key 停用、过期、时段外或额度耗尽时，不尝试任何分组。
 - 真实上游派发开始后，分组内账户会按既有恢复、冷却和切号策略优先在 A 号池内处理；如果 A 号池账号耗尽且尚未写下游输出，或写下游前配置化流式拦截耗尽 A 号池，可以回到 API Key 候选列表继续寻找未失败且当前可承接的账号，并在审计 metadata 中记录切换原因。
 - A 调度前不可承接后最终命中 B，使用记录里的 `group_id` 是 B，API Key 统计仍归属同一个 Key；A 恢复正常可调度账号后，后续请求应优先回到 A。
 - 分组筛选能查到绑定了该分组的 Key，并展示完整 `groupBindings`。

@@ -50,6 +50,54 @@ export interface OpenAIModelsListResponse {
   data: OpenAIModelListItem[]
 }
 
+export interface CodexReasoningEffortPreset {
+  effort: string
+  description: string
+}
+
+export interface CodexModelListItem {
+  slug: string
+  display_name: string
+  description: string | null
+  default_reasoning_level: string
+  supported_reasoning_levels: CodexReasoningEffortPreset[]
+  shell_type: 'shell_command'
+  visibility: 'list'
+  supported_in_api: boolean
+  priority: number
+  additional_speed_tiers: string[]
+  service_tiers: Array<{ id: string; name: string; description: string }>
+  default_service_tier: string | null
+  availability_nux: null
+  upgrade: null
+  base_instructions: string
+  model_messages: null
+  supports_reasoning_summaries: boolean
+  default_reasoning_summary: 'auto'
+  support_verbosity: boolean
+  default_verbosity: null
+  apply_patch_tool_type: null
+  web_search_tool_type: 'text'
+  truncation_policy: { mode: 'bytes'; limit: number }
+  supports_parallel_tool_calls: boolean
+  supports_image_detail_original: boolean
+  context_window: number
+  max_context_window: number
+  auto_compact_token_limit: null
+  effective_context_window_percent: number
+  experimental_supported_tools: string[]
+  input_modalities: Array<'text' | 'image'>
+  supports_search_tool: boolean
+  use_responses_lite: boolean
+  auto_review_model_override: null
+  tool_mode: null
+  multi_agent_version: null
+}
+
+export interface CodexModelsListResponse {
+  models: CodexModelListItem[]
+}
+
 export interface ModelCatalogListOptions {
   providerCode: string
   systemAccountId?: string
@@ -92,6 +140,14 @@ export function buildOpenAIModelsResponseFromCatalog(items: ProviderModelCatalog
         created: modelCreatedUnixSeconds(item),
         owned_by: item.scope === 'built_in' ? 'openai' : 'juhe-ai'
       }))
+  }
+}
+
+export function buildCodexModelsResponseFromCatalog(items: ProviderModelCatalogItem[]): CodexModelsListResponse {
+  return {
+    models: items
+      .filter((item) => item.visibility === 'public')
+      .map((item, index) => buildCodexModelInfo(item, index))
   }
 }
 
@@ -276,6 +332,61 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     createdAt: item.createdAt,
     updatedAt: item.updatedAt
   }
+}
+
+function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): CodexModelListItem {
+  const contextWindow = codexContextWindow(item)
+  return {
+    slug: item.model,
+    display_name: item.displayName || item.model,
+    description: item.capabilityNotes || item.pricingNotes || item.notes || null,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: [
+      { effort: 'minimal', description: 'Minimal' },
+      { effort: 'low', description: 'Low' },
+      { effort: 'medium', description: 'Medium' },
+      { effort: 'high', description: 'High' }
+    ],
+    shell_type: 'shell_command',
+    visibility: 'list',
+    supported_in_api: true,
+    priority: index,
+    additional_speed_tiers: [],
+    service_tiers: [],
+    default_service_tier: null,
+    availability_nux: null,
+    upgrade: null,
+    base_instructions: 'You are Codex, a coding agent.',
+    model_messages: null,
+    supports_reasoning_summaries: false,
+    default_reasoning_summary: 'auto',
+    support_verbosity: false,
+    default_verbosity: null,
+    apply_patch_tool_type: null,
+    web_search_tool_type: 'text',
+    truncation_policy: { mode: 'bytes', limit: 10_000 },
+    supports_parallel_tool_calls: false,
+    supports_image_detail_original: false,
+    context_window: contextWindow,
+    max_context_window: contextWindow,
+    auto_compact_token_limit: null,
+    effective_context_window_percent: 95,
+    experimental_supported_tools: [],
+    input_modalities: ['text', 'image'],
+    supports_search_tool: false,
+    use_responses_lite: false,
+    auto_review_model_override: null,
+    tool_mode: null,
+    multi_agent_version: null
+  }
+}
+
+function codexContextWindow(item: ProviderModelCatalogItem): number {
+  const configured = item.contextWindowTokens
+  if (Number.isFinite(configured) && configured && configured > 0) {
+    return Math.trunc(configured)
+  }
+  return 272_000
 }
 
 function catalogPriority(item: ProviderModelCatalogItem): number {

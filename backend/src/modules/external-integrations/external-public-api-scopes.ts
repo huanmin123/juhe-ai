@@ -16,7 +16,7 @@ import {
   externalIntegrationGroupUpdateWriteScope,
   externalIntegrationIpUsageReadScope,
   externalIntegrationSourceAuthDemoScope
-} from '../../storage/external-integration-source.repository.js'
+} from '../../storage/external-integration-source-constants.js'
 
 export function scopeForPublicApiDocItem(id: string): string {
   const scopesById: Record<string, string> = {

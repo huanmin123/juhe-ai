@@ -58,7 +58,7 @@ try {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   testLocalSuppressionHalfOpenEscalation()
   testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
-  testRuntimePrecheckPendingAndSuccessRecovery()
+  await testRuntimePrecheckPendingAndSuccessRecovery()
   await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
   await testFailedUsageDoesNotMakePrecheckStale()
@@ -77,7 +77,7 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function testRuntimePrecheckPendingAndSuccessRecovery(): void {
+async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
   const account = createRuntimeAccount('precheck-runtime-account')
   for (let index = 0; index < 4; index += 1) {
     gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
@@ -99,11 +99,22 @@ function testRuntimePrecheckPendingAndSuccessRecovery(): void {
     endpoint: '/v1/responses',
     reason: '模拟网关短窗口失败'
   })
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id], undefined, '达到数量和多 IP 阈值但观察时间不足时不应立即进入事前确认')
+
+  await delay(2100)
+  gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
+    systemAccountId: 'sys_admin',
+    groupId: 'group-a',
+    apiKeyId: 'key-b',
+    clientIp: '10.0.0.2',
+    endpoint: '/v1/responses',
+    reason: '模拟网关短窗口持续失败'
+  })
 
   const runtime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]
   assert(runtime, '达到短窗口多来源阈值后应写入账号运行态缓存')
   assert.equal(runtime.status, 'precheck_pending')
-  assert.equal(runtime.failureCount, 5)
+  assert.equal(runtime.failureCount, 6)
   assert.equal(runtime.distinctClientIpCount, 2)
   assert.equal(runtime.distinctApiKeyCount, 2)
   assert.equal(runtime.precheckAttemptCount, 0)
@@ -118,6 +129,31 @@ function testRuntimePrecheckPendingAndSuccessRecovery(): void {
     gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
     undefined,
     '真实成功回写应清理账号本地 suppression、failure storm 和待执行预检查'
+  )
+
+  for (let index = 0; index < 4; index += 1) {
+    gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
+      systemAccountId: 'sys_admin',
+      groupId: 'group-a',
+      apiKeyId: 'key-a',
+      clientIp: '10.0.0.1',
+      endpoint: '/v1/responses',
+      reason: '模拟近期成功后的网关短窗口失败'
+    })
+  }
+  await delay(2100)
+  gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(account, undefined, {
+    systemAccountId: 'sys_admin',
+    groupId: 'group-a',
+    apiKeyId: 'key-b',
+    clientIp: '10.0.0.2',
+    endpoint: '/v1/responses',
+    reason: '模拟近期成功后的网关短窗口失败'
+  })
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
+    undefined,
+    '近期真实成功后，即使短窗口失败达到数量阈值，也不应立即升级事前确认'
   )
 
   gatewaySideEffects.suppressGatewayAccountLocallyForTest(account.id, 60_000)
@@ -138,6 +174,9 @@ function testRuntimePrecheckPendingAndSuccessRecovery(): void {
 
   const authorizedAccount = createRuntimeAuthorizedAccount('precheck-runtime-authorized-account')
   for (let index = 0; index < 5; index += 1) {
+    if (index === 4) {
+      await delay(2100)
+    }
     gatewaySideEffects.recordGatewayAccountFailureForPrecheckForTest(authorizedAccount, undefined, {
       systemAccountId: 'sys_grantee',
       groupId: 'group-authorized',

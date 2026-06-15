@@ -4,6 +4,7 @@ import {
   isAccountApiKeyPoolIsolationEnabled,
   selectAccountRuntimeApiKeyEntry
 } from '../../../storage/account-api-key-rotation.js'
+import { localAccountApiKeyRuntimeStatesForDispatch } from './account-api-key-failure-guard.service.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
@@ -15,7 +16,6 @@ import {
   type OpenAIAccountSecret
 } from '../../../storage/repositories.js'
 import { clearSettingsRepositoryCache } from '../../../storage/settings.repository.js'
-import { availabilityScheduleCacheTtlMs } from '../../../storage/availability-schedule-cache.js'
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from '../policy/account-error-policy.service.js'
@@ -145,7 +145,7 @@ export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountI
   const value = listOpenAIAccountsForGroupResult(groupId, systemAccountId)
   const accounts = value.accounts.map(cloneStaticOpenAIAccountSecret)
   openAIAccountsCache.set(cacheKey, accounts, {
-    ttlMs: openAIAccountsCacheTtlMs(value.hasAccountAvailabilitySchedule, Date.now(), accounts)
+    ttlMs: openAIAccountsCacheTtlMs(Date.now(), accounts)
   })
   return cloneOpenAIAccountsWithCurrentConcurrency(value.accounts)
 }
@@ -166,7 +166,7 @@ export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, sys
   })
   const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
   openAIAccountsCache.set(cacheKey, accounts, {
-    ttlMs: openAIAccountsCacheTtlMs(result.hasAccountAvailabilitySchedule, Date.now(), accounts)
+    ttlMs: openAIAccountsCacheTtlMs(Date.now(), accounts)
   })
   return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
 }
@@ -339,7 +339,7 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
   if (runtime.groupAccess) {
     const accounts = runtime.accounts.map(cloneStaticOpenAIAccountSecret)
     openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), accounts, {
-      ttlMs: openAIAccountsCacheTtlMs(runtime.hasAccountAvailabilitySchedule === true, nowMs, accounts)
+      ttlMs: openAIAccountsCacheTtlMs(nowMs, accounts)
     })
   }
   if (runtime.groupAccess && runtime.responseInspectionPolicies) {
@@ -383,15 +383,20 @@ function cloneOpenAIAccountsWithCurrentConcurrency(accounts: OpenAIAccountSecret
 function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): OpenAIAccountSecret | undefined {
   const cloned = cloneStaticOpenAIAccountSecret(account)
   if (cloned.type === 'api_key') {
+    const accountId = cloned.credentialSourceAccountId ?? cloned.id
     const credentials = {
       ...cloned.credentials,
       api_key: cloned.apiKey,
       ...(cloned.apiKeys?.length ? { api_keys: cloned.apiKeys } : {})
     }
+    const runtimeStates = [
+      ...(cloned.apiKeyRuntimeStates ?? []),
+      ...localAccountApiKeyRuntimeStatesForDispatch(accountId)
+    ]
     const selected = selectAccountRuntimeApiKeyEntry({
-      accountId: cloned.credentialSourceAccountId ?? cloned.id,
+      accountId,
       credentials,
-      runtimeStates: cloned.apiKeyRuntimeStates
+      runtimeStates
     })
     if (!selected && isAccountApiKeyPoolIsolationEnabled({
       providerCode: cloned.providerCode,
@@ -432,7 +437,6 @@ function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceG
           : undefined
       }
       : undefined,
-    hasAccountAvailabilitySchedule: runtime.hasAccountAvailabilitySchedule,
     accountDispatchDiagnostics: runtime.accountDispatchDiagnostics ? { ...runtime.accountDispatchDiagnostics } : undefined,
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
@@ -465,9 +469,6 @@ function isGatewayRuntimeCacheEntryDynamic(entry: GatewayRuntimeCacheEntry): boo
 
 function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime, now = Date.now()): number {
   let ttlMs = gatewayRuntimeTtlMs
-  if (runtime.apiKey?.availability_schedule_json || runtime.hasAccountAvailabilitySchedule) {
-    ttlMs = Math.min(ttlMs, availabilityScheduleCacheTtlMs(now))
-  }
   for (const expiresAt of runtimeCacheExpiryCandidates(runtime)) {
     const expiresAtMs = Date.parse(expiresAt)
     if (!Number.isFinite(expiresAtMs)) {
@@ -482,8 +483,8 @@ function groupUsageAccessCacheTtlMs(value: GroupUsageAccessMetadata, now = Date.
   return ttlBoundedByIsoExpiries(groupUsageAccessTtlMs, [value.groupAuthorizationExpiresAt], now)
 }
 
-function openAIAccountsCacheTtlMs(hasAccountAvailabilitySchedule: boolean, now = Date.now(), accounts: OpenAIAccountSecret[] = []): number {
-  const ttlMs = hasAccountAvailabilitySchedule ? availabilityScheduleCacheTtlMs(now) : openAIAccountsTtlMs
+function openAIAccountsCacheTtlMs(now = Date.now(), accounts: OpenAIAccountSecret[] = []): number {
+  const ttlMs = openAIAccountsTtlMs
   return ttlBoundedByIsoExpiries(ttlMs, accounts.flatMap((account) => [
     account.accountExpiresAt,
     account.expiresAt,

@@ -2,6 +2,11 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { AccountApiKeyRuntimeStatus } from '../../../storage/account-api-key-rotation.js'
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
 import { requestDbService } from '../../db-service/db-service-ipc.js'
+import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
+import {
+  recordGatewayAccountApiKeySuccessGuard,
+  recordGatewayAccountApiKeyFailureGuard
+} from './account-api-key-failure-guard.service.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 
 export function recordGatewayAccountApiKeyFailure(
@@ -12,10 +17,26 @@ export function recordGatewayAccountApiKeyFailure(
     errorCode?: string
     errorMessage?: string
     cooldownUntil?: string
+    trafficSource?: OpenAIGatewayTrafficSource
+    clientIp?: string
+    apiKeyId?: string
     source: string
   }
 ): void {
   if (!account.selectedApiKeyFingerprint) {
+    return
+  }
+  const guardDecision = recordGatewayAccountApiKeyFailureGuard(account, {
+    status: input.status,
+    statusCode: input.statusCode,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    trafficSource: input.trafficSource,
+    clientIp: input.clientIp,
+    apiKeyId: input.apiKeyId,
+    source: input.source
+  })
+  if (!guardDecision.persist) {
     return
   }
   void requestDbService({
@@ -43,6 +64,7 @@ export function recordGatewayAccountApiKeyFailure(
 }
 
 export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, source: string): void {
+  recordGatewayAccountApiKeySuccessGuard(account)
   if (!account.selectedApiKeyFingerprint) {
     return
   }

@@ -360,7 +360,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       : []
     : orderedBindings.map((binding) => binding.group_id)
   const uniqueCandidateGroupIds = [...new Set(candidateGroupIds.filter(Boolean))]
-  let hasCandidateAccountAvailabilitySchedule = false
 
   for (const groupId of uniqueCandidateGroupIds) {
     const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
@@ -369,7 +368,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     }
     const groupAccountsResult = listOpenAIAccountsForGroupResult(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
     const accounts = groupAccountsResult.accounts
-    hasCandidateAccountAvailabilitySchedule = hasCandidateAccountAvailabilitySchedule || groupAccountsResult.hasAccountAvailabilitySchedule
     if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
@@ -386,7 +384,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
       settings,
       groupAccess,
       accounts,
-      hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
       accountDispatchDiagnostics: groupAccountsResult.diagnostics,
       responseInspectionPolicies
     }
@@ -396,7 +393,6 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     apiKey,
     settings,
     accounts: [],
-    hasAccountAvailabilitySchedule: hasCandidateAccountAvailabilitySchedule,
     responseInspectionPolicies: []
   }
 }

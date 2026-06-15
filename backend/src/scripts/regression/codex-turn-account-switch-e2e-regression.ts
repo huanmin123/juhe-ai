@@ -111,8 +111,10 @@ async function main(): Promise<void> {
     const codexSwitch = seedTwoAccountGateway(upstreamBaseUrl, 'codex-switch')
     const latentCodexSwitch = seedThreeAccountGateway(upstreamBaseUrl, 'codex-latent-switch')
     const probeFailCodexSwitch = seedProbeFailureGateway(upstreamBaseUrl, 'codex-probe-fail')
+    const httpFailCodex = seedProbeFailureGateway(upstreamBaseUrl, 'codex-http-fail')
     const nonCodex = seedTwoAccountGateway(upstreamBaseUrl, 'non-codex')
     const nonCodexAllFail = seedProbeFailureGateway(upstreamBaseUrl, 'non-codex-all-fail')
+    const nonCodexHttpAllFail = seedProbeFailureGateway(upstreamBaseUrl, 'non-codex-http-all-fail')
     const contextWindow = seedTwoAccountGateway(upstreamBaseUrl, 'context-window')
     const cyberPolicy = seedTwoAccountGateway(upstreamBaseUrl, 'cyber-policy')
     const clientAbortAffinity = seedTwoAccountGateway(upstreamBaseUrl, 'client-abort-affinity', { freshPriority: 0 })
@@ -124,8 +126,10 @@ async function main(): Promise<void> {
     await assertCodexPreCommitFailureSwitchesAccountOnServer(baseUrl, codexSwitch, upstreamState)
     await assertCodexPreCommitFailureWalksCandidatesOnServer(baseUrl, latentCodexSwitch, upstreamState)
     await assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
+    await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, httpFailCodex, upstreamState)
     await assertGenericPreCommitFailureSwitchesAccountOnServer(baseUrl, nonCodex, upstreamState)
     await assertGenericPreCommitFailureReturnsOrdinaryFailureWhenAllCandidatesFail(baseUrl, nonCodexAllFail, upstreamState)
+    await assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(baseUrl, nonCodexHttpAllFail, upstreamState)
     await assertCodexContextWindowSingleRequestSwitchesAccountOnServer(baseUrl, contextWindow, upstreamState)
     await assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(baseUrl, cyberPolicy, upstreamState)
     await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, upstreamState)
@@ -138,12 +142,20 @@ async function main(): Promise<void> {
       freshAccountId: probeFailCodexSwitch.probeFailedAccountId,
       freshUpstreamKey: probeFailCodexSwitch.probeFailedUpstreamKey
     }, {
+      ...httpFailCodex,
+      freshAccountId: httpFailCodex.probeFailedAccountId,
+      freshUpstreamKey: httpFailCodex.probeFailedUpstreamKey
+    }, {
       ...nonCodexAllFail,
       freshAccountId: nonCodexAllFail.probeFailedAccountId,
       freshUpstreamKey: nonCodexAllFail.probeFailedUpstreamKey
+    }, {
+      ...nonCodexHttpAllFail,
+      freshAccountId: nonCodexHttpAllFail.probeFailedAccountId,
+      freshUpstreamKey: nonCodexHttpAllFail.probeFailedUpstreamKey
     }])
 
-    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、Codex/普通客户端输出前流失败均由服务端优先隐藏切号，账号耗尽时仅 Codex 返回客户端可重试 SSE，context_length_exceeded 和 cyber_policy 均可服务端切号，client_aborted 会释放会话亲和，符合预期')
+    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、Codex/普通客户端输出前流失败均由服务端优先隐藏切号，账号耗尽时仅 Codex 返回客户端可重试 SSE，HTTP 非 2xx 建流前失败在 Codex profile 下也收口为可重试 SSE，context_length_exceeded 和 cyber_policy 均可服务端切号，client_aborted 会释放会话亲和，符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -238,6 +250,29 @@ async function assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(
   assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 0, '服务端隐藏重试耗尽前不应消耗 Codex turn 探针')
 }
 
+async function assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(
+  baseUrl: string,
+  seeded: SeededProbeFailureGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeProbeFailedHits = hitCount(upstreamState, seeded.probeFailedUpstreamKey)
+
+  const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-http-non2xx-all-fail',
+    turnId: 'turn-codex-http-all-fail',
+    codex: true,
+    retryTag: 'server-retry-exhausted'
+  })
+  assert(streamText.includes('response.failed'), `Codex HTTP 非 2xx 全部账号耗尽时应返回 SSE 失败事件：${streamText}`)
+  assert(streamText.includes('upstream_retryable_error'), `Codex HTTP 非 2xx 全部账号耗尽时应返回客户端可重试错误：${streamText}`)
+  assert(!streamText.includes('server_is_overloaded'), `Codex HTTP 非 2xx 全部账号耗尽时不应透出原始致命错误码：${streamText}`)
+  assert(!streamText.includes('response.completed'), `HTTP 非 2xx 全部失败不应伪成功：${streamText}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, 'HTTP 非 2xx 全部失败场景应先命中首选账号')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, 'HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
+}
+
 async function assertGenericPreCommitFailureSwitchesAccountOnServer(
   baseUrl: string,
   seeded: SeededGateway,
@@ -283,6 +318,30 @@ async function assertGenericPreCommitFailureReturnsOrdinaryFailureWhenAllCandida
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端全部失败场景应先命中首选死号')
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '普通客户端全部失败场景应隐藏重试唯一备用号')
   assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 0, '普通客户端不应消耗 Codex turn 探针')
+}
+
+async function assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(
+  baseUrl: string,
+  seeded: SeededProbeFailureGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeProbeFailedHits = hitCount(upstreamState, seeded.probeFailedUpstreamKey)
+
+  const result = await requestResponsesRaw(baseUrl, seeded.apiKey, {
+    scenario: 'codex-http-non2xx-all-fail',
+    turnId: 'non-codex-http-all-fail',
+    codex: false,
+    retryTag: 'server-retry-exhausted'
+  })
+  assert.equal(result.status, 503, `普通客户端 HTTP 非 2xx 全部账号耗尽时应保留网关 JSON 失败：${result.status} ${result.text}`)
+  assert(result.contentType.includes('application/json'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回 JSON：${result.contentType}`)
+  assert(result.text.includes('service_unavailable'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回网关统一错误：${result.text}`)
+  assert(!result.text.includes('response.failed'), `普通客户端 HTTP 非 2xx 全部账号耗尽时不应伪造 SSE：${result.text}`)
+  assert(!result.text.includes('upstream_retryable_error'), `普通客户端 HTTP 非 2xx 全部账号耗尽时不应返回 Codex 专用可重试错误：${result.text}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端 HTTP 非 2xx 全部失败场景应先命中首选账号')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '普通客户端 HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
 }
 
 async function assertCodexContextWindowSingleRequestSwitchesAccountOnServer(
@@ -654,6 +713,17 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         : undefined
       state.requests.push({ upstreamKey, scenario, turnMetadata })
 
+      if (scenario === 'codex-http-non2xx-all-fail') {
+        res.writeHead(503, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          error: {
+            code: 'server_is_overloaded',
+            message: 'mock upstream failed before stream headers'
+          }
+        }))
+        return
+      }
+
       if (scenario === 'client-abort-before-upstream-headers') {
         const timer = setTimeout(() => {
           if (res.destroyed || res.writableEnded) {
@@ -721,6 +791,23 @@ async function requestResponsesStream(
     retryTag?: string
   }
 ): Promise<string> {
+  const response = await requestResponsesRaw(baseUrl, apiKey, input)
+  assert.equal(response.status, 200)
+  assert(response.contentType.includes('text/event-stream'), '网关应保持 SSE content-type')
+  return response.text
+}
+
+async function requestResponsesRaw(
+  baseUrl: string,
+  apiKey: string,
+  input: {
+    scenario: string
+    turnId: string
+    codex: boolean
+    sessionId?: string
+    retryTag?: string
+  }
+): Promise<{ status: number; contentType: string; text: string }> {
   const headers: Record<string, string> = {
     authorization: `Bearer ${apiKey}`,
     'content-type': 'application/json',
@@ -746,9 +833,11 @@ async function requestResponsesStream(
       stream: true
     })
   })
-  assert.equal(response.status, 200)
-  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
-  return response.text()
+  return {
+    status: response.status,
+    contentType: response.headers.get('content-type') ?? '',
+    text: await response.text()
+  }
 }
 
 async function requestResponsesStreamAndAbortAfterFirstChunk(
@@ -1005,6 +1094,7 @@ function resolveMockScenario(body: Record<string, unknown>): string {
     'client-abort-before-upstream-headers',
     'client-abort-before-terminal',
     'after-client-abort',
+    'codex-http-non2xx-all-fail',
     'codex-missing-terminal-switch',
     'context-window-error',
     'cyber-policy-error',

@@ -31,6 +31,7 @@ const [
 ])
 
 let serverConcurrency: Record<string, number> = {}
+let serverRuntimeAvailability: ServerRuntimeAvailabilitySnapshot = {}
 const requestedScopes: Array<string | undefined> = []
 
 class FakeServerParent extends EventEmitter {
@@ -41,9 +42,10 @@ class FakeServerParent extends EventEmitter {
         dbServiceIpc.handleDbServiceParentRuntimeMessage({
           type: 'db_service_server_runtime_response',
           requestId: message.requestId,
-          ok: true,
-          result: {
-            accountConcurrency: serverConcurrency
+        ok: true,
+        result: {
+            accountConcurrency: serverConcurrency,
+            accountRuntimeAvailability: serverRuntimeAvailability
           }
         })
       })
@@ -116,6 +118,28 @@ try {
     [accountB.id]: 1,
     [authorizedAccountA.id]: 4
   }
+  assert(authorizedAccountA.accountAuthorizationId, '授权实例应包含账户授权 ID')
+  const authorizedRuntimeKey = `${authorizedAccountA.id}:authorized:${grantee.id}:${granteeTargetGroup.id}:${authorizedAccountA.accountAuthorizationId}`
+  serverRuntimeAvailability = {
+    [accountA.id]: {
+      status: 'precheck_pending',
+      reason: 'mock account precheck pending',
+      since: '2026-06-16T00:00:00.000Z',
+      failureCount: 6,
+      distinctClientIpCount: 2,
+      distinctApiKeyCount: 3,
+      precheckAttemptCount: 1
+    },
+    [authorizedRuntimeKey]: {
+      status: 'precheck_pending',
+      reason: 'mock authorized account precheck pending',
+      since: '2026-06-16T00:00:00.000Z',
+      failureCount: 6,
+      distinctClientIpCount: 2,
+      distinctApiKeyCount: 2,
+      precheckAttemptCount: 1
+    }
+  }
 
   const fakeParent = new FakeServerParent()
   const previousProcessRole = runtimeConfig.processRole
@@ -129,8 +153,12 @@ try {
 
     const accountPage = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
     const accountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(accountPage)
-    assert.equal(findAccount(accountPageWithRuntime.items, accountA.id).currentConcurrency, 2, '账户列表应合并 server 当前并发 A')
-    assert.equal(findAccount(accountPageWithRuntime.items, accountA.id).currentConcurrencyAvailable, true, '账户列表应标记 server 并发快照可用')
+    const accountAWithRuntime = findAccount(accountPageWithRuntime.items, accountA.id)
+    assert.equal(accountAWithRuntime.currentConcurrency, 2, '账户列表应合并 server 当前并发 A')
+    assert.equal(accountAWithRuntime.currentConcurrencyAvailable, true, '账户列表应标记 server 并发快照可用')
+    assert.equal(accountAWithRuntime.runtimeAvailability?.status, 'precheck_pending', '账户列表应合并 server 事前确认运行态')
+    assert.equal(accountAWithRuntime.effectiveAvailability?.status, 'runtime_precheck_pending', '账户列表应把事前确认合成为实际不可用状态')
+    assert.equal(accountAWithRuntime.effectiveAvailability?.label, '待探针确认', '账户列表应展示事前确认文案')
     assert.equal(findAccount(accountPageWithRuntime.items, accountB.id).currentConcurrency, 1, '账户列表应合并 server 当前并发 B')
     assert.equal(accountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '账户分页结果应标记 server 并发快照可用')
 
@@ -141,6 +169,8 @@ try {
     assert.equal(authorizedAccount.concurrencyLimit, 10, '授权账户应展示来源账号并发上限')
     assert.equal(authorizedAccount.currentConcurrency, 4, '授权实例账户应按自己的账户 ID 合并 server 当前并发')
     assert.equal(authorizedAccount.currentConcurrencyAvailable, true, '授权账户应标记 server 并发快照可用')
+    assert.equal(authorizedAccount.runtimeAvailability?.status, 'precheck_pending', '授权账户列表应按绑定维度合并 server 事前确认运行态')
+    assert.equal(authorizedAccount.effectiveAvailability?.status, 'runtime_precheck_pending', '授权账户列表应把绑定维度事前确认合成为实际不可用状态')
     assert.equal(authorizedAccountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '仅包含授权账户时也应标记 server 并发快照可用')
 
     const groups = await runtimeSnapshot.applyServerAccountConcurrencyToGroups(repositories.listGroups(access))
@@ -154,10 +184,11 @@ try {
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend
     serverConcurrency = {}
+    serverRuntimeAvailability = {}
     requestedScopes.length = 0
   }
 
-  console.log('网关实时并发快照回归通过：系统 API 通过 server 快照合并账户和分组当前并发')
+  console.log('网关实时快照回归通过：系统 API 通过 server 快照合并账户并发、账户运行态和分组当前并发')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -180,3 +211,15 @@ function isServerRuntimeRequest(value: unknown): value is { type: 'db_service_se
     && (value as Record<string, unknown>).type === 'db_service_server_runtime_request'
     && typeof (value as Record<string, unknown>).requestId === 'string'
 }
+
+type ServerRuntimeAvailabilitySnapshot = Record<string, {
+  status: 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
+  reason?: string
+  since?: string
+  until?: string
+  failureCount?: number
+  distinctClientIpCount?: number
+  distinctApiKeyCount?: number
+  precheckAttemptCount?: number
+  localFailureCount?: number
+}>

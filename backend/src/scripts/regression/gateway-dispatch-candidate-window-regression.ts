@@ -110,7 +110,7 @@ try {
     .run('2999-01-01T00:00:00.000Z', cooledAccount.id)
 
   const candidatePlans = explainDispatchCandidateWindowQueries(group.id, access.systemAccountId)
-  assert(candidatePlans.length >= 2, '回归应覆盖有计划和无计划两条候选窗口查询')
+  assert(candidatePlans.length === 1, '调度候选应使用一条已状态化的候选窗口查询')
   for (const plan of candidatePlans) {
     assert(plan.includes('idx_group_accounts_dispatch_candidate_window'), `调度候选窗口应使用覆盖排序索引，实际计划：${plan}`)
     assert(!/USE TEMP B-TREE/i.test(plan), `调度候选窗口不应使用临时排序树，实际计划：${plan}`)
@@ -147,13 +147,11 @@ try {
     assert.equal(ids.has(cooledAccount.id), false, '仍在冷却中的账号应在 SQL 窗口阶段被过滤')
     assert.equal(ids.has(scheduledAllowedAccount.id), true, '带计划但当前允许的账号不能因无计划窗口 LIMIT 被误漏')
     assert.equal(ids.has(scheduledDeniedAccount.id), false, '带计划但当前停用的账号不应进入调度候选')
-    assert.equal(result.hasAccountAvailabilitySchedule, true, '候选窗口包含计划账号时应保留计划重校验标记')
     assert(result.diagnostics, '调度候选窗口应返回轻量诊断字段')
     assert.equal(result.diagnostics.scanLimit, dispatchCandidateScanLimit, '诊断应记录候选扫描窗口上限')
     assert.equal(result.diagnostics.finalLimit, dispatchCandidateLimit, '诊断应记录最终候选上限')
-    assert.equal(result.diagnostics.withoutScheduleRowCount, dispatchCandidateLimit + 64, '诊断应记录无计划候选窗口行数')
-    assert.equal(result.diagnostics.withScheduleRowCount, 2, '诊断应记录有计划候选窗口行数')
-    assert.equal(result.diagnostics.scannedRowCount, dispatchCandidateLimit + 66, '诊断应记录两类候选窗口扫描总数')
+    assert.equal(result.diagnostics.candidateRowCount, dispatchCandidateLimit + 65, '诊断应记录派生状态过滤后的候选窗口行数')
+    assert.equal(result.diagnostics.scannedRowCount, dispatchCandidateLimit + 65, '诊断应记录候选窗口扫描总数')
     assert.equal(result.diagnostics.eligibleRowCount, dispatchCandidateLimit + 65, '诊断应记录运行态过滤后的可用候选数')
     assert.equal(result.diagnostics.hydrationBatchCount, 1, '首批 256 个候选成功水合时不应继续扩大水合窗口')
     assert.equal(result.diagnostics.hydratedAccountCount, dispatchCandidateLimit, '诊断应记录成功水合账号数')
@@ -164,7 +162,7 @@ try {
       assert(ids.has(accountId), `无计划主窗口账号应稳定进入候选：${accountId}`)
     }
 
-    assert.equal(capturedCalls.length, 2, '调度候选读取应拆成有计划/无计划两条有界 SQL，不应按账号逐条查询')
+    assert.equal(capturedCalls.length, 1, '调度候选读取应使用一条有界 SQL，不应按账号逐条查询或按计划分桶')
     assert.equal(supportedModelHydrationCalls.length, 1, '候选水合应只读取最终 256 个主候选的模型列表，不能按两个窗口扩大到 512 个')
 
     const refillGroup = repositories.createGroup({
@@ -220,13 +218,12 @@ try {
     for (const accountId of brokenAccountIds) {
       assert.equal(refillIds.has(accountId), false, `凭据损坏账号不应进入最终候选：${accountId}`)
     }
-    assert.equal(capturedCalls.length - capturedCallsBeforeRefill, 2, '补齐场景仍应只读取有计划/无计划两条有界 SQL')
+    assert.equal(capturedCalls.length - capturedCallsBeforeRefill, 1, '补齐场景仍应只读取一条有界 SQL')
     assert.equal(supportedModelHydrationCalls.length - hydrationCallsBeforeRefill, 2, '补齐场景应先水合失败窗口，再水合后续补齐窗口')
     assert(refillResult.diagnostics, '补齐场景应返回轻量诊断字段')
     assert.equal(refillResult.diagnostics.scanLimit, dispatchCandidateScanLimit, '补齐诊断应记录候选扫描窗口上限')
     assert.equal(refillResult.diagnostics.finalLimit, dispatchCandidateLimit, '补齐诊断应记录最终候选上限')
-    assert.equal(refillResult.diagnostics.withoutScheduleRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录无计划候选窗口行数')
-    assert.equal(refillResult.diagnostics.withScheduleRowCount, 0, '补齐诊断应记录有计划候选窗口行数')
+    assert.equal(refillResult.diagnostics.candidateRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录候选窗口行数')
     assert.equal(refillResult.diagnostics.scannedRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录候选扫描总数')
     assert.equal(refillResult.diagnostics.eligibleRowCount, dispatchCandidateLimit + refillAccountIds.length, '补齐诊断应记录运行态可用候选数')
     assert.equal(refillResult.diagnostics.hydrationBatchCount, 2, '补齐场景应记录两批水合')
@@ -247,7 +244,7 @@ try {
     assert(params.length <= dispatchCandidateLimit, '模型水合 IN 参数不应超过调度候选上限')
   }
 
-  console.log('网关调度候选窗口回归通过：分组候选按 512 扫描窗口读取、最终候选保持 256 上限，冷却前置过滤，计划账号不被无计划窗口误漏，水合失败时可继续补齐后续可用账号，查询计划不使用临时排序树，后续水合不扩大候选集')
+  console.log('网关调度候选窗口回归通过：分组候选按 512 扫描窗口读取、最终候选保持 256 上限，冷却和计划派生状态前置过滤，水合失败时可继续补齐后续可用账号，查询计划不使用临时排序树，后续水合不扩大候选集')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -259,17 +256,13 @@ try {
 
 function explainDispatchCandidateWindowQueries(groupId: string, systemAccountId: string): string[] {
   const now = new Date().toISOString()
-  return [
-    'AND accounts.availability_schedule_json IS NULL',
-    'AND accounts.availability_schedule_json IS NOT NULL'
-  ].map((scheduleClause) => explainDispatchCandidateWindowQuery(groupId, systemAccountId, now, scheduleClause))
+  return [explainDispatchCandidateWindowQuery(groupId, systemAccountId, now)]
 }
 
 function explainDispatchCandidateWindowQuery(
   groupId: string,
   systemAccountId: string,
-  now: string,
-  scheduleClause: string
+  now: string
 ): string {
   const rows = databaseModule.getBusinessDatabase()
     .prepare(`
@@ -284,11 +277,15 @@ function explainDispatchCandidateWindowQuery(
         AND accounts.provider_code = 'gpt'
         AND accounts.status = 'active'
         AND accounts.schedulable = 1
+        AND accounts.availability_schedule_active = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
-        ${scheduleClause}
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
-          OR (accounts.authorization_instance_authorization_id IS NOT NULL AND source_accounts.type IN ('api_key', 'oauth'))
+          OR (
+            accounts.authorization_instance_authorization_id IS NOT NULL
+            AND source_accounts.type IN ('api_key', 'oauth')
+            AND source_accounts.availability_schedule_active = 1
+          )
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       ORDER BY

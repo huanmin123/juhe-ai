@@ -4,7 +4,6 @@ import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-cli
 import { isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
-import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import {
@@ -82,7 +81,7 @@ export function findOpenAIAccountForGroup(
     .prepare(`
       SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.availability_schedule_json, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.availability_schedule_active, accounts.account_expires_at, accounts.last_successful_test_model, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
         source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -91,7 +90,7 @@ export function findOpenAIAccountForGroup(
         source_accounts.type AS resource_type,
         source_accounts.status AS resource_status,
         source_accounts.schedulable AS resource_schedulable,
-        source_accounts.availability_schedule_json AS resource_availability_schedule_json,
+        source_accounts.availability_schedule_active AS resource_availability_schedule_active,
         source_accounts.account_expires_at AS resource_account_expires_at,
         source_accounts.cooldown_until AS resource_cooldown_until,
         source_accounts.last_error_code AS resource_last_error_code,
@@ -212,14 +211,10 @@ export function listOpenAIAccountsForGroupResult(
   if (!groupAccess) {
     return {
       accounts: [],
-      hasAccountAvailabilitySchedule: false,
       diagnostics: emptyGatewayDispatchCandidateDiagnostics()
     }
   }
-  const withoutScheduleRows = listGatewayDispatchCandidateRows(database, groupId, groupAccess, now, 'without_schedule')
-  const withScheduleRows = listGatewayDispatchCandidateRows(database, groupId, groupAccess, now, 'with_schedule')
-  const groupAccountRows = [...withoutScheduleRows, ...withScheduleRows]
-  const hasAccountAvailabilitySchedule = groupAccountRows.some((row) => Boolean(row.availability_schedule_json || row.resource_availability_schedule_json))
+  const groupAccountRows = listGatewayDispatchCandidateRows(database, groupId, groupAccess, now)
   const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
   const eligibleRows = groupAccountRows
     .map((row) => ({
@@ -258,58 +253,19 @@ export function listOpenAIAccountsForGroupResult(
 
   return {
     accounts,
-    hasAccountAvailabilitySchedule,
     diagnostics: {
       scanLimit: gatewayDispatchAccountCandidateScanLimit,
       finalLimit: gatewayDispatchAccountCandidateLimit,
-      withoutScheduleRowCount: withoutScheduleRows.length,
-      withScheduleRowCount: withScheduleRows.length,
+      candidateRowCount: groupAccountRows.length,
       scannedRowCount: groupAccountRows.length,
       eligibleRowCount: eligibleRows.length,
       hydrationBatchCount,
       hydratedAccountCount: accounts.length,
       hydrationDroppedCount,
       finalAccountCount: accounts.length,
-      scanLimitReached: withoutScheduleRows.length >= gatewayDispatchAccountCandidateScanLimit || withScheduleRows.length >= gatewayDispatchAccountCandidateScanLimit
+      scanLimitReached: groupAccountRows.length >= gatewayDispatchAccountCandidateScanLimit
     }
   }
-}
-
-export function hasOpenAIAccountAvailabilityScheduleForGroup(
-  groupId: string,
-  systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
-): boolean {
-  const groupAccess = options.preResolvedGroupAccess ?? resolveGroupUsageAccessMetadata(groupId, systemAccountId)
-  if (!groupAccess) return false
-  const row = getBusinessDatabase()
-    .prepare(`
-      SELECT 1
-      FROM group_accounts
-      INNER JOIN accounts ON accounts.id = group_accounts.account_id
-      LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
-      WHERE group_accounts.group_id = ?
-        AND group_accounts.system_account_id = ?
-        AND group_accounts.enabled = 1
-        AND accounts.provider_protocol_profile_id = ?
-        AND accounts.deleted_at IS NULL
-        AND (
-          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
-          OR (
-            accounts.authorization_instance_authorization_id IS NOT NULL
-            AND source_accounts.deleted_at IS NULL
-            AND source_accounts.provider_protocol_profile_id = ?
-            AND source_accounts.type IN ('api_key', 'oauth')
-          )
-        )
-        AND (
-          accounts.availability_schedule_json IS NOT NULL
-          OR source_accounts.availability_schedule_json IS NOT NULL
-        )
-      LIMIT 1
-    `)
-    .get(groupId, groupAccess.groupOwnerSystemAccountId, groupAccess.providerProtocolProfileId, groupAccess.providerProtocolProfileId) as unknown
-  return Boolean(row)
 }
 
 function openAIAccountResourceAccountId(row: OpenAIAccountRow): string {
@@ -461,7 +417,6 @@ function openAIAccountSecretFromRow(
     lastErrorMessage: row.last_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
     streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-    availabilityScheduleJson: row.availability_schedule_json ?? undefined,
     accountExpiresAt: row.account_expires_at ?? undefined,
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials: runtimeOpenAIAccountCredentials(credentials)
@@ -488,7 +443,7 @@ function isOpenAIPhysicalAccountAvailableForSelection(row: OpenAIAccountRow, now
   if (row.schedulable !== 1) {
     return false
   }
-  if (!isAccountAvailabilityScheduleAllowed(row.availability_schedule_json, new Date(now))) {
+  if (row.availability_schedule_active !== 1) {
     return false
   }
   if (includeUnavailable) {
@@ -513,7 +468,7 @@ function isOpenAIResourceAccountAvailableForSelection(row: OpenAIAccountRow, now
   if (row.resource_schedulable !== 1) {
     return false
   }
-  if (!isAccountAvailabilityScheduleAllowed(row.resource_availability_schedule_json, new Date(now))) {
+  if (row.resource_availability_schedule_active !== 1) {
     return false
   }
   if (includeUnavailable) {

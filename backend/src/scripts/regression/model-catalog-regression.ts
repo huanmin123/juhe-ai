@@ -184,6 +184,21 @@ try {
   assert.equal(globalModel.created, Date.parse('2026-01-02T00:00:00.000Z') / 1000, '/v1/models created 应为 Unix 秒')
   assert.equal(response.data.some((item) => item.id === 'gpt-regression-hidden-target'), false, '/v1/models 不应暴露 mapping_target_only 模型')
 
+  const codexResponse = catalogService.buildCodexModelsResponseFromCatalog(publicCatalog)
+  assert(Array.isArray(codexResponse.models), 'Codex /models 顶层 models 必须是数组')
+  assert.equal(Object.prototype.hasOwnProperty.call(codexResponse, 'data'), false, 'Codex /models 不应返回 OpenAI data 字段')
+  const codexGlobalModel = codexResponse.models.find((item) => item.slug === 'gpt-regression-global')
+  assert(codexGlobalModel, 'Codex /models 应包含公开自定义模型')
+  assert.equal(codexGlobalModel.display_name, 'gpt-regression-global', 'Codex /models display_name 默认使用模型名')
+  assert.equal(codexGlobalModel.shell_type, 'shell_command', 'Codex /models shell_type 必须匹配 Codex ModelInfo')
+  assert.equal(codexGlobalModel.visibility, 'list', 'Codex /models visibility 必须可进入列表')
+  assert.equal(codexGlobalModel.supported_in_api, true, 'Codex /models 模型必须标记 API 可用')
+  assert.equal(codexGlobalModel.default_reasoning_level, 'medium', 'Codex /models 默认 reasoning 应为 medium')
+  assert(codexGlobalModel.supported_reasoning_levels.some((item) => item.effort === 'medium'), 'Codex /models 应包含 medium reasoning 选项')
+  assert.equal(typeof codexGlobalModel.base_instructions, 'string', 'Codex /models 必须提供 base_instructions')
+  assert.equal(codexGlobalModel.truncation_policy.mode, 'bytes', 'Codex /models 必须提供 truncation_policy')
+  assert.equal(codexResponse.models.some((item) => item.slug === 'gpt-regression-hidden-target'), false, 'Codex /models 不应暴露 mapping_target_only 模型')
+
   const aliasCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',

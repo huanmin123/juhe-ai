@@ -10,6 +10,12 @@ import {
 } from '@/shared/formatters'
 import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import {
+  accountDiagnosticTooltipLines,
+  conciseAccountLastErrorText,
+  splitAccountDiagnosticMessage,
+  type AccountDiagnosticMessageParts
+} from './accountDiagnosticMessages'
 
 export interface OAuthUsageBar {
   key: string
@@ -28,12 +34,6 @@ export interface AccountStatusTagInfo {
 
 interface AccountQualityStatusInfo extends AccountStatusTagInfo {
   tooltipLines: string[]
-}
-
-export interface AccountDiagnosticMessageParts {
-  message: string
-  traceId?: string
-  requestId?: string
 }
 
 export function statusColor(status: AccountStatus) {
@@ -70,7 +70,7 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
-  if (account.effectiveAvailability && !account.effectiveAvailability.available && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.color
+  if (account.effectiveAvailability && !account.effectiveAvailability.available) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
@@ -82,7 +82,7 @@ export function accountStatusColor(account: AccountSummary) {
   if (runtimeStatus === 'precheck_failed') return 'gold'
   const qualityStatus = accountQualityStatusInfo(account)
   if (qualityStatus) return qualityStatus.color
-  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.color
+  if (account.effectiveAvailability) return account.effectiveAvailability.color
   return statusColor(account.status)
 }
 
@@ -90,7 +90,7 @@ export function accountStatusText(account: AccountSummary) {
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }
-  if (account.effectiveAvailability && !account.effectiveAvailability.available && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.label
+  if (account.effectiveAvailability && !account.effectiveAvailability.available) return account.effectiveAvailability.label
   if (isAuthorizationPaused(account)) return '授权暂停'
   if (isAuthorizationExpired(account)) return '授权到期'
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
@@ -103,7 +103,7 @@ export function accountStatusText(account: AccountSummary) {
   if (runtimeStatus === 'precheck_failed') return '探针确认失败'
   const qualityStatus = accountQualityStatusInfo(account)
   if (qualityStatus) return qualityStatus.label
-  if (account.effectiveAvailability && !isScheduleInactiveAvailability(account)) return account.effectiveAvailability.label
+  if (account.effectiveAvailability) return account.effectiveAvailability.label
   return statusText(account.status)
 }
 
@@ -186,91 +186,9 @@ function accountCooldownRetestText(account: AccountSummary): string {
   return parts.length ? `后台复测：${parts.join('，')}` : ''
 }
 
-export function splitAccountDiagnosticMessage(message?: string): AccountDiagnosticMessageParts {
-  let remaining = message?.trim() ?? ''
-  if (!remaining) return { message: '' }
-
-  const traceIdMatch = remaining.match(/(?:^|[；;\s,，])(?:traceId|trace id)(?:[：:]|\s+)([^\s；;，,)]+)/i)
-  const traceId = traceIdMatch?.[1]?.trim()
-  if (traceIdMatch) {
-    remaining = removeDiagnosticSegment(remaining, traceIdMatch.index ?? 0, traceIdMatch[0].length)
-  }
-
-  const parenthesizedRequestIdMatch = remaining.match(/\((?:upstream\s+)?(?:request\s*id|requestId)[：:]\s*([^)]+?)\)/i)
-  let requestId = parenthesizedRequestIdMatch?.[1]?.trim()
-  if (parenthesizedRequestIdMatch) {
-    remaining = removeDiagnosticSegment(remaining, parenthesizedRequestIdMatch.index ?? 0, parenthesizedRequestIdMatch[0].length)
-  }
-
-  if (!requestId) {
-    const requestIdMatch = remaining.match(/(?:^|[；;\s,，])(?:upstream\s+)?(?:request\s*id|requestId)[：:]\s*([^\s；;，,)]+)/i)
-    requestId = requestIdMatch?.[1]?.trim()
-    if (requestIdMatch) {
-      remaining = removeDiagnosticSegment(remaining, requestIdMatch.index ?? 0, requestIdMatch[0].length)
-    }
-  }
-
-  return {
-    message: cleanupDiagnosticMessage(remaining),
-    traceId,
-    requestId
-  }
-}
-
-function accountDiagnosticTooltipLines(
-  message: string | undefined,
-  options: { reasonLabel: string; idLabelPrefix?: string; statusCode?: number; concise?: boolean }
-): string[] {
-  const text = options.concise ? conciseAccountLastErrorText(message) : message?.trim()
-  if (!text) return []
-  const parts = splitAccountDiagnosticMessage(text)
-  let reason = parts.message
-  if (options.statusCode) {
-    reason = reason.replace(new RegExp(`^HTTP ${options.statusCode}[；;\\s]*`), '').trim()
-  }
-  const idLabelPrefix = options.idLabelPrefix ? `${options.idLabelPrefix} ` : ''
-  const lines: string[] = []
-  if (parts.traceId) {
-    lines.push(`${idLabelPrefix}traceId：${parts.traceId}`)
-  }
-  if (parts.requestId) {
-    lines.push(`${idLabelPrefix}request id：${parts.requestId}`)
-  }
-  if (reason) {
-    lines.push(`${options.reasonLabel}：${reason}`)
-  }
-  return lines
-}
-
-function conciseAccountLastErrorText(message?: string): string {
-  const value = message?.trim()
-  if (!value) return ''
-  const lastErrorMarker = '最后错误：'
-  const markerIndex = value.lastIndexOf(lastErrorMarker)
-  return markerIndex >= 0
-    ? value.slice(markerIndex + lastErrorMarker.length).trim()
-    : value
-      .replace(/^账户测试失败，已自动标记为临时不可调用；/, '')
-      .replace(/^账户测试失败；/, '')
-      .trim()
-}
-
-function removeDiagnosticSegment(value: string, index: number, length: number): string {
-  return cleanupDiagnosticMessage(`${value.slice(0, index)}${value.slice(index + length)}`)
-}
-
-function cleanupDiagnosticMessage(value: string): string {
-  return value
-    .replace(/\(\s*\)/g, '')
-    .replace(/\s*[；;]\s*/g, '；')
-    .replace(/；{2,}/g, '；')
-    .replace(/^[；;\s,，。]+|[；;\s,，。]+$/g, '')
-    .trim()
-}
-
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
-  const effectiveAvailability = isScheduleInactiveAvailability(account) ? undefined : account.effectiveAvailability
+  const effectiveAvailability = account.effectiveAvailability
   const conciseOwnStatus = isAccountInstanceEffectiveAvailability(account)
     && !isScheduleInactiveStatus(account.effectiveAvailability.status)
     && isConciseAccountStatus(account.effectiveAvailability.status)
@@ -460,6 +378,9 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   if (account.authorizationInstanceSourceAccountSchedulable === false) {
     lines.push('授权方原账户已关闭调度，授权实例实际不可调用')
   }
+  if (account.authorizationInstanceSourceAccountScheduleActive === false) {
+    lines.push('授权方原账户当前不在允许使用时段，授权实例实际不可调用')
+  }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) {
     lines.push(`授权方原账户冷却至 ${formatDateTime(account.authorizationInstanceSourceAccountCooldownUntil)}`)
   }
@@ -550,10 +471,6 @@ export function isTemporaryAccountStatus(account: AccountSummary) {
 
 function isDirectAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
   return status.startsWith('instance_') && !isScheduleInactiveStatus(status)
-}
-
-function isScheduleInactiveAvailability(account: AccountSummary): boolean {
-  return isScheduleInactiveStatus(account.effectiveAvailability?.status)
 }
 
 function isScheduleInactiveStatus(status?: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
@@ -743,6 +660,8 @@ export function formatTestTerminalResult(result: AccountTestResult): string {
 export function formatAccountTestDuration(value?: number): string {
   return formatMillisecondsAsSeconds(value)
 }
+
+export { splitAccountDiagnosticMessage, type AccountDiagnosticMessageParts }
 
 function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {
   if (!window) return undefined

@@ -1,54 +1,27 @@
-import { createHash } from 'node:crypto'
-import type { DatabaseSync } from 'node:sqlite'
-
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { appendAuditHotSearchEntries, appendAuditHotSearchEntriesAsync } from './audit-log-hot-search-files.js'
+import { prepareAuditErrorGroupStatements, upsertAuditErrorGroup } from './audit-log-error-groups.repository.js'
 import {
   applyAuditPayloadBlobPersistencePlan,
-  auditPayloadBodyDetail,
   cleanupCreatedAuditBlobFiles,
   cleanupCreatedAuditBlobFilesAsync,
   persistAuditPayloadBlob,
-  persistAuditPayloadBlobAsync,
   prepareAuditPayloadBlobStatements,
-  prepareAuditPayloadBlob,
-  prepareAuditPayloadBlobAsync,
-  planAuditPayloadBlobPersistence,
-  readAuditHeadersBlobDetail,
-  readAuditPayloadBlobWindow,
   writeAuditPayloadBlobFileForPlan,
-  type AuditPayloadBlobPersistencePlan,
-  type PreparedAuditPayloadBlob
+  type AuditPayloadBlobPersistencePlan
 } from './audit-log-payload-blobs.js'
 import {
-  auditErrorGroupFromRow,
-  auditLogAttemptFromRow,
-  auditLogPayloadSummaryFromRow,
-  auditLogSummaryFromRow,
-  hydrateAuditRows,
-  type AuditLogRow
-} from './audit-log-mappers.js'
+  planAuditPayloadBlobPersistenceForBatch,
+  preparePayloadInput,
+  preparePayloadInputAsync,
+  type PreparedAuditPayload
+} from './audit-log-payload-input.js'
+import { normalizeAuditTrafficSource } from './audit-log-traffic-source.js'
 import type {
-  AuditErrorGroupListOptions,
-  AuditErrorGroupListResult,
-  AuditErrorGroupSummary,
   AuditLogAttemptInput,
-  AuditLogDetail,
-  AuditLogInput,
-  AuditLogListOptions,
-  AuditLogListResult,
-  AuditLogPayloadDetail,
-  AuditLogPayloadInput,
-  AuditLogPayloadReadOptions,
-  AuditLogSuccessHotRetentionCleanupResult,
-  AuditLogSummary,
-  AuditPayloadCaptureStatus,
-  AuditPayloadPartType,
-  AuditTrafficSource
+  AuditLogInput
 } from './audit-log-types.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
-import { optionalString } from './value-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 export {
@@ -58,6 +31,14 @@ export {
   cleanupAuditLogsByRetentionAsync,
   cleanupAuditSuccessHotRetentionAsync
 } from './audit-log-retention.repository.js'
+export {
+  getAuditLogDetail,
+  getAuditLogPayload,
+  listAuditErrorGroupEvents,
+  listAuditErrorGroups,
+  listAuditLogs,
+  listAuditLogsByIds
+} from './audit-log-read.repository.js'
 export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
 export type {
   AuditErrorGroupListOptions,
@@ -80,43 +61,6 @@ export type {
   AuditPayloadPartType,
   AuditTrafficSource
 } from './audit-log-types.js'
-
-type AuditLogFilterValue = string | number
-
-interface PreparedAuditPayload {
-  id: string
-  attemptTempId?: string
-  partType: AuditPayloadPartType
-  sequenceIndex: number
-  contentType?: string
-  contentEncoding?: string
-  headersBlob?: PreparedAuditPayloadBlob
-  bodyBlob?: PreparedAuditPayloadBlob
-  headersBlobPlan?: AuditPayloadBlobPersistencePlan
-  bodyBlobPlan?: AuditPayloadBlobPersistencePlan
-  headersSha256?: string
-  bodySha256?: string
-  rawSizeBytes: number
-  compressedSizeBytes: number
-  captureStatus: AuditPayloadCaptureStatus
-  createdAt: string
-}
-
-type AuditErrorGroupStatement = ReturnType<DatabaseSync['prepare']>
-
-interface AuditErrorGroupStatements {
-  selectExisting: AuditErrorGroupStatement
-  updateExisting: AuditErrorGroupStatement
-  insertGroup: AuditErrorGroupStatement
-}
-
-const auditLogDefaultPageSize = 100
-const auditLogMaxPageSize = 100
-const errorGroupDefaultPageSize = 100
-const errorGroupMaxPageSize = 100
-const auditLogMaxListWindowRows = 1001
-const auditErrorGroupWindowMs = 5 * 60 * 1000
-const auditHeadersContentType = 'application/json; audit=headers'
 
 export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   if (inputs.length === 0) return
@@ -175,12 +119,13 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       const rawPayloadBytes = payloads.reduce((sum, payload) => sum + payload.rawSizeBytes, 0)
       const compressedPayloadBytes = payloads.reduce((sum, payload) => sum + payload.compressedSizeBytes, 0)
       const compressionSavedBytes = Math.max(0, rawPayloadBytes - compressedPayloadBytes)
-      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, errorGroupStatements)
+      const trafficSource = normalizeAuditTrafficSource(input.trafficSource)
+      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, trafficSource, errorGroupStatements)
 
       const insertLogResult = insertLog.run(
         id,
         input.traceId,
-        normalizeAuditTrafficSource(input.trafficSource),
+        trafficSource,
         input.systemAccountId ?? null,
         input.apiKeyId ?? null,
         input.groupId ?? null,
@@ -387,12 +332,13 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
   try {
     for (const prepared of preparedLogs) {
       const { input, id, createdAt, attemptIds, preparedAttempts, payloads, rawPayloadBytes, compressedPayloadBytes, compressionSavedBytes } = prepared
-      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, errorGroupStatements)
+      const trafficSource = normalizeAuditTrafficSource(input.trafficSource)
+      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, trafficSource, errorGroupStatements)
 
       const insertLogResult = insertLog.run(
         id,
         input.traceId,
-        normalizeAuditTrafficSource(input.trafficSource),
+        trafficSource,
         input.systemAccountId ?? null,
         input.apiKeyId ?? null,
         input.groupId ?? null,
@@ -503,540 +449,4 @@ function loadExistingAuditLogIds(database: ReturnType<typeof getDatasetDatabase>
     }
   }
   return existingIds
-}
-
-export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListResult {
-  const filters = buildAuditLogFilters(options)
-  const pageSize = normalizePageSize(options.pageSize, auditLogDefaultPageSize, auditLogMaxPageSize)
-  const page = normalizePage(options.page, pageSize)
-  const offset = (page - 1) * pageSize
-  const database = getDatasetDatabase()
-  const rows = database
-    .prepare(`
-      SELECT
-        al.*
-      FROM audit_logs al
-      ${filters.clause}
-      ORDER BY al.created_at DESC, al.id DESC
-      LIMIT ? OFFSET ?
-    `)
-    .all(...filters.params, pageSize + 1, offset) as AuditLogRow[]
-  const pageRows = takePageRows(rows, pageSize)
-  const rowsWithNames = hydrateAuditRows(pageRows.rows)
-  const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
-  const items = rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
-  return {
-    items,
-    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
-    hasMore: pageRows.hasMore,
-    page,
-    pageSize
-  }
-}
-
-export function listAuditLogsByIds(ids: string[]): AuditLogSummary[] {
-  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
-  if (uniqueIds.length === 0) return []
-  const database = getDatasetDatabase()
-  const rows: AuditLogRow[] = []
-  for (const chunk of chunkValues(uniqueIds, 900)) {
-    rows.push(...database
-      .prepare(`
-        SELECT al.*
-        FROM audit_logs al
-        WHERE al.id IN (${sqlPlaceholders(chunk.length)})
-      `)
-      .all(...chunk) as AuditLogRow[])
-  }
-  const order = new Map(uniqueIds.map((id, index) => [id, index]))
-  rows.sort((left, right) => {
-    const leftOrder = order.get(String(left.id ?? '')) ?? Number.MAX_SAFE_INTEGER
-    const rightOrder = order.get(String(right.id ?? '')) ?? Number.MAX_SAFE_INTEGER
-    return leftOrder - rightOrder
-  })
-  const rowsWithNames = hydrateAuditRows(rows)
-  const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
-  return rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
-}
-
-export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): AuditErrorGroupListResult {
-  const filters = buildAuditErrorGroupFilters(options)
-  const pageSize = normalizePageSize(options.pageSize, errorGroupDefaultPageSize, errorGroupMaxPageSize)
-  const page = normalizePage(options.page, pageSize)
-  const offset = (page - 1) * pageSize
-  const database = getDatasetDatabase()
-  const rows = database
-    .prepare(`
-      SELECT ${auditErrorGroupListSelectColumns('aeg')}
-      FROM audit_error_groups aeg
-      ${filters.clause}
-      ORDER BY aeg.updated_at DESC, aeg.id DESC
-      LIMIT ? OFFSET ?
-    `)
-    .all(...filters.params, pageSize + 1, offset) as AuditLogRow[]
-  const pageRows = takePageRows(rows, pageSize)
-  const rowsWithNames = hydrateAuditRows(pageRows.rows)
-  const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
-  const items = rowsWithNames.map((row) => auditErrorGroupFromRow(row, systemAccountNames))
-  return {
-    items,
-    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
-    hasMore: pageRows.hasMore,
-    page,
-    pageSize
-  }
-}
-
-export function listAuditErrorGroupEvents(errorGroupId: string, options: AuditLogListOptions = {}): AuditLogListResult {
-  return listAuditLogs({ ...options, errorGroupId })
-}
-
-export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
-  const row = getDatasetDatabase()
-    .prepare(`
-      SELECT
-        al.*
-      FROM audit_logs al
-      WHERE al.id = ?
-    `)
-    .get(id) as AuditLogRow | undefined
-  if (!row) return undefined
-  const namedRow = hydrateAuditRows([row])[0] ?? row
-
-  const attemptRows = getDatasetDatabase()
-    .prepare('SELECT * FROM audit_log_attempts WHERE audit_log_id = ? ORDER BY attempt_index ASC, id ASC')
-    .all(id) as AuditLogRow[]
-  const payloadRows = getAuditPayloadRows(id)
-  const systemAccountNames = loadSystemAccountNameMapByIds([optionalString(namedRow.system_account_id)])
-  const errorGroupId = optionalString(namedRow.error_group_id)
-  const accountNames = loadAccountNameMap(attemptRows.map((attempt) => String(attempt.account_id ?? '')).filter(Boolean))
-  const groupNames = loadGroupNameMap(attemptRows.map((attempt) => String(attempt.group_id ?? '')).filter(Boolean))
-  return {
-    ...auditLogSummaryFromRow(namedRow, systemAccountNames),
-    attempts: attemptRows.map((attempt) => auditLogAttemptFromRow(attempt, accountNames, groupNames)),
-    errorGroup: errorGroupId ? getAuditErrorGroupById(errorGroupId) : undefined,
-    payloads: payloadRows.map(auditLogPayloadSummaryFromRow)
-  }
-}
-
-function getAuditErrorGroupById(id: string): AuditErrorGroupSummary | undefined {
-  const row = getDatasetDatabase()
-    .prepare(`
-      SELECT
-        aeg.*
-      FROM audit_error_groups aeg
-      WHERE aeg.id = ?
-    `)
-    .get(id) as AuditLogRow | undefined
-  const namedRow = row ? hydrateAuditRows([row])[0] : undefined
-  const systemAccountNames = loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
-  return namedRow ? auditErrorGroupFromRow(namedRow, systemAccountNames) : undefined
-}
-
-export async function getAuditLogPayload(
-  auditLogId: string,
-  payloadId: string,
-  options: AuditLogPayloadReadOptions = {}
-): Promise<AuditLogPayloadDetail | undefined> {
-  const row = getDatasetDatabase()
-    .prepare(`
-      SELECT *
-      FROM audit_payload_refs
-      WHERE audit_log_id = ? AND id = ?
-    `)
-    .get(auditLogId, payloadId) as AuditLogRow | undefined
-  if (row) {
-    const summary = auditLogPayloadSummaryFromRow(row)
-    const headers = await readAuditHeadersBlobDetail(optionalString(row.headers_blob_id))
-    const bodyWindow = await readAuditPayloadBlobWindow(optionalString(row.body_blob_id), options)
-    return {
-      ...summary,
-      headers: headers.headers,
-      ...auditPayloadBodyDetail(bodyWindow.bytes),
-      headersStorageStatus: headers.storageStatus,
-      bodyStorageStatus: bodyWindow.storageStatus,
-      bodyOffset: bodyWindow.offset,
-      bodyLimit: bodyWindow.limit,
-      bodyBytesReturned: bodyWindow.bytes?.byteLength ?? 0,
-      bodyTotalBytes: bodyWindow.totalBytes,
-      bodyNextOffset: bodyWindow.nextOffset,
-      bodyTruncated: bodyWindow.truncated
-    }
-  }
-}
-
-function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: number, fallbackCreatedAt: string): PreparedAuditPayload {
-  const headersBlob = payload.headers
-    ? prepareAuditPayloadBlob(Buffer.from(stableJsonStringify(payload.headers), 'utf8'), auditHeadersContentType)
-    : undefined
-  const bodyBuffer = bodyToBuffer(payload.body)
-  const bodyBlob = prepareAuditPayloadBlob(bodyBuffer, payload.contentType, payload.contentEncoding)
-  const rawBodySizeBytes = normalizePayloadSizeBytes(payload.rawBodySizeBytes, bodyBlob?.rawSizeBytes ?? 0)
-  const rawSizeBytes = (headersBlob?.rawSizeBytes ?? 0) + rawBodySizeBytes
-  const compressedSizeBytes = (headersBlob?.compressedSizeBytes ?? 0) + (bodyBlob?.compressedSizeBytes ?? 0)
-  const bodySha256 = payload.bodySha256 ?? bodyBlob?.sha256
-  return {
-    id: payload.id ?? newId('audpay'),
-    attemptTempId: payload.attemptTempId,
-    partType: payload.partType,
-    sequenceIndex: payload.sequenceIndex ?? fallbackIndex,
-    contentType: payload.contentType,
-    contentEncoding: payload.contentEncoding,
-    headersBlob,
-    bodyBlob,
-    headersSha256: headersBlob?.sha256,
-    bodySha256,
-    rawSizeBytes,
-    compressedSizeBytes,
-    captureStatus: payload.captureStatus ?? 'complete',
-    createdAt: payload.createdAt ?? fallbackCreatedAt
-  }
-}
-
-async function preparePayloadInputAsync(payload: AuditLogPayloadInput, fallbackIndex: number, fallbackCreatedAt: string): Promise<PreparedAuditPayload> {
-  const headersBlob = payload.headers
-    ? await prepareAuditPayloadBlobAsync(Buffer.from(stableJsonStringify(payload.headers), 'utf8'), auditHeadersContentType)
-    : undefined
-  const bodyBuffer = bodyToBuffer(payload.body)
-  const bodyBlob = await prepareAuditPayloadBlobAsync(bodyBuffer, payload.contentType, payload.contentEncoding)
-  const rawBodySizeBytes = normalizePayloadSizeBytes(payload.rawBodySizeBytes, bodyBlob?.rawSizeBytes ?? 0)
-  const rawSizeBytes = (headersBlob?.rawSizeBytes ?? 0) + rawBodySizeBytes
-  const compressedSizeBytes = (headersBlob?.compressedSizeBytes ?? 0) + (bodyBlob?.compressedSizeBytes ?? 0)
-  const bodySha256 = payload.bodySha256 ?? bodyBlob?.sha256
-  return {
-    id: payload.id ?? newId('audpay'),
-    attemptTempId: payload.attemptTempId,
-    partType: payload.partType,
-    sequenceIndex: payload.sequenceIndex ?? fallbackIndex,
-    contentType: payload.contentType,
-    contentEncoding: payload.contentEncoding,
-    headersBlob,
-    bodyBlob,
-    headersSha256: headersBlob?.sha256,
-    bodySha256,
-    rawSizeBytes,
-    compressedSizeBytes,
-    captureStatus: payload.captureStatus ?? 'complete',
-    createdAt: payload.createdAt ?? fallbackCreatedAt
-  }
-}
-
-function planAuditPayloadBlobPersistenceForBatch(
-  database: ReturnType<typeof getDatasetDatabase>,
-  blob: PreparedAuditPayloadBlob | undefined,
-  statements: ReturnType<typeof prepareAuditPayloadBlobStatements>,
-  batchPlans: Map<string, AuditPayloadBlobPersistencePlan>
-): AuditPayloadBlobPersistencePlan | undefined {
-  if (!blob) return undefined
-  const key = auditPayloadBlobBatchKey(blob)
-  const existingPlan = batchPlans.get(key)
-  if (existingPlan) {
-    return {
-      ...existingPlan,
-      existing: true,
-      shouldWriteFile: false
-    }
-  }
-  const plan = planAuditPayloadBlobPersistence(database, blob, statements)
-  if (plan) {
-    batchPlans.set(key, plan)
-  }
-  return plan
-}
-
-function auditPayloadBlobBatchKey(blob: PreparedAuditPayloadBlob): string {
-  return `${blob.sha256}\u0000${blob.rawSizeBytes}\u0000${blob.contentType}`
-}
-
-function prepareAuditErrorGroupStatements(database: ReturnType<typeof getDatasetDatabase>): AuditErrorGroupStatements {
-  return {
-    selectExisting: database.prepare('SELECT id FROM audit_error_groups WHERE fingerprint = ? AND window_started_at = ?'),
-    updateExisting: database.prepare(`
-      UPDATE audit_error_groups
-      SET count = count + 1,
-          window_ended_at = ?,
-          last_event_id = ?,
-          sample_event_id = COALESCE(sample_event_id, ?),
-          last_message = ?,
-          updated_at = ?
-      WHERE id = ?
-    `),
-    insertGroup: database.prepare(`
-      INSERT INTO audit_error_groups (
-        id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id, group_id, account_id,
-        provider_code, path, model, status_code, error_phase, error_code, error_type, request_fingerprint,
-        error_fingerprint, count, first_event_id, last_event_id, sample_event_id, last_message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `)
-  }
-}
-
-function upsertAuditErrorGroup(
-  input: AuditLogInput,
-  auditLogId: string,
-  payloads: PreparedAuditPayload[],
-  timestamp: string,
-  statements: AuditErrorGroupStatements
-): string | null {
-  if (input.auditOutcome === 'success') {
-    return null
-  }
-  const requestFingerprint = auditRequestFingerprint(input, payloads)
-  const errorFingerprint = auditErrorFingerprint(input)
-  const windowStartedAt = auditErrorWindowStart(timestamp)
-  const windowEndedAt = new Date(Date.parse(windowStartedAt) + auditErrorGroupWindowMs).toISOString()
-  const fingerprint = sha256Text(stableJsonStringify({
-    systemAccountId: input.systemAccountId ?? '',
-    apiKeyId: input.apiKeyId ?? '',
-    groupId: input.groupId ?? '',
-    accountId: input.accountId ?? '',
-    providerCode: input.providerCode ?? '',
-    trafficSource: normalizeAuditTrafficSource(input.trafficSource),
-    path: input.path,
-    model: input.model ?? '',
-    statusCode: input.finalStatusCode ?? '',
-    errorPhase: input.errorPhase ?? '',
-    errorCode: input.errorCode ?? '',
-    requestFingerprint,
-    errorFingerprint
-  }))
-  const existing = statements.selectExisting.get(fingerprint, windowStartedAt) as AuditLogRow | undefined
-  const existingId = optionalString(existing?.id)
-  if (existingId) {
-    statements.updateExisting.run(windowEndedAt, auditLogId, auditLogId, input.errorMessage ?? null, timestamp, existingId)
-    return existingId
-  }
-
-  const id = newId('audgrp')
-  statements.insertGroup.run(
-    id,
-    fingerprint,
-    windowStartedAt,
-    windowEndedAt,
-    input.systemAccountId ?? null,
-    input.apiKeyId ?? null,
-    input.groupId ?? null,
-    input.accountId ?? null,
-    input.providerCode ?? null,
-    input.path,
-    input.model ?? null,
-    input.finalStatusCode ?? null,
-    input.errorPhase ?? null,
-    input.errorCode ?? null,
-    input.auditOutcome,
-    requestFingerprint,
-    errorFingerprint,
-    auditLogId,
-    auditLogId,
-    auditLogId,
-    input.errorMessage ?? null,
-    timestamp,
-    timestamp
-  )
-  return id
-}
-
-function auditRequestFingerprint(input: AuditLogInput, payloads: PreparedAuditPayload[]): string {
-  const clientRequest = payloads.find((payload) => payload.partType === 'client_request')
-  return sha256Text(stableJsonStringify({
-    method: input.method,
-    path: input.path,
-    model: input.model ?? '',
-    stream: input.stream === true,
-    bodySha256: clientRequest?.bodySha256 ?? ''
-  }))
-}
-
-function auditErrorFingerprint(input: AuditLogInput): string {
-  const failedAttempt = input.attempts.find((attempt) => attempt.success === false)
-  return sha256Text(stableJsonStringify({
-    outcome: input.auditOutcome,
-    statusCode: input.finalStatusCode ?? failedAttempt?.upstreamStatusCode ?? '',
-    phase: input.errorPhase ?? failedAttempt?.errorPhase ?? '',
-    code: input.errorCode ?? failedAttempt?.errorCode ?? '',
-    message: normalizeErrorMessage(input.errorMessage ?? failedAttempt?.errorMessage ?? '')
-  }))
-}
-
-function normalizeAuditTrafficSource(value: unknown): AuditTrafficSource {
-  if (value === undefined) return 'gateway'
-  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
-    return value
-  }
-  throw new Error(`非法审计流量来源：${String(value)}`)
-}
-
-function normalizeErrorMessage(value: string): string {
-  return value
-    .slice(0, 500)
-    .replace(/[0-9a-f]{16,}/gi, '{hex}')
-    .replace(/\d{3,}/g, '{num}')
-}
-
-function auditErrorWindowStart(timestamp: string): string {
-  const time = Date.parse(timestamp)
-  const safeTime = Number.isFinite(time) ? time : Date.now()
-  return new Date(Math.floor(safeTime / auditErrorGroupWindowMs) * auditErrorGroupWindowMs).toISOString()
-}
-
-function getAuditPayloadRows(auditLogId: string): AuditLogRow[] {
-  return getDatasetDatabase()
-    .prepare('SELECT * FROM audit_payload_refs WHERE audit_log_id = ? ORDER BY sequence_index ASC, id ASC')
-    .all(auditLogId) as AuditLogRow[]
-}
-
-function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; params: AuditLogFilterValue[] } {
-  const clauses: string[] = []
-  const params: AuditLogFilterValue[] = []
-
-  pushPrefixFilter(clauses, params, 'al.trace_id', options.traceId)
-  pushExactFilter(clauses, params, 'al.path', options.path)
-  pushExactFilter(clauses, params, 'al.model', options.model)
-  pushPrefixFilter(clauses, params, 'al.client_ip', options.clientIp)
-  if (options.outcome && options.outcome !== 'all') {
-    clauses.push('al.audit_outcome = ?')
-    params.push(options.outcome)
-  }
-  if (isHttpStatusCode(options.statusCode)) {
-    clauses.push('al.final_status_code = ?')
-    params.push(options.statusCode)
-  }
-  if (options.trafficSource) {
-    clauses.push('al.traffic_source = ?')
-    params.push(options.trafficSource)
-  }
-  for (const [column, value] of [
-    ['al.system_account_id', options.systemAccountId],
-    ['al.api_key_id', options.apiKeyId],
-    ['al.group_id', options.groupId],
-    ['al.account_id', options.accountId],
-    ['al.error_group_id', options.errorGroupId]
-  ] as const) {
-    if (value?.trim()) {
-      clauses.push(`${column} = ?`)
-      params.push(value.trim())
-    }
-  }
-
-  return {
-    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
-    params
-  }
-}
-
-function buildAuditErrorGroupFilters(options: AuditErrorGroupListOptions): { clause: string; params: AuditLogFilterValue[] } {
-  const clauses: string[] = []
-  const params: AuditLogFilterValue[] = []
-
-  pushExactFilter(clauses, params, 'aeg.path', options.path)
-  pushExactFilter(clauses, params, 'aeg.model', options.model)
-  if (isHttpStatusCode(options.statusCode)) {
-    clauses.push('aeg.status_code = ?')
-    params.push(options.statusCode)
-  }
-  for (const [column, value] of [
-    ['aeg.system_account_id', options.systemAccountId],
-    ['aeg.api_key_id', options.apiKeyId],
-    ['aeg.group_id', options.groupId],
-    ['aeg.account_id', options.accountId]
-  ] as const) {
-    if (value?.trim()) {
-      clauses.push(`${column} = ?`)
-      params.push(value.trim())
-    }
-  }
-
-  return {
-    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
-    params
-  }
-}
-
-function pushExactFilter(clauses: string[], params: AuditLogFilterValue[], column: string, value?: string): void {
-  const text = value?.trim()
-  if (!text) return
-  clauses.push(`${column} = ?`)
-  params.push(text)
-}
-
-function pushPrefixFilter(clauses: string[], params: AuditLogFilterValue[], column: string, value?: string): void {
-  const text = value?.trim()
-  if (!text) return
-  clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, `${text}\uffff`)
-}
-
-function auditErrorGroupListSelectColumns(alias: string): string {
-  return [
-    'id',
-    'fingerprint',
-    'window_started_at',
-    'window_ended_at',
-    'system_account_id',
-    'api_key_id',
-    'group_id',
-    'account_id',
-    'provider_code',
-    'path',
-    'model',
-    'status_code',
-    'error_phase',
-    'error_code',
-    'error_type',
-    'request_fingerprint',
-    'error_fingerprint',
-    'count',
-    'first_event_id',
-    'last_event_id',
-    'sample_event_id',
-    'last_message',
-    'created_at',
-    'updated_at'
-  ].map((column) => `${alias}.${column}`).join(', ')
-}
-
-function normalizePage(value: unknown, pageSize: number): number {
-  const maxPage = Math.max(1, Math.floor((auditLogMaxListWindowRows - 1) / Math.max(1, Math.trunc(pageSize))))
-  return typeof value === 'number' && Number.isInteger(value)
-    ? Math.min(maxPage, Math.max(1, value))
-    : 1
-}
-
-function normalizePageSize(value: unknown, fallback: number, max: number): number {
-  return typeof value === 'number' && Number.isInteger(value)
-    ? Math.min(max, Math.max(1, value))
-    : fallback
-}
-
-function bodyToBuffer(body: Buffer | string | undefined): Buffer | undefined {
-  if (body === undefined) return undefined
-  return Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8')
-}
-
-function normalizePayloadSizeBytes(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
-    : fallback
-}
-
-function stableJsonStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJsonStringify).join(',')}]`
-  }
-  if (value && typeof value === 'object') {
-    const object = value as Record<string, unknown>
-    return `{${Object.keys(object)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(object[key])}`)
-      .join(',')}}`
-  }
-  return JSON.stringify(value)
-}
-
-function sha256Text(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
-}
-
-function isHttpStatusCode(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
 }

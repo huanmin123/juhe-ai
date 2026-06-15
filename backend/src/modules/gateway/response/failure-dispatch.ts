@@ -257,6 +257,9 @@ export async function handleFailedUpstreamResponse(
       errorCode: stringValue(parsedError.code) || undefined,
       errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
       cooldownUntil: policyDecision?.cooldownUntil,
+      trafficSource: usageContext.trafficSource,
+      clientIp: usageContext.clientIp,
+      apiKeyId: usageContext.apiKeyId,
       source: 'upstream_response_failed'
     })
   }
@@ -433,6 +436,9 @@ export async function handleUpstreamRequestError(
     recordGatewayAccountApiKeyFailure(account, {
       status: 'temporary_unavailable',
       errorMessage: message,
+      trafficSource: usageContext.trafficSource,
+      clientIp: usageContext.clientIp,
+      apiKeyId: usageContext.apiKeyId,
       source: 'upstream_request_failed'
     })
   }

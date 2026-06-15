@@ -17,6 +17,7 @@ import {
 } from './upstream/request.js'
 import {
   gatewayStreamClientRetryErrorCode,
+  gatewayStreamClientRetryMessage,
   gatewayErrorPayload,
   sendGatewayErrorResponse,
   shouldHandleOpenAIUpstreamResponseAsStream,
@@ -541,6 +542,30 @@ export async function handleOpenAIGatewayRequest(
     }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : '没有可用的上游账户'
+    if (shouldSendCodexDispatchExhaustedStreamRetry(currentPreflight, error, res)) {
+      confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'codex_dispatch_exhausted_retryable_sse')
+      auditCapture.addGatewayMetadata({
+        label: 'codex_dispatch_exhausted_retryable_sse',
+        metadata: {
+          lastAttemptAccountId: lastAttempt?.accountId,
+          lastAttemptStatus: lastAttempt?.status,
+          failedAccountIds: error.failedAccountIds
+        }
+      })
+      sendPreCommitStreamRetryExhaustedResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: gatewayUsageContext,
+        startedAt,
+        retryReason: 'codex_pre_commit_stream_failure',
+        message: gatewayStreamClientRetryMessage,
+        errorCode: gatewayStreamClientRetryErrorCode,
+        accountId: lastAttempt?.accountId,
+        clientStrategy: currentPreflight.clientStrategy
+      })
+      return
+    }
     const diagnosticError = options.exposeUpstreamDiagnostics
       ? buildDiagnosticUpstreamError(lastAttempt, message)
       : undefined
@@ -630,6 +655,19 @@ function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccoun
     return accounts
   }
   return accounts.filter((account) => !excludedAccountIds.has(account.id))
+}
+
+function shouldSendCodexDispatchExhaustedStreamRetry(
+  preflight: OpenAIGatewayDispatchContext,
+  error: unknown,
+  res: Response
+): error is UpstreamAttemptError {
+  return error instanceof UpstreamAttemptError
+    && preflight.clientStrategy.allowCodexStreamClientRetry
+    && preflight.clientStrategy.downstreamProtocol === 'responses_sse'
+    && !res.headersSent
+    && !res.writableEnded
+    && !res.destroyed
 }
 
 async function selectCodexProbeVerifiedDispatchAccount(input: {

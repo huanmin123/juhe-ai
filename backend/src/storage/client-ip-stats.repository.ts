@@ -2,28 +2,17 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
-import { dateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import {
   USAGE_STATS_RECORD_SELECT_COLUMNS,
   type StatsJobStateRow,
-  type UsageStatsAccumulator,
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
-import { usageStatsAccumulatorFromRecord } from './usage-stats-aggregation.js'
-import {
-  clientIpRegistryBucketCount,
-  normalizeClientIpForStats,
-  type NormalizedClientIp
-} from './client-ip-normalization.js'
 import {
   listClientIpStats as listClientIpStatsFromWindow,
   type ClientIpStatsListOptions,
   type ClientIpStatsListResult
 } from './client-ip-stats-list.repository.js'
-import {
-  markClientIpRangeWindowsDirty,
-  markCurrentClientIpUsageRangeWindowsStale
-} from './client-ip-usage-range-windows.repository.js'
+import { writeClientIpStatsAggregatesFromUsageRows } from './client-ip-stats-writer.js'
 
 export { normalizeClientIpForStats, type NormalizedClientIp } from './client-ip-normalization.js'
 export type {
@@ -59,35 +48,6 @@ const clientIpStatsJobName = 'client_ip_stats_aggregation'
 const cursorSafetyDelaySeconds = 5
 const clientIpStatsMaxShardsPerBatch = 16
 let clientIpStatsShardScanOffset = 0
-const ipRegistryBuckets = new Map<number, Set<string>>()
-
-type DatabaseStatement = ReturnType<DatabaseSync['prepare']>
-
-interface ClientIpAggregate {
-  normalized: NormalizedClientIp
-  requestCount: number
-  successCount: number
-  errorCount: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheReadCostUsd: number
-  totalCostUsd: number
-  durationMsSum: number
-  durationMsCount: number
-  durationMsMax: number
-  firstTokenMsSum: number
-  firstTokenMsCount: number
-  firstSeenAt: string
-  lastUsedAt: string
-  lastErrorAt?: string
-}
-
-interface ClientIpAggregateStatements {
-  registerInsert: DatabaseStatement
-  registerUpdate: DatabaseStatement
-  dailyUpsert: DatabaseStatement
-}
 
 export function aggregateClientIpStatsBatch(limit = 2000): number {
   const database = getStatsDatabase()
@@ -131,8 +91,7 @@ export function aggregateClientIpStatsBatch(limit = 2000): number {
         .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, rowLimit) as unknown as UsageStatsRecordRow[]
 
       if (rows.length > 0) {
-        const aggregates = buildClientIpAggregates(rows)
-        writeClientIpAggregates(database, aggregates, updatedAt)
+        writeClientIpStatsAggregatesFromUsageRows(database, rows, updatedAt)
         processedRows += rows.length
         const last = rows[rows.length - 1]
         updateClientIpStatsShardJobState(database, location, {
@@ -209,185 +168,6 @@ export function latestClientIpStatsLagSeconds(): number | undefined {
     .get(clientIpStatsJobName) as unknown as { lag_seconds?: number | null } | undefined
   const value = row?.lag_seconds
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function buildClientIpAggregates(rows: UsageStatsRecordRow[]): ClientIpAggregate[] {
-  const aggregates = new Map<string, ClientIpAggregate>()
-  for (const row of rows) {
-    const normalized = normalizeClientIpForStats(row.client_ip)
-    if (!normalized) continue
-    const statDate = dateKey(new Date(row.created_at), usageStatsTimezone())
-    const key = `${normalized.ipHash}:${statDate}`
-    const accumulator = usageStatsAccumulatorFromRecord(row)
-    const current = aggregates.get(key)
-    if (current) {
-      addAccumulatorToClientIpAggregate(current, accumulator, row.created_at)
-      continue
-    }
-    aggregates.set(key, {
-      normalized,
-      requestCount: accumulator.requestCount,
-      successCount: accumulator.successCount,
-      errorCount: accumulator.errorCount,
-      inputTokens: accumulator.inputTokens,
-      outputTokens: accumulator.outputTokens,
-      cacheReadTokens: accumulator.cacheReadTokens,
-      cacheReadCostUsd: accumulator.cacheReadCostUsd,
-      totalCostUsd: accumulator.totalCostUsd,
-      durationMsSum: accumulator.durationMsSum,
-      durationMsCount: accumulator.durationMsCount,
-      durationMsMax: accumulator.durationMsMax,
-      firstTokenMsSum: accumulator.firstTokenMsSum,
-      firstTokenMsCount: accumulator.firstTokenMsCount,
-      firstSeenAt: row.created_at,
-      lastUsedAt: row.created_at,
-      lastErrorAt: accumulator.lastErrorAt
-    })
-  }
-  return [...aggregates.values()]
-}
-
-function writeClientIpAggregates(database: DatabaseSync, aggregates: ClientIpAggregate[], updatedAt: string): void {
-  if (!aggregates.length) return
-  const dirtyIpHashes = new Set<string>()
-  const statements = prepareClientIpAggregateStatements(database)
-  for (const aggregate of aggregates) {
-    dirtyIpHashes.add(aggregate.normalized.ipHash)
-    registerClientIp(statements, aggregate.normalized, aggregate.firstSeenAt, aggregate.lastUsedAt, updatedAt)
-    upsertClientIpDaily(statements, aggregate, updatedAt)
-  }
-  markCurrentClientIpUsageRangeWindowsStale(database)
-  markClientIpRangeWindowsDirty(database, dirtyIpHashes, updatedAt)
-}
-
-function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAggregateStatements {
-  return {
-    registerInsert: database.prepare(`
-      INSERT OR IGNORE INTO client_ip_registry (
-        ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
-        first_seen_at, last_seen_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `),
-    registerUpdate: database.prepare(`
-      UPDATE client_ip_registry
-      SET client_ip = ?,
-        first_seen_at = CASE WHEN first_seen_at > ? THEN ? ELSE first_seen_at END,
-        last_seen_at = CASE WHEN last_seen_at < ? THEN ? ELSE last_seen_at END,
-        updated_at = ?
-      WHERE ip_hash = ?
-    `),
-    dailyUpsert: database.prepare(`
-      INSERT INTO client_ip_stats_daily (
-        ip_hash, stat_date, request_count, success_count, error_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
-        duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count,
-        last_used_at, last_error_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(ip_hash, stat_date) DO UPDATE SET
-        request_count = request_count + excluded.request_count,
-        success_count = success_count + excluded.success_count,
-        error_count = error_count + excluded.error_count,
-        input_tokens = input_tokens + excluded.input_tokens,
-        output_tokens = output_tokens + excluded.output_tokens,
-        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-        cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
-        total_cost_usd = total_cost_usd + excluded.total_cost_usd,
-        duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
-        duration_ms_count = duration_ms_count + excluded.duration_ms_count,
-        duration_ms_max = MAX(duration_ms_max, excluded.duration_ms_max),
-        first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
-        first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
-        last_used_at = CASE WHEN client_ip_stats_daily.last_used_at IS NULL OR excluded.last_used_at > client_ip_stats_daily.last_used_at THEN excluded.last_used_at ELSE client_ip_stats_daily.last_used_at END,
-        last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN client_ip_stats_daily.last_error_at WHEN client_ip_stats_daily.last_error_at IS NULL OR excluded.last_error_at > client_ip_stats_daily.last_error_at THEN excluded.last_error_at ELSE client_ip_stats_daily.last_error_at END,
-        updated_at = excluded.updated_at
-    `)
-  }
-}
-
-function registerClientIp(
-  statements: ClientIpAggregateStatements,
-  normalized: NormalizedClientIp,
-  firstSeenAt: string,
-  lastSeenAt: string,
-  updatedAt: string
-): void {
-  const bucket = registryBucket(normalized.bucketNo)
-  if (!bucket.has(normalized.ipHash)) {
-    statements.registerInsert.run(
-      normalized.ipHash,
-      normalized.bucketNo,
-      normalized.aggregateIpKey,
-      normalized.clientIp,
-      normalized.ipVersion,
-      firstSeenAt,
-      lastSeenAt,
-      updatedAt,
-      updatedAt
-    )
-    bucket.add(normalized.ipHash)
-  }
-  statements.registerUpdate.run(
-    normalized.clientIp,
-    firstSeenAt,
-    firstSeenAt,
-    lastSeenAt,
-    lastSeenAt,
-    updatedAt,
-    normalized.ipHash
-  )
-}
-
-function upsertClientIpDaily(statements: ClientIpAggregateStatements, aggregate: ClientIpAggregate, updatedAt: string): void {
-  statements.dailyUpsert.run(
-    aggregate.normalized.ipHash,
-    dateKey(new Date(aggregate.firstSeenAt), usageStatsTimezone()),
-    aggregate.requestCount,
-    aggregate.successCount,
-    aggregate.errorCount,
-    aggregate.inputTokens,
-    aggregate.outputTokens,
-    aggregate.cacheReadTokens,
-    aggregate.cacheReadCostUsd,
-    aggregate.totalCostUsd,
-    aggregate.durationMsSum,
-    aggregate.durationMsCount,
-    aggregate.durationMsMax,
-    aggregate.firstTokenMsSum,
-    aggregate.firstTokenMsCount,
-    aggregate.lastUsedAt,
-    aggregate.lastErrorAt ?? null,
-    updatedAt
-  )
-}
-
-function registryBucket(bucketNo: number): Set<string> {
-  const normalizedBucket = Number.isInteger(bucketNo) ? Math.max(0, Math.min(clientIpRegistryBucketCount - 1, bucketNo)) : 0
-  const current = ipRegistryBuckets.get(normalizedBucket)
-  if (current) return current
-  const bucket = new Set<string>()
-  ipRegistryBuckets.set(normalizedBucket, bucket)
-  return bucket
-}
-
-function addAccumulatorToClientIpAggregate(target: ClientIpAggregate, accumulator: UsageStatsAccumulator, createdAt: string): void {
-  target.requestCount += accumulator.requestCount
-  target.successCount += accumulator.successCount
-  target.errorCount += accumulator.errorCount
-  target.inputTokens += accumulator.inputTokens
-  target.outputTokens += accumulator.outputTokens
-  target.cacheReadTokens += accumulator.cacheReadTokens
-  target.cacheReadCostUsd += accumulator.cacheReadCostUsd
-  target.totalCostUsd += accumulator.totalCostUsd
-  target.durationMsSum += accumulator.durationMsSum
-  target.durationMsCount += accumulator.durationMsCount
-  target.durationMsMax = Math.max(target.durationMsMax, accumulator.durationMsMax)
-  target.firstTokenMsSum += accumulator.firstTokenMsSum
-  target.firstTokenMsCount += accumulator.firstTokenMsCount
-  if (createdAt < target.firstSeenAt) target.firstSeenAt = createdAt
-  if (createdAt > target.lastUsedAt) target.lastUsedAt = createdAt
-  if (accumulator.lastErrorAt && (!target.lastErrorAt || accumulator.lastErrorAt > target.lastErrorAt)) {
-    target.lastErrorAt = accumulator.lastErrorAt
-  }
 }
 
 function clientIpStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof listUsageRecordShardLocationsPage> {

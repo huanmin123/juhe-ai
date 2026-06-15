@@ -6,7 +6,7 @@ import type {
   AuditOutcome,
   AuditPayloadCaptureStatus,
   AuditPayloadPartType
-} from './audit-logs.repository.js'
+} from './audit-log-types.js'
 import { sanitizeUrlCredentialsForLog } from '../shared/request-context.js'
 import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'

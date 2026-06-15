@@ -1,0 +1,168 @@
+:global(body.responsive-data-list-scroll-lock) {
+  overflow: hidden;
+}
+
+.responsive-data-list {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.responsive-data-list-table {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.responsive-data-list-table-natural {
+  display: block;
+  flex: initial;
+  overflow: visible;
+}
+
+.responsive-data-list-table :deep(.ant-spin-nested-loading),
+.responsive-data-list-table :deep(.ant-spin-container) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.responsive-data-list-table-natural :deep(.ant-spin-nested-loading),
+.responsive-data-list-table-natural :deep(.ant-spin-container) {
+  display: block;
+  flex: initial;
+}
+
+.responsive-data-list-table :deep(.ant-table) {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.responsive-data-list-table-natural :deep(.ant-table) {
+  flex: initial;
+}
+
+.responsive-data-list-table :deep(.ant-table-body) {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-clickable-row) {
+  cursor: pointer;
+}
+
+.responsive-data-list-table-overlay-scrollbar :deep(.ant-table-cell-scrollbar) {
+  display: none;
+}
+
+.responsive-data-list-table-overlay-scrollbar :deep(.ant-table-header table) {
+  width: calc(100% - var(--responsive-data-list-scrollbar-placeholder-width, 0px)) !important;
+}
+
+.responsive-data-list-table-overlay-scrollbar :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right) {
+  right: 0 !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column) {
+  padding-inline: 8px !important;
+  white-space: nowrap;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-first::after),
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-last::after) {
+  box-shadow: none !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-first),
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-last) {
+  border-left: 1px solid #edf1f7;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-space) {
+  column-gap: 6px !important;
+  row-gap: 6px !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-btn-link) {
+  padding-inline: 0 !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-flex-column) {
+  min-width: 0;
+}
+
+.responsive-data-list-cards {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.responsive-data-list-cards-virtualized {
+  gap: 0;
+}
+
+.responsive-data-list-item {
+  min-width: 0;
+  box-sizing: border-box;
+  padding-bottom: 12px;
+}
+
+.responsive-data-list-item-last {
+  padding-bottom: 0;
+}
+
+.responsive-data-list-virtual-spacer {
+  min-height: 0;
+  pointer-events: none;
+}
+
+.responsive-data-list-pull,
+.responsive-data-list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.responsive-data-list-footer-clickable {
+  cursor: pointer;
+}
+
+.responsive-data-list-footer-clickable:hover {
+  color: #1677ff;
+}
+
+.responsive-data-list-pull {
+  min-height: 0;
+  height: 0;
+  overflow: hidden;
+  transition: height 0.18s ease;
+}
+
+.responsive-data-list-pull.active {
+  height: 34px;
+}
+
+.responsive-data-list-loading {
+  display: flex;
+  justify-content: center;
+  padding: 36px 0;
+}
+
+.responsive-data-list-table-placeholder {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+}

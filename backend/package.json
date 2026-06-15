@@ -48,6 +48,7 @@
     "test:account-name-uniqueness": "tsx src/scripts/regression/account-name-uniqueness-regression.ts",
     "test:account-credential-duplicates": "tsx src/scripts/regression/account-credential-duplicates-regression.ts",
     "test:account-api-key-gateway-mock-ai": "tsx src/scripts/regression/account-api-key-gateway-mock-ai-regression.ts",
+    "test:account-api-key-failure-guard": "tsx src/scripts/regression/account-api-key-failure-guard-regression.ts",
     "test:group-options-lightweight": "tsx src/scripts/regression/group-options-lightweight-regression.ts",
     "test:default-group-current-contract": "tsx src/scripts/regression/default-group-current-contract-regression.ts",
     "test:group-scheduling-policy": "tsx src/scripts/regression/group-scheduling-policy-regression.ts",

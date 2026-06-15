@@ -85,15 +85,6 @@ export function handleStreamFailure(
   recordGatewayUpstreamBucketFailure(account, '流式响应失败')
   const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
-  recordGatewayAccountApiKeyFailure(account, {
-    status: 'temporary_unavailable',
-    errorCode,
-    errorMessage: reasonWithCode,
-    source: 'stream_failure'
-  })
-  if (isolateAccountApiKeyFailure) {
-    return
-  }
   if (usageContext?.trafficSource === 'gateway') {
     if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {
       getRequestLogger().info({
@@ -105,6 +96,18 @@ export function handleStreamFailure(
         downstreamBytesWritten: context.downstreamBytesWritten,
         outputReceived: context.outputReceived
       }, '流式失败未产生可见模型输出，已跳过账号运行态副作用')
+      return
+    }
+    recordGatewayAccountApiKeyFailure(account, {
+      status: 'temporary_unavailable',
+      errorCode,
+      errorMessage: reasonWithCode,
+      trafficSource: usageContext.trafficSource,
+      clientIp: usageContext.clientIp,
+      apiKeyId: usageContext.apiKeyId,
+      source: 'stream_failure'
+    })
+    if (isolateAccountApiKeyFailure) {
       return
     }
     const runtimeReason = `流式响应失败：${reason}`
@@ -119,6 +122,16 @@ export function handleStreamFailure(
       forcePrecheck: localSuppression.action === 'precheck_required'
     })
   } else {
+    recordGatewayAccountApiKeyFailure(account, {
+      status: 'temporary_unavailable',
+      errorCode,
+      errorMessage: reasonWithCode,
+      trafficSource: usageContext?.trafficSource,
+      source: 'stream_failure'
+    })
+    if (isolateAccountApiKeyFailure) {
+      return
+    }
     applyAccountErrorHandlingWithCacheInvalidation(account, {
       success: false,
       errorMessage: reasonWithCode,

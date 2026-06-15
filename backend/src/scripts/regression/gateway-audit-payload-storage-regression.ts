@@ -48,6 +48,9 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const model = 'gpt-5.4-mini'
 
+auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+
 const nonStreamSuccessBody = JSON.stringify({
   id: 'resp_audit_non_stream_success',
   object: 'response',
@@ -107,6 +110,8 @@ try {
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   try {
     cleanupAuditBlobFilesForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()

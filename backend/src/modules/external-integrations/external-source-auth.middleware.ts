@@ -1,10 +1,10 @@
 import type { NextFunction, Request, Response } from 'express'
 
+import { validateExternalIntegrationSourceToken } from '../../storage/external-integration-source-auth.repository.js'
 import {
   type ExternalIntegrationSourceAuthContext,
-  type ExternalIntegrationRateLimitRule,
-  validateExternalIntegrationSourceToken
-} from '../../storage/external-integration-source.repository.js'
+  type ExternalIntegrationRateLimitRule
+} from '../../storage/external-integration-source-types.js'
 
 const rateLimitStates = new Map<string, { windowStartedAt: number; count: number }>()
 const rateLimitCleanupThreshold = 1000

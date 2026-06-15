@@ -34,12 +34,7 @@ import {
   accountTypeChoicesForProfile
 } from './accountEditFormDisplay'
 import { defaultAccountClientCompatibility, defaultAccountForm } from './accountFormDefaults'
-import { accountAvailabilityScheduleFormFingerprint, createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
-import {
-  asString,
-  isAuthorizedAccount,
-  parseStrictDatePickerValue
-} from './accountFormatters'
+import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
@@ -47,15 +42,15 @@ import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm, type AccountSavePayload } from './accountSavePayload'
 import {
-  accountApiKeysForForm,
-  accountApiKeyWeightsForForm,
   accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload,
-  accountTagNames,
-  cloneAccountModelMappings,
-  cloneAccountName,
   normalizeFormTagNames,
   sameTagNames
 } from './accountEditFormPayload'
+import {
+  AccountEditFormLoadError,
+  buildAccountCloneFormLoad,
+  buildAccountEditFormLoad
+} from './accountEditFormLoaders'
 import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
@@ -293,21 +288,21 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
     if (!sourceAccount || !isCurrentFormOpenRequest(requestToken)) return
     const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
-    const baseUrl = credentialBaseUrlForForm(sourceAccount.credentials, '账户详情凭据')
-    const errorPolicyRules = loadCredentialErrorPolicyRules(sourceAccount.credentials, '账户详情错误处理策略')
-    const responseInspectionRules = loadCredentialResponseInspectionRules(sourceAccount.credentials, '账户详情响应检查策略')
-    if (!baseUrl || !errorPolicyRules || !responseInspectionRules) return
     const selectedGroup = sourceAccount.boundGroupId
       ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
       : undefined
-    let accountExpiresAt: AccountFormModel['accountExpiresAt']
-    let availabilitySchedule: AccountFormModel['availabilitySchedule']
+    const fallbackGroupId = options.groupIdForAccount(sourceAccount.id)
+    let formLoad: ReturnType<typeof buildAccountEditFormLoad>
     try {
-      accountExpiresAt = parseStrictDatePickerValue(sourceAccount.accountExpiresAt, '账户过期时间')
-      availabilitySchedule = createAccountAvailabilityScheduleForm(accountAvailabilityScheduleForForm(sourceAccount))
+      formLoad = buildAccountEditFormLoad({
+        account: sourceAccount,
+        credentials: sourceAccount.credentials,
+        defaults,
+        fallbackGroupId,
+        selectedGroup
+      })
     } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '账户数据结构异常，请清理后再编辑'))
+      reportAccountFormLoadError(error, '账户数据结构异常，请清理后再编辑')
       return
     }
     editingId.value = sourceAccount.id
@@ -315,37 +310,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = undefined
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(editScopeParams?.systemAccountId)
-    Object.assign(form, defaults, {
-      providerCode: sourceAccount.providerCode,
-      providerProtocolProfileId: sourceAccount.providerProtocolProfileId ?? defaults.providerProtocolProfileId,
-      name: sourceAccount.name,
-      type: sourceAccount.type,
-      concurrencyLimit: sourceAccount.concurrencyLimit,
-      priority: sourceAccount.priority,
-      clientCompatibility: sourceAccount.providerCode === GPT_VENDOR_CODE && sourceAccount.type === 'oauth'
-        ? 'codex_responses'
-        : sourceAccount.clientCompatibility ?? defaultAccountClientCompatibility(sourceAccount.providerCode),
-      proxyProfileId: sourceAccount.proxyProfileId,
-      accountExpiresAt,
-      groupId: selectedGroup?.id ?? options.groupIdForAccount(sourceAccount.id),
-      group: selectedGroup,
-      apiKey: asString(sourceAccount.credentials.api_key) ?? '',
-      apiKeys: accountApiKeysForForm(sourceAccount.credentials),
-      apiKeyStrategy: sourceAccount.credentials.api_key_strategy === 'weighted_round_robin' ? 'weighted_round_robin' : 'round_robin',
-      apiKeyWeights: accountApiKeyWeightsForForm(sourceAccount.credentials),
-      baseUrl,
-      accessToken: asString(sourceAccount.credentials.access_token) ?? '',
-      refreshToken: asString(sourceAccount.credentials.refresh_token) ?? '',
-      supportedModels: [...(sourceAccount.supportedModels ?? [])],
-      modelMappings: cloneAccountModelMappings(sourceAccount.modelMappings),
-      tags: accountTagNames(sourceAccount.tags),
-      availabilitySchedule,
-      notes: sourceAccount.notes ?? ''
-    })
-    editingScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
+    Object.assign(form, formLoad.patch)
+    editingScheduleFingerprint.value = formLoad.scheduleFingerprint
     cloningScheduleFingerprint.value = undefined
-    accountErrorPolicyRules.value = errorPolicyRules
-    accountResponseInspectionRules.value = responseInspectionRules
+    accountErrorPolicyRules.value = formLoad.errorPolicyRules
+    accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
@@ -372,7 +341,29 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = sourceAccount.id
     creatingAccountScopeParams.value = cloneScopeParams
     void options.loadAccountOptions(cloneScopeParams?.systemAccountId)
-    if (!fillCloneForm(sourceAccount, sourceAccount.credentials)) return
+    const defaults = defaultForm(sourceAccount.providerCode, sourceAccount.type, sourceAccount.providerProtocolProfileId)
+    const selectedGroup = sourceAccount.boundGroupId
+      ? groupSelectionForId(sourceAccount.boundGroupId, sourceAccount.boundGroupName)
+      : undefined
+    const fallbackGroupId = options.groupIdForAccount(sourceAccount.id)
+    let formLoad: ReturnType<typeof buildAccountCloneFormLoad>
+    try {
+      formLoad = buildAccountCloneFormLoad({
+        account: sourceAccount,
+        credentials: sourceAccount.credentials,
+        defaults,
+        fallbackGroupId,
+        selectedGroup
+      })
+    } catch (error) {
+      reportAccountFormLoadError(error, '克隆来源账户数据结构异常，请清理后再克隆')
+      return
+    }
+    Object.assign(form, formLoad.patch)
+    cloningScheduleFingerprint.value = formLoad.scheduleFingerprint
+    accountErrorPolicyRules.value = formLoad.errorPolicyRules
+    accountResponseInspectionRules.value = formLoad.responseInspectionRules
+    authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true, {
       providerCode: sourceAccount.providerCode,
@@ -624,95 +615,19 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return { id: normalizedId, name: normalizedName }
   }
 
-  function accountAvailabilityScheduleForForm(account: AccountSummary) {
-    return isAuthorizedAccount(account)
-      ? account.authorizationInstanceSourceAccountAvailabilitySchedule
-      : account.availabilitySchedule
-  }
-
-  function credentialBaseUrlForForm(credentials: Record<string, unknown>, label: string): string | undefined {
-    const baseUrl = asString(credentials.base_url)
-    if (!baseUrl) {
-      message.error(`${label}缺少 Base URL，请先修正账户凭据`)
-      return undefined
+  function reportAccountFormLoadError(error: unknown, fallbackMessage: string): void {
+    if (error instanceof AccountEditFormLoadError) {
+      if (error.log) {
+        console.error(error.cause ?? error)
+      }
+      message.error(error.fallbackMessage
+        ? options.extractApiErrorMessage(error.cause ?? error, error.fallbackMessage)
+        : error.message
+      )
+      return
     }
-    return baseUrl
-  }
-
-  function loadCredentialErrorPolicyRules(credentials: Record<string, unknown>, label: string): AccountErrorPolicyRuleForm[] | undefined {
-    try {
-      return loadAccountErrorPolicyRules(credentials)
-    } catch (error) {
-      console.error(error)
-      message.error(`${label}配置异常，请先修正已保存的账户凭据`)
-      return undefined
-    }
-  }
-
-  function loadCredentialResponseInspectionRules(credentials: Record<string, unknown>, label: string): AccountResponseInspectionRuleForm[] | undefined {
-    try {
-      return loadAccountResponseInspectionRules(credentials)
-    } catch (error) {
-      console.error(error)
-      message.error(`${label}配置异常，请先修正已保存的账户凭据`)
-      return undefined
-    }
-  }
-
-  function fillCloneForm(account: AccountSummary, credentials: Record<string, unknown>): boolean {
-    const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
-    const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '克隆来源响应检查策略')
-    if (!errorPolicyRules || !responseInspectionRules) return false
-    const baseUrl = credentialBaseUrlForForm(credentials, '克隆来源凭据')
-    if (!baseUrl) return false
-    const selectedGroup = account.boundGroupId
-      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
-      : undefined
-    const defaults = defaultForm(account.providerCode, account.type, account.providerProtocolProfileId)
-    let accountExpiresAt: AccountFormModel['accountExpiresAt']
-    let availabilitySchedule: AccountFormModel['availabilitySchedule']
-    try {
-      accountExpiresAt = parseStrictDatePickerValue(account.accountExpiresAt, '账户过期时间')
-      availabilitySchedule = createAccountAvailabilityScheduleForm(account.availabilitySchedule)
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '克隆来源账户数据结构异常，请清理后再克隆'))
-      return false
-    }
-    Object.assign(form, defaults, {
-      providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId ?? defaults.providerProtocolProfileId,
-      name: cloneAccountName(account.name),
-      type: account.type,
-      concurrencyLimit: account.concurrencyLimit,
-      priority: account.priority,
-      clientCompatibility: account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth'
-        ? 'codex_responses'
-        : account.clientCompatibility ?? defaultAccountClientCompatibility(account.providerCode),
-      proxyProfileId: account.proxyProfileId,
-      accountExpiresAt,
-      groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
-      group: selectedGroup,
-      apiKey: '',
-      apiKeys: [''],
-      apiKeyStrategy: 'round_robin',
-      apiKeyWeights: [1],
-      baseUrl,
-      accessToken: '',
-      refreshToken: '',
-      callbackUrl: '',
-      oauthMode: 'manual',
-      supportedModels: [...(account.supportedModels ?? [])],
-      modelMappings: cloneAccountModelMappings(account.modelMappings),
-      tags: accountTagNames(account.tags),
-      availabilitySchedule,
-      notes: account.notes ?? ''
-    })
-    cloningScheduleFingerprint.value = accountAvailabilityScheduleFormFingerprint(form.availabilitySchedule)
-    accountErrorPolicyRules.value = errorPolicyRules
-    accountResponseInspectionRules.value = responseInspectionRules
-    authResult.value = undefined
-    return true
+    console.error(error)
+    message.error(options.extractApiErrorMessage(error, fallbackMessage))
   }
 
   function setFormGroup(group: GroupSelection | undefined): void {

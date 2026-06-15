@@ -1,35 +1,37 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
+import { isBuiltInExternalIntegrationTestSourceId } from './external-integration-source-constants.js'
+import { mapSourceSummary } from './external-integration-source-mappers.js'
 import {
-  builtInExternalIntegrationTestSourceId,
-  builtInExternalIntegrationTestTokenId,
-  createExternalIntegrationSourceTokenValue,
-  externalIntegrationAccessInfoReadScope,
-  externalIntegrationAccountAddWriteScope,
-  externalIntegrationAccountDeleteWriteScope,
-  externalIntegrationAccountListReadScope,
-  externalIntegrationAccountUpdateWriteScope,
-  externalIntegrationAccountUsageReadScope,
-  externalIntegrationApiKeyAddWriteScope,
-  externalIntegrationApiKeyDeleteWriteScope,
-  externalIntegrationApiKeyListReadScope,
-  externalIntegrationApiKeyUpdateWriteScope,
-  externalIntegrationConsumptionRankingReadScope,
-  externalIntegrationGroupAddWriteScope,
-  externalIntegrationGroupDeleteWriteScope,
-  externalIntegrationGroupListReadScope,
-  externalIntegrationGroupUpdateWriteScope,
-  externalIntegrationIpUsageReadScope,
-  externalIntegrationScopeOptions,
-  externalIntegrationSourceAuthDemoScope,
-  hashExternalIntegrationSourceTokenValue,
-  isBuiltInExternalIntegrationTestSourceId,
-  isBuiltInExternalIntegrationTestTokenId
-} from './external-integration-source-constants.js'
+  encodeRateLimits,
+  encodeScopes,
+  normalizeNullableIso,
+  normalizeNullableText,
+  normalizeSourceStatus,
+  normalizeSourceStatusInput
+} from './external-integration-source-normalizers.js'
+import {
+  createExternalIntegrationSourceToken,
+  loadExternalIntegrationSourceTokensBySourceIds,
+  syncExternalIntegrationSourceTokenState
+} from './external-integration-source-token.repository.js'
+import type {
+  CreatedExternalIntegrationSourceAuthorization,
+  ExternalIntegrationSourceInput,
+  ExternalIntegrationSourceListOptions,
+  ExternalIntegrationSourceListResult,
+  ExternalIntegrationSourceListRow,
+  ExternalIntegrationSourceRow,
+  ExternalIntegrationSourceSummary,
+  ExternalIntegrationSourceUpdateInput
+} from './external-integration-source-types.js'
+import {
+  assertKnownInputKeys,
+  isUniqueConstraintError,
+  normalizeNameOrThrow
+} from './external-integration-source-write-helpers.js'
 import { normalizeListPage } from './query-utils.js'
-import { optionalServerDateTimeIso } from './value-utils.js'
 
 export {
   builtInExternalIntegrationTestSourceId,
@@ -54,190 +56,40 @@ export {
   externalIntegrationSourceAuthDemoScope
 } from './external-integration-source-constants.js'
 
-export type ExternalIntegrationSourceStatus = 'active' | 'disabled'
-export type ExternalIntegrationSourceTokenStatus = 'active' | 'disabled' | 'revoked'
+export { validateExternalIntegrationSourceToken } from './external-integration-source-auth.repository.js'
+export {
+  createExternalIntegrationSourceToken,
+  findExternalIntegrationSourceTokenSecret,
+  resetBuiltInExternalIntegrationTestToken,
+  updateExternalIntegrationSourceToken
+} from './external-integration-source-token.repository.js'
 
-export interface ExternalIntegrationRateLimitRule {
-  windowSeconds: number
-  maxRequests: number
-}
+export type {
+  CreatedExternalIntegrationSourceAuthorization,
+  CreatedExternalIntegrationSourceToken,
+  ExternalIntegrationRateLimitRule,
+  ExternalIntegrationSourceAuthContext,
+  ExternalIntegrationSourceAuthResult,
+  ExternalIntegrationSourceInput,
+  ExternalIntegrationSourceListOptions,
+  ExternalIntegrationSourceListResult,
+  ExternalIntegrationSourceListRow,
+  ExternalIntegrationSourceRow,
+  ExternalIntegrationSourceStatus,
+  ExternalIntegrationSourceSummary,
+  ExternalIntegrationSourceTokenInput,
+  ExternalIntegrationSourceTokenListRow,
+  ExternalIntegrationSourceTokenRow,
+  ExternalIntegrationSourceTokenSecret,
+  ExternalIntegrationSourceTokenStatus,
+  ExternalIntegrationSourceTokenSummary,
+  ExternalIntegrationSourceTokenUpdateInput,
+  ExternalIntegrationSourceUpdateInput
+} from './external-integration-source-types.js'
 
-export interface ExternalIntegrationSourceInput {
-  name: string
-  status?: ExternalIntegrationSourceStatus
-  scopes?: string[]
-  rateLimits?: ExternalIntegrationRateLimitRule[]
-  expiresAt?: string | null
-  notes?: string | null
-}
-
-export interface ExternalIntegrationSourceUpdateInput {
-  name?: string
-  status?: ExternalIntegrationSourceStatus
-  scopes?: string[]
-  rateLimits?: ExternalIntegrationRateLimitRule[]
-  expiresAt?: string | null
-  notes?: string | null
-}
-
-export interface ExternalIntegrationSourceTokenInput {
-  sourceRefId?: string
-  name: string
-  token?: string
-  status?: ExternalIntegrationSourceTokenStatus
-  scopes?: string[]
-  expiresAt?: string | null
-}
-
-export interface ExternalIntegrationSourceTokenUpdateInput {
-  name?: string
-  status?: ExternalIntegrationSourceTokenStatus
-  scopes?: string[]
-  expiresAt?: string | null
-}
-
-export interface CreatedExternalIntegrationSourceToken {
-  id: string
-  name: string
-  token: string
-  tokenPrefix: string
-  tokenSuffix: string
-  scopes: string[]
-  expiresAt?: string
-}
-
-export interface CreatedExternalIntegrationSourceAuthorization {
-  source: ExternalIntegrationSourceSummary
-  token: CreatedExternalIntegrationSourceToken
-}
-
-export interface ExternalIntegrationSourceTokenSecret {
-  token: string
-}
-
-export interface ExternalIntegrationSourceTokenSummary {
-  id: string
-  name: string
-  tokenPrefix: string
-  tokenSuffix: string
-  status: ExternalIntegrationSourceTokenStatus
-  scopes: string[]
-  expiresAt?: string
-  lastUsedAt?: string
-  createdAt: string
-  updatedAt: string
-  revokedAt?: string
-  isBuiltIn: boolean
-}
-
-export interface ExternalIntegrationSourceSummary {
-  id: string
-  name: string
-  status: ExternalIntegrationSourceStatus
-  scopes: string[]
-  rateLimits: ExternalIntegrationRateLimitRule[]
-  expiresAt?: string
-  notes?: string
-  lastUsedAt?: string
-  createdAt: string
-  updatedAt: string
-  tokenCount: number
-  activeTokenCount: number
-  tokens: ExternalIntegrationSourceTokenSummary[]
-  isBuiltIn: boolean
-}
-
-export interface ExternalIntegrationSourceListResult {
-  items: ExternalIntegrationSourceSummary[]
-  page: number
-  pageSize: number
-  pageUpperBound: number
-  hasMore: boolean
-}
-
-export interface ExternalIntegrationSourceListOptions {
-  page?: number
-  pageSize?: number
-  keyword?: string
-  status?: ExternalIntegrationSourceStatus | 'all'
-}
-
-export interface ExternalIntegrationSourceAuthContext {
-  sourceRefId: string
-  sourceName: string
-  tokenId: string
-  tokenName: string
-  tokenPrefix: string
-  scopes: string[]
-  rateLimits: ExternalIntegrationRateLimitRule[]
-  authenticatedAt: string
-  isTestToken: boolean
-}
-
-export type ExternalIntegrationSourceAuthResult =
-  | { ok: true; context: ExternalIntegrationSourceAuthContext }
-  | { ok: false; statusCode: 401 | 403; code: string; message: string; context?: ExternalIntegrationSourceAuthContext }
-
-interface ExternalIntegrationSourceTokenRow {
-  source_row_id: string
-  source_name: string
-  source_status: string
-  source_scopes_json: string
-  source_rate_limits_json: string | null
-  source_expires_at: string | null
-  source_last_used_at: string | null
-  token_id: string
-  token_name: string
-  token_prefix: string
-  token_suffix: string
-  token_status: string
-  token_scopes_json: string
-  token_expires_at: string | null
-  token_last_used_at: string | null
-}
-
-interface ExternalIntegrationSourceRow {
-  id: string
-  name: string
-  status: string
-  scopes_json: string
-  rate_limits_json: string | null
-  expires_at: string | null
-  notes: string | null
-  last_used_at: string | null
-  created_at: string
-  updated_at: string
-}
-
-interface ExternalIntegrationSourceListRow extends ExternalIntegrationSourceRow {
-  token_count: number
-  active_token_count: number
-}
-
-interface ExternalIntegrationSourceTokenListRow {
-  id: string
-  source_ref_id: string
-  name: string
-  token_secret_encrypted?: string | null
-  token_prefix: string
-  token_suffix: string
-  status: string
-  scopes_json: string
-  expires_at: string | null
-  last_used_at: string | null
-  created_at: string
-  updated_at: string
-  revoked_at: string | null
-}
-
-const touchLastUsedIntervalMs = 60_000
 const defaultPageSize = 20
 const maxPageSize = 100
 const externalIntegrationSourceInputKeys = new Set(['name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes'])
-const externalIntegrationSourceTokenInputKeys = new Set(['sourceRefId', 'name', 'token', 'status', 'scopes', 'expiresAt'])
-const externalIntegrationSourceTokenUpdateInputKeys = new Set(['name', 'status', 'scopes', 'expiresAt'])
-const externalIntegrationRateLimitRuleKeys = ['windowSeconds', 'maxRequests'] as const
-const activeExternalIntegrationScopes = new Set<string>(externalIntegrationScopeOptions.map((item) => item.value))
 
 export function listExternalIntegrationSources(options: ExternalIntegrationSourceListOptions = {}): ExternalIntegrationSourceListResult {
   const pageSize = Math.max(1, Math.min(Math.trunc(options.pageSize ?? defaultPageSize), maxPageSize))
@@ -267,7 +119,7 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceListRow[]
 
   const pageRows = rows.slice(0, pageSize)
-  const tokensBySourceId = loadTokensBySourceIds(pageRows.map((row) => row.id))
+  const tokensBySourceId = loadExternalIntegrationSourceTokensBySourceIds(pageRows.map((row) => row.id))
   return {
     items: pageRows.map((row) => {
       const tokens = tokensBySourceId.get(row.id) ?? []
@@ -291,7 +143,7 @@ export function findExternalIntegrationSource(id: string): ExternalIntegrationSo
   if (!row) {
     return undefined
   }
-  const tokens = loadTokensBySourceIds([row.id]).get(row.id) ?? []
+  const tokens = loadExternalIntegrationSourceTokensBySourceIds([row.id]).get(row.id) ?? []
   return mapSourceSummary({
     ...row,
     token_count: tokens.length,
@@ -437,288 +289,6 @@ export function deleteExternalIntegrationSource(id: string): boolean {
   })
 }
 
-export function createExternalIntegrationSourceToken(input: ExternalIntegrationSourceTokenInput): CreatedExternalIntegrationSourceToken {
-  assertKnownInputKeys(input, externalIntegrationSourceTokenInputKeys, '来源系统 token')
-  const name = normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符')
-  const source = resolveSourceForToken(input)
-  if (isBuiltInExternalIntegrationTestSourceId(source.id)) {
-    throw new Error('内置测试 Token 不支持新增 Token')
-  }
-  const token = normalizeTokenValue(input.token)
-  const scopes = normalizeScopes(input.scopes)
-  const now = nowIso()
-  const id = newId('exttok')
-  const tokenPrefix = token.slice(0, 8)
-  const tokenSuffix = token.slice(-8)
-  try {
-    getBusinessDatabase().prepare(`
-      INSERT INTO external_integration_source_tokens (
-        id, source_ref_id, name, token_hash, token_secret_encrypted, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      source.id,
-      name,
-      hashExternalIntegrationSourceTokenValue(token),
-      encryptJson({ token }),
-      tokenPrefix,
-      tokenSuffix,
-      normalizeTokenStatusInput(input.status),
-      JSON.stringify(scopes),
-      normalizeNullableIso(input.expiresAt),
-      now,
-      now
-    )
-  } catch (error) {
-    if (isUniqueConstraintError(error)) {
-      throw new Error('来源系统 token 已存在，请重新生成')
-    }
-    throw error
-  }
-
-  return {
-    id,
-    name,
-    token,
-    tokenPrefix,
-    tokenSuffix,
-    scopes,
-    expiresAt: normalizeNullableIso(input.expiresAt) ?? undefined
-  }
-}
-
-export function updateExternalIntegrationSourceToken(sourceRefId: string, tokenId: string, input: ExternalIntegrationSourceTokenUpdateInput): ExternalIntegrationSourceTokenSummary | undefined {
-  assertKnownInputKeys(input, externalIntegrationSourceTokenUpdateInputKeys, '来源系统 token')
-  if (isBuiltInExternalIntegrationTestSourceId(sourceRefId) || isBuiltInExternalIntegrationTestTokenId(tokenId)) {
-    throw new Error('内置测试 Token 不支持编辑')
-  }
-  const existing = getBusinessDatabase().prepare(`
-    SELECT tokens.*
-    FROM external_integration_source_tokens AS tokens
-    JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
-    WHERE sources.id = ? AND tokens.id = ?
-  `).get(sourceRefId, tokenId) as ExternalIntegrationSourceTokenListRow | undefined
-  if (!existing) {
-    return undefined
-  }
-  const nextStatus = input.status === undefined ? normalizeTokenStatus(existing.status) : normalizeTokenStatusInput(input.status)
-  const revokedAt = nextStatus === 'revoked' && existing.status !== 'revoked'
-    ? nowIso()
-    : nextStatus === 'revoked'
-      ? existing.revoked_at
-      : null
-  getBusinessDatabase().prepare(`
-    UPDATE external_integration_source_tokens
-    SET name = ?, status = ?, scopes_json = ?, expires_at = ?, revoked_at = ?, updated_at = ?
-    WHERE id = ?
-  `).run(
-    input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统 token 名称不能为空', '来源系统 token 名称不能超过 80 个字符'),
-    nextStatus,
-    input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes),
-    input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt),
-    revokedAt,
-    nowIso(),
-    tokenId
-  )
-  return requiredSource(sourceRefId).tokens.find((token) => token.id === tokenId)
-}
-
-export function findExternalIntegrationSourceTokenSecret(sourceRefId: string, tokenId: string): ExternalIntegrationSourceTokenSecret | undefined {
-  const row = getBusinessDatabase().prepare(`
-    SELECT tokens.token_secret_encrypted
-    FROM external_integration_source_tokens AS tokens
-    JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
-    WHERE sources.id = ? AND tokens.id = ?
-  `).get(sourceRefId, tokenId) as Pick<ExternalIntegrationSourceTokenListRow, 'token_secret_encrypted'> | undefined
-  if (!row) {
-    return undefined
-  }
-  return { token: decryptExternalIntegrationSourceTokenSecret(row.token_secret_encrypted) }
-}
-
-export function resetBuiltInExternalIntegrationTestToken(): CreatedExternalIntegrationSourceToken {
-  const source = findExternalIntegrationSource(builtInExternalIntegrationTestSourceId)
-  const tokenSummary = source?.tokens.find((token) => token.id === builtInExternalIntegrationTestTokenId)
-  if (!source || !tokenSummary) {
-    throw new Error('内置测试 Token 不存在')
-  }
-  const token = createExternalIntegrationSourceTokenValue()
-  const tokenPrefix = token.slice(0, 8)
-  const tokenSuffix = token.slice(-8)
-  const now = nowIso()
-  getBusinessDatabase().prepare(`
-    UPDATE external_integration_source_tokens
-    SET token_hash = ?,
-        token_secret_encrypted = ?,
-        token_prefix = ?,
-        token_suffix = ?,
-        status = 'active',
-        revoked_at = NULL,
-        updated_at = ?
-    WHERE id = ? AND source_ref_id = ?
-  `).run(
-    hashExternalIntegrationSourceTokenValue(token),
-    encryptJson({ token }),
-    tokenPrefix,
-    tokenSuffix,
-    now,
-    builtInExternalIntegrationTestTokenId,
-    builtInExternalIntegrationTestSourceId
-  )
-  getBusinessDatabase()
-    .prepare('UPDATE external_integration_sources SET updated_at = ? WHERE id = ?')
-    .run(now, builtInExternalIntegrationTestSourceId)
-  return {
-    id: builtInExternalIntegrationTestTokenId,
-    name: tokenSummary.name,
-    token,
-    tokenPrefix,
-    tokenSuffix,
-    scopes: [...source.scopes],
-    expiresAt: undefined
-  }
-}
-
-function syncExternalIntegrationSourceTokenState(sourceRefId: string): void {
-  const source = findSourceRow(sourceRefId)
-  if (!source) {
-    return
-  }
-  const sourceStatus = normalizeSourceStatus(source.status)
-  getBusinessDatabase().prepare(`
-    UPDATE external_integration_source_tokens
-    SET name = ?,
-        status = CASE WHEN status = 'revoked' THEN status ELSE ? END,
-        scopes_json = ?,
-        expires_at = ?,
-        updated_at = ?
-    WHERE source_ref_id = ?
-  `).run(
-    `${source.name} 生产 Token`,
-    sourceStatus,
-    source.scopes_json,
-    source.expires_at,
-    nowIso(),
-    sourceRefId
-  )
-}
-
-export function validateExternalIntegrationSourceToken(input: {
-  token: string
-  requiredScope?: string
-}): ExternalIntegrationSourceAuthResult {
-  const token = input.token.trim()
-  if (!token) {
-    return {
-      ok: false,
-      statusCode: 401,
-      code: 'external_source_token_missing',
-      message: '缺少来源系统 token'
-    }
-  }
-
-  const row = getBusinessDatabase().prepare(`
-    SELECT
-      sources.id AS source_row_id,
-      sources.name AS source_name,
-      sources.status AS source_status,
-      sources.scopes_json AS source_scopes_json,
-      sources.rate_limits_json AS source_rate_limits_json,
-      sources.expires_at AS source_expires_at,
-      sources.last_used_at AS source_last_used_at,
-      tokens.id AS token_id,
-      tokens.name AS token_name,
-      tokens.token_prefix,
-      tokens.token_suffix,
-      tokens.status AS token_status,
-      tokens.scopes_json AS token_scopes_json,
-      tokens.expires_at AS token_expires_at,
-      tokens.last_used_at AS token_last_used_at
-    FROM external_integration_source_tokens AS tokens
-    JOIN external_integration_sources AS sources ON sources.id = tokens.source_ref_id
-    WHERE tokens.token_hash = ?
-    LIMIT 1
-  `).get(hashExternalIntegrationSourceTokenValue(token)) as ExternalIntegrationSourceTokenRow | undefined
-
-  if (!row) {
-    return {
-      ok: false,
-      statusCode: 401,
-      code: 'external_source_unauthorized',
-      message: '来源系统或 token 无效'
-    }
-  }
-
-  const now = nowIso()
-  const sourceScopes = decodeScopes(row.source_scopes_json)
-  const tokenScopes = decodeScopes(row.token_scopes_json)
-  const grantedScopes = tokenScopes.filter((scope) => sourceScopes.includes(scope))
-  const context = externalIntegrationAuthContextFromRow(row, grantedScopes, now)
-  const sourceStatus = normalizeSourceStatus(row.source_status)
-  const tokenStatus = normalizeTokenStatus(row.token_status)
-  if (sourceStatus !== 'active') {
-    return {
-      ok: false,
-      statusCode: 403,
-      code: 'external_source_disabled',
-      message: '来源系统未启用',
-      context
-    }
-  }
-  if (row.source_expires_at && row.source_expires_at <= now) {
-    return {
-      ok: false,
-      statusCode: 403,
-      code: 'external_source_expired',
-      message: '来源系统已过期',
-      context
-    }
-  }
-  if (tokenStatus !== 'active' || (row.token_expires_at && row.token_expires_at <= now)) {
-    return {
-      ok: false,
-      statusCode: 401,
-      code: 'external_source_token_unavailable',
-      message: '来源系统 token 不可用',
-      context
-    }
-  }
-
-  if (input.requiredScope && !grantedScopes.includes(input.requiredScope)) {
-    return {
-      ok: false,
-      statusCode: 403,
-      code: 'external_source_scope_forbidden',
-      message: '来源系统没有调用该接口的权限',
-      context
-    }
-  }
-
-  touchExternalIntegrationSourceLastUsed(row, now)
-  return {
-    ok: true,
-    context
-  }
-}
-
-function externalIntegrationAuthContextFromRow(
-  row: ExternalIntegrationSourceTokenRow,
-  grantedScopes: string[],
-  authenticatedAt: string
-): ExternalIntegrationSourceAuthContext {
-  return {
-    sourceRefId: row.source_row_id,
-    sourceName: row.source_name,
-    tokenId: row.token_id,
-    tokenName: row.token_name,
-    tokenPrefix: row.token_prefix,
-    scopes: grantedScopes,
-    rateLimits: decodeRateLimits(row.source_rate_limits_json),
-    authenticatedAt,
-    isTestToken: isBuiltInExternalIntegrationTestSourceId(row.source_row_id) || isBuiltInExternalIntegrationTestTokenId(row.token_id)
-  }
-}
-
 function requiredSource(id: string): ExternalIntegrationSourceSummary {
   const source = findExternalIntegrationSource(id)
   if (!source) {
@@ -733,83 +303,6 @@ function findSourceRow(id: string): ExternalIntegrationSourceRow | undefined {
     .get(id) as ExternalIntegrationSourceRow | undefined
 }
 
-function resolveSourceForToken(input: ExternalIntegrationSourceTokenInput): Pick<ExternalIntegrationSourceRow, 'id'> {
-  if (input.sourceRefId !== undefined && typeof input.sourceRefId !== 'string') {
-    throw new Error('来源系统不存在')
-  }
-  const sourceRefId = input.sourceRefId?.trim()
-  if (sourceRefId) {
-    const source = getBusinessDatabase()
-      .prepare('SELECT id FROM external_integration_sources WHERE id = ?')
-      .get(sourceRefId) as Pick<ExternalIntegrationSourceRow, 'id'> | undefined
-    if (!source) {
-      throw new Error('来源系统不存在')
-    }
-    return source
-  }
-  throw new Error('来源系统不存在')
-}
-
-function loadTokensBySourceIds(sourceIds: string[]): Map<string, ExternalIntegrationSourceTokenSummary[]> {
-  const result = new Map<string, ExternalIntegrationSourceTokenSummary[]>()
-  if (!sourceIds.length) {
-    return result
-  }
-  const placeholders = sourceIds.map(() => '?').join(',')
-  const rows = getBusinessDatabase().prepare(`
-    SELECT *
-    FROM external_integration_source_tokens
-    WHERE source_ref_id IN (${placeholders})
-    ORDER BY created_at DESC, id DESC
-  `).all(...sourceIds) as unknown as ExternalIntegrationSourceTokenListRow[]
-  for (const row of rows) {
-    const token = mapTokenSummary(row)
-    const tokens = result.get(row.source_ref_id)
-    if (tokens) {
-      tokens.push(token)
-    } else {
-      result.set(row.source_ref_id, [token])
-    }
-  }
-  return result
-}
-
-function mapSourceSummary(row: ExternalIntegrationSourceListRow, tokens: ExternalIntegrationSourceTokenSummary[]): ExternalIntegrationSourceSummary {
-  return {
-    id: row.id,
-    name: row.name,
-    status: normalizeSourceStatus(row.status),
-    scopes: decodeScopes(row.scopes_json),
-    rateLimits: decodeRateLimits(row.rate_limits_json),
-    expiresAt: row.expires_at ?? undefined,
-    notes: row.notes ?? undefined,
-    lastUsedAt: row.last_used_at ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    tokenCount: Number(row.token_count ?? tokens.length),
-    activeTokenCount: Number(row.active_token_count ?? tokens.filter((token) => token.status === 'active').length),
-    tokens,
-    isBuiltIn: isBuiltInExternalIntegrationTestSourceId(row.id)
-  }
-}
-
-function mapTokenSummary(row: ExternalIntegrationSourceTokenListRow): ExternalIntegrationSourceTokenSummary {
-  return {
-    id: row.id,
-    name: row.name,
-    tokenPrefix: row.token_prefix,
-    tokenSuffix: row.token_suffix,
-    status: normalizeTokenStatus(row.status),
-    scopes: decodeScopes(row.scopes_json),
-    expiresAt: row.expires_at ?? undefined,
-    lastUsedAt: row.last_used_at ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    revokedAt: row.revoked_at ?? undefined,
-    isBuiltIn: isBuiltInExternalIntegrationTestTokenId(row.id)
-  }
-}
-
 function assertBuiltInSourceUpdateInput(input: ExternalIntegrationSourceUpdateInput): void {
   const keys = Object.keys(input)
   const disallowed = keys.filter((key) => key !== 'status')
@@ -818,240 +311,11 @@ function assertBuiltInSourceUpdateInput(input: ExternalIntegrationSourceUpdateIn
   }
 }
 
-function decryptExternalIntegrationSourceTokenSecret(value: string | null | undefined): string {
-  if (!value) {
-    throw new Error('来源系统 Token 密文缺少完整 Token')
-  }
-  const decrypted = decryptJson<{ token?: unknown }>(value)
-  if (typeof decrypted.token !== 'string' || decrypted.token.length === 0) {
-    throw new Error('来源系统 Token 密文缺少完整 Token')
-  }
-  return decrypted.token
-}
-
-function normalizeNameOrThrow(value: unknown, message: string, maxLengthMessage = '来源系统名称不能超过 80 个字符'): string {
-  if (typeof value !== 'string') {
-    throw new Error(message)
-  }
-  const name = value.trim()
-  if (!name) {
-    throw new Error(message)
-  }
-  if (name.length > 80) {
-    throw new Error(maxLengthMessage)
-  }
-  return name
-}
-
 function ensureSourceNameAvailable(name: string, currentId?: string): void {
   const existing = getBusinessDatabase()
     .prepare('SELECT id FROM external_integration_sources WHERE lower(name) = lower(?) LIMIT 1')
     .get(name) as Pick<ExternalIntegrationSourceRow, 'id'> | undefined
   if (existing && existing.id !== currentId) {
     throw new Error('来源系统名称已存在')
-  }
-}
-
-function normalizeTokenValue(value: unknown): string {
-  if (value === undefined) {
-    return createExternalIntegrationSourceTokenValue()
-  }
-  if (typeof value !== 'string') {
-    throw new Error('来源系统 token 必须是字符串')
-  }
-  const token = value.trim()
-  if (!token) {
-    throw new Error('来源系统 token 不能为空')
-  }
-  return token
-}
-
-function normalizeSourceStatusInput(status: ExternalIntegrationSourceStatus | undefined): ExternalIntegrationSourceStatus {
-  return status === undefined ? 'active' : normalizeSourceStatus(status)
-}
-
-function normalizeSourceStatus(status: unknown): ExternalIntegrationSourceStatus {
-  if (status === 'active' || status === 'disabled') {
-    return status
-  }
-  throw new Error('来源系统状态无效')
-}
-
-function normalizeTokenStatusInput(status: ExternalIntegrationSourceTokenStatus | undefined): ExternalIntegrationSourceTokenStatus {
-  return status === undefined ? 'active' : normalizeTokenStatus(status)
-}
-
-function normalizeTokenStatus(status: unknown): ExternalIntegrationSourceTokenStatus {
-  if (status === 'active' || status === 'disabled' || status === 'revoked') {
-    return status
-  }
-  throw new Error('来源系统 token 状态无效')
-}
-
-function encodeScopes(scopes: unknown): string {
-  return JSON.stringify(normalizeScopes(scopes))
-}
-
-function normalizeScopes(scopes: unknown): string[] {
-  if (scopes === undefined) {
-    return []
-  }
-  if (!Array.isArray(scopes)) {
-    throw new Error('来源系统 scopes 必须是字符串数组')
-  }
-  const values = new Set<string>()
-  for (const scope of scopes) {
-    if (typeof scope !== 'string') {
-      throw new Error('来源系统 scopes 必须是字符串数组')
-    }
-    const value = scope.trim()
-    if (!value) {
-      throw new Error('来源系统 scopes 不能为空')
-    }
-    if (!activeExternalIntegrationScopes.has(value)) {
-      throw new Error(`来源系统 scope 不受支持：${value}`)
-    }
-    values.add(value)
-  }
-  return [...values].sort()
-}
-
-function decodeScopes(value: string): string[] {
-  const parsed = JSON.parse(value) as unknown
-  if (Array.isArray(parsed)) {
-    return normalizeScopes(parsed.filter((scope) => typeof scope !== 'string' || activeExternalIntegrationScopes.has(scope.trim())))
-  }
-  return normalizeScopes(parsed)
-}
-
-function encodeRateLimits(rules: unknown): string {
-  return JSON.stringify(normalizeRateLimits(rules))
-}
-
-function decodeRateLimits(value: string | null | undefined): ExternalIntegrationRateLimitRule[] {
-  if (!value) {
-    return []
-  }
-  const parsed = JSON.parse(value) as unknown
-  if (!Array.isArray(parsed)) {
-    throw new Error('来源系统 rate_limits_json 必须是数组')
-  }
-  return normalizeRateLimits(parsed)
-}
-
-function normalizeRateLimits(rules: unknown): ExternalIntegrationRateLimitRule[] {
-  if (rules === undefined) {
-    return []
-  }
-  if (!Array.isArray(rules)) {
-    throw new Error('来源系统限频规则必须是数组')
-  }
-  if (rules.length > 8) {
-    throw new Error('来源系统限频规则最多 8 条')
-  }
-  const normalized: ExternalIntegrationRateLimitRule[] = []
-  const seen = new Set<number>()
-  for (const rule of rules) {
-    if (typeof rule !== 'object' || rule === null || Array.isArray(rule)) {
-      throw new Error('来源系统限频规则必须是对象')
-    }
-    const record = rule as Record<string, unknown>
-    assertOnlyKeys(record, externalIntegrationRateLimitRuleKeys, '来源系统限频规则')
-    const windowSeconds = normalizeRateLimitInteger(record.windowSeconds, 1, 86_400, '来源系统限频窗口')
-    const maxRequests = normalizeRateLimitInteger(record.maxRequests, 1, 100_000, '来源系统限频次数')
-    if (seen.has(windowSeconds)) {
-      throw new Error('来源系统限频窗口不能重复')
-    }
-    seen.add(windowSeconds)
-    normalized.push({ windowSeconds, maxRequests })
-  }
-  return normalized.sort((a, b) => a.windowSeconds - b.windowSeconds)
-}
-
-function normalizeRateLimitInteger(value: unknown, min: number, max: number, label: string): number {
-  if (!Number.isInteger(value)) {
-    throw new Error(`${label}必须是整数`)
-  }
-  const numeric = value as number
-  if (numeric < min || numeric > max) {
-    throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
-  }
-  return numeric
-}
-
-function normalizeNullableIso(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null
-  }
-  if (typeof value !== 'string') {
-    throw new Error('过期时间无效')
-  }
-  const text = value.trim()
-  if (!text) {
-    throw new Error('过期时间无效')
-  }
-  const normalized = optionalServerDateTimeIso(text)
-  if (!normalized) {
-    throw new Error('过期时间无效')
-  }
-  return normalized
-}
-
-function normalizeNullableText(value: unknown): string | null {
-  if (value === undefined || value === null) {
-    return null
-  }
-  if (typeof value !== 'string') {
-    throw new Error('备注必须是字符串')
-  }
-  const text = value.trim()
-  if (text.length > 500) {
-    throw new Error('备注不能超过 500 个字符')
-  }
-  return text || null
-}
-
-function touchExternalIntegrationSourceLastUsed(row: ExternalIntegrationSourceTokenRow, now: string): void {
-  const database = getBusinessDatabase()
-  if (shouldTouchLastUsed(row.token_last_used_at, now)) {
-    database
-      .prepare('UPDATE external_integration_source_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?')
-      .run(now, now, row.token_id)
-  }
-  if (shouldTouchLastUsed(row.source_last_used_at, now)) {
-    database
-      .prepare('UPDATE external_integration_sources SET last_used_at = ?, updated_at = ? WHERE id = ?')
-      .run(now, now, row.source_row_id)
-  }
-}
-
-function shouldTouchLastUsed(previous: string | null, now: string): boolean {
-  if (!previous) {
-    return true
-  }
-  const previousTime = Date.parse(previous)
-  const nowTime = Date.parse(now)
-  if (!Number.isFinite(previousTime) || !Number.isFinite(nowTime)) {
-    return true
-  }
-  return nowTime - previousTime >= touchLastUsedIntervalMs
-}
-
-function isUniqueConstraintError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('UNIQUE constraint failed')
-}
-
-function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {
-  const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
-  if (unknownKeys.length) {
-    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
-  }
-}
-
-function assertOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[], label: string): void {
-  const allowed = new Set(allowedKeys)
-  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key))
-  if (unknownKeys.length) {
-    throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
   }
 }

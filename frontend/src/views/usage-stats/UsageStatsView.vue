@@ -134,7 +134,6 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
@@ -146,15 +145,10 @@ import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatInteger } from '@/views/stats/statsFormatters'
 import AccountUsageStatsTable from './AccountUsageStatsTable.vue'
 import {
-  aggregateUsageSummaries,
   authorizationAccountTagText,
   buildAccountUsageSummaryCards,
   cacheReadRate,
-  dedupeRowsById,
-  metricText,
-  metricValue,
-  placeholderTrendRow,
-  usageTrendDateKeys
+  dedupeRowsById
 } from './usageStatsHelpers'
 import {
   accountUsageStatsParams as buildAccountUsageStatsParams,
@@ -176,7 +170,8 @@ import {
   type UsageStatsPageState
 } from './usageStatsPageState'
 import { useUsageStatsAccountOptions } from './useUsageStatsAccountOptions'
-import { buildAccountUsageTrendOption, chartColors, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
+import { useUsageStatsTrendAccountSelection } from './useUsageStatsTrendAccountSelection'
+import { buildAccountUsageTrendOption, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
@@ -202,9 +197,7 @@ const selectedMetric = ref<UsageTrendMetric>(initialUsageStatsMetric(initialPage
 const dateRange = ref<[Dayjs, Dayjs]>(parseUsageStatsDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
-const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
-const addedTrendAccountSelections = ref<AccountSelection[]>([])
 const {
   items: accountUsageRows,
   loading,
@@ -229,7 +222,7 @@ const {
     ])
     overview.value = usageOverview
     syncDateRangeFromResponse(usageOverview.range)
-    pruneSelectedTrendAccounts(usageOverview.rows)
+    pruneLoadedTrendAccounts(usageOverview.rows)
     return {
       items: usageOverview.rows,
       page: usageOverview.page,
@@ -281,59 +274,38 @@ const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizeUsageStatsDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
-const rowsById = computed(() => new Map(rows.value.map((row) => [row.id, row])))
-const accountOptionById = computed(() => new Map(accountOptionRows.value.map((account) => [account.id, account])))
-const addedTrendSelectionById = computed(() => new Map(addedTrendAccountSelections.value.map((account) => [account.id, account])))
-const defaultTrendRows = computed(() => (overview.value?.defaultTrendAccountIds ?? [])
-  .map((id) => rowsById.value.get(id))
-  .filter((row): row is AccountUsageStatsRow => Boolean(row)))
-const defaultTrendAccountIdSet = computed(() => new Set(overview.value?.defaultTrendAccountIds ?? defaultTrendRows.value.map((account) => account.id)))
-const addedTrendAccountIdSet = computed(() => new Set(addedTrendAccountIds.value))
-const addedTrendRows = computed(() => {
-  const dateKeys = usageTrendDateKeys(selectedRange.value)
-  return addedTrendAccountIds.value
-    .map((id) => rowsById.value.get(id) ?? placeholderTrendRow(id, {
-      accountOptionById: accountOptionById.value,
-      addedTrendSelectionById: addedTrendSelectionById.value,
-      dateKeys
-    }))
-    .filter((row): row is AccountUsageStatsRow => Boolean(row))
+const {
+  accountFilterItems,
+  accountPickerHiddenValues,
+  accountUsageEmptyDescription,
+  addedTrendAccountSelections,
+  displayRows,
+  displaySummary,
+  hasSelectedTrendAccounts,
+  hasTrendData,
+  trendEmptyDescription,
+  visibleTrendRows,
+  clearTrendAccountState: clearTrendAccountSelectionState,
+  pruneSelectedTrendAccounts,
+  removeAddedTrendAccount: removeAddedTrendAccountSelection,
+  toggleTrendAccount: toggleTrendAccountSelection,
+  updateAddedTrendAccounts
+} = useUsageStatsTrendAccountSelection({
+  overview,
+  rows,
+  accountOptionRows,
+  addedTrendAccountIds,
+  selectedRange,
+  selectedMetric,
+  rangeLabel,
+  isManagementView: () => isManagementView.value,
+  providerName
 })
-const trendAccountRows = computed(() => dedupeRowsById([...defaultTrendRows.value, ...addedTrendRows.value]))
-const accountPickerHiddenValues = computed(() => [
-  ...trendAccountRows.value.map((account) => account.id),
-  ...addedTrendAccountIds.value
-])
-const selectedTrendRows = computed(() => {
-  const selectedIds = new Set(selectedTrendAccountIds.value)
-  return trendAccountRows.value.filter((row) => selectedIds.has(row.id))
-})
-const visibleTrendRows = computed(() => selectedTrendAccountIds.value.length ? selectedTrendRows.value : trendAccountRows.value)
-const hasSelectedTrendAccounts = computed(() => selectedTrendAccountIds.value.length > 0)
-const displayRows = computed(() => hasSelectedTrendAccounts.value ? orderedUsageRows(selectedTrendRows.value) : rows.value)
 const displayTablePagination = computed(() => hasSelectedTrendAccounts.value ? false : tablePagination.value)
 const displayMobileHasMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileHasMore.value)
 const displayMobileLoadingMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileLoadingMore.value)
-const displaySummary = computed(() => hasSelectedTrendAccounts.value
-  ? aggregateUsageSummaries(displayRows.value.map((row) => row.rangeUsage))
-  : overview.value?.summary)
-const accountUsageEmptyDescription = computed(() => hasSelectedTrendAccounts.value
-  ? '当前已选账户在日期范围内暂无用量。'
-  : '当前日期范围暂无账户用量，等待后台聚合后会显示结果。')
-const trendEmptyDescription = computed(() => visibleTrendRows.value.length ? `${rangeLabel.value} 暂无${metricText(selectedMetric.value)}消耗趋势` : '暂无可展示账户')
-const hasTrendData = computed(() => visibleTrendRows.value.some((row) => row.dailyUsage.some((point) => metricValue(point, selectedMetric.value) > 0)))
 const tableScrollX = computed(() => accountUsageStatsTableScrollX(isManagementView.value))
 const columns = computed(() => accountUsageStatsTableColumns(isManagementView.value))
-const accountFilterItems = computed(() => {
-  const selectedIds = new Set(selectedTrendAccountIds.value)
-  return trendAccountRows.value.map((account, index) => ({
-    account,
-    label: trendAccountLabel(account),
-    color: chartColors[index % chartColors.length],
-    selected: selectedIds.has(account.id),
-    removable: addedTrendAccountIdSet.value.has(account.id) && !defaultTrendAccountIdSet.value.has(account.id)
-  }))
-})
 const summaryCards = computed(() => {
   return buildAccountUsageSummaryCards({
     summary: displaySummary.value,
@@ -368,12 +340,7 @@ function resetFilters() {
   selectedMetric.value = defaults.metric
   dateRange.value = parseUsageStatsDateRange(defaults.range)
   dateRangeExplicit.value = false
-  selectedTrendAccountIds.value = []
-  addedTrendAccountIds.value = []
-  addedTrendAccountSelections.value = []
-  accountOptionRows.value = []
-  accountOptionsKeyword.value = ''
-  clearAccountOptionsSearchTimer()
+  clearTrendAccountState()
   resetAccountUsagePagination()
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
@@ -428,46 +395,27 @@ function handleMetricChange() {
 }
 
 function toggleTrendAccount(id: string) {
-  if (!trendAccountRows.value.some((row) => row.id === id)) return
-  selectedTrendAccountIds.value = selectedTrendAccountIds.value.includes(id)
-    ? selectedTrendAccountIds.value.filter((accountId) => accountId !== id)
-    : [...selectedTrendAccountIds.value, id]
-  renderChart()
+  if (toggleTrendAccountSelection(id)) {
+    renderChart()
+  }
 }
 
 function handleAddedTrendAccountsChange(value: string[], previousValue: string[]) {
   accountOptionsKeyword.value = ''
-  const previousIds = new Set(previousValue)
-  const acceptedIds = value.filter((id) => !defaultTrendAccountIdSet.value.has(id))
-  for (const id of acceptedIds) {
-    rememberAddedTrendAccountSelection(id)
-  }
-  addedTrendAccountIds.value = acceptedIds
-  syncAddedTrendAccountSelections()
-  const newlyAddedIds = acceptedIds.filter((id) => !previousIds.has(id))
-  const visibleIds = new Set([...defaultTrendAccountIdSet.value, ...acceptedIds])
-  const nextSelectedIds = selectedTrendAccountIds.value.filter((id) => visibleIds.has(id))
-  selectedTrendAccountIds.value = selectedTrendAccountIds.value.length
-    ? [...new Set([...nextSelectedIds, ...newlyAddedIds])]
-    : nextSelectedIds
+  updateAddedTrendAccounts(value, previousValue)
   void loadAccountOptions()
   void loadData({ quiet: true })
 }
 
 function removeAddedTrendAccount(id: string) {
-  if (!addedTrendAccountIdSet.value.has(id)) return
-  addedTrendAccountIds.value = addedTrendAccountIds.value.filter((accountId) => accountId !== id)
-  addedTrendAccountSelections.value = addedTrendAccountSelections.value.filter((selection) => selection.id !== id)
-  selectedTrendAccountIds.value = selectedTrendAccountIds.value.filter((accountId) => accountId !== id)
+  if (!removeAddedTrendAccountSelection(id)) return
   void loadAccountOptions()
   void loadData({ quiet: true })
   renderChart()
 }
 
 function clearTrendAccountState() {
-  selectedTrendAccountIds.value = []
-  addedTrendAccountIds.value = []
-  addedTrendAccountSelections.value = []
+  clearTrendAccountSelectionState()
   accountOptionRows.value = []
   accountOptionsKeyword.value = ''
   clearAccountOptionsSearchTimer()
@@ -479,18 +427,6 @@ function disabledDate(current: Dayjs) {
 
 function providerName(providerCode?: string) {
   return providerDisplayName(providerCode, availableProviders.value)
-}
-
-function trendAccountLabel(account: AccountUsageStatsRow) {
-  if (account.accessType === 'authorized') {
-    return accountSelectOptionLabel(account)
-  }
-  const sameNameCount = rows.value.filter((row) => row.name === account.name).length
-  if (sameNameCount <= 1) return account.name
-  const suffix = isManagementView.value && account.systemAccountName
-    ? account.systemAccountName
-    : providerName(account.providerCode)
-  return `${account.name}（${suffix}）`
 }
 
 function renderUsageTrendChart() {
@@ -526,32 +462,12 @@ function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: strin
   dateRange.value = responseRange
 }
 
-function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
-  const currentIds = new Set(currentRows.map((row) => row.id))
-  syncAddedTrendAccountSelections()
-  const defaultIds = new Set((overview.value?.defaultTrendAccountIds ?? []).filter((id) => currentIds.has(id)))
-  const visibleIds = new Set([...defaultIds, ...addedTrendAccountIds.value])
-  selectedTrendAccountIds.value = selectedTrendAccountIds.value.filter((id) => visibleIds.has(id))
-}
-
-function rememberAddedTrendAccountSelection(id: string) {
-  const selection = accountSelectionForId(id, [...accountOptionRows.value, ...rows.value])
-  rememberAccountSelection(selection)
-  if (!selection || addedTrendAccountSelections.value.some((item) => item.id === selection.id)) return
-  addedTrendAccountSelections.value = [...addedTrendAccountSelections.value, selection]
-}
-
-function syncAddedTrendAccountSelections() {
-  const existing = new Map(addedTrendAccountSelections.value.map((selection) => [selection.id, selection]))
-  addedTrendAccountSelections.value = addedTrendAccountIds.value
-    .map((id) => accountSelectionForId(id, [...accountOptionRows.value, ...rows.value]) ?? existing.get(id))
-    .filter((selection): selection is AccountSelection => Boolean(selection))
-  rememberAccountSelections(addedTrendAccountSelections.value)
+function pruneLoadedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
+  pruneSelectedTrendAccounts(currentRows)
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
-watch(addedTrendAccountSelections, (selections) => rememberAccountSelections(selections), { deep: true, immediate: true })
 </script>
 
 <style scoped>

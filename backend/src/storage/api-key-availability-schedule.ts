@@ -36,6 +36,12 @@ export interface ApiKeyAvailabilityScheduleDueEvent {
   action: 'start' | 'end'
 }
 
+interface ApiKeyAvailabilityScheduleStartEventCandidate {
+  dateKey: string
+  minuteOfDay: number
+  key: string
+}
+
 export function normalizeApiKeyAvailabilitySchedule(input: unknown): ApiKeyAvailabilitySchedule | undefined {
   if (input === undefined || input === null) {
     return undefined
@@ -144,6 +150,26 @@ export function dueApiKeyAvailabilityScheduleEvent(
     action,
     status: action === 'start' ? 'active' : 'disabled',
     eventKey: `${current.dateKey}:${current.minuteOfDay}:${action}:${events.map((event) => event.key).sort().join('|')}`
+  }
+}
+
+export function latestApiKeyAvailabilityScheduleStartEvent(
+  schedule: ApiKeyAvailabilitySchedule | undefined,
+  now = new Date()
+): ApiKeyAvailabilityScheduleDueEvent | undefined {
+  if (!schedule?.enabled) return undefined
+  if (!evaluateApiKeyAvailabilitySchedule(schedule, now).allowed) return undefined
+  const current = zonedDateTimeParts(now, schedule.timezone)
+  const candidates = startEventCandidatesForCurrentAllowedTime(schedule, current)
+  if (!candidates.length) return undefined
+  const latest = candidates
+    .sort((left, right) => right.dateKey.localeCompare(left.dateKey) || right.minuteOfDay - left.minuteOfDay)[0]
+  if (!latest) return undefined
+  const sameBoundaryCandidates = candidates.filter((candidate) => candidate.dateKey === latest.dateKey && candidate.minuteOfDay === latest.minuteOfDay)
+  return {
+    action: 'start',
+    status: 'active',
+    eventKey: `${latest.dateKey}:${latest.minuteOfDay}:start:${sameBoundaryCandidates.map((candidate) => candidate.key).sort().join('|')}`
   }
 }
 
@@ -339,6 +365,48 @@ function dueWindowEvents(
   return events
 }
 
+function startEventCandidatesForCurrentAllowedTime(
+  schedule: ApiKeyAvailabilitySchedule,
+  current: ZonedDateTimeParts
+): ApiKeyAvailabilityScheduleStartEventCandidate[] {
+  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
+  if (exception?.action === 'allow') {
+    return exception.windows.flatMap((window, index) => startEventCandidateForCurrentAllowedWindow(
+      current,
+      { ...window, daysOfWeek: [current.dayOfWeek] },
+      `exception:${current.dateKey}:${index}`,
+      false
+    ))
+  }
+  if (exception?.action === 'deny') return []
+  return schedule.windows.flatMap((window, index) => startEventCandidateForCurrentAllowedWindow(current, window, `window:${index}`, true))
+}
+
+function startEventCandidateForCurrentAllowedWindow(
+  current: ZonedDateTimeParts,
+  window: ApiKeyAvailabilityScheduleWindow,
+  token: string,
+  allowPreviousDate: boolean
+): ApiKeyAvailabilityScheduleStartEventCandidate[] {
+  const start = minuteOfDay(window.start)
+  const end = minuteOfDay(window.end)
+  const days = new Set(window.daysOfWeek)
+  if (start < end) {
+    if (days.has(current.dayOfWeek) && current.minuteOfDay >= start && current.minuteOfDay < end) {
+      return [{ dateKey: current.dateKey, minuteOfDay: start, key: `${token}:start:${window.start}` }]
+    }
+    return []
+  }
+  if (days.has(current.dayOfWeek) && current.minuteOfDay >= start) {
+    return [{ dateKey: current.dateKey, minuteOfDay: start, key: `${token}:start:${window.start}` }]
+  }
+  const previousDay = previousDayOfWeek(current.dayOfWeek)
+  if (allowPreviousDate && days.has(previousDay) && current.minuteOfDay < end) {
+    return [{ dateKey: previousDateKey(current.dateKey), minuteOfDay: start, key: `${token}:start:${window.start}` }]
+  }
+  return []
+}
+
 function minuteOfDay(value: string): number {
   const match = value.match(timePattern)
   if (!match) return 0
@@ -347,6 +415,12 @@ function minuteOfDay(value: string): number {
 
 function previousDayOfWeek(dayOfWeek: number): number {
   return dayOfWeek === 1 ? 7 : dayOfWeek - 1
+}
+
+function previousDateKey(dateKey: string): string {
+  const date = new Date(`${dateKey}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() - 1)
+  return date.toISOString().slice(0, 10)
 }
 
 function zonedDateTimeParts(date: Date, timezone: string): ZonedDateTimeParts {

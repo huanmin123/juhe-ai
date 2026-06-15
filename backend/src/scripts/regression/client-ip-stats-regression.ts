@@ -360,13 +360,25 @@ try {
   const loadedPolicyDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
   assert.equal(loadedPolicyDecision.blacklistPolicy?.id, policy.id, '来源级缓存未命中后应按当前 IP 精确查询封禁策略')
   assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blacklistPolicy?.id, policy.id, '精确查询后应写入来源级短 TTL 缓存')
+  const expiringPolicy = clientIpStats.createClientIpPolicy({
+    ipHash: ipv4Identity.ipHash,
+    reason: 'regression expiring',
+    expiresAt: new Date(Date.now() + 200).toISOString(),
+    actorSystemAccountId: 'sys_admin'
+  })
+  clientIpPolicyCache.clearClientIpPolicyCacheLocal()
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)).blacklistPolicy?.id, expiringPolicy.id, '临期封禁策略过期前应进入来源级缓存')
+  await delay(260)
+  assert.equal(clientIpStats.findActiveClientIpPolicyByHash(ipv4Identity.ipHash), undefined, '封禁策略过期后精确读取不应继续返回 active 策略')
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blocked, false, '来源级缓存中的封禁策略过期后不应继续阻断')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '封禁策略过期后不应进入运行态列表')
   const blacklistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 })
-  assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [ipv4Identity.ipHash], 'IP 列表封禁筛选应只返回 active 封禁 IP')
+  assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [], 'IP 列表封禁筛选不应返回已过期封禁 IP')
   assertClientIpListPolicyQueryPlan(today)
   assertClientIpListSortQueryPlans(today)
   assertClientIpListGlobalLastUsedSortQueryPlan(today)
   assert.equal(
-    clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: policy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
+    clientIpStats.recordClientIpPolicyHits([{ ipHash: ipv4Identity.ipHash, policyId: expiringPolicy.id, hitCount: 3, hitAt: new Date(createdAtBase + 10).toISOString() }]).recorded,
     1,
     '封禁命中计数应可后台累计'
   )
@@ -374,15 +386,15 @@ try {
     ipHash: ipv4Identity.ipHash,
     reason: 'regression unblock',
     actorSystemAccountId: 'sys_admin'
-  }).disabledCount, 1, '解封应停用 active 封禁策略')
-  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === policy.id), false, '解封后策略不应继续进入运行态列表')
+  }).disabledCount, 1, '解封应停用当前 status=active 的封禁策略')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '解封后策略不应继续进入运行态列表')
 
   const cursorCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM stats_job_state WHERE job_name = 'client_ip_stats_aggregation' AND scope_type = 'usage_shard' AND cursor_id IS NOT NULL")
     .get() as { total?: number } | undefined
   assert(Number(cursorCount?.total ?? 0) > 0, 'IP 统计应维护独立 usage shard 游标')
 
-  console.log('IP 统计回归通过：IPv4 注册、非 IPv4 忽略、预聚合窗口、封禁策略和命中计数均符合预期')
+  console.log('IP 统计回归通过：IPv4 注册、非 IPv4 忽略、预聚合窗口、封禁策略过期边界和命中计数均符合预期')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
@@ -506,6 +518,10 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   assert(!buildListParamsSource.includes('lastUsedEndDate'), 'IP 管理页面不应提交最后使用结束日期')
   assert(!buildListParamsSource.includes('startDate: formatDateKey(lastUsedDateRange.value[0])'), 'IP 管理 startDate 不能直接绑定最后使用日期')
   assert(!buildListParamsSource.includes('endDate: formatDateKey(lastUsedDateRange.value[1])'), 'IP 管理 endDate 不能直接绑定最后使用日期')
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {

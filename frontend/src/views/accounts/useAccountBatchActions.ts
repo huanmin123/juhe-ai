@@ -5,9 +5,8 @@ import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { canBatchDeleteAccount, canBatchManageAccount, canBatchRestoreAccount, canTestAccount } from './accountRules'
-
-const accountBatchConcurrency = 5
+import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
+import { canBatchManageAccount, canBatchRestoreAccount, canTestAccount } from './accountRules'
 
 interface UseAccountBatchActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -108,66 +107,10 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     )
   }
 
-  async function batchDeleteSelected(sourceAccounts = options.selectedAccounts.value) {
-    const selected = sourceAccounts.filter(canBatchDeleteAccount)
-    if (!selected.length) {
-      message.warning('所选账户里没有可删除的自有账户')
-      return
-    }
-    if (selected.length !== sourceAccounts.length) {
-      message.warning('已跳过授权账户或无权删除的账户')
-    }
-    const hide = message.loading(`正在批量删除账户（${selected.length} 个）...`, 0)
-    try {
-      const results = await runWithConcurrency(selected, accountBatchConcurrency, (account) => (
-        options.isManagementView.value
-          ? api.accounts.delete(account.id, accountOperationScopeParams(account, options.accountScopeParams.value))
-          : api.myAccounts.delete(account.id)
-      ))
-      const failedCount = results.filter((result) => result.status === 'rejected').length
-      if (failedCount === 0) {
-        message.success('账户已批量删除，关联记录将在一个月后由后台物理清理')
-        options.clearSelection()
-      } else {
-        message.warning(`账户批量删除已执行，成功 ${selected.length - failedCount} 个，失败 ${failedCount} 个`)
-      }
-      await options.loadData()
-    } catch (error) {
-      console.error(error)
-      message.error('批量删除账户失败')
-    } finally {
-      hide()
-    }
-  }
-
   return {
-    batchDeleteSelected,
     batchRestoreSelected,
     batchSetStatus,
     batchTestSelected,
     batchUpdateAccounts
   }
-}
-
-async function runWithConcurrency<TItem, TResult>(
-  items: TItem[],
-  concurrency: number,
-  task: (item: TItem) => Promise<TResult>
-): Promise<Array<PromiseSettledResult<TResult>>> {
-  const results: Array<PromiseSettledResult<TResult>> = new Array(items.length)
-  let nextIndex = 0
-  const workerCount = Math.min(Math.max(1, concurrency), items.length)
-  async function runWorker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex
-      nextIndex += 1
-      try {
-        results[index] = { status: 'fulfilled', value: await task(items[index]) }
-      } catch (reason) {
-        results[index] = { status: 'rejected', reason }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: workerCount }, runWorker))
-  return results
 }

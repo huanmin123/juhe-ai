@@ -89,6 +89,23 @@ interface FailureStormEntry {
   apiKeyIds: Set<string>
 }
 
+interface SuccessObservationEntry {
+  firstSeenMs: number
+  lastSeenMs: number
+  successCount: number
+}
+
+interface FailureStormPrecheckDecision {
+  trigger: boolean
+  successCount: number
+  failureRatio: number
+  skippedReason?:
+    | 'below_threshold'
+    | 'observation_window'
+    | 'recent_success'
+    | 'failure_ratio'
+}
+
 interface PrecheckState {
   account: OpenAIAccountSecret
   settings?: GatewaySettings
@@ -144,6 +161,9 @@ const localSuppressionIdleRetentionMs = 60_000
 const failureStormWindowMs = 10_000
 const failureStormThresholdCount = 5
 const failureStormDistinctIpThreshold = 2
+const failureStormMinObservationMs = 2_000
+const failureStormRecentSuccessGraceMs = 5_000
+const failureStormFailureRatioThreshold = 0.9
 const precheckMinIntervalMs = 60_000
 const precheckMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 const precheckSuppressionGuardMs = accountDiagnosticRetryMaxTotalTimeoutMs + 15_000
@@ -154,6 +174,7 @@ const maxSideEffectQueueLength = 5000
 const sideEffectQueue = new AccountSideEffectQueue()
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
 const failureStorms = new Map<string, FailureStormEntry>()
+const successObservations = new Map<string, SuccessObservationEntry>()
 const precheckStates = new Map<string, PrecheckState>()
 const precheckConcurrencyDrainWaits = new Map<string, { unsubscribe: () => void; timer: NodeJS.Timeout }>()
 let processingSideEffects = false
@@ -171,10 +192,12 @@ let localHalfOpenLeaseSequence = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
   if (operation.input.success) {
-    const canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(gatewayAccountRuntimeKey(operation.account))
+    const runtimeKey = gatewayAccountRuntimeKey(operation.account)
+    recordGatewayAccountSuccessObservation(runtimeKey)
+    const canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey)
     if (canceledCount > 0) {
       canceledBySuccessCount += canceledCount
-      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
+      clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
     }
   } else if (coalesceQueuedAccountErrorHandlingSideEffect(operation)) {
     return
@@ -302,7 +325,8 @@ function recordGatewayAccountFailureForPrecheckInternal(
   failureStorms.set(runtimeKey, entry)
 
   const forcePrecheck = input.forcePrecheck === true
-  if (!forcePrecheck && (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold)) {
+  const precheckDecision = shouldTriggerFailureStormPrecheck(runtimeKey, entry, forcePrecheck, now)
+  if (!precheckDecision.trigger) {
     return
   }
 
@@ -349,6 +373,8 @@ function recordGatewayAccountFailureForPrecheckInternal(
     failureCount: entry.failureCount,
     distinctClientIpCount: entry.clientIps.size,
     distinctApiKeyCount: entry.apiKeyIds.size,
+    successCount: precheckDecision.successCount,
+    failureRatio: precheckDecision.failureRatio,
     forcePrecheck,
     systemAccountId: input.systemAccountId,
     groupId: input.groupId,
@@ -359,6 +385,51 @@ function recordGatewayAccountFailureForPrecheckInternal(
   if (runPrecheck) {
     void runGatewayAccountPrecheck(runtimeKey)
   }
+}
+
+function recordGatewayAccountSuccessObservation(runtimeKey: string): void {
+  cleanupExpiredFailureStorms()
+  const now = Date.now()
+  const current = successObservations.get(runtimeKey)
+  const entry: SuccessObservationEntry = current && now - current.firstSeenMs <= failureStormWindowMs
+    ? current
+    : {
+        firstSeenMs: now,
+        lastSeenMs: now,
+        successCount: 0
+      }
+  entry.lastSeenMs = now
+  entry.successCount += 1
+  successObservations.set(runtimeKey, entry)
+}
+
+function shouldTriggerFailureStormPrecheck(
+  runtimeKey: string,
+  entry: FailureStormEntry,
+  forcePrecheck: boolean,
+  now: number
+): FailureStormPrecheckDecision {
+  const successObservation = successObservations.get(runtimeKey)
+  const successCount = successObservation?.successCount ?? 0
+  const total = entry.failureCount + successCount
+  const failureRatio = total > 0 ? entry.failureCount / total : 1
+
+  if (forcePrecheck) {
+    return { trigger: true, successCount, failureRatio }
+  }
+  if (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold) {
+    return { trigger: false, successCount, failureRatio, skippedReason: 'below_threshold' }
+  }
+  if (now - entry.firstSeenMs < failureStormMinObservationMs) {
+    return { trigger: false, successCount, failureRatio, skippedReason: 'observation_window' }
+  }
+  if (successObservation && now - successObservation.lastSeenMs <= failureStormRecentSuccessGraceMs) {
+    return { trigger: false, successCount, failureRatio, skippedReason: 'recent_success' }
+  }
+  if (failureRatio < failureStormFailureRatioThreshold) {
+    return { trigger: false, successCount, failureRatio, skippedReason: 'failure_ratio' }
+  }
+  return { trigger: true, successCount, failureRatio }
 }
 
 export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
@@ -488,6 +559,7 @@ export function clearGatewayLocalAccountSuppressionsForTest(): void {
   clearAllPrecheckConcurrencyDrainWaits()
   localAccountSuppressions.clear()
   failureStorms.clear()
+  successObservations.clear()
   precheckStates.clear()
 }
 
@@ -832,6 +904,11 @@ function cleanupExpiredFailureStorms(): void {
   for (const [runtimeKey, entry] of failureStorms) {
     if (now - entry.lastSeenMs > failureStormWindowMs) {
       failureStorms.delete(runtimeKey)
+    }
+  }
+  for (const [runtimeKey, entry] of successObservations) {
+    if (now - entry.lastSeenMs > failureStormWindowMs) {
+      successObservations.delete(runtimeKey)
     }
   }
 }

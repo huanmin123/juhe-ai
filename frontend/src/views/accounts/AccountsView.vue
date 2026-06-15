@@ -218,7 +218,6 @@
 import { message } from '@/lib/antd'
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
-import { api } from '@/api/client'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -261,10 +260,12 @@ import { useAccountExportActions } from './useAccountExportActions'
 import { useAccountFilterTagOptions } from './useAccountFilterTagOptions'
 import { useAccountFilterInteractions } from './useAccountFilterInteractions'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
+import { useAccountEditGroupOptions } from './useAccountEditGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
-import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
+import { accountOperationSystemAccountId } from './accountOperationScope'
 import { useAccountReauthorize } from './useAccountReauthorize'
+import { useAccountRemovalActions } from './useAccountRemovalActions'
 import { useAccountSelectionActions } from './useAccountSelectionActions'
 import { useAccountTestModal, type SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
@@ -419,9 +420,6 @@ const {
   selectedAccounts,
   systemAccounts
 })
-const groupOptionProviderCode = ref('')
-const groupOptionSystemAccountId = ref('')
-const selectedGroupIds = ref<Array<string | undefined>>([])
 const successfulDraftActivationTest = ref<SuccessfulDraftActivationTest>()
 const {
   groups,
@@ -429,14 +427,11 @@ const {
   handleSearch: handleGroupOptionsSearch,
   load: loadGroupOptions,
   loading: groupOptionsLoading,
-  resetSearch: resetGroupOptionsSearch
-} = useAccountGroupOptions({
-  isManagementView: () => isManagementView.value,
-  scope: () => ({
-    providerCode: groupOptionProviderCode.value,
-    systemAccountId: isManagementView.value ? groupOptionSystemAccountId.value || accountScopeParams.value?.systemAccountId : undefined,
-    selectedIds: selectedGroupIds.value
-  })
+  resetSearch: resetGroupOptionsSearch,
+  setEditGroupOptionScope
+} = useAccountEditGroupOptions({
+  accountScopeParams,
+  isManagementView
 })
 const {
   accountErrorPolicyRules,
@@ -496,6 +491,28 @@ const {
   systemAccounts,
   successfulDraftActivationTest
 })
+watch(
+  [
+    () => form.providerCode,
+    () => form.groupId,
+    () => createScopeParams.value?.systemAccountId,
+    () => editingId.value,
+    () => accountScopeParams.value?.systemAccountId
+  ],
+  () => {
+    const activeAccount = editingId.value
+      ? accountById.value.get(editingId.value)
+      : undefined
+    setEditGroupOptionScope({
+      providerCode: form.providerCode,
+      systemAccountId: isManagementView.value
+        ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
+        : undefined,
+      selectedIds: [form.groupId]
+    })
+  },
+  { immediate: true }
+)
 const {
   handleAccountTypeFilterChange,
   handleProviderFilterChange,
@@ -597,31 +614,7 @@ const {
   isManagementView,
   loadData
 })
-watch(
-  [
-    () => form.providerCode,
-    () => form.groupId,
-    () => createScopeParams.value?.systemAccountId,
-    () => editingId.value,
-    () => accountScopeParams.value?.systemAccountId
-  ],
-  () => {
-    const activeAccount = editingId.value
-      ? accountById.value.get(editingId.value)
-      : undefined
-    groupOptionProviderCode.value = form.providerCode
-    groupOptionSystemAccountId.value = isManagementView.value
-      ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
-      : ''
-    selectedGroupIds.value = [form.groupId]
-  },
-  { immediate: true }
-)
-watch([groupOptionProviderCode, groupOptionSystemAccountId], () => {
-  resetGroupOptionsSearch()
-})
 const {
-  batchDeleteSelected,
   batchRestoreSelected,
   batchSetStatus,
   batchTestSelected
@@ -643,6 +636,21 @@ const {
   openReauthorizeModal,
   openTestModal,
   openTrafficMigration
+})
+const {
+  batchDeleteSelected,
+  removeAccount,
+  returnAuthorizationAccount
+} = useAccountRemovalActions({
+  accountById,
+  accounts,
+  accountScopeParams,
+  clearSelection,
+  extractApiErrorMessage,
+  isManagementView,
+  loadData,
+  pruneSelection,
+  removeLoadedAccount
 })
 const proxyByIdMapRef = computed(() => proxyByIdMap(proxies.value))
 
@@ -678,52 +686,6 @@ function openImportModal() {
 async function handleImportCompleted() {
   clearSelectedAccountIds()
   await loadData({ forceOptions: true })
-}
-
-async function removeLoadedRemovedAccount(id: string): Promise<void> {
-  removeLoadedAccount(id)
-  pruneSelection(new Set(accounts.value.map((account) => account.id)))
-  void loadData({ quiet: true })
-}
-
-async function returnAuthorizationAccount(id: string) {
-  const account = accountById.value.get(id)
-  if (!account || account.accessType !== 'authorized') {
-    message.warning('只有授权账户可以归还')
-    return
-  }
-  try {
-    if (isManagementView.value) {
-      await api.accounts.returnAuthorization(id, accountOperationScopeParams(account, accountScopeParams.value))
-    } else {
-      await api.myAccounts.returnAuthorization(id)
-    }
-    await removeLoadedRemovedAccount(id)
-    message.success('授权账户已归还')
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '归还授权账户失败'))
-  }
-}
-
-async function removeAccount(id: string) {
-  const account = accountById.value.get(id)
-  if (account?.accessType === 'authorized') {
-    message.warning('授权账户请使用归还操作')
-    return
-  }
-  try {
-    if (isManagementView.value) {
-      await api.accounts.delete(id, accountScopeParams.value)
-    } else {
-      await api.myAccounts.delete(id)
-    }
-    await removeLoadedRemovedAccount(id)
-    message.success('账户已删除，关联记录将在一个月后由后台物理清理')
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '删除账户失败'))
-  }
 }
 
 onMounted(() => {

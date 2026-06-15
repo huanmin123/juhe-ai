@@ -27,6 +27,7 @@ interface OpenAIModelsResponseUsageContext {
 }
 
 interface SendOpenAIModelsGatewayResponseInput {
+  req: Request
   res: Response
   auditCapture: AuditCaptureContext
   usageContext: OpenAIModelsResponseUsageContext
@@ -60,13 +61,13 @@ export function finalizeGatewayAuthFailureAudit(
 }
 
 export async function sendOpenAIModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
-  const { res, auditCapture, usageContext, startedAt } = input
+  const { req, res, auditCapture, usageContext, startedAt } = input
   const providerCode = usageContext.providerCode ?? GPT_VENDOR_CODE
   const catalog = await listCachedProviderModelCatalogAsync({
     providerCode,
     systemAccountId: usageContext.systemAccountId
   })
-  const responsePayload = buildOpenAIModelsResponse(catalog)
+  const responsePayload = buildOpenAIModelsResponse(catalog, req)
   res.status(200).json(responsePayload)
   enqueueUsageRecord({
     ...usageContext,

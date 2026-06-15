@@ -72,6 +72,7 @@ function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabili
     || status === 'authorization_paused'
     || status === 'authorization_unavailable'
     || status === 'binding_missing'
+    || status === 'permission_denied'
     || status === 'source_deleted'
     || status === 'source_expired'
     || status === 'source_disabled'

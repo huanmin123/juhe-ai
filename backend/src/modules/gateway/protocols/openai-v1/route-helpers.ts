@@ -2,7 +2,9 @@ import type { Request } from 'express'
 
 import type { OpenAIAccountSecret } from '../../../../storage/repositories.js'
 import {
+  buildCodexModelsResponseFromCatalog,
   buildOpenAIModelsResponseFromCatalog,
+  type CodexModelsListResponse,
   type OpenAIModelsListResponse,
   type ProviderModelCatalogItem
 } from '../../../model-pricing/model-catalog.service.js'
@@ -68,10 +70,48 @@ export function isOpenAIModelsRequest(req: Request): boolean {
   return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/models'
 }
 
-export type { OpenAIModelsListResponse }
+export function isCodexModelsRequest(req: Request): boolean {
+  if (!isOpenAIModelsRequest(req)) {
+    return false
+  }
+  if (hasNonEmptyQueryParam(req, 'client_version')) {
+    return true
+  }
+  return headerContainsCodex(requestHeader(req, 'originator'))
+    || headerContainsCodex(requestHeader(req, 'user-agent'))
+    || headerContainsCodex(requestHeader(req, 'x-codex-client'))
+}
 
-export function buildOpenAIModelsResponse(catalog: ProviderModelCatalogItem[]): OpenAIModelsListResponse {
+export type { CodexModelsListResponse, OpenAIModelsListResponse }
+
+export function buildOpenAIModelsResponse(catalog: ProviderModelCatalogItem[], req?: Request): OpenAIModelsListResponse | CodexModelsListResponse {
+  if (req && isCodexModelsRequest(req)) {
+    return buildCodexModelsResponseFromCatalog(catalog)
+  }
   return buildOpenAIModelsResponseFromCatalog(catalog)
+}
+
+function hasNonEmptyQueryParam(req: Request, name: string): boolean {
+  const { query } = splitPathAndQuery(req.originalUrl)
+  if (!query) {
+    return false
+  }
+  const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query)
+  const value = params.get(name)
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function headerContainsCodex(value: string | undefined): boolean {
+  return typeof value === 'string' && value.toLowerCase().includes('codex')
+}
+
+function requestHeader(req: Request, name: string): string | undefined {
+  if (typeof req.header === 'function') {
+    return req.header(name)
+  }
+  const headers = req.headers as Record<string, string | string[] | undefined>
+  const value = headers[name.toLowerCase()] ?? headers[name]
+  return Array.isArray(value) ? value[0] : value
 }
 
 const openAICodexBaseUrl = 'https://chatgpt.com/backend-api/codex'
