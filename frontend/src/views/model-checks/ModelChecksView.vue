@@ -1,113 +1,50 @@
 <template>
   <div class="model-checks-page">
-    <a-card class="page-card model-checks-run-card">
-      <a-form class="model-checks-form" layout="vertical">
-        <div class="model-checks-control-panel">
-          <div class="model-checks-fields">
-            <a-form-item v-if="isManagementView" class="model-checks-system-account-field" required>
-              <SystemPrincipalSelect
-                v-model:value="systemAccountFilter"
-                v-model:selected-principal="systemAccountFilterSelection"
-                :accounts="systemAccounts"
-                :active-only="false"
-                include-all
-                allow-clear
-                :disabled="submitting"
-                :filter-option="false"
-                :loading="systemAccountOptionsLoading"
-                placeholder="请选择系统账户"
-                @change="handleSystemAccountFilterChange"
-                @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-                @search="handleSystemAccountOptionsSearch"
-              />
-            </a-form-item>
-            <a-form-item class="model-checks-account-field" required>
-              <AccountSelect
-                :value="selectValueOrUndefined(form.targetId)"
-                v-model:selected-account="selectedTargetAccount"
-                show-search
-                allow-clear
-                :disabled="accountSelectDisabled"
-                :filter-option="false"
-                :loading="targetOptionsLoading"
-                :options="targetOptions"
-                :placeholder="accountSelectPlaceholder"
-                @change="handleTargetChange"
-                @dropdown-visible-change="handleTargetDropdownVisibleChange"
-                @search="handleTargetSearch"
-                @update:value="handleTargetValueUpdate"
-              />
-            </a-form-item>
-            <a-form-item class="model-checks-model-field" required>
-              <a-select
-                v-model:value="form.model"
-                :options="modelOptions"
-                :loading="optionsLoading"
-                :disabled="submitting"
-                placeholder="模型"
-              />
-            </a-form-item>
-            <a-form-item class="model-checks-comparison-field">
-              <AccountSelect
-                v-model:value="form.trustedComparisonAccountId"
-                v-model:selected-account="selectedComparisonAccount"
-                show-search
-                allow-clear
-                :disabled="accountSelectDisabled"
-                :filter-option="false"
-                :loading="comparisonOptionsLoading"
-                :options="comparisonOptions"
-                :placeholder="comparisonSelectPlaceholder"
-                @dropdown-visible-change="handleComparisonDropdownVisibleChange"
-                @search="handleComparisonSearch"
-              />
-            </a-form-item>
-            <a-button :loading="optionsLoading" @click="loadOptions">
-              <template #icon>
-                <ReloadOutlined />
-              </template>
-              刷新
-            </a-button>
-            <a-button :disabled="submitting" @click="resetRunForm">重置</a-button>
-          </div>
-
-          <div class="model-checks-toolbar">
-            <a-button type="primary" :loading="submitting" @click="submitRun">
-              <template #icon>
-                <ExperimentOutlined />
-              </template>
-              开始检测
-            </a-button>
-          </div>
-        </div>
-
-      </a-form>
-
-      <div v-if="terminalVisible" class="model-check-terminal">
-        <div class="model-check-terminal-head">
-          <div>
-            <div class="terminal-title">AI 测试终端</div>
-            <div class="terminal-subtitle">按真实检测进度输出探针请求、响应、评分和 Trace ID</div>
-          </div>
-          <a-space>
-            <a-tag :color="terminalStatusColor">{{ terminalStatusText }}</a-tag>
-            <a-button v-if="submitting" size="small" danger @click="stopCurrentModelCheck()">停止检测</a-button>
-          </a-space>
-        </div>
-        <div ref="terminalBodyRef" class="model-check-terminal-body">
-          <div v-for="line in terminalLines" :key="line.id" class="terminal-line" :class="`terminal-line-${line.level}`">
-            <span class="terminal-time">[{{ line.time }}]</span>
-            <span class="terminal-prompt">$</span>
-            <span class="terminal-text">{{ line.text }}</span>
-          </div>
-          <div v-if="submitting" class="terminal-line terminal-line-muted">
-            <span class="terminal-time">[{{ terminalNow }}]</span>
-            <span class="terminal-prompt">_</span>
-            <span class="terminal-text terminal-cursor">等待下一个检测事件</span>
-          </div>
-        </div>
-      </div>
-    </a-card>
+    <ModelCheckRunPanel
+      :account-select-disabled="accountSelectDisabled"
+      :account-select-placeholder="accountSelectPlaceholder"
+      :comparison-options="comparisonOptions"
+      :comparison-options-loading="comparisonOptionsLoading"
+      :comparison-select-placeholder="comparisonSelectPlaceholder"
+      :is-management-view="isManagementView"
+      :model="form.model"
+      :model-options="modelOptions"
+      :options-loading="optionsLoading"
+      :selected-comparison-account="selectedComparisonAccount"
+      :selected-target-account="selectedTargetAccount"
+      :submitting="submitting"
+      :system-account-filter="systemAccountFilter"
+      :system-account-filter-selection="systemAccountFilterSelection"
+      :system-account-options-loading="systemAccountOptionsLoading"
+      :system-accounts="systemAccounts"
+      :target-id="selectValueOrUndefined(form.targetId)"
+      :target-options="targetOptions"
+      :target-options-loading="targetOptionsLoading"
+      :terminal-lines="terminalLines"
+      :terminal-status-color="terminalStatusColor"
+      :terminal-status-text="terminalStatusText"
+      :terminal-visible="terminalVisible"
+      :trusted-comparison-account-id="selectValueOrUndefined(form.trustedComparisonAccountId)"
+      @comparison-dropdown-visible-change="handleComparisonDropdownVisibleChange"
+      @comparison-search="handleComparisonSearch"
+      @refresh="loadOptions"
+      @reset="resetRunForm"
+      @stop="stopCurrentModelCheck()"
+      @submit="submitRun"
+      @system-account-change="handleSystemAccountFilterChange"
+      @system-account-dropdown-visible-change="handleSystemAccountOptionsDropdown"
+      @system-account-search="handleSystemAccountOptionsSearch"
+      @target-change="handleTargetChange"
+      @target-dropdown-visible-change="handleTargetDropdownVisibleChange"
+      @target-search="handleTargetSearch"
+      @target-value-update="handleTargetValueUpdate"
+      @update:model="form.model = $event"
+      @update:selected-comparison-account="selectedComparisonAccount = $event"
+      @update:selected-target-account="selectedTargetAccount = $event"
+      @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
+      @update:system-account-filter-selection="systemAccountFilterSelection = $event"
+      @update:trusted-comparison-account-id="form.trustedComparisonAccountId = $event"
+    />
 
     <ModelCheckRunHistoryList
       :filters="filters"
@@ -159,12 +96,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
-import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
 import { message } from '@/lib/antd'
 
-import AccountSelect from '@/components/AccountSelect.vue'
-import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
@@ -194,10 +128,11 @@ import {
   levelText,
   progressItemTitle,
   statusText,
-  terminalLevelForCheckStatus,
-  type ModelCheckTerminalLineLevel
+  terminalLevelForCheckStatus
 } from './modelCheckFormatters'
 import { modelCheckFallbackOptions, modelCheckPageSize } from './modelCheckPageConfig'
+import type { ModelCheckTerminalLine } from './ModelCheckTerminal.vue'
+import ModelCheckRunPanel from './ModelCheckRunPanel.vue'
 import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
 import ModelCheckRunDetailDrawer from './ModelCheckRunDetailDrawer.vue'
 import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
@@ -230,8 +165,7 @@ const submitting = ref(false)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
 const terminalVisible = ref(false)
-const terminalLines = ref<TerminalLine[]>([])
-const terminalBodyRef = ref<HTMLElement>()
+const terminalLines = ref<ModelCheckTerminalLine[]>([])
 let modelCheckAbortController: AbortController | undefined
 const options = ref<ModelCheckOptions>(modelCheckFallbackOptions)
 const currentRun = ref<ModelCheckRunDetail>()
@@ -330,17 +264,8 @@ const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))
 const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
-const terminalNow = ref(formatClockTime(new Date()))
 let terminalLineId = 0
 let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
-let terminalClockTimer: number | undefined
-
-type TerminalLine = {
-  id: number
-  time: string
-  level: ModelCheckTerminalLineLevel
-  text: string
-}
 
 async function loadOptions() {
   optionsLoading.value = true
@@ -482,19 +407,13 @@ function clearTerminal() {
   terminalVisible.value = false
 }
 
-function appendTerminalLine(level: ModelCheckTerminalLineLevel, text: string) {
+function appendTerminalLine(level: ModelCheckTerminalLine['level'], text: string) {
   terminalLines.value.push({
     id: ++terminalLineId,
     time: formatClockTime(new Date()),
     level,
     text
   })
-  void nextTick(scrollTerminalToBottom)
-}
-
-function scrollTerminalToBottom() {
-  if (!terminalBodyRef.value) return
-  terminalBodyRef.value.scrollTop = terminalBodyRef.value.scrollHeight
 }
 
 function handleModelCheckProgress(event: ModelCheckProgressEvent) {
@@ -562,15 +481,9 @@ function updateViewportWidth() {
   viewportWidth.value = window.innerWidth
 }
 
-function updateTerminalNow() {
-  terminalNow.value = formatClockTime(new Date())
-}
-
 onMounted(async () => {
   updateViewportWidth()
-  updateTerminalNow()
   window.addEventListener('resize', updateViewportWidth)
-  terminalClockTimer = window.setInterval(updateTerminalNow, 1000)
   await Promise.all([loadOptions(), loadRuns()])
 })
 
@@ -580,10 +493,6 @@ onDeactivated(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewportWidth)
-  if (terminalClockTimer !== undefined) {
-    window.clearInterval(terminalClockTimer)
-    terminalClockTimer = undefined
-  }
   stopCurrentModelCheck(false, 'unmount')
 })
 </script>
@@ -597,198 +506,10 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.model-checks-run-card {
-  flex: 0 0 auto;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-}
-
-.model-checks-form :deep(.ant-form-item) {
-  margin-bottom: 0;
-}
-
-.model-checks-control-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.model-checks-fields {
-  display: flex;
-  flex: 1 1 620px;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  min-width: 0;
-}
-
-.model-checks-system-account-field,
-.model-checks-account-field {
-  flex: 0 1 300px;
-  width: 300px;
-  min-width: 240px;
-}
-
-.model-checks-model-field {
-  flex: 0 0 160px;
-  width: 160px;
-  min-width: 140px;
-}
-
-.model-checks-comparison-field {
-  flex: 0 1 300px;
-  width: 300px;
-  min-width: 240px;
-}
-
-.model-checks-toolbar {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.model-check-terminal {
-  display: flex;
-  height: 344px;
-  margin-top: 14px;
-  min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid #1e293b;
-  border-radius: 10px;
-  background: #020617;
-}
-
-.model-check-terminal-head {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-bottom: 1px solid #1e293b;
-  background: #0f172a;
-}
-
-.terminal-title {
-  color: #e2e8f0;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.terminal-subtitle {
-  margin-top: 2px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.model-check-terminal-body {
-  min-height: 0;
-  flex: 1 1 auto;
-  padding: 12px;
-  overflow: auto;
-  color: #cbd5e1;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.terminal-line {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  word-break: break-word;
-}
-
-.terminal-time {
-  color: #64748b;
-  white-space: nowrap;
-}
-
-.terminal-prompt {
-  color: #38bdf8;
-}
-
-.terminal-line-success .terminal-text {
-  color: #86efac;
-}
-
-.terminal-line-warning .terminal-text {
-  color: #fde68a;
-}
-
-.terminal-line-error .terminal-text {
-  color: #fca5a5;
-}
-
-.terminal-line-muted .terminal-text {
-  color: #94a3b8;
-}
-
-.terminal-cursor::after {
-  display: inline-block;
-  width: 6px;
-  height: 12px;
-  margin-left: 4px;
-  vertical-align: -2px;
-  background: #38bdf8;
-  content: '';
-  animation: terminal-cursor-blink 1s steps(1) infinite;
-}
-
-@keyframes terminal-cursor-blink {
-  50% {
-    opacity: 0;
-  }
-}
-
 @media (max-width: 900px) {
   .model-checks-page {
     height: auto;
     min-height: calc(100dvh - 108px);
-  }
-
-  .model-checks-control-panel,
-  .model-checks-fields {
-    width: 100%;
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .model-checks-system-account-field,
-  .model-checks-account-field,
-  .model-checks-model-field,
-  .model-checks-comparison-field {
-    width: 100%;
-    flex: none;
-    min-width: 0;
-  }
-
-  .model-checks-toolbar {
-    align-items: stretch;
-    width: 100%;
-    flex-direction: column;
-    justify-content: flex-start;
-  }
-
-  .model-checks-fields :deep(.ant-btn),
-  .model-checks-toolbar :deep(.ant-btn) {
-    width: 100%;
-  }
-
-  .model-check-terminal-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .model-check-terminal {
-    height: 320px;
   }
 }
 </style>

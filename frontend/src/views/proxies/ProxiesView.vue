@@ -5,7 +5,7 @@
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </template>
     </ResponsiveListToolbar>
-    <ResponsiveDataList table-class="page-table proxy-table" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1160" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileProxies" @mobile-refresh="refreshMobileProxies">
+    <ResponsiveDataList table-class="page-table proxy-table" :columns="proxyColumns" :data-source="proxies" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1160" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileProxies" @mobile-refresh="refreshMobileProxies">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建代理，再在 OAuth 账户里选择绑定。" />
       </template>
@@ -106,7 +106,7 @@
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item label="类型">
-              <a-select v-model:value="form.type" :options="typeOptions" />
+              <a-select v-model:value="form.type" :options="proxyTypeOptions" />
             </a-form-item>
           </a-col>
           <a-col :span="12">
@@ -139,101 +139,13 @@
       </a-form>
     </a-modal>
 
-    <a-modal
+    <ProxyTestReportModal
       v-model:open="testReportOpen"
-      title="代理质量检测报告"
-      width="680px"
-      :footer="null"
-      class="proxy-test-modal"
-    >
-      <template v-if="selectedTestProxy && !testReport">
-        <section class="proxy-test-start">
-          <h3>{{ selectedTestProxy.name }}</h3>
-          <div class="proxy-report-meta">
-            <span>检测目标: 供应商默认地址</span>
-            <span>当前延迟: {{ formatLatency(selectedTestProxy.latencyMs) }}</span>
-            <span>当前状态: {{ testStatusText(selectedTestProxy.testStatus) }}</span>
-            <span>最近检测: {{ formatDateTime(selectedTestProxy.lastTestedAt) }}</span>
-          </div>
-        </section>
-
-        <div class="proxy-report-footer">
-          <a-space>
-            <a-button :disabled="Boolean(testingProxyId)" @click="testReportOpen = false">关闭</a-button>
-            <a-button type="primary" :loading="testingProxyId === selectedTestProxy.id" @click="runProxyTest">开始测试</a-button>
-          </a-space>
-        </div>
-      </template>
-
-      <template v-else-if="testReport">
-        <section class="proxy-report-summary">
-          <div class="proxy-report-main">
-            <h3>{{ testReport.proxyName }}</h3>
-            <p>通过 {{ testReport.passedCount }} 项，告警 {{ testReport.warningCount }} 项，失败 {{ testReport.failedCount }} 项</p>
-            <div class="proxy-report-meta">
-              <span>检测目标: 供应商默认地址</span>
-              <span>出口 IP: {{ testReport.outboundIp || '-' }}</span>
-              <span>出口地区: {{ testReport.outboundRegion || '-' }}</span>
-              <span>基础延迟: {{ formatLatency(testReport.baseLatencyMs) }}</span>
-              <span>检测时间: {{ formatDateTime(testReport.testedAt) }}</span>
-            </div>
-          </div>
-          <div class="proxy-score">
-            <strong>{{ testReport.score }}</strong>
-            <span>等级 {{ testReport.grade }}</span>
-          </div>
-        </section>
-
-        <ResponsiveDataList
-          size="small"
-          table-class="proxy-report-table"
-          :columns="reportColumns"
-          :data-source="testReport.items"
-          :pagination="false"
-          row-key="name"
-          :table-scroll-enabled="false"
-          :lock-body-scroll="false"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'status'">
-              <a-tag :color="testItemStatusColor(record.status)">{{ testItemStatusText(record.status) }}</a-tag>
-            </template>
-            <template v-else-if="column.key === 'httpStatus'">
-              <span>{{ record.httpStatus ?? '-' }}</span>
-            </template>
-            <template v-else-if="column.key === 'latencyMs'">
-              <span>{{ formatLatency(record.latencyMs) }}</span>
-            </template>
-            <template v-else-if="column.key === 'message'">
-              <span>{{ record.message }}</span>
-            </template>
-          </template>
-          <template #card="{ record }">
-            <article class="proxy-report-card">
-              <div class="proxy-report-card-head">
-                <strong>{{ record.name }}</strong>
-                <a-tag :color="testItemStatusColor(record.status)">{{ testItemStatusText(record.status) }}</a-tag>
-              </div>
-              <div class="proxy-report-card-grid">
-                <span>HTTP</span>
-                <strong>{{ record.httpStatus ?? '-' }}</strong>
-                <span>延迟</span>
-                <strong>{{ formatLatency(record.latencyMs) }}</strong>
-                <span>说明</span>
-                <strong>{{ record.message }}</strong>
-              </div>
-            </article>
-          </template>
-        </ResponsiveDataList>
-
-        <div class="proxy-report-footer">
-          <a-space>
-            <a-button :disabled="Boolean(testingProxyId)" @click="testReportOpen = false">关闭</a-button>
-            <a-button type="primary" :loading="testingProxyId === testReport.proxyId" @click="runProxyTest">重新测试</a-button>
-          </a-space>
-        </div>
-      </template>
-    </a-modal>
+      :report="testReport"
+      :selected-proxy="selectedTestProxy"
+      :testing-proxy-id="testingProxyId"
+      @run-test="runProxyTest"
+    />
   </a-card>
 </template>
 
@@ -245,12 +157,22 @@ import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
-import type { RowActionItem } from '@/components/rowActions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatMillisecondsAsSeconds, formatNumber } from '@/shared/formatters'
-import type { ProxyProfileSummary, ProxyTestItemStatus, ProxyTestReport } from '@/types/domain'
+import { formatNumber } from '@/shared/formatters'
+import type { ProxyProfileSummary, ProxyTestReport } from '@/types/domain'
+import ProxyTestReportModal from './ProxyTestReportModal.vue'
+import {
+  formatLatency,
+  latencyTooltip,
+  proxyActions,
+  proxyColumns,
+  proxyTypeColor,
+  proxyTypeOptions,
+  testStatusColor,
+  testStatusText
+} from './proxyDisplay'
 
 const pageSize = 20
 const modalOpen = ref(false)
@@ -273,48 +195,6 @@ function proxySavePayload(): Record<string, unknown> {
   }
   return payload
 }
-
-const columns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 180, fixed: 'left' },
-  { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
-  { title: '地址', dataIndex: 'host', key: 'host', width: 140 },
-  { title: '端口', dataIndex: 'port', key: 'port', width: 80 },
-  { title: '用户', dataIndex: 'username', key: 'username', width: 130 },
-  { title: '状态', key: 'status', width: 160 },
-  { title: '延迟', key: 'latency', width: 100 },
-  { title: '出口 IP', key: 'outboundIp', width: 140 },
-  { title: '地区', key: 'outboundRegion', width: 100 },
-  { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', fixed: 'right', customRender: () => '' }
-]
-
-const proxyActions: RowActionItem[] = [
-  { key: 'test', label: '测试', icon: 'test', tone: 'info' },
-  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-  {
-    key: 'delete',
-    label: '删除',
-    icon: 'delete',
-    tone: 'danger',
-    confirmTitle: '确认删除这个代理？',
-    confirmOkText: '删除'
-  }
-]
-
-const reportColumns = [
-  { title: '检测项', dataIndex: 'name', key: 'name', width: 120 },
-  { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
-  { title: 'HTTP', dataIndex: 'httpStatus', key: 'httpStatus', width: 80 },
-  { title: '延迟', dataIndex: 'latencyMs', key: 'latencyMs', width: 90 },
-  { title: '说明', dataIndex: 'message', key: 'message' }
-]
-
-const typeOptions = [
-  { label: 'HTTP', value: 'http' },
-  { label: 'HTTPS', value: 'https' },
-  { label: 'SOCKS5', value: 'socks5' },
-  { label: 'SOCKS5H', value: 'socks5h' }
-]
 
 const {
   items: proxies,
@@ -344,46 +224,6 @@ const {
     message.error('加载代理失败')
   }
 })
-
-function proxyTypeColor(type: string) {
-  if (type === 'socks5' || type === 'socks5h') return 'purple'
-  if (type === 'https') return 'green'
-  return 'blue'
-}
-
-function testStatusColor(status: string) {
-  if (status === 'passed') return 'green'
-  if (status === 'warning') return 'gold'
-  if (status === 'failed') return 'red'
-  return 'default'
-}
-
-function testStatusText(status: string) {
-  if (status === 'passed') return '检测通过'
-  if (status === 'warning') return '有告警'
-  if (status === 'failed') return '检测失败'
-  return '未检测'
-}
-
-function testItemStatusColor(status: ProxyTestItemStatus) {
-  return status === 'passed' ? 'green' : status === 'warning' ? 'gold' : 'red'
-}
-
-function testItemStatusText(status: ProxyTestItemStatus) {
-  return status === 'passed' ? '通过' : status === 'warning' ? '告警' : '失败'
-}
-
-function formatLatency(value?: number) {
-  return formatMillisecondsAsSeconds(value)
-}
-
-function latencyTooltip(proxy: ProxyProfileSummary) {
-  const parts = [
-    proxy.lastTestMessage || testStatusText(proxy.testStatus),
-    proxy.lastTestedAt ? `检测时间：${formatDateTime(proxy.lastTestedAt)}` : ''
-  ].filter(Boolean)
-  return parts.join('\n') || '尚未检测'
-}
 
 function openCreate() {
   editingId.value = undefined
@@ -500,124 +340,6 @@ onMounted(loadData)
 
 .mobile-list-card :deep(.mobile-list-meta-item strong) {
   font-weight: 400;
-}
-
-.proxy-report-summary {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 20px;
-  padding: 22px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.proxy-report-main {
-  min-width: 0;
-}
-
-.proxy-report-main h3 {
-  margin: 0 0 8px;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.proxy-report-main p {
-  margin: 0 0 14px;
-  color: #475569;
-  font-size: 14px;
-}
-
-.proxy-report-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 28px;
-  color: #475569;
-  font-size: 13px;
-}
-
-.proxy-report-meta span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.proxy-score {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  align-items: center;
-  min-width: 74px;
-  color: #0f172a;
-}
-
-.proxy-score strong {
-  font-size: 32px;
-  line-height: 1;
-}
-
-.proxy-score span {
-  margin-top: 6px;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.proxy-report-table {
-  margin-top: 8px;
-}
-
-.proxy-report-table :deep(.ant-table-cell) {
-  white-space: normal;
-}
-
-.proxy-report-card {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.proxy-report-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.proxy-report-card-grid {
-  display: grid;
-  grid-template-columns: minmax(52px, auto) minmax(0, 1fr);
-  gap: 6px 10px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.proxy-report-card-grid strong {
-  min-width: 0;
-  color: #0f172a;
-  font-weight: 400;
-}
-
-.proxy-report-footer {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 20px;
-}
-
-@media (max-width: 640px) {
-  .proxy-report-summary {
-    flex-direction: column;
-  }
-
-  .proxy-report-meta {
-    grid-template-columns: 1fr;
-  }
 }
 
 </style>

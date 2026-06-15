@@ -1,5 +1,25 @@
 <template>
   <div class="response-match-fields">
+    <a-form-item label="客户端画像">
+      <a-select
+        v-model:value="form.clientProfiles"
+        :disabled="disabled"
+        :options="responseInspectionClientProfileOptions"
+        mode="multiple"
+        placeholder="不限客户端"
+        allow-clear
+      />
+    </a-form-item>
+    <a-form-item label="账号兼容模式">
+      <a-select
+        v-model:value="form.accountClientCompatibilities"
+        :disabled="disabled"
+        :options="responseInspectionAccountCompatibilityOptions"
+        mode="multiple"
+        placeholder="不限兼容模式"
+        allow-clear
+      />
+    </a-form-item>
     <a-form-item label="输出文本包含">
       <a-textarea v-model:value="form.outputTextIncludes" :disabled="disabled" :rows="1" auto-size placeholder="广告关键词, 异常提示" />
     </a-form-item>
@@ -28,7 +48,11 @@
 </template>
 
 <script setup lang="ts">
-import type { ResponseInspectionMatchFormFields } from './responseInspectionPolicyForm'
+import {
+  responseInspectionAccountCompatibilityOptions,
+  responseInspectionClientProfileOptions,
+  type ResponseInspectionMatchFormFields
+} from './responseInspectionPolicyForm'
 
 withDefaults(defineProps<{
   form: ResponseInspectionMatchFormFields

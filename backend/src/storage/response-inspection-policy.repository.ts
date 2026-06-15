@@ -2,9 +2,14 @@ import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-i
 import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { isOpenAIProtocolProviderCode } from './provider.repository.js'
+import {
+  ACCOUNT_CLIENT_COMPATIBILITIES,
+  type AccountClientCompatibility
+} from '../domain/types.js'
 
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
 export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
+export type ResponseInspectionPolicyClientProfile = 'codex' | 'generic_openai'
 export type ResponseInspectionPolicyAction =
   | 'observe'
   | 'drop_event'
@@ -19,6 +24,8 @@ export type ResponseInspectionPolicyAccountSwitch = 'none' | 'request_next_accou
 export type ResponseInspectionPolicyAccountState = 'none' | 'runtime_avoidance'
 
 export interface ResponseInspectionPolicyMatch {
+  clientProfiles?: ResponseInspectionPolicyClientProfile[]
+  accountClientCompatibilities?: AccountClientCompatibility[]
   outputTextIncludes?: string[]
   outputTextExcludes?: string[]
   errorCodes?: string[]
@@ -101,7 +108,13 @@ const inputKeys = new Set([
   'notes'
 ])
 
+const clientProfiles = ['codex', 'generic_openai'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
+const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
+const accountClientCompatibilityValues = new Set<AccountClientCompatibility>(ACCOUNT_CLIENT_COMPATIBILITIES)
+
 const matchKeys = [
+  'clientProfiles',
+  'accountClientCompatibilities',
   'outputTextIncludes',
   'outputTextExcludes',
   'errorCodes',
@@ -169,12 +182,28 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     notes: 'OpenAI v1 Responses failed 状态默认检查规则。'
   },
   {
+    id: 'default_codex_response_incomplete',
+    defaultRule: true,
+    editable: false,
+    name: 'Codex response.incomplete',
+    enabled: true,
+    priority: 4,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['codex'],
+      finishReasons: ['incomplete']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'Codex 客户端会把 Responses response.incomplete 当成可重试流式错误；网关在写下游前拦截为统一可重试失败，避免服务端误判成功。'
+  },
+  {
     id: 'default_gpt_cyber_policy',
     defaultRule: true,
     editable: false,
     name: 'GPT cyber_policy',
     enabled: true,
-    priority: 4,
+    priority: 5,
     scopeType: 'provider',
     protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: GPT_VENDOR_CODE,
@@ -428,7 +457,26 @@ function normalizeMatch(value: unknown): ResponseInspectionPolicyMatch {
   const record = value as Record<string, unknown>
   assertKnownInputKeys(record, new Set(matchKeys), '响应检查策略匹配条件')
   const match: ResponseInspectionPolicyMatch = {}
+  const normalizedClientProfiles = normalizeKnownStringList(
+    record.clientProfiles,
+    '响应检查策略clientProfiles',
+    clientProfileValues
+  ) as ResponseInspectionPolicyClientProfile[]
+  if (normalizedClientProfiles.length > 0) {
+    match.clientProfiles = normalizedClientProfiles
+  }
+  const normalizedClientCompatibilities = normalizeKnownStringList(
+    record.accountClientCompatibilities,
+    '响应检查策略accountClientCompatibilities',
+    accountClientCompatibilityValues
+  ) as AccountClientCompatibility[]
+  if (normalizedClientCompatibilities.length > 0) {
+    match.accountClientCompatibilities = normalizedClientCompatibilities
+  }
   for (const key of matchKeys) {
+    if (key === 'clientProfiles' || key === 'accountClientCompatibilities') {
+      continue
+    }
     const normalized = normalizeStringList(record[key], `响应检查策略${key}`)
     if (normalized.length > 0) {
       match[key] = normalized
@@ -502,6 +550,20 @@ function normalizeStringList(value: unknown, label: string): string[] {
     }
   }
   return output
+}
+
+function normalizeKnownStringList<T extends string>(
+  value: unknown,
+  label: string,
+  allowedValues: ReadonlySet<T>
+): T[] {
+  const items = normalizeStringList(value, label)
+  for (const item of items) {
+    if (!allowedValues.has(item as T)) {
+      throw new Error(`${label}包含不支持的值：${item}`)
+    }
+  }
+  return items as T[]
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {

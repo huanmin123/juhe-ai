@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
+import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import {
   responseHeadersToObject,
   type AuditCaptureContext
@@ -57,6 +58,7 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
   responseBodyText: string
   firstTokenMs?: number
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
+  clientStrategy?: OpenAIGatewayClientStrategyContext
   accountStateMutationEnabled: boolean
   sessionAffinityKey?: string
 }): Promise<UpstreamResponseHandlingResult | undefined> {
@@ -80,7 +82,11 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
     frames,
     policies,
     downstreamWritten: false,
-    transport: 'json'
+    transport: 'json',
+    context: {
+      clientProfile: input.clientStrategy?.clientProfile ?? 'generic_openai',
+      accountClientCompatibility: input.account.clientCompatibility
+    }
   })
   await applyResponseInspectionObservationDecisions(
     inspection.observations,

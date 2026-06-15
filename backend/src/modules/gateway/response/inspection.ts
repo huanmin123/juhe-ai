@@ -11,6 +11,7 @@ import {
   responseInspectionPolicyActionRuntime,
   type ResponseInspectionPolicyAccountState,
   type ResponseInspectionPolicyAccountSwitch,
+  type ResponseInspectionPolicyClientProfile,
   type ResponseInspectionPolicyDataHandling,
   type ResponseInspectionPolicyExecutionMode,
   type ResponseInspectionPolicyMatch,
@@ -20,6 +21,7 @@ import {
 } from '../../../storage/response-inspection-policy.repository.js'
 import { normalizeAccountResponseInspectionRules } from '../../accounts/account-response-inspection-policy-validation.js'
 import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
+import type { AccountClientCompatibility } from '../../../domain/types.js'
 
 export interface RuntimeResponseInspectionPolicy {
   id: string
@@ -47,6 +49,11 @@ export interface ResponseInspectionMatchResult {
   snippet?: string
 }
 
+export interface ResponseInspectionRuntimeContext {
+  clientProfile: ResponseInspectionPolicyClientProfile
+  accountClientCompatibility?: AccountClientCompatibility
+}
+
 export interface ResponseInspectionDecision {
   reason: 'configured_response_policy' | 'before_downstream_write_response_failure' | 'cyber_policy_response_failure'
   action: 'client_retry' | 'discard_event' | 'discard_response' | 'replace_with_failure' | 'dry_run'
@@ -59,6 +66,8 @@ export interface ResponseInspectionDecision {
   upstreamErrorType?: string
   upstreamErrorMessage?: string
   finishReason?: string
+  clientProfile?: ResponseInspectionPolicyClientProfile
+  accountClientCompatibility?: AccountClientCompatibility
   rewriteErrorCode?: string
   rewriteMessage?: string
   downstreamWritten: boolean
@@ -111,14 +120,15 @@ export function inspectResponseSemanticFrames(input: {
   policies: RuntimeResponseInspectionPolicy[]
   downstreamWritten: boolean
   transport: 'json' | 'sse'
+  context?: ResponseInspectionRuntimeContext
 }): ResponseInspectionResult {
   const observations: ResponseInspectionDecision[] = []
   for (const frame of input.frames) {
-    const match = matchRuntimeResponseInspectionPolicy(frame, input.policies)
+    const match = matchRuntimeResponseInspectionPolicy(frame, input.policies, input.context)
     if (!match) continue
     const policy = match.policy
     const action = responseInspectionDecisionAction(policy, input.transport)
-    const decision = buildPolicyDecision(match, input.downstreamWritten, action)
+    const decision = buildPolicyDecision(match, input.downstreamWritten, action, input.context)
     if (policy.executionMode === 'dry_run') {
       observations.push(decision)
       continue
@@ -159,10 +169,12 @@ export function isCodexRetryableAfterOutputResponseFailureCode(errorCode: string
 
 export function matchRuntimeResponseInspectionPolicy(
   frame: ResponseSemanticFrame,
-  policies: RuntimeResponseInspectionPolicy[]
+  policies: RuntimeResponseInspectionPolicy[],
+  context?: ResponseInspectionRuntimeContext
 ): ResponseInspectionMatchResult | undefined {
   for (const policy of policies) {
     if (!policy.enabled) continue
+    if (!policyMatchesRuntimeContext(policy.match, context)) continue
     const match = firstPositiveMatch(frame, policy.match)
     if (!match) continue
     if (outputTextExcluded(frame, policy.match)) continue
@@ -234,7 +246,8 @@ function outputTextExcluded(frame: ResponseSemanticFrame, match: ResponseInspect
 function buildPolicyDecision(
   match: ResponseInspectionMatchResult,
   downstreamWritten: boolean,
-  action: ResponseInspectionDecision['action']
+  action: ResponseInspectionDecision['action'],
+  context?: ResponseInspectionRuntimeContext
 ): ResponseInspectionDecision {
   const policy = match.policy
   const frame = match.matchedFrame
@@ -250,6 +263,8 @@ function buildPolicyDecision(
     upstreamErrorType: frame.errorType,
     upstreamErrorMessage: frame.errorMessage,
     finishReason: frame.finishReason ?? frame.status,
+    clientProfile: context?.clientProfile,
+    accountClientCompatibility: context?.accountClientCompatibility,
     rewriteErrorCode: rewriteErrorCode(policy, frame),
     rewriteMessage: frame.errorMessage ?? `响应命中检查策略：${policy.name}`,
     downstreamWritten,
@@ -268,6 +283,19 @@ function buildPolicyDecision(
     matchedValue: match.matchedValue,
     matchedSnippet: match.snippet
   }
+}
+
+function policyMatchesRuntimeContext(
+  match: ResponseInspectionPolicyMatch,
+  context: ResponseInspectionRuntimeContext | undefined
+): boolean {
+  if (match.clientProfiles?.length) {
+    if (!context?.clientProfile || !firstExactMatch(context.clientProfile, match.clientProfiles)) return false
+  }
+  if (match.accountClientCompatibilities?.length) {
+    if (!context?.accountClientCompatibility || !firstExactMatch(context.accountClientCompatibility, match.accountClientCompatibilities)) return false
+  }
+  return true
 }
 
 function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame, downstreamWritten: boolean): ResponseInspectionDecision['reason'] {

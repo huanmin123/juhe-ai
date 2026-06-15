@@ -8,6 +8,8 @@ export interface AccountResponseInspectionPolicyValidationResult {
 }
 
 const textListSchema = z.array(z.string().trim().min(1).max(200)).max(50).optional()
+const clientProfileListSchema = z.array(z.enum(['codex', 'generic_openai'])).max(2).optional()
+const accountClientCompatibilityListSchema = z.array(z.enum(['openai_standard', 'codex_responses'])).max(2).optional()
 const actionSchema = z.enum([
   'observe',
   'drop_event',
@@ -22,6 +24,8 @@ const accountResponseInspectionRuleSchema = z.object({
   name: z.string().trim().min(1).max(100),
   priority: z.number().int().min(1).max(9999),
   match: z.object({
+    clientProfiles: clientProfileListSchema,
+    accountClientCompatibilities: accountClientCompatibilityListSchema,
     outputTextIncludes: textListSchema,
     outputTextExcludes: textListSchema,
     errorCodes: textListSchema,

@@ -49,147 +49,14 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList
-      class="ip-stats-list"
-      table-class="page-table ip-stats-table"
-      :columns="columns"
-      :data-source="rows"
-      row-key="ipHash"
+    <IpStatsList
+      :empty-description="emptyDescription"
       :loading="loading"
-      :pagination="tablePagination"
-      :pagination-summary="false"
-      :scroll-x="1770"
+      :rows="rows"
+      :table-pagination="tablePagination"
       @change="handleTableChange"
-    >
-      <template #emptyText>
-        <a-empty class="page-empty-card" :description="emptyDescription" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'ip'">
-          <span class="mono-cell">{{ record.aggregateIpKey }}</span>
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'requestCount'">
-          <span class="number-cell">{{ formatInteger(record.rangeUsage.requestCount) }}</span>
-        </template>
-        <template v-else-if="column.key === 'totalTokens'">
-          <span class="number-cell">{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
-        </template>
-        <template v-else-if="column.key === 'inputTokens'">
-          <span class="number-cell">{{ formatCompactInteger(record.rangeUsage.inputTokens) }}</span>
-        </template>
-        <template v-else-if="column.key === 'outputTokens'">
-          <span class="number-cell">{{ formatCompactInteger(record.rangeUsage.outputTokens) }}</span>
-        </template>
-        <template v-else-if="column.key === 'cacheReadTokens'">
-          <span class="number-cell">{{ formatCompactInteger(record.rangeUsage.cacheReadTokens) }}</span>
-        </template>
-        <template v-else-if="column.key === 'cacheRate'">
-          <span class="number-cell">{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</span>
-        </template>
-        <template v-else-if="column.key === 'cacheCost'">
-          <span class="number-cell">{{ formatCost(record.rangeUsage.cacheReadCost) }}</span>
-        </template>
-        <template v-else-if="column.key === 'cost'">
-          <span class="number-cell">{{ formatCost(record.rangeUsage.totalCost) }}</span>
-        </template>
-        <template v-else-if="column.key === 'errorRate'">
-          <a-tag :color="record.rangeUsage.errorRate > 0.05 ? 'red' : 'green'">
-            {{ formatPercent(record.rangeUsage.errorRate * 100) }}
-          </a-tag>
-        </template>
-        <template v-else-if="column.key === 'activeDays'">
-          {{ formatInteger(record.rangeUsage.activeDays) }}
-        </template>
-        <template v-else-if="column.key === 'averageFirstTokenMs'">
-          <span class="number-cell">{{ formatDuration(record.rangeUsage.averageFirstTokenMs) }}</span>
-        </template>
-        <template v-else-if="column.key === 'averageDurationMs'">
-          <span class="number-cell">{{ formatDuration(record.rangeUsage.averageDurationMs) }}</span>
-        </template>
-        <template v-else-if="column.key === 'maxDurationMs'">
-          <span class="number-cell">{{ formatDuration(record.rangeUsage.maxDurationMs) }}</span>
-        </template>
-        <template v-else-if="column.key === 'lastUsedAt'">
-          <span :class="clientIpLastUsedAt(record) ? 'name-cell' : 'muted-cell'">{{ formatDateTime(clientIpLastUsedAt(record)) }}</span>
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <RowActions :actions="ipRowActions(record)" @action-click="handleRowAction($event, record)" />
-        </template>
-      </template>
-      <template #card="{ record }">
-        <article class="ip-mobile-card">
-          <div class="ip-mobile-head">
-            <div class="mono-cell">{{ record.aggregateIpKey }}</div>
-            <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
-          </div>
-          <div class="mobile-list-meta-grid">
-            <div class="mobile-list-meta-item">
-              <span>请求</span>
-              <strong>{{ formatInteger(record.rangeUsage.requestCount) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>Token</span>
-              <strong>{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>输入 Token</span>
-              <strong>{{ formatCompactInteger(record.rangeUsage.inputTokens) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>输出 Token</span>
-              <strong>{{ formatCompactInteger(record.rangeUsage.outputTokens) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>缓存 Token</span>
-              <strong>{{ formatCompactInteger(record.rangeUsage.cacheReadTokens) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>缓存率</span>
-              <strong>{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>缓存成本</span>
-              <strong>{{ formatCost(record.rangeUsage.cacheReadCost) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>成本</span>
-              <strong>{{ formatCost(record.rangeUsage.totalCost) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>失败率</span>
-              <strong>{{ formatPercent(record.rangeUsage.errorRate * 100) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>活跃天数</span>
-              <strong>{{ formatInteger(record.rangeUsage.activeDays) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>平均首 Token</span>
-              <strong>{{ formatDuration(record.rangeUsage.averageFirstTokenMs) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>平均总耗时</span>
-              <strong>{{ formatDuration(record.rangeUsage.averageDurationMs) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>最大总耗时</span>
-              <strong>{{ formatDuration(record.rangeUsage.maxDurationMs) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>最后使用</span>
-              <strong>{{ formatDateTime(clientIpLastUsedAt(record)) }}</strong>
-            </div>
-          </div>
-          <div class="ip-mobile-actions">
-            <a-button v-if="record.status === 'blacklisted'" size="small" @click="openPolicyModal(record, 'unblock')">解封</a-button>
-            <a-button v-else size="small" danger @click="openPolicyModal(record, 'blacklist')">封禁</a-button>
-          </div>
-        </article>
-      </template>
-    </ResponsiveDataList>
+      @policy-action="openPolicyModal"
+    />
 
     <a-modal
       v-model:open="policyModalOpen"
@@ -245,40 +112,18 @@ import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 
 import { api, type ClientIpStatsListParams, type SortDirection } from '@/api/client'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import RowActions from '@/components/RowActions.vue'
-import type { RowActionItem } from '@/components/rowActions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime } from '@/shared/formatters'
-import type { ClientIpStatsRow, ClientIpStatsSortField, ClientIpStatus, ClientIpUsageSummary } from '@/types/domain'
-import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
+import type { ClientIpStatsRow, ClientIpStatsSortField, ClientIpStatus } from '@/types/domain'
+
+import IpStatsList from './IpStatsList.vue'
+import type { IpStatsPolicyAction } from './ipStatsDisplay'
 
 type TableSortOrder = 'ascend' | 'descend' | null
-type PolicyAction = 'blacklist' | 'unblock'
+type PolicyAction = IpStatsPolicyAction
 type PolicyDurationMode = 'permanent' | 'minutes' | 'days'
 type UsageWindow = 'today' | 'recent7d' | 'recent31d'
-
-const columns = [
-  { title: 'IP', key: 'ip', width: 180, fixed: 'left', align: 'left' },
-  { title: '状态', key: 'status', width: 110, align: 'left' },
-  { title: '请求', key: 'requestCount', width: 120, align: 'left', sorter: true },
-  { title: 'Token', key: 'totalTokens', width: 120, align: 'left', sorter: true },
-  { title: '输入 Token', key: 'inputTokens', width: 120, align: 'left' },
-  { title: '输出 Token', key: 'outputTokens', width: 120, align: 'left' },
-  { title: '缓存 Token', key: 'cacheReadTokens', width: 120, align: 'left' },
-  { title: '缓存率', key: 'cacheRate', width: 100, align: 'left' },
-  { title: '缓存成本', key: 'cacheCost', width: 120, align: 'left' },
-  { title: '成本', key: 'cost', width: 130, align: 'left', sorter: true },
-  { title: '失败率', key: 'errorRate', width: 110, align: 'left', sorter: true },
-  { title: '活跃天数', key: 'activeDays', width: 120, align: 'left', sorter: true },
-  { title: '平均首 Token', key: 'averageFirstTokenMs', width: 130, align: 'left' },
-  { title: '平均总耗时', key: 'averageDurationMs', width: 130, align: 'left' },
-  { title: '最大总耗时', key: 'maxDurationMs', width: 130, align: 'left' },
-  { title: '最后使用', key: 'lastUsedAt', width: 180, align: 'left', sorter: true },
-  { title: '操作', key: 'actions', fixed: 'right', align: 'left' }
-]
 
 const usageWindowOptions = [
   { label: '今天', value: 'today' },
@@ -386,20 +231,6 @@ function resetFilters(): void {
   void loadData()
 }
 
-function ipRowActions(record: ClientIpStatsRow): RowActionItem[] {
-  if (record.status === 'blacklisted') {
-    return [{ key: 'unblock', label: '解封', icon: 'restore', tone: 'success' }]
-  }
-  return [{ key: 'blacklist', label: '封禁', icon: 'disable', tone: 'danger' }]
-}
-
-function handleRowAction(key: string, record: ClientIpStatsRow): void {
-  const action = key as PolicyAction
-  if (action === 'blacklist' || action === 'unblock') {
-    openPolicyModal(record, action)
-  }
-}
-
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
   updatePaginationFromTable(paginationInfo)
   sortState.value = normalizeTableSorter(sorter) ?? { field: 'requestCount', order: 'descend' }
@@ -496,32 +327,10 @@ function sortFieldFromColumn(value: unknown): ClientIpStatsSortField | undefined
   return undefined
 }
 
-function cacheReadRate(usage?: ClientIpUsageSummary): number {
-  const inputTokens = usage?.inputTokens ?? 0
-  if (inputTokens <= 0) return 0
-  return ((usage?.cacheReadTokens ?? 0) / inputTokens) * 100
-}
-
-function clientIpLastUsedAt(record: ClientIpStatsRow): string | undefined {
-  return record.lastSeenAt ?? record.rangeUsage.lastUsedAt
-}
-
 function tableSortOrderToApi(order: TableSortOrder): SortDirection | undefined {
   if (order === 'ascend') return 'asc'
   if (order === 'descend') return 'desc'
   return undefined
-}
-
-function statusText(status: ClientIpStatus): string {
-  if (status === 'blacklisted') return '已封禁'
-  if (status === 'normal') return '正常'
-  return '全部'
-}
-
-function statusColor(status: ClientIpStatus): string {
-  if (status === 'blacklisted') return 'red'
-  if (status === 'normal') return 'green'
-  return 'default'
 }
 
 function formatDateKey(value: Dayjs): string {
@@ -545,59 +354,8 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   width: 130px;
 }
 
-.mono-cell {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  word-break: break-all;
-}
-
-.muted-cell {
-  color: #8c8c8c;
-  font-size: 12px;
-}
-
-.name-cell {
-  color: #1f2937;
-}
-
-.number-cell {
-  font-variant-numeric: tabular-nums;
-}
-
-.metric-cell {
-  display: flex;
-  width: 100%;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.metric-cell-extra,
-.mobile-list-meta-item small {
-  color: #8c8c8c;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
 .policy-duration-input {
   width: 100%;
-}
-
-.ip-mobile-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.ip-mobile-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.ip-mobile-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 @media (max-width: 768px) {

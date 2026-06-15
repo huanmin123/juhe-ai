@@ -114,11 +114,25 @@ assert.equal(validateAccountResponseInspectionRules([
     name: '账户响应检查',
     priority: 10,
     match: {
+      clientProfiles: ['codex'],
+      accountClientCompatibilities: ['codex_responses'],
       outputTextIncludes: ['污染']
     },
     action: 'retry_next_account'
   }
 ]).valid, true, '账户级响应检查规则应接受新响应检查 matcher')
+assert.equal(validateAccountResponseInspectionRules([
+  {
+    enabled: true,
+    name: '无效客户端维度',
+    priority: 10,
+    match: {
+      clientProfiles: ['desktop_codex'],
+      outputTextIncludes: ['污染']
+    },
+    action: 'retry_next_account'
+  }
+]).valid, false, '账户级响应检查规则必须拒绝未知客户端画像')
 assert.equal(validateAccountResponseInspectionRules([
   {
     enabled: true,
@@ -256,8 +270,62 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
+  const frames = extractOpenAIJsonSemanticFrames({
+    error: {
+      code: 'client_scoped_error',
+      message: 'only codex compatible accounts should match'
+    }
+  }, 'responses')
+  const policies = [
+    responsePolicy({
+      match: {
+        clientProfiles: ['codex'],
+        accountClientCompatibilities: ['codex_responses'],
+        errorCodes: ['client_scoped_error']
+      }
+    })
+  ]
+  const genericResult = inspectResponseSemanticFrames({
+    frames,
+    policies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_openai',
+      accountClientCompatibility: 'codex_responses'
+    }
+  })
+  assert.equal(genericResult.decision, undefined, 'clientProfiles 不匹配时不能命中响应检查策略')
+  const accountCompatibilityResult = inspectResponseSemanticFrames({
+    frames,
+    policies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'openai_standard'
+    }
+  })
+  assert.equal(accountCompatibilityResult.decision, undefined, 'accountClientCompatibilities 不匹配时不能命中响应检查策略')
+  const codexResult = inspectResponseSemanticFrames({
+    frames,
+    policies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses'
+    }
+  })
+  assert.equal(codexResult.decision?.matchedField, 'errorCodes', '客户端维度匹配后仍必须由语义字段触发命中')
+  assert.equal(codexResult.decision?.clientProfile, 'codex', '响应检查决策应记录命中时的客户端画像')
+  assert.equal(codexResult.decision?.accountClientCompatibility, 'codex_responses', '响应检查决策应记录命中时的账号兼容模式')
+}
+
+{
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   assert(defaultRules.some((rule) => rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 OpenAI JSON / SSE error 对象')
+  assert(defaultRules.some((rule) => rule.match.clientProfiles?.includes('codex') && rule.match.finishReasons?.includes('incomplete')), '默认规则必须覆盖 Codex response.incomplete')
   assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 只能作为 GPT provider 规则存在')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
@@ -279,6 +347,39 @@ assert.equal(validateAccountResponseInspectionRules([
   })
   assert(gptPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), 'GPT 供应商应加载 cyber_policy 默认规则')
   assert.equal(genericPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, '通用 OpenAI-compatible 供应商不应继承 GPT cyber_policy 规则')
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_incomplete',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses'
+    }
+  })
+  const result = buffer.pushChunk(sseEvent('response.incomplete', {
+    response: {
+      status: 'incomplete',
+      incomplete_details: {
+        reason: 'max_output_tokens'
+      }
+    }
+  }))
+  const responseBody = Buffer.concat(result.chunks).toString('utf8')
+  assert.equal(result.intercepted?.policyId, 'default_codex_response_incomplete', 'Codex response.incomplete 应命中专用默认规则')
+  assert(responseBody.includes('upstream_retryable_error'), `Codex response.incomplete 应改写为客户端可重试失败：${responseBody}`)
 }
 
 {

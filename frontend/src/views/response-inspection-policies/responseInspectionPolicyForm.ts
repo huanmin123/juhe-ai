@@ -1,6 +1,12 @@
-import type { ResponseInspectionPolicyAction } from '@/types/domain'
+import type {
+  AccountClientCompatibility,
+  ResponseInspectionPolicyAction,
+  ResponseInspectionPolicyClientProfile
+} from '@/types/domain'
 
 export interface ResponseInspectionMatchFormFields {
+  clientProfiles: ResponseInspectionPolicyClientProfile[]
+  accountClientCompatibilities: AccountClientCompatibility[]
   outputTextIncludes: string
   outputTextExcludes: string
   errorCodes: string
@@ -11,9 +17,12 @@ export interface ResponseInspectionMatchFormFields {
   rawTextIncludes: string
 }
 
-export type ResponseInspectionMatchFieldKey = keyof ResponseInspectionMatchFormFields
+export type ResponseInspectionDimensionMatchFieldKey = 'clientProfiles' | 'accountClientCompatibilities'
+export type ResponseInspectionTextMatchFieldKey = Exclude<keyof ResponseInspectionMatchFormFields, ResponseInspectionDimensionMatchFieldKey>
+export type ResponseInspectionMatchFieldKey = ResponseInspectionTextMatchFieldKey
 
-export type ResponseInspectionMatchPayload = Partial<Record<ResponseInspectionMatchFieldKey, string[]>>
+export type ResponseInspectionMatchPayload = Partial<Record<ResponseInspectionTextMatchFieldKey, string[]>>
+  & Partial<Pick<ResponseInspectionMatchFormFields, ResponseInspectionDimensionMatchFieldKey>>
 
 export const responseInspectionActionValues: ResponseInspectionPolicyAction[] = [
   'observe',
@@ -32,9 +41,9 @@ export const responseInspectionPositiveMatchFieldKeys = [
   'finishReasons',
   'jsonPathsExists',
   'rawTextIncludes'
-] as const satisfies readonly ResponseInspectionMatchFieldKey[]
+] as const satisfies readonly ResponseInspectionTextMatchFieldKey[]
 
-export const responseInspectionMatchFieldDefinitions: readonly { key: ResponseInspectionMatchFieldKey; label: string }[] = [
+export const responseInspectionMatchFieldDefinitions: readonly { key: ResponseInspectionTextMatchFieldKey; label: string }[] = [
   { key: 'outputTextIncludes', label: '输出文本包含' },
   { key: 'outputTextExcludes', label: '输出文本排除' },
   { key: 'errorCodes', label: 'error.code' },
@@ -44,6 +53,26 @@ export const responseInspectionMatchFieldDefinitions: readonly { key: ResponseIn
   { key: 'jsonPathsExists', label: 'JSON字段路径存在' },
   { key: 'rawTextIncludes', label: 'SSE 事件原文包含' }
 ]
+
+export const responseInspectionClientProfileOptions: Array<{ label: string; value: ResponseInspectionPolicyClientProfile }> = [
+  { label: 'Codex', value: 'codex' },
+  { label: '通用 OpenAI', value: 'generic_openai' }
+]
+
+export const responseInspectionAccountCompatibilityOptions: Array<{ label: string; value: AccountClientCompatibility }> = [
+  { label: 'Codex Responses', value: 'codex_responses' },
+  { label: 'OpenAI 标准', value: 'openai_standard' }
+]
+
+export function normalizeResponseInspectionClientProfiles(value: unknown): ResponseInspectionPolicyClientProfile[] {
+  const allowed = new Set(responseInspectionClientProfileOptions.map((option) => option.value))
+  return uniqueKnownStrings(value, allowed)
+}
+
+export function normalizeResponseInspectionAccountCompatibilities(value: unknown): AccountClientCompatibility[] {
+  const allowed = new Set(responseInspectionAccountCompatibilityOptions.map((option) => option.value))
+  return uniqueKnownStrings(value, allowed)
+}
 
 const listSeparators = /[,，]/
 const unsupportedListSeparators = /[;；\r\n]/
@@ -89,6 +118,14 @@ export function validateResponseInspectionMatchFields(
   form: ResponseInspectionMatchFormFields,
   options: { messagePrefix?: string } = {}
 ): string | undefined {
+  const clientProfiles = normalizeResponseInspectionClientProfiles(form.clientProfiles)
+  if (clientProfiles.length !== form.clientProfiles.length) {
+    return `${options.messagePrefix ?? ''}客户端画像包含无效选项`
+  }
+  const accountCompatibilities = normalizeResponseInspectionAccountCompatibilities(form.accountClientCompatibilities)
+  if (accountCompatibilities.length !== form.accountClientCompatibilities.length) {
+    return `${options.messagePrefix ?? ''}账号兼容模式包含无效选项`
+  }
   for (const field of responseInspectionMatchFieldEntries(form)) {
     const label = `${options.messagePrefix ?? ''}${field.label}`
     if (hasUnsupportedResponseInspectionListSeparators(field.value)) {
@@ -107,6 +144,10 @@ export function hasPositiveResponseInspectionMatcher(form: ResponseInspectionMat
 
 export function buildResponseInspectionMatchPayload(form: ResponseInspectionMatchFormFields): ResponseInspectionMatchPayload {
   const payload: ResponseInspectionMatchPayload = {}
+  const clientProfiles = normalizeResponseInspectionClientProfiles(form.clientProfiles)
+  if (clientProfiles.length > 0) payload.clientProfiles = clientProfiles
+  const accountCompatibilities = normalizeResponseInspectionAccountCompatibilities(form.accountClientCompatibilities)
+  if (accountCompatibilities.length > 0) payload.accountClientCompatibilities = accountCompatibilities
   for (const field of responseInspectionMatchFieldDefinitions) {
     const items = splitResponseInspectionList(form[field.key])
     if (items.length > 0) {
@@ -146,6 +187,16 @@ function uniqueTrimmedStrings(values: unknown[]): string[] {
     if (!text || seen.has(text)) continue
     seen.add(text)
     output.push(text)
+  }
+  return output
+}
+
+function uniqueKnownStrings<T extends string>(value: unknown, allowed: ReadonlySet<T>): T[] {
+  const output: T[] = []
+  const values = Array.isArray(value) ? value : []
+  for (const item of values) {
+    if (typeof item !== 'string' || !allowed.has(item as T) || output.includes(item as T)) continue
+    output.push(item as T)
   }
   return output
 }

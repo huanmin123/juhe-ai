@@ -87,7 +87,7 @@ import {
   canManageResourceOwner,
   groupOwnerAndProvider,
   isResourceAuthorizationExpired,
-  sanitizeAuthorizationSourcesForViewer,
+  sanitizeAuthorizationSourcesForViewer
 } from './resource-authorization-helpers.js'
 import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
 import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
@@ -113,7 +113,7 @@ import {
 import {
   invalidateAccountLookupCache,
   invalidateGroupLookupCache,
-  loadSystemAccountNameMapByIds,
+  loadSystemAccountNameMapByIds
 } from './repository-lookups.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationSourceRow } from './repository-row-types.js'

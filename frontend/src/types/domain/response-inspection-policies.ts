@@ -1,3 +1,5 @@
+import type { AccountClientCompatibility } from './accounts'
+
 export type ResponseInspectionPolicyAction =
   | 'observe'
   | 'drop_event'
@@ -7,8 +9,11 @@ export type ResponseInspectionPolicyAction =
   | 'avoid_upstream_bucket_ttl'
 
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
+export type ResponseInspectionPolicyClientProfile = 'codex' | 'generic_openai'
 
 export interface ResponseInspectionPolicyMatch {
+  clientProfiles?: ResponseInspectionPolicyClientProfile[]
+  accountClientCompatibilities?: AccountClientCompatibility[]
   outputTextIncludes?: string[]
   outputTextExcludes?: string[]
   errorCodes?: string[]

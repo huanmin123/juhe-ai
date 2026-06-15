@@ -10,6 +10,8 @@ import {
   buildResponseInspectionMatchPayload,
   formatResponseInspectionList,
   hasPositiveResponseInspectionMatcher,
+  normalizeResponseInspectionAccountCompatibilities,
+  normalizeResponseInspectionClientProfiles,
   requireResponseInspectionAction,
   responseInspectionActionValues,
   validateResponseInspectionMatchFields
@@ -46,6 +48,8 @@ function buildRuleFromPayload(value: unknown): AccountResponseInspectionRuleForm
     enabled: payloadBoolean(entry.enabled, '启用状态'),
     name: payloadString(entry.name, '规则名称'),
     priority: payloadPositiveInt(entry.priority, '优先级'),
+    clientProfiles: normalizeResponseInspectionClientProfiles(record.clientProfiles),
+    accountClientCompatibilities: normalizeResponseInspectionAccountCompatibilities(record.accountClientCompatibilities),
     outputTextIncludes: formatResponseInspectionList(payloadStringList(record.outputTextIncludes)),
     outputTextExcludes: formatResponseInspectionList(payloadStringList(record.outputTextExcludes)),
     errorCodes: formatResponseInspectionList(payloadStringList(record.errorCodes)),

@@ -21,6 +21,22 @@ export const responseInspectionPolicyGuideSources = [
 
 export const responseInspectionPolicyGuideFields = [
   {
+    key: 'clientProfiles',
+    field: '客户端画像',
+    source: '检查当前下游请求被网关识别成 Codex 还是通用 OpenAI 客户端',
+    example: 'Codex',
+    required: '否，适用范围',
+    note: '只限制规则适用的客户端范围，不能单独构成命中；Codex 专属错误改写必须用它收窄。'
+  },
+  {
+    key: 'accountClientCompatibilities',
+    field: '账号兼容模式',
+    source: '检查当前命中账号的客户端兼容模式',
+    example: 'Codex Responses',
+    required: '否，适用范围',
+    note: '适合把规则限制在 Codex Responses 账号；它是账号维度，不等同于下游客户端画像。'
+  },
+  {
     key: 'outputTextIncludes',
     field: '输出文本包含',
     source: '检查模型最终答复或流式输出里能被用户看到的文字',

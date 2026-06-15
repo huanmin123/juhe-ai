@@ -3,6 +3,7 @@ import {
   inspectResponseSemanticFrames,
   responseInspectionFailurePayloadForDecision,
   type ResponseInspectionDecision,
+  type ResponseInspectionRuntimeContext,
   type RuntimeResponseInspectionPolicy
 } from '../../response/inspection.js'
 import {
@@ -25,6 +26,7 @@ export interface OpenAIResponseInspectionBufferOptions {
   clientRetryEnabled?: boolean
   policies?: RuntimeResponseInspectionPolicy[]
   endpointFamily: OpenAIResponseEndpointFamily
+  context?: ResponseInspectionRuntimeContext
 }
 
 const maxBufferedSseEventBytes = 256 * 1024
@@ -34,6 +36,7 @@ export class OpenAIResponseInspectionBuffer {
   private readonly clientRetryEnabled: boolean
   private readonly policies: RuntimeResponseInspectionPolicy[]
   private readonly endpointFamily: OpenAIResponseEndpointFamily
+  private readonly context: ResponseInspectionRuntimeContext | undefined
   private readonly deferredLeadingNoopChunks: Buffer[] = []
   private parserSkipped = false
   private downstreamWritten = false
@@ -42,6 +45,7 @@ export class OpenAIResponseInspectionBuffer {
     this.clientRetryEnabled = options.clientRetryEnabled === true
     this.policies = options.policies ?? []
     this.endpointFamily = options.endpointFamily
+    this.context = options.context
   }
 
   markDownstreamWrite(): void {
@@ -80,7 +84,8 @@ export class OpenAIResponseInspectionBuffer {
         frames,
         policies: this.policies,
         downstreamWritten: this.downstreamWritten,
-        transport: 'sse'
+        transport: 'sse',
+        context: this.context
       })
       if (inspection.observations) observations.push(...inspection.observations)
       if (inspection.decision) {
@@ -140,7 +145,8 @@ export class OpenAIResponseInspectionBuffer {
       frames,
       policies: this.policies,
       downstreamWritten: this.downstreamWritten,
-      transport: 'sse'
+      transport: 'sse',
+      context: this.context
     })
     if (!inspection.decision) {
       return {
@@ -416,4 +422,3 @@ function bufferEndsWith(buffer: Buffer, suffix: Buffer): boolean {
 const sseCrLfBoundary = Buffer.from('\r\n\r\n', 'utf8')
 const sseLfBoundary = Buffer.from('\n\n', 'utf8')
 const sseCrBoundary = Buffer.from('\r\r', 'utf8')
-

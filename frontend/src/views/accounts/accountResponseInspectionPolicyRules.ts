@@ -4,6 +4,8 @@ export const makeAccountResponseInspectionRule = (patch: Partial<AccountResponse
   enabled: true,
   name: '',
   priority: 1,
+  clientProfiles: [],
+  accountClientCompatibilities: [],
   outputTextIncludes: '',
   outputTextExcludes: '',
   errorCodes: '',

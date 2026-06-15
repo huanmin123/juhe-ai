@@ -232,6 +232,10 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           account,
           managementPolicies: input.responseInspectionPolicies
         }),
+        responseInspectionContext: {
+          clientProfile: clientStrategy?.clientProfile ?? 'generic_openai',
+          accountClientCompatibility: account.clientCompatibility
+        },
         endpointFamily: openAIResponseEndpointFamilyFromRequest(req),
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
       }
@@ -596,6 +600,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             responseBodyText: completeBodyText,
             firstTokenMs,
             responseInspectionPolicies: input.responseInspectionPolicies,
+            clientStrategy: input.clientStrategy,
             accountStateMutationEnabled: accountStateMutationEnabled !== false,
             sessionAffinityKey
           })

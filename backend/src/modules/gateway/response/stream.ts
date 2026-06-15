@@ -31,6 +31,7 @@ import {
 import {
   responseInspectionFailurePayloadForDecision,
   type ResponseInspectionDecision,
+  type ResponseInspectionRuntimeContext,
   type RuntimeResponseInspectionPolicy
 } from './inspection.js'
 import {
@@ -70,6 +71,7 @@ export interface StreamPipeOptions {
   captureSuccessPayloads?: boolean
   retryBeforeDownstreamWriteUntilOutput?: boolean
   responseInspectionPolicies?: RuntimeResponseInspectionPolicy[]
+  responseInspectionContext?: ResponseInspectionRuntimeContext
   endpointFamily?: OpenAIResponseEndpointFamily
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
@@ -97,7 +99,8 @@ export async function pipeUpstreamStream(
   const interceptor = new OpenAIResponseInspectionBuffer({
     clientRetryEnabled: options.clientRetryEnabled === true,
     policies: options.responseInspectionPolicies,
-    endpointFamily: options.endpointFamily ?? 'unknown'
+    endpointFamily: options.endpointFamily ?? 'unknown',
+    context: options.responseInspectionContext
   })
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
