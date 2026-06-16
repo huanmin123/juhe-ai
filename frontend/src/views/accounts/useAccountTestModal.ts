@@ -30,14 +30,12 @@ import {
   submitAccountTestTask
 } from './accountTestSessionClient'
 import {
-  accountTestTaskMaxWaitMs,
-  accountTestTaskRemainingWaitMs,
   isAbortError,
   parseTaskTime,
-  taskStatusToBatchStatus,
-  waitForPollDelay
+  taskStatusToBatchStatus
 } from './accountTestTaskHelpers'
 import { useAccountTestModels } from './useAccountTestModels'
+import { waitForAccountTestResult } from './accountTestTaskPolling'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -210,7 +208,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         activeAccountTestTasks.delete(task.id)
         throw new DOMException('测试已停止', 'AbortError')
       }
-      const result = await waitForAccountTestResult(task, account, controller.signal, (latestTask) => {
+      const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
         activeSingleTestTask.value = latestTask
       })
       testResult.value = result
@@ -328,7 +326,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
         message: task.message ?? '等待后台测试',
         startedAt: parseTaskTime(task.startedAt)
       })
-      const result = await waitForAccountTestResult(task, account, controller.signal, (latestTask) => {
+      const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
         const latestStartedAt = parseTaskTime(latestTask.startedAt)
         updateBatchTestItem(index, {
           taskId: latestTask.id,
@@ -526,63 +524,24 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
   }
 
-  async function waitForAccountTestResult(
+  function waitForSubmittedAccountTestResult(
     initialTask: AccountTestTask,
     account: AccountSummary,
     signal: AbortSignal,
     onUpdate?: (task: AccountTestTask) => void
   ): Promise<AccountTestResult> {
-    let task = initialTask
-    onUpdate?.(task)
-    while (true) {
-      if (signal.aborted) {
-        throw new DOMException('测试已停止', 'AbortError')
-      }
-      if (task.status === 'success' || task.status === 'failed') {
-        activeAccountTestTasks.delete(task.id)
-        if (task.result) {
-          return task.result
-        }
-        return failedAccountTestResult({
-          account,
-          error: new Error(task.message ?? '测试失败'),
-          model: task.model ?? testForm.model,
-          clientCompatibility: testForm.clientCompatibility,
-          startedAt: task.startedAt ? Date.parse(task.startedAt) : Date.now()
-        })
-      }
-      if (task.status === 'canceled') {
-        activeAccountTestTasks.delete(task.id)
-        throw new DOMException(task.message ?? '测试已停止', 'AbortError')
-      }
-      const timeoutResult = accountTestTaskTimeoutResult(task, account)
-      if (timeoutResult) {
-        await cancelCreatedAccountTestTask(task.id, account)
-        activeAccountTestTasks.delete(task.id)
-        return timeoutResult
-      }
-      await waitForPollDelay(signal, accountTestTaskRemainingWaitMs(task))
-      task = await fetchAccountTestTask(task.id, account, signal)
-      onUpdate?.(task)
-    }
-  }
-
-  function accountTestTaskTimeoutResult(task: AccountTestTask, account: AccountSummary): AccountTestResult | undefined {
-    if (task.status !== 'running') {
-      return undefined
-    }
-    const startedAt = parseTaskTime(task.startedAt)
-    if (startedAt === undefined || Date.now() - startedAt < accountTestTaskMaxWaitMs) {
-      return undefined
-    }
-    const maxWaitText = `${Math.ceil(accountTestTaskMaxWaitMs / 1000)}s`
-    const message = `账号测试运行超过 ${maxWaitText} 未完成，已自动停止`
-    return failedAccountTestResult({
+    return waitForAccountTestResult({
       account,
-      error: new Error(message),
-      model: task.model ?? testForm.model,
-      clientCompatibility: testForm.clientCompatibility,
-      startedAt
+      cancelTask: cancelCreatedAccountTestTask,
+      currentClientCompatibility: () => testForm.clientCompatibility,
+      currentModel: () => testForm.model,
+      fetchTask: fetchAccountTestTask,
+      initialTask,
+      onTaskSettled: (taskId) => {
+        activeAccountTestTasks.delete(taskId)
+      },
+      onUpdate,
+      signal
     })
   }
 
