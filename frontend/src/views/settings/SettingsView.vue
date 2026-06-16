@@ -73,6 +73,53 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
+              <h3>后台接口限流</h3>
+              <p>保护后台管理 API，避免同一来源或同一登录用户在短时间内压垮 DB service。</p>
+            </div>
+            <a-switch v-model:checked="systemForm.systemApiRateLimitEnabled" checked-children="启用" un-checked-children="关闭" />
+          </div>
+
+          <a-alert class="setting-alert section-alert" type="info" show-icon>
+            <template #message>限流只作用于 /__aisys__/api 后台接口；健康检查不受影响。阈值填 0 表示关闭对应限制，默认值适合作为轻量级防刷保护。</template>
+          </a-alert>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="IP 读请求每分钟" extra="默认 600；适用于 GET、HEAD 和 OPTIONS。">
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadPerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="IP 读请求 10 秒突发" extra="默认 120；用于拦截短时间刷新列表和探测接口。">
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadBurstPer10Seconds" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="IP 写请求每分钟" extra="默认 180；适用于 POST、PATCH、PUT 和 DELETE。">
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWritePerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="IP 写请求 10 秒突发" extra="默认 40；优先挡住批量提交和暴力探测。">
+                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWriteBurstPer10Seconds" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="登录用户读请求每分钟" extra="默认 300；同一登录账号的后台读请求保护。">
+                <a-input-number v-model:value="systemForm.systemApiRateLimitUserReadPerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="登录用户写请求每分钟" extra="默认 120；对保存、删除、批量操作等写请求再加一层限制。">
+                <a-input-number v-model:value="systemForm.systemApiRateLimitUserWritePerMinute" :disabled="!systemForm.systemApiRateLimitEnabled" :min="0" :max="1000000" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
               <h3>账号测试</h3>
               <p>控制后台账号测试任务的系统级并发防护；单个用户批量测试仍按每批最多 10 个账号提交。</p>
             </div>

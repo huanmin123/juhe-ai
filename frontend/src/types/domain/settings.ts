@@ -1,5 +1,12 @@
 export interface SystemSettings {
   gatewayTextRawBodyLimitMegabytes: number
+  systemApiRateLimitEnabled: boolean
+  systemApiRateLimitIpReadPerMinute: number
+  systemApiRateLimitIpReadBurstPer10Seconds: number
+  systemApiRateLimitIpWritePerMinute: number
+  systemApiRateLimitIpWriteBurstPer10Seconds: number
+  systemApiRateLimitUserReadPerMinute: number
+  systemApiRateLimitUserWritePerMinute: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number

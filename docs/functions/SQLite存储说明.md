@@ -125,7 +125,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。进入慢速恢复后仍继续自动退避复测；超过 `cooldownAccountRetestMaxBackoffHours` 表达的最长自动恢复观察窗口后写入 `status = error` 和 `last_error_code = cooldown_retest_max_recovery_exceeded`，停止自动复测并等待人工“恢复异常”。
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写不敏感唯一；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
-- `custom_provider_models` 保存管理员全局自定义模型和用户个人自定义模型。`scope = global` 的模型不绑定 `system_account_id`，所有系统账户可见；`scope = personal` 的模型只对对应 `system_account_id` 可见。模型路由方案落地后，`model` 需要按 `lower(trim(model))` 在全系统维度唯一，不能按供应商、scope 或用户维度放宽；内置、全局和个人模型之间出现同名都必须在写入时拒绝，已有重名数据按离线清洗处理，不在运行路径做覆盖式去重。`visibility = mapping_target_only` 只供账号模型映射选择，不进入 `/v1/models`；`/v1/models` 对外只输出 OpenAI 标准字段，不暴露价格、scope、visibility、`pricingModel` 或备注。
+- `custom_provider_models` 保存管理员全局自定义模型和用户个人自定义模型。`scope = global` 的模型不绑定 `system_account_id`，所有系统账户可见；`scope = personal` 的模型只对对应 `system_account_id` 可见。模型路由方案落地后，`model` 需要按 `lower(trim(model))` 在全系统维度唯一，不能按供应商、scope 或用户维度放宽；内置、全局和个人模型之间出现同名都必须在写入时拒绝，已有重名数据按离线清洗处理，不在运行路径做覆盖式去重。自定义模型不再保存可见性或显示名称字段，模型 ID 同时作为页面和协议展示名；状态为 `active` 且可解析价格的模型会进入当前作用域的 `/v1/models`、账号支持模型和账号模型映射选项。`/v1/models` 对外只输出 OpenAI 标准字段，不暴露价格、scope、`pricingModel` 或备注。
 - 高并发分组已使用 `groups.group_type` 和 `groups.scheduling_policy_json`：前者保存分组调度类型，默认 `personal`；后者接收最大单账户排队阈值和分组最大等待时间，快速优先、慢请求分流、亲和打破、备用启用和分组级短等待容量都使用代码内置默认开启策略。默认分组使用个人分组语义。
 - 高并发分组的单账户排队阈值只来自 `groups.scheduling_policy_json` 里的分组目标配置；账户绑定关系不再保存绑定级权重或绑定级单账户排队阈值。实际调度阈值仍不能突破账号 `concurrency_limit` 硬上限。
 - 高并发分组需要的近期质量、超时率、首 token 和总耗时趋势应由 background worker 或请求终态事件增量写入紧凑缓存，网关热路径只读取 DB service 已批量带出的运行时快照，不实时回扫 `usage_records` 或 `account_quality_minute_stats`。跨进程共享指标必须落到 SQLite 缓存表或明确 IPC，不能只放在 worker 进程内存。
@@ -904,6 +904,10 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 系统设置默认写入：
 
+- `systemApiRateLimitEnabled = true`：后台管理 API 粗限流默认开启；只作用于 `/__aisys__/api`，健康检查不参与。
+- `systemApiRateLimitIpReadPerMinute = 600`、`systemApiRateLimitIpReadBurstPer10Seconds = 120`：同一客户端 IP 后台读请求的分钟上限和 10 秒突发上限。
+- `systemApiRateLimitIpWritePerMinute = 180`、`systemApiRateLimitIpWriteBurstPer10Seconds = 40`：同一客户端 IP 后台写请求的分钟上限和 10 秒突发上限。
+- `systemApiRateLimitUserReadPerMinute = 300`、`systemApiRateLimitUserWritePerMinute = 120`：同一登录系统账户后台读 / 写请求每分钟上限。
 - `defaultTemporaryUnschedulableMinutes = 5`：临时不可调用恢复流程中的最大单次暂停时间；账号进入 `temporary_unavailable` 后先 3 秒快速恢复，连续失败后翻倍，慢速恢复单次等待不超过该上限。
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试之间的等待间隔；冷却恢复复测会显式覆盖为不做同账号重试。
 - `temporaryUnschedulableRetryAttempts = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试次数；冷却恢复复测会显式覆盖为不做同账号重试。

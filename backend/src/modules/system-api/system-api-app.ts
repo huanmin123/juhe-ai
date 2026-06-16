@@ -30,6 +30,7 @@ import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
 import { ok } from '../../shared/http.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { listPublicGlobalSettings } from '../../storage/repositories.js'
+import { systemApiAuthenticatedRateLimit, systemApiIpRateLimit } from './system-api-rate-limit.middleware.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -54,6 +55,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   }
 
   app.use(requestContextMiddleware)
+  app.use(systemApiPrefix, systemApiIpRateLimit)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
 
@@ -68,6 +70,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(publicApiPrefix, externalIntegrationsRouter)
 
   app.use(systemApiPrefix, requireAuth)
+  app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)
   app.use(`${systemApiPrefix}/announcements`, announcementsRouter)
   app.use(`${systemApiPrefix}/my-accounts`, forceSelfAccessScope, accountsRouter)
   app.use(`${systemApiPrefix}/my-groups`, forceSelfAccessScope, groupsRouter)

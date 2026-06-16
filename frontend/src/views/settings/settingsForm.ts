@@ -8,6 +8,13 @@ export interface GlobalForm {
 
 export interface SystemForm {
   gatewayTextRawBodyLimitMegabytes: number
+  systemApiRateLimitEnabled: boolean
+  systemApiRateLimitIpReadPerMinute: number
+  systemApiRateLimitIpReadBurstPer10Seconds: number
+  systemApiRateLimitIpWritePerMinute: number
+  systemApiRateLimitIpWriteBurstPer10Seconds: number
+  systemApiRateLimitUserReadPerMinute: number
+  systemApiRateLimitUserWritePerMinute: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -27,6 +34,13 @@ export const defaultGlobalSettings: GlobalForm = {
 
 export const defaultSystemSettings: SystemForm = {
   gatewayTextRawBodyLimitMegabytes: 8,
+  systemApiRateLimitEnabled: true,
+  systemApiRateLimitIpReadPerMinute: 600,
+  systemApiRateLimitIpReadBurstPer10Seconds: 120,
+  systemApiRateLimitIpWritePerMinute: 180,
+  systemApiRateLimitIpWriteBurstPer10Seconds: 40,
+  systemApiRateLimitUserReadPerMinute: 300,
+  systemApiRateLimitUserWritePerMinute: 120,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
@@ -49,6 +63,13 @@ export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): 
 export function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemForm {
   return {
     gatewayTextRawBodyLimitMegabytes: integerValue(settings.gatewayTextRawBodyLimitMegabytes, '文本请求体上限', 1, 64),
+    systemApiRateLimitEnabled: booleanValue(settings.systemApiRateLimitEnabled, '后台接口限流开关'),
+    systemApiRateLimitIpReadPerMinute: integerValue(settings.systemApiRateLimitIpReadPerMinute, 'IP 读请求每分钟上限', 0, 1_000_000),
+    systemApiRateLimitIpReadBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'IP 读请求突发上限', 0, 1_000_000),
+    systemApiRateLimitIpWritePerMinute: integerValue(settings.systemApiRateLimitIpWritePerMinute, 'IP 写请求每分钟上限', 0, 1_000_000),
+    systemApiRateLimitIpWriteBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpWriteBurstPer10Seconds, 'IP 写请求突发上限', 0, 1_000_000),
+    systemApiRateLimitUserReadPerMinute: integerValue(settings.systemApiRateLimitUserReadPerMinute, '登录用户读请求每分钟上限', 0, 1_000_000),
+    systemApiRateLimitUserWritePerMinute: integerValue(settings.systemApiRateLimitUserWritePerMinute, '登录用户写请求每分钟上限', 0, 1_000_000),
     defaultTemporaryUnschedulableMinutes: integerValue(settings.defaultTemporaryUnschedulableMinutes, '临时不可调用最大暂停时间', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '临时状态重试间隔', 0, 3600),
     temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '临时状态重试次数', 0, 10),

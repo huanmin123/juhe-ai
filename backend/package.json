@@ -13,6 +13,7 @@
     "test:scope": "tsx src/scripts/regression/scope-boundary-regression.ts",
     "test:auth-memory-maintenance-boundary": "tsx src/scripts/regression/auth-memory-maintenance-boundary-regression.ts",
     "test:captcha-rate-limit": "tsx src/scripts/regression/captcha-rate-limit-regression.ts",
+    "test:system-api-rate-limit": "tsx src/scripts/regression/system-api-rate-limit-regression.ts",
     "test:auth-must-change-password-boundary": "tsx src/scripts/regression/auth-must-change-password-boundary-regression.ts",
     "test:deduplication-maintenance-boundary": "tsx src/scripts/regression/deduplication-maintenance-boundary-regression.ts",
     "test:proxy-negative": "tsx src/scripts/regression/proxy-negative-regression.ts",

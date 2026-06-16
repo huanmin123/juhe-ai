@@ -121,6 +121,13 @@ export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED = {
 
 export const DEFAULT_SYSTEM_SETTINGS = [
   ['gatewayTextRawBodyLimitMegabytes', 8],
+  ['systemApiRateLimitEnabled', true],
+  ['systemApiRateLimitIpReadPerMinute', 600],
+  ['systemApiRateLimitIpReadBurstPer10Seconds', 120],
+  ['systemApiRateLimitIpWritePerMinute', 180],
+  ['systemApiRateLimitIpWriteBurstPer10Seconds', 40],
+  ['systemApiRateLimitUserReadPerMinute', 300],
+  ['systemApiRateLimitUserWritePerMinute', 120],
   ['defaultTemporaryUnschedulableMinutes', 5],
   ['temporaryUnschedulableRetryIntervalSeconds', 3],
   ['temporaryUnschedulableRetryAttempts', 3],

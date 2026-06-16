@@ -121,10 +121,25 @@ function assertSettingsSourceReadsKnownKeysOnly(): void {
 }
 
 function assertAccountCooldownSettingNoRuntimeFallback(): void {
-  const source = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
-  const body = sourceFunctionBlock(source, 'function defaultTemporaryUnschedulableMinutes')
+  const body = sourceFunctionBlockFromAnyFile([
+    'src/storage/account-runtime-mutation-helpers.ts',
+    'src/storage/repositories.ts'
+  ], 'function defaultTemporaryUnschedulableMinutes')
   assert(!body.includes('Math.trunc'), '临时不可调用默认设置读取不能截断小数')
   assert(!body.includes('return 5'), '临时不可调用默认设置读取不能静默回退 5 分钟')
+}
+
+function sourceFunctionBlockFromAnyFile(paths: string[], marker: string): string {
+  const errors: string[] = []
+  for (const path of paths) {
+    try {
+      const source = readFileSync(resolve(path), 'utf8')
+      return sourceFunctionBlock(source, marker)
+    } catch (error) {
+      errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw new Error(`未找到源码片段：${marker}\n${errors.join('\n')}`)
 }
 
 function sourceFunctionBlock(source: string, marker: string): string {

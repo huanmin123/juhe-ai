@@ -14,6 +14,13 @@ const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
 const settingsCacheTtlMs = 60_000
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
+  'systemApiRateLimitEnabled',
+  'systemApiRateLimitIpReadPerMinute',
+  'systemApiRateLimitIpReadBurstPer10Seconds',
+  'systemApiRateLimitIpWritePerMinute',
+  'systemApiRateLimitIpWriteBurstPer10Seconds',
+  'systemApiRateLimitUserReadPerMinute',
+  'systemApiRateLimitUserWritePerMinute',
   'defaultTemporaryUnschedulableMinutes',
   'temporaryUnschedulableRetryIntervalSeconds',
   'temporaryUnschedulableRetryAttempts',
@@ -65,6 +72,13 @@ const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
+  systemApiRateLimitEnabled: booleanSetting,
+  systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
+  systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
+  systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),
+  systemApiRateLimitIpWriteBurstPer10Seconds: integerSetting(0, 1_000_000),
+  systemApiRateLimitUserReadPerMinute: integerSetting(0, 1_000_000),
+  systemApiRateLimitUserWritePerMinute: integerSetting(0, 1_000_000),
   defaultTemporaryUnschedulableMinutes: integerSetting(1, 1440),
   temporaryUnschedulableRetryIntervalSeconds: integerSetting(0, 3600),
   temporaryUnschedulableRetryAttempts: integerSetting(0, 10),
