@@ -393,7 +393,6 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     supportsServiceTier: false,
     source: 'regression',
     scope: 'built_in',
-    visibility: 'public',
     status: 'active'
   }
 }

@@ -26,11 +26,6 @@ export function normalizeAccountModelMappingsForProvider(value: unknown, provide
     providerCode,
     systemAccountId
   }).map((item) => item.model))
-  const mappingTargetModels = new Set(listProviderModelCatalog({
-    providerCode,
-    systemAccountId,
-    includeMappingTargets: true
-  }).map((item) => item.model))
   const invalidSourceModels = mappings
     .map((mapping) => mapping.sourceModel)
     .filter((model) => !requestableModels.has(model))
@@ -39,9 +34,9 @@ export function normalizeAccountModelMappingsForProvider(value: unknown, provide
   }
   const invalidUpstreamModels = mappings
     .map((mapping) => mapping.upstreamModel)
-    .filter((model) => !mappingTargetModels.has(model))
+    .filter((model) => !requestableModels.has(model))
   if (invalidUpstreamModels.length > 0) {
-    throw new Error(`映射上游模型不在可用模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+    throw new Error(`映射上游模型不在可请求模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
   }
   return mappings
 }

@@ -121,7 +121,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return listProviderModelCatalog({
         providerCode: operation.providerCode,
         systemAccountId: operation.systemAccountId,
-        includeMappingTargets: operation.includeMappingTargets,
         includeInactive: operation.includeInactive,
         includeUnpriced: operation.includeUnpriced
       })

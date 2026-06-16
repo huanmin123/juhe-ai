@@ -1,8 +1,8 @@
-import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, type ComputedRef } from 'vue'
 
-import { api, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
-import type { AccountSummary, AccountTestResult, AccountTestTask, ProviderDefinition, ProviderModelPricing } from '@/types/domain'
+import { message } from '@/lib/antd'
+import { type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
+import type { AccountSummary, AccountTestResult, AccountTestTask, ProviderDefinition } from '@/types/domain'
 import {
   type AccountBatchTestItem,
   type AccountTestForm,
@@ -12,11 +12,8 @@ import {
   buildAccountTestPayload,
   batchTestSummary,
   failedAccountTestResult,
-  nextTestModel,
   stoppedAccountTestMessage
 } from './accountTestFlow'
-import { buildTestModelOptions, defaultTestModelForAccountSelection, isOpenAICompatibleTestSelection, providerCodeForAccountSelection, providerDefaultTestModelForAccountSelection } from './accountDerivedState'
-import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
@@ -40,6 +37,7 @@ import {
   taskStatusToBatchStatus,
   waitForPollDelay
 } from './accountTestTaskHelpers'
+import { useAccountTestModels } from './useAccountTestModels'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -60,15 +58,12 @@ const accountTestSessionHeartbeatIntervalMs = 2000
 export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testModalOpen = ref(false)
   const testRunning = ref(false)
-  const testModelsLoading = ref(false)
   const testMode = ref<AccountTestMode>('single')
   const testingAccount = ref<AccountSummary>()
   const batchTestingAccounts = ref<AccountSummary[]>([])
   const batchTestItems = ref<AccountBatchTestItem[]>([])
   const activeSingleTestTask = ref<AccountTestTask>()
   const testResult = ref<AccountTestResult>()
-  const providerModels = ref<ProviderModelPricing[]>([])
-  const providerModelsProviderCode = ref('')
   const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
   const draftTestMode = ref<AccountTestDraftMode>()
   const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
@@ -76,52 +71,22 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testTargetAccountSelection = computed(() => (
     testMode.value === 'batch' ? batchTestingAccounts.value : testingAccount.value
   ))
-  const testTargetProviderCode = computed(() => providerCodeForAccountSelection(testTargetAccountSelection.value))
-  const providerDefaultTestModel = computed(() => providerDefaultTestModelForAccountSelection(
-    options.providers.value,
-    testTargetAccountSelection.value
-  ))
-  const testModelOptions = computed(() => buildTestModelOptions(
-    providerModels.value,
-    testTargetAccountSelection.value,
-    providerDefaultTestModel.value
-  ))
-  const defaultTestModel = computed(() => (
-    defaultTestModelForAccountSelection(testTargetAccountSelection.value, providerDefaultTestModel.value)
-  ))
-  const isOpenAICompatibleTestTarget = computed(() => isOpenAICompatibleTestSelection(testTargetAccountSelection.value))
+  const {
+    defaultModelForSelection,
+    loadTestModels,
+    testModelOptions,
+    testModelsLoading
+  } = useAccountTestModels({
+    providers: options.providers,
+    testForm,
+    testTargetAccountSelection
+  })
 
   let accountTestAbortController: AbortController | undefined
   let activeAccountTestSessionId: string | undefined
   let activeAccountTestSessionScopeParams: { systemAccountId: string } | undefined
   let accountTestSessionHeartbeatTimer: number | undefined
   const activeAccountTestTasks = new Map<string, AccountSummary>()
-
-  async function loadTestModels() {
-    if (!isOpenAICompatibleTestTarget.value) {
-      providerModels.value = []
-      providerModelsProviderCode.value = ''
-      testForm.model = nextTestModel(testForm.model, testModelOptions.value, defaultTestModel.value)
-      return
-    }
-    const providerCode = testTargetProviderCode.value || GPT_VENDOR_CODE
-    if (providerModelsProviderCode.value !== providerCode) {
-      providerModels.value = []
-      providerModelsProviderCode.value = providerCode
-    }
-    if (providerModels.value.length || testModelsLoading.value) return
-    testModelsLoading.value = true
-    try {
-      providerModels.value = await api.providers.models(providerCode)
-      testForm.model = nextTestModel(testForm.model || defaultTestModel.value, testModelOptions.value, defaultTestModel.value)
-    } catch (error) {
-      console.error(error)
-      testForm.model = nextTestModel(testForm.model, testModelOptions.value, defaultTestModel.value)
-      message.warning('测试模型列表加载失败，已使用默认模型')
-    } finally {
-      testModelsLoading.value = false
-    }
-  }
 
   async function openTestModal(account: AccountSummary) {
     if (!canTestAccount(account)) {
@@ -457,13 +422,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       clientCompatibility: account.type === 'oauth' ? 'account_default' : clientCompatibility,
       model: testForm.model || defaultModelForSelection(account)
     })
-  }
-
-  function defaultModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
-    return defaultTestModelForAccountSelection(
-      account,
-      providerDefaultTestModelForAccountSelection(options.providers.value, account)
-    )
   }
 
   async function createAccountTestSession(account?: AccountSummary) {

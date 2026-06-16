@@ -4,8 +4,7 @@ import type {
   ProviderModelMode,
   ProviderModelPricing,
   ProviderModelStatus,
-  ProviderModelUpsertPayload,
-  ProviderModelVisibility
+  ProviderModelUpsertPayload
 } from '@/types/domain'
 
 import {
@@ -22,8 +21,6 @@ export interface CustomModelForm {
   model: string
   scope: CustomProviderModelScope
   status: ProviderModelStatus
-  visibility: ProviderModelVisibility
-  displayName?: string
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
   pricingTemplateModel?: string
@@ -46,7 +43,6 @@ export const emptyCustomModelForm: CustomModelForm = {
   model: '',
   scope: 'personal',
   status: 'active',
-  visibility: 'public',
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions']
 }
@@ -60,8 +56,6 @@ export function createCustomModelFormFromPricing(
     model: record.model,
     scope: record.scope === 'global' ? 'global' : 'personal',
     status: record.status ?? 'active',
-    visibility: record.visibility ?? 'public',
-    displayName: record.displayName,
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     releaseDate: record.releaseDate,
@@ -97,8 +91,6 @@ export function buildCustomModelPayload(
     model,
     scope: form.scope,
     status: form.status,
-    visibility: form.visibility,
-    displayName: trimToNull(form.displayName),
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
     pricingModel: null,

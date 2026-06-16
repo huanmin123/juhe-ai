@@ -311,6 +311,11 @@ import { authorizationUserUsageColumns } from './authorizationUsageTableConfig'
 import { authorizationResourceTypeOptions } from './authorizationTableColumns'
 import { useAuthorizationUsageDateRange } from './useAuthorizationUsageDateRange'
 import { useAuthorizationUsageResourceFilters } from './useAuthorizationUsageResourceFilters'
+import {
+  authorizationUserUsageRouteFiltersFromQuery,
+  hasAuthorizationUserUsageRouteFilters,
+  isAuthorizationUserUsageRoutePath
+} from './authorizationUserUsageRouteFilters'
 
 const route = useRoute()
 const authorizationUsagePageSize = 20
@@ -544,50 +549,29 @@ function resetFilters() {
 }
 
 function applyRouteFilters() {
-  if (!hasRouteFilters()) return
-  const teamId = singleQueryValue(route.query.teamId)
-  const granteeSystemAccountId = singleQueryValue(route.query.granteeSystemAccountId)
-  const resourceOwnerSystemAccountId = singleQueryValue(route.query.resourceOwnerSystemAccountId)
-  const resourceId = singleQueryValue(route.query.resourceId)
-  const resourceType = route.query.resourceType === 'account' || route.query.resourceType === 'group' ? route.query.resourceType : undefined
-  const startDate = singleQueryValue(route.query.startDate)
-  const endDate = singleQueryValue(route.query.endDate)
+  if (!hasAuthorizationUserUsageRouteFilters(route.query)) return
+  const routeFilters = authorizationUserUsageRouteFiltersFromQuery(route.query)
   Object.assign(filters, defaultAuthorizationUserUsageFilters())
   resetDateRange()
-  filters.teamId = teamId
-  filters.granteeSystemAccountId = granteeSystemAccountId
-  if (isManagementView.value && resourceOwnerSystemAccountId) {
-    filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
+  filters.teamId = routeFilters.teamId
+  filters.granteeSystemAccountId = routeFilters.granteeSystemAccountId
+  if (isManagementView.value && routeFilters.resourceOwnerSystemAccountId) {
+    filters.resourceOwnerSystemAccountId = routeFilters.resourceOwnerSystemAccountId
   }
-  if (resourceType) {
-    filters.resourceType = resourceType
-    filters.resourceId = resourceId
+  if (routeFilters.resourceType) {
+    filters.resourceType = routeFilters.resourceType
+    filters.resourceId = routeFilters.resourceId
   }
-  if (isDateKey(startDate) || isDateKey(endDate)) {
-    setExplicitDateRange({ startDate, endDate })
+  if (isDateKey(routeFilters.startDate) || isDateKey(routeFilters.endDate)) {
+    setExplicitDateRange({
+      startDate: routeFilters.startDate,
+      endDate: routeFilters.endDate
+    })
   }
   resetTeamOptionsSearch()
   resetGranteeUserOptionsSearch()
   resetResourceOwnerUserOptionsSearch()
   resetResourceOptionsSearch()
-}
-
-function hasRouteFilters(): boolean {
-  return Boolean(
-    singleQueryValue(route.query.teamId)
-    || singleQueryValue(route.query.granteeSystemAccountId)
-    || singleQueryValue(route.query.resourceOwnerSystemAccountId)
-    || singleQueryValue(route.query.resourceId)
-    || singleQueryValue(route.query.startDate)
-    || singleQueryValue(route.query.endDate)
-    || route.query.resourceType === 'account'
-    || route.query.resourceType === 'group'
-  )
-}
-
-function singleQueryValue(value: unknown): string | undefined {
-  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined
-  return typeof value === 'string' ? value : undefined
 }
 
 onMounted(() => {
@@ -596,106 +580,20 @@ onMounted(() => {
 })
 
 watch(() => route.fullPath, () => {
-  if (route.path !== '/authorization-user-usage' && route.path !== '/my-authorization-user-usage') return
-  if (!hasRouteFilters()) return
+  if (!isAuthorizationUserUsageRoutePath(route.path)) return
+  if (!hasAuthorizationUserUsageRouteFilters(route.query)) return
   applyRouteFilters()
   reloadFromFirstPage()
 })
 </script>
 
+<style scoped src="./authorization-usage.css"></style>
+
 <style scoped>
-.authorization-usage-page {
-  display: flex;
-  height: calc(100dvh - 154px);
-  min-height: 0;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.authorization-usage-header-card,
-.authorization-usage-page :deep(.stats-summary-grid) {
-  flex: 0 0 auto;
-}
-
-.authorization-usage-header-card :deep(.ant-card-body) {
-  padding: 16px 18px;
-}
-
-.authorization-usage-range {
-  width: 260px;
-}
-
-.authorization-usage-select {
-  min-width: 180px;
-}
-
-.authorization-usage-resource {
-  min-width: 220px;
-}
-
-.authorization-usage-table-card {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
-}
-
-.authorization-usage-table-card :deep(.ant-card-body) {
-  display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-}
-
-.authorization-usage-table-head {
-  display: flex;
-  flex: 0 0 auto;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.authorization-usage-responsive-list {
-  min-height: 0;
-  flex: 1 1 auto;
-}
-
-.authorization-usage-table-head h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 700;
-}
-
 .authorization-usage-user-cell {
   display: grid;
   gap: 3px;
   min-width: 0;
-}
-
-.authorization-usage-resource-cell {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  gap: 8px;
-  min-width: 0;
-}
-
-.authorization-usage-resource-cell :deep(.ant-tag) {
-  flex: 0 0 auto;
-  margin-inline-end: 0;
-}
-
-.authorization-usage-name {
-  min-width: 0;
-  overflow: hidden;
-  color: #0f172a;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .authorization-usage-subtext {
@@ -705,44 +603,5 @@ watch(() => route.fullPath, () => {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.authorization-usage-number {
-  color: #0f172a;
-  font-family: Consolas, 'Courier New', monospace;
-}
-
-.authorization-usage-table :deep(.ant-table-thead > tr > th),
-.authorization-usage-table :deep(.ant-table-cell) {
-  font-weight: 400;
-  white-space: nowrap;
-}
-
-.authorization-usage-page :deep(.mobile-list-card-title),
-.authorization-usage-page :deep(.mobile-list-meta-item strong) {
-  font-weight: 400;
-}
-
-.authorization-usage-table :deep(.responsive-data-list-flex-column) {
-  min-width: 260px;
-}
-
-.mobile-filter-field {
-  display: grid;
-  gap: 8px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.advanced-filter-form :deep(.ant-select) {
-  width: 100%;
-}
-
-@media (max-width: 900px) {
-  .authorization-usage-page {
-    height: auto;
-    min-height: calc(100dvh - 122px);
-  }
 }
 </style>

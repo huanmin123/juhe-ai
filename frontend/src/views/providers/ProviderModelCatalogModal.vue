@@ -9,7 +9,23 @@
   >
     <div class="model-modal-content">
       <div class="model-toolbar">
-        <a-input-search v-model:value="keyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
+        <div class="model-toolbar-filters">
+          <SystemPrincipalSelect
+            v-if="showSystemAccountFilter"
+            v-model:value="systemAccountId"
+            v-model:selected-principal="selectedSystemAccount"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountsLoading"
+            placeholder="选择目标用户"
+            class="model-owner-select"
+            @change="emit('system-account-change')"
+            @dropdown-visible-change="emit('system-account-dropdown', $event)"
+            @search="emit('system-account-search', $event)"
+          />
+          <a-input-search v-model:value="keyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
+        </div>
         <a-space wrap>
           <a-button type="primary" @click="emit('create')">新增模型</a-button>
           <a-tag color="blue">{{ models.length }} / {{ currentCategoryCount }} 个模型</a-tag>
@@ -38,7 +54,6 @@
           <template v-if="column.key === 'model'">
             <a-space size="small">
               <span class="mono-cell">{{ record.model }}</span>
-              <a-tag v-if="record.displayName">{{ record.displayName }}</a-tag>
               <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
             </a-space>
           </template>
@@ -47,9 +62,6 @@
           </template>
           <template v-else-if="column.key === 'status'">
             <a-tag :color="modelStatusColor(record.status)">{{ formatModelStatus(record.status) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'visibility'">
-            <a-tag :color="record.visibility === 'mapping_target_only' ? 'orange' : 'green'">{{ formatModelVisibility(record.visibility) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'releaseDate'">
             <span>{{ record.releaseDate || '-' }}</span>
@@ -116,8 +128,6 @@
             <div class="model-mobile-card-grid">
               <span>来源</span>
               <strong>{{ formatModelScope(record.scope) }}</strong>
-              <span>可见性</span>
-              <strong>{{ formatModelVisibility(record.visibility) }}</strong>
               <span>发布时间</span>
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
@@ -139,7 +149,9 @@
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { ProviderModelPricing } from '@/types/domain'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
+import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/types/domain'
 
 import {
   formatApiProtocol,
@@ -148,7 +160,6 @@ import {
   formatModelPriceSummary,
   formatModelScope,
   formatModelStatus,
-  formatModelVisibility,
   formatPrice,
   formatTokens,
   formatUnitPrice,
@@ -161,21 +172,33 @@ import {
 const open = defineModel<boolean>('open', { required: true })
 const keyword = defineModel<string>('keyword', { required: true })
 const selectedCategory = defineModel<ModelCategoryKey>('selectedCategory', { required: true })
+const systemAccountId = defineModel<string | undefined>('systemAccountId')
+const selectedSystemAccount = defineModel<PrincipalSelection | undefined>('selectedSystemAccount')
 
-defineProps<{
+withDefaults(defineProps<{
   title: string
   loading: boolean
+  showSystemAccountFilter?: boolean
+  systemAccounts?: SystemAccountPrincipalSummary[]
+  systemAccountsLoading?: boolean
   categoryTabs: Array<{ key: ModelCategoryKey; label: string }>
   columns: Array<Record<string, any>>
   models: ProviderModelPricing[]
   currentCategoryCount: number
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
-}>()
+}>(), {
+  showSystemAccountFilter: false,
+  systemAccounts: () => [],
+  systemAccountsLoading: false
+})
 
 const emit = defineEmits<{
   cancel: []
   create: []
   'model-action': [key: string, record: ProviderModelPricing]
+  'system-account-change': []
+  'system-account-dropdown': [open: boolean]
+  'system-account-search': [value: string]
 }>()
 </script>
 
@@ -215,6 +238,13 @@ const emit = defineEmits<{
   margin-bottom: 16px;
 }
 
+.model-toolbar-filters {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
 .model-tabs {
   flex: 0 0 auto;
   margin-bottom: 8px;
@@ -230,6 +260,10 @@ const emit = defineEmits<{
 
 .model-search {
   width: 320px;
+}
+
+.model-owner-select {
+  width: 220px;
 }
 
 .model-table {
@@ -295,7 +329,16 @@ const emit = defineEmits<{
     flex-direction: column;
   }
 
+  .model-toolbar-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .model-search {
+    width: 100%;
+  }
+
+  .model-owner-select {
     width: 100%;
   }
 }

@@ -1,11 +1,6 @@
-import { EventEmitter } from 'node:events'
-import type { IncomingHttpHeaders } from 'node:http'
-import type { Request } from 'express'
-
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
-import { MemoryGatewayResponse } from '../accounts/account-test.service.js'
 import {
   accountDiagnosticRetryTimeoutMs,
   diagnosticAccountTestGatewaySettingsOverride,
@@ -13,6 +8,10 @@ import {
   isDiagnosticTimeoutSignal
 } from '../accounts/account-diagnostic-retry-policy.js'
 import { handleOpenAIGatewayRequest, type OpenAIGatewayRequestIdentity } from '../gateway/routes.js'
+import {
+  createMemoryGatewayRequest,
+  MemoryGatewayResponse
+} from '../gateway/testing/memory-gateway-http.js'
 import {
   bounded,
   extractOpenAIResponseOutputText,
@@ -258,97 +257,5 @@ function emitGatewayProbeProgress(progress: GatewayProbeProgressReporter | undef
     progress(event)
   } catch (error) {
     logger.warn({ event: 'model_check_progress_emit_failed', err: error }, '模型检测进度事件发送失败')
-  }
-}
-
-function createMemoryGatewayRequest(input: {
-  method: 'GET' | 'POST'
-  path: string
-  body?: Record<string, unknown>
-  signal?: AbortSignal
-}): Request {
-  const rawBody = input.body ? Buffer.from(JSON.stringify(input.body), 'utf8') : Buffer.alloc(0)
-  const headers: IncomingHttpHeaders = {
-    accept: input.body?.stream === true ? 'application/json, text/event-stream' : 'application/json'
-  }
-  if (input.body) {
-    headers['content-type'] = 'application/json'
-    headers['content-length'] = String(rawBody.length)
-  }
-  return new MemoryGatewayRequest({
-    method: input.method,
-    originalUrl: input.path,
-    path: input.path.split('?')[0] || input.path,
-    headers,
-    body: input.body,
-    rawBody,
-    ip: '127.0.0.1',
-    signal: input.signal
-  }).asRequest()
-}
-
-class MemoryGatewayRequest extends EventEmitter {
-  constructor(private readonly input: {
-    method: string
-    originalUrl: string
-    path: string
-    headers: IncomingHttpHeaders
-    body?: Record<string, unknown>
-    rawBody: Buffer
-    ip: string
-    signal?: AbortSignal
-  }) {
-    super()
-    if (this.input.signal?.aborted) {
-      queueMicrotask(() => this.emit('aborted'))
-    } else {
-      this.input.signal?.addEventListener('abort', () => this.emit('aborted'), { once: true })
-    }
-  }
-
-  get method(): string {
-    return this.input.method
-  }
-
-  get originalUrl(): string {
-    return this.input.originalUrl
-  }
-
-  get path(): string {
-    return this.input.path
-  }
-
-  get headers(): IncomingHttpHeaders {
-    return this.input.headers
-  }
-
-  get body(): Record<string, unknown> | undefined {
-    return this.input.body
-  }
-
-  get rawBody(): Buffer {
-    return this.input.rawBody
-  }
-
-  get ip(): string {
-    return this.input.ip
-  }
-
-  get socket(): { remoteAddress: string } {
-    return { remoteAddress: this.input.ip }
-  }
-
-  get aborted(): boolean {
-    return this.input.signal?.aborted ?? false
-  }
-
-  header(name: string): string | undefined {
-    const value = this.input.headers[name.toLowerCase()]
-    if (Array.isArray(value)) return value.join(', ')
-    return typeof value === 'string' ? value : undefined
-  }
-
-  asRequest(): Request {
-    return this as unknown as Request
   }
 }

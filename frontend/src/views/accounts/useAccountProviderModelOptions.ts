@@ -12,12 +12,25 @@ interface UseAccountProviderModelOptionsOptions {
   isManagementView: ComputedRef<boolean>
 }
 
+const providerModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
+
+export function invalidateAccountProviderModelOptionsCache(providerCode?: string): void {
+  const code = providerCode?.trim()
+  if (!code) {
+    providerModelOptionsCache.clear()
+    return
+  }
+  for (const key of providerModelOptionsCache.keys()) {
+    if (key.startsWith(`${code}:`)) {
+      providerModelOptionsCache.delete(key)
+    }
+  }
+}
+
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
   const providerModelOptions = ref<AccountModelSelectOption[]>([])
   const mappingTargetModelOptions = ref<AccountModelSelectOption[]>([])
   const providerModelsLoading = ref(false)
-  const providerModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
-  const mappingTargetModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
 
   function resetProviderModelOptions(): void {
     providerModelOptions.value = []
@@ -31,27 +44,21 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     mappingTargetModelOptions.value = []
     if (!code) return
     const cacheKey = providerModelCacheKey(code)
-    const cachedPublic = providerModelOptionsCache.get(cacheKey)
-    const cachedMappingTargets = mappingTargetModelOptionsCache.get(cacheKey)
-    if (cachedPublic && cachedMappingTargets) {
-      providerModelOptions.value = cachedPublic
-      mappingTargetModelOptions.value = cachedMappingTargets
+    const cached = providerModelOptionsCache.get(cacheKey)
+    if (cached) {
+      providerModelOptions.value = cached
+      mappingTargetModelOptions.value = cached
       providerModelsLoading.value = false
       return
     }
     providerModelsLoading.value = true
     try {
-      const [models, mappingTargetModels] = await Promise.all([
-        cachedPublic ? Promise.resolve(undefined) : api.providers.models(code),
-        cachedMappingTargets ? Promise.resolve(undefined) : api.providers.models(code, { includeMappingTargets: true })
-      ])
-      const modelOptions = cachedPublic ?? providerModelsToOptions(models ?? [])
-      const mappingTargetOptions = cachedMappingTargets ?? providerModelsToOptions(mappingTargetModels ?? [])
+      const models = await api.providers.models(code)
+      const modelOptions = providerModelsToOptions(models)
       providerModelOptionsCache.set(cacheKey, modelOptions)
-      mappingTargetModelOptionsCache.set(cacheKey, mappingTargetOptions)
       if (options.currentProviderCode() === code) {
         providerModelOptions.value = modelOptions
-        mappingTargetModelOptions.value = mappingTargetOptions
+        mappingTargetModelOptions.value = modelOptions
       }
     } catch (error) {
       console.error(error)

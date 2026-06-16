@@ -2,8 +2,7 @@ import type {
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
-  ProviderModelStatus,
-  ProviderModelVisibility
+  ProviderModelStatus
 } from '@/types/domain'
 
 export const modelCategoryOrder = ['text', 'image', 'audio'] as const
@@ -39,11 +38,6 @@ export const modelStatusOptions: Array<{ label: string; value: ProviderModelStat
   { label: '启用', value: 'active' },
   { label: '草稿', value: 'draft' },
   { label: '停用', value: 'disabled' }
-]
-
-export const modelVisibilityOptions: Array<{ label: string; value: ProviderModelVisibility }> = [
-  { label: '公开目录', value: 'public' },
-  { label: '仅映射目标', value: 'mapping_target_only' }
 ]
 
 export const modelModeOptions: Array<{ label: string; value: ProviderModelMode }> = [
@@ -192,12 +186,6 @@ export function modelStatusColor(status?: string): string {
   if (status === 'draft') return 'gold'
   if (status === 'disabled') return 'default'
   return 'default'
-}
-
-export function formatModelVisibility(visibility?: string): string {
-  if (visibility === 'public') return '公开目录'
-  if (visibility === 'mapping_target_only') return '仅映射目标'
-  return '-'
 }
 
 export function formatApiProtocol(protocol?: string): string {

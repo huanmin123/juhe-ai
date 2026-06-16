@@ -119,8 +119,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       scope TEXT NOT NULL,
       system_account_id TEXT,
       status TEXT NOT NULL DEFAULT 'active',
-      visibility TEXT NOT NULL DEFAULT 'public',
-      display_name TEXT,
       mode TEXT,
       supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
       pricing_model TEXT,
@@ -149,7 +147,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       CHECK (scope IN ('global', 'personal')),
       CHECK (status IN ('draft', 'active', 'disabled')),
-      CHECK (visibility IN ('public', 'mapping_target_only')),
       CHECK ((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id IS NOT NULL))
     );
 
@@ -683,7 +680,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON custom_provider_models(provider_code, system_account_id, lower(model))
       WHERE scope = 'personal';
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
-      ON custom_provider_models(provider_code, status, visibility, scope, system_account_id, model);
+      ON custom_provider_models(provider_code, status, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, account_id);

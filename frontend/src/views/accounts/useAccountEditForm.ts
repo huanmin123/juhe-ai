@@ -2,14 +2,12 @@ import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import { useSubmitAction } from '@/composables/useSubmitAction'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   AccountSummary,
   AccountType,
   GroupOptionSummary,
-  OpenAIAuthURLResult,
   ProviderDefinition,
   SystemAccountPrincipalSummary
 } from '@/types/domain'
@@ -38,13 +36,11 @@ import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
-import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
+import { authUrl } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
-import { buildAccountSavePayload, buildAccountUpdatePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm, type AccountSavePayload } from './accountSavePayload'
+import type { AccountSavePayload } from './accountSavePayload'
 import {
-  accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload,
-  normalizeFormTagNames,
-  sameTagNames
+  accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload
 } from './accountEditFormPayload'
 import {
   AccountEditFormLoadError,
@@ -54,6 +50,7 @@ import {
 import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
+import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -77,11 +74,7 @@ interface UseAccountEditFormOptions {
 }
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {
-  const { submitAction, submittingRef } = useSubmitAction('accounts')
-  const saving = submittingRef('accounts.save')
-  const authLoading = ref(false)
   const modalOpen = ref(false)
-  const authResult = ref<OpenAIAuthURLResult>()
   const editingId = ref<string>()
   const editingAccountDetail = ref<AccountSummary>()
   const cloningSourceId = ref<string>()
@@ -142,6 +135,29 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
   const isOpenAIOAuthForm = computed(() => form.providerCode === GPT_VENDOR_CODE && form.type === 'oauth' && isOpenAIProtocolProfile(selectedProtocolProfile.value))
   const editingAuthorizedAccount = computed(() => Boolean(editingId.value && editingAccountDetail.value && isAuthorizedAccount(editingAccountDetail.value)))
+  const {
+    authLoading,
+    authResult,
+    generateOAuthUrl,
+    saveAccount,
+    saving
+  } = useAccountEditSaveFlow({
+    accountCreatePayloadWithActivationTest,
+    accountErrorPolicyRules,
+    accountResponseInspectionRules,
+    accounts: options.accounts,
+    clearSuccessfulDraftActivationTest,
+    createScopeParams,
+    editingAccountDetail,
+    editingAccountScopeParams,
+    editingAuthorizedAccount,
+    editingId,
+    extractApiErrorMessage: options.extractApiErrorMessage,
+    form,
+    isManagementView: options.isManagementView,
+    loadData: options.loadData,
+    modalOpen
+  })
   const editingSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return ''
     const account = editingAccountDetail.value ?? options.accounts.value.find((item) => item.id === editingId.value)
@@ -402,161 +418,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return requestToken === formOpenRequestToken
   }
 
-  const saveAccount = submitAction('accounts.save', async () => {
-    if (editingAuthorizedAccount.value) {
-      await saveAuthorizedAccountEdit()
-      return
-    }
-
-    const validationMessage = validateAccountSaveForm({
-      editingId: editingId.value,
-      form,
-      hasAuthSession: Boolean(authResult.value?.sessionId),
-      errorPolicyRules: accountErrorPolicyRules.value,
-      responseInspectionRules: accountResponseInspectionRules.value
-    })
-    if (validationMessage) {
-      message.warning(validationMessage)
-      return
-    }
-
-    const payload = buildAccountSavePayload({
-      accounts: options.accounts.value,
-      accountDetail: editingAccountDetail.value,
-      editingId: editingId.value,
-      form,
-      errorPolicyRules: accountErrorPolicyRules.value,
-      responseInspectionRules: accountResponseInspectionRules.value
-    })
-
-    try {
-      if (editingId.value) {
-        const updatePayload = buildAccountUpdatePayload(payload)
-        if (options.isManagementView.value) {
-          await api.accounts.update(editingId.value, updatePayload, editingAccountScopeParams())
-        } else {
-          await api.myAccounts.update(editingId.value, updatePayload)
-        }
-        message.success('账户已更新')
-      } else if (form.type === 'oauth') {
-        await createOAuthAccountFromUnifiedForm()
-        message.success('OAuth 账户已创建，需测试通过后参与调度')
-      } else {
-        const created = await createApiKeyAccount(accountCreatePayloadWithActivationTest(payload))
-        message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
-      }
-      clearSuccessfulDraftActivationTest()
-      modalOpen.value = false
-      await options.loadData()
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '保存账户失败'))
-    }
-  })
-
-  async function generateOAuthUrl() {
-    authLoading.value = true
-    try {
-      authResult.value = options.isManagementView.value ? await api.openaiOAuth.authUrl({}) : await api.myOpenaiOAuth.authUrl({})
-      message.success('授权链接已生成')
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '生成授权链接失败'))
-    } finally {
-      authLoading.value = false
-    }
-  }
-
-  async function saveAuthorizedAccountEdit(): Promise<void> {
-    const account = editingAccountDetail.value
-    if (!editingId.value || !account || !isAuthorizedAccount(account)) {
-      message.warning('请选择要编辑的授权账户')
-      return
-    }
-    if (!form.groupId) {
-      message.warning('请选择加入分组')
-      return
-    }
-    const priority = Number(form.priority)
-    if (!Number.isFinite(priority) || priority < 0) {
-      message.warning('优先级必须是大于等于 0 的整数')
-      return
-    }
-    const nextPriority = Math.trunc(priority)
-    const scopeParams = editingAccountScopeParams()
-    try {
-      if (form.groupId !== account.boundGroupId) {
-        if (options.isManagementView.value) {
-          await api.accounts.bindGroup(account.id, { groupId: form.groupId }, scopeParams)
-        } else {
-          await api.myAccounts.bindGroup(account.id, { groupId: form.groupId })
-        }
-      }
-      if (nextPriority !== account.priority) {
-        if (options.isManagementView.value) {
-          await api.accounts.updateAuthorizedDispatch(account.id, { priority: nextPriority }, scopeParams)
-        } else {
-          await api.myAccounts.updateAuthorizedDispatch(account.id, { priority: nextPriority })
-        }
-      }
-      if (!sameTagNames(form.tags, account.tags)) {
-        const payload = { tags: normalizeFormTagNames(form.tags) }
-        if (options.isManagementView.value) {
-          await api.accounts.updateTags(account.id, payload, scopeParams)
-        } else {
-          await api.myAccounts.updateTags(account.id, payload)
-        }
-      }
-      message.success('授权账户已更新')
-      modalOpen.value = false
-      await options.loadData()
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '保存授权账户失败'))
-    }
-  }
-
   function openAuthUrl() {
     const url = authUrl(authResult.value?.authUrl)
     if (!url) return
     window.open(url, '_blank', 'noopener,noreferrer')
-  }
-
-  async function createOAuthAccountFromUnifiedForm() {
-    const commonPayload = buildOAuthCreateCommonPayload({
-      accounts: options.accounts.value,
-      editingId: editingId.value,
-      form,
-      errorPolicyRules: accountErrorPolicyRules.value,
-      responseInspectionRules: accountResponseInspectionRules.value
-    })
-
-    const payload = buildOAuthCreatePayload({
-      commonPayload,
-      form,
-      sessionId: authResult.value?.sessionId
-    })
-
-    if (form.oauthMode === 'manual') {
-      if (options.isManagementView.value) {
-        await api.openaiOAuth.createFromCode(payload, createScopeParams.value)
-      } else {
-        await api.myOpenaiOAuth.createFromCode(payload)
-      }
-      return
-    }
-
-    if (options.isManagementView.value) {
-      await api.openaiOAuth.createFromRefreshToken(payload, createScopeParams.value)
-    } else {
-      await api.myOpenaiOAuth.createFromRefreshToken(payload)
-    }
-  }
-
-  async function createApiKeyAccount(payload: AccountSavePayload): Promise<AccountSummary> {
-    return options.isManagementView.value
-      ? api.accounts.create(payload, createScopeParams.value)
-      : api.myAccounts.create(payload)
   }
 
   return {

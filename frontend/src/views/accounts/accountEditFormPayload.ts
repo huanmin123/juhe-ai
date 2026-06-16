@@ -12,7 +12,7 @@ export interface AccountModelSelectOption {
 
 export function providerModelsToOptions(models: ProviderModelPricing[]): AccountModelSelectOption[] {
   return models.map((item) => ({
-    label: item.visibility === 'mapping_target_only' ? `${item.model}（仅映射）` : item.model,
+    label: item.model,
     value: item.model
   }))
 }

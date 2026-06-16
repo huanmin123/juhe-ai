@@ -41,13 +41,13 @@ const ownerAccess = { systemAccountId: 'sys_admin', role: 'admin' as const, syst
 const sourceModel = 'gpt-mapping-regression-source'
 const upstreamModel = 'gpt-mapping-regression-upstream-personal'
 const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
+const unavailableSourceModel = 'gpt-mapping-regression-draft-source'
 
 try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: sourceModel,
     scope: 'global',
-    visibility: 'public',
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -58,7 +58,6 @@ try {
     model: upstreamModel,
     scope: 'personal',
     systemAccountId: ownerAccess.systemAccountId,
-    visibility: 'mapping_target_only',
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 3,
     outputUsdPer1M: 9,
@@ -68,10 +67,17 @@ try {
     providerCode: GPT_VENDOR_CODE,
     model: replacementUpstreamModel,
     scope: 'global',
-    visibility: 'mapping_target_only',
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 4,
     outputUsdPer1M: 10,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GPT_VENDOR_CODE,
+    model: unavailableSourceModel,
+    scope: 'global',
+    status: 'draft',
+    supportedApiProtocols: ['responses'],
     actorSystemAccountId: ownerAccess.systemAccountId
   })
 
@@ -140,10 +146,10 @@ try {
   assert.throws(() => {
     repositories.updateAccount(account.id, {
       modelMappings: [
-        { sourceModel: upstreamModel, upstreamModel: replacementUpstreamModel, enabled: true }
+        { sourceModel: unavailableSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
       ]
     }, ownerAccess)
-  }, /映射下游模型不在可请求模型目录中/, 'mapping_target_only 模型不能作为下游映射源')
+  }, /映射下游模型不在可请求模型目录中/, '草稿模型不能作为下游映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -151,7 +157,7 @@ try {
         { sourceModel, upstreamModel: 'gpt-mapping-regression-missing', enabled: true }
       ]
     }, ownerAccess)
-  }, /映射上游模型不在可用模型目录中/, '映射上游模型必须存在于可见模型目录')
+  }, /映射上游模型不在可请求模型目录中/, '映射上游模型必须存在于可请求模型目录')
   assertImportPreviewRejectsInvalidMapping(group.id)
 
   console.log('account model mapping regression passed')
@@ -180,7 +186,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
           base_url: 'https://api.openai.com/v1'
         },
         modelMappings: [
-          { sourceModel: upstreamModel, upstreamModel: replacementUpstreamModel, enabled: true }
+          { sourceModel: unavailableSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
         ]
       }
     ]

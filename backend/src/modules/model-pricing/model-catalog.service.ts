@@ -1,12 +1,13 @@
 import {
+  customProviderModelAccountBindingSummary,
   deleteCustomProviderModel,
   findCustomProviderModelById,
   listCustomProviderModelsForCatalog,
   upsertCustomProviderModel,
+  type CustomProviderModelAccountBindingSummary,
   type CustomProviderModelRecord,
   type CustomProviderModelScope,
   type CustomProviderModelStatus,
-  type CustomProviderModelVisibility,
   type UpsertCustomProviderModelInput
 } from '../../storage/custom-provider-models.repository.js'
 import {
@@ -20,15 +21,12 @@ import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../d
 import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
-export type ModelCatalogVisibility = 'public' | 'mapping_target_only'
 
 export interface ProviderModelCatalogItem extends ProviderModelPricing {
   id?: string
   scope: ModelCatalogScope
-  visibility: ModelCatalogVisibility
   status: 'draft' | 'active' | 'disabled'
   systemAccountId?: string
-  displayName?: string
   pricingModel?: string
   contextWindowTokens?: number
   pricingNotes?: string
@@ -101,7 +99,6 @@ export interface CodexModelsListResponse {
 export interface ModelCatalogListOptions {
   providerCode: string
   systemAccountId?: string
-  includeMappingTargets?: boolean
   includeInactive?: boolean
   includeUnpriced?: boolean
 }
@@ -117,13 +114,11 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
   const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
     providerCode,
     systemAccountId: options.systemAccountId,
-    includeMappingTargets: true,
     includeInactive: options.includeInactive
   }).map(toCustomCatalogItem))
   const merged = mergeModelCatalogItems([...builtIn, ...custom])
 
   return merged
-    .filter((item) => options.includeMappingTargets || item.visibility === 'public')
     .filter((item) => options.includeInactive || item.status === 'active')
     .filter((item) => options.includeUnpriced || hasResolvablePrice(item, merged))
     .sort(compareProviderModelCatalogItems)
@@ -133,7 +128,6 @@ export function buildOpenAIModelsResponseFromCatalog(items: ProviderModelCatalog
   return {
     object: 'list',
     data: items
-      .filter((item) => item.visibility === 'public')
       .map((item) => ({
         id: item.model,
         object: 'model',
@@ -146,7 +140,6 @@ export function buildOpenAIModelsResponseFromCatalog(items: ProviderModelCatalog
 export function buildCodexModelsResponseFromCatalog(items: ProviderModelCatalogItem[]): CodexModelsListResponse {
   return {
     models: items
-      .filter((item) => item.visibility === 'public')
       .map((item, index) => buildCodexModelInfo(item, index))
   }
 }
@@ -162,6 +155,13 @@ export function findCustomProviderModel(id: string): CustomProviderModelRecord |
 
 export function removeCustomProviderModel(id: string): boolean {
   return deleteCustomProviderModel(id)
+}
+
+export function customProviderModelBindings(input: {
+  providerCode: string
+  model: string
+}): CustomProviderModelAccountBindingSummary {
+  return customProviderModelAccountBindingSummary(input)
 }
 
 export function estimateCatalogCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
@@ -242,8 +242,7 @@ function resolveCatalogPricing(input: CostInput & { systemAccountId?: string }):
   if (!input.model) return undefined
   const catalog = listProviderModelCatalog({
     providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    includeMappingTargets: true
+    systemAccountId: input.systemAccountId
   })
   const item = findCatalogItem(catalog, input.model)
   if (!item) return undefined
@@ -292,7 +291,6 @@ function toBuiltInCatalogItem(item: ProviderModelPricing): ProviderModelCatalogI
   return {
     ...item,
     scope: 'built_in',
-    visibility: 'public',
     status: 'active'
   }
 }
@@ -320,10 +318,8 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     supportsServiceTier: false,
     source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
-    visibility: item.visibility,
     status: item.status,
     systemAccountId: item.systemAccountId,
-    displayName: item.displayName,
     pricingModel: item.pricingModel,
     contextWindowTokens: item.contextWindowTokens,
     pricingNotes: item.pricingNotes,
@@ -338,7 +334,7 @@ function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): Cod
   const contextWindow = codexContextWindow(item)
   return {
     slug: item.model,
-    display_name: item.displayName || item.model,
+    display_name: item.model,
     description: item.capabilityNotes || item.pricingNotes || item.notes || null,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [

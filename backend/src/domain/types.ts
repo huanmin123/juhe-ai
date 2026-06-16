@@ -169,10 +169,8 @@ export interface ProviderModelPricing {
   model: string
   id?: string
   scope?: 'built_in' | 'global' | 'personal'
-  visibility?: 'public' | 'mapping_target_only'
   status?: 'draft' | 'active' | 'disabled'
   systemAccountId?: string
-  displayName?: string
   pricingModel?: string
   mode?: string
   releaseDate?: string

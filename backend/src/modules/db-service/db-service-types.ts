@@ -412,7 +412,6 @@ export type DbServiceOperation =
     type: 'list_provider_model_catalog'
     providerCode: string
     systemAccountId?: string
-    includeMappingTargets?: boolean
     includeInactive?: boolean
     includeUnpriced?: boolean
   }

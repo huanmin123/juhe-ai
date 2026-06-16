@@ -2,7 +2,6 @@ import type { AccountType, ProviderCode } from './base'
 
 export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
-export type ProviderModelVisibility = 'public' | 'mapping_target_only'
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
 export type ProviderModelMode = 'text' | 'image' | 'audio'
 export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
@@ -50,10 +49,8 @@ export interface ProviderModelPricing {
   model: string
   id?: string
   scope?: ProviderModelScope
-  visibility?: ProviderModelVisibility
   status?: ProviderModelStatus
   systemAccountId?: string
-  displayName?: string
   pricingModel?: string
   mode?: string
   releaseDate?: string
@@ -89,7 +86,7 @@ export interface ProviderModelOption {
 }
 
 export interface ProviderModelsParams {
-  includeMappingTargets?: boolean
+  systemAccountId?: string
   includeInactive?: boolean
   includeUnpriced?: boolean
 }
@@ -98,8 +95,6 @@ export interface ProviderModelUpsertPayload {
   model: string
   scope?: CustomProviderModelScope
   status?: ProviderModelStatus
-  visibility?: ProviderModelVisibility
-  displayName?: string | null
   mode?: ProviderModelMode | null
   supportedApiProtocols?: ProviderModelApiProtocol[]
   pricingModel?: null

@@ -15,7 +15,6 @@ export const baseModelColumns = [
   { title: '模型', key: 'model', width: 260 },
   { title: '范围', key: 'scope', width: 100 },
   { title: '状态', key: 'status', width: 90 },
-  { title: '可见性', key: 'visibility', width: 130 },
   { title: '发布时间', key: 'releaseDate', width: 120 },
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
@@ -29,7 +28,7 @@ export const baseModelColumns = [
 ]
 
 export function buildProviderModelColumns(category: ModelCategoryKey, rows: ProviderModelPricing[]) {
-  const visibleKeys = new Set(['model', 'scope', 'status', 'visibility', 'releaseDate', 'category', 'protocols', 'actions'])
+  const visibleKeys = new Set(['model', 'scope', 'status', 'releaseDate', 'category', 'protocols', 'actions'])
 
   if (category === 'text') {
     visibleKeys.add('prices')

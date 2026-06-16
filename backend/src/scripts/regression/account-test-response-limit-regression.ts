@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 
-import { MemoryGatewayResponse, accountTestResponsePreviewBytes } from '../../modules/accounts/account-test.service.js'
+import { MemoryGatewayResponse, accountTestResponsePreviewBytes } from '../../modules/gateway/testing/memory-gateway-http.js'
 
 const omittedTailMarker = 'account_test_response_limit_tail'
 

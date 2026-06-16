@@ -7,7 +7,6 @@ import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-i
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
 export type CustomProviderModelScope = 'global' | 'personal'
 export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
-export type CustomProviderModelVisibility = 'public' | 'mapping_target_only'
 
 export interface CustomProviderModelRecord {
   id: string
@@ -16,8 +15,6 @@ export interface CustomProviderModelRecord {
   scope: CustomProviderModelScope
   systemAccountId?: string
   status: CustomProviderModelStatus
-  visibility: CustomProviderModelVisibility
-  displayName?: string
   mode?: string
   supportedApiProtocols: CustomProviderModelApiProtocol[]
   pricingModel?: string
@@ -44,6 +41,13 @@ export interface CustomProviderModelRecord {
   updatedAt: string
 }
 
+export interface CustomProviderModelAccountBindingSummary {
+  supportedModelAccountCount: number
+  mappingSourceAccountCount: number
+  mappingUpstreamAccountCount: number
+  totalAccountCount: number
+}
+
 export interface UpsertCustomProviderModelInput {
   id?: string
   providerCode: string
@@ -51,8 +55,6 @@ export interface UpsertCustomProviderModelInput {
   scope: CustomProviderModelScope
   systemAccountId?: string
   status?: CustomProviderModelStatus
-  visibility?: CustomProviderModelVisibility
-  displayName?: string | null
   mode?: string | null
   supportedApiProtocols?: string[] | null
   pricingModel?: string | null
@@ -82,8 +84,6 @@ interface CustomProviderModelRow {
   scope: CustomProviderModelScope
   system_account_id?: string | null
   status: CustomProviderModelStatus
-  visibility: CustomProviderModelVisibility
-  display_name?: string | null
   mode?: string | null
   supported_api_protocols_json?: string | null
   pricing_model?: string | null
@@ -113,16 +113,12 @@ interface CustomProviderModelRow {
 export function listCustomProviderModelsForCatalog(input: {
   providerCode: string
   systemAccountId?: string
-  includeMappingTargets?: boolean
   includeInactive?: boolean
 }): CustomProviderModelRecord[] {
   const clauses = ['provider_code = ?']
   const params: SQLInputValue[] = [input.providerCode]
   if (!input.includeInactive) {
     clauses.push("status = 'active'")
-  }
-  if (!input.includeMappingTargets) {
-    clauses.push("visibility = 'public'")
   }
   if (input.systemAccountId) {
     clauses.push("(scope = 'global' OR (scope = 'personal' AND system_account_id = ?))")
@@ -157,33 +153,33 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
     ? requiredText(input.systemAccountId, '个人模型必须归属系统账户')
     : undefined
   const status = input.status ?? 'active'
-  const visibility = input.visibility ?? 'public'
   const now = nowIso()
   const existing = input.id
     ? findCustomProviderModelById(input.id)
     : findCustomProviderModelByScope(providerCode, scope, systemAccountId, model)
+  if (existing && existing.model.trim() !== model) {
+    throw new Error('模型 ID 创建后不能修改')
+  }
   const id = existing?.id ?? input.id ?? newId('custom_model')
 
   getBusinessDatabase()
     .prepare(`
       INSERT INTO custom_provider_models (
-        id, provider_code, model, scope, system_account_id, status, visibility,
-        display_name, mode, supported_api_protocols_json, pricing_model,
+        id, provider_code, model, scope, system_account_id, status,
+        mode, supported_api_protocols_json, pricing_model,
         release_date, shutdown_date, context_window_tokens, max_output_tokens,
         input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
         image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
         output_usd_per_image, currency, pricing_notes, capability_notes, notes,
         created_by, updated_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider_code = excluded.provider_code,
         model = excluded.model,
         scope = excluded.scope,
         system_account_id = excluded.system_account_id,
         status = excluded.status,
-        visibility = excluded.visibility,
-        display_name = excluded.display_name,
         mode = excluded.mode,
         supported_api_protocols_json = excluded.supported_api_protocols_json,
         pricing_model = excluded.pricing_model,
@@ -213,8 +209,6 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
       scope,
       systemAccountId ?? null,
       status,
-      visibility,
-      optionalText(input.displayName) ?? null,
       optionalText(input.mode) ?? null,
       JSON.stringify(normalizeProtocols(input.supportedApiProtocols)),
       optionalText(input.pricingModel) ?? null,
@@ -258,6 +252,75 @@ export function deleteCustomProviderModel(id: string): boolean {
   return result.changes > 0
 }
 
+export function customProviderModelAccountBindingSummary(input: {
+  providerCode: string
+  model: string
+}): CustomProviderModelAccountBindingSummary {
+  const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
+  const model = requiredText(input.model, '模型 ID 不能为空')
+  const supportedModelAccountCount = countDistinctBoundAccounts(`
+    SELECT account_supported_models.account_id
+    FROM account_supported_models
+    INNER JOIN accounts
+      ON accounts.id = account_supported_models.account_id
+      AND accounts.deleted_at IS NULL
+    WHERE account_supported_models.provider_code = ?
+      AND lower(account_supported_models.model) = lower(?)
+  `, providerCode, model)
+  const mappingSourceAccountCount = countDistinctBoundAccounts(`
+    SELECT account_model_mappings.account_id
+    FROM account_model_mappings
+    INNER JOIN accounts
+      ON accounts.id = account_model_mappings.account_id
+      AND accounts.deleted_at IS NULL
+    WHERE account_model_mappings.provider_code = ?
+      AND lower(account_model_mappings.source_model) = lower(?)
+  `, providerCode, model)
+  const mappingUpstreamAccountCount = countDistinctBoundAccounts(`
+    SELECT account_model_mappings.account_id
+    FROM account_model_mappings
+    INNER JOIN accounts
+      ON accounts.id = account_model_mappings.account_id
+      AND accounts.deleted_at IS NULL
+    WHERE account_model_mappings.provider_code = ?
+      AND lower(account_model_mappings.upstream_model) = lower(?)
+  `, providerCode, model)
+  const totalAccountCount = countDistinctBoundAccounts(`
+    SELECT account_id FROM (
+      SELECT account_supported_models.account_id AS account_id
+      FROM account_supported_models
+      INNER JOIN accounts
+        ON accounts.id = account_supported_models.account_id
+        AND accounts.deleted_at IS NULL
+      WHERE account_supported_models.provider_code = ?
+        AND lower(account_supported_models.model) = lower(?)
+      UNION
+      SELECT account_model_mappings.account_id AS account_id
+      FROM account_model_mappings
+      INNER JOIN accounts
+        ON accounts.id = account_model_mappings.account_id
+        AND accounts.deleted_at IS NULL
+      WHERE account_model_mappings.provider_code = ?
+        AND lower(account_model_mappings.source_model) = lower(?)
+      UNION
+      SELECT account_model_mappings.account_id AS account_id
+      FROM account_model_mappings
+      INNER JOIN accounts
+        ON accounts.id = account_model_mappings.account_id
+        AND accounts.deleted_at IS NULL
+      WHERE account_model_mappings.provider_code = ?
+        AND lower(account_model_mappings.upstream_model) = lower(?)
+    )
+  `, providerCode, model, providerCode, model, providerCode, model)
+
+  return {
+    supportedModelAccountCount,
+    mappingSourceAccountCount,
+    mappingUpstreamAccountCount,
+    totalAccountCount
+  }
+}
+
 function findCustomProviderModelByScope(
   providerCode: string,
   scope: CustomProviderModelScope,
@@ -274,10 +337,17 @@ function findCustomProviderModelByScope(
   return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
 }
 
+function countDistinctBoundAccounts(sql: string, ...params: string[]): number {
+  const row = getBusinessDatabase()
+    .prepare(`SELECT COUNT(DISTINCT account_id) AS count FROM (${sql})`)
+    .get(...params) as { count?: number } | undefined
+  return typeof row?.count === 'number' ? row.count : 0
+}
+
 function customProviderModelColumns(): string {
   return `
-    id, provider_code, model, scope, system_account_id, status, visibility,
-    display_name, mode, supported_api_protocols_json, pricing_model,
+    id, provider_code, model, scope, system_account_id, status,
+    mode, supported_api_protocols_json, pricing_model,
     release_date, shutdown_date, context_window_tokens, max_output_tokens,
     input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
     image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
@@ -294,8 +364,6 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     scope: row.scope,
     systemAccountId: optionalText(row.system_account_id),
     status: row.status,
-    visibility: row.visibility,
-    displayName: optionalText(row.display_name),
     mode: optionalText(row.mode),
     supportedApiProtocols: parseStringArray(row.supported_api_protocols_json),
     pricingModel: optionalText(row.pricing_model),

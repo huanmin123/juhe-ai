@@ -5,9 +5,10 @@ import { isAdminRole } from '../../domain/types.js'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProviders } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { getRequestAuthContext } from '../auth/request-context.js'
+import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import {
   findCustomProviderModel,
+  customProviderModelBindings,
   listProviderModelCatalog,
   removeCustomProviderModel,
   saveCustomProviderModel,
@@ -48,6 +49,7 @@ providersRouter.get('/models/options', (_req, res) => {
 
 providersRouter.get('/:code/models', (req, res) => {
   const context = getRequestAuthContext()
+  const access = getRequestAccessScope(req.query.systemAccountId)
   const provider = listProviders().find((item) => item.code === req.params.code)
   if (!provider) {
     res.status(404).json({ message: '供应商不存在' })
@@ -56,9 +58,8 @@ providersRouter.get('/:code/models', (req, res) => {
 
   res.json(ok(listProviderModelsForRequest({
     providerCode: provider.code,
-    systemAccountId: context?.systemAccountId,
+    systemAccountId: modelCatalogSystemAccountId(access),
     admin: Boolean(context && isAdminRole(context.role)),
-    includeMappingTargets: booleanQueryValue(req.query.includeMappingTargets),
     includeInactive: booleanQueryValue(req.query.includeInactive),
     includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
   })))
@@ -74,8 +75,6 @@ const customModelSchema = z.object({
   model: z.string().trim().min(1),
   scope: z.enum(['global', 'personal']).default('personal'),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
-  visibility: z.enum(['public', 'mapping_target_only']).optional(),
-  displayName: nullableTrimmedStringSchema,
   mode: nullableModelModeSchema,
   supportedApiProtocols: z.array(z.enum(['chat_completions', 'responses', 'completions', 'images', 'audio', 'realtime'])).optional(),
   pricingModel: nullableTrimmedStringSchema,
@@ -163,6 +162,10 @@ providersRouter.patch('/:code/models/:id', (req, res) => {
     res.status(400).json(badRequest('自定义模型参数无效'))
     return
   }
+  if (parsed.data.model !== undefined && parsed.data.model.trim() !== existing.model.trim()) {
+    res.status(400).json(badRequest('模型 ID 创建后不能修改'))
+    return
+  }
   const next = {
     ...existing,
     ...parsed.data,
@@ -204,6 +207,16 @@ providersRouter.delete('/:code/models/:id', (req, res) => {
     res.status(403).json({ message: '无权删除该自定义模型' })
     return
   }
+  const bindings = customProviderModelBindings({
+    providerCode: existing.providerCode,
+    model: existing.model
+  })
+  if (bindings.totalAccountCount > 0) {
+    res.status(409).json({
+      message: customModelBoundToAccountMessage(bindings)
+    })
+    return
+  }
   res.json(ok({ deleted: removeCustomProviderModel(existing.id) }))
 })
 
@@ -225,7 +238,6 @@ function listProviderModelsForRequest(input: {
   providerCode: string
   systemAccountId?: string
   admin: boolean
-  includeMappingTargets?: boolean
   includeInactive?: boolean
   includeUnpriced?: boolean
 }): ProviderModelCatalogItem[] {
@@ -234,20 +246,17 @@ function listProviderModelsForRequest(input: {
     return listProviderModelCatalog({
       providerCode: input.providerCode,
       systemAccountId: input.systemAccountId,
-      includeMappingTargets: input.includeMappingTargets,
       includeInactive: input.admin ? input.includeInactive : undefined,
       includeUnpriced: input.admin ? input.includeUnpriced : undefined
     })
   }
 
   const publicCatalog = listProviderModelCatalog({
-    providerCode: input.providerCode,
-    includeMappingTargets: input.includeMappingTargets
+    providerCode: input.providerCode
   })
   const personalCatalog = listProviderModelCatalog({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
-    includeMappingTargets: true,
     includeInactive: input.includeInactive,
     includeUnpriced: input.includeUnpriced
   }).filter((item) => item.scope === 'personal')
@@ -273,6 +282,10 @@ function routeModelPriority(item: ProviderModelCatalogItem): number {
   return 1
 }
 
+function modelCatalogSystemAccountId(access: ReturnType<typeof getRequestAccessScope>): string | undefined {
+  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
+}
+
 function booleanQueryValue(value: unknown): boolean | undefined {
   const raw = Array.isArray(value) ? value[0] : value
   if (typeof raw === 'boolean') return raw
@@ -290,6 +303,27 @@ function canMutateCustomModel(
 ): boolean {
   if (scope === 'global') return isAdminRole(context.role)
   return ownerSystemAccountId === context.systemAccountId
+}
+
+function customModelBoundToAccountMessage(input: {
+  supportedModelAccountCount: number
+  mappingSourceAccountCount: number
+  mappingUpstreamAccountCount: number
+  totalAccountCount: number
+}): string {
+  const details: string[] = []
+  if (input.supportedModelAccountCount > 0) {
+    details.push(`${input.supportedModelAccountCount} 个账户支持模型`)
+  }
+  if (input.mappingSourceAccountCount > 0) {
+    details.push(`${input.mappingSourceAccountCount} 个账户映射下游模型`)
+  }
+  if (input.mappingUpstreamAccountCount > 0) {
+    details.push(`${input.mappingUpstreamAccountCount} 个账户映射上游模型`)
+  }
+  return details.length
+    ? `模型已绑定 AI 账户，不能删除；请先从${details.join('、')}中移除后再删除`
+    : '模型已绑定 AI 账户，不能删除；请先解除账户绑定后再删除'
 }
 
 function validateCustomModelPricing(input: {
@@ -315,8 +349,7 @@ function validateCustomModelPricing(input: {
   }
   const pricingTarget = listProviderModelCatalog({
     providerCode: input.providerCode,
-    systemAccountId: input.ownerSystemAccountId,
-    includeMappingTargets: true
+    systemAccountId: input.ownerSystemAccountId
   }).find((item) => item.model.toLowerCase() === pricingModel.toLowerCase())
   if (!pricingTarget) {
     return { success: false, message: `pricingModel 不存在：${pricingModel}` }

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -56,6 +56,8 @@ const gatewaySettings: GatewaySettings = {
 
 try {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  testPrecheckSummaryMapperBoundary()
+  testLocalSuppressionStoreBoundary()
   testLocalSuppressionHalfOpenEscalation()
   testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
   await testRuntimePrecheckPendingAndSuccessRecovery()
@@ -75,6 +77,71 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function testPrecheckSummaryMapperBoundary(): void {
+  const sideEffectsSource = readFileSync(resolve('src/modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
+  const mapperSource = readFileSync(resolve('src/modules/gateway/runtime/account-precheck-summary.mapper.ts'), 'utf8')
+
+  assert(
+    sideEffectsSource.includes("from './account-precheck-summary.mapper.js'"),
+    '账号事前确认运行态服务应从专用 mapper 导入测试摘要适配器'
+  )
+  assert(
+    sideEffectsSource.includes('accountSummaryFromGatewayPrecheckAccount(state.account, state)'),
+    '事前确认探针应通过专用 mapper 构造测试账户摘要'
+  )
+  assert(
+    !sideEffectsSource.includes('function accountSummaryFromUpstreamAccount'),
+    '事前确认测试摘要 mapper 不应继续内联在运行态副作用服务'
+  )
+  assert(
+    !sideEffectsSource.includes('function gatewayAccountSummarySystemAccountId'),
+    '授权绑定系统账户解析不应继续内联在运行态副作用服务'
+  )
+  assert(
+    mapperSource.includes('export function accountSummaryFromGatewayPrecheckAccount'),
+    '应导出事前确认测试摘要专用 mapper'
+  )
+  assert(mapperSource.includes('schedulable: true'), '事前确认测试摘要应保持强制探针可调度语义')
+  assert(
+    mapperSource.includes('permissions:') && mapperSource.includes('canUse: true'),
+    '事前确认测试摘要应保持可用于测试的权限语义'
+  )
+  assert(
+    mapperSource.includes('bindingSystemAccountId') && mapperSource.includes('gatewayAccountSummarySystemAccountId(account)'),
+    '授权账户测试摘要应使用绑定系统账户维度'
+  )
+  assert(
+    mapperSource.includes('boundGroupId') && mapperSource.includes('gatewayAccountSummaryBoundGroupId(account)'),
+    '授权账户测试摘要应使用绑定分组维度'
+  )
+}
+
+function testLocalSuppressionStoreBoundary(): void {
+  const sideEffectsSource = readFileSync(resolve('src/modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
+  const storeSource = readFileSync(resolve('src/modules/gateway/runtime/account-local-suppression-store.ts'), 'utf8')
+
+  assert(
+    sideEffectsSource.includes("from './account-local-suppression-store.js'"),
+    '账号运行态服务应从本地 suppression store 导入本地避让能力'
+  )
+  assert(
+    sideEffectsSource.includes('snapshotLocalAccountRuntimeAvailability(isPrecheckRuntimeBlocking)'),
+    '运行态快照应由服务组合本地避让快照和 precheck 状态'
+  )
+  assert(
+    sideEffectsSource.includes('filterLocalAccountSuppressions(accounts, isPrecheckRuntimeBlocking, options)'),
+    '候选过滤应委托本地 suppression store，同时保留 precheck 阻断谓词'
+  )
+  assert.doesNotMatch(sideEffectsSource, /const localAccountSuppressions = new Map/)
+  assert.doesNotMatch(sideEffectsSource, /function acquireLocalHalfOpenLease/)
+  assert.doesNotMatch(sideEffectsSource, /function isLocalSuppressionBlocking/)
+  assert.match(storeSource, /const localAccountSuppressions = new Map/)
+  assert.match(storeSource, /export function suppressLocalAccountForGatewayFailure/)
+  assert.match(storeSource, /export function filterLocalAccountSuppressions/)
+  assert.match(storeSource, /export function snapshotLocalAccountRuntimeAvailability/)
+  assert.match(storeSource, /getAccountCurrentConcurrency/)
 }
 
 async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {

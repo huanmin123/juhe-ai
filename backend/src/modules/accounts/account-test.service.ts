@@ -1,10 +1,5 @@
-import { EventEmitter } from 'node:events'
-import type { IncomingHttpHeaders } from 'node:http'
-import type { Request, Response } from 'express'
-
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
-import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
@@ -20,12 +15,15 @@ import { sanitizeDiagnosticPayload } from '../gateway/audit/payload-sanitizer.js
 import type { GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/runtime/account-side-effects.service.js'
 import {
+  createGatewayTestRequest,
+  MemoryGatewayResponse
+} from '../gateway/testing/memory-gateway-http.js'
+import {
   extractOpenAIResponseOutputText,
   parseOpenAIJsonBody,
   parseOpenAIStreamFailureMessage,
   parseOpenAIUpstreamMessage
 } from '../gateway/protocols/openai-v1/response-parsing.js'
-import { OpenAIStreamInspector } from '../gateway/protocols/openai-v1/stream-inspection.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import {
   type AccountDiagnosticAttemptProgressHandler,
@@ -40,8 +38,6 @@ import {
   accountTestModelsPath,
   createOpenAITestRequest
 } from './account-test-request.js'
-
-export const accountTestResponsePreviewBytes = 256 * 1024
 
 type AccountTestInput = {
   model?: string
@@ -403,189 +399,6 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
       ...resolvedCandidate,
       clientCompatibility: input.clientCompatibility
     } : resolvedCandidate
-  }
-}
-
-function createGatewayTestRequest(path: string, body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean, signal?: AbortSignal): Request {
-  const stream = body.stream === true
-  const headers: IncomingHttpHeaders = {
-    accept: stream ? isOAuth ? 'text/event-stream' : 'application/json, text/event-stream' : 'application/json',
-    'content-type': 'application/json',
-    'content-length': String(Buffer.byteLength(rawBodyText))
-  }
-  return new MemoryGatewayRequest({
-    method: 'POST',
-    originalUrl: path,
-    path,
-    headers,
-    body,
-    rawBody: Buffer.from(rawBodyText),
-    ip: '127.0.0.1',
-    signal
-  }).asRequest()
-}
-
-class MemoryGatewayRequest extends EventEmitter {
-  constructor(private readonly input: {
-    method: string
-    originalUrl: string
-    path: string
-    headers: IncomingHttpHeaders
-    body: Record<string, unknown>
-    rawBody: Buffer
-    ip: string
-    signal?: AbortSignal
-  }) {
-    super()
-    if (this.input.signal?.aborted) {
-      queueMicrotask(() => this.emit('aborted'))
-    } else {
-      this.input.signal?.addEventListener('abort', () => this.emit('aborted'), { once: true })
-    }
-  }
-
-  get method(): string {
-    return this.input.method
-  }
-
-  get originalUrl(): string {
-    return this.input.originalUrl
-  }
-
-  get path(): string {
-    return this.input.path
-  }
-
-  get headers(): IncomingHttpHeaders {
-    return this.input.headers
-  }
-
-  get body(): Record<string, unknown> {
-    return this.input.body
-  }
-
-  get rawBody(): Buffer {
-    return this.input.rawBody
-  }
-
-  get ip(): string {
-    return this.input.ip
-  }
-
-  get socket(): { remoteAddress: string } {
-    return { remoteAddress: this.input.ip }
-  }
-
-  get aborted(): boolean {
-    return this.input.signal?.aborted ?? false
-  }
-
-  header(name: string): string | undefined {
-    const value = this.input.headers[name.toLowerCase()]
-    if (Array.isArray(value)) return value.join(', ')
-    return typeof value === 'string' ? value : undefined
-  }
-
-  asRequest(): Request {
-    return this as unknown as Request
-  }
-}
-
-export class MemoryGatewayResponse extends EventEmitter {
-  statusCode = 200
-  writableEnded = false
-  destroyed = false
-  locals: Record<string, unknown> = {}
-  private readonly headers = new Map<string, string | string[]>()
-  private readonly body = new BoundedBufferCollector(accountTestResponsePreviewBytes)
-  private readonly streamInspector = new OpenAIStreamInspector()
-  private firstOutputMs: number | undefined
-
-  constructor(private readonly startedAt: number) {
-    super()
-  }
-
-  status(code: number): this {
-    this.statusCode = code
-    return this
-  }
-
-  setHeader(name: string, value: number | string | readonly string[]): this {
-    this.headers.set(name.toLowerCase(), Array.isArray(value) ? value.map(String) : String(value))
-    return this
-  }
-
-  hasHeader(name: string): boolean {
-    return this.headers.has(name.toLowerCase())
-  }
-
-  getHeaders(): Record<string, string | string[]> {
-    return Object.fromEntries(this.headers.entries())
-  }
-
-  json(value: unknown): this {
-    if (!this.hasHeader('content-type')) {
-      this.setHeader('content-type', 'application/json; charset=utf-8')
-    }
-    return this.send(Buffer.from(JSON.stringify(value), 'utf8'))
-  }
-
-  send(value?: Buffer | string | object): this {
-    if (Buffer.isBuffer(value)) {
-      this.body.append(value)
-    } else if (typeof value === 'string') {
-      this.body.append(value)
-    } else if (value !== undefined) {
-      this.body.append(JSON.stringify(value))
-    }
-    return this.end()
-  }
-
-  write(value: Buffer | string | Uint8Array): boolean {
-    const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value)
-    this.body.append(buffer)
-    const inspection = this.streamInspector.pushChunk(buffer)
-    if (this.firstOutputMs === undefined && inspection.outputReceived) {
-      this.firstOutputMs = Date.now() - this.startedAt
-    }
-    return true
-  }
-
-  end(value?: Buffer | string | Uint8Array): this {
-    if (value !== undefined) {
-      this.write(value)
-    }
-    if (!this.writableEnded) {
-      this.writableEnded = true
-      this.emit('finish')
-      this.emit('close')
-    }
-    return this
-  }
-
-  bodyText(): string {
-    return this.body.text({ includeTruncationMarker: true })
-  }
-
-  bodyTruncated(): boolean {
-    return this.body.truncated
-  }
-
-  headersObject(): Record<string, string | string[]> {
-    const hiddenHeaders = new Set(['authorization', 'cookie', 'set-cookie', 'proxy-authorization'])
-    const output: Record<string, string | string[]> = {}
-    for (const [name, value] of this.headers) {
-      output[name] = hiddenHeaders.has(name) ? '[redacted]' : value
-    }
-    return output
-  }
-
-  firstTokenMs(): number | undefined {
-    return this.firstOutputMs
-  }
-
-  asResponse(): Response {
-    return this as unknown as Response
   }
 }
 

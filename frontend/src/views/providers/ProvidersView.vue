@@ -74,16 +74,24 @@
       v-model:keyword="modelKeyword"
       v-model:open="modelModalOpen"
       v-model:selected-category="selectedModelCategory"
+      v-model:system-account-id="modelSystemAccountId"
+      v-model:selected-system-account="modelSystemAccountSelection"
       :category-tabs="modelCategoryTabs"
       :columns="modelColumns"
       :current-category-count="currentCategoryModels.length"
       :loading="modelLoading"
       :models="filteredModels"
       :row-actions="modelRowActions"
+      :show-system-account-filter="isManagementView"
+      :system-accounts="modelSystemAccounts"
+      :system-accounts-loading="modelSystemAccountOptionsLoading"
       :title="modelModalTitle"
       @cancel="resetModelModal"
       @create="openCreateCustomModel"
       @model-action="handleModelAction"
+      @system-account-change="handleModelSystemAccountChange"
+      @system-account-dropdown="handleModelSystemAccountOptionsDropdown"
+      @system-account-search="handleModelSystemAccountOptionsSearch"
     />
 
     <a-modal
@@ -97,19 +105,13 @@
       <a-form layout="vertical" class="custom-model-form">
         <div class="custom-model-grid">
           <a-form-item label="模型 ID" required>
-            <a-input v-model:value="customModelForm.model" placeholder="例如 gpt-5.5-pro" />
-          </a-form-item>
-          <a-form-item label="显示名称">
-            <a-input v-model:value="customModelForm.displayName" allow-clear />
+            <a-input v-model:value="customModelForm.model" :disabled="customModelEditing" placeholder="例如 gpt-5.5-pro" />
           </a-form-item>
           <a-form-item label="范围">
             <a-select v-model:value="customModelForm.scope" :disabled="customModelEditing" :options="modelScopeOptions" />
           </a-form-item>
           <a-form-item label="状态">
             <a-select v-model:value="customModelForm.status" :options="modelStatusOptions" />
-          </a-form-item>
-          <a-form-item label="可见性">
-            <a-select v-model:value="customModelForm.visibility" :options="modelVisibilityOptions" />
           </a-form-item>
           <a-form-item label="用途">
             <a-select v-model:value="customModelForm.mode" :options="modelModeOptions" @change="handleCustomModelModeChange" />
@@ -195,7 +197,10 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
-import type { ProviderDefinition, ProviderModelPricing, ProviderModelUpsertPayload } from '@/types/domain'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
+import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
+import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyPricingTemplateToCustomModelForm,
@@ -215,7 +220,6 @@ import {
   getModelCategory,
   modelModeOptions,
   modelStatusOptions,
-  modelVisibilityOptions,
   visibleProviderCapabilities,
   type ModelCategoryKey
 } from './providerModelFormatters'
@@ -244,10 +248,24 @@ const modelModalOpen = ref(false)
 const customModelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
 const editingCustomModelId = ref<string>()
+const modelSystemAccountId = ref<string>()
+const modelSystemAccountSelection = ref<PrincipalSelection | undefined>()
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canCreateGlobalModel = computed(() => authState.isAdmin.value && isManagementView.value)
+const canCreatePersonalModel = computed(() => !isManagementView.value || selectedModelCatalogSystemAccountId() === authState.currentUser.value?.id)
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
+const {
+  handleDropdown: handleModelSystemAccountOptionsDropdown,
+  handleSearch: handleModelSystemAccountOptionsSearch,
+  loading: modelSystemAccountOptionsLoading,
+  resetSearch: resetModelSystemAccountOptionsSearch,
+  systemAccounts: modelSystemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value && modelModalOpen.value,
+  localCacheKeyParts: () => ['provider-model-catalog'],
+  selectedIds: () => [modelSystemAccountId.value]
+})
 
 const providerColumns = computed(() => providerColumnsForScope(isManagementView.value))
 const providerScrollX = computed(() => providerScrollXForScope(isManagementView.value))
@@ -268,9 +286,12 @@ const customModelModalTitle = computed(() => customModelEditing.value ? '编辑�
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 
 const modelScopeOptions = computed(() => {
-  const options = [{ label: '个人模型', value: 'personal' }]
+  const options: Array<{ label: string; value: 'global' | 'personal' }> = []
   if (canCreateGlobalModel.value) {
-    options.unshift({ label: '全局模型', value: 'global' })
+    options.push({ label: '全局模型', value: 'global' })
+  }
+  if (canCreatePersonalModel.value) {
+    options.push({ label: '个人模型', value: 'personal' })
   }
   return options
 })
@@ -302,21 +323,8 @@ async function openModelModal(provider: ProviderDefinition) {
   modelModalOpen.value = true
   modelKeyword.value = ''
   selectedModelCategory.value = 'text'
-  modelLoading.value = true
-  try {
-    providerModels.value = await api.providers.models(provider.code, {
-      includeMappingTargets: true,
-      includeInactive: true,
-      includeUnpriced: true
-    })
-    selectedModelCategory.value = findFirstModelCategory(providerModels.value)
-  } catch (error) {
-    console.error(error)
-    providerModels.value = []
-    message.error('加载模型价格失败')
-  } finally {
-    modelLoading.value = false
-  }
+  resetModelSystemAccountFilter()
+  await reloadActiveProviderModels()
 }
 
 function handleProviderAction(key: string, provider: ProviderDefinition) {
@@ -330,6 +338,9 @@ function resetModelModal() {
   modelKeyword.value = ''
   selectedModelCategory.value = 'text'
   providerModels.value = []
+  modelSystemAccountId.value = undefined
+  modelSystemAccountSelection.value = undefined
+  resetModelSystemAccountOptionsSearch()
   resetCustomModelForm()
 }
 
@@ -363,6 +374,7 @@ async function saveCustomModel() {
       await api.providers.createModel(activeProvider.value.code, payload)
       message.success('自定义模型已创建')
     }
+    invalidateAccountProviderModelOptionsCache(activeProvider.value.code)
     customModelModalOpen.value = false
     resetCustomModelForm()
     await reloadActiveProviderModels()
@@ -379,6 +391,7 @@ async function deleteCustomModel(record: ProviderModelPricing) {
   modelLoading.value = true
   try {
     await api.providers.deleteModel(activeProvider.value.code, record.id)
+    invalidateAccountProviderModelOptionsCache(activeProvider.value.code)
     message.success('自定义模型已删除')
     await reloadActiveProviderModels()
   } catch (error) {
@@ -392,12 +405,17 @@ async function deleteCustomModel(record: ProviderModelPricing) {
 async function reloadActiveProviderModels() {
   const provider = activeProvider.value
   if (!provider) return
-  providerModels.value = await api.providers.models(provider.code, {
-    includeMappingTargets: true,
-    includeInactive: true,
-    includeUnpriced: true
-  })
-  selectedModelCategory.value = findFirstModelCategory(providerModels.value)
+  modelLoading.value = true
+  try {
+    providerModels.value = await api.providers.models(provider.code, modelCatalogQueryParams())
+    selectedModelCategory.value = findFirstModelCategory(providerModels.value)
+  } catch (error) {
+    console.error(error)
+    providerModels.value = []
+    message.error('加载模型价格失败')
+  } finally {
+    modelLoading.value = false
+  }
 }
 
 function resetCustomModelForm() {
@@ -428,11 +446,42 @@ function handlePricingTemplateChange(value?: string) {
   applyPricingTemplateToCustomModelForm(customModelForm, providerModels.value, value)
 }
 
+function handleModelSystemAccountChange() {
+  resetModelSystemAccountOptionsSearch()
+  void reloadActiveProviderModels()
+}
+
+function resetModelSystemAccountFilter() {
+  if (!isManagementView.value) {
+    modelSystemAccountId.value = undefined
+    modelSystemAccountSelection.value = undefined
+    return
+  }
+  const currentUser = authState.currentUser.value
+  modelSystemAccountId.value = currentUser?.id
+  modelSystemAccountSelection.value = currentUser
+    ? { id: currentUser.id, name: currentUser.displayName, kind: 'system_account' }
+    : undefined
+}
+
+function selectedModelCatalogSystemAccountId(): string | undefined {
+  if (!isManagementView.value) return undefined
+  return modelSystemAccountId.value?.trim() || authState.currentUser.value?.id
+}
+
+function modelCatalogQueryParams(): ProviderModelsParams {
+  return {
+    systemAccountId: selectedModelCatalogSystemAccountId(),
+    includeInactive: true,
+    includeUnpriced: true
+  }
+}
+
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
   if (!canMutateModel(record)) return []
   return [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'info' },
-    { key: 'delete', label: '删除', icon: 'delete', danger: true, confirmTitle: `确认删除模型 ${record.model}？`, confirmOkText: '删除' }
+    { key: 'delete', label: '删除', icon: 'delete', danger: true, confirmTitle: `确认删除模型 ${record.model}？已绑定 AI 账户时需要先从账户支持模型或模型映射中移除。`, confirmOkText: '删除' }
   ]
 }
 

@@ -204,7 +204,6 @@ export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, sys
 export async function listCachedProviderModelCatalogAsync(input: {
   providerCode: string
   systemAccountId?: string
-  includeMappingTargets?: boolean
   includeInactive?: boolean
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
@@ -214,7 +213,6 @@ export async function listCachedProviderModelCatalogAsync(input: {
   const cacheKey = [
     input.providerCode,
     input.systemAccountId ?? '',
-    input.includeMappingTargets === true ? 'all' : 'public',
     input.includeInactive === true ? 'inactive' : 'active',
     input.includeUnpriced === true ? 'unpriced' : 'priced'
   ].join(':')
@@ -226,7 +224,6 @@ export async function listCachedProviderModelCatalogAsync(input: {
     type: 'list_provider_model_catalog',
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
-    includeMappingTargets: input.includeMappingTargets,
     includeInactive: input.includeInactive,
     includeUnpriced: input.includeUnpriced
   })

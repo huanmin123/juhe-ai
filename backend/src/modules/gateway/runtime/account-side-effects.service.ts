@@ -9,18 +9,33 @@ import {
   subscribeAccountConcurrencyRelease
 } from '../../../shared/account-concurrency.js'
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
-import type { AccountSummary } from '../../../domain/types.js'
-import { accountSummaryWithEffectiveAvailability } from '../../../domain/account-effective-availability.js'
 import {
   accountDiagnosticRetryMaxTotalTimeoutMs,
   accountDiagnosticRetryTimeoutMs,
   diagnosticAccountTestGatewaySettingsOverride
 } from '../../accounts/account-diagnostic-retry-policy.js'
+import { accountSummaryFromGatewayPrecheckAccount } from './account-precheck-summary.mapper.js'
+import {
+  clearLocalAccountSuppression,
+  clearLocalAccountSuppressionsForTest,
+  cleanupExpiredLocalSuppressions,
+  countVisibleLocalSuppressions,
+  filterLocalAccountSuppressions,
+  localSuppressionMaxMs,
+  releaseLocalAccountHalfOpenLease,
+  snapshotLocalAccountRuntimeAvailability,
+  suppressLocalAccount,
+  suppressLocalAccountForGatewayFailure,
+  type GatewayAccountHalfOpenLease,
+  type GatewayAccountLocalSuppressionResult,
+  type LocalAccountSuppression,
+  type LocalAccountSuppressionFilterOptions,
+  type LocalAccountSuppressionFilterResult
+} from './account-local-suppression-store.js'
 import {
   gatewayAccountId,
   gatewayAccountRuntimeClearKeys,
   gatewayAccountRuntimeKey,
-  runtimeAccountIdFromKey,
   type GatewayAccountRuntimeClearTarget,
   type SuppressibleGatewayAccount
 } from './account-runtime-keys.js'
@@ -31,42 +46,16 @@ import {
   type StreamFailureOperation
 } from './account-side-effect-queue.js'
 
-interface LocalAccountSuppression {
-  accountId: string
-  untilMs: number
-  reason: string
-  sinceMs: number
-  status: AccountRuntimeAvailability['status']
-  failureCount?: number
-  distinctClientIpCount?: number
-  distinctApiKeyCount?: number
-  precheckAttemptCount?: number
-  localFailureCount?: number
-  halfOpenLeaseUntilMs?: number
-  halfOpenLeaseId?: string
-}
-
 export type { GatewayAccountRuntimeClearTarget, SuppressibleGatewayAccount } from './account-runtime-keys.js'
+export type {
+  GatewayAccountHalfOpenLease,
+  GatewayAccountLocalSuppressionResult,
+  LocalAccountSuppressionFilterResult
+} from './account-local-suppression-store.js'
 
 export interface GatewayAccountRuntimeClearResult {
   cleared: boolean
   clearedKeys: string[]
-}
-
-export interface GatewayAccountLocalSuppressionResult {
-  runtimeKey: string
-  action: 'suppressed' | 'precheck_required'
-  reason: string
-  localFailureCount: number
-  delayMs?: number
-  until?: string
-}
-
-export interface GatewayAccountHalfOpenLease {
-  runtimeKey: string
-  accountId: string
-  leaseId: string
-  release: () => boolean
 }
 
 export interface GatewayAccountFailurePrecheckInput {
@@ -123,20 +112,6 @@ interface PrecheckState {
   waitingForConcurrencyDrain?: boolean
 }
 
-export interface LocalAccountSuppressionFilterResult<T> {
-  accounts: T[]
-  suppressedCount: number
-  allSuppressed: boolean
-  suppressedAccountIds: string[]
-  acquiredHalfOpenLeases: GatewayAccountHalfOpenLease[]
-  nextRetryAtMs?: number
-  nextRetryAfterMs?: number
-}
-
-interface LocalAccountSuppressionFilterOptions {
-  acquireHalfOpenLease?: boolean
-}
-
 export interface GatewayAccountSideEffectState {
   queueLength: number
   processing: boolean
@@ -154,10 +129,6 @@ export interface GatewayAccountSideEffectState {
 }
 
 const sideEffectRetentionMs = 10 * 60_000
-const localSuppressionMaxMs = 10 * 60_000
-const localSuppressionDelayMs = [3_000, 5_000, 10_000] as const
-const localSuppressionHalfOpenLeaseMs = 180_000
-const localSuppressionIdleRetentionMs = 60_000
 const failureStormWindowMs = 10_000
 const failureStormThresholdCount = 5
 const failureStormDistinctIpThreshold = 2
@@ -172,7 +143,6 @@ const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effec
 const maxSideEffectQueueLength = 5000
 
 const sideEffectQueue = new AccountSideEffectQueue()
-const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
 const failureStorms = new Map<string, FailureStormEntry>()
 const successObservations = new Map<string, SuccessObservationEntry>()
 const precheckStates = new Map<string, PrecheckState>()
@@ -188,7 +158,6 @@ let skippedHealthySuccessCount = 0
 let failedAttemptCount = 0
 let droppedCount = 0
 let expiredCount = 0
-let localHalfOpenLeaseSequence = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
   if (operation.input.success) {
@@ -252,26 +221,7 @@ export function recordGatewayAccountFailureForPrecheckForTest(
 export function releaseGatewayAccountHalfOpenLease(
   lease: Pick<GatewayAccountHalfOpenLease, 'runtimeKey' | 'accountId' | 'leaseId'>
 ): boolean {
-  const current = localAccountSuppressions.get(lease.runtimeKey)
-  if (!current || current.status !== 'half_open' || current.halfOpenLeaseId !== lease.leaseId) {
-    return false
-  }
-  const now = Date.now()
-  localAccountSuppressions.set(lease.runtimeKey, {
-    ...current,
-    status: 'local_suppressed',
-    untilMs: now,
-    halfOpenLeaseUntilMs: undefined,
-    halfOpenLeaseId: undefined,
-    reason: `半开探测请求结束，等待下一次调度确认；${current.reason}`.slice(0, 1000)
-  })
-  logger.info({
-    event: 'gateway_account_local_half_open_released',
-    accountId: lease.accountId,
-    runtimeKey: lease.runtimeKey,
-    localFailureCount: current.localFailureCount
-  }, '账号短暂避让半开探测租约已释放')
-  return true
+  return releaseLocalAccountHalfOpenLease(lease)
 }
 
 export async function completeGatewayAccountPrecheckForTest(
@@ -305,7 +255,7 @@ function recordGatewayAccountFailureForPrecheckInternal(
   runPrecheck: boolean
 ): void {
   cleanupExpiredFailureStorms()
-  cleanupExpiredLocalSuppressions()
+  cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const now = Date.now()
   const current = failureStorms.get(runtimeKey)
@@ -433,26 +383,8 @@ function shouldTriggerFailureStormPrecheck(
 }
 
 export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
-  cleanupExpiredLocalSuppressions()
   cleanupExpiredFailureStorms()
-  const now = Date.now()
-  const snapshot: Record<string, AccountRuntimeAvailability> = {}
-  for (const [runtimeKey, suppression] of localAccountSuppressions) {
-    if (!isLocalSuppressionVisible(runtimeKey, suppression, now)) {
-      continue
-    }
-    snapshot[runtimeKey] = {
-      status: suppression.status,
-      reason: suppression.reason,
-      since: new Date(suppression.sinceMs).toISOString(),
-      until: new Date(localSuppressionVisibleUntilMs(suppression, now)).toISOString(),
-      failureCount: suppression.failureCount,
-      distinctClientIpCount: suppression.distinctClientIpCount,
-      distinctApiKeyCount: suppression.distinctApiKeyCount,
-      precheckAttemptCount: suppression.precheckAttemptCount,
-      localFailureCount: suppression.localFailureCount
-    }
-  }
+  const snapshot = snapshotLocalAccountRuntimeAvailability(isPrecheckRuntimeBlocking)
   for (const [runtimeKey, state] of precheckStates) {
     snapshot[runtimeKey] = {
       ...snapshot[runtimeKey],
@@ -473,44 +405,11 @@ export function filterLocallySuppressedGatewayAccounts<T extends SuppressibleGat
   accounts: T[],
   options: LocalAccountSuppressionFilterOptions = {}
 ): LocalAccountSuppressionFilterResult<T> {
-  cleanupExpiredLocalSuppressions()
-  const now = Date.now()
-  const filtered: T[] = []
-  const suppressedAccountIds: string[] = []
-  const acquiredHalfOpenLeases: GatewayAccountHalfOpenLease[] = []
-  let nextRetryAtMs: number | undefined
-  for (const account of accounts) {
-    const runtimeKey = gatewayAccountRuntimeKey(account)
-    const suppression = localAccountSuppressions.get(runtimeKey)
-    if (isPrecheckRuntimeBlocking(runtimeKey)) {
-      suppressedAccountIds.push(account.id)
-      nextRetryAtMs = minRetryAtMs(nextRetryAtMs, Math.max(suppression?.untilMs ?? 0, now + 1000))
-      continue
-    }
-    if (!suppression || !isLocalSuppressionBlocking(suppression, now)) {
-      if (suppression && options.acquireHalfOpenLease && canAcquireLocalHalfOpenLease(suppression, now)) {
-        acquiredHalfOpenLeases.push(acquireLocalHalfOpenLease(runtimeKey, account, suppression, now))
-      }
-      filtered.push(account)
-      continue
-    }
-    suppressedAccountIds.push(account.id)
-    nextRetryAtMs = minRetryAtMs(nextRetryAtMs, localSuppressionVisibleUntilMs(suppression, now))
-  }
-  const suppressedCount = suppressedAccountIds.length
-  return {
-    accounts: filtered,
-    suppressedCount,
-    allSuppressed: filtered.length === 0 && accounts.length > 0,
-    suppressedAccountIds,
-    acquiredHalfOpenLeases,
-    nextRetryAtMs,
-    nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - now)
-  }
+  return filterLocalAccountSuppressions(accounts, isPrecheckRuntimeBlocking, options)
 }
 
 export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectState {
-  cleanupExpiredLocalSuppressions()
+  cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking)
   const nextAttemptAtMs = sideEffectQueue.peek()?.nextAttemptAtMs
   return {
     queueLength: sideEffectQueue.length,
@@ -523,7 +422,7 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     failedAttemptCount,
     droppedCount,
     expiredCount,
-    localSuppressedAccountCount: countVisibleLocalSuppressions(),
+    localSuppressedAccountCount: countVisibleLocalSuppressions(isPrecheckRuntimeBlocking),
     precheckPendingAccountCount: precheckStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
   }
@@ -557,7 +456,7 @@ export function suppressGatewayAccountLocallyForTest(
 
 export function clearGatewayLocalAccountSuppressionsForTest(): void {
   clearAllPrecheckConcurrencyDrainWaits()
-  localAccountSuppressions.clear()
+  clearLocalAccountSuppressionsForTest()
   failureStorms.clear()
   successObservations.clear()
   precheckStates.clear()
@@ -783,120 +682,13 @@ function dropExpiredSideEffects(now: number): void {
   expiredCount += removed
 }
 
-function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {
-  const now = Date.now()
-  const current = localAccountSuppressions.get(runtimeKey)
-  const currentFailureCount = current?.localFailureCount ?? 0
-  const shouldAdvanceFailureCount = !current
-    || current.status === 'half_open'
-    || (current.status === 'local_suppressed' && current.untilMs <= now)
-  const localFailureCount = shouldAdvanceFailureCount ? currentFailureCount + 1 : Math.max(1, currentFailureCount)
-  if (localFailureCount > localSuppressionDelayMs.length) {
-    const fallbackDelayMs = localSuppressionDelayMs[localSuppressionDelayMs.length - 1]
-    suppressLocalAccount(runtimeKey, fallbackDelayMs, reason, 'local_suppressed', {
-      accountId,
-      localFailureCount: localSuppressionDelayMs.length
-    })
-    logger.warn({
-      event: 'gateway_account_local_suppression_precheck_required',
-      accountId,
-      runtimeKey,
-      localFailureCount,
-      reason
-    }, '账号短暂避让半开探测连续失败，要求进入事前确认')
-    return {
-      runtimeKey,
-      action: 'precheck_required',
-      reason,
-      localFailureCount
-    }
-  }
-
-  const delayMs = localSuppressionDelayMs[localFailureCount - 1]
-  suppressLocalAccount(runtimeKey, delayMs, reason, 'local_suppressed', {
-    accountId,
-    localFailureCount
-  })
-  return {
-    runtimeKey,
-    action: 'suppressed',
-    reason,
-    localFailureCount,
-    delayMs,
-    until: new Date(Date.now() + delayMs).toISOString()
-  }
-}
-
-function suppressLocalAccount(
-  runtimeKey: string,
-  durationMs: number,
-  reason: string,
-  status: AccountRuntimeAvailability['status'] = 'local_suppressed',
-  metadata: Partial<Pick<LocalAccountSuppression, 'accountId' | 'failureCount' | 'distinctClientIpCount' | 'distinctApiKeyCount' | 'precheckAttemptCount' | 'localFailureCount' | 'halfOpenLeaseUntilMs' | 'halfOpenLeaseId'>> = {}
-): void {
-  const untilMs = Date.now() + durationMs
-  const current = localAccountSuppressions.get(runtimeKey)
-  const accountId = metadata.accountId ?? current?.accountId ?? runtimeAccountIdFromKey(runtimeKey)
-  const shouldPreserveLongerUntil = current
-    && current.untilMs >= untilMs
-    && !(current.status === 'half_open' && status === 'local_suppressed')
-  if (shouldPreserveLongerUntil) {
-    localAccountSuppressions.set(runtimeKey, {
-      ...current,
-      accountId,
-      status,
-      reason,
-      halfOpenLeaseUntilMs: metadata.halfOpenLeaseUntilMs,
-      halfOpenLeaseId: metadata.halfOpenLeaseId,
-      ...metadata
-    })
-    return
-  }
-  localAccountSuppressions.set(runtimeKey, {
-    accountId,
-    untilMs,
-    reason,
-    sinceMs: current?.sinceMs ?? Date.now(),
-    status,
-    localFailureCount: current?.localFailureCount,
-    halfOpenLeaseUntilMs: metadata.halfOpenLeaseUntilMs,
-    halfOpenLeaseId: metadata.halfOpenLeaseId,
-    ...metadata
-  })
-  logger.warn({
-    event: 'gateway_account_local_suppressed',
-    accountId,
-    runtimeKey,
-    until: new Date(untilMs).toISOString(),
-    runtimeStatus: status,
-    localFailureCount: metadata.localFailureCount,
-    reason
-  }, '网关账号已进入 Web 进程本地短期屏蔽')
-}
-
 function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean {
   let cleared = false
   clearPrecheckConcurrencyDrainWait(accountId)
-  cleared = localAccountSuppressions.delete(accountId) || cleared
+  cleared = clearLocalAccountSuppression(accountId) || cleared
   cleared = failureStorms.delete(accountId) || cleared
   cleared = precheckStates.delete(accountId) || cleared
   return cleared
-}
-
-function cleanupExpiredLocalSuppressions(): void {
-  const now = Date.now()
-  for (const [accountId, suppression] of localAccountSuppressions) {
-    if (isPrecheckRuntimeBlocking(accountId)) {
-      continue
-    }
-    if (suppression.status === 'half_open' && getAccountCurrentConcurrency(suppression.accountId) > 0) {
-      continue
-    }
-    const retainUntilMs = Math.max(suppression.untilMs, suppression.halfOpenLeaseUntilMs ?? 0) + localSuppressionIdleRetentionMs
-    if (retainUntilMs <= now) {
-      localAccountSuppressions.delete(accountId)
-    }
-  }
 }
 
 function cleanupExpiredFailureStorms(): void {
@@ -917,93 +709,8 @@ function isPrecheckRuntimeBlocking(runtimeKey: string): boolean {
   return precheckStates.has(runtimeKey)
 }
 
-function isLocalSuppressionVisible(runtimeKey: string, suppression: LocalAccountSuppression, now: number): boolean {
-  return isPrecheckRuntimeBlocking(runtimeKey) || isLocalSuppressionBlocking(suppression, now)
-}
-
-function isLocalSuppressionBlocking(suppression: LocalAccountSuppression, now: number): boolean {
-  if (suppression.status === 'half_open') {
-    return (suppression.halfOpenLeaseUntilMs ?? suppression.untilMs) > now
-      || getAccountCurrentConcurrency(suppression.accountId) > 0
-  }
-  if (suppression.status === 'precheck_pending' || suppression.status === 'precheck_failed') {
-    return suppression.untilMs > now
-  }
-  return suppression.untilMs > now
-}
-
-function canAcquireLocalHalfOpenLease(suppression: LocalAccountSuppression, now: number): boolean {
-  if (suppression.status === 'local_suppressed') {
-    return suppression.untilMs <= now
-  }
-  if (suppression.status === 'half_open') {
-    return (suppression.halfOpenLeaseUntilMs ?? suppression.untilMs) <= now
-      && getAccountCurrentConcurrency(suppression.accountId) <= 0
-  }
-  return false
-}
-
-function acquireLocalHalfOpenLease(
-  runtimeKey: string,
-  account: SuppressibleGatewayAccount,
-  suppression: LocalAccountSuppression,
-  now: number
-): GatewayAccountHalfOpenLease {
-  const leaseUntilMs = now + localSuppressionHalfOpenLeaseMs
-  localHalfOpenLeaseSequence += 1
-  const leaseId = `${now}:${localHalfOpenLeaseSequence}`
-  localAccountSuppressions.set(runtimeKey, {
-    ...suppression,
-    accountId: account.id,
-    status: 'half_open',
-    untilMs: leaseUntilMs,
-    halfOpenLeaseUntilMs: leaseUntilMs,
-    halfOpenLeaseId: leaseId,
-    reason: `短暂避让到期，允许一个请求半开探测；${suppression.reason}`.slice(0, 1000)
-  })
-  logger.info({
-    event: 'gateway_account_local_half_open_acquired',
-    accountId: account.id,
-    runtimeKey,
-    leaseUntil: new Date(leaseUntilMs).toISOString(),
-    localFailureCount: suppression.localFailureCount,
-    reason: suppression.reason
-  }, '账号短暂避让到期，已放行一个真实请求进行半开探测')
-  return {
-    runtimeKey,
-    accountId: account.id,
-    leaseId,
-    release: () => releaseGatewayAccountHalfOpenLease({ runtimeKey, accountId: account.id, leaseId })
-  }
-}
-
-function localSuppressionVisibleUntilMs(suppression: LocalAccountSuppression, now = Date.now()): number {
-  if (suppression.status !== 'half_open') {
-    return suppression.untilMs
-  }
-  const leaseUntilMs = suppression.halfOpenLeaseUntilMs ?? suppression.untilMs
-  return getAccountCurrentConcurrency(suppression.accountId) > 0
-    ? Math.max(leaseUntilMs, now + 1000)
-    : leaseUntilMs
-}
-
-function minRetryAtMs(current: number | undefined, candidate: number): number {
-  return current === undefined ? candidate : Math.min(current, candidate)
-}
-
 function precheckSuppressionMs(): number {
   return Math.min(precheckSuppressionGuardMs, localSuppressionMaxMs)
-}
-
-function countVisibleLocalSuppressions(): number {
-  const now = Date.now()
-  let count = 0
-  for (const [runtimeKey, suppression] of localAccountSuppressions) {
-    if (isLocalSuppressionVisible(runtimeKey, suppression, now)) {
-      count += 1
-    }
-  }
-  return count
 }
 
 function operationAccountId(operation: AccountSideEffectOperation): string {
@@ -1182,7 +889,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
 }> {
   const { preferredSystemAccountTestModel, testOpenAIAccount } = await import('../../accounts/account-test.service.js')
   const signal = AbortSignal.timeout(timeoutMs)
-  const account = accountSummaryFromUpstreamAccount(state.account, state)
+  const account = accountSummaryFromGatewayPrecheckAccount(state.account, state)
   return await testOpenAIAccount(account, {
     model: preferredSystemAccountTestModel(account),
     diagnostics: 'full',
@@ -1206,71 +913,4 @@ function accountPrecheckFailureReason(result: { statusCode?: number; errorCode?:
     parts.push(result.message)
   }
   return parts.join('；').slice(0, 1000)
-}
-
-function accountSummaryFromUpstreamAccount(account: OpenAIAccountSecret, state: Pick<PrecheckState, 'systemAccountId' | 'groupId'>): AccountSummary {
-  const emptyUsage = {
-    requestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheReadCost: 0,
-    totalTokens: 0,
-    totalCost: 0
-  }
-  return accountSummaryWithEffectiveAvailability({
-    id: account.id,
-    systemAccountId: gatewayAccountSummarySystemAccountId(account),
-    ownerSystemAccountId: account.accountOwnerSystemAccountId,
-    providerCode: account.providerCode,
-    name: account.name,
-    type: account.type,
-    credentials: account.credentials,
-    status: account.status,
-    concurrencyLimit: account.concurrencyLimit,
-    currentConcurrency: account.currentConcurrency ?? 0,
-    priority: account.priority,
-    superPriorityEnabled: account.superPriorityEnabled,
-    fallbackEnabled: account.fallbackEnabled,
-    clientCompatibility: account.clientCompatibility,
-    supportedModels: account.supportedModels,
-    modelMappings: account.modelMappings,
-    lastSuccessfulTestModel: account.lastSuccessfulTestModel,
-    proxyProfileId: account.proxyProfileId,
-    schedulable: true,
-    cooldownUntil: account.cooldownUntil,
-    lastErrorMessage: account.lastErrorMessage,
-    streamFailureCount: account.streamFailureCount,
-    streamFailureWindowStartedAt: account.streamFailureWindowStartedAt,
-    todayUsage: emptyUsage,
-    usage: emptyUsage,
-    accessType: account.accountAccessType === 'account_authorized' ? 'authorized' : 'owner',
-    accountAuthorizationId: account.accountAuthorizationId,
-    boundGroupId: account.accountAccessType === 'account_authorized' ? gatewayAccountSummaryBoundGroupId(account) : state.groupId,
-    bindingSystemAccountId: account.accountAccessType === 'account_authorized' ? gatewayAccountSummarySystemAccountId(account) : undefined,
-    permissions: {
-      canUse: true,
-      canEdit: false,
-      canDelete: false,
-      canAuthorize: false,
-      canViewCredentials: false
-    }
-  })
-}
-
-function gatewayAccountSummarySystemAccountId(account: OpenAIAccountSecret): string {
-  if (account.accountAccessType === 'account_authorized') {
-    const bindingSystemAccountId = account.bindingSystemAccountId?.trim()
-    if (bindingSystemAccountId) return bindingSystemAccountId
-    throw new Error('授权账户缺少绑定系统账户，无法构造测试摘要')
-  }
-  const systemAccountId = account.systemAccountId?.trim()
-  if (systemAccountId) return systemAccountId
-  throw new Error('账户缺少系统账户，无法构造测试摘要')
-}
-
-function gatewayAccountSummaryBoundGroupId(account: OpenAIAccountSecret): string {
-  const boundGroupId = account.boundGroupId?.trim()
-  if (boundGroupId) return boundGroupId
-  throw new Error('授权账户缺少绑定分组，无法构造测试摘要')
 }
