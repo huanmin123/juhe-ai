@@ -101,10 +101,9 @@ import {
   accountLastUsedAt,
   accountDisplayExpiresAt,
   accountTypeText,
-  formatDateTime,
-  isAccountDisplayExpired,
-  isAuthorizedAccount
-} from './accountFormatters'
+  isAccountDisplayExpired
+} from './accountBasicFormatters'
+import { formatDateTime, isAuthorizedAccount } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
 import { accountMenuItemsWithClone, authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip, canReturnAuthorizedAccount } from './accountRules'
 

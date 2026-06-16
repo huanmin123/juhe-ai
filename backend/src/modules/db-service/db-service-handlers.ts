@@ -28,7 +28,7 @@ import {
   listRuntimeLogs
 } from '../../storage/runtime-logs.repository.js'
 import {
-  findActiveClientIpPolicyByHash,
+  listActiveClientIpPolicies,
   recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
 import { listActiveResponseInspectionPoliciesForGateway } from '../../storage/response-inspection-policy.repository.js'
@@ -37,6 +37,7 @@ import {
   readCachedGatewaySettings,
 } from '../gateway/runtime/runtime-cache.service.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { isDynamicApiKeyGroupRouteStrategy } from '../../domain/api-key-routing.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/quota/authorization-quota.service.js'
@@ -228,8 +229,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       clearApiKeyQuotaCache()
       clearAuthorizationQuotaCache()
       return { cleared: true }
-    case 'find_active_client_ip_policy':
-      return findActiveClientIpPolicyByHash(operation.ipHash)
+    case 'list_active_client_ip_policies':
+      return listActiveClientIpPolicies()
     case 'list_active_response_inspection_policies':
       return listActiveResponseInspectionPoliciesForGateway({
         protocolCode: operation.protocolCode,
@@ -352,6 +353,17 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     }
   }
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
+  if (operation.skipDynamicRouteSelection === true && isDynamicApiKeyGroupRouteStrategy(apiKey.group_route_strategy)) {
+    return {
+      apiKey: {
+        ...apiKey,
+        group_bindings: apiKey.group_bindings?.map((binding) => ({ ...binding }))
+      },
+      settings,
+      accounts: [],
+      responseInspectionPolicies: []
+    }
+  }
   const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
   apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
   const candidateGroupIds = operation.groupId

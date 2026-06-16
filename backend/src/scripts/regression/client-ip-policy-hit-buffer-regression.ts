@@ -17,8 +17,7 @@ logger.level = 'silent'
 assertClientIpPolicyHitBufferSourceGuards()
 
 const initialRuntime = getClientIpPolicyCacheRuntime()
-assert.equal(initialRuntime.maxPendingPolicyLoads, 1024, 'IP 封禁策略 cache miss 并发查询必须有固定上限')
-assert.equal(initialRuntime.droppedPolicyLoadCount, 0, '初始 IP 封禁策略查询溢出计数应为 0')
+assert.equal(initialRuntime.snapshotPolicyCount, 0, '初始 IP 封禁策略快照应为空')
 const maxPendingHits = initialRuntime.maxPendingPolicyHits
 for (let index = 0; index < maxPendingHits + 25; index += 1) {
   recordClientIpPolicyHitAsync(policyForIndex(index))
@@ -48,11 +47,8 @@ function policyForIndex(index: number): ActiveClientIpPolicy {
 
 function assertClientIpPolicyHitBufferSourceGuards(): void {
   const source = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
-  assert(source.includes('clientIpPolicyLoadMaxPendingEntries'), 'IP 封禁策略查询必须声明固定 pending load 上限')
-  assert(source.includes('pendingPolicyLoads.size >= clientIpPolicyLoadMaxPendingEntries'), '新增 IP 封禁策略查询前必须检查 pending load 上限')
-  assert(source.includes("event: 'client_ip_policy_load_dropped'"), 'IP 封禁策略查询超过 pending load 上限时必须记录丢弃计数和日志')
-  assert(source.includes("status: 'skipped'"), 'IP 封禁策略查询过载跳过必须有独立状态，不能混同为未命中策略')
-  assert(source.includes("loaded.status !== 'loaded'"), '只有真实完成的 IP 封禁策略查询结果才能写入短 TTL 缓存')
+  assert(source.includes('activePolicySnapshot'), 'IP 封禁策略请求路径必须基于 server 内存快照')
+  assert(!source.includes("type: 'find_active_client_ip_policy'"), 'IP 封禁策略请求路径不能按单个 IP 查 DB service')
   assert(source.includes('clientIpPolicyHitMaxPendingEntries'), 'IP 封禁命中缓冲必须声明固定 distinct key 上限')
   assert(source.includes('pendingPolicyHits.size >= clientIpPolicyHitMaxPendingEntries'), '新增 distinct 命中入队前必须检查缓冲上限')
   assert(source.includes('clientIpPolicyHitFlushBatchSize'), 'IP 封禁命中 flush 必须声明固定批量')

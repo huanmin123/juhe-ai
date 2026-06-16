@@ -35,12 +35,12 @@ import {
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
 } from './account-diagnostic-retry-policy.js'
+import {
+  accountTestDefaultPrompt,
+  accountTestModelsPath,
+  createOpenAITestRequest
+} from './account-test-request.js'
 
-const defaultTestPrompt = '只输出 OK'
-const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
-const gatewayTestPath = '/v1/responses'
-const gatewayChatCompletionsPath = '/v1/chat/completions'
-const gatewayModelsPath = '/v1/models'
 export const accountTestResponsePreviewBytes = 256 * 1024
 
 type AccountTestInput = {
@@ -116,7 +116,7 @@ export async function testOpenAIAccount(
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
   const model = explicitModel || defaultAccountTestModel(account)
-  const prompt = stringValue(input.prompt) || defaultTestPrompt
+  const prompt = stringValue(input.prompt) || accountTestDefaultPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
   const accountClientCompatibility = normalizeOpenAIAccountClientCompatibility(
@@ -144,7 +144,7 @@ export async function testOpenAIAccount(
   const requestBody = testRequest.body
   const requestBodyText = JSON.stringify(requestBody)
   const requestUrl = testRequest.path
-  const modelsUrl = gatewayModelsPath
+  const modelsUrl = accountTestModelsPath
   const traceId = createTraceId()
 
   try {
@@ -589,86 +589,10 @@ export class MemoryGatewayResponse extends EventEmitter {
   }
 }
 
-function createOpenAITestRequest(input: {
-  explicitModel?: string
-  fallbackModel: string
-  prompt: string
-  isOAuth: boolean
-  clientCompatibility: AccountClientCompatibility
-  requestShape?: RecentOpenAIRequestShape
-}): { path: string; body: Record<string, unknown>; model: string } {
-  const path = testPathFromRecentShape(input.requestShape, input.isOAuth, input.clientCompatibility)
-  const model = stringValue(input.explicitModel) || input.fallbackModel
-  return {
-    path,
-    body: path === gatewayChatCompletionsPath
-      ? createOpenAIChatCompletionsTestPayload(model, input.prompt, input.requestShape?.stream ?? true)
-      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, input.requestShape?.stream ?? true),
-    model
-  }
-}
-
 function defaultAccountTestModel(account: AccountSummary): string {
   return findProviderDefaultTestModel(account.providerCode)
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
-}
-
-function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, isOAuth: boolean, clientCompatibility: AccountClientCompatibility): string {
-  if (isOAuth) {
-    return gatewayTestPath
-  }
-  if (clientCompatibility === 'codex_responses') {
-    return gatewayTestPath
-  }
-  const endpoint = stringValue(shape?.endpoint).toLowerCase()
-  if (endpoint.includes('/v1/chat/completions')) {
-    return gatewayChatCompletionsPath
-  }
-  return gatewayTestPath
-}
-
-function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth: boolean, clientCompatibility: AccountClientCompatibility, stream: boolean): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    model,
-    input: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: prompt
-          }
-        ]
-      }
-    ],
-    instructions: defaultOpenAITestInstructions,
-    stream
-  }
-  if (isOAuth) {
-    payload.max_output_tokens = 1
-    payload.store = false
-  }
-  if (clientCompatibility === 'codex_responses') {
-    payload.stream = true
-    payload.store = false
-    payload.include = ['reasoning.encrypted_content']
-  }
-  return payload
-}
-
-function createOpenAIChatCompletionsTestPayload(model: string, prompt: string, stream: boolean): Record<string, unknown> {
-  return {
-    model,
-    messages: [
-      {
-        role: 'user',
-        content: prompt
-      }
-    ],
-    max_tokens: 1,
-    stream
-  }
 }
 
 function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {

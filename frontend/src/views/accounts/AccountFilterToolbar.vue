@@ -201,7 +201,7 @@ import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountStatus, AccountTagSummary, GroupOptionSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import { accountTypeText } from './accountFormatters'
+import { accountTypeText } from './accountBasicFormatters'
 import type { AccountFilters } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 

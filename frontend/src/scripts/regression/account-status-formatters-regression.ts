@@ -1,7 +1,8 @@
-import type { AccountStatus, AccountSummary } from '@/types/domain'
+import type { AccountStatus, AccountSummary, ApiKeySummary } from '@/types/domain'
 import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
 import type { AccountFilters } from '../../views/accounts/accountFormTypes'
 import { filterAccounts } from '../../views/accounts/accountListFilters'
+import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } from '../../views/api-keys/apiKeyFormatters'
 
 assertStatus('正常账户', accountFixture(), '正常', 'green')
 assertStatus('近窗口少量失败', accountFixture({
@@ -66,7 +67,7 @@ assertStatus('持久临时不可调用', accountFixture({
     reason: '慢速通道确认失败'
   }
 }), '临时不可调用', 'gold')
-assertStatus('账户时段外', accountFixture({
+const scheduleInactiveAccount = accountFixture({
   effectiveAvailability: {
     available: false,
     status: 'instance_schedule_inactive',
@@ -76,8 +77,19 @@ assertStatus('账户时段外', accountFixture({
     reason: '账户当前不在允许使用时段，恢复前不会参与调度'
   },
   availabilityScheduleActive: false
-}), '账户时段外', 'gold')
-assertStatus('来源时段外', accountFixture({
+})
+assertStatus('账户时段外', scheduleInactiveAccount, '停用', 'default')
+assertEqual(
+  filterAccounts({ accounts: [scheduleInactiveAccount], filters: accountFilters(['disabled']), isManagementView: false }).length,
+  1,
+  '账户时段外应能被停用状态筛选命中'
+)
+assertEqual(
+  filterAccounts({ accounts: [scheduleInactiveAccount], filters: accountFilters(['temporary_unavailable']), isManagementView: false }).length,
+  0,
+  '账户时段外不应被临时不可调用状态筛选命中'
+)
+const sourceScheduleInactiveAccount = accountFixture({
   accessType: 'authorized',
   authorizationInstanceSourceAccountId: 'source_schedule_inactive_account',
   authorizationInstanceSourceAccountStatus: 'active',
@@ -90,7 +102,13 @@ assertStatus('来源时段外', accountFixture({
     blockerScope: 'source_account',
     reason: '授权方原账户当前不在允许使用时段，当前账户不能调用'
   }
-}), '来源时段外', 'gold')
+})
+assertStatus('来源时段外', sourceScheduleInactiveAccount, '停用', 'default')
+assertEqual(
+  filterAccounts({ accounts: [sourceScheduleInactiveAccount], filters: accountFilters(['disabled']), isManagementView: false }).length,
+  1,
+  '来源时段外应能被停用状态筛选命中'
+)
 const permissionDeniedAccount = accountFixture({
   effectiveAvailability: {
     available: false,
@@ -147,8 +165,8 @@ const scheduleInactiveTooltip = accountStatusTooltipLines(accountFixture({
   },
   availabilityScheduleActive: false
 }))
-assertTrue(scheduleInactiveTooltip.some((line) => line.includes('实际状态：账户时段外')), '账户时段外 tooltip 应展示实际状态')
 assertTrue(scheduleInactiveTooltip.some((line) => line.includes('账户当前不在允许使用时段')), '账户时段外 tooltip 应展示原因')
+assertTrue(!scheduleInactiveTooltip.some((line) => line.includes('实际状态：账户时段外')), '账户时段外不应作为状态名进入 tooltip')
 
 const sourceScheduleInactiveTooltip = accountStatusTooltipLines(accountFixture({
   accessType: 'authorized',
@@ -165,8 +183,24 @@ const sourceScheduleInactiveTooltip = accountStatusTooltipLines(accountFixture({
   }
 }))
 assertTrue(sourceScheduleInactiveTooltip.some((line) => line.includes('授权方原账户当前不在允许使用时段')), '来源时段外 tooltip 应展示授权来源原因')
+assertTrue(!sourceScheduleInactiveTooltip.some((line) => line.includes('实际状态：来源时段外')), '来源时段外不应作为状态名进入 tooltip')
 
-console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态短暂避让、运行态事前确认、持久临时不可调用、账户时段外、来源时段外、无可用权限均可显示和筛选')
+const apiKeyScheduleInactive = apiKeyFixture({
+  status: 'disabled',
+  availabilityScheduleActive: false
+})
+assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 时间计划外状态标签仍应显示停用')
+assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
+assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('时间计划当前不在允许时段')), 'API Key 时间计划外应在状态 tooltip 展示原因')
+const apiKeyScheduleInactiveWaitingSync = apiKeyFixture({
+  status: 'active',
+  availabilityScheduleActive: false
+})
+assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', 'API Key 时间计划等待同步时状态标签仍应显示停用')
+assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划等待同步时状态颜色仍应使用停用颜色')
+assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('等待后台同步停用')), 'API Key 时间计划等待同步时 tooltip 应展示同步提示')
+
+console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态短暂避让、运行态事前确认、持久临时不可调用、时间计划提示、无可用权限均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)
@@ -195,6 +229,31 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
       color: 'green'
     },
     todayUsage: emptyUsage(),
+    usage: emptyUsage(),
+    ...overrides
+  }
+}
+
+function apiKeyFixture(overrides: Partial<ApiKeySummary> = {}): ApiKeySummary {
+  return {
+    id: 'api_key_status_formatter_regression',
+    name: 'API Key 状态 formatter 回归',
+    keyPrefix: 'sk-test',
+    keySuffix: 'suffix',
+    key: '',
+    status: 'active',
+    groupRouteStrategy: 'priority_failover',
+    groupBindings: [],
+    quotaLimits: {},
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'Asia/Shanghai',
+      mode: 'allow_windows',
+      windows: [
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '22:00', end: '23:55' }
+      ]
+    },
+    availabilityScheduleActive: true,
     usage: emptyUsage(),
     ...overrides
   }

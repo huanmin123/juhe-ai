@@ -126,7 +126,8 @@
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountUsageStatsRow, AccountUsageSummary } from '@/types/domain'
-import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
+import { accountTypeText } from '@/views/accounts/accountBasicFormatters'
+import { statusColor, statusText } from '@/views/accounts/accountFormatters'
 import { formatCompactInteger, formatCost, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
 
 type TablePagination = false | Record<string, unknown>

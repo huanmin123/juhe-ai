@@ -79,6 +79,7 @@ class FakeDbServiceChild extends EventEmitter {
 
 try {
   assertReadGatewayRuntimeDefersPolicyLists()
+  assertGatewayRuntimeCacheUsesStaleWhileRevalidate()
   const apiKey = seedGatewayRuntime()
   const fakeChild = new FakeDbServiceChild()
   runtimeConfig.processRole = 'server'
@@ -154,7 +155,7 @@ try {
   const scheduleActiveAt = Date.parse('2026-06-01T00:00:30.000Z')
   syncApiKeyScheduleStatusAt(scheduleActiveAt)
   const scheduledFirst = await withMockedNow(scheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
-  assert.equal(scheduledFirst.apiKey?.status, 'active', '计划允许时段内应由同步任务写入启用状态')
+  assert.equal(scheduledFirst.apiKey?.status, 'active', '计划允许时段内人工启停状态应保持启用')
   assert.equal(scheduledFirst.accounts.length, 2, '计划允许时段内应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 7, '首次读取计划 API Key 应请求 DB service')
   const scheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.scheduledKey))
@@ -187,15 +188,15 @@ try {
   const disabledScheduleInactiveAt = Date.parse('2026-06-01T00:03:01.000Z')
   syncApiKeyScheduleStatusAt(disabledScheduleActiveAt)
   const disabledScheduledFirst = await withMockedNow(disabledScheduleActiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledFirst.apiKey?.status, 'active', '计划窗口内应把原本停用的 API Key 实际改为启用')
-  assert.equal(disabledScheduledFirst.accounts.length, 2, '计划窗口内实际启用后应返回候选账号')
+  assert.equal(disabledScheduledFirst.apiKey, undefined, '计划窗口内不应覆盖手动停用的 API Key')
+  assert.equal(disabledScheduledFirst.accounts.length, 0, '手动停用的 API Key 即使计划允许也不应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '首次读取手动停用计划 API Key 应请求 DB service')
-  const disabledScheduledSecond = await withMockedNow(disabledScheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledSecond.apiKey?.status, 'active', '手动停用计划 API Key 被同步启用后边界前应继续命中可用缓存')
-  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '手动停用计划 API Key 边界前重复读取应命中缓存')
+  const disabledScheduledSecond = await withMockedNow(disabledScheduleActiveAt + 5_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
+  assert.equal(disabledScheduledSecond.apiKey, undefined, '手动停用计划 API Key 边界前应继续命中不可用缓存')
+  assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 1, '手动停用计划 API Key 短期重复读取应命中负缓存')
   syncApiKeyScheduleStatusAt(disabledScheduleInactiveAt)
   const disabledScheduledAfterBoundary = await withMockedNow(disabledScheduleInactiveAt, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.disabledScheduledKey))
-  assert.equal(disabledScheduledAfterBoundary.apiKey, undefined, '手动停用计划 API Key 时段外应被同步任务实际关闭')
+  assert.equal(disabledScheduledAfterBoundary.apiKey, undefined, '手动停用计划 API Key 时段外仍应不可用')
   assert.equal(disabledScheduledAfterBoundary.accounts.length, 0, '手动停用计划 API Key 时段外不应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, disabledScheduledOperationCount + 2, '手动停用计划 API Key 跨计划边界后应重新请求 DB service')
 
@@ -291,7 +292,7 @@ try {
   assert(concurrentRuntimeReads.every((runtime) => runtime.apiKey?.id === apiKey.id), '冷缓存并发读取应全部返回同一个 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, coldConcurrentOperationCount + 1, '同一 API Key 冷缓存并发读取应合并为一次 DB service 请求')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 和账户时间计划由后台同步任务改写真实运行状态，无账户计划分组不被分钟边界误伤，并在 API Key、账户计划同步、API Key 过期、账户到期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，运行态软过期后请求继续使用内存快照并后台刷新，清缓存后重新加载，对重复无效 Key 做短期负缓存，无计划 API Key 停用不污染分组账号缓存，API Key 和账户时间计划由后台同步任务维护派生运行状态，无账户计划分组不被分钟边界误伤，并在 API Key、账户计划同步、API Key 过期、账户到期和授权过期边界后重新计算运行态，同 Key 冷缓存并发读取只请求一次 DB service')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -569,6 +570,17 @@ function assertReadGatewayRuntimeDefersPolicyLists(): void {
   assert(validateIndex >= 0, 'read_gateway_runtime 应先验证 API Key')
   assert(responseInspectionPolicyIndex > validateIndex, 'read_gateway_runtime 不能在验证 API Key 前加载全量响应检查策略')
   assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), 'read_gateway_runtime 不能携带全量 active IP 封禁策略')
+}
+
+function assertGatewayRuntimeCacheUsesStaleWhileRevalidate(): void {
+  const source = readFileSync(new URL('../../modules/gateway/runtime/runtime-cache.service.ts', import.meta.url), 'utf8')
+  assert.match(source, /gatewayRuntimeRetainTtlMs\s*=\s*10\s*\*\s*60_000/, '网关运行态缓存应使用长保留窗口，避免软过期后请求链路硬 miss 等 DB')
+  assert.match(source, /refreshGatewayRuntimeInBackground\(apiKey,\s*cacheKey\)/, '网关运行态软过期应触发后台刷新')
+  assert.match(source, /sanitizedGatewayRuntimeForDispatch\(cached\.runtime\)/, '软过期运行态返回前必须按当前时间过滤过期 API Key、授权和账号')
+  assert.match(source, /groupUsageAccessRetainTtlMs\s*=\s*10\s*\*\s*60_000/, '分组访问缓存应软过期保留，动态路由不能在 TTL 边界硬 miss 等 DB')
+  assert.match(source, /openAIAccountsRetainTtlMs\s*=\s*10\s*\*\s*60_000/, '候选账号缓存应软过期保留，动态路由不能在 TTL 边界硬 miss 等 DB')
+  assert.match(source, /refreshOpenAIAccountsForGroupInBackground/, '候选账号缓存软过期应后台刷新')
+  assert.match(source, /function isOpenAIAccountRuntimeUsableAt/, '软过期账号快照必须在内存中判断到期边界')
 }
 
 function sourceFunctionBlock(source: string, marker: string): string {

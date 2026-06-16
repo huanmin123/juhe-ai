@@ -18,6 +18,7 @@ runtimeConfig.secret = 'authorized-account-test-local-restore-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -222,8 +223,8 @@ try {
   }))
   assert.equal(failureResult.success, false, '授权账户测试收到上游失败时测试结果不应成功')
   assert.equal(failureResult.statusCode, 400, '授权账户测试应保留上游失败状态码用于诊断')
-  assert.equal(failureResult.accountStatusChanged, true, '授权账户测试失败应返回实例状态已变更')
-  assert.equal(failureResult.accountStatus, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
+  assert.equal(failureResult.accountStatusChanged, false, '授权账户测试失败不应在主测试结果中直接改实例状态')
+  assert.equal(failureResult.accountStatus, 'active', '授权账户测试失败应先保持当前实例状态，等待事前确认')
   assertNoLeak(JSON.stringify(failureResult), [
     'account-test-bearer-token',
     'sk-account-test-secret-token',
@@ -232,10 +233,14 @@ try {
     'account-test-url-password'
   ], '账户测试失败响应不应暴露上游错误体中的敏感串')
 
-  const failedGranteeView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
-  assert.equal(failedGranteeView?.status, 'temporary_unavailable', '测试失败后被授权用户视角应为临时不可调用')
-  assert(failedGranteeView?.cooldownUntil, '测试失败应写入授权实例冷却时间')
-  assert(failedGranteeView?.lastErrorMessage?.includes('账户测试失败'), `测试失败应写入授权实例错误信息，实际 ${failedGranteeView?.lastErrorMessage}`)
+  const failedGranteeView = await waitForGranteeAccountView(
+    granteeAccess,
+    failingGranteeAccount.id,
+    (account) => account.status === 'temporary_unavailable',
+    '测试失败事前确认后被授权用户视角应为临时不可调用'
+  )
+  assert(failedGranteeView.cooldownUntil, '测试失败事前确认后应写入授权实例冷却时间')
+  assert(failedGranteeView.lastErrorMessage?.includes('事前确认仍未通过'), `测试失败事前确认后应写入授权实例错误信息，实际 ${failedGranteeView.lastErrorMessage}`)
   assertNoLeak(failedGranteeView?.lastErrorMessage ?? '', [
     'account-test-bearer-token',
     'sk-account-test-secret-token',
@@ -251,10 +256,13 @@ try {
     body: { model: 'gpt-5.5' }
   }))
   assert.equal(secondFailureResult.success, false, '再次测试失败时结果仍不应成功')
-  assert.equal(secondFailureResult.accountStatusChanged, true, '再次测试失败应覆盖上一条结果并返回状态变化')
-  const secondFailedView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
-  assert.equal(secondFailedView?.status, 'temporary_unavailable', '再次测试失败后仍应保持临时不可调用')
-  assert(secondFailedView?.lastErrorMessage?.includes('第二次'), `再次测试失败应覆盖最近错误，实际 ${secondFailedView?.lastErrorMessage}`)
+  assert.equal(secondFailureResult.accountStatusChanged, false, '再次测试失败也应先进入事前确认，不应由主测试直接写状态')
+  const secondFailedView = await waitForGranteeAccountView(
+    granteeAccess,
+    failingGranteeAccount.id,
+    (account) => account.status === 'temporary_unavailable' && Boolean(account.lastErrorMessage?.includes('第二次')),
+    '再次测试失败事前确认后应覆盖最近错误'
+  )
   assertNoLeak(JSON.stringify(secondFailureResult), [
     'second-account-test-bearer-token',
     'sk-second-account-test-secret-token',
@@ -344,7 +352,7 @@ function createMockOpenAIServer(): http.Server {
         res.end(JSON.stringify({
           error: {
             code: 'key_switch_cooldown',
-            message: attempt === 1
+            message: attempt <= 6
               ? '切换key需要冷却30秒 Authorization: Bearer account-test-bearer-token sk-account-test-secret-token client_secret=account-test-client-secret url=https://account-test-url-user:account-test-url-password@example.com/v1'
               : '第二次测试失败仍需保持最新错误 Authorization: Bearer second-account-test-bearer-token sk-second-account-test-secret-token client_secret=second-account-test-client-secret url=https://second-account-test-url-user:second-account-test-url-password@example.com/v1',
             type: 'invalid_request_error'
@@ -389,6 +397,24 @@ function sessionCookie(systemAccountId: string): string {
   return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
 }
 
+async function waitForGranteeAccountView(
+  access: { systemAccountId: string; role: 'user' },
+  accountId: string,
+  predicate: (account: AccountView) => boolean,
+  message: string
+): Promise<AccountView> {
+  const startedAt = Date.now()
+  let latest: AccountView | undefined
+  while (Date.now() - startedAt < 5000) {
+    latest = repositories.findAccountSummary(accountId, access) as AccountView | undefined
+    if (latest && predicate(latest)) {
+      return latest
+    }
+    await sleep(100)
+  }
+  throw new Error(`${message}，最后状态 ${latest?.status ?? 'missing'}，错误 ${latest?.lastErrorMessage ?? ''}`)
+}
+
 async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {
   const previousProcessRole = runtimeConfig.processRole
   try {
@@ -424,6 +450,10 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
     })
     listeningServer.closeIdleConnections?.()
   })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
 function assertNoLeak(text: string, markers: string[], message: string): void {

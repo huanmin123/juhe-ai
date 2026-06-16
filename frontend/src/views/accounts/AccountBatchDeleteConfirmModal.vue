@@ -27,7 +27,7 @@
 
 <script setup lang="ts">
 import type { AccountSummary } from '@/types/domain'
-import { accountDisplayName } from './accountFormatters'
+import { accountDisplayName } from './accountBasicFormatters'
 
 defineProps<{
   accounts: AccountSummary[]

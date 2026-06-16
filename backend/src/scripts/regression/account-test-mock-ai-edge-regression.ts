@@ -108,6 +108,26 @@ try {
   assert.equal(retryFinished.status, 'success', '10s 超时后的第二次真实请求应继续重试并成功')
   assert.equal(mockState.hitsByKey.get('retry-once'), 2, 'retry-once 账号应命中 mock AI 两次')
 
+  const precheckRecoverAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: `失败确认恢复账号 ${Date.now()} ${Math.random().toString(16).slice(2, 6)}`,
+    type: 'api_key',
+    status: 'active',
+    credentials: {
+      api_key: 'sk-precheck-recover',
+      base_url: context.mockBaseUrl
+    },
+    groupId: context.groupId,
+    clientCompatibility: 'codex_responses'
+  }, { systemAccountId: admin.id, role: 'admin' })
+  databaseModule.closeStorageDatabases()
+  const precheckRecoverTask = await submitAccountTest(context, precheckRecoverAccount)
+  const precheckRecoverFinished = await waitForTask(context, precheckRecoverTask.id, 20_000, (task) => task.status === 'failed')
+  assert.equal(precheckRecoverFinished.status, 'failed', '前三次真实请求均失败时账号测试任务应失败')
+  await waitForCondition(10_000, () => (mockState.hitsByKey.get('precheck-recover') ?? 0) >= 4, '等待失败事前确认请求')
+  const precheckRecoveredAccount = await getAccount(context, precheckRecoverAccount.id)
+  assert.equal(precheckRecoveredAccount.status, 'active', '账号测试失败后事前确认恢复时不应把账号改为临时不可调用')
+
   const timeoutAccount = await createMockAccount(context, '真实超时账号', 'sk-timeout-always')
   const queuedAccount = await createMockAccount(context, '排队不计时账号', 'sk-queued-fast')
   const timeoutTask = await submitAccountTest(context, timeoutAccount)
@@ -151,6 +171,7 @@ try {
     mockBaseUrl,
     scenarios: [
       '10s attempt 超时后重试成功',
+      '测试失败后事前确认恢复不改账号状态',
       'running 60s 总超时失败',
       'queued 超过运行任务耗时不计超时且后续成功',
       'session 取消 running/queued',
@@ -187,6 +208,10 @@ async function createTestSession(context: TestContext): Promise<AccountTestSessi
   return postEnvelope<AccountTestSession>(context.backendBaseUrl, '/accounts/test-sessions', context.cookie, {})
 }
 
+async function getAccount(context: TestContext, accountId: string): Promise<AccountSummary> {
+  return getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${encodeURIComponent(accountId)}`, context.cookie)
+}
+
 async function cancelTestSession(context: TestContext, sessionId: string): Promise<AccountTestSession> {
   return postEnvelope<AccountTestSession>(context.backendBaseUrl, `/accounts/test-sessions/${sessionId}/cancel`, context.cookie, {})
 }
@@ -221,6 +246,17 @@ async function waitForTask(
     latest = await getTask(context, taskId)
   }
   throw new Error(`等待任务 ${taskId} 超时，最后状态：${latest.status} ${latest.message ?? ''}`)
+}
+
+async function waitForCondition(timeoutMs: number, done: () => boolean, message: string): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (done()) {
+      return
+    }
+    await sleep(pollIntervalMs)
+  }
+  throw new Error(`${message} 超时`)
 }
 
 function startBackendServer(port: number): ChildProcess {
@@ -343,6 +379,16 @@ function delayedResponse(res: http.ServerResponse, key: string): { cancel: () =>
     return { cancel: () => {} }
   }
   const hits = mockState.hitsByKey.get(key) ?? 0
+  if (key === 'precheck-recover' && hits <= 3) {
+    const timer = setTimeout(() => {
+      if (!res.destroyed) {
+        sendJsonError(res, 500, 'mock precheck staged failure')
+      }
+    }, 100)
+    return {
+      cancel: () => clearTimeout(timer)
+    }
+  }
   const delayMs = key === 'retry-once' && hits === 1
     ? 12_000
     : key === 'cancel-running' || key === 'stale-session'

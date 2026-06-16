@@ -125,21 +125,28 @@ import { computed } from 'vue'
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
 import type { AccountBatchTestItem, AccountTestClientCompatibility, AccountTestMode } from './accountTestFlow'
 import {
-  accountClientCompatibilityText,
+  accountTestBatchCounts,
+  accountTestBatchItemDurationText as batchItemDurationText,
+  accountTestBatchItemJson as batchItemJson,
+  accountTestBatchItemMessage as batchItemMessage,
+  accountTestBatchItemModelText,
+  accountTestBatchItemStatusColor as batchItemStatusColor,
+  accountTestBatchItemStatusText as batchItemStatusText,
+  accountTestBatchOutputLines,
+  accountTestBatchResultSnapshot,
+  accountTestBatchSelectedCompatibilityText,
+  accountTestBatchStatusColor,
+  accountTestBatchStatusText,
+  accountTestSingleOutputLines,
+  type AccountTestOutputLine
+} from './accountTestDisplayFormatters'
+import {
+  accountTypeText
+} from './accountBasicFormatters'
+import {
   accountStatusColor,
-  accountStatusText,
-  accountTypeText,
-  formatAccountTestDuration,
-  formatErrorPolicyAction,
-  formatTestTerminalResult,
-  splitAccountDiagnosticMessage,
-  statusText
+  accountStatusText
 } from './accountFormatters'
-
-interface TestOutputLine {
-  text: string
-  tone?: 'muted' | 'info' | 'success' | 'warning' | 'error' | 'label' | 'divider'
-}
 
 const props = defineProps<{
   account?: AccountSummary
@@ -172,38 +179,30 @@ const hasTestTarget = computed(() => isBatchMode.value ? props.accounts.length >
 const modalTitle = computed(() => isBatchMode.value ? '批量测试账号连接' : '测试账号连接')
 const modalWidth = computed(() => isBatchMode.value ? '860px' : '620px')
 const headerTitle = computed(() => isBatchMode.value ? '批量测试账号连接' : props.account?.name ?? '')
-const batchSuccessCount = computed(() => props.batchItems.filter((item) => item.status === 'success').length)
-const batchFailedCount = computed(() => props.batchItems.filter((item) => item.status === 'failed').length)
-const batchStoppedCount = computed(() => props.batchItems.filter((item) => item.status === 'stopped').length)
-const batchCompletedCount = computed(() => props.batchItems.filter((item) => item.status === 'success' || item.status === 'failed' || item.status === 'stopped').length)
-const batchQueuedCount = computed(() => props.batchItems.filter((item) => item.status === 'queued').length)
-const batchRunningCount = computed(() => props.batchItems.filter((item) => item.status === 'running').length)
+const batchCounts = computed(() => accountTestBatchCounts(props.batchItems))
+const batchSuccessCount = computed(() => batchCounts.value.success)
+const batchFailedCount = computed(() => batchCounts.value.failed)
+const batchStoppedCount = computed(() => batchCounts.value.stopped)
+const batchCompletedCount = computed(() => batchCounts.value.completed)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
 const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key'))
 const fixedOAuthCompatibilityText = computed(() => 'Codex Responses（OAuth 固定）')
-const batchSelectedCompatibilityText = computed(() => (
-  showClientCompatibilityControl.value
-    ? props.clientCompatibility === 'account_default' ? '跟随账户配置' : accountClientCompatibilityText(props.clientCompatibility)
-    : fixedOAuthCompatibilityText.value
-))
-const batchStatusColor = computed(() => {
-  if (props.running || batchQueuedCount.value || batchRunningCount.value) return 'blue'
-  if (batchFailedCount.value) return 'red'
-  if (batchStoppedCount.value) return 'orange'
-  if (batchSuccessCount.value && batchSuccessCount.value === props.batchItems.length) return 'green'
-  return 'default'
-})
-const batchStatusText = computed(() => {
-  const total = props.batchItems.length
-  if (props.running || batchQueuedCount.value || batchRunningCount.value) return `测试中 ${batchCompletedCount.value} / ${total}`
-  if (!batchCompletedCount.value) return '等待开始'
-  if (batchFailedCount.value) return `成功 ${batchSuccessCount.value}，失败 ${batchFailedCount.value}`
-  if (batchStoppedCount.value) return `已停止 ${batchStoppedCount.value}`
-  return '全部通过'
-})
+const batchSelectedCompatibilityText = computed(() => accountTestBatchSelectedCompatibilityText({
+  clientCompatibility: props.clientCompatibility,
+  fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,
+  showClientCompatibilityControl: showClientCompatibilityControl.value
+}))
+const batchStatusColor = computed(() => accountTestBatchStatusColor(batchCounts.value, props.running))
+const batchStatusText = computed(() => accountTestBatchStatusText(batchCounts.value, props.running))
 const showResultJson = computed(() => isBatchMode.value ? batchCompletedCount.value > 0 : Boolean(props.result))
 const resultJson = computed(() => {
-  if (isBatchMode.value) return JSON.stringify(batchResultSnapshot(), null, 2)
+  if (isBatchMode.value) {
+    return JSON.stringify(accountTestBatchResultSnapshot({
+      batchItems: props.batchItems,
+      clientCompatibility: props.clientCompatibility,
+      model: props.model
+    }), null, 2)
+  }
   return props.result ? JSON.stringify(props.result, null, 2) : ''
 })
 const runButtonText = computed(() => {
@@ -216,65 +215,31 @@ const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClien
   { label: 'OpenAI 标准', value: 'openai_standard' },
   { label: 'Codex Responses', value: 'codex_responses' }
 ]
-const diagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000]
-const diagnosticMaxWaitMs = diagnosticAttemptTimeoutsMs.reduce((sum, value) => sum + value, 0)
 const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
 const proxyTagColor = computed(() => {
   if (props.account?.proxyProfileUnavailable) return 'red'
   return props.account?.proxyProfileId ? 'cyan' : 'default'
 })
-const outputLines = computed<TestOutputLine[]>(() => {
-  if (isBatchMode.value) return batchOutputLines()
-  const account = props.account
-  if (!account || (!props.running && !props.result)) return []
-  const lines: TestOutputLine[] = [
-    { text: `开始测试账号：${account.name}`, tone: 'info' },
-    { text: `供应商：${providerLabel(account)}`, tone: 'muted' },
-    { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
-    { text: `测试兼容：${selectedCompatibilityText(account)}`, tone: 'muted' }
-  ]
-
-  if (props.running) {
-    lines.push(...singleRunningOutputLines(account))
-    return lines
+const outputLines = computed<AccountTestOutputLine[]>(() => {
+  if (isBatchMode.value) {
+    return accountTestBatchOutputLines({
+      batchItems: props.batchItems,
+      counts: batchCounts.value,
+      model: props.model,
+      running: props.running,
+      selectedCompatibilityText: batchSelectedCompatibilityText.value
+    })
   }
-
-  if (!props.result) {
-    lines.push({ text: '点击「开始测试」后会显示完整返回结果。', tone: 'muted' })
-    return lines
-  }
-
-  lines.push({ text: props.result.statusCode && props.result.statusCode >= 200 && props.result.statusCode < 300 ? '已连接到 API' : 'API 返回错误', tone: props.result.success ? 'success' : 'error' })
-  lines.push({ text: `使用模型：${props.result.model || props.model}`, tone: 'success' })
-  const diagnosticParts = splitAccountDiagnosticMessage(props.result.message)
-  const traceId = props.result.traceId || diagnosticParts.traceId
-  if (traceId) {
-    lines.push({ text: `traceId：${traceId}`, tone: 'muted' })
-  }
-  if (diagnosticParts.requestId) {
-    lines.push({ text: `request id：${diagnosticParts.requestId}`, tone: 'muted' })
-  }
-  lines.push({ text: `实际兼容：${accountClientCompatibilityText(props.result.testClientCompatibility ?? props.result.clientCompatibility ?? account.clientCompatibility)}`, tone: 'muted' })
-  lines.push({ text: '响应：', tone: 'label' })
-  const outputText = formatTestTerminalResult(props.result)
-  if (outputText) {
-    lines.push({ text: outputText, tone: props.result.success ? 'success' : 'error' })
-  } else {
-    lines.push({ text: diagnosticParts.message || props.result.message, tone: props.result.success ? 'success' : 'error' })
-  }
-  if (props.result.errorPolicyAction && props.result.errorPolicyAction !== 'none') {
-    const reason = props.result.errorPolicyReason ? `，原因：${props.result.errorPolicyReason}` : ''
-    lines.push({ text: `错误处理策略：${formatErrorPolicyAction(props.result.errorPolicyAction)}${reason}`, tone: 'warning' })
-  }
-  if (props.result.accountStatusChanged || props.result.accountStatus) {
-    const status = props.result.accountStatus ? statusText(props.result.accountStatus) : '未变化'
-    lines.push({ text: `账号状态：${status}`, tone: props.result.accountStatusChanged ? 'warning' : 'muted' })
-  }
-  lines.push({ text: '', tone: 'divider' })
-  const completionText = props.result.success ? '✓ 测试完成！' : '✕ 测试失败！'
-  const firstTokenText = props.result.firstTokenMs !== undefined ? `，首 token：${formatAccountTestDuration(props.result.firstTokenMs)}` : ''
-  lines.push({ text: `${completionText}  总耗时：${formatAccountTestDuration(props.result.durationMs)}${firstTokenText}`, tone: props.result.success ? 'success' : 'error' })
-  return lines
+  return accountTestSingleOutputLines({
+    account: props.account,
+    activeTask: props.activeTask,
+    clientCompatibility: props.clientCompatibility,
+    fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,
+    model: props.model,
+    providerLabel,
+    result: props.result,
+    running: props.running
+  })
 })
 
 function close() {
@@ -300,187 +265,8 @@ function handleCompatibilityUpdate(value: string): void {
   }
 }
 
-function selectedCompatibilityText(account: AccountSummary): string {
-  if (account.type === 'oauth') {
-    return fixedOAuthCompatibilityText.value
-  }
-  if (props.clientCompatibility === 'account_default') {
-    return `跟随账户配置（${accountClientCompatibilityText(account.clientCompatibility)}）`
-  }
-  return accountClientCompatibilityText(props.clientCompatibility)
-}
-
-function singleRunningOutputLines(account: AccountSummary): TestOutputLine[] {
-  const task = props.activeTask
-  const elapsedMs = taskElapsedMs(task)
-  const lines: TestOutputLine[] = [
-    { text: '正在走账户配置的真实请求流程...', tone: 'warning' },
-    { text: `使用模型：${props.model}`, tone: 'success' },
-    { text: `等待策略：后台接收后按 10s + 20s + 30s 执行，运行超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)} 会自动失败`, tone: 'muted' }
-  ]
-  if (task?.id) {
-    lines.push({ text: `后台任务：${task.id}（${taskStatusText(task.status)}）`, tone: 'muted' })
-  } else {
-    lines.push({ text: '后台任务：提交中', tone: 'muted' })
-  }
-  if (task?.message) {
-    lines.push({ text: task.message, tone: task.status === 'queued' ? 'muted' : 'info' })
-  }
-  if (task?.status === 'queued') {
-    lines.push({ text: '等待后台 worker 接收，尚未开始计时', tone: 'muted' })
-  }
-  if (elapsedMs !== undefined) {
-    lines.push({ text: `运行耗时：${formatAccountTestDuration(elapsedMs)}`, tone: elapsedMs > diagnosticMaxWaitMs ? 'warning' : 'muted' })
-    lines.push({ text: `当前窗口估计：${diagnosticAttemptWindowText(elapsedMs)}`, tone: 'info' })
-  }
-  if (account.type === 'oauth') {
-    lines.push({ text: 'OAuth Token 刷新也包含在当前等待窗口内', tone: 'muted' })
-  }
-  return lines
-}
-
-function batchOutputLines(): TestOutputLine[] {
-  const total = props.batchItems.length
-  if (!total) return []
-  const lines: TestOutputLine[] = [
-    { text: `批量测试账号：${total} 个`, tone: 'info' },
-    { text: '提交策略：每批最多 10 个账户，本批全部结束后再提交下一批', tone: 'muted' },
-    { text: `优先测试模型：${props.model}`, tone: 'muted' },
-    { text: `测试兼容：${batchSelectedCompatibilityText.value}`, tone: 'muted' },
-    { text: `单个任务运行上限：${formatAccountTestDuration(diagnosticMaxWaitMs)}，后台未接收前不计时`, tone: 'muted' }
-  ]
-  if (props.running || batchQueuedCount.value || batchRunningCount.value) {
-    const activeNames = props.batchItems
-      .filter((item) => item.status === 'queued' || item.status === 'running')
-      .map((item) => item.account.name)
-      .slice(0, 3)
-      .join('、')
-    lines.push({ text: `正在执行：已完成 ${batchCompletedCount.value} / ${total}`, tone: 'warning' })
-    if (activeNames) lines.push({ text: `当前账户：${activeNames}`, tone: 'success' })
-    const activeItems = props.batchItems.filter((item) => item.status === 'queued' || item.status === 'running').slice(0, 3)
-    for (const item of activeItems) {
-      const elapsedMs = item.startedAt ? Date.now() - item.startedAt : undefined
-      const elapsedText = elapsedMs !== undefined ? `，运行 ${formatAccountTestDuration(elapsedMs)}` : '，未开始计时'
-      lines.push({ text: `${item.account.name}: ${batchItemMessage(item)}${elapsedText}`, tone: item.status === 'queued' ? 'muted' : 'info' })
-    }
-    return lines
-  }
-  if (!batchCompletedCount.value) {
-    lines.push({ text: '点击「开始批量测试」后会逐个显示结果。', tone: 'muted' })
-    return lines
-  }
-  lines.push({ text: `测试完成：成功 ${batchSuccessCount.value} 个，失败 ${batchFailedCount.value} 个，已停止 ${batchStoppedCount.value} 个`, tone: batchFailedCount.value ? 'warning' : 'success' })
-  const failedItems = props.batchItems.filter((item) => item.status === 'failed').slice(0, 5)
-  if (failedItems.length) {
-    lines.push({ text: '失败摘要：', tone: 'label' })
-    for (const item of failedItems) {
-      lines.push({ text: `${item.account.name}: ${batchItemMessage(item)}`, tone: 'error' })
-    }
-  }
-  return lines
-}
-
-function batchItemStatusColor(item: AccountBatchTestItem): string {
-  if (item.status === 'success') return 'green'
-  if (item.status === 'failed') return 'red'
-  if (item.status === 'running') return 'blue'
-  if (item.status === 'queued') return 'processing'
-  if (item.status === 'stopped') return 'orange'
-  return 'default'
-}
-
-function batchItemStatusText(item: AccountBatchTestItem): string {
-  if (item.status === 'success') return '通过'
-  if (item.status === 'failed') return '失败'
-  if (item.status === 'running') return '测试中'
-  if (item.status === 'queued') return '等待接收'
-  if (item.status === 'stopped') return '已停止'
-  return '等待'
-}
-
-function taskStatusText(status: AccountTestTask['status']): string {
-  if (status === 'queued') return '等待接收'
-  if (status === 'running') return '测试中'
-  if (status === 'success') return '已通过'
-  if (status === 'failed') return '失败'
-  return '已停止'
-}
-
-function taskElapsedMs(task?: AccountTestTask): number | undefined {
-  const startedAt = parseTaskTime(task?.startedAt)
-  if (startedAt === undefined) return undefined
-  return Math.max(0, Date.now() - startedAt)
-}
-
-function parseTaskTime(value?: string): number | undefined {
-  if (!value) return undefined
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : undefined
-}
-
-function diagnosticAttemptWindowText(elapsedMs: number): string {
-  let cursor = 0
-  for (let index = 0; index < diagnosticAttemptTimeoutsMs.length; index += 1) {
-    const timeoutMs = diagnosticAttemptTimeoutsMs[index] ?? diagnosticAttemptTimeoutsMs[diagnosticAttemptTimeoutsMs.length - 1]
-    cursor += timeoutMs
-    if (elapsedMs <= cursor) {
-      return `第 ${index + 1}/${diagnosticAttemptTimeoutsMs.length} 次，单次最多 ${formatAccountTestDuration(timeoutMs)}`
-    }
-  }
-  return `已超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)}，将自动停止并返回运行超时错误`
-}
-
 function batchItemModelText(item: AccountBatchTestItem): string {
-  if (item.result?.model) return item.result.model
-  return item.status === 'pending' ? `优先 ${props.model}` : props.model
-}
-
-function batchItemDurationText(item: AccountBatchTestItem): string {
-  if (item.result?.durationMs !== undefined) return formatAccountTestDuration(item.result.durationMs)
-  if (item.startedAt && item.finishedAt) return formatAccountTestDuration(item.finishedAt - item.startedAt)
-  return ''
-}
-
-function batchItemMessage(item: AccountBatchTestItem): string {
-  if (item.message) return item.message
-  if (item.result?.message) return item.result.message
-  if (item.status === 'queued') return '等待后台 worker 接收'
-  if (item.status === 'running') return '正在连接 OpenAI API'
-  if (item.status === 'stopped') return '已停止测试'
-  return '等待开始测试'
-}
-
-function batchItemJson(item: AccountBatchTestItem): string {
-  return JSON.stringify(batchItemSnapshot(item), null, 2)
-}
-
-function batchResultSnapshot() {
-  return {
-    model: props.model,
-    clientCompatibility: props.clientCompatibility,
-    summary: {
-      total: props.batchItems.length,
-      completed: batchCompletedCount.value,
-      success: batchSuccessCount.value,
-      failed: batchFailedCount.value,
-      stopped: batchStoppedCount.value
-    },
-    results: props.batchItems.map(batchItemSnapshot)
-  }
-}
-
-function batchItemSnapshot(item: AccountBatchTestItem) {
-  return {
-    accountId: item.account.id,
-    accountName: item.account.name,
-    providerCode: item.account.providerCode,
-    type: item.account.type,
-    status: item.status,
-    message: batchItemMessage(item),
-    startedAt: item.startedAt,
-    finishedAt: item.finishedAt,
-    result: item.result
-  }
+  return accountTestBatchItemModelText(item, props.model)
 }
 </script>
 

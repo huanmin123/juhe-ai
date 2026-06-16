@@ -13,6 +13,7 @@ export interface GatewayApiKeyRow {
   system_account_id: string
   selected_group_id: string
   status: 'active' | 'disabled'
+  availability_schedule_active: number
   expires_at: string | null
   quota_limits_json: string | null
   group_route_strategy: ApiKeyGroupRouteStrategy
@@ -74,6 +75,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       api_keys.system_account_id,
       '' AS selected_group_id,
       api_keys.status,
+      api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
       api_keys.group_route_strategy,
@@ -91,7 +93,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  if (row.status !== 'active') {
+  if (row.status !== 'active' || row.availability_schedule_active !== 1) {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
@@ -118,6 +120,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       api_keys.system_account_id,
       '' AS selected_group_id,
       api_keys.status,
+      api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
       api_keys.group_route_strategy,
@@ -134,7 +137,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (isGatewayApiKeyRowExpired(row)) {
     return undefined
   }
-  if (row.status !== 'active') {
+  if (row.status !== 'active' || row.availability_schedule_active !== 1) {
     return undefined
   }
   row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)

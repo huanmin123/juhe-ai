@@ -57,7 +57,6 @@ import {
   openAIResponseEndpointFamilyFromRequest
 } from '../protocols/openai-v1/response-semantics.js'
 import {
-  copyResponseHeaders,
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
   upstreamRequestTimeoutMs,
@@ -105,6 +104,7 @@ import {
 } from './inspection-runtime-effects.js'
 import type { UpstreamResponseHandlingResult } from './response-handling-result.js'
 import { inspectBufferedOpenAIJsonResponse } from './non-stream-json-inspection.js'
+import { prepareUpstreamResponseForDownstream } from './downstream-headers.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
@@ -135,22 +135,6 @@ interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInp
 }
 
 const nonStreamResponseInspectionMaxBytes = 1024 * 1024
-
-export function prepareUpstreamResponseForDownstream(
-  res: Response,
-  upstreamResponse: GatewayUpstreamResponse,
-  shouldHandleAsStream: boolean
-): void {
-  res.status(upstreamResponse.status)
-  copyResponseHeaders(upstreamResponse, res)
-  if (shouldHandleAsStream && !res.hasHeader('content-type')) {
-    res.setHeader('content-type', 'text/event-stream; charset=utf-8')
-  }
-  if (shouldHandleAsStream) {
-    setGatewayStreamResponseHeaders(res)
-    flushResponseHeadersIfSupported(res)
-  }
-}
 
 export async function handleStreamUpstreamResponse(input: HandleUpstreamResponseInput): Promise<UpstreamResponseHandlingResult> {
   const {
@@ -960,26 +944,4 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     accountId: account.id,
     firstTokenMs: result.firstTokenMs
   })
-}
-
-function flushResponseHeadersIfSupported(res: Response): void {
-  const flushHeaders = (res as { flushHeaders?: unknown }).flushHeaders
-  if (typeof flushHeaders === 'function') {
-    flushHeaders.call(res)
-  }
-}
-
-function setGatewayStreamResponseHeaders(res: Response): void {
-  if (!res.hasHeader('cache-control')) {
-    res.setHeader('cache-control', 'no-cache, no-transform')
-  }
-  res.setHeader('x-accel-buffering', 'no')
-}
-
-function stringResponseHeadersToObject(res: Response): Record<string, string> {
-  const output: Record<string, string> = {}
-  for (const [name, value] of Object.entries(responseHeadersToObject(res))) {
-    output[name] = Array.isArray(value) ? value.join(', ') : String(value)
-  }
-  return output
 }

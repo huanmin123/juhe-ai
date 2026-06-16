@@ -293,6 +293,49 @@ export function listRunnableAccountTestTaskIds(limit = 100): string[] {
   return rows.map((row) => row.id)
 }
 
+export function failExpiredQueuedAccountTestTasks(maxQueuedMs: number, limit = 200): string[] {
+  cancelExpiredAccountTestSessions()
+  const safeMaxQueuedMs = Math.max(1, Math.trunc(maxQueuedMs))
+  const safeLimit = Math.max(1, Math.trunc(limit))
+  const queuedCutoff = new Date(Date.now() - safeMaxQueuedMs).toISOString()
+  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
+  const rows = getBusinessDatabase().prepare(`
+    SELECT t.id
+    FROM account_test_tasks t
+    LEFT JOIN account_test_session_tasks st ON st.task_id = t.id
+    LEFT JOIN account_test_sessions s ON s.id = st.session_id
+    WHERE t.status = 'queued'
+      AND t.cancel_requested = 0
+      AND t.queued_at < ?
+      AND (
+        st.session_id IS NULL
+        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+      )
+    ORDER BY t.queued_at ASC, t.id ASC
+    LIMIT ?
+  `).all(queuedCutoff, heartbeatCutoff, safeLimit) as unknown as Array<{ id: string }>
+  const taskIds = rows.map((row) => row.id)
+  if (taskIds.length === 0) {
+    return []
+  }
+
+  const placeholders = taskIds.map(() => '?').join(', ')
+  const now = nowIso()
+  const message = accountTestQueuedWaitExpiredMessage(safeMaxQueuedMs)
+  getBusinessDatabase().prepare(`
+    UPDATE account_test_tasks
+    SET status = 'failed',
+        status_message = ?,
+        error_message = ?,
+        finished_at = ?,
+        updated_at = ?
+    WHERE id IN (${placeholders})
+      AND status = 'queued'
+      AND cancel_requested = 0
+  `).run(message, message, now, now, ...taskIds)
+  return taskIds
+}
+
 export function requeueInterruptedAccountTestTasks(): string[] {
   const now = nowIso()
   getBusinessDatabase().prepare(`
@@ -672,6 +715,23 @@ function accountTestSessionCancelReason(row: AccountTestSessionRow): string | un
     return '前端测试窗口已关闭，任务已取消'
   }
   return undefined
+}
+
+function accountTestQueuedWaitExpiredMessage(maxQueuedMs: number): string {
+  return `后台测试队列等待超过 ${formatAccountTestQueuedWait(maxQueuedMs)}，任务已自动收口；请检查 probe-worker 或降低批量并发`
+}
+
+function formatAccountTestQueuedWait(maxQueuedMs: number): string {
+  const seconds = Math.max(1, Math.ceil(maxQueuedMs / 1000))
+  if (seconds < 60) {
+    return `${seconds} 秒`
+  }
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) {
+    return `${minutes} 分钟`
+  }
+  const hours = Math.ceil(minutes / 60)
+  return `${hours} 小时`
 }
 
 function accountTestTaskStatus(value: string): AccountTestTaskStatus {

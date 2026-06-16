@@ -216,11 +216,11 @@ try {
   )
   assert.equal(
     fakeChild.operationCount('read_gateway_runtime'),
-    operationsBeforeDynamicRoute + 2,
-    '轮询策略每次请求都应重新读取运行时以计算候选分组起点'
+    operationsBeforeDynamicRoute + 1,
+    '轮询策略应缓存静态运行快照，第二次请求只在 server 本地重新计算候选分组起点'
   )
 
-  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略不会缓存最终命中分组，连续请求可重新选组')
+  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略缓存静态运行快照但不缓存最终命中分组，连续请求可在 server 本地重新选组')
 } finally {
   closeGatewayUpstreamAgentsForTest?.()
   await closeServer(gatewayServer)

@@ -2,7 +2,7 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { createAppCache } from '../../../shared/cache.js'
 import {
-  findActiveClientIpPolicyByHash,
+  listActiveClientIpPolicies,
   normalizeClientIpForStats,
   recordClientIpPolicyHits,
   type ActiveClientIpPolicy,
@@ -20,13 +20,8 @@ interface InspectClientIpPolicyOptions {
   cacheOnly?: boolean
 }
 
-type ClientIpPolicyLoadResult =
-  | { status: 'loaded'; policy: ActiveClientIpPolicy | undefined }
-  | { status: 'skipped' }
-
 const clientIpPolicyCacheTtlMs = 30_000
 const clientIpPolicyCacheMaxEntries = 5_000
-const clientIpPolicyLoadMaxPendingEntries = 1024
 const clientIpPolicyHitFlushDelayMs = 1000
 const clientIpPolicyHitMaxPendingEntries = 5_000
 const clientIpPolicyHitFlushBatchSize = 1000
@@ -35,10 +30,10 @@ const policyCache = createAppCache<string, { policy: ActiveClientIpPolicy | unde
   max: clientIpPolicyCacheMaxEntries,
   ttlMs: clientIpPolicyCacheTtlMs
 })
-const pendingPolicyLoads = new Map<string, Promise<ClientIpPolicyLoadResult>>()
+const activePolicySnapshot = new Map<string, ActiveClientIpPolicy>()
 const pendingPolicyHits = new Map<string, ClientIpPolicyHitInput>()
+let activePolicySnapshotLoadedAt: string | undefined
 let policyHitFlushTimer: NodeJS.Timeout | undefined
-let droppedPolicyLoadCount = 0
 let droppedPolicyHitCount = 0
 
 export async function inspectClientIpPolicy(clientIp?: string, options: InspectClientIpPolicyOptions = {}): Promise<ClientIpPolicyDecision> {
@@ -50,24 +45,38 @@ export async function inspectClientIpPolicy(clientIp?: string, options: InspectC
   if (cached) {
     return policyDecisionFromCacheEntry(normalizedIp, cached)
   }
-  if (options.cacheOnly) {
+  const snapshotPolicy = activePolicySnapshot.get(normalizedIp.ipHash)
+  if (!snapshotPolicy && options.cacheOnly && !activePolicySnapshotLoadedAt) {
     return { blocked: false, normalizedIp }
   }
-  const loaded = await loadClientIpPolicy(normalizedIp.ipHash)
-  if (loaded.status !== 'loaded') {
-    return { blocked: false, normalizedIp }
-  }
-  policyCache.set(normalizedIp.ipHash, { policy: loaded.policy }, {
-    ttlMs: clientIpPolicyTtlMs(loaded.policy)
+  const entry = { policy: snapshotPolicy }
+  policyCache.set(normalizedIp.ipHash, entry, {
+    ttlMs: clientIpPolicyTtlMs(snapshotPolicy)
   })
-  return policyDecisionFromCacheEntry(normalizedIp, { policy: loaded.policy })
+  return policyDecisionFromCacheEntry(normalizedIp, entry)
 }
 
 export function primeClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[]): void {
+  replaceClientIpPolicyCacheLocal(policies)
+}
+
+export function replaceClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[]): void {
   policyCache.clear()
+  activePolicySnapshot.clear()
   for (const policy of policies) {
-    policyCache.set(policy.ipHash, { policy }, { ttlMs: clientIpPolicyTtlMs(policy) })
+    const cloned = cloneActiveClientIpPolicy(policy)
+    if (!activePolicySnapshot.has(cloned.ipHash)) {
+      activePolicySnapshot.set(cloned.ipHash, cloned)
+    }
   }
+  activePolicySnapshotLoadedAt = new Date().toISOString()
+}
+
+export async function reloadClientIpPolicyCacheLocal(): Promise<void> {
+  const policies = runtimeConfig.processRole === 'server'
+    ? await requestDbService({ type: 'list_active_client_ip_policies' }, { timeoutMs: 1000 })
+    : listActiveClientIpPolicies()
+  replaceClientIpPolicyCacheLocal(policies)
 }
 
 export function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): void {
@@ -97,18 +106,16 @@ export function recordClientIpPolicyHitAsync(policy: ActiveClientIpPolicy): void
 }
 
 export function getClientIpPolicyCacheRuntime(): {
-  pendingPolicyLoadCount: number
-  maxPendingPolicyLoads: number
-  droppedPolicyLoadCount: number
+  snapshotLoadedAt?: string
+  snapshotPolicyCount: number
   pendingPolicyHitCount: number
   droppedPolicyHitCount: number
   maxPendingPolicyHits: number
   flushBatchSize: number
 } {
   return {
-    pendingPolicyLoadCount: pendingPolicyLoads.size,
-    maxPendingPolicyLoads: clientIpPolicyLoadMaxPendingEntries,
-    droppedPolicyLoadCount,
+    snapshotLoadedAt: activePolicySnapshotLoadedAt,
+    snapshotPolicyCount: activePolicySnapshot.size,
     pendingPolicyHitCount: pendingPolicyHits.size,
     droppedPolicyHitCount,
     maxPendingPolicyHits: clientIpPolicyHitMaxPendingEntries,
@@ -127,48 +134,8 @@ function scheduleClientIpPolicyHitFlush(delayMs: number): void {
 
 export function clearClientIpPolicyCacheLocal(): void {
   policyCache.clear()
-  pendingPolicyLoads.clear()
-}
-
-async function loadClientIpPolicy(ipHash: string): Promise<ClientIpPolicyLoadResult> {
-  const pending = pendingPolicyLoads.get(ipHash)
-  if (pending) {
-    return pending
-  }
-  if (pendingPolicyLoads.size >= clientIpPolicyLoadMaxPendingEntries) {
-    droppedPolicyLoadCount += 1
-    if (droppedPolicyLoadCount <= 10 || droppedPolicyLoadCount % 1000 === 0) {
-      logger.warn({
-        event: 'client_ip_policy_load_dropped',
-        ipHash,
-        pendingPolicyLoadCount: pendingPolicyLoads.size,
-        maxPendingPolicyLoads: clientIpPolicyLoadMaxPendingEntries,
-        droppedPolicyLoadCount
-      }, 'IP 封禁策略查询达到保护上限，已跳过新的来源查询')
-    }
-    return { status: 'skipped' }
-  }
-  const promise = findClientIpPolicy(ipHash).then((policy) => ({ status: 'loaded' as const, policy }))
-  pendingPolicyLoads.set(ipHash, promise)
-  try {
-    return await promise
-  } finally {
-    pendingPolicyLoads.delete(ipHash)
-  }
-}
-
-async function findClientIpPolicy(ipHash: string): Promise<ActiveClientIpPolicy | undefined> {
-  try {
-    return runtimeConfig.processRole === 'server'
-      ? await requestDbService({ type: 'find_active_client_ip_policy', ipHash }, { timeoutMs: 1000 })
-      : findActiveClientIpPolicyByHash(ipHash)
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'client_ip_policy_lookup_failed',
-      ipHash
-    }), 'IP 策略按来源查询失败')
-    return undefined
-  }
+  activePolicySnapshot.clear()
+  activePolicySnapshotLoadedAt = undefined
 }
 
 function isPolicyActiveAt(policy: ActiveClientIpPolicy, nowMs: number): boolean {
@@ -200,6 +167,17 @@ function policyExpiresAtTime(policy: ActiveClientIpPolicy): number | undefined {
   if (!policy.expiresAt) return undefined
   const expiresAtMs = Date.parse(policy.expiresAt)
   return Number.isFinite(expiresAtMs) ? expiresAtMs : undefined
+}
+
+function cloneActiveClientIpPolicy(policy: ActiveClientIpPolicy): ActiveClientIpPolicy {
+  return {
+    id: policy.id,
+    ipHash: policy.ipHash,
+    aggregateIpKey: policy.aggregateIpKey,
+    clientIp: policy.clientIp,
+    reason: policy.reason,
+    expiresAt: policy.expiresAt
+  }
 }
 
 async function flushClientIpPolicyHits(): Promise<void> {

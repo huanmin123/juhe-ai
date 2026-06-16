@@ -1,5 +1,6 @@
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
@@ -119,6 +120,7 @@ export type BackgroundWorkerMessage =
   | { type: 'server_account_runtime_clear'; target: AccountRuntimeAvailabilityClearTarget }
   | { type: 'gateway_runtime_cache_invalidate' }
   | { type: 'gateway_quota_snapshot_update'; snapshot: GatewayQuotaSnapshot }
+  | { type: 'client_ip_policy_snapshot_update'; policies: ActiveClientIpPolicy[] }
 
 export interface PendingRequest {
   resolve: (snapshot: BackgroundWorkerRuntimeSnapshot | undefined) => void

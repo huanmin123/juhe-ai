@@ -1,7 +1,7 @@
 import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary } from '@/types/domain'
 import { matchesSystemAccountFilter } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
-import { normalizeKeyword } from './accountFormatters'
+import { normalizeKeyword } from './accountBasicFormatters'
 
 export function filterAccounts(input: {
   accounts: AccountSummary[]
@@ -55,10 +55,8 @@ function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabili
   if (
     status === 'source_temporary_unavailable'
     || status === 'source_cooldown'
-    || status === 'source_schedule_inactive'
     || status === 'instance_temporary_unavailable'
     || status === 'instance_cooldown'
-    || status === 'instance_schedule_inactive'
     || status === 'api_key_pool_unavailable'
     || status === 'runtime_local_suppressed'
     || status === 'runtime_half_open'
@@ -79,6 +77,8 @@ function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabili
     || status === 'source_unschedulable'
     || status === 'instance_expired'
     || status === 'instance_disabled'
+    || status === 'source_schedule_inactive'
+    || status === 'instance_schedule_inactive'
     || status === 'instance_unschedulable'
   ) {
     return 'disabled'

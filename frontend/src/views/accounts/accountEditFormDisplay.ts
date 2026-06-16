@@ -5,7 +5,7 @@ import {
   accountTypeDescription,
   accountTypeText,
   accountTypeTitle as buildAccountTypeTitle
-} from './accountFormatters'
+} from './accountBasicFormatters'
 
 type ProviderDisplaySource = Pick<ProviderDefinition, 'code' | 'name'>
 

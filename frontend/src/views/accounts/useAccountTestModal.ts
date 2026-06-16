@@ -1,8 +1,7 @@
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, type ComputedRef } from 'vue'
 
-import { api, apiUrl, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
+import { api, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
 import type { AccountSummary, AccountTestResult, AccountTestTask, ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 import {
   type AccountBatchTestItem,
@@ -22,6 +21,25 @@ import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
+import { accountBatchTestChunkSize, runInFixedBatches } from './accountBatchExecution'
+import {
+  type AccountTestDraftMode,
+  cancelAccountTestSession as cancelAccountTestSessionRequest,
+  cancelAccountTestTask as cancelAccountTestTaskRequest,
+  createAccountTestSession as createAccountTestSessionRequest,
+  fetchAccountTestTask as fetchAccountTestTaskRequest,
+  heartbeatAccountTestSession as heartbeatAccountTestSessionRequest,
+  sendCancelAccountTestSessionOnUnload,
+  submitAccountTestTask
+} from './accountTestSessionClient'
+import {
+  accountTestTaskMaxWaitMs,
+  accountTestTaskRemainingWaitMs,
+  isAbortError,
+  parseTaskTime,
+  taskStatusToBatchStatus,
+  waitForPollDelay
+} from './accountTestTaskHelpers'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -32,18 +50,12 @@ interface UseAccountTestModalOptions {
   successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
-type DraftTestMode = 'create' | 'saved'
-
 export interface SuccessfulDraftActivationTest {
   taskId: string
   account: AccountDraftTestPayload['account']
 }
 
-const accountBatchTestChunkSize = 10
-const accountTestPollIntervalMs = 1000
 const accountTestSessionHeartbeatIntervalMs = 2000
-const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
-const accountTestTaskMaxWaitMs = accountDiagnosticAttemptTimeoutsMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
 
 export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testModalOpen = ref(false)
@@ -58,7 +70,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const providerModels = ref<ProviderModelPricing[]>([])
   const providerModelsProviderCode = ref('')
   const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
-  const draftTestMode = ref<DraftTestMode>()
+  const draftTestMode = ref<AccountTestDraftMode>()
   const successfulDraftActivationTest = options.successfulDraftActivationTest ?? ref<SuccessfulDraftActivationTest>()
   const testForm = reactive<AccountTestForm>({ model: '', clientCompatibility: 'account_default' })
   const testTargetAccountSelection = computed(() => (
@@ -250,7 +262,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       }
       await options.loadData()
     } catch (error) {
-      if (axios.isCancel(error) || (error instanceof DOMException && error.name === 'AbortError')) {
+      if (isAbortError(error)) {
         message.info(stoppedAccountTestMessage(account))
         return
       }
@@ -415,21 +427,11 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   function cancelActiveAccountTestSessionOnUnload() {
     const sessionId = activeAccountTestSessionId
     if (!sessionId) return
-    const path = options.isManagementView.value
-      ? `/accounts/test-sessions/${sessionId}/cancel`
-      : `/my-accounts/test-sessions/${sessionId}/cancel`
-    const url = apiUrl(path, options.isManagementView.value ? activeAccountTestSessionScopeParams : undefined)
-    const body = new Blob(['{}'], { type: 'application/json' })
-    const sent = navigator.sendBeacon?.(url, body) ?? false
-    if (!sent) {
-      void fetch(url, {
-        method: 'POST',
-        body: '{}',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        keepalive: true
-      }).catch(() => {})
-    }
+    sendCancelAccountTestSessionOnUnload({
+      isManagementView: options.isManagementView.value,
+      scopeParams: activeAccountTestSessionScopeParams,
+      sessionId
+    })
   }
 
   function closeTestModal() {
@@ -466,9 +468,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function createAccountTestSession(account?: AccountSummary) {
     const scopeParams = account ? accountTestTaskScopeParams(account) : options.accountScopeParams.value
-    return options.isManagementView.value
-      ? api.accounts.createTestSession(scopeParams)
-      : api.myAccounts.createTestSession()
+    return createAccountTestSessionRequest({
+      isManagementView: options.isManagementView.value,
+      scopeParams
+    })
   }
 
   function startAccountTestSessionHeartbeat(sessionId: string, scopeParams?: { systemAccountId: string }) {
@@ -495,9 +498,11 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function heartbeatAccountTestSession(sessionId: string, scopeParams?: { systemAccountId: string }) {
-    return options.isManagementView.value
-      ? api.accounts.heartbeatTestSession(sessionId, scopeParams)
-      : api.myAccounts.heartbeatTestSession(sessionId)
+    return heartbeatAccountTestSessionRequest({
+      isManagementView: options.isManagementView.value,
+      scopeParams,
+      sessionId
+    })
   }
 
   function cancelActiveAccountTestSession() {
@@ -505,40 +510,40 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     if (!sessionId) {
       return Promise.resolve()
     }
-    return options.isManagementView.value
-      ? api.accounts.cancelTestSession(sessionId, activeAccountTestSessionScopeParams)
-      : api.myAccounts.cancelTestSession(sessionId)
+    return cancelAccountTestSessionRequest({
+      isManagementView: options.isManagementView.value,
+      scopeParams: activeAccountTestSessionScopeParams,
+      sessionId
+    })
   }
 
   function submitAccountTest(account: AccountSummary, payload: AccountTestPayload, sessionId: string): Promise<AccountTestTask> {
-    const requestPayload: AccountTestPayload = { ...payload, testSessionId: sessionId }
-    const draftPayload = activeDraftTestPayload(account)
-    if (draftPayload) {
-      const draftRequestPayload: AccountDraftTestPayload = { account: draftPayload, ...requestPayload }
-      if (draftTestMode.value === 'saved') {
-        return options.isManagementView.value
-          ? api.accounts.test(account.id, draftRequestPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
-          : api.myAccounts.test(account.id, draftRequestPayload)
-      }
-      return options.isManagementView.value
-        ? api.accounts.testDraft(draftRequestPayload, options.accountScopeParams.value)
-        : api.myAccounts.testDraft(draftRequestPayload)
-    }
-    return options.isManagementView.value
-      ? api.accounts.test(account.id, requestPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
-      : api.myAccounts.test(account.id, requestPayload)
+    return submitAccountTestTask({
+      account,
+      accountScopeParams: options.accountScopeParams.value,
+      draftMode: draftTestMode.value,
+      draftPayload: activeDraftTestPayload(account),
+      isManagementView: options.isManagementView.value,
+      payload,
+      sessionId
+    })
   }
 
   function fetchAccountTestTask(taskId: string, account: AccountSummary, signal?: AbortSignal): Promise<AccountTestTask> {
-    return options.isManagementView.value
-      ? api.accounts.testTask(taskId, accountTestTaskScopeParams(account), { signal })
-      : api.myAccounts.testTask(taskId, { signal })
+    return fetchAccountTestTaskRequest({
+      isManagementView: options.isManagementView.value,
+      scopeParams: accountTestTaskScopeParams(account),
+      signal,
+      taskId
+    })
   }
 
   function cancelAccountTestTask(taskId: string, account?: AccountSummary): Promise<AccountTestTask> {
-    return options.isManagementView.value
-      ? api.accounts.cancelTestTask(taskId, account ? accountTestTaskScopeParams(account) : options.accountScopeParams.value)
-      : api.myAccounts.cancelTestTask(taskId)
+    return cancelAccountTestTaskRequest({
+      isManagementView: options.isManagementView.value,
+      scopeParams: account ? accountTestTaskScopeParams(account) : options.accountScopeParams.value,
+      taskId
+    })
   }
 
   function activeDraftTestPayload(account: AccountSummary): AccountDraftTestPayload['account'] | undefined {
@@ -623,23 +628,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     })
   }
 
-  function accountTestTaskRemainingWaitMs(task: AccountTestTask): number {
-    if (task.status !== 'running') {
-      return accountTestPollIntervalMs
-    }
-    const startedAt = parseTaskTime(task.startedAt)
-    if (startedAt === undefined) {
-      return accountTestPollIntervalMs
-    }
-    return Math.max(0, accountTestTaskMaxWaitMs - (Date.now() - startedAt))
-  }
-
-  function parseTaskTime(value?: string): number | undefined {
-    if (!value) return undefined
-    const timestamp = Date.parse(value)
-    return Number.isFinite(timestamp) ? timestamp : undefined
-  }
-
   function updateBatchTestItem(index: number, patch: Partial<AccountBatchTestItem>) {
     const current = batchTestItems.value[index]
     if (!current) return
@@ -686,58 +674,4 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testingAccount,
     successfulDraftActivationTest
   }
-}
-
-async function runInFixedBatches<TItem>(
-  items: TItem[],
-  batchSize: number,
-  task: (item: TItem, index: number) => Promise<void>,
-  signal: AbortSignal
-): Promise<void> {
-  const size = Math.max(1, Math.trunc(batchSize))
-  for (let startIndex = 0; startIndex < items.length && !signal.aborted; startIndex += size) {
-    const batch = items.slice(startIndex, startIndex + size)
-    await Promise.all(batch.map((item, offset) => task(item, startIndex + offset)))
-  }
-}
-
-function isAbortError(error: unknown): boolean {
-  return axios.isCancel(error) || (error instanceof DOMException && error.name === 'AbortError')
-}
-
-function taskStatusToBatchStatus(task: AccountTestTask): AccountBatchTestItem['status'] {
-  if (task.status === 'queued') return 'queued'
-  if (task.status === 'running') return 'running'
-  if (task.status === 'success') return 'success'
-  if (task.status === 'failed') return 'failed'
-  if (task.status === 'canceled') return 'stopped'
-  return 'running'
-}
-
-async function waitForPollDelay(signal: AbortSignal, maxDelayMs = accountTestPollIntervalMs): Promise<void> {
-  if (signal.aborted) {
-    throw new DOMException('测试已停止', 'AbortError')
-  }
-  const delayMs = Math.min(accountTestPollIntervalMs, Math.max(0, maxDelayMs))
-  if (delayMs <= 0) return
-  await new Promise<void>((resolve, reject) => {
-    let settled = false
-    const timer = window.setTimeout(() => finish(), delayMs)
-    const finish = (error?: Error) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timer)
-      signal.removeEventListener('abort', onAbort)
-      if (error) {
-        reject(error)
-        return
-      }
-      resolve()
-    }
-    const onAbort = () => finish(new DOMException('测试已停止', 'AbortError'))
-    signal.addEventListener('abort', onAbort, { once: true })
-    if (signal.aborted) {
-      onAbort()
-    }
-  })
 }

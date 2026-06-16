@@ -201,7 +201,7 @@ assert.equal(
 
 await assertApiKeyScheduleStatusSyncAndGatewayGuard()
 
-console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、错过边界补偿和热链路不解析计划符合预期')
+console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、派生状态同步和热链路不解析计划符合预期')
 
 async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
   const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-availability-schedule-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -253,23 +253,30 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     assert.equal(
       await withMockedNow(missedEndBoundaryAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
       apiKey.id,
-      '后台尚未改写 status 前，网关热链路不解析时间计划，允许存在一个同步周期内的状态延迟'
+      '后台尚未同步计划派生状态前，网关热链路不解析时间计划，允许存在一个同步周期内的状态延迟'
     )
 
     const disabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(missedEndBoundaryAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(disabledResult.disabled, 1, '错过停止边界后下一轮同步也应补偿停用 API Key')
-    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'disabled', '补偿停用后列表状态应变为停用')
+    assert.equal(disabledResult.disabled, 1, '时段外后下一轮同步应把 API Key 计划派生状态标记为不可用')
+    const inactiveSummary = repositories.findApiKeySummary(apiKey.id, access)
+    assert.equal(inactiveSummary?.status, 'active', '时间计划外不应改写 API Key 手动启停状态')
+    assert.equal(inactiveSummary?.availabilityScheduleActive, false, '时间计划外应通过 availabilityScheduleActive 暴露')
+    assert(repositories.listApiKeysPage(access, { status: 'disabled', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 应归入停用父筛选')
+    assert(!repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 不应归入启用父筛选')
     assert.equal(
       await withMockedNow(missedEndBoundaryAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
       undefined,
-      '后台补偿停用并清缓存后，网关应只按 status 拒绝 API Key'
+      '后台同步计划派生状态并清缓存后，网关应拒绝时段外 API Key'
     )
 
     const activatedResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(allowedAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(activatedResult.activated, 1, '错过开启边界后下一轮同步也应补偿启用 API Key')
-    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'active', '补偿启用后列表状态应变为启用')
+    assert.equal(activatedResult.activated, 1, '进入允许时段后下一轮同步应把 API Key 计划派生状态标记为可用')
+    const activeSummary = repositories.findApiKeySummary(apiKey.id, access)
+    assert.equal(activeSummary?.status, 'active', '计划恢复可用后仍不改写 API Key 手动启停状态')
+    assert.equal(activeSummary?.availabilityScheduleActive, true, '计划恢复可用后应通过 availabilityScheduleActive 暴露')
+    assert(repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '计划命中且手动启用的 API Key 应归入启用父筛选')
     assert.equal(
       await withMockedNow(allowedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
       apiKey.id,
@@ -280,7 +287,7 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
     const manualDisabledAt = allowedAt + 10 * 60_000
     const manualDisabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(manualDisabledAt))
-    assert.equal(manualDisabledResult.activated, 0, '开启事件已补执行后，窗口中间人工停用不应被同步任务再次启用')
+    assert.equal(manualDisabledResult.activated, 0, '计划允许窗口内人工停用不应被同步任务再次启用')
     assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.status, 'disabled', '窗口中间人工停用应保持停用状态')
     assert.equal(
       await withMockedNow(manualDisabledAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),

@@ -25,10 +25,8 @@ export function accountStatusFilterForEffectiveAvailabilityStatus(
   if (
     status === 'source_temporary_unavailable'
     || status === 'source_cooldown'
-    || status === 'source_schedule_inactive'
     || status === 'instance_temporary_unavailable'
     || status === 'instance_cooldown'
-    || status === 'instance_schedule_inactive'
     || status === 'api_key_pool_unavailable'
     || status === 'runtime_local_suppressed'
     || status === 'runtime_half_open'
@@ -49,6 +47,8 @@ export function accountStatusFilterForEffectiveAvailabilityStatus(
     || status === 'source_unschedulable'
     || status === 'instance_expired'
     || status === 'instance_disabled'
+    || status === 'source_schedule_inactive'
+    || status === 'instance_schedule_inactive'
     || status === 'instance_unschedulable'
   ) {
     return 'disabled'

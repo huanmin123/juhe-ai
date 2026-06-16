@@ -1,15 +1,12 @@
 import {
-  formatCompactUsageAmount,
   formatDateTime,
   formatMillisecondsAsSeconds,
   formatNumber,
   formatServerDateTimeInput,
-  formatUsd,
   parseStrictDatePickerValue,
   serverDateTimeTimestamp
 } from '@/shared/formatters'
-import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import type { AccountStatus, AccountSummary, AccountTestResult } from '@/types/domain'
 import {
   accountDiagnosticTooltipLines,
   conciseAccountLastErrorText,
@@ -17,15 +14,30 @@ import {
   type AccountDiagnosticMessageParts
 } from './accountDiagnosticMessages'
 
-export interface OAuthUsageBar {
-  key: string
-  label: string
-  percent: number
-  displayPercent: string
-  resetText: string
-  color: string
-  tone: string
-}
+export {
+  accountClientCompatibilityText,
+  accountDisplayExpiresAt,
+  accountDisplayName,
+  accountLastUsedAt,
+  accountTypeDescription,
+  accountTypeText,
+  accountTypeTitle,
+  asString,
+  compareAccountConcurrency,
+  compareAccountExpiresAt,
+  compareAccountLastUsedAt,
+  isAccountDisplayExpired,
+  normalizeKeyword
+} from './accountBasicFormatters'
+
+export {
+  formatAccountUsageSummary,
+  formatCost,
+  formatRelativeReset,
+  formatUsageAmount,
+  oauthUsageBars,
+  type OAuthUsageBar
+} from './accountUsageFormatters'
 
 export interface AccountStatusTagInfo {
   color: string
@@ -70,7 +82,8 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
-  if (account.effectiveAvailability && !account.effectiveAvailability.available) return account.effectiveAvailability.color
+  if (isScheduleInactiveEffectiveAvailability(account)) return statusColor('disabled')
+  if (shouldDisplayEffectiveAvailabilityAsStatus(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
@@ -82,15 +95,15 @@ export function accountStatusColor(account: AccountSummary) {
   if (runtimeStatus === 'precheck_failed') return 'gold'
   const qualityStatus = accountQualityStatusInfo(account)
   if (qualityStatus) return qualityStatus.color
-  if (account.effectiveAvailability) return account.effectiveAvailability.color
   return statusColor(account.status)
 }
 
 export function accountStatusText(account: AccountSummary) {
+  if (isScheduleInactiveEffectiveAvailability(account)) return statusText('disabled')
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }
-  if (account.effectiveAvailability && !account.effectiveAvailability.available) return account.effectiveAvailability.label
+  if (shouldDisplayEffectiveAvailabilityAsStatus(account)) return account.effectiveAvailability.label
   if (isAuthorizationPaused(account)) return '授权暂停'
   if (isAuthorizationExpired(account)) return '授权到期'
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
@@ -103,7 +116,6 @@ export function accountStatusText(account: AccountSummary) {
   if (runtimeStatus === 'precheck_failed') return '探针确认失败'
   const qualityStatus = accountQualityStatusInfo(account)
   if (qualityStatus) return qualityStatus.label
-  if (account.effectiveAvailability) return account.effectiveAvailability.label
   return statusText(account.status)
 }
 
@@ -195,7 +207,9 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (conciseOwnStatus) {
     return conciseAccountStatusTooltipLines(account)
   }
-  if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {
+  if (effectiveAvailability?.status === 'instance_schedule_inactive') {
+    lines.push(effectiveAvailability.reason || '账户当前不在允许使用时段，实际不参与调度')
+  } else if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {
     lines.push(`实际状态：${effectiveAvailability.label}`)
     if (effectiveAvailability.reason && effectiveAvailability.reason !== effectiveAvailability.label) {
       lines.push(`实际原因：${effectiveAvailability.reason}`)
@@ -301,6 +315,7 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
 function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {
   const availability = account.effectiveAvailability
   if (!availability || availability.available) return false
+  if (isScheduleInactiveStatus(availability.status)) return false
   if (isDirectAccountStatus(availability.status)) return false
   if (availability.blockerScope === 'source_account' || availability.blockerScope === 'runtime') return false
   if (availability.status === 'authorization_expired'
@@ -309,6 +324,16 @@ function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolea
     return false
   }
   return true
+}
+
+function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
+  const availability = account.effectiveAvailability
+  return Boolean(availability && !availability.available && !isScheduleInactiveStatus(availability.status))
+}
+
+function isScheduleInactiveEffectiveAvailability(account: AccountSummary): boolean {
+  const status = account.effectiveAvailability?.status
+  return status === 'instance_schedule_inactive' || status === 'source_schedule_inactive'
 }
 
 function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): string[] {
@@ -540,114 +565,11 @@ export function isAuthorizationBindingUnavailable(account: AccountSummary): bool
     && !isAuthorizationPaused(account)
 }
 
-export function accountDisplayExpiresAt(account: AccountSummary): string | undefined {
-  if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
-    return account.authorizationExpiresAt
-  }
-  return account.accountExpiresAt
-}
-
-export function isAccountDisplayExpired(account: AccountSummary): boolean {
-  const expiresAt = accountDisplayExpiresAt(account)
-  if (!expiresAt) return false
-  const time = serverDateTimeTimestamp(expiresAt)
-  return time !== undefined && time <= Date.now()
-}
-
-export function accountDisplayName(account: AccountSummary): string {
-  if (!isAuthorizedAccount(account)) return account.name
-  const cleaned = account.name.replace(/（授权(?: [^）]+)?）$/, '')
-  return cleaned || account.name
-}
-
-export function accountTypeText(type: AccountType) {
-  if (type === 'oauth') return 'OAuth'
-  if (type === 'api_key') return 'API Key'
-  return type || '-'
-}
-
-export function accountClientCompatibilityText(value?: AccountClientCompatibility): string {
-  if (value === 'codex_responses') return 'Codex Responses'
-  return 'OpenAI 标准'
-}
-
-export function accountTypeTitle(providerName: string, type: AccountType) {
-  if (type === 'oauth') return `${providerName} OAuth`
-  if (type === 'api_key') return `${providerName} API Key`
-  return `${providerName} ${type}`.trim()
-}
-
-export function accountTypeDescription(providerCode: string, type: AccountType) {
-  if (isGptVendorCode(providerCode) && type === 'oauth') return '适合 GPT / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
-  if (isGptVendorCode(providerCode) && type === 'api_key') return '适合 GPT 官方或 OpenAI v1 兼容透传，可配置 Base URL。'
-  return '该账户类型会使用供应商定义的创建流程。'
-}
-
 export function isAuthorizedAccount(account: AccountSummary): boolean {
   return account.accessType === 'authorized'
 }
 
-export function asString(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-export function normalizeKeyword(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase()
-}
-
-export function formatAccountUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
-}
-
-export function formatUsageAmount(value?: number): string {
-  return formatCompactUsageAmount(value)
-}
-
-export function formatCost(value?: number): string {
-  return formatUsd(value)
-}
-
-export function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
-  if (!isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') return []
-  const usage = account.oauthUsage
-  if (!usage) return []
-  return [
-    oauthUsageBar('5h', '5h', usage.fiveHour),
-    oauthUsageBar('7d', '7d', usage.sevenDay)
-  ].filter((bar): bar is OAuthUsageBar => Boolean(bar))
-}
-
-export function formatRelativeReset(value: string): string {
-  const time = serverDateTimeTimestamp(value)
-  if (time === undefined) return '时间格式异常'
-  const diffMs = time - Date.now()
-  if (diffMs <= 0) return '现在'
-  const totalMinutes = Math.ceil(diffMs / 60_000)
-  const days = Math.floor(totalMinutes / 1440)
-  const hours = Math.floor((totalMinutes % 1440) / 60)
-  const minutes = totalMinutes % 60
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
-}
-
 export { formatDateTime, formatNumber, formatServerDateTimeInput, parseStrictDatePickerValue }
-
-export function accountLastUsedAt(account: AccountSummary): string | undefined {
-  return account.lastUsedAt
-}
-
-export function compareAccountLastUsedAt(left: AccountSummary, right: AccountSummary): number {
-  return timestampOf(accountLastUsedAt(left)) - timestampOf(accountLastUsedAt(right))
-}
-
-export function compareAccountExpiresAt(left: AccountSummary, right: AccountSummary): number {
-  return timestampOf(accountDisplayExpiresAt(left)) - timestampOf(accountDisplayExpiresAt(right))
-}
-
-export function compareAccountConcurrency(left: AccountSummary, right: AccountSummary): number {
-  return left.concurrencyLimit - right.concurrencyLimit || left.currentConcurrency - right.currentConcurrency || left.name.localeCompare(right.name, 'zh-CN')
-}
 
 export function formatTestTerminalResult(result: AccountTestResult): string {
   if (result.outputText?.trim()) return result.outputText.trim()
@@ -662,23 +584,3 @@ export function formatAccountTestDuration(value?: number): string {
 }
 
 export { splitAccountDiagnosticMessage, type AccountDiagnosticMessageParts }
-
-function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {
-  if (!window) return undefined
-  const rawPercent = Math.max(0, window.utilization)
-  const percent = Math.min(Math.round(rawPercent), 100)
-  return {
-    key,
-    label,
-    percent,
-    displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
-    resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '现在',
-    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
-    tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
-  }
-}
-
-function timestampOf(value?: string): number {
-  if (!value) return 0
-  return serverDateTimeTimestamp(value) ?? 0
-}

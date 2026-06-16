@@ -3,10 +3,13 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
-import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberAccountLabels, rememberAccountSelection } from '@/shared/accountLabelCache'
+import { mergeSelectedGroupOptions, rememberGroupLabels } from '@/shared/groupLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary } from '@/types/domain'
+import { normalizeSearchKeyword, selectedAccountFromOptions, selectedGroupFromOptions } from './authorizationOptionHelpers'
+import { createAuthorizationSearchScheduler } from './authorizationSearchScheduler'
+import { ensureSelectedAccountOption, ensureSelectedGroupOption } from './authorizationSelectedOptionLoaders'
 import type { AuthorizationUsageResourceFilters } from './authorizationUsageFilters'
 
 export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsageResourceFilters) {
@@ -21,8 +24,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   let requestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
-  let searchKeyword = ''
-  let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+  const searchKeyword = ref('')
   const selectedResourceOwnerSystemAccountId = computed(() => {
     return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
   })
@@ -44,8 +46,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       .map((group) => ({ label: group.name, value: group.id })), [filters.resourceId], [filters.resourceGroup])
   })
 
-  async function loadAuthorizableResourceOptions(keyword = searchKeyword) {
-    searchKeyword = keyword
+  async function loadAuthorizableResourceOptions(keyword = searchKeyword.value) {
+    searchKeyword.value = keyword
     if (filters.resourceType === 'all') {
       accounts.value = []
       groups.value = []
@@ -105,7 +107,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
           let nextAccounts = isManagementView.value
             ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
             : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
-          nextAccounts = await ensureSelectedAccountOption(nextAccounts, ownerSystemAccountId)
+          nextAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, ownerSystemAccountId, isManagementView.value)
           rememberAccountLabels(nextAccounts)
           syncResourceAccount(nextAccounts)
           accountOptionCache.set(requestKey, nextAccounts)
@@ -116,7 +118,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
           let nextGroups = isManagementView.value
             ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
             : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
-          nextGroups = await ensureSelectedGroupOption(nextGroups, ownerSystemAccountId)
+          nextGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, ownerSystemAccountId, isManagementView.value)
           rememberGroupLabels(nextGroups)
           syncResourceGroup(nextGroups)
           groupOptionCache.set(requestKey, nextGroups)
@@ -153,51 +155,17 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     }
   }
 
-  function handleResourceOptionsSearch(value: string) {
-    searchKeyword = value
-    clearSearchTimer()
-    searchTimer = window.setTimeout(() => {
-      searchTimer = undefined
-      void loadAuthorizableResourceOptions(searchKeyword)
-    }, searchDelayMs)
-  }
+  const resourceOptionsSearch = createAuthorizationSearchScheduler({
+    delayMs: searchDelayMs,
+    keyword: searchKeyword,
+    load: loadAuthorizableResourceOptions
+  })
+  const handleResourceOptionsSearch = resourceOptionsSearch.schedule
+  const clearSearchTimer = resourceOptionsSearch.clear
 
   function resetResourceOptionsSearch() {
-    searchKeyword = ''
+    searchKeyword.value = ''
     clearSearchTimer()
-  }
-
-  function clearSearchTimer() {
-    if (searchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(searchTimer)
-      searchTimer = undefined
-    }
-  }
-
-  async function ensureSelectedAccountOption(nextAccounts: AccountOptionSummary[], ownerSystemAccountId: string | undefined): Promise<AccountOptionSummary[]> {
-    const selectedId = filters.resourceId?.trim()
-    if (!selectedId || nextAccounts.some((account) => account.id === selectedId)) return nextAccounts
-    try {
-      const selected = isManagementView.value
-        ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, ids: [selectedId], limit: 1 })
-        : await api.myAccounts.options({ ids: [selectedId], limit: 1 })
-      return mergeOptionsById(selected, nextAccounts)
-    } catch {
-      return nextAccounts
-    }
-  }
-
-  async function ensureSelectedGroupOption(nextGroups: GroupOptionSummary[], ownerSystemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
-    const selectedId = filters.resourceId?.trim()
-    if (!selectedId || nextGroups.some((group) => group.id === selectedId)) return nextGroups
-    try {
-      const selected = isManagementView.value
-        ? await api.groups.options({ systemAccountId: ownerSystemAccountId, ids: [selectedId], limit: 1 })
-        : await api.myGroups.options({ ids: [selectedId], limit: 1 })
-      return mergeOptionsById(selected, nextGroups)
-    } catch {
-      return nextGroups
-    }
   }
 
   function syncResourceGroup(nextGroups = groups.value): void {
@@ -217,20 +185,6 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     filters.resourceGroup = undefined
     filters.resourceAccount = selectedAccountFromOptions(filters.resourceId, nextAccounts, filters.resourceAccount)
     rememberAccountSelection(filters.resourceAccount)
-  }
-
-  function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
-    const normalizedId = id?.trim()
-    if (!normalizedId) return undefined
-    const group = nextGroups.find((item) => item.id === normalizedId)
-    if (group) return { id: group.id, name: group.name }
-    return fallback?.id === normalizedId ? fallback : undefined
-  }
-
-  function selectedAccountFromOptions(id: string | undefined, nextAccounts: AccountOptionSummary[], fallback?: AccountSelection): AccountSelection | undefined {
-    const normalizedId = id?.trim()
-    if (!normalizedId) return undefined
-    return accountSelectionForId(normalizedId, nextAccounts) ?? (fallback?.id === normalizedId ? fallback : undefined)
   }
 
   function matchesSelectedResourceOwner(resource: Pick<AccountOptionSummary | GroupOptionSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
@@ -256,17 +210,4 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     resetResourceId,
     resetResourceOptionsSearch
   }
-}
-
-function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
-  const merged = new Map<string, T>()
-  for (const item of [...leading, ...trailing]) {
-    merged.set(item.id, item)
-  }
-  return [...merged.values()]
-}
-
-function normalizeSearchKeyword(value?: string): string | undefined {
-  const keyword = value?.trim()
-  return keyword ? keyword : undefined
 }

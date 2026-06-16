@@ -16,7 +16,7 @@
 
 - 现象：API Key 配置了允许窗口，例如每天 `22:00-23:55`，到停止时间后列表仍显示运行状态为“启用”，网关继续接受该 Key 并访问绑定分组。
 - 期望：到计划时段外后 API Key 不应继续进入任何分组路由；后台状态同步即使错过边界分钟，也应在下一轮补偿停用。
-- 实际：后台任务只在开始 / 结束的精确分钟生成状态事件；如果 maintenance-worker 在该分钟未执行成功，后续扫描不会补偿。网关校验只看 `api_keys.status` 和过期时间，因此旧状态会继续放行。
+- 实际：后台任务只在开始 / 结束的精确分钟生成状态事件；如果 maintenance-worker 在该分钟未执行成功，后续扫描不会补偿。网关校验只看人工状态和过期时间，没有独立的计划派生运行态，因此旧状态会继续放行。
 - 影响范围：所有配置 API Key 时间计划的入口 Key；同类风险也覆盖账户时间计划派生候选状态。
 
 ## 复现步骤
@@ -42,20 +42,20 @@
 ## 修复方案
 
 - 修改点：
-  - `backend/src/storage/api-key-schedule-status-sync.repository.ts`：同步任务每轮按 `apiKeyAvailabilityScheduleStatus()` 计算当前计划状态；时段外补偿停用，时段内补执行尚未执行过的开启事件，保留窗口中间人工停用语义。
+  - `backend/src/storage/api-key-schedule-status-sync.repository.ts`：同步任务每轮按当前时间计算计划是否允许，只写 `api_keys.availability_schedule_active`，不覆盖人工启停 `status`；时段外补偿派生停用，时段内恢复派生可用，保留窗口中间人工停用语义。
   - `backend/src/storage/account-availability-schedule-status-sync.repository.ts`：新增账户时间计划派生状态同步，把 `accounts.availability_schedule_active` 作为网关候选 SQL 的轻量过滤字段。
-  - `backend/src/storage/gateway-api-key.repository.ts`、`backend/src/storage/openai-account-selector.repository.ts`、`backend/src/modules/gateway/runtime/runtime-cache.service.ts`：请求热链路不解析时间计划 JSON，不再用计划分钟边界缩短 runtime cache；只读取 `api_keys.status` 和账户派生布尔字段。
+  - `backend/src/storage/gateway-api-key.repository.ts`、`backend/src/storage/openai-account-selector.repository.ts`、`backend/src/modules/gateway/runtime/runtime-cache.service.ts`：请求热链路不解析时间计划 JSON，不再用计划分钟边界缩短 runtime cache；只读取 API Key / 账户的人工状态、派生计划布尔字段和到期时间。已加载运行态采用软过期缓存，软过期请求继续使用内存快照并后台刷新，返回前按当前时间过滤已过期 API Key、授权和账号。
   - `backend/src/modules/background/background-jobs.ts`：maintenance-worker 定时同步 API Key 和账户计划派生状态，变更后清理网关运行缓存。
   - `backend/src/scripts/regression/api-key-availability-schedule-regression.ts`：补充错过停止 / 开启边界后的补偿同步，以及状态尚未同步时允许一个同步周期延迟。
-- 行为影响：带时间计划的 API Key 和账户不再在每次网关请求内解析计划；状态切换由后台同步任务维护，允许最多一个 worker 同步周期的延迟。窗口中间人工停用不会被下一轮同步立即打开。
+- 行为影响：带时间计划的 API Key 和账户不再在每次网关请求内解析计划；派生状态切换由后台同步任务维护，允许最多一个 worker 同步周期的延迟。窗口中间人工停用不会被下一轮同步立即打开。
 - 发布异常处理：若线上已经出现未停用 Key，部署后下一轮 maintenance-worker 会补偿状态；部署前可先手动停用止血。
 
 ## 横向排查
 
 - AI 账户时间计划：由 `account-availability-schedule-status-sync` 写入 `accounts.availability_schedule_active`；网关候选 SQL 只读派生布尔字段，不在请求链路解析时间计划。状态变化后由后台任务清理 runtime cache，允许一个同步周期延迟。
-- 账户到期时间：网关候选 SQL 对账户自身和授权来源账户都带 `account_expires_at > now` 硬过滤，runtime 缓存 TTL 受返回候选里的 `accountExpiresAt` 约束，避免到期后被缓存续命。
-- 资源授权到期：分组授权、账户授权和批量授权读取均带 `expires_at > now` 条件；分组访问元数据和账号候选缓存 TTL 受授权到期时间约束。
-- IP 封禁策略到期：运行态按 `ip_hash` 精确查 active policy 时带 `expires_at > now` 条件；命中来源级缓存后仍会按 `expiresAt` 再判断，TTL 也截到策略过期点。
+- 账户到期时间：网关候选 SQL 对账户自身和授权来源账户都带 `account_expires_at > now` 硬过滤；已加载账号快照软过期后仍会在返回前按 `accountExpiresAt` / token `expiresAt` 内存过滤，避免到期后被缓存续命。
+- 资源授权到期：分组授权、账户授权和批量授权读取均带 `expires_at > now` 条件；已加载分组访问元数据和账号候选软过期后仍会在返回前按授权到期时间内存过滤。
+- IP 封禁策略到期：网关请求路径只读 server 内存 active policy 快照；命中来源级缓存或快照后仍会按 `expiresAt` 本地判断，TTL 截到策略过期点，stats-worker 周期推送快照兜底清出过期策略。
 - 手动账户测试、模型检测和冷却复测会显式传 `ignoreAvailability: true`，属于诊断 / 恢复路径，不是普通 API Key 网关请求入口。
 
 ## 验证记录

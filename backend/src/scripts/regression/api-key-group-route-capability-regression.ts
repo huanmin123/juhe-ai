@@ -63,6 +63,9 @@ const [
   import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js')
 ])
 
+usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+
 interface MockUpstreamRequest {
   path: string
   accountKey: string
@@ -112,7 +115,9 @@ try {
   failingUpstreamKeys.clear()
   releaseLocalSuppressionsBeforeRespondingKeys.clear()
   usageRecordQueue.flushAllUsageRecordQueue()
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   auditLogQueue.flushAllAuditLogQueue()
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   upstreamModule.closeGatewayUpstreamAgentsForTest()
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)

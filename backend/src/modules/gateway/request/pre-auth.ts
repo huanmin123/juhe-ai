@@ -38,7 +38,7 @@ export type GatewayRuntimeRequest = Request & {
 
 interface ResolveGatewayRuntimeOptions {
   closeConnectionOnAuthFailure?: boolean
-  loadClientIpPolicy?: boolean
+  inspectClientIpPolicyAfterRuntime?: boolean
 }
 
 export async function preResolveGatewayRuntime(
@@ -49,7 +49,7 @@ export async function preResolveGatewayRuntime(
   try {
     const runtime = await resolveGatewayRuntimeAsync(req, res, {
       closeConnectionOnAuthFailure: true,
-      loadClientIpPolicy: false
+      inspectClientIpPolicyAfterRuntime: false
     })
     if (!runtime?.apiKey) {
       recordEarlyGatewayAuthFailure(req, res)
@@ -126,7 +126,7 @@ export async function resolveGatewayRuntimeAsync(
     sendGatewayJsonError(res, 401, gatewayErrorPayload('API Key 无效', 'invalid_request_error'))
     return undefined
   }
-  if (options.loadClientIpPolicy !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
+  if (options.inspectClientIpPolicyAfterRuntime !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
     return undefined
   }
 

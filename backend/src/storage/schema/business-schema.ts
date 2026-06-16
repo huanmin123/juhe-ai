@@ -563,6 +563,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
+      availability_schedule_active INTEGER NOT NULL DEFAULT 1,
       last_used_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -742,7 +743,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON api_keys(status, updated_at DESC, id)
       WHERE quota_limits_json IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_status_sync
-      ON api_keys(updated_at ASC, id ASC, status)
+      ON api_keys(availability_schedule_active, updated_at ASC, id ASC)
       WHERE availability_schedule_json IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);

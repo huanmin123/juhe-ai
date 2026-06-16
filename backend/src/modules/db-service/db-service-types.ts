@@ -406,6 +406,7 @@ export type DbServiceOperation =
     key: string
     groupId?: string
     systemAccountId?: string
+    skipDynamicRouteSelection?: boolean
   }
   | {
     type: 'list_provider_model_catalog'
@@ -512,8 +513,7 @@ export type DbServiceOperation =
     type: 'clear_gateway_runtime_cache'
   }
   | {
-    type: 'find_active_client_ip_policy'
-    ipHash: string
+    type: 'list_active_client_ip_policies'
   }
   | {
     type: 'list_active_response_inspection_policies'
@@ -562,7 +562,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
-  T extends { type: 'find_active_client_ip_policy' } ? ActiveClientIpPolicy | undefined :
+  T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
   T extends { type: 'list_active_response_inspection_policies' } ? ResponseInspectionPolicySummary[] :
   T extends { type: 'record_client_ip_policy_hits' } ? { recorded: number } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :

@@ -1,6 +1,6 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import type { AccountSummary, ProviderModelPricing } from '@/types/domain'
-import { asString } from './accountFormatters'
+import { asString } from './accountBasicFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountSavePayload } from './accountSavePayload'
 import type { SuccessfulDraftActivationTest } from './useAccountTestModal'

@@ -68,6 +68,7 @@ try {
   const upstreamState: MockUpstreamState = { mode: 'failure', hits: 0 }
 
   try {
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
     updateSystemSettingsForTest({
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0,
@@ -207,6 +208,7 @@ try {
     console.log('账号质量状态 mock AI 回归通过：真实网关失败进入质量标签，后台确认失败升级临时不可调用，mock 上游恢复后冷却复测恢复 active')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     auditLogQueue.flushAllAuditLogQueue()

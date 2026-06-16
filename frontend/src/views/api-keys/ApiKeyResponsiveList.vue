@@ -22,7 +22,17 @@
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'status'">
-        <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+        <a-tooltip v-if="apiKeyStatusTooltipLines(record).length" placement="topLeft">
+          <template #title>
+            <div class="status-tooltip">
+              <div v-for="line in apiKeyStatusTooltipLines(record)" :key="line">{{ line }}</div>
+            </div>
+          </template>
+          <span>
+            <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+          </span>
+        </a-tooltip>
+        <StatusTag v-else :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
       </template>
       <template v-else-if="column.key === 'availabilitySchedule'">
         <a-tag class="schedule-tag" :color="apiKeyScheduleTagColor(record)">
@@ -80,7 +90,17 @@
         <div class="mobile-list-card-head">
           <div class="mobile-list-card-title">{{ record.name }}</div>
           <div class="mobile-list-card-tags">
-            <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+            <a-tooltip v-if="apiKeyStatusTooltipLines(record).length" placement="topLeft">
+              <template #title>
+                <div class="status-tooltip">
+                  <div v-for="line in apiKeyStatusTooltipLines(record)" :key="line">{{ line }}</div>
+                </div>
+              </template>
+              <span>
+                <StatusTag :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
+              </span>
+            </a-tooltip>
+            <StatusTag v-else :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
             <a-tag
               v-for="(binding, index) in apiKeyGroupBindings(record).slice(0, 2)"
               :key="binding.id"
@@ -154,6 +174,7 @@ import {
   apiKeyScheduleTagColor,
   apiKeyStatusTagColor,
   apiKeyStatusTagLabel,
+  apiKeyStatusTooltipLines,
   apiKeySystemAccountText,
   formatKeyPreview,
   formatUsageSummary,
@@ -212,6 +233,12 @@ const emit = defineEmits<{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-tooltip {
+  max-width: 320px;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
 
 .key-preview-cell {

@@ -356,10 +356,11 @@ try {
   assert.equal(clientIpStats.findActiveClientIpPolicyByHash(ipv4Identity.ipHash)?.id, policy.id, '运行态封禁检查应能按 ip_hash 精确读取 active 策略')
   assertClientIpPolicyLookupQueryPlan(ipv4Identity.ipHash)
   clientIpPolicyCache.clearClientIpPolicyCacheLocal()
-  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blocked, false, '来源级缓存未命中时不应在前置 cacheOnly 检查里查库')
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blocked, false, '封禁快照未加载时请求链路不应查库阻塞')
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal(clientIpStats.listActiveClientIpPolicies())
   const loadedPolicyDecision = await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)
-  assert.equal(loadedPolicyDecision.blacklistPolicy?.id, policy.id, '来源级缓存未命中后应按当前 IP 精确查询封禁策略')
-  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blacklistPolicy?.id, policy.id, '精确查询后应写入来源级短 TTL 缓存')
+  assert.equal(loadedPolicyDecision.blacklistPolicy?.id, policy.id, '封禁快照加载后应从 server 内存命中策略')
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blacklistPolicy?.id, policy.id, '内存快照命中后应写入来源级短 TTL 缓存')
   const expiringPolicy = clientIpStats.createClientIpPolicy({
     ipHash: ipv4Identity.ipHash,
     reason: 'regression expiring',
@@ -367,10 +368,11 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   clientIpPolicyCache.clearClientIpPolicyCacheLocal()
-  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)).blacklistPolicy?.id, expiringPolicy.id, '临期封禁策略过期前应进入来源级缓存')
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal(clientIpStats.listActiveClientIpPolicies())
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp)).blacklistPolicy?.id, expiringPolicy.id, '临期封禁策略过期前应进入内存快照')
   await delay(260)
   assert.equal(clientIpStats.findActiveClientIpPolicyByHash(ipv4Identity.ipHash), undefined, '封禁策略过期后精确读取不应继续返回 active 策略')
-  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blocked, false, '来源级缓存中的封禁策略过期后不应继续阻断')
+  assert.equal((await clientIpPolicyCache.inspectClientIpPolicy(ipv4Identity.clientIp, { cacheOnly: true })).blocked, false, '内存快照中的封禁策略过期后不应继续阻断')
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === expiringPolicy.id), false, '封禁策略过期后不应进入运行态列表')
   const blacklistedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 })
   assert.deepEqual(blacklistedList.items.map((item) => item.ipHash), [], 'IP 列表封禁筛选不应返回已过期封禁 IP')
@@ -546,8 +548,15 @@ function assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot(): void {
   assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), '网关 runtime 读取不能携带全量 active IP 封禁策略')
   assert(!readRuntimeBody.includes('clientIpPolicies'), '网关 runtime 响应不能携带全量 IP 封禁策略数组')
   const cacheSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
-  assert(cacheSource.includes("type: 'find_active_client_ip_policy'"), '网关 IP 封禁缓存未命中时应使用按 ip_hash 精确查询')
-  assert(!cacheSource.includes("type: 'list_active_client_ip_policies'"), '网关 IP 封禁请求路径不能加载全量 active IP 封禁策略')
+  const inspectSource = sourceBetween(
+    cacheSource,
+    'export async function inspectClientIpPolicy',
+    'export function primeClientIpPolicyCacheLocal'
+  )
+  assert(inspectSource.includes('activePolicySnapshot.get'), '网关 IP 封禁请求路径应只读 server 内存快照')
+  assert(!inspectSource.includes('requestDbService'), '网关 IP 封禁请求路径不能请求 DB service')
+  assert(!cacheSource.includes("type: 'find_active_client_ip_policy'"), '网关 IP 封禁请求路径不能按单个 IP 查库')
+  assert(cacheSource.includes("type: 'list_active_client_ip_policies'"), 'active IP 封禁策略只能通过快照重载进入 server 内存')
 }
 
 function sourceFunctionBlock(source: string, marker: string): string {
@@ -555,6 +564,14 @@ function sourceFunctionBlock(source: string, marker: string): string {
   assert(start >= 0, `未找到源码片段：${marker}`)
   const nextFunction = source.indexOf('\nfunction ', start + marker.length)
   return source.slice(start, nextFunction === -1 ? undefined : nextFunction)
+}
+
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker)
+  assert(start >= 0, `未找到源码片段：${startMarker}`)
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  assert(end >= 0, `未找到源码片段：${endMarker}`)
+  return source.slice(start, end)
 }
 
 function explainStatsQuery(sql: string, params: SQLInputValue[]): string {

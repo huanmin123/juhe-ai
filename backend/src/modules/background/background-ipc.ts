@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
@@ -26,11 +27,18 @@ import type {
   BackgroundWorkerRuntimeSnapshot,
   BackgroundWorkerState,
   PendingIngestStatusRequest,
-  PendingProcessEventLoopRequest,
-  PendingRequest
+  PendingProcessEventLoopRequest
 } from './background-ipc.types.js'
 import { failIpcPendingRequests, finishIpcPendingRequest, timeoutIpcPendingRequest } from './background-ipc-pending-requests.js'
 import { buildBackgroundWorkerStateSnapshot } from './background-ipc-state-snapshot.js'
+import {
+  failWorkerSnapshotPendingRequests,
+  finishWorkerSnapshotResponse,
+  requestDirectWorkerSnapshot,
+  requestQueuedWorkerSnapshot,
+  requestRoleWorkerSnapshot as requestSnapshotRoleWorkerSnapshot,
+  snapshotRequestStats
+} from './background-ipc-snapshot-requests.js'
 import {
   roleForBackgroundWorkerChild,
   terminateBrokenWorkerIpc,
@@ -106,38 +114,10 @@ const pendingQueueRuntime = emptyIpcQueuesRuntime()
 const ingestPendingQueueRuntime = emptyIpcQueuesRuntime()
 const probePendingQueueRuntime = emptyIpcQueuesRuntime()
 const maintenancePendingQueueRuntime = emptyIpcQueuesRuntime()
-let pendingRequests = new Map<string, PendingRequest>()
-let metricsPendingRequests = new Map<string, PendingRequest>()
-let ingestPendingRequests = new Map<string, PendingRequest>()
-let statsPendingRequests = new Map<string, PendingRequest>()
-let snapshotPendingRequests = new Map<string, PendingRequest>()
-let probePendingRequests = new Map<string, PendingRequest>()
-let maintenancePendingRequests = new Map<string, PendingRequest>()
 let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
-let timedOutSnapshotRequestCount = 0
-let rejectedSnapshotRequestCount = 0
-let metricsTimedOutSnapshotRequestCount = 0
-let metricsRejectedSnapshotRequestCount = 0
-let ingestTimedOutSnapshotRequestCount = 0
-let ingestRejectedSnapshotRequestCount = 0
-let statsTimedOutSnapshotRequestCount = 0
-let statsRejectedSnapshotRequestCount = 0
-let snapshotTimedOutSnapshotRequestCount = 0
-let snapshotRejectedSnapshotRequestCount = 0
-let probeTimedOutSnapshotRequestCount = 0
-let probeRejectedSnapshotRequestCount = 0
-let maintenanceTimedOutSnapshotRequestCount = 0
-let maintenanceRejectedSnapshotRequestCount = 0
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
-let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
-let metricsLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
-let ingestLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
-let statsLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
-let snapshotLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
-let probeLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
-let maintenanceLastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 let backgroundWorkerReadyHandler: (() => void) | undefined
 let metricsWorkerReadyHandler: (() => void) | undefined
 let ingestWorkerReadyHandler: (() => void) | undefined
@@ -432,6 +412,24 @@ export function sendGatewayQuotaSnapshotToServer(snapshot: GatewayQuotaSnapshot)
   }
 }
 
+export function sendClientIpPolicySnapshotToServer(policies: ActiveClientIpPolicy[]): void {
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
+    return
+  }
+  try {
+    process.send({
+      type: 'client_ip_policy_snapshot_update',
+      policies
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markParentIpcBroken(error)
+      }
+    })
+  } catch (error) {
+    markParentIpcBroken(error)
+  }
+}
+
 export function sendAccountRuntimeClearToServer(target: AccountRuntimeAvailabilityClearTarget): void {
   if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
     return
@@ -476,30 +474,10 @@ function sendBackgroundWorkerMessageToParent(message: BackgroundWorkerMessage): 
 }
 
 export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  if (runtimeConfig.processRole === 'worker') {
-    return lastSnapshot
-  }
-
-  if (!workerProcess) {
-    return undefined
-  }
-
-  const requestId = randomUUID()
-  return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      if (timeoutIpcPendingRequest(pendingRequests, requestId)) {
-        timedOutSnapshotRequestCount += 1
-      }
-    }, timeoutMs)
-    pendingRequests.set(requestId, { resolve, reject, timeout })
-    const queued = queueWorkerMessage({
-      type: 'background_worker_status_request',
-      requestId
-    })
-    if (!queued) {
-      rejectedSnapshotRequestCount += 1
-      finishPendingRequest(requestId, undefined)
-    }
+  return await requestQueuedWorkerSnapshot({
+    queueWorkerMessage,
+    timeoutMs,
+    workerProcess
   })
 }
 
@@ -514,133 +492,56 @@ function sendBackgroundWorkerMessageToWorker(message: BackgroundWorkerMessage): 
 }
 
 export async function requestMetricsWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  if (runtimeConfig.processRole === 'worker') {
-    return runtimeConfig.workerRole === 'metrics-worker' ? metricsLastSnapshot : undefined
-  }
-
-  const child = metricsWorkerProcess
-  if (!child || !child.connected || !metricsWorkerReady) {
-    return undefined
-  }
-
-  const requestId = randomUUID()
-  return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      if (timeoutIpcPendingRequest(metricsPendingRequests, requestId)) {
-        metricsTimedOutSnapshotRequestCount += 1
-      }
-    }, timeoutMs)
-    metricsPendingRequests.set(requestId, { resolve, reject, timeout })
-    try {
-      child.send({
-        type: 'background_worker_status_request',
-        requestId
-      } satisfies BackgroundWorkerMessage, (error) => {
-        if (error) {
-          metricsRejectedSnapshotRequestCount += 1
-          finishMetricsPendingRequest(requestId, undefined)
-          markMetricsWorkerIpcBroken(error, child)
-        }
-      })
-    } catch (error) {
-      metricsRejectedSnapshotRequestCount += 1
-      finishMetricsPendingRequest(requestId, undefined)
-      markMetricsWorkerIpcBroken(error, child)
-    }
+  return await requestDirectWorkerSnapshot('metrics-worker', {
+    child: metricsWorkerProcess,
+    markIpcBroken: (error, child) => markMetricsWorkerIpcBroken(error, child),
+    ready: metricsWorkerReady,
+    timeoutMs
   })
 }
 
 export async function requestIngestWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  if (runtimeConfig.processRole === 'worker') {
-    return runtimeConfig.workerRole === 'ingest-worker' ? ingestLastSnapshot : undefined
-  }
-
-  const child = ingestWorkerProcess
-  if (!child || !child.connected || !ingestWorkerReady) {
-    return undefined
-  }
-
-  const requestId = randomUUID()
-  return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      if (timeoutIpcPendingRequest(ingestPendingRequests, requestId)) {
-        ingestTimedOutSnapshotRequestCount += 1
-      }
-    }, timeoutMs)
-    ingestPendingRequests.set(requestId, { resolve, reject, timeout })
-    try {
-      child.send({
-        type: 'background_worker_status_request',
-        requestId
-      } satisfies BackgroundWorkerMessage, (error) => {
-        if (error) {
-          ingestRejectedSnapshotRequestCount += 1
-          finishIngestPendingRequest(requestId, undefined)
-          markIngestWorkerIpcBroken(error, child)
-        }
-      })
-    } catch (error) {
-      ingestRejectedSnapshotRequestCount += 1
-      finishIngestPendingRequest(requestId, undefined)
-      markIngestWorkerIpcBroken(error, child)
-    }
+  return await requestDirectWorkerSnapshot('ingest-worker', {
+    child: ingestWorkerProcess,
+    markIpcBroken: (error, child) => markIngestWorkerIpcBroken(error, child),
+    ready: ingestWorkerReady,
+    timeoutMs
   })
 }
 
 export async function requestStatsWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestRoleWorkerSnapshot('stats-worker', timeoutMs)
+  return await requestSnapshotRoleWorkerSnapshot('stats-worker', {
+    child: statsWorkerProcess,
+    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('stats-worker', error, child),
+    ready: statsWorkerReady,
+    timeoutMs
+  })
 }
 
 export async function requestSnapshotWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestRoleWorkerSnapshot('snapshot-worker', timeoutMs)
+  return await requestSnapshotRoleWorkerSnapshot('snapshot-worker', {
+    child: snapshotWorkerProcess,
+    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('snapshot-worker', error, child),
+    ready: snapshotWorkerReady,
+    timeoutMs
+  })
 }
 
 export async function requestProbeWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestRoleWorkerSnapshot('probe-worker', timeoutMs)
+  return await requestSnapshotRoleWorkerSnapshot('probe-worker', {
+    child: probeWorkerProcess,
+    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('probe-worker', error, child),
+    ready: probeWorkerReady,
+    timeoutMs
+  })
 }
 
 export async function requestMaintenanceWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestRoleWorkerSnapshot('maintenance-worker', timeoutMs)
-}
-
-async function requestRoleWorkerSnapshot(
-  role: BackgroundWorkerSnapshotRole,
-  timeoutMs: number
-): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  if (runtimeConfig.processRole === 'worker') {
-    return runtimeConfig.workerRole === role ? lastSnapshotForRole(role) : undefined
-  }
-
-  const child = processForRole(role)
-  if (!child || !child.connected || !readyForRole(role)) {
-    return undefined
-  }
-
-  const requestId = randomUUID()
-  return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve) => {
-    const rolePendingRequests = pendingRequestsForRole(role)
-    const timeout = setTimeout(() => {
-      if (timeoutIpcPendingRequest(rolePendingRequests, requestId)) {
-        incrementTimedOutSnapshotRequestCount(role)
-      }
-    }, timeoutMs)
-    rolePendingRequests.set(requestId, { resolve, reject: () => undefined, timeout })
-    try {
-      child.send({
-        type: 'background_worker_status_request',
-        requestId
-      } satisfies BackgroundWorkerMessage, (error) => {
-        if (error) {
-          incrementRejectedSnapshotRequestCount(role)
-          finishRolePendingRequest(role, requestId, undefined)
-          markRoleWorkerIpcBroken(role, error, child)
-        }
-      })
-    } catch (error) {
-      incrementRejectedSnapshotRequestCount(role)
-      finishRolePendingRequest(role, requestId, undefined)
-      markRoleWorkerIpcBroken(role, error, child)
-    }
+  return await requestSnapshotRoleWorkerSnapshot('maintenance-worker', {
+    child: maintenanceWorkerProcess,
+    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('maintenance-worker', error, child),
+    ready: maintenanceWorkerReady,
+    timeoutMs
   })
 }
 
@@ -754,10 +655,17 @@ async function requestChildProcessEventLoopSamples(
 }
 
 export function getBackgroundWorkerState(): BackgroundWorkerState {
+  const workerSnapshotStats = snapshotRequestStats('worker')
+  const metricsSnapshotStats = snapshotRequestStats('metrics-worker')
+  const ingestSnapshotStats = snapshotRequestStats('ingest-worker')
+  const statsSnapshotStats = snapshotRequestStats('stats-worker')
+  const snapshotWorkerSnapshotStats = snapshotRequestStats('snapshot-worker')
+  const probeSnapshotStats = snapshotRequestStats('probe-worker')
+  const maintenanceSnapshotStats = snapshotRequestStats('maintenance-worker')
   return buildBackgroundWorkerStateSnapshot({
     pid: workerPid,
     ready: workerReady,
-    lastSnapshot,
+    lastSnapshot: workerSnapshotStats.lastSnapshot,
     pendingMessageCounts: {
       regularWorker: regularWorkerMessageQueue.length,
       ingestUsageRecord: ingestUsageRecordMessageQueue.length,
@@ -773,9 +681,9 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
       maintenanceWorker: maintenanceWorkerMessageQueueBytes
     },
     pendingQueues: buildAggregatePendingQueuesRuntime(),
-    pendingSnapshotRequestCount: pendingRequests.size,
-    timedOutSnapshotRequestCount,
-    rejectedSnapshotRequestCount,
+    pendingSnapshotRequestCount: workerSnapshotStats.pendingSnapshotRequestCount,
+    timedOutSnapshotRequestCount: workerSnapshotStats.timedOutSnapshotRequestCount,
+    rejectedSnapshotRequestCount: workerSnapshotStats.rejectedSnapshotRequestCount,
     pendingProcessEventLoopRequestCount: pendingProcessEventLoopRequests.size,
     timedOutProcessEventLoopRequestCount,
     failedProcessEventLoopRequestCount,
@@ -783,59 +691,59 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
       metricsWorker: {
         pid: metricsWorkerPid,
         ready: metricsWorkerReady,
-        lastSnapshot: metricsLastSnapshot,
-        pendingSnapshotRequestCount: metricsPendingRequests.size,
-        timedOutSnapshotRequestCount: metricsTimedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: metricsRejectedSnapshotRequestCount
+        lastSnapshot: metricsSnapshotStats.lastSnapshot,
+        pendingSnapshotRequestCount: metricsSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: metricsSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: metricsSnapshotStats.rejectedSnapshotRequestCount
       },
       ingestWorker: {
         pid: ingestWorkerPid,
         ready: ingestWorkerReady,
-        lastSnapshot: ingestLastSnapshot,
+        lastSnapshot: ingestSnapshotStats.lastSnapshot,
         pendingMessageCount: ingestUsageRecordMessageQueue.length + ingestRegularWorkerMessageQueue.length,
         pendingMessageBytes: ingestUsageRecordMessageQueueBytes + ingestRegularWorkerMessageQueueBytes,
         pendingQueues: buildIngestPendingQueuesRuntime(),
-        pendingSnapshotRequestCount: ingestPendingRequests.size,
-        timedOutSnapshotRequestCount: ingestTimedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: ingestRejectedSnapshotRequestCount
+        pendingSnapshotRequestCount: ingestSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: ingestSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: ingestSnapshotStats.rejectedSnapshotRequestCount
       },
       statsWorker: {
         pid: statsWorkerPid,
         ready: statsWorkerReady,
-        lastSnapshot: statsLastSnapshot,
-        pendingSnapshotRequestCount: statsPendingRequests.size,
-        timedOutSnapshotRequestCount: statsTimedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: statsRejectedSnapshotRequestCount
+        lastSnapshot: statsSnapshotStats.lastSnapshot,
+        pendingSnapshotRequestCount: statsSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: statsSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: statsSnapshotStats.rejectedSnapshotRequestCount
       },
       snapshotWorker: {
         pid: snapshotWorkerPid,
         ready: snapshotWorkerReady,
-        lastSnapshot: snapshotLastSnapshot,
-        pendingSnapshotRequestCount: snapshotPendingRequests.size,
-        timedOutSnapshotRequestCount: snapshotTimedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: snapshotRejectedSnapshotRequestCount
+        lastSnapshot: snapshotWorkerSnapshotStats.lastSnapshot,
+        pendingSnapshotRequestCount: snapshotWorkerSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: snapshotWorkerSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: snapshotWorkerSnapshotStats.rejectedSnapshotRequestCount
       },
       probeWorker: {
         pid: probeWorkerPid,
         ready: probeWorkerReady,
-        lastSnapshot: probeLastSnapshot,
+        lastSnapshot: probeSnapshotStats.lastSnapshot,
         pendingMessageCount: probeWorkerMessageQueue.length,
         pendingMessageBytes: probeWorkerMessageQueueBytes,
         pendingQueues: buildProbePendingQueuesRuntime(),
-        pendingSnapshotRequestCount: probePendingRequests.size,
-        timedOutSnapshotRequestCount: probeTimedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: probeRejectedSnapshotRequestCount
+        pendingSnapshotRequestCount: probeSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: probeSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: probeSnapshotStats.rejectedSnapshotRequestCount
       },
       maintenanceWorker: {
         pid: maintenanceWorkerPid,
         ready: maintenanceWorkerReady,
-        lastSnapshot: maintenanceLastSnapshot,
+        lastSnapshot: maintenanceSnapshotStats.lastSnapshot,
         pendingMessageCount: maintenanceWorkerMessageQueue.length,
         pendingMessageBytes: maintenanceWorkerMessageQueueBytes,
         pendingQueues: buildMaintenancePendingQueuesRuntime(),
-        pendingSnapshotRequestCount: maintenancePendingRequests.size,
-        timedOutSnapshotRequestCount: maintenanceTimedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: maintenanceRejectedSnapshotRequestCount
+        pendingSnapshotRequestCount: maintenanceSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: maintenanceSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: maintenanceSnapshotStats.rejectedSnapshotRequestCount
       }
     }
   })
@@ -891,6 +799,11 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
     case 'gateway_quota_snapshot_update':
       if (runtimeConfig.processRole === 'server' && isGatewayQuotaSnapshot(record.snapshot)) {
         void replaceServerGatewayQuotaSnapshot(record.snapshot)
+      }
+      break
+    case 'client_ip_policy_snapshot_update':
+      if (runtimeConfig.processRole === 'server' && isActiveClientIpPolicyArray(record.policies)) {
+        void replaceServerClientIpPolicySnapshot(record.policies)
       }
       break
     default:
@@ -1451,69 +1364,6 @@ function setPidForRole(role: BackgroundWorkerProcessRole, pid: number | undefine
   }
 }
 
-function pendingRequestsForRole(
-  role: BackgroundWorkerSnapshotRole
-): Map<string, PendingRequest> {
-  if (role === 'stats-worker') return statsPendingRequests
-  if (role === 'snapshot-worker') return snapshotPendingRequests
-  if (role === 'probe-worker') return probePendingRequests
-  return maintenancePendingRequests
-}
-
-function failPendingRequestsForRole(
-  role: BackgroundWorkerSnapshotRole
-): void {
-  if (role === 'stats-worker') return failStatsPendingRequests()
-  if (role === 'snapshot-worker') return failSnapshotPendingRequests()
-  if (role === 'probe-worker') return failProbePendingRequests()
-  return failMaintenancePendingRequests()
-}
-
-function lastSnapshotForRole(
-  role: BackgroundWorkerSnapshotRole
-): BackgroundWorkerRuntimeSnapshot | undefined {
-  if (role === 'stats-worker') return statsLastSnapshot
-  if (role === 'snapshot-worker') return snapshotLastSnapshot
-  if (role === 'probe-worker') return probeLastSnapshot
-  return maintenanceLastSnapshot
-}
-
-function setLastSnapshotForRole(
-  role: BackgroundWorkerSnapshotRole,
-  snapshot: BackgroundWorkerRuntimeSnapshot | undefined
-): void {
-  if (!snapshot || typeof snapshot !== 'object') {
-    return
-  }
-  if (role === 'stats-worker') {
-    statsLastSnapshot = snapshot
-  } else if (role === 'snapshot-worker') {
-    snapshotLastSnapshot = snapshot
-  } else if (role === 'probe-worker') {
-    probeLastSnapshot = snapshot
-  } else {
-    maintenanceLastSnapshot = snapshot
-  }
-}
-
-function incrementTimedOutSnapshotRequestCount(
-  role: BackgroundWorkerSnapshotRole
-): void {
-  if (role === 'stats-worker') statsTimedOutSnapshotRequestCount += 1
-  else if (role === 'snapshot-worker') snapshotTimedOutSnapshotRequestCount += 1
-  else if (role === 'probe-worker') probeTimedOutSnapshotRequestCount += 1
-  else maintenanceTimedOutSnapshotRequestCount += 1
-}
-
-function incrementRejectedSnapshotRequestCount(
-  role: BackgroundWorkerSnapshotRole
-): void {
-  if (role === 'stats-worker') statsRejectedSnapshotRequestCount += 1
-  else if (role === 'snapshot-worker') snapshotRejectedSnapshotRequestCount += 1
-  else if (role === 'probe-worker') probeRejectedSnapshotRequestCount += 1
-  else maintenanceRejectedSnapshotRequestCount += 1
-}
-
 function markWorkerReady(role: BackgroundWorkerProcessRole, record: Partial<BackgroundWorkerMessage> & Record<string, unknown>): void {
   if (role === 'metrics-worker') {
     metricsWorkerReady = true
@@ -1562,50 +1412,7 @@ function markWorkerReady(role: BackgroundWorkerProcessRole, record: Partial<Back
 }
 
 function finishWorkerStatusResponse(role: BackgroundWorkerProcessRole, requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  if (role === 'metrics-worker') {
-    finishMetricsPendingRequest(requestId, snapshot)
-    if (snapshot && typeof snapshot === 'object') {
-      metricsLastSnapshot = snapshot
-    }
-    return
-  }
-  if (role === 'ingest-worker') {
-    finishIngestPendingRequest(requestId, snapshot)
-    if (snapshot && typeof snapshot === 'object') {
-      ingestLastSnapshot = snapshot
-    }
-    return
-  }
-  if (isSnapshotRoleWorker(role)) {
-    finishRolePendingRequest(role, requestId, snapshot)
-    setLastSnapshotForRole(role, snapshot)
-    return
-  }
-
-  finishPendingRequest(requestId, snapshot)
-  if (snapshot && typeof snapshot === 'object') {
-    lastSnapshot = snapshot
-  }
-}
-
-function finishPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  finishIpcPendingRequest(pendingRequests, requestId, snapshot)
-}
-
-function finishMetricsPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  finishIpcPendingRequest(metricsPendingRequests, requestId, snapshot)
-}
-
-function finishIngestPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
-  finishIpcPendingRequest(ingestPendingRequests, requestId, snapshot)
-}
-
-function finishRolePendingRequest(
-  role: BackgroundWorkerSnapshotRole,
-  requestId: string,
-  snapshot: BackgroundWorkerRuntimeSnapshot | undefined
-): void {
-  finishIpcPendingRequest(pendingRequestsForRole(role), requestId, snapshot)
+  finishWorkerSnapshotResponse(role, requestId, snapshot)
 }
 
 function finishParentIngestStatusRequest(requestId: string, status: BackgroundWorkerIngestDrainStatus | undefined): void {
@@ -1613,36 +1420,32 @@ function finishParentIngestStatusRequest(requestId: string, status: BackgroundWo
 }
 
 function failPendingRequests(): void {
-  failIpcPendingRequests(pendingRequests)
+  failWorkerSnapshotPendingRequests('worker')
   failPendingProcessEventLoopRequests()
 }
 
 function failMetricsPendingRequests(): void {
-  failIpcPendingRequests(metricsPendingRequests)
+  failWorkerSnapshotPendingRequests('metrics-worker')
 }
 
 function failIngestPendingRequests(): void {
-  failIpcPendingRequests(ingestPendingRequests)
+  failWorkerSnapshotPendingRequests('ingest-worker')
 }
 
 function failStatsPendingRequests(): void {
-  failRolePendingRequests(statsPendingRequests)
+  failWorkerSnapshotPendingRequests('stats-worker')
 }
 
 function failSnapshotPendingRequests(): void {
-  failRolePendingRequests(snapshotPendingRequests)
+  failWorkerSnapshotPendingRequests('snapshot-worker')
 }
 
 function failProbePendingRequests(): void {
-  failRolePendingRequests(probePendingRequests)
+  failWorkerSnapshotPendingRequests('probe-worker')
 }
 
 function failMaintenancePendingRequests(): void {
-  failRolePendingRequests(maintenancePendingRequests)
-}
-
-function failRolePendingRequests(requests: Map<string, PendingRequest>): void {
-  failIpcPendingRequests(requests)
+  failWorkerSnapshotPendingRequests('maintenance-worker')
 }
 
 function failPendingProcessEventLoopRequests(): void {
@@ -1696,7 +1499,7 @@ function markRoleWorkerIpcBroken(
   if (isCurrentChild) {
     setReadyForRole(role, false)
     setPidForRole(role, workerPidFromBrokenChild(child, undefined))
-    failPendingRequestsForRole(role)
+    failWorkerSnapshotPendingRequests(role)
   }
   terminateBrokenWorkerIpc(role, error, child)
 }
@@ -1782,6 +1585,11 @@ async function replaceServerGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot)
   quotaSnapshotCache.replaceGatewayQuotaSnapshot(snapshot)
 }
 
+async function replaceServerClientIpPolicySnapshot(policies: ActiveClientIpPolicy[]): Promise<void> {
+  const policyCache = await import('../gateway/runtime/client-ip-policy-cache.service.js')
+  policyCache.replaceClientIpPolicyCacheLocal(policies)
+}
+
 function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
@@ -1810,6 +1618,23 @@ function isGatewayQuotaSnapshot(value: unknown): value is GatewayQuotaSnapshot {
   return typeof record.generatedAt === 'string'
     && Array.isArray(record.costEntries)
     && Array.isArray(record.authorizationEntries)
+}
+
+function isActiveClientIpPolicyArray(value: unknown): value is ActiveClientIpPolicy[] {
+  return Array.isArray(value) && value.every(isActiveClientIpPolicy)
+}
+
+function isActiveClientIpPolicy(value: unknown): value is ActiveClientIpPolicy {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return typeof record.id === 'string'
+    && typeof record.ipHash === 'string'
+    && typeof record.aggregateIpKey === 'string'
+    && typeof record.clientIp === 'string'
+    && (record.reason === undefined || typeof record.reason === 'string')
+    && (record.expiresAt === undefined || typeof record.expiresAt === 'string')
 }
 
 function optionalString(value: unknown): string | undefined {

@@ -1,5 +1,7 @@
 export const accountBatchConcurrency = 5
 
+export const accountBatchTestChunkSize = 10
+
 export async function runWithConcurrency<TItem, TResult>(
   items: TItem[],
   concurrency: number,
@@ -21,4 +23,17 @@ export async function runWithConcurrency<TItem, TResult>(
   }
   await Promise.all(Array.from({ length: workerCount }, runWorker))
   return results
+}
+
+export async function runInFixedBatches<TItem>(
+  items: TItem[],
+  batchSize: number,
+  task: (item: TItem, index: number) => Promise<void>,
+  signal: AbortSignal
+): Promise<void> {
+  const size = Math.max(1, Math.trunc(batchSize))
+  for (let startIndex = 0; startIndex < items.length && !signal.aborted; startIndex += size) {
+    const batch = items.slice(startIndex, startIndex + size)
+    await Promise.all(batch.map((item, offset) => task(item, startIndex + offset)))
+  }
 }

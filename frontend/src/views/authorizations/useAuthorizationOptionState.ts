@@ -8,7 +8,6 @@ import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import type { AuthorizationCreateFormModel } from './authorizationFormModel'
 import {
-  mergeOptionsById,
   normalizeSearchKeyword,
   selectedAccountFromOptions,
   selectedGroupFromOptions,
@@ -16,6 +15,14 @@ import {
   selectedUserFromOptions
 } from './authorizationOptionHelpers'
 import type { AuthorizationFilters } from './authorizationPageState'
+import { createAuthorizationSearchScheduler } from './authorizationSearchScheduler'
+import {
+  ensureSelectedAccountOption,
+  ensureSelectedAuthorizationGranteeGroupOption,
+  ensureSelectedGroupOption,
+  ensureSelectedSystemAccountPrincipal,
+  ensureSelectedTeamOption
+} from './authorizationSelectedOptionLoaders'
 
 const remoteOptionLimit = 50
 const remoteSearchDelayMs = 250
@@ -61,19 +68,12 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
   const authorizationUserOptionCache = createShortLivedQueryCache<SystemAccountPrincipalSummary[]>({ ttlMs: 10_000 })
   const authorizationTeamOptionCache = createShortLivedQueryCache<SystemTeamPrincipalSummary[]>({ ttlMs: 10_000 })
   let createOwnerUserRequestId = 0
-  let createOwnerUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let createOwnerResourceRequestId = 0
-  let createResourceSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let createGranteeRequestId = 0
-  let createGranteeSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let createTargetGroupRequestId = 0
-  let createTargetGroupSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let filterResourceRequestId = 0
-  let filterResourceSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let filterTeamRequestId = 0
-  let filterTeamSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let filterUserRequestId = 0
-  let filterUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 
   const filterResourceDisabled = computed(() => {
     return isManagementView.value && filters.resourceType === 'group' && !selectedFilterOwnerSystemAccountId.value
@@ -103,7 +103,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     createOwnerUsersLoading.value = true
     try {
       let nextOptions = await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
-      nextOptions = await ensureSelectedSystemAccountPrincipal(nextOptions, createForm.ownerSystemAccountId)
+      nextOptions = await ensureSelectedSystemAccountPrincipal(nextOptions, createForm.ownerSystemAccountId, isManagementView.value)
       authorizationUserOptionCache.set(requestKey, nextOptions)
       if (requestId !== createOwnerUserRequestId) return
       createOwnerUsers.value = nextOptions
@@ -157,7 +157,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
         let nextAccounts = isManagementView.value
           ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
           : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
-        nextAccounts = await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId)
+        nextAccounts = await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
         rememberAccountLabels(nextAccounts)
         syncCreateResourceAccount(nextAccounts)
         authorizationAccountOptionCache.set(requestKey, nextAccounts)
@@ -168,7 +168,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
         let nextGroups = isManagementView.value
           ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
           : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
-        nextGroups = await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId)
+        nextGroups = await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
         rememberGroupLabels(nextGroups)
         syncCreateResourceGroup(nextGroups)
         authorizationGroupOptionCache.set(requestKey, nextGroups)
@@ -218,7 +218,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
           ? await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
           : await api.myAuthorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
         nextUsers = nextUsers.filter((user) => !createExcludedGranteeIds.value.includes(user.id))
-        nextUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, createForm.granteeId)
+        nextUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, createForm.granteeId, isManagementView.value)
         authorizationUserOptionCache.set(requestKey, nextUsers)
         if (requestId !== createGranteeRequestId) return
         createUsers.value = nextUsers
@@ -227,7 +227,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
         let nextTeams = isManagementView.value
           ? await api.authorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
           : await api.myAuthorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
-        nextTeams = await ensureSelectedTeamOption(nextTeams, createForm.granteeId)
+        nextTeams = await ensureSelectedTeamOption(nextTeams, createForm.granteeId, isManagementView.value)
         authorizationTeamOptionCache.set(requestKey, nextTeams)
         if (requestId !== createGranteeRequestId) return
         createTeams.value = nextTeams
@@ -271,7 +271,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
       let nextGroups = isManagementView.value
         ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
         : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
-      nextGroups = await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode)
+      nextGroups = await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode, isManagementView.value)
       if (requestId !== createTargetGroupRequestId) return
       rememberGroupLabels(nextGroups)
       syncCreateTargetGroup(nextGroups)
@@ -339,7 +339,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     try {
       if (filters.resourceType === 'account') {
         const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
-        const mergedAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId)
+        const mergedAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId, isManagementView.value)
         rememberAccountLabels(mergedAccounts)
         syncFilterResourceAccount(mergedAccounts)
         authorizationAccountOptionCache.set(requestKey, mergedAccounts)
@@ -349,7 +349,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
         return
       }
       const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
-      const mergedGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId)
+      const mergedGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId, isManagementView.value)
       rememberGroupLabels(mergedGroups)
       syncFilterResourceGroup(mergedGroups)
       authorizationGroupOptionCache.set(requestKey, mergedGroups)
@@ -386,7 +386,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     filterTeamOptionsLoading.value = true
     try {
       const nextTeams = await api.authorizationOptions.granteeTeams({ keyword: requestKeyword, limit: remoteOptionLimit })
-      const mergedTeams = await ensureSelectedTeamOption(nextTeams, filters.teamId)
+      const mergedTeams = await ensureSelectedTeamOption(nextTeams, filters.teamId, isManagementView.value)
       authorizationTeamOptionCache.set(requestKey, mergedTeams)
       if (requestId !== filterTeamRequestId) return
       syncFilterTeamSelection(mergedTeams)
@@ -421,7 +421,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     filterUserOptionsLoading.value = true
     try {
       const nextUsers = await api.authorizationOptions.granteeAccounts({ keyword: requestKeyword, limit: remoteOptionLimit })
-      const mergedUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId)
+      const mergedUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId, isManagementView.value)
       authorizationUserOptionCache.set(requestKey, mergedUsers)
       if (requestId !== filterUserRequestId) return
       syncFilterUserSelection(mergedUsers)
@@ -437,117 +437,27 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     }
   }
 
-  function scheduleCreateOwnerSearch(value: string) {
-    createOwnerSearchKeyword.value = value
-    clearCreateOwnerSearchTimer()
-    createOwnerUserSearchTimer = window.setTimeout(() => {
-      createOwnerUserSearchTimer = undefined
-      void loadCreateOwnerOptions(createOwnerSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function scheduleCreateResourceSearch(value: string) {
-    createResourceSearchKeyword.value = value
-    clearCreateResourceSearchTimer()
-    createResourceSearchTimer = window.setTimeout(() => {
-      createResourceSearchTimer = undefined
-      void loadCreateResourceOptions(createResourceSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function scheduleCreateGranteeSearch(value: string) {
-    createGranteeSearchKeyword.value = value
-    clearCreateGranteeSearchTimer()
-    createGranteeSearchTimer = window.setTimeout(() => {
-      createGranteeSearchTimer = undefined
-      void loadCreateGranteeOptions(createGranteeSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function scheduleCreateTargetGroupSearch(value: string) {
-    createTargetGroupSearchKeyword.value = value
-    clearCreateTargetGroupSearchTimer()
-    createTargetGroupSearchTimer = window.setTimeout(() => {
-      createTargetGroupSearchTimer = undefined
-      void loadCreateTargetGroupOptions(createTargetGroupSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function scheduleFilterResourceSearch(value: string) {
-    filterResourceSearchKeyword.value = value
-    clearFilterResourceSearchTimer()
-    filterResourceSearchTimer = window.setTimeout(() => {
-      filterResourceSearchTimer = undefined
-      void loadFilterResourceOptions(filterResourceSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function scheduleFilterTeamSearch(value: string) {
-    filterTeamSearchKeyword.value = value
-    clearFilterTeamSearchTimer()
-    filterTeamSearchTimer = window.setTimeout(() => {
-      filterTeamSearchTimer = undefined
-      void loadFilterTeamOptions(filterTeamSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function scheduleFilterUserSearch(value: string) {
-    filterUserSearchKeyword.value = value
-    clearFilterUserSearchTimer()
-    filterUserSearchTimer = window.setTimeout(() => {
-      filterUserSearchTimer = undefined
-      void loadFilterUserOptions(filterUserSearchKeyword.value)
-    }, remoteSearchDelayMs)
-  }
-
-  function clearCreateOwnerSearchTimer() {
-    if (createOwnerUserSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(createOwnerUserSearchTimer)
-      createOwnerUserSearchTimer = undefined
-    }
-  }
-
-  function clearCreateResourceSearchTimer() {
-    if (createResourceSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(createResourceSearchTimer)
-      createResourceSearchTimer = undefined
-    }
-  }
-
-  function clearCreateGranteeSearchTimer() {
-    if (createGranteeSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(createGranteeSearchTimer)
-      createGranteeSearchTimer = undefined
-    }
-  }
-
-  function clearCreateTargetGroupSearchTimer() {
-    if (createTargetGroupSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(createTargetGroupSearchTimer)
-      createTargetGroupSearchTimer = undefined
-    }
-  }
-
-  function clearFilterResourceSearchTimer() {
-    if (filterResourceSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(filterResourceSearchTimer)
-      filterResourceSearchTimer = undefined
-    }
-  }
-
-  function clearFilterTeamSearchTimer() {
-    if (filterTeamSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(filterTeamSearchTimer)
-      filterTeamSearchTimer = undefined
-    }
-  }
-
-  function clearFilterUserSearchTimer() {
-    if (filterUserSearchTimer && typeof window !== 'undefined') {
-      window.clearTimeout(filterUserSearchTimer)
-      filterUserSearchTimer = undefined
-    }
-  }
+  const createOwnerSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: createOwnerSearchKeyword, load: loadCreateOwnerOptions })
+  const createResourceSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: createResourceSearchKeyword, load: loadCreateResourceOptions })
+  const createGranteeSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: createGranteeSearchKeyword, load: loadCreateGranteeOptions })
+  const createTargetGroupSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: createTargetGroupSearchKeyword, load: loadCreateTargetGroupOptions })
+  const filterResourceSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: filterResourceSearchKeyword, load: loadFilterResourceOptions })
+  const filterTeamSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: filterTeamSearchKeyword, load: loadFilterTeamOptions })
+  const filterUserSearch = createAuthorizationSearchScheduler({ delayMs: remoteSearchDelayMs, keyword: filterUserSearchKeyword, load: loadFilterUserOptions })
+  const scheduleCreateOwnerSearch = createOwnerSearch.schedule
+  const scheduleCreateResourceSearch = createResourceSearch.schedule
+  const scheduleCreateGranteeSearch = createGranteeSearch.schedule
+  const scheduleCreateTargetGroupSearch = createTargetGroupSearch.schedule
+  const scheduleFilterResourceSearch = filterResourceSearch.schedule
+  const scheduleFilterTeamSearch = filterTeamSearch.schedule
+  const scheduleFilterUserSearch = filterUserSearch.schedule
+  const clearCreateOwnerSearchTimer = createOwnerSearch.clear
+  const clearCreateResourceSearchTimer = createResourceSearch.clear
+  const clearCreateGranteeSearchTimer = createGranteeSearch.clear
+  const clearCreateTargetGroupSearchTimer = createTargetGroupSearch.clear
+  const clearFilterResourceSearchTimer = filterResourceSearch.clear
+  const clearFilterTeamSearchTimer = filterTeamSearch.clear
+  const clearFilterUserSearchTimer = filterUserSearch.clear
 
   function resetCreateOptionSearchState() {
     createOwnerSearchKeyword.value = ''
@@ -655,71 +565,6 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
 
   function syncFilterUserSelection(nextUsers = users.value): void {
     filters.granteeSystemAccount = selectedUserFromOptions(filters.granteeSystemAccountId, nextUsers, filters.granteeSystemAccount)
-  }
-
-  async function ensureSelectedAccountOption(options: AccountOptionSummary[], selectedId?: string, systemAccountId?: string): Promise<AccountOptionSummary[]> {
-    const id = selectedId?.trim()
-    if (!id || options.some((item) => item.id === id)) return options
-    try {
-      const selected = isManagementView.value
-        ? await api.accounts.options({ systemAccountId, ids: [id], limit: 1 })
-        : await api.myAccounts.options({ ids: [id], limit: 1 })
-      return mergeOptionsById(selected, options)
-    } catch {
-      return options
-    }
-  }
-
-  async function ensureSelectedGroupOption(options: GroupOptionSummary[], selectedId?: string, systemAccountId?: string): Promise<GroupOptionSummary[]> {
-    const id = selectedId?.trim()
-    if (!id || options.some((item) => item.id === id)) return options
-    try {
-      const selected = isManagementView.value
-        ? await api.groups.options({ systemAccountId, ids: [id], limit: 1 })
-        : await api.myGroups.options({ ids: [id], limit: 1 })
-      return mergeOptionsById(selected, options)
-    } catch {
-      return options
-    }
-  }
-
-  async function ensureSelectedAuthorizationGranteeGroupOption(options: GroupOptionSummary[], selectedId: string | undefined, granteeSystemAccountId: string, providerCode: string): Promise<GroupOptionSummary[]> {
-    const id = selectedId?.trim()
-    if (!id || options.some((item) => item.id === id)) return options
-    try {
-      const selected = isManagementView.value
-        ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, ids: [id], limit: 1, preferDefault: true })
-        : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, ids: [id], limit: 1, preferDefault: true })
-      return mergeOptionsById(selected, options)
-    } catch {
-      return options
-    }
-  }
-
-  async function ensureSelectedSystemAccountPrincipal(options: SystemAccountPrincipalSummary[], selectedId?: string): Promise<SystemAccountPrincipalSummary[]> {
-    const id = selectedId?.trim()
-    if (!id || options.some((item) => item.id === id)) return options
-    try {
-      const selected = isManagementView.value
-        ? await api.authorizationOptions.granteeAccounts({ ids: [id], limit: 1 })
-        : await api.myAuthorizationOptions.granteeAccounts({ ids: [id], limit: 1 })
-      return mergeOptionsById(selected, options)
-    } catch {
-      return options
-    }
-  }
-
-  async function ensureSelectedTeamOption(options: SystemTeamPrincipalSummary[], selectedId?: string): Promise<SystemTeamPrincipalSummary[]> {
-    const id = selectedId?.trim()
-    if (!id || options.some((item) => item.id === id)) return options
-    try {
-      const selected = isManagementView.value
-        ? await api.authorizationOptions.granteeTeams({ ids: [id], limit: 1 })
-        : await api.myAuthorizationOptions.granteeTeams({ ids: [id], limit: 1 })
-      return mergeOptionsById(selected, options)
-    } catch {
-      return options
-    }
   }
 
   return {

@@ -358,13 +358,13 @@ function buildAccountOptionFilters(
     WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN source_accounts.status
     WHEN source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN source_accounts.schedulable <> 1 THEN 'disabled'
-    WHEN account_schedule_allowed(source_accounts.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN account_schedule_allowed(source_accounts.availability_schedule_json) = 0 THEN 'disabled'
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
     WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'disabled'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN ${authorizedOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
     ELSE accounts.status
@@ -466,7 +466,7 @@ function ownerOptionStatusExpression(): string {
     THEN 'disabled'
     WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'temporary_unavailable'
+    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'disabled'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN ${ownerOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
     ELSE accounts.status

@@ -7,8 +7,10 @@ interface ApiResponse<T> {
   message?: string
 }
 
+const viteApiBaseUrl = (import.meta.env as { VITE_JUHE_AI_API_BASE_URL?: string } | undefined)?.VITE_JUHE_AI_API_BASE_URL
+
 export const http = axios.create({
-  baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
+  baseURL: normalizeApiBaseUrl(viteApiBaseUrl),
   timeout: 15000,
   withCredentials: true
 })

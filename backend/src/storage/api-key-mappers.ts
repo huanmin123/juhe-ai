@@ -1,7 +1,7 @@
 import type { ApiKeyGroupBindingSummary, ApiKeySummary } from '../domain/types.js'
 import { normalizeApiKeyGroupRouteStrategy } from '../domain/api-key-routing.js'
 import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { evaluateApiKeyAvailabilitySchedule, parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
+import { parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
 import { loadApiKeyGroupBindingSummariesByApiKeyIds } from './api-key-group-bindings.repository.js'
 import { decryptJson } from './crypto.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -23,6 +23,7 @@ export interface ApiKeyRow {
   expires_at: string | null
   quota_limits_json: string | null
   availability_schedule_json?: string | null
+  availability_schedule_active?: number | null
 }
 
 export function apiKeySummariesFromRows(
@@ -36,7 +37,6 @@ export function apiKeySummariesFromRows(
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
   const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
   const bindingsByApiKeyId = options.bindingsByApiKeyId ?? loadApiKeyGroupBindingSummariesByApiKeyIds(rows.map((row) => row.id))
-  const now = new Date()
   return rows.map((row) => {
     const groupBindings = bindingsByApiKeyId.get(row.id) ?? []
     const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
@@ -57,7 +57,7 @@ export function apiKeySummariesFromRows(
       quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
       availabilitySchedule,
       availabilityScheduleActive: availabilitySchedule?.enabled
-        ? evaluateApiKeyAvailabilitySchedule(availabilitySchedule, now).allowed
+        ? row.availability_schedule_active !== 0
         : undefined,
       usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
     }

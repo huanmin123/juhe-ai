@@ -17,7 +17,7 @@ import { computed } from 'vue'
 
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { AccountSummary } from '@/types/domain'
-import { oauthUsageBars } from './accountFormatters'
+import { oauthUsageBars } from './accountUsageFormatters'
 
 const props = defineProps<{
   account: AccountSummary

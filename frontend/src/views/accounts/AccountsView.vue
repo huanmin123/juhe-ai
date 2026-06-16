@@ -239,7 +239,7 @@ import {
 } from './accountOptions'
 import {
   accountDisplayName
-} from './accountFormatters'
+} from './accountBasicFormatters'
 import {
   accountTableScrollX,
   accountTableScrollY,

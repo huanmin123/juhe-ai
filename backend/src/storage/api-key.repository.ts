@@ -152,7 +152,8 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
     'system_accounts.display_name AS group_owner_system_account_name',
     'api_keys.expires_at',
     'api_keys.quota_limits_json',
-    'api_keys.availability_schedule_json'
+    'api_keys.availability_schedule_json',
+    'api_keys.availability_schedule_active'
   ]
   if (options.includeSecret) {
     columns.splice(5, 0, 'api_keys.key_secret_encrypted')

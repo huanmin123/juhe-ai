@@ -1,0 +1,244 @@
+import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import {
+  accountTestBatchCounts,
+  accountTestBatchItemJson,
+  accountTestBatchItemMessage,
+  accountTestBatchItemModelText,
+  accountTestBatchItemStatusColor,
+  accountTestBatchItemStatusText,
+  accountTestBatchOutputLines,
+  accountTestBatchResultSnapshot,
+  accountTestBatchSelectedCompatibilityText,
+  accountTestBatchStatusColor,
+  accountTestBatchStatusText,
+  accountTestSingleOutputLines
+} from '../../views/accounts/accountTestDisplayFormatters'
+import type { AccountBatchTestItem } from '../../views/accounts/accountTestFlow'
+
+const apiKeyAccount = accountFixture({
+  id: 'account_test_display_api_key',
+  name: 'API Key 测试账户',
+  type: 'api_key',
+  clientCompatibility: 'openai_standard'
+})
+const oauthAccount = accountFixture({
+  id: 'account_test_display_oauth',
+  name: 'OAuth 测试账户',
+  type: 'oauth',
+  clientCompatibility: 'codex_responses'
+})
+
+const successResult = resultFixture(apiKeyAccount, {
+  success: true,
+  statusCode: 200,
+  message: '测试成功',
+  model: 'gpt-5.1',
+  outputText: 'pong',
+  traceId: 'trace_test_display',
+  durationMs: 1234,
+  firstTokenMs: 320,
+  testClientCompatibility: 'openai_standard'
+})
+const successLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  clientCompatibility: 'account_default',
+  fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+  model: 'gpt-5.1',
+  providerLabel: () => 'OpenAI',
+  result: successResult,
+  running: false
+})
+assertLineIncludes(successLines, '开始测试账号：API Key 测试账户', '单账号输出应展示账户名')
+assertLineIncludes(successLines, '供应商：OpenAI', '单账号输出应展示供应商')
+assertLineIncludes(successLines, '测试兼容：跟随账户配置（OpenAI 标准）', 'API Key 默认兼容应展示账户配置')
+assertLineIncludes(successLines, 'traceId：trace_test_display', '成功输出应展示 traceId')
+assertLineIncludes(successLines, '实际兼容：OpenAI 标准', '成功输出应展示实际兼容')
+assertLineIncludes(successLines, 'pong', '成功输出应展示返回内容')
+assertLineIncludes(successLines, '✓ 测试完成！  总耗时：1.2s，首 token：0.32s', '成功输出应展示总耗时和首 token')
+
+const runningTask = taskFixture(oauthAccount, {
+  status: 'running',
+  startedAt: new Date(Date.now() - 1500).toISOString(),
+  message: 'worker 已接收'
+})
+const runningLines = accountTestSingleOutputLines({
+  account: oauthAccount,
+  activeTask: runningTask,
+  clientCompatibility: 'codex_responses',
+  fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+  model: 'gpt-5.1',
+  providerLabel: () => 'OpenAI',
+  running: true
+})
+assertLineIncludes(runningLines, '测试兼容：Codex Responses（OAuth 固定）', 'OAuth 账户应展示固定兼容模式')
+assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth（测试中）', '运行输出应展示后台任务状态')
+assertLineIncludes(runningLines, '当前窗口估计：第 1/3 次', '运行输出应展示当前等待窗口')
+assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
+
+const failedAccount = accountFixture({
+  id: 'account_test_display_failed',
+  name: '失败账户'
+})
+const failedResult = resultFixture(failedAccount, {
+  success: false,
+  statusCode: 500,
+  message: '上游 500',
+  responseText: 'upstream failed',
+  durationMs: 600,
+  testClientCompatibility: 'codex_responses'
+})
+const batchItems: AccountBatchTestItem[] = [
+  {
+    account: apiKeyAccount,
+    status: 'success',
+    result: successResult,
+    startedAt: 1000,
+    finishedAt: 2234
+  },
+  {
+    account: failedAccount,
+    status: 'failed',
+    result: failedResult,
+    message: '上游 500',
+    startedAt: 2000,
+    finishedAt: 2600
+  },
+  {
+    account: oauthAccount,
+    status: 'stopped',
+    message: '已停止测试'
+  }
+]
+const batchCounts = accountTestBatchCounts(batchItems)
+assertEqual(batchCounts.total, 3, '批量计数应包含全部账户')
+assertEqual(batchCounts.completed, 3, '批量计数应把 success/failed/stopped 视为完成')
+assertEqual(batchCounts.success, 1, '批量计数应包含成功数')
+assertEqual(batchCounts.failed, 1, '批量计数应包含失败数')
+assertEqual(batchCounts.stopped, 1, '批量计数应包含停止数')
+assertEqual(accountTestBatchStatusColor(batchCounts, false), 'red', '批量状态颜色应优先展示失败')
+assertEqual(accountTestBatchStatusText(batchCounts, false), '成功 1，失败 1', '批量状态文案应展示成功和失败数')
+assertEqual(
+  accountTestBatchSelectedCompatibilityText({
+    clientCompatibility: 'account_default',
+    fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+    showClientCompatibilityControl: true
+  }),
+  '跟随账户配置',
+  '可选兼容时 account_default 应展示跟随账户配置'
+)
+assertEqual(
+  accountTestBatchSelectedCompatibilityText({
+    clientCompatibility: 'openai_standard',
+    fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+    showClientCompatibilityControl: false
+  }),
+  'Codex Responses（OAuth 固定）',
+  '全部 OAuth 时应展示固定兼容模式'
+)
+
+const batchLines = accountTestBatchOutputLines({
+  batchItems,
+  counts: batchCounts,
+  model: 'gpt-5.1',
+  running: false,
+  selectedCompatibilityText: '跟随账户配置'
+})
+assertLineIncludes(batchLines, '批量测试账号：3 个', '批量输出应展示账户数量')
+assertLineIncludes(batchLines, '测试完成：成功 1 个，失败 1 个，已停止 1 个', '批量输出应展示完成摘要')
+assertLineIncludes(batchLines, '失败摘要：', '批量输出应展示失败摘要标题')
+assertLineIncludes(batchLines, '失败账户: 上游 500', '批量输出应展示失败账户消息')
+
+assertEqual(accountTestBatchItemStatusColor(batchItems[1]!), 'red', '失败行状态颜色应为 red')
+assertEqual(accountTestBatchItemStatusText(batchItems[1]!), '失败', '失败行状态文案应为失败')
+assertEqual(accountTestBatchItemModelText(batchItems[0]!, 'gpt-5.1'), 'gpt-5.1', '批量行应优先展示结果模型')
+assertEqual(accountTestBatchItemMessage(batchItems[2]!), '已停止测试', '批量行应优先展示显式消息')
+
+const batchSnapshot = accountTestBatchResultSnapshot({
+  batchItems,
+  clientCompatibility: 'account_default',
+  model: 'gpt-5.1'
+})
+assertEqual(batchSnapshot.summary.completed, 3, '批量快照应展示完成数')
+assertEqual(batchSnapshot.summary.failed, 1, '批量快照应展示失败数')
+assertEqual(batchSnapshot.results[1]?.accountId, failedAccount.id, '批量快照应保留账户 ID')
+assertEqual(batchSnapshot.results[1]?.message, '上游 500', '批量快照应保留行消息')
+const itemSnapshot = JSON.parse(accountTestBatchItemJson(batchItems[0]!)) as { accountId?: string; result?: { traceId?: string } }
+assertEqual(itemSnapshot.accountId, apiKeyAccount.id, '单行复制 JSON 应保留账户 ID')
+assertEqual(itemSnapshot.result?.traceId, 'trace_test_display', '单行复制 JSON 应保留测试结果')
+
+console.log('账户测试展示 formatter 回归通过：单账号输出、OAuth 运行窗口、批量状态、批量摘要和 JSON 快照均符合预期')
+
+function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary {
+  return {
+    id: 'account_test_display',
+    providerCode: 'openai',
+    name: '测试账户',
+    type: 'api_key',
+    credentials: {},
+    status: 'active',
+    concurrencyLimit: 1,
+    currentConcurrency: 0,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'openai_standard',
+    schedulable: true,
+    todayUsage: emptyUsage(),
+    usage: emptyUsage(),
+    ...overrides
+  }
+}
+
+function resultFixture(account: AccountSummary, overrides: Partial<AccountTestResult> = {}): AccountTestResult {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    type: account.type,
+    success: true,
+    message: '测试成功',
+    model: 'gpt-5.1',
+    durationMs: 0,
+    ...overrides
+  }
+}
+
+function taskFixture(account: AccountSummary, overrides: Partial<AccountTestTask> = {}): AccountTestTask {
+  const now = new Date().toISOString()
+  return {
+    id: `task_${account.id}`,
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    type: account.type,
+    status: 'queued',
+    createdAt: now,
+    queuedAt: now,
+    updatedAt: now,
+    ...overrides
+  }
+}
+
+function emptyUsage() {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheReadCost: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+}
+
+function assertLineIncludes(lines: Array<{ text: string }>, expected: string, message: string): void {
+  if (!lines.some((line) => line.text.includes(expected))) {
+    throw new Error(`${message}，未找到 ${expected}；实际输出：${lines.map((line) => line.text).join(' | ')}`)
+  }
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) {
+    throw new Error(`${message}，实际 ${String(actual)}`)
+  }
+}

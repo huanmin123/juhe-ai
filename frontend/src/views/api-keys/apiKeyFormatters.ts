@@ -51,11 +51,24 @@ function groupBindingPriorityTextByPriority(priority: number | undefined): strin
 }
 
 export function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {
-  return apiKey.status === 'active' ? '启用' : '停用'
+  return apiKey.status === 'active' && !isApiKeyScheduleInactive(apiKey) ? '启用' : '停用'
 }
 
 export function apiKeyStatusTagColor(apiKey: ApiKeySummary): string {
-  return apiKey.status === 'active' ? 'green' : 'default'
+  return apiKey.status === 'active' && !isApiKeyScheduleInactive(apiKey) ? 'green' : 'default'
+}
+
+export function apiKeyStatusTooltipLines(apiKey: ApiKeySummary): string[] {
+  if (!isApiKeyScheduleInactive(apiKey)) return []
+  return [
+    apiKey.status === 'disabled'
+      ? '时间计划当前不在允许时段，API Key 已停用'
+      : '时间计划当前不在允许时段，等待后台同步停用'
+  ]
+}
+
+function isApiKeyScheduleInactive(apiKey: ApiKeySummary): boolean {
+  return Boolean(apiKey.availabilitySchedule?.enabled && apiKey.availabilityScheduleActive === false)
 }
 
 export function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: boolean): string {

@@ -1045,7 +1045,14 @@ async function clearServerAuthorizationQuotaRuntimeCache(): Promise<void> {
 
 async function clearServerClientIpPolicyCache(): Promise<void> {
   const policyCache = await import('../gateway/runtime/client-ip-policy-cache.service.js')
-  policyCache.clearClientIpPolicyCacheLocal()
+  try {
+    await policyCache.reloadClientIpPolicyCacheLocal()
+  } catch (error) {
+    policyCache.clearClientIpPolicyCacheLocal()
+    logger.warn(errorLogFields(error, {
+      event: 'client_ip_policy_snapshot_reload_failed'
+    }), 'IP 封禁策略快照重载失败，已清空 server 本地快照')
+  }
 }
 
 registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)

@@ -7,13 +7,9 @@ import { datasetDatabasePath, nowIso, statsDatabasePath } from '../../storage/da
 import {
   expireDueResourceAuthorizations,
   getSettings,
-  listAccountQualityFailurePrecheckCandidates,
-  listAccountsDueForCooldownRetest,
-  refreshAccountQualityFromUsage,
   syncAccountAvailabilityScheduleStatuses,
   syncApiKeyAvailabilityScheduleStatuses
 } from '../../storage/repositories.js'
-import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
 import {
   aggregateUsageStatsBatch,
   checkUsageStatsConsistency,
@@ -27,6 +23,7 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import {
   aggregateClientIpStatsBatch,
+  listActiveClientIpPolicies,
   refreshClientIpUsageRangeWindows
 } from '../../storage/client-ip-stats.repository.js'
 import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.repository.js'
@@ -36,11 +33,13 @@ import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refre
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
-import { requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
-import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
-import { enqueueAccountApiKeyCooldownRetest, getAccountApiKeyCooldownRetestQueueSnapshot } from './account-api-key-cooldown-retest.service.js'
-import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
+import { requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples, sendClientIpPolicySnapshotToServer, sendGatewayQuotaSnapshotToServer } from './background-ipc.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
+import {
+  runAccountApiKeyCooldownRetest,
+  runAccountQualityRefresh,
+  runCooldownAccountRetest
+} from './account-probe-jobs.js'
 import {
   runAccountRecordCleanupRetry,
   runApiKeyRecordCleanupRetry,
@@ -59,7 +58,6 @@ let missingRemoteProcessEventLoopSampleWarningCount = 0
 const dailyIntervalMs = 24 * 60 * 60 * 1000
 const secondMs = 1000
 const minuteMs = 60 * secondMs
-const accountQualityFailurePrecheckBatchSize = 10
 const clientIpStatsAggregationBatchSizeCap = 1000
 const clientIpStatsAggregationMaxBatchesCap = 10
 const clientIpStatsAggregationMaxRunMs = 5000
@@ -103,9 +101,9 @@ export function startBackgroundJobs(): void {
       return
     case 'probe-worker':
       scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: runAccountQualityRefresh })
-      scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: runCooldownAccountRetest })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: runAccountApiKeyCooldownRetest })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation, yieldToEventLoop }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
       return
     case 'maintenance-worker':
@@ -170,6 +168,7 @@ async function runClientIpStatsAggregation(): Promise<void> {
     }
     await yieldToEventLoop()
     refreshClientIpUsageRangeWindows()
+    sendClientIpPolicySnapshotToServer(listActiveClientIpPolicies())
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_client_ip_stats_aggregation_failed' }), 'IP 统计聚合失败')
     throw error
@@ -333,102 +332,6 @@ async function runProxyLatencyRefresh(): Promise<void> {
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), '代理延迟刷新失败')
     throw error
-  }
-}
-
-async function runAccountQualityRefresh(): Promise<void> {
-  try {
-    await ensureUsageRecordsIngestedBeforeStatsAggregation()
-    await yieldToEventLoop()
-    const windowMinutes = settingsNumber('accountQualityWindowMinutes', 1, 60)
-    const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
-    const failureCandidates = listAccountQualityFailurePrecheckCandidates(accountQualityFailurePrecheckBatchSize)
-    let failurePrecheckEnqueuedCount = 0
-    let failurePrecheckSkippedQueuedCount = 0
-    for (const candidate of failureCandidates) {
-      if (enqueueAccountQualityFailurePrecheck(candidate)) {
-        failurePrecheckEnqueuedCount += 1
-      } else {
-        failurePrecheckSkippedQueuedCount += 1
-      }
-    }
-    if (realtimeResult.refreshed > 0 || realtimeResult.removed > 0 || failureCandidates.length > 0) {
-      clearGatewayRuntimeCache()
-      const queue = getAccountQualityFailurePrecheckQueueSnapshot()
-      logger.info({
-        event: 'background_account_quality_refresh_completed',
-        realtimeRefreshed: realtimeResult.refreshed,
-        realtimeRemoved: realtimeResult.removed,
-        failureCandidateCount: failureCandidates.length,
-        failurePrecheckEnqueuedCount,
-        failurePrecheckSkippedQueuedCount,
-        failurePrecheckQueuePendingCount: queue.pendingCount,
-        failurePrecheckQueueRunningCount: queue.runningCount,
-        failurePrecheckQueueNextRunAt: queue.nextRunAt
-      }, '账户质量缓存刷新完成')
-    }
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_account_quality_refresh_failed' }), '账户质量缓存刷新失败')
-    throw error
-  }
-}
-
-async function runCooldownAccountRetest(): Promise<void> {
-  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const maxPauseMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
-  const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
-  const candidates = listAccountsDueForCooldownRetest(batchSize)
-  const startedAtMs = Date.now()
-  let enqueuedCount = 0
-  let skippedQueuedCount = 0
-  for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours })) {
-      enqueuedCount += 1
-    } else {
-      skippedQueuedCount += 1
-    }
-  }
-  if (candidates.length > 0) {
-    const queue = getCooldownAccountRetestQueueSnapshot()
-    logger.info({
-      event: 'background_cooldown_account_retest_completed',
-      candidateCount: candidates.length,
-      enqueuedCount,
-      skippedQueuedCount,
-      retryQueuePendingCount: queue.pendingCount,
-      retryQueueRunningCount: queue.runningCount,
-      retryQueueNextRunAt: queue.nextRunAt,
-      elapsedMs: Date.now() - startedAtMs
-    }, '冷却账户复测候选已加入异步队列')
-  }
-}
-
-async function runAccountApiKeyCooldownRetest(): Promise<void> {
-  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
-  const candidates = listAccountApiKeyRuntimeStatesDueForProbe(batchSize)
-  const startedAtMs = Date.now()
-  let enqueuedCount = 0
-  let skippedQueuedCount = 0
-  for (const candidate of candidates) {
-    if (enqueueAccountApiKeyCooldownRetest(candidate, { maxRecoveryHours })) {
-      enqueuedCount += 1
-    } else {
-      skippedQueuedCount += 1
-    }
-  }
-  if (candidates.length > 0) {
-    const queue = getAccountApiKeyCooldownRetestQueueSnapshot()
-    logger.info({
-      event: 'background_account_api_key_cooldown_retest_completed',
-      candidateCount: candidates.length,
-      enqueuedCount,
-      skippedQueuedCount,
-      retryQueuePendingCount: queue.pendingCount,
-      retryQueueRunningCount: queue.runningCount,
-      retryQueueNextRunAt: queue.nextRunAt,
-      elapsedMs: Date.now() - startedAtMs
-    }, '账户内 API Key 复测候选已加入异步队列')
   }
 }
 

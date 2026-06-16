@@ -17,7 +17,14 @@ const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storag
 const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
 const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background/background-ipc.ts'), 'utf8')
 const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/useAccountTestModal.ts'), 'utf8')
+const frontendAccountTestSessionClientSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestSessionClient.ts'), 'utf8')
+const frontendAccountBatchExecutionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountBatchExecution.ts'), 'utf8')
 const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
+const frontendAccountTestDisplayFormattersSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestDisplayFormatters.ts'), 'utf8')
+const runOpenAIAccountTestWithSideEffectsSource = accountTestTaskQueueSource.slice(
+  accountTestTaskQueueSource.indexOf('async function runOpenAIAccountTestWithSideEffects'),
+  accountTestTaskQueueSource.indexOf('function enqueueManualAccountTestFailurePrecheck')
+)
 
 assert.equal(
   accountTestDispatchRoutesSource.includes('testOpenAIAccount('),
@@ -176,8 +183,21 @@ assert(
   '手动账号测试后台 worker 应使用系统设置控制并发，默认 100'
 )
 assert(
-  accountTestTaskQueueSource.includes('listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize)'),
+  accountTestTaskQueueSource.includes('listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize())')
+    && accountTestTaskQueueSource.includes('manualAccountTestRefillMaxBatchSize = 1000'),
   '手动账号测试队列应持续从 DB 补拉 queued 任务，避免 worker 重启后只执行首批任务'
+)
+assert.equal(
+  runOpenAIAccountTestWithSideEffectsSource.includes('markAccountTestTemporaryUnavailable'),
+  false,
+  '账号测试失败不应在主测试函数内直接写临时不可调用，应先进入事前确认'
+)
+assert(
+  accountTestTaskQueueSource.includes('manualAccountTestFailurePrecheckQueue')
+    && accountTestTaskQueueSource.includes('enqueueManualAccountTestFailurePrecheck(account, access, result')
+    && accountTestTaskQueueSource.includes("trafficSource: 'cooldown_retest'")
+    && accountTestTaskQueueSource.includes('getAccountPrecheckMutationState'),
+  '账号测试失败应进入事前确认队列，确认失败后才允许写临时不可调用，并需要跳过已被更新的旧确认'
 )
 assert(
   accountTestSessionRoutesSource.includes("router.post('/test-sessions'")
@@ -208,9 +228,11 @@ assert(
   'worker 重启时应保留已请求取消的 running 任务，不应把它们重新排队'
 )
 assert(
-  !accountTestTaskRepositorySource.includes('failTimedOutQueuedAccountTestTasks')
-    && !accountTestTaskRepositorySource.includes('accountTestTaskQueueTimeoutMessage'),
-  '未被 worker 消费的 queued 任务不应计算 60s 运行超时，也不应被查询路径自动失败'
+  accountTestTaskRepositorySource.includes('failExpiredQueuedAccountTestTasks')
+    && accountTestTaskRepositorySource.includes('accountTestQueuedWaitExpiredMessage')
+    && accountTestTaskQueueSource.includes('failExpiredQueuedAccountTestTasks(manualAccountTestQueuedMaxWaitMs')
+    && accountTestTaskQueueSource.includes('manualAccountTestQueuedMaxWaitMs = 10 * 60_000'),
+  '未被 worker 消费的 queued 任务不应计算 60s 运行超时，但后台应按独立队列等待上限自动收口'
 )
 assert(
   accountTestTaskRepositorySource.includes('draft_account_encrypted')
@@ -257,7 +279,8 @@ assert(
   '前端批量测试应让每个任务独立完成提交、轮询和运行超时取消'
 )
 assert(
-  frontendAccountTestModalSource.includes('const accountBatchTestChunkSize = 10')
+  frontendAccountBatchExecutionSource.includes('const accountBatchTestChunkSize = 10')
+    && frontendAccountTestModalSource.includes('accountBatchTestChunkSize')
     && frontendAccountTestModalSource.includes('runInFixedBatches(accounts, accountBatchTestChunkSize'),
   '前端批量测试应固定每批最多提交 10 个任务，本批全部结束后再提交下一批'
 )
@@ -269,9 +292,16 @@ assert(
 )
 assert(
   frontendAccountTestModalSource.includes('beforeunload')
-    && frontendAccountTestModalSource.includes('navigator.sendBeacon')
-    && frontendAccountTestModalSource.includes('keepalive: true'),
+    && frontendAccountTestModalSource.includes('sendCancelAccountTestSessionOnUnload')
+    && frontendAccountTestSessionClientSource.includes('navigator.sendBeacon')
+    && frontendAccountTestSessionClientSource.includes('keepalive: true'),
   '前端刷新或关闭页面时应使用 sendBeacon / keepalive 兜底取消测试 session'
+)
+assert(
+  frontendAccountTestSessionClientSource.includes('api.accounts.testDraft')
+    && frontendAccountTestSessionClientSource.includes('api.myAccounts.testDraft')
+    && frontendAccountTestSessionClientSource.includes('accountOperationScopeParams(input.account, input.accountScopeParams)'),
+  '前端测试 session client 应集中管理管理端/个人端和草稿/已保存草稿的账号测试 API 分流'
 )
 assert(
   frontendAccountTestModalSource.includes("if (task.status !== 'running')")
@@ -286,17 +316,17 @@ assert.equal(
 )
 assert(
   frontendAccountTestModalComponentSource.includes('activeTask?: AccountTestTask')
-    && frontendAccountTestModalComponentSource.includes('当前窗口估计')
-    && frontendAccountTestModalComponentSource.includes('10s + 20s + 30s'),
+    && frontendAccountTestDisplayFormattersSource.includes('当前窗口估计')
+    && frontendAccountTestDisplayFormattersSource.includes('10s + 20s + 30s'),
   '前端测试终端应展示后台任务状态、等待策略和当前等待窗口'
 )
 assert(
-  frontendAccountTestModalComponentSource.includes('等待接收')
-    && frontendAccountTestModalComponentSource.includes("item.status === 'queued'"),
+  frontendAccountTestDisplayFormattersSource.includes('等待接收')
+    && frontendAccountTestDisplayFormattersSource.includes("item.status === 'queued'"),
   '批量测试弹窗应区分等待接收和测试中，避免把 worker 未接任务误展示为真实测试中'
 )
 assert(
-  frontendAccountTestModalComponentSource.includes('每批最多 10 个账户'),
+  frontendAccountTestDisplayFormattersSource.includes('每批最多 10 个账户'),
   '批量测试弹窗应明确展示固定小批次提交策略'
 )
 
