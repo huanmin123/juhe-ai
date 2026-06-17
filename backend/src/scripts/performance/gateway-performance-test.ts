@@ -30,6 +30,7 @@ interface PerfConfig {
   model: string
   promptBytes: number
   p95TargetMs: number
+  auditCaptureMode: 'default' | 'metadata_only'
   reportPath?: string
 }
 
@@ -161,7 +162,7 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [
-  { openAIGatewayRouter },
+  { handleOpenAIGatewayRequest },
   { captureGatewayRawBody },
   { requestContextMiddleware },
   databaseModule,
@@ -184,6 +185,9 @@ const [
   import('../../modules/gateway/runtime/account-side-effects.service.js')
 ])
 
+usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+
 async function main(): Promise<void> {
   const config = loadConfig()
   let appServer: http.Server | undefined
@@ -205,7 +209,7 @@ async function main(): Promise<void> {
     prewarmUsageRecordShards()
     gatewayCache.clearGatewayRuntimeCacheLocal()
 
-    appServer = createGatewayServer(gatewayConnections)
+    appServer = createGatewayServer(gatewayConnections, config)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverPort(appServer)}`
 
@@ -261,6 +265,7 @@ function loadConfig(): PerfConfig {
     model: envText('JUHE_AI_PERF_MODEL', 'gpt-5.4-mini'),
     promptBytes: envInteger('JUHE_AI_PERF_PROMPT_BYTES', 64, 1, Math.max(1, gatewayRawBodyHardLimitBytes - 64 * 1024)),
     p95TargetMs: envInteger('JUHE_AI_PERF_P95_TARGET_MS', 1000, 1, 600000),
+    auditCaptureMode: auditCaptureMode(envText('JUHE_AI_PERF_AUDIT_CAPTURE_MODE', 'default')),
     reportPath: optionalEnvText('JUHE_AI_PERF_REPORT_PATH')
   }
 }
@@ -270,7 +275,8 @@ function seedGatewayData(config: PerfConfig, upstreamBaseUrl: string): SeededGat
     label: '性能压测',
     upstreamBaseUrl,
     accountCount: config.accountCount,
-    accountConcurrencyLimit: config.accountConcurrencyLimit
+    accountConcurrencyLimit: config.accountConcurrencyLimit,
+    clientCompatibility: 'openai_standard'
   })
   if (!fixture.apiKey) throw new Error('Mockdata 压测夹具未生成本地网关 Key')
   return {
@@ -305,7 +311,7 @@ function prewarmStorageDatabases(): void {
   databaseModule.getStatsDatabase().prepare('SELECT 1').get()
 }
 
-function createGatewayServer(connectionTracker: ConnectionTracker): http.Server {
+function createGatewayServer(connectionTracker: ConnectionTracker, config: PerfConfig): http.Server {
   const gatewayRawBodyLimit = gatewayRawBodyHardLimit
   const app = express()
   app.use((req, _res, next) => {
@@ -317,7 +323,10 @@ function createGatewayServer(connectionTracker: ConnectionTracker): http.Server 
   app.get('/__aisys__/health', (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-performance-test' })
   })
-  app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, openAIGatewayRouter)
+  app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, (req: Request, res: ExpressResponse, next: NextFunction) => {
+    handleOpenAIGatewayRequest(req, res, { auditCaptureMode: config.auditCaptureMode })
+      .catch((error: unknown) => next(error))
+  })
   app.use(handleGatewayPerfUnhandledError)
   const server = http.createServer(app)
   attachConnectionTracker(server, connectionTracker)
@@ -816,6 +825,7 @@ function printHeader(config: PerfConfig, baseUrl: string, upstreamBaseUrl: strin
   console.log(`- 并发档位：${config.concurrencyLevels.join(', ')}`)
   console.log(`- 单档时长：${config.durationSeconds}s，预热：${config.warmupSeconds}s`)
   console.log(`- 模拟上游延迟：${config.upstreamLatencyMs}ms，响应体：${config.upstreamBodyBytes} bytes`)
+  console.log(`- 审计捕获模式：${config.auditCaptureMode}`)
   console.log(`- 临时账户：${seeded.accountIds.length} 个，单账号并发上限：${config.accountConcurrencyLimit}`)
 }
 
@@ -1070,6 +1080,13 @@ function scenarioList(value: string): ScenarioName[] {
     .map((item) => item.trim())
     .filter((item): item is ScenarioName => allowed.has(item as ScenarioName))
   return parsed.length > 0 ? [...new Set(parsed)] : ['responses']
+}
+
+function auditCaptureMode(value: string): PerfConfig['auditCaptureMode'] {
+  if (value === 'default' || value === 'metadata_only') {
+    return value
+  }
+  throw new Error(`非法审计捕获模式：${value}，可选值为 default 或 metadata_only`)
 }
 
 function envText(name: string, fallback: string): string {

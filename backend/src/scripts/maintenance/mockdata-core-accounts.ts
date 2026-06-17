@@ -1,12 +1,16 @@
 import type {
+  AccountAvailabilitySchedule,
   GroupSummary,
   SystemAccountSummary
 } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { getBusinessDatabase, newId, nowIso } from '../../storage/database.js'
 import * as repositories from '../../storage/repositories.js'
+import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import { refreshAccount } from './mockdata-account-helpers.js'
 import {
   dayMs,
+  idPrefix,
   namePrefix,
   providerCode,
   type MockAccounts,
@@ -184,6 +188,54 @@ export function createAccounts(
     notes: 'Mockdata 普通账号'
   }, adminAccess)
 
+  const standardClient = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}OpenAI 标准兼容账户`,
+    type: 'api_key',
+    status: 'active',
+    groupId: groups.main.id,
+    credentials: apiKeyCredentials('standard-client'),
+    clientCompatibility: 'openai_standard',
+    supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
+    modelMappings: [
+      { sourceModel: 'mockdata-global-long-context', upstreamModel: 'gpt-5.4-mini', enabled: true },
+      { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.4', enabled: false }
+    ],
+    tags: ['标准兼容', '模型映射', 'Mockdata'],
+    concurrencyLimit: 30,
+    priority: 35,
+    notes: 'Mockdata OpenAI 标准兼容账号，用于客户端兼容模式、模型映射和标签展示'
+  }, adminAccess)
+
+  const multiKeyPool = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}多 API Key 轮换账户`,
+    type: 'api_key',
+    status: 'active',
+    groupId: groups.main.id,
+    credentials: multiApiKeyCredentials('multi-key-pool', 'weighted_round_robin'),
+    supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
+    tags: ['多Key', '故障隔离'],
+    concurrencyLimit: 70,
+    priority: 18,
+    notes: 'Mockdata 账户内多 API Key，用于 key 级故障隔离、轮换策略和运行态汇总展示'
+  }, adminAccess)
+  seedAccountApiKeyRuntimeStates(multiKeyPool)
+
+  const image = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}图像生成账户`,
+    type: 'api_key',
+    status: 'active',
+    groupId: groups.experiment.id,
+    credentials: apiKeyCredentials('image'),
+    supportedModels: ['mockdata-global-image', 'gpt-image-1'],
+    tags: ['图像生成'],
+    concurrencyLimit: 18,
+    priority: 50,
+    notes: 'Mockdata 图像生成账号，用于 Images API、图片 token 和系统账户图像权限展示'
+  }, adminAccess)
+
   const burstFast = repositories.createAccount({
     providerCode,
     name: `${namePrefix}高并发快响账户`,
@@ -265,6 +317,64 @@ export function createAccounts(
     priority: 60,
     fallbackEnabled: true,
     notes: 'Mockdata OAuth 备用账号'
+  }, adminAccess)
+
+  const pendingTest = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}待测试账户`,
+    type: 'api_key',
+    status: 'pending_test',
+    groupId: groups.experiment.id,
+    credentials: apiKeyCredentials('pending-test'),
+    supportedModels: ['gpt-5.4-mini'],
+    tags: ['待测试'],
+    concurrencyLimit: 10,
+    priority: 90,
+    notes: 'Mockdata 待测试账号，用于待测试状态、手动测试入口和不可调度展示'
+  }, adminAccess)
+
+  const disabled = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}手动停用账户`,
+    type: 'api_key',
+    status: 'disabled',
+    groupId: groups.experiment.id,
+    credentials: apiKeyCredentials('disabled'),
+    supportedModels: ['gpt-5.4-mini'],
+    tags: ['停用'],
+    concurrencyLimit: 8,
+    priority: 95,
+    notes: 'Mockdata 手动停用账号，用于停用状态和恢复入口展示'
+  }, adminAccess)
+
+  const unschedulable = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}停调账户`,
+    type: 'api_key',
+    status: 'active',
+    groupId: groups.experiment.id,
+    credentials: apiKeyCredentials('unschedulable'),
+    supportedModels: ['gpt-5.4-mini'],
+    schedulable: false,
+    tags: ['停调'],
+    concurrencyLimit: 8,
+    priority: 98,
+    notes: 'Mockdata 正常但手动关闭调度账号，用于参与调度筛选和有效可用性展示'
+  }, adminAccess)
+
+  const scheduledInactive = repositories.createAccount({
+    providerCode,
+    name: `${namePrefix}时间计划停调账户`,
+    type: 'api_key',
+    status: 'active',
+    groupId: groups.experiment.id,
+    credentials: apiKeyCredentials('scheduled-inactive'),
+    supportedModels: ['gpt-5.4-mini'],
+    availabilitySchedule: inactiveAvailabilitySchedule(),
+    tags: ['时间计划'],
+    concurrencyLimit: 8,
+    priority: 100,
+    notes: 'Mockdata 当前不在允许时段内的账号，用于账户时间计划和调度过滤展示'
   }, adminAccess)
 
   const rateLimited = repositories.createAccount({
@@ -397,12 +507,19 @@ export function createAccounts(
     primary,
     proxied,
     normal,
+    standardClient,
+    multiKeyPool: refreshAccount(multiKeyPool.id),
+    image,
     burstFast,
     burstImage,
     burstFallback,
     fallback,
     oauth,
     oauthBackup,
+    pendingTest,
+    disabled,
+    unschedulable,
+    scheduledInactive,
     rateLimited: refreshAccount(rateLimited.id),
     temporary: refreshAccount(temporary.id),
     error: refreshAccount(error.id),
@@ -422,6 +539,50 @@ function apiKeyCredentials(suffix: string): Record<string, unknown> {
   }
 }
 
+function multiApiKeyCredentials(suffix: string, strategy: 'round_robin' | 'weighted_round_robin'): Record<string, unknown> {
+  const apiKeys = [1, 2, 3, 4].map((index) => `sk-mockdata-admin-${suffix}-${index}-${'m'.repeat(20)}`)
+  return {
+    api_key: apiKeys[0],
+    api_keys: apiKeys,
+    api_key_strategy: strategy,
+    api_key_weights: strategy === 'weighted_round_robin' ? [6, 3, 1, 1] : undefined,
+    base_url: 'https://api.openai.com/v1',
+    error_handling_rules: [
+      {
+        enabled: true,
+        name: 'Mockdata 429 限流冷却',
+        priority: 1,
+        status_codes: [429],
+        action: 'rate_limited',
+        reset_strategy: 'duration',
+        duration_hours: 2,
+        description: 'Mockdata key 级限流规则'
+      },
+      {
+        enabled: true,
+        name: 'Mockdata 5xx 临时停调',
+        priority: 2,
+        status_codes: [500, 502, 503],
+        action: 'temp_unschedulable',
+        description: 'Mockdata key 级临时停调规则'
+      }
+    ],
+    response_inspection_rules: [
+      {
+        enabled: true,
+        name: 'Mockdata 输出污染切号',
+        priority: 10,
+        match: {
+          outputTextIncludes: ['Mockdata 广告污染'],
+          accountClientCompatibilities: ['codex_responses']
+        },
+        action: 'retry_next_account',
+        notes: 'Mockdata 账户级响应检查规则'
+      }
+    ]
+  }
+}
+
 function oauthCredentials(suffix: string, expiresHours: number): Record<string, unknown> {
   return {
     access_token: `mockdata-oauth-access-${suffix}-${'a'.repeat(32)}`,
@@ -430,5 +591,87 @@ function oauthCredentials(suffix: string, expiresHours: number): Record<string, 
     account_id: `mockdata-openai-user-${suffix}`,
     expires_at: new Date(Date.now() + expiresHours * 60 * 60_000).toISOString(),
     base_url: 'https://api.openai.com/v1'
+  }
+}
+
+function inactiveAvailabilitySchedule(): AccountAvailabilitySchedule {
+  return {
+    enabled: true,
+    timezone: 'UTC',
+    mode: 'allow_windows',
+    windows: [{ daysOfWeek: [1], start: '00:00', end: '00:01' }],
+    dateRange: {
+      startDate: new Date(Date.now() + 14 * dayMs).toISOString().slice(0, 10),
+      endDate: new Date(Date.now() + 21 * dayMs).toISOString().slice(0, 10)
+    }
+  }
+}
+
+function seedAccountApiKeyRuntimeStates(account: { id: string; systemAccountId?: string; credentials: Record<string, unknown> }): void {
+  const entries = accountApiKeyEntries(account.credentials)
+  if (entries.length < 4) return
+  const now = nowIso()
+  const database = getBusinessDatabase()
+  const states = [
+    { entryIndex: 1, status: 'temporary_unavailable', failures: 2, successes: 8, message: 'Mockdata 模拟 key 级 503 冷却', nextProbeMinutes: 5 },
+    { entryIndex: 2, status: 'rate_limited', failures: 5, successes: 21, message: 'Mockdata 模拟 key 级限流', nextProbeMinutes: 45 },
+    { entryIndex: 3, status: 'error', failures: 7, successes: 3, message: 'Mockdata 模拟 key 级认证异常', nextProbeMinutes: 15 }
+  ]
+  const insert = database.prepare(`
+    INSERT INTO account_api_key_runtime_states (
+      id, system_account_id, account_id, key_fingerprint, key_index, credential_revision,
+      status, failure_count, consecutive_failures, success_count,
+      cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
+      last_attempt_at, last_success_at, last_failure_at, last_error_code, last_error_message,
+      last_probe_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, key_fingerprint) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      key_index = excluded.key_index,
+      credential_revision = excluded.credential_revision,
+      status = excluded.status,
+      failure_count = excluded.failure_count,
+      consecutive_failures = excluded.consecutive_failures,
+      success_count = excluded.success_count,
+      cooldown_until = excluded.cooldown_until,
+      next_probe_at = excluded.next_probe_at,
+      probe_backoff_seconds = excluded.probe_backoff_seconds,
+      recovery_started_at = excluded.recovery_started_at,
+      last_attempt_at = excluded.last_attempt_at,
+      last_success_at = excluded.last_success_at,
+      last_failure_at = excluded.last_failure_at,
+      last_error_code = excluded.last_error_code,
+      last_error_message = excluded.last_error_message,
+      last_probe_at = excluded.last_probe_at,
+      updated_at = excluded.updated_at
+  `)
+  for (const state of states) {
+    const entry = entries[state.entryIndex]
+    if (!entry) continue
+    const nextProbeAt = new Date(Date.now() + state.nextProbeMinutes * 60_000).toISOString()
+    insert.run(
+      `${idPrefix}account_api_key_runtime_${state.entryIndex}`,
+      account.systemAccountId ?? null,
+      account.id,
+      entry.fingerprint,
+      entry.index,
+      'mockdata',
+      state.status,
+      state.failures,
+      state.failures,
+      state.successes,
+      nextProbeAt,
+      nextProbeAt,
+      state.nextProbeMinutes * 60,
+      now,
+      now,
+      new Date(Date.now() - 2 * 60_000).toISOString(),
+      now,
+      state.status === 'rate_limited' ? 'rate_limit_exceeded' : state.status === 'error' ? 'invalid_api_key' : 'service_unavailable',
+      state.message,
+      new Date(Date.now() - 60_000).toISOString(),
+      now,
+      now
+    )
   }
 }

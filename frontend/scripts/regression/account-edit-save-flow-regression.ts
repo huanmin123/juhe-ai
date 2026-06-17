@@ -93,7 +93,7 @@ for (const marker of [
 
 assert.equal(
   packageJson.scripts?.['test:account-edit-save-flow'],
-  '..\\backend\\node_modules\\.bin\\tsx.CMD scripts/regression/account-edit-save-flow-regression.ts',
+  'pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts',
   '前端 package script 应暴露账户编辑保存流程边界回归'
 )
 

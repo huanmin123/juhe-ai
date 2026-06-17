@@ -103,7 +103,7 @@ export async function pipeNonStreamUpstreamResponse(
         break
       }
 
-      const buffer = Buffer.from(result.value)
+      const buffer = bufferFromUint8Array(result.value)
       if (firstByteMs === undefined) {
         firstByteMs = Date.now() - input.startedAt
         if (!downstreamPrepared) {
@@ -207,7 +207,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
         break
       }
 
-      const buffer = Buffer.from(result.value)
+      const buffer = bufferFromUint8Array(result.value)
       if (firstByteMs === undefined) {
         firstByteMs = Date.now() - input.startedAt
         input.onFirstByte?.()
@@ -299,7 +299,7 @@ export async function readUpstreamBodyLimited(
         break
       }
 
-      const buffer = Buffer.from(result.value)
+      const buffer = bufferFromUint8Array(result.value)
       if (firstByteMs === undefined && input.startedAt !== undefined) {
         firstByteMs = Date.now() - input.startedAt
         input.onFirstByte?.()
@@ -362,6 +362,12 @@ export async function writeResponseChunk(res: Response, buffer: Buffer): Promise
     destroyed: res.destroyed
   }, logLevel === 'warn' ? '下游响应 backpressure 等待时间过长' : '下游响应短暂 backpressure 已恢复')
   return { bytes: buffer.length, backpressure: true, drainWaitMs, logLevel }
+}
+
+export function bufferFromUint8Array(value: Uint8Array): Buffer {
+  return Buffer.isBuffer(value)
+    ? value
+    : Buffer.from(value.buffer, value.byteOffset, value.byteLength)
 }
 
 export function endResponse(res: Response): void {

@@ -9,7 +9,7 @@ import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 const operationLogFlushIntervalMs = 100
 const operationLogRetryPolicy = fixedRetryPolicy('operation_log_queue_flush', 1000)
 const operationLogBatchSize = 200
-const operationLogShutdownFlushMaxBatches = 1
+const operationLogShutdownFlushMaxBatches = 100
 const operationLogQueueMaxItems = 5_000
 const operationLogQueueMaxBytes = 32 * 1024 * 1024
 

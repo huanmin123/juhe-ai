@@ -12,6 +12,7 @@ import {
 import {
   classifyOpenAIStreamEvent,
   estimateOpenAIRequestInputTokens,
+  estimateTokenCountFromText,
   isOpenAIImageStreamEventType,
   parseOpenAIStreamEventData,
   type OpenAIStreamEventClassification
@@ -213,6 +214,12 @@ export class OpenAIStreamInspector {
     return summaries.map((event) => ({ ...event }))
   }
 
+  drainEventSummariesCanEndStream(): boolean {
+    const summaries = this.pendingEventSummaries
+    this.pendingEventSummaries = []
+    return summaries.some((event) => event.canEndStream)
+  }
+
   private processLine(line: string): void {
     if (line === '') {
       this.flushEvent()
@@ -254,6 +261,10 @@ export class OpenAIStreamInspector {
     this.dataLines = []
     this.dataBytes = 0
     if (!data) return
+    if (this.tryFlushCommonResponsesTextDelta(data, currentEventName, currentDataBytes)) {
+      this.resetOversizedEventState()
+      return
+    }
     const event = parseOpenAIStreamEventData(data, currentEventName)
     if (event.dataParseError) {
       this.recordEventSummary({
@@ -302,6 +313,35 @@ export class OpenAIStreamInspector {
       usage: classification.usageFound
     })
     this.resetOversizedEventState()
+  }
+
+  private tryFlushCommonResponsesTextDelta(data: string, currentEventName: string, currentDataBytes: number): boolean {
+    if (currentEventName !== 'response.output_text.delta') {
+      return false
+    }
+    const delta = extractCommonResponsesTextDelta(data)
+    if (delta === undefined) {
+      return false
+    }
+    const visibleOutput = delta.length > 0
+    const estimatedOutputTokens = estimateTokenCountFromText(delta)
+    if (visibleOutput) {
+      this.inspection.outputReceived = true
+      this.inspection.outputEventCount += 1
+    }
+    if (estimatedOutputTokens > 0) {
+      this.inspection.estimatedOutputTokens = (this.inspection.estimatedOutputTokens ?? 0) + estimatedOutputTokens
+    }
+    this.recordEventSummary({
+      type: 'response.output_text.delta',
+      dataBytes: currentDataBytes,
+      terminal: false,
+      canEndStream: false,
+      failed: false,
+      output: visibleOutput,
+      usage: false
+    })
+    return true
   }
 
   private skipParsing(reason: string): OpenAIStreamInspection {
@@ -667,6 +707,35 @@ function appendRollingTextTail(current: string, next: string, limitChars: number
   }
   const combined = current.length > 0 ? current + next : next
   return combined.length > limitChars ? combined.slice(combined.length - limitChars) : combined
+}
+
+function extractCommonResponsesTextDelta(data: string): string | undefined {
+  if (!data.startsWith(commonResponsesTextDeltaPrefix) || !data.endsWith('"}')) {
+    return undefined
+  }
+  const delta = data.slice(commonResponsesTextDeltaPrefix.length, -2)
+  if (delta.length === 0) {
+    return ''
+  }
+  if (!isPlainJsonStringContent(delta)) {
+    return undefined
+  }
+  return delta
+}
+
+const commonResponsesTextDeltaPrefix = '{"type":"response.output_text.delta","delta":"'
+const jsonCodeBackslash = 92
+const jsonCodeQuote = 34
+const jsonCodeSpace = 32
+
+function isPlainJsonStringContent(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index)
+    if (code === jsonCodeQuote || code === jsonCodeBackslash || code < jsonCodeSpace) {
+      return false
+    }
+  }
+  return true
 }
 
 const imageStreamPayloadHintTokens = [

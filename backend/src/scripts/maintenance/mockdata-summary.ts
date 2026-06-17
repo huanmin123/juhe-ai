@@ -103,6 +103,9 @@ function apiKeySummariesForMockdata(
         }
       }),
       status: key.status,
+      groupRouteStrategy: key.groupRouteStrategy,
+      expiresAt: key.expiresAt,
+      availabilityScheduleActive: key.availabilityScheduleActive,
       key: key.key
     }
   })
@@ -166,6 +169,7 @@ export function writeSummary(
       authorizations: created.authorizations.length,
       externalSources: Object.keys(created.externalSources).length,
       responseInspectionPolicies: created.responseInspectionPolicies,
+      customProviderModels: created.customProviderModels,
       usageRecords: records.length,
       publicApiLogs: extraCounts.publicApiLogs,
       auditLogs: Math.ceil(records.length / 4),

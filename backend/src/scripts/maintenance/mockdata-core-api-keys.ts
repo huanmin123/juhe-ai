@@ -1,3 +1,4 @@
+import type { ApiKeyAvailabilitySchedule } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import * as repositories from '../../storage/repositories.js'
 import {
@@ -38,6 +39,49 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
       daily: { enabled: true, limit: 420 },
       monthly: { enabled: true, limit: 1600 }
     }
+  }, adminAccess)
+  const adminRoundRobin = repositories.createApiKeyRecord({
+    name: `${namePrefix}轮询多分组 Key`,
+    description: 'Mockdata 轮询 Key，混合启用和停用分组绑定，用于 API Key 多分组路由策略展示',
+    groupRouteStrategy: 'round_robin',
+    groupBindings: [
+      { groupId: groups.main.id, priority: 1, weight: 1, status: 'active' },
+      { groupId: groups.highConcurrency.id, priority: 2, weight: 1, status: 'active' },
+      { groupId: groups.backup.id, priority: 3, weight: 1, status: 'disabled' }
+    ],
+    status: 'active',
+    quotaLimits: {
+      hourly: { enabled: true, hours: 6, limit: 220 },
+      daily: { enabled: true, limit: 900 },
+      weekly: { enabled: true, limit: 3200 },
+      monthly: { enabled: true, limit: 9000 }
+    }
+  }, adminAccess)
+  const adminWeighted = repositories.createApiKeyRecord({
+    name: `${namePrefix}加权多分组 Key`,
+    description: 'Mockdata 加权轮询 Key，用于权重、优先级和跨分组路由状态展示',
+    groupRouteStrategy: 'weighted_round_robin',
+    groupBindings: [
+      { groupId: groups.main.id, priority: 1, weight: 6, status: 'active' },
+      { groupId: groups.highConcurrency.id, priority: 2, weight: 3, status: 'active' },
+      { groupId: groups.oauth.id, priority: 3, weight: 1, status: 'active' }
+    ],
+    status: 'active',
+    quotaLimits: {
+      hourly: { enabled: true, hours: 12, limit: 260 },
+      daily: { enabled: true, limit: 1000 },
+      weekly: { enabled: true, limit: 3600 },
+      monthly: { enabled: true, limit: 12000 },
+      total: { enabled: true, limit: 40000 }
+    }
+  }, adminAccess)
+  const adminScheduled = repositories.createApiKeyRecord({
+    name: `${namePrefix}时间计划 Key`,
+    description: 'Mockdata 当前不在允许时段内的 API Key，用于时间计划运行态和网关拒绝状态展示',
+    groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
+    status: 'active',
+    availabilitySchedule: inactiveAvailabilitySchedule(),
+    quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
   const adminBackup = repositories.createApiKeyRecord({
     name: `${namePrefix}备用网关 Key`,
@@ -158,6 +202,9 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     adminMain,
     adminHighConcurrency,
     adminHighFrequency,
+    adminRoundRobin,
+    adminWeighted,
+    adminScheduled,
     adminBackup,
     adminOAuth,
     adminAuthorizedGroups,
@@ -170,5 +217,18 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     opsAccountAuthorized,
     financeAuthorized,
     viewerAuthorized
+  }
+}
+
+function inactiveAvailabilitySchedule(): ApiKeyAvailabilitySchedule {
+  return {
+    enabled: true,
+    timezone: 'UTC',
+    mode: 'allow_windows',
+    windows: [{ daysOfWeek: [1], start: '00:00', end: '00:01' }],
+    dateRange: {
+      startDate: new Date(Date.now() + 14 * dayMs).toISOString().slice(0, 10),
+      endDate: new Date(Date.now() + 21 * dayMs).toISOString().slice(0, 10)
+    }
   }
 }

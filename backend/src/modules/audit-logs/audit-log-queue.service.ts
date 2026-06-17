@@ -11,7 +11,7 @@ import { readAuditLogSettings } from './audit-log-settings.js'
 
 const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
 const auditLogFlushBatchMaxBytes = 8 * 1024 * 1024
-const auditLogShutdownFlushMaxBatches = 1
+const auditLogShutdownFlushMaxBatches = 100
 const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
 const auditLogEstimateMaxStringChars = 16 * 1024
 
@@ -58,6 +58,7 @@ export interface AuditLogQueueRuntime {
 
 export function recordDroppedAuditCapture(input: {
   traceId: string
+  trafficSource?: AuditLogInput['trafficSource']
   auditOutcome: string
   success: boolean
   bytes: number
@@ -71,14 +72,23 @@ export function recordDroppedAuditCapture(input: {
   errorMessage?: string
   clientIp?: string
   userAgent?: string
+  systemAccountId?: string
+  apiKeyId?: string
+  groupId?: string
+  providerCode?: string
 }): void {
   const timestamp = nowIso()
   const sanitizedUrl = sanitizeDroppedAuditUrl(input.path, input.queryString)
   enqueueAuditLog({
     id: `audit_${Date.now()}_${randomUUID()}`,
     traceId: input.traceId,
+    trafficSource: input.trafficSource,
     auditOutcome: input.auditOutcome as AuditLogInput['auditOutcome'],
     success: input.success,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    providerCode: input.providerCode,
     method: input.method?.toUpperCase() ?? 'UNKNOWN',
     path: sanitizedUrl.path,
     queryString: sanitizedUrl.queryString,

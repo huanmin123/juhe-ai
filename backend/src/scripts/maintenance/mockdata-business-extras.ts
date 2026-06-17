@@ -5,9 +5,100 @@ import {
   createExternalIntegrationSourceToken,
   externalIntegrationScopeOptions
 } from '../../storage/external-integration-source.repository.js'
+import { upsertCustomProviderModel } from '../../storage/custom-provider-models.repository.js'
 import { createAnnouncement, markPublicAnnouncementsRead, upsertAccountUsageSnapshots } from '../../storage/repositories.js'
 import { createResponseInspectionPolicy } from '../../storage/response-inspection-policy.repository.js'
 import { dayMs, namePrefix, type MockAccounts, type MockExternalSources, type MockSystemAccounts } from './mockdata-shared.js'
+
+export function createCustomProviderModels(adminId: string, users: MockSystemAccounts): number {
+  const models = [
+    {
+      providerCode: GPT_VENDOR_CODE,
+      model: 'mockdata-global-long-context',
+      scope: 'global' as const,
+      status: 'active' as const,
+      mode: 'text',
+      supportedApiProtocols: ['responses', 'chat_completions'],
+      pricingModel: 'token',
+      contextWindowTokens: 512_000,
+      maxOutputTokens: 32_000,
+      inputUsdPer1M: 0.2,
+      outputUsdPer1M: 0.8,
+      cachedInputUsdPer1M: 0.05,
+      capabilityNotes: 'Mockdata 全局长上下文模型，用于模型目录、账户支持模型和映射目标展示',
+      notes: 'Mockdata 全局模型样本',
+      actorSystemAccountId: adminId
+    },
+    {
+      providerCode: GPT_VENDOR_CODE,
+      model: 'mockdata-global-image',
+      scope: 'global' as const,
+      status: 'active' as const,
+      mode: 'image_generation',
+      supportedApiProtocols: ['images', 'responses'],
+      pricingModel: 'image',
+      contextWindowTokens: 32_000,
+      maxOutputTokens: 8_000,
+      imageInputUsdPer1M: 5,
+      imageOutputUsdPer1M: 40,
+      outputUsdPerImage: 0.02,
+      capabilityNotes: 'Mockdata 图像模型，用于图片用量与图像权限验收',
+      notes: 'Mockdata 图像模型样本',
+      actorSystemAccountId: adminId
+    },
+    {
+      providerCode: GPT_VENDOR_CODE,
+      model: 'mockdata-personal-codex',
+      scope: 'personal' as const,
+      systemAccountId: users.manager.id,
+      status: 'active' as const,
+      mode: 'text',
+      supportedApiProtocols: ['responses'],
+      pricingModel: 'token',
+      contextWindowTokens: 256_000,
+      maxOutputTokens: 16_000,
+      inputUsdPer1M: 0.3,
+      outputUsdPer1M: 1.2,
+      capabilityNotes: 'Mockdata 普通管理员个人模型，用于个人模型目录和账户模型限制展示',
+      notes: 'Mockdata 个人模型样本',
+      actorSystemAccountId: users.manager.id
+    },
+    {
+      providerCode: GPT_VENDOR_CODE,
+      model: 'mockdata-draft-audio',
+      scope: 'global' as const,
+      status: 'draft' as const,
+      mode: 'audio',
+      supportedApiProtocols: ['audio', 'responses'],
+      pricingModel: 'audio',
+      audioInputUsdPer1M: 1.5,
+      audioOutputUsdPer1M: 6,
+      capabilityNotes: 'Mockdata 草稿音频模型，用于模型目录草稿状态展示',
+      notes: 'Mockdata 草稿模型样本',
+      actorSystemAccountId: adminId
+    },
+    {
+      providerCode: GPT_VENDOR_CODE,
+      model: 'mockdata-disabled-legacy',
+      scope: 'global' as const,
+      status: 'disabled' as const,
+      mode: 'text',
+      supportedApiProtocols: ['chat_completions'],
+      pricingModel: 'token',
+      inputUsdPer1M: 0.1,
+      outputUsdPer1M: 0.4,
+      shutdownDate: new Date(Date.now() - 7 * dayMs).toISOString().slice(0, 10),
+      capabilityNotes: 'Mockdata 停用模型，用于模型目录停用状态展示',
+      notes: 'Mockdata 停用模型样本',
+      actorSystemAccountId: adminId
+    }
+  ]
+
+  for (const model of models) {
+    upsertCustomProviderModel(model)
+  }
+  return models.length
+}
 
 export function createExternalSources(): MockExternalSources {
   const allScopes = externalIntegrationScopeOptions.map((option) => option.value)

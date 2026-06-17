@@ -10,6 +10,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { runtimeConfig } from '../../config/runtime.js'
 import type { GatewayRuntimeRequest } from '../../modules/gateway/request/pre-auth.js'
 import { logger } from '../../shared/logger.js'
+import { gatewayErrorPayload } from '../../modules/gateway/response/responses.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-auth-preflight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'gateway-auth-preflight.sqlite3')
@@ -18,7 +19,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'gateway-auth-preflight-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'server'
+runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -32,7 +33,11 @@ const [
   gatewayRoutes,
   gatewayBodyMiddleware,
   gatewayJsonParser,
-  gatewayRequestBody
+  gatewayRequestBody,
+  usageRecordQueue,
+  auditLogQueue,
+  gatewayCache,
+  backgroundIpc
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
@@ -43,7 +48,11 @@ const [
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
   import('../../modules/gateway/request/json-parser.js'),
-  import('../../modules/gateway/request/body.js')
+  import('../../modules/gateway/request/body.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/background/background-ipc.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {
@@ -94,6 +103,8 @@ class FakeDbServiceChild extends EventEmitter {
 let rawBodyMiddlewareHitCount = 0
 
 try {
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   const apiKey = seedGatewayRuntime()
   const fakeChild = new FakeDbServiceChild()
   runtimeConfig.processRole = 'server'
@@ -109,24 +120,25 @@ try {
   try {
     const baseUrl = `http://127.0.0.1:${addressPort(server)}`
     const body = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(1024 * 1024) })
+    const authRejectBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(1024) })
 
-    const missingBearer = await postJson(`${baseUrl}/v1/responses`, body)
+    const missingBearer = await postJson(`${baseUrl}/v1/responses`, authRejectBody, undefined, 'missingBearer')
     assert.equal(missingBearer.status, 401, '缺少 Bearer 应在读取 body 前返回 401')
     assert.equal(rawBodyMiddlewareHitCount, 0, '缺少 Bearer 不应进入 raw body 读取链路')
     assert.equal(fakeChild.sentOperationCount, 0, '缺少 Bearer 不应请求 DB service')
 
-    const invalidKey = await postJson(`${baseUrl}/v1/responses`, body, 'sk-invalid')
+    const invalidKey = await postJson(`${baseUrl}/v1/responses`, authRejectBody, 'sk-invalid', 'invalidKey')
     assert.equal(invalidKey.status, 401, '无效 API Key 应在读取 body 前返回 401')
     assert.equal(rawBodyMiddlewareHitCount, 0, '无效 API Key 不应进入 raw body 读取链路')
     assert.equal(fakeChild.sentOperationCount, 1, '无效 API Key 只需要一次运行配置读取')
 
-    const disabledImage = await postJson(`${baseUrl}/v1/images/generations`, body, apiKey.key)
+    const disabledImage = await postJson(`${baseUrl}/v1/images/generations`, authRejectBody, apiKey.key, 'disabledImage')
     assert.equal(disabledImage.status, 403, '未开启图像生成权限的 API Key 应在读取 body 前返回 403')
     assert.match(disabledImage.text, /当前用户图像生成被禁用了，请联系管理员开启/, '图像生成权限禁用应返回中文错误')
     assert.equal(rawBodyMiddlewareHitCount, 0, '路径可识别的图像请求被禁用时不应读取 raw body')
     assert.equal(fakeChild.sentOperationCount, 2, '图像权限早拒绝只需要复用一次运行配置读取')
 
-    const valid = await postJson(`${baseUrl}/v1/responses`, body, apiKey.key)
+    const valid = await postJson(`${baseUrl}/v1/responses`, body, apiKey.key, 'valid')
     assert.equal(valid.status, 200, `合法 API Key 应继续进入网关 body 读取链路：${valid.text}`)
     assert.equal(rawBodyMiddlewareHitCount, 1, '合法请求应读取一次 raw body')
     assert.deepEqual(JSON.parse(valid.text), {
@@ -135,14 +147,21 @@ try {
     })
 
     repositories.updateSettings({ gatewayTextRawBodyLimitMegabytes: 2 })
+    gatewayCache.clearGatewayRuntimeCacheLocal()
     const configuredTextLimitBytes = gatewayRequestBody.gatewayTextRawBodyLimitBytes(2)
     const oversizeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(configuredTextLimitBytes) })
-    const oversize = await postJson(`${baseUrl}/v1/responses`, oversizeBody, apiKey.key)
+    const usageQueueLengthBeforeOversize = backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.queueLength
+    const oversize = await postJson(`${baseUrl}/v1/responses`, oversizeBody, apiKey.key, 'oversize')
     assert.equal(oversize.status, 413, '超过系统设置里的文本请求体上限应在进入业务解析前返回 413')
     assert.equal(rawBodyMiddlewareHitCount, 2, '超过动态文本上限但未超过入口上限的合法请求会进入 raw body 限额判定')
+    assert.equal(
+      backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.queueLength,
+      usageQueueLengthBeforeOversize + 1,
+      '合法 API Key 的请求体 413 拒绝必须投递一条失败用量到 ingest-worker 队列'
+    )
 
     const largeImageBody = JSON.stringify({ model: 'gpt-image-1', input: 'x'.repeat(configuredTextLimitBytes) })
-    const largeImage = await postJson(`${baseUrl}/v1/responses`, largeImageBody, apiKey.key)
+    const largeImage = await postJson(`${baseUrl}/v1/responses`, largeImageBody, apiKey.key, 'largeImage')
     assert.equal(largeImage.status, 200, '图像模型请求超过动态文本上限但未超过图像上限时应继续进入业务链路')
     assert.deepEqual(JSON.parse(largeImage.text), {
       apiKeyId: apiKey.id,
@@ -156,6 +175,10 @@ try {
   console.log('网关认证预解析回归通过：无效请求不读取大 body，合法请求复用 runtime 后继续处理')
 } finally {
   await gatewayJsonParser.stopGatewayJsonParseWorker()
+  usageRecordQueue.clearUsageRecordQueueForTest()
+  auditLogQueue.clearAuditLogQueueForTest()
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -221,8 +244,8 @@ async function listen(): Promise<Server> {
 }
 
 function handleRawBodyErrorForTest(
-  error: Error & { status?: number; statusCode?: number },
-  _req: Request,
+  error: Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number },
+  req: Request,
   res: Response,
   next: NextFunction
 ): void {
@@ -232,29 +255,39 @@ function handleRawBodyErrorForTest(
       ? Number(error.status)
       : 400
   if (statusCode >= 400 && statusCode < 600) {
-    res.status(statusCode).json({
-      error: {
-        message: statusCode === 413 ? '请求体过大' : '请求体无效',
-        type: statusCode === 413 ? 'request_too_large' : 'invalid_request_error'
-      }
+    const message = statusCode === 413 ? '请求体过大' : '请求体无效'
+    const responsePayload = gatewayErrorPayload(message, statusCode === 413 ? 'request_too_large' : 'invalid_request_error')
+    gatewayBodyMiddleware.recordGatewayBodyRejection(req as never, {
+      statusCode,
+      responsePayload,
+      rawBodyBytes: Number(error.received ?? error.length ?? error.limit ?? 0),
+      reason: 'gateway_body_parser',
+      errorCode: error.type,
+      errorMessage: message
     })
+    res.status(statusCode).json(responsePayload)
     return
   }
   next(error)
 }
 
-async function postJson(url: string, body: string, token?: string): Promise<{ status: number; text: string }> {
+async function postJson(url: string, body: string, token?: string, label = 'request'): Promise<{ status: number; text: string }> {
   const headers: Record<string, string> = {
     'content-type': 'application/json'
   }
   if (token) {
     headers.authorization = `Bearer ${token}`
   }
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body
-  })
+  let response: Awaited<ReturnType<typeof fetch>>
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body
+    })
+  } catch (error) {
+    throw new Error(`${label} fetch failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
   return {
     status: response.status,
     text: await response.text()

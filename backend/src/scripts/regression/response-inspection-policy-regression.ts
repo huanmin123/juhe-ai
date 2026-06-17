@@ -457,6 +457,28 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_gpt_default_delta_fastpath',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    endpointFamily: 'responses',
+    policies
+  })
+  const event = sseEvent('response.output_text.delta', {
+    delta: '普通输出'
+  })
+  const result = buffer.pushChunk(event)
+  assert.equal(result.intercepted, undefined, '默认错误规则下普通 Responses delta 不应触发响应检查')
+  assert.equal(Buffer.concat(result.chunks).toString('utf8'), event.toString('utf8'), '默认错误规则下普通 Responses delta 应原样透传')
+}
+
+{
   const buffer = new OpenAIResponseInspectionBuffer({
     endpointFamily: 'responses',
     policies: [
@@ -583,6 +605,54 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(response.writableEnded, false, '服务端重试不应结束客户端响应')
   assert.equal(downstreamPrepared, false, '服务端重试不应准备下游响应')
   assert.equal(failureCalled, false, '配置化写前检查应交给调度重试，不应走流失败副作用')
+}
+
+{
+  let failureCalled = false
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write() {
+      return true
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    yield Buffer.from([
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed"}}',
+      '',
+      'event: response.failed',
+      'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_overloaded","message":"late failure"}}}',
+      ''
+    ].join('\n'), 'utf8')
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    settings,
+    Date.now(),
+    () => { failureCalled = true },
+    undefined,
+    {
+      endpointFamily: 'responses'
+    }
+  )
+  assert.equal(result.completed, false, '同批终止后失败应返回失败结果')
+  assert.equal(result.errorCode, 'server_overloaded', '同批终止后失败应保留失败错误码')
+  assert.equal(failureCalled, true, '同批终止后失败应触发失败回调')
+  assert.equal(response.writableEnded, true, '同批终止后失败应结束客户端响应')
 }
 
 {

@@ -227,6 +227,7 @@ function buildHotSearchFileBatches(inputs: AuditLogInput[]): Map<string, string[
 function buildHotSearchLines(input: AuditLogInput, createdAt: string): string[] {
   const id = input.id
   if (!id) return []
+  const includePayloadBodyText = shouldIncludePayloadBodyTextInHotSearch(input)
   const parts = [
     [
       input.traceId,
@@ -274,7 +275,7 @@ function buildHotSearchLines(input: AuditLogInput, createdAt: string): string[] 
       payload.rawBodySizeBytes,
       payload.captureStatus,
       payload.headers ? JSON.stringify(payload.headers) : '',
-      payloadBodySearchText(payload.body)
+      includePayloadBodyText ? payloadBodySearchText(payload.body) : ''
     ].filter(Boolean).join(' '))
   }
 
@@ -286,6 +287,13 @@ function buildHotSearchLines(input: AuditLogInput, createdAt: string): string[] 
     sequence,
     text: chunk
   } satisfies AuditHotSearchLine)}\n`)
+}
+
+function shouldIncludePayloadBodyTextInHotSearch(input: AuditLogInput): boolean {
+  if (!input.success || input.auditOutcome !== 'success') {
+    return true
+  }
+  return input.sampleReason.startsWith('success_sample_')
 }
 
 function payloadBodySearchText(value: AuditLogInput['payloads'][number]['body']): string {

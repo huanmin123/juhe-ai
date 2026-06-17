@@ -1,8 +1,12 @@
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const accountTestModalPath = resolve('src/views/accounts/useAccountTestModal.ts')
-const accountTestModelsPath = resolve('src/views/accounts/useAccountTestModels.ts')
+const currentDir = dirname(fileURLToPath(import.meta.url))
+const frontendRoot = resolve(currentDir, '../..')
+
+const accountTestModalPath = resolve(frontendRoot, 'src/views/accounts/useAccountTestModal.ts')
+const accountTestModelsPath = resolve(frontendRoot, 'src/views/accounts/useAccountTestModels.ts')
 
 const accountTestModalSource = readFileSync(accountTestModalPath, 'utf8')
 const accountTestModelsSource = readFileSync(accountTestModelsPath, 'utf8')

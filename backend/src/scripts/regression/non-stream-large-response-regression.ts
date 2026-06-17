@@ -60,6 +60,8 @@ async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
   try {
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     upstreamServer = createLargeResponseUpstreamServer()
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
@@ -131,6 +133,8 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {

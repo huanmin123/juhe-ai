@@ -35,6 +35,7 @@ export class OpenAIResponseInspectionBuffer {
   private readonly pendingBuffer = new PendingSseEventBuffer()
   private readonly clientRetryEnabled: boolean
   private readonly policies: RuntimeResponseInspectionPolicy[]
+  private readonly inspectVisibleOutputTextEvents: boolean
   private readonly endpointFamily: OpenAIResponseEndpointFamily
   private readonly context: ResponseInspectionRuntimeContext | undefined
   private readonly deferredLeadingNoopChunks: Buffer[] = []
@@ -44,6 +45,7 @@ export class OpenAIResponseInspectionBuffer {
   constructor(options: OpenAIResponseInspectionBufferOptions) {
     this.clientRetryEnabled = options.clientRetryEnabled === true
     this.policies = options.policies ?? []
+    this.inspectVisibleOutputTextEvents = this.policies.some(policyRequiresVisibleOutputTextInspection)
     this.endpointFamily = options.endpointFamily
     this.context = options.context
   }
@@ -74,9 +76,19 @@ export class OpenAIResponseInspectionBuffer {
     while (true) {
       const rawBuffer = this.pendingBuffer.shiftEvent()
       if (!rawBuffer) break
+      if (this.canPassThroughCommonResponsesTextDeltaBuffer(rawBuffer)) {
+        chunks.push(...this.drainDeferredLeadingNoopChunks())
+        chunks.push(rawBuffer)
+        continue
+      }
       const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
       if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
         this.deferredLeadingNoopChunks.push(rawBuffer)
+        continue
+      }
+      if (this.canPassThroughUninspectableVisibleOutputTextEvent(event)) {
+        chunks.push(...this.drainDeferredLeadingNoopChunks())
+        chunks.push(rawBuffer)
         continue
       }
       const frames = extractOpenAISseSemanticFrames(event, this.endpointFamily)
@@ -134,11 +146,23 @@ export class OpenAIResponseInspectionBuffer {
   }
 
   private inspectRawEventBuffer(rawBuffer: Buffer, eofPendingFlush = false): ResponseInspectionSseResult {
+    if (this.canPassThroughCommonResponsesTextDeltaBuffer(rawBuffer)) {
+      return {
+        chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        parserSkipped: this.parserSkipped
+      }
+    }
     const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
     if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
       this.deferredLeadingNoopChunks.push(rawBuffer)
       this.clearDeferredLeadingNoopChunks()
       return { chunks: [], parserSkipped: this.parserSkipped }
+    }
+    if (this.canPassThroughUninspectableVisibleOutputTextEvent(event)) {
+      return {
+        chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        parserSkipped: this.parserSkipped
+      }
     }
     const frames = extractOpenAISseSemanticFrames(event, this.endpointFamily)
     const inspection = inspectResponseSemanticFrames({
@@ -183,6 +207,26 @@ export class OpenAIResponseInspectionBuffer {
   private clearDeferredLeadingNoopChunks(): void {
     this.deferredLeadingNoopChunks.length = 0
   }
+
+  private canPassThroughUninspectableVisibleOutputTextEvent(event: ParsedOpenAIStreamEvent): boolean {
+    if (this.inspectVisibleOutputTextEvents) return false
+    if (!event.data || event.dataParseError) return false
+    if (!isSafeVisibleOutputOnlyRoot(event.data)) return false
+    const eventType = event.eventType || event.eventName
+    if (eventType === 'response.output_text.delta' || eventType === 'response.output_text.done') {
+      return true
+    }
+    if (eventType !== 'message' && event.eventName !== '') {
+      return false
+    }
+    const choices = Array.isArray(event.data.choices) ? event.data.choices : []
+    return choices.length > 0 && choices.every(isVisibleOutputOnlyChatCompletionChoice)
+  }
+
+  private canPassThroughCommonResponsesTextDeltaBuffer(rawBuffer: Buffer): boolean {
+    if (this.inspectVisibleOutputTextEvents) return false
+    return isCommonResponsesTextDeltaSseBuffer(rawBuffer)
+  }
 }
 
 
@@ -217,6 +261,46 @@ function isNoopChatCompletionChoice(value: unknown): boolean {
     return false
   }
   return true
+}
+
+function isSafeVisibleOutputOnlyRoot(data: Record<string, unknown>): boolean {
+  if (data.error !== undefined || data.response !== undefined || data.usage !== undefined) return false
+  if (data.status !== undefined || data.finish_reason !== undefined) return false
+  if (data.code !== undefined || data.message !== undefined) return false
+  return true
+}
+
+function isVisibleOutputOnlyChatCompletionChoice(value: unknown): boolean {
+  const choice = objectValue(value)
+  if (!choice) return false
+  if (choice.finish_reason !== undefined && choice.finish_reason !== null) return false
+  if (choice.error !== undefined || choice.message !== undefined) return false
+  if (typeof choice.text === 'string') return true
+  const delta = objectValue(choice.delta)
+  if (!delta) return false
+  for (const key of Object.keys(delta)) {
+    const value = delta[key]
+    if (key === 'content' && typeof value === 'string') continue
+    if (key === 'refusal' && typeof value === 'string') continue
+    if (key === 'role' && typeof value === 'string') continue
+    return false
+  }
+  return Object.prototype.hasOwnProperty.call(delta, 'content') || Object.prototype.hasOwnProperty.call(delta, 'refusal')
+}
+
+function policyRequiresVisibleOutputTextInspection(policy: RuntimeResponseInspectionPolicy): boolean {
+  const match = policy.match
+  return Boolean(
+    match.outputTextIncludes?.length
+    || match.outputTextExcludes?.length
+    || match.rawTextIncludes?.length
+    || match.jsonPathsExists?.some((path) => !isFastPathSafeErrorJsonPath(path))
+  )
+}
+
+function isFastPathSafeErrorJsonPath(path: string): boolean {
+  const normalized = path.split('.').map((part) => part.trim()).filter(Boolean).join('.')
+  return normalized === 'error' || normalized === 'response.error'
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -358,6 +442,44 @@ const crlfcrlfBoundary = Buffer.from('\r\n\r\n', 'utf8')
 const lflfBoundary = Buffer.from('\n\n', 'utf8')
 const crcrBoundary = Buffer.from('\r\r', 'utf8')
 const sseEventBoundarySuffix = lflfBoundary
+const commonResponsesTextDeltaSsePrefix = Buffer.from('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"', 'utf8')
+const commonResponsesTextDeltaSseSuffix = Buffer.from('"}\n\n', 'utf8')
+const commonResponsesTextDeltaSseCrLfSuffix = Buffer.from('"}\r\n\r\n', 'utf8')
+const commonResponsesTextDeltaSseCrSuffix = Buffer.from('"}\r\r', 'utf8')
+
+function isCommonResponsesTextDeltaSseBuffer(buffer: Buffer): boolean {
+  if (!startsWithBuffer(buffer, commonResponsesTextDeltaSsePrefix)) {
+    return false
+  }
+  const suffixLength = commonResponsesTextDeltaSseSuffixLength(buffer)
+  if (suffixLength === 0) {
+    return false
+  }
+  const contentStart = commonResponsesTextDeltaSsePrefix.length
+  const contentEnd = buffer.length - suffixLength
+  for (let index = contentStart; index < contentEnd; index += 1) {
+    const code = buffer[index]
+    if (code === jsonQuoteByte || code === jsonBackslashByte || code < jsonSpaceByte) {
+      return false
+    }
+  }
+  return true
+}
+
+function commonResponsesTextDeltaSseSuffixLength(buffer: Buffer): number {
+  if (bufferEndsWith(buffer, commonResponsesTextDeltaSseSuffix)) return commonResponsesTextDeltaSseSuffix.length
+  if (bufferEndsWith(buffer, commonResponsesTextDeltaSseCrLfSuffix)) return commonResponsesTextDeltaSseCrLfSuffix.length
+  if (bufferEndsWith(buffer, commonResponsesTextDeltaSseCrSuffix)) return commonResponsesTextDeltaSseCrSuffix.length
+  return 0
+}
+
+function startsWithBuffer(buffer: Buffer, prefix: Buffer): boolean {
+  return buffer.length >= prefix.length && buffer.subarray(0, prefix.length).equals(prefix)
+}
+
+const jsonQuoteByte = 34
+const jsonBackslashByte = 92
+const jsonSpaceByte = 32
 
 function findBoundaryEndAfterAppend(previousSize: number, previousTail: Buffer, chunk: Buffer): number | undefined {
   return findBoundaryEndInChunk(previousSize, previousTail, chunk)

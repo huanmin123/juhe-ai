@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 
+import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.js'
 import {
   downgradeAutoImageGenerationToolsInBody,
   inspectImageGenerationTools,
@@ -49,11 +50,7 @@ export interface GatewayRequestBodyState {
 
 export type GatewayRawBodyRequest = Request & {
   rawBody?: Buffer
-  gatewayRuntime?: {
-    settings?: {
-      gatewayTextRawBodyLimitMegabytes?: number
-    }
-  }
+  gatewayRuntime?: DbServiceGatewayRuntime
   gatewayRequestBody?: GatewayRequestBodyState
   gatewayParsedJsonBodyAvailable?: boolean
   gatewayParsedJsonBody?: unknown

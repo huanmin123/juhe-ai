@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:pa
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
-import { getDatasetDatabase, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 
@@ -441,28 +441,35 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
       created_at = excluded.created_at,
       indexed_at = excluded.indexed_at
   `)
-  for (const entry of entries) {
-    statement.run(
-      entry.id,
-      entry.shardKey,
-      entry.systemAccountId,
-      entry.traceId,
-      entry.apiKeyId ?? null,
-      entry.accountId ?? null,
-      entry.groupId ?? null,
-      entry.model ?? null,
-      entry.trafficSource,
-      entry.success ? 1 : 0,
-      entry.statusCode ?? null,
-      entry.clientIp ?? null,
-      entry.firstTokenMs ?? null,
-      entry.durationMs ?? null,
-      entry.costUsd ?? null,
-      entry.createdAt,
-      timestamp
-    )
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const entry of entries) {
+      statement.run(
+        entry.id,
+        entry.shardKey,
+        entry.systemAccountId,
+        entry.traceId,
+        entry.apiKeyId ?? null,
+        entry.accountId ?? null,
+        entry.groupId ?? null,
+        entry.model ?? null,
+        entry.trafficSource,
+        entry.success ? 1 : 0,
+        entry.statusCode ?? null,
+        entry.clientIp ?? null,
+        entry.firstTokenMs ?? null,
+        entry.durationMs ?? null,
+        entry.costUsd ?? null,
+        entry.createdAt,
+        timestamp
+      )
+    }
+    upsertUsageRecordScopeShardCatalog(entries)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
   }
-  upsertUsageRecordScopeShardCatalog(entries)
 }
 
 export function deleteUsageRecordShardEntries(ids: string[]): number {

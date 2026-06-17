@@ -39,6 +39,9 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     const mockResponseInspectionPolicyIds = selectIds(database, 'SELECT id FROM response_inspection_policies WHERE name LIKE ?', likeName)
     deleteWhereIn(database, 'response_inspection_policies', 'id', mockResponseInspectionPolicyIds)
 
+    const mockCustomProviderModelIds = selectIds(database, 'SELECT id FROM custom_provider_models WHERE model LIKE ?', 'mockdata-%')
+    deleteWhereIn(database, 'custom_provider_models', 'id', mockCustomProviderModelIds)
+
     const mockRuntimeAuthorizationIds = selectIds(database, 'SELECT id FROM resource_authorizations WHERE created_by = ? AND remark LIKE ?', adminId, likeName)
     deleteWhereIn(database, 'resource_authorization_sources', 'authorization_id', mockRuntimeAuthorizationIds)
     const mockGrantIds = selectIds(database, 'SELECT id FROM resource_authorization_grants WHERE created_by = ? AND remark LIKE ?', adminId, likeName)

@@ -144,6 +144,25 @@ const textBase64LikeDeltaInspection = inspectOpenAIStreamText([
 assert.equal(textBase64LikeDeltaInspection.outputReceived, true)
 assert.equal(textBase64LikeDeltaInspection.estimatedOutputTokens, 160)
 
+const malformedTextDeltaInspection = inspectOpenAIStreamText([
+  'event: response.output_text.delta',
+  'data: {"type":"response.output_text.delta","delta":"bad"',
+  ''
+].join('\n'))
+assert.equal(malformedTextDeltaInspection.outputReceived, false, '畸形 Responses delta JSON 不应被快速路径记为输出')
+assert.equal(malformedTextDeltaInspection.estimatedOutputTokens, undefined)
+
+const semanticTextDeltaInspection = inspectOpenAIStreamText([
+  'event: response.output_text.delta',
+  'data: {"type":"response.output_text.delta","delta":"hi","usage":{"input_tokens":3,"output_tokens":2}}',
+  ''
+].join('\n'))
+assert.equal(semanticTextDeltaInspection.outputReceived, true)
+assert.deepEqual(defined(semanticTextDeltaInspection.usage), {
+  inputTokens: 3,
+  outputTokens: 2
+})
+
 const oversizedStreamInspection = inspectOpenAIStreamText(`data: ${'x'.repeat(300 * 1024)}`)
 assert.equal(oversizedStreamInspection.skipped, true)
 assert.equal(oversizedStreamInspection.failedReceived, false)

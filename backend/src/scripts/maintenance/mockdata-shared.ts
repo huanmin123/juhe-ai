@@ -53,12 +53,19 @@ export interface MockAccounts {
   primary: AccountSummary
   proxied: AccountSummary
   normal: AccountSummary
+  standardClient: AccountSummary
+  multiKeyPool: AccountSummary
+  image: AccountSummary
   burstFast: AccountSummary
   burstImage: AccountSummary
   burstFallback: AccountSummary
   fallback: AccountSummary
   oauth: AccountSummary
   oauthBackup: AccountSummary
+  pendingTest: AccountSummary
+  disabled: AccountSummary
+  unschedulable: AccountSummary
+  scheduledInactive: AccountSummary
   rateLimited: AccountSummary
   temporary: AccountSummary
   error: AccountSummary
@@ -76,6 +83,9 @@ export interface MockApiKeys {
   adminMain: ApiKeyWithSecret
   adminHighConcurrency: ApiKeyWithSecret
   adminHighFrequency: ApiKeyWithSecret
+  adminRoundRobin: ApiKeyWithSecret
+  adminWeighted: ApiKeyWithSecret
+  adminScheduled: ApiKeyWithSecret
   adminBackup: ApiKeyWithSecret
   adminOAuth: ApiKeyWithSecret
   adminAuthorizedGroups: ApiKeyWithSecret
@@ -110,6 +120,7 @@ export interface CreatedMockdata {
   authorizations: ResourceAuthorizationSummary[]
   externalSources: MockExternalSources
   responseInspectionPolicies: number
+  customProviderModels: number
 }
 
 export interface UsageRecordSeed extends UsageRecordInput {

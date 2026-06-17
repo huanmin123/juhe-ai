@@ -18,7 +18,8 @@ export function createMockUsers(admin: SystemAccountSummary): MockSystemAccounts
       displayName: `${namePrefix}管理员用户`,
       description: 'Mockdata 普通管理员账号，用于管理员模式下验证管理员自有资源、筛选和创建目标',
       role: 'admin',
-      status: 'active'
+      status: 'active',
+      imageGenerationEnabled: true
     }),
     ops: ensureSystemAccount({
       username: 'mockdata_ops',
@@ -36,7 +37,8 @@ export function createMockUsers(admin: SystemAccountSummary): MockSystemAccounts
       username: 'mockdata_tester',
       displayName: `${namePrefix}测试用户`,
       description: 'Mockdata 测试协作用户，用于团队授权和回归验证',
-      status: 'active'
+      status: 'active',
+      imageGenerationEnabled: true
     }),
     finance: ensureSystemAccount({
       username: 'mockdata_finance',
@@ -65,6 +67,7 @@ function ensureSystemAccount(input: {
   description: string
   role?: SystemAccountRole
   status: 'active' | 'disabled'
+  imageGenerationEnabled?: boolean
 }): SystemAccountSummary {
   const role = input.role ?? 'user'
   const existing = repositories.findSystemAccountByUsername(input.username)
@@ -75,6 +78,7 @@ function ensureSystemAccount(input: {
       role,
       status: input.status,
       mustChangePassword: false,
+      imageGenerationEnabled: input.imageGenerationEnabled ?? false,
       password: mockPassword
     })
     if (!updated) throw new Error(`更新 Mockdata 用户失败：${input.username}`)
@@ -87,7 +91,8 @@ function ensureSystemAccount(input: {
     password: mockPassword,
     role,
     status: input.status,
-    mustChangePassword: false
+    mustChangePassword: false,
+    imageGenerationEnabled: input.imageGenerationEnabled ?? false
   })
 }
 

@@ -307,7 +307,7 @@ function estimateTokensFromValueWithContext(
   return total
 }
 
-function estimateTokenCountFromText(text: string): number {
+export function estimateTokenCountFromText(text: string): number {
   if (!text.trim()) return 0
   let asciiLikeChars = 0
   let cjkChars = 0

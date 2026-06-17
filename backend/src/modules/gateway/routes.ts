@@ -11,7 +11,10 @@ import {
   extractClientIp,
   requestEndpoint
 } from './request/metadata.js'
-import { buildUsageRequestSnapshot } from './usage/snapshots.js'
+import {
+  buildUsageRequestSnapshot,
+  buildUsageResponseSnapshot
+} from './usage/snapshots.js'
 import {
   isEffectiveOpenAIStreamRequest
 } from './upstream/request.js'
@@ -65,7 +68,10 @@ import {
   confirmClientIpAccountAvoidanceAfterFinalFailure,
   transferClientIpAccountPendingFailures
 } from './runtime/client-ip-account-avoidance.service.js'
-import type { GatewayFailureUsageContext } from './usage/records.js'
+import {
+  recordGatewayFailure,
+  type GatewayFailureUsageContext
+} from './usage/records.js'
 import { isGatewayForcedDownstreamClose } from './upstream/body.js'
 import {
   normalizeOpenAIGatewayTrafficSource,
@@ -84,6 +90,7 @@ export interface OpenAIGatewayHandleOptions {
   disableSessionAffinity?: boolean
   exposeUpstreamDiagnostics?: boolean
   trafficSource?: OpenAIGatewayTrafficSource
+  auditCaptureMode?: 'default' | 'metadata_only'
   settingsOverride?: Partial<GatewaySettings>
   disableAccountStateMutation?: boolean
 }
@@ -139,7 +146,7 @@ export async function handleOpenAIGatewayRequest(
     clientIp,
     startedAtMs: startedAt,
     trafficSource,
-    captureMode: trafficSource === 'cooldown_retest' ? 'metadata_only' : 'default'
+    captureMode: options.auditCaptureMode ?? (trafficSource === 'cooldown_retest' ? 'metadata_only' : 'default')
   })
   let activeDownstreamSessionAffinity: { key: string; accountId: string } | undefined
   const clearActiveDownstreamSessionAffinity = () => {
@@ -879,6 +886,24 @@ function sendCodexSwitchProbeFailedResponse(input: {
 }): void {
   const message = codexSwitchProbeFailedMessage(input.probes)
   const failureEvent = writeGatewayStreamFailureEvent(input.res, message, 'codex_switch_probe_failed')
+  recordGatewayFailure(input.req, input.usageContext, {
+    statusCode: 200,
+    startedAt: input.startedAt,
+    responsePayload: gatewayErrorPayload(message, 'server_error', 'codex_switch_probe_failed'),
+    errorMessage: message,
+    errorCode: 'codex_switch_probe_failed',
+    responseSnapshot: buildUsageResponseSnapshot({
+      statusCode: 200,
+      headers: {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        'x-accel-buffering': 'no'
+      },
+      bodyText: failureEvent?.toString('utf8'),
+      errorMessage: message,
+      generatedBy: 'gateway'
+    })
+  })
   input.auditCapture.addGatewayMetadata({
     label: 'codex_switch_probe_failed',
     metadata: {

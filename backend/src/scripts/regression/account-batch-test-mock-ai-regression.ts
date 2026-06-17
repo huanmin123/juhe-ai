@@ -73,6 +73,7 @@ let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
 
 try {
+  repositories.updateSettings({ systemApiRateLimitEnabled: false })
   mockUpstream = createMockAIUpstream()
   mockUpstream.listen(0, '127.0.0.1')
   await onceListening(mockUpstream)

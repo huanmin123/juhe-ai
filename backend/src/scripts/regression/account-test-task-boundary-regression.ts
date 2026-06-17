@@ -17,6 +17,7 @@ const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storag
 const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
 const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background/background-ipc.ts'), 'utf8')
 const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/useAccountTestModal.ts'), 'utf8')
+const frontendAccountTestTaskPollingSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestTaskPolling.ts'), 'utf8')
 const frontendAccountTestSessionClientSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestSessionClient.ts'), 'utf8')
 const frontendAccountBatchExecutionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountBatchExecution.ts'), 'utf8')
 const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
@@ -268,13 +269,14 @@ assert(
 )
 assert(
   frontendAccountTestModalSource.includes('activeSingleTestTask')
-    && frontendAccountTestModalSource.includes('waitForAccountTestResult(task, account, controller.signal,'),
+    && frontendAccountTestModalSource.includes('waitForSubmittedAccountTestResult(task, account, controller.signal,')
+    && frontendAccountTestModalSource.includes('activeSingleTestTask.value = latestTask'),
   '前端单账号测试应轮询活动任务并把任务状态传给测试终端'
 )
 assert(
   frontendAccountTestModalSource.includes('runBatchAccountTestItem(account, index, controller, session.id)')
-    && frontendAccountTestModalSource.includes('const result = await waitForAccountTestResult(task, account, controller.signal,')
-    && frontendAccountTestModalSource.includes('accountTestTaskMaxWaitMs')
+    && frontendAccountTestModalSource.includes('const result = await waitForSubmittedAccountTestResult(task, account, controller.signal,')
+    && frontendAccountTestTaskPollingSource.includes('accountTestTaskMaxWaitMs')
     && frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
   '前端批量测试应让每个任务独立完成提交、轮询和运行超时取消'
 )
@@ -304,9 +306,9 @@ assert(
   '前端测试 session client 应集中管理管理端/个人端和草稿/已保存草稿的账号测试 API 分流'
 )
 assert(
-  frontendAccountTestModalSource.includes("if (task.status !== 'running')")
-    && frontendAccountTestModalSource.includes('parseTaskTime(task.startedAt)')
-    && frontendAccountTestModalSource.includes('账号测试运行超过'),
+  frontendAccountTestTaskPollingSource.includes("if (input.task.status !== 'running')")
+    && frontendAccountTestTaskPollingSource.includes('parseTaskTime(input.task.startedAt)')
+    && frontendAccountTestTaskPollingSource.includes('账号测试运行超过'),
   '前端 60s 超时只应从后台任务进入 running 且写入 startedAt 后开始计算'
 )
 assert.equal(

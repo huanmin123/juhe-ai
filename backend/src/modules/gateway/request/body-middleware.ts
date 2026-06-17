@@ -1,7 +1,14 @@
 import type { NextFunction, Response } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
-import { getRequestLogger, sanitizeUrlForLog } from '../../../shared/request-context.js'
+import { getRequestContext } from '../../../shared/request-context.js'
+import {
+  createTraceId,
+  getRequestLogger,
+  getTraceId,
+  sanitizeUrlForLog
+} from '../../../shared/request-context.js'
+import { recordDroppedAuditCapture } from '../../audit-logs/audit-log-queue.service.js'
 import {
   createGatewayRequestBodyState,
   gatewayImageRawBodyHardLimitBytes,
@@ -19,8 +26,24 @@ import {
 import type { GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import { extractGatewayJsonBodyMetadataInWorker, isGatewayJsonWorkerQueueFullError } from './json-parser.js'
 import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
+import { buildUsageRequestSnapshot } from '../usage/snapshots.js'
+import type { UsageRequestSnapshot } from '../usage/snapshots.js'
+import { groupUsageMetadata, recordGatewayFailure } from '../usage/records.js'
+import { gatewayErrorPayload, type GatewayErrorPayload } from '../response/responses.js'
+import { extractClientIp, requestEndpoint } from './metadata.js'
+import { buildGatewayUsageContext } from './preflight.js'
 
 type GatewayRawBodyLimitScope = 'gateway' | 'text' | 'image'
+type GatewayBodyRejectReason = 'gateway_body_parser' | 'gateway_body_size_limit' | 'gateway_body_in_flight_limit' | 'gateway_body_metadata_worker'
+
+export interface GatewayBodyRejectionInput {
+  statusCode: number
+  responsePayload: GatewayErrorPayload
+  rawBodyBytes: number
+  reason: GatewayBodyRejectReason
+  errorCode?: string
+  errorMessage?: string
+}
 
 export async function captureGatewayRawBody(
   req: GatewayRawBodyRequest,
@@ -178,6 +201,14 @@ function rejectGatewayRawBodyTooLarge(
   req.rawBody = undefined
   req.body = undefined
   releaseGatewayRequestBodyInFlightBytes(req)
+  recordGatewayBodyRejection(req, {
+    statusCode: 413,
+    responsePayload: gatewayErrorPayload('请求体过大', 'request_too_large'),
+    rawBodyBytes: rawBody.length,
+    reason: 'gateway_body_size_limit',
+    errorCode: 'request_too_large',
+    errorMessage: '请求体过大'
+  })
   if (!res.headersSent) {
     res.status(413).json({
       error: {
@@ -207,6 +238,14 @@ function rejectGatewayRawBodyInFlightLimit(
   }, '网关请求体在途总量超过上限，已拒绝以保护主进程')
   req.rawBody = undefined
   req.body = undefined
+  recordGatewayBodyRejection(req, {
+    statusCode: 503,
+    responsePayload: gatewayErrorPayload('网关请求体在途总量过高，请稍后重试', 'server_overloaded', 'gateway_body_in_flight_limit_exceeded'),
+    rawBodyBytes: rawBody.length,
+    reason: 'gateway_body_in_flight_limit',
+    errorCode: 'gateway_body_in_flight_limit_exceeded',
+    errorMessage: '网关请求体在途总量过高，请稍后重试'
+  })
   if (!res.headersSent) {
     res.setHeader('Retry-After', '1')
     res.status(503).json({
@@ -242,6 +281,14 @@ async function extractLargeJsonBodyMetadata(
         originalUrl: sanitizeUrlForLog(req.originalUrl),
         rawBodyBytes: rawBody.length
       }, '网关大 JSON 请求体元数据 worker 队列已满，拒绝本次请求以保护主进程')
+      recordGatewayBodyRejection(req, {
+        statusCode: 503,
+        responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded'),
+        rawBodyBytes: rawBody.length,
+        reason: 'gateway_body_metadata_worker',
+        errorCode: 'server_overloaded',
+        errorMessage: '网关请求解析繁忙，请稍后重试'
+      })
       if (!res.headersSent) {
         res.status(503).json({
           error: {
@@ -260,6 +307,14 @@ async function extractLargeJsonBodyMetadata(
       rawBodyBytes: rawBody.length,
       errorMessage: error instanceof Error ? error.message : String(error)
     }, '网关大 JSON 请求体元数据 worker 扫描失败，拒绝本次请求以保护主进程')
+    recordGatewayBodyRejection(req, {
+      statusCode: 503,
+      responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded'),
+      rawBodyBytes: rawBody.length,
+      reason: 'gateway_body_metadata_worker',
+      errorCode: 'server_overloaded',
+      errorMessage: '网关请求解析繁忙，请稍后重试'
+    })
     if (!res.headersSent) {
       res.status(503).json({
         error: {
@@ -291,5 +346,118 @@ function removeListener(target: unknown, event: string, listener: () => void): v
   const remove = (target as { removeListener?: (event: string, listener: () => void) => void })?.removeListener
   if (typeof remove === 'function') {
     remove.call(target, event, listener)
+  }
+}
+
+export function recordGatewayBodyRejection(req: GatewayRawBodyRequest, input: GatewayBodyRejectionInput): void {
+  try {
+    const context = getRequestContext()
+    const traceId = getTraceId() ?? createTraceId()
+    const clientIp = requestClientIp(req)
+    const startedAt = context?.startedAt ?? Date.now()
+    const [path, ...queryParts] = req.originalUrl.includes('?')
+      ? req.originalUrl.split('?')
+      : [req.originalUrl.split('?')[0] || req.path]
+    const runtime = req.gatewayRuntime
+    const apiKey = runtime?.apiKey
+    const groupUsageFields = runtime?.groupAccess ? groupUsageMetadata(runtime.groupAccess) : undefined
+    recordDroppedAuditCapture({
+      traceId,
+      auditOutcome: 'gateway_failed',
+      success: false,
+      bytes: input.rawBodyBytes,
+      reason: 'gateway_body_rejected',
+      method: req.method,
+      path: path || req.path,
+      queryString: queryParts.length ? queryParts.join('?') : undefined,
+      statusCode: input.statusCode,
+      errorPhase: 'gateway',
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage ?? input.responsePayload.error.message,
+      clientIp,
+      userAgent: requestHeaderValue(req, 'user-agent'),
+      trafficSource: 'gateway',
+      systemAccountId: apiKey?.system_account_id,
+      apiKeyId: apiKey?.id,
+      groupId: apiKey?.selected_group_id,
+      providerCode: groupUsageFields?.providerCode
+    })
+
+    if (!apiKey) {
+      return
+    }
+    recordGatewayFailure(req, buildGatewayUsageContext({
+      traceId,
+      clientIp,
+      identity: {
+        systemAccountId: apiKey.system_account_id,
+        apiKeyId: apiKey.id,
+        groupId: apiKey.selected_group_id
+      },
+      trafficSource: 'gateway',
+      groupUsageFields,
+      endpoint: requestEndpoint(req),
+      requestSnapshot: buildBodyRejectionUsageRequestSnapshot(req, traceId, clientIp, input)
+    }), {
+      statusCode: input.statusCode,
+      startedAt,
+      responsePayload: input.responsePayload,
+      errorMessage: input.errorMessage,
+      errorCode: input.errorCode
+    })
+  } catch (error) {
+    getRequestLogger().warn({
+      event: 'gateway_body_rejection_record_failed',
+      reason: input.reason,
+      method: req.method,
+      path: req.path,
+      originalUrl: sanitizeUrlForLog(req.originalUrl),
+      statusCode: input.statusCode,
+      rawBodyBytes: input.rawBodyBytes,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    }, '网关请求体拒绝记录写入失败，已保留原始拒绝响应')
+  }
+}
+
+function buildBodyRejectionUsageRequestSnapshot(
+  req: GatewayRawBodyRequest,
+  traceId: string,
+  clientIp: string | undefined,
+  input: GatewayBodyRejectionInput
+): UsageRequestSnapshot {
+  const snapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
+  const metadataOnlySnapshot: UsageRequestSnapshot = { ...snapshot }
+  delete metadataOnlySnapshot.body
+  return {
+    ...metadataOnlySnapshot,
+    bodyOmission: {
+      omitted: true,
+      reason: input.reason,
+      message: input.errorMessage ?? input.responsePayload.error.message,
+      rawBodyBytes: input.rawBodyBytes,
+      statusCode: input.statusCode,
+      errorCode: input.errorCode
+    }
+  }
+}
+
+function requestHeaderValue(req: GatewayRawBodyRequest, name: string): string | undefined {
+  const header = (req as { header?: (name: string) => string | undefined }).header
+  if (typeof header === 'function') {
+    return header.call(req, name)
+  }
+  const value = req.headers[name.toLowerCase()]
+  return Array.isArray(value) ? value.join(', ') : value
+}
+
+function requestClientIp(req: GatewayRawBodyRequest): string | undefined {
+  const context = getRequestContext()
+  if (context?.clientIp) {
+    return context.clientIp
+  }
+  try {
+    return extractClientIp(req)
+  } catch {
+    return undefined
   }
 }

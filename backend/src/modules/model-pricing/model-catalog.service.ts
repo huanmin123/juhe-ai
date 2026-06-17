@@ -19,6 +19,8 @@ import {
 } from './model-pricing.service.js'
 import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
+import { createAppCache } from '../../shared/cache.js'
+import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -107,7 +109,25 @@ export interface SaveCustomProviderModelInput extends Omit<UpsertCustomProviderM
   actorSystemAccountId: string
 }
 
+const modelCatalogCacheTtlMs = 60_000
+const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogItem[]>({
+  name: 'model-pricing:provider-model-catalog',
+  max: 1000,
+  ttlMs: modelCatalogCacheTtlMs
+})
+
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
+  const cacheKey = modelCatalogCacheKey(options)
+  const cached = providerModelCatalogCache.get(cacheKey)
+  if (cached) {
+    return cloneProviderModelCatalogItems(cached)
+  }
+  const catalog = buildProviderModelCatalog(options)
+  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(catalog))
+  return cloneProviderModelCatalogItems(catalog)
+}
+
+function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
   const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode).map(toBuiltInCatalogItem))
@@ -248,6 +268,22 @@ function resolveCatalogPricing(input: CostInput & { systemAccountId?: string }):
   if (!item) return undefined
   if (!item.pricingModel) return item
   return findCatalogItem(catalog, item.pricingModel)
+}
+
+function modelCatalogCacheKey(options: ModelCatalogListOptions): string {
+  return [
+    normalizeProviderToken(options.providerCode) ?? '',
+    options.systemAccountId ?? '',
+    options.includeInactive === true ? 'inactive' : 'active',
+    options.includeUnpriced === true ? 'unpriced' : 'priced'
+  ].join(':')
+}
+
+function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
+  return items.map((item) => ({
+    ...item,
+    supportedApiProtocols: [...item.supportedApiProtocols]
+  }))
 }
 
 function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
@@ -482,3 +518,5 @@ function sumCostParts(...parts: Array<number | undefined>): number | undefined {
   const values = parts.filter((part): part is number => part !== undefined)
   return values.length ? roundCost(values.reduce((sum, part) => sum + part, 0)) : undefined
 }
+
+registerGatewayRuntimeCacheInvalidator(() => providerModelCatalogCache.clear())

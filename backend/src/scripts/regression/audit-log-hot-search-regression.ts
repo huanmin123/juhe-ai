@@ -48,32 +48,32 @@ try {
       id: 'audit_hot_search_older',
       traceId: olderTraceId,
       createdAt: new Date(nowMs - 60_000).toISOString(),
-      sampleBucket: 9000,
-      sampleReason: 'success_hot_full_retention',
+      sampleBucket: 999,
+      sampleReason: 'success_sample_0.1',
       body: JSON.stringify({ keyword: uniqueKeyword, order: 'older', content: '最近1小时 rg 搜索应能命中正文内容' })
     }),
     successAuditLog({
       id: 'audit_hot_search_newer',
       traceId: newerTraceId,
       createdAt: new Date(nowMs - 5_000).toISOString(),
-      sampleBucket: 9000,
-      sampleReason: 'success_hot_full_retention',
+      sampleBucket: 999,
+      sampleReason: 'success_sample_0.1',
       body: JSON.stringify({ keyword: uniqueKeyword, order: 'newer', content: '最近1小时 rg 搜索应按最新审计优先返回' })
     }),
     successAuditLog({
       id: 'audit_hot_search_exact_phrase',
       traceId: exactPhraseTraceId,
       createdAt: new Date(nowMs - 4_500).toISOString(),
-      sampleBucket: 9000,
-      sampleReason: 'success_hot_full_retention',
+      sampleBucket: 999,
+      sampleReason: 'success_sample_0.1',
       body: JSON.stringify({ keyword: trimKeyword, content: '搜索输入只清理前后空格再匹配' })
     }),
     successAuditLog({
       id: 'audit_hot_search_cross_chunk',
       traceId: crossChunkTraceId,
       createdAt: new Date(nowMs - 4_000).toISOString(),
-      sampleBucket: 9000,
-      sampleReason: 'success_hot_full_retention',
+      sampleBucket: 999,
+      sampleReason: 'success_sample_0.1',
       body: JSON.stringify({
         keyword: crossChunkFirstKeyword,
         content: `${'x'.repeat(13_000)} ${crossChunkSecondKeyword}`
@@ -103,6 +103,22 @@ try {
     limit: 10
   })
   assert.deepEqual(nonSplitResult.auditLogIds, [], '热搜索不能把空格分隔的输入拆成多个关键词后误命中')
+
+  await repositories.createAuditLogsBatchAsync([
+    successAuditLog({
+      id: 'audit_hot_unsampled_success_body_omitted',
+      traceId: `trace-hot-unsampled-body-omitted-${nowMs}`,
+      createdAt: new Date(nowMs - 3_000).toISOString(),
+      sampleBucket: 9000,
+      sampleReason: 'success_hot_full_retention',
+      body: JSON.stringify({ keyword: `${uniqueKeyword}-unsampled-hidden`, content: '普通成功热保留不应写入热搜索正文' })
+    })
+  ])
+  const unsampledHiddenResult = await hotSearchFiles.grepAuditHotSearchFiles({
+    keywords: [`${uniqueKeyword}-unsampled-hidden`],
+    limit: 10
+  })
+  assert.deepEqual(unsampledHiddenResult.auditLogIds, [], '普通成功热保留日志只保留审计正文，不应再把正文写入热搜索镜像')
 
   const oldCreatedAt = new Date(nowMs - 3 * hourMs).toISOString()
   await repositories.createAuditLogsBatchAsync([

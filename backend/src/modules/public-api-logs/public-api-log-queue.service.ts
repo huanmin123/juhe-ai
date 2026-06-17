@@ -8,7 +8,7 @@ const publicApiLogQueueMaxSize = 5000
 const publicApiLogQueueMaxBytes = 32 * 1024 * 1024
 const publicApiLogEstimateMaxBytes = publicApiLogQueueMaxBytes + 1
 const publicApiLogFlushBatchSize = 50
-const publicApiLogShutdownFlushMaxBatches = 1
+const publicApiLogShutdownFlushMaxBatches = 100
 const publicApiLogDropWarnInterval = 100
 const publicApiLogRetryDelayMs = 1000
 
@@ -97,7 +97,7 @@ export function flushPublicApiLogQueueForTest(): void {
 }
 
 export function flushPublicApiLogQueueForShutdown(): void {
-  flushPublicApiLogQueueBatches({ maxBatches: publicApiLogShutdownFlushMaxBatches })
+  flushPublicApiLogQueueBatches({ drain: true, maxBatches: publicApiLogShutdownFlushMaxBatches })
   clearPublicApiLogFlushTimers()
 }
 

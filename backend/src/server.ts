@@ -8,14 +8,14 @@ import { startBackgroundWorkerSupervisor } from './modules/background/background
 import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
 import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/routes.js'
-import { captureGatewayRawBody } from './modules/gateway/request/body-middleware.js'
-import { gatewayRawBodyHardLimit } from './modules/gateway/request/body.js'
+import { captureGatewayRawBody, recordGatewayBodyRejection } from './modules/gateway/request/body-middleware.js'
+import { gatewayRawBodyHardLimit, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
-import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
+import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate } from './shared/http-security.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { sendRuntimeLogLineToWorker } from './modules/background/background-ipc.js'
@@ -51,17 +51,12 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
       : 400
   const message = statusCode === 413 ? '请求体过大' : '网关请求体无效'
   const traceId = getTraceId() ?? 'unknown'
-  recordDroppedAuditCapture({
-    traceId,
-    auditOutcome: 'gateway_failed',
-    success: false,
-    bytes: Number(error.received ?? error.length ?? error.limit ?? 0),
-    reason: 'gateway_body_rejected',
-    method: req.method,
-    path: req.path,
-    queryString: req.originalUrl.includes('?') ? req.originalUrl.split('?').slice(1).join('?') : undefined,
+  const responsePayload = gatewayErrorPayload(message, statusCode === 413 ? 'request_too_large' : 'invalid_request_error')
+  recordGatewayBodyRejection(req as GatewayRawBodyRequest, {
     statusCode,
-    errorPhase: 'gateway',
+    responsePayload,
+    rawBodyBytes: Number(error.received ?? error.length ?? error.limit ?? 0),
+    reason: 'gateway_body_parser',
     errorCode: error.type,
     errorMessage: message
   })
@@ -78,10 +73,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     bodyLimit: error.limit
   }, '网关原始请求体被拒绝')
   res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 400).json({
-    error: {
-      message,
-      type: statusCode === 413 ? 'request_too_large' : 'invalid_request_error'
-    }
+    error: responsePayload.error
   })
 }
 

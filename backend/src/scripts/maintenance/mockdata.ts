@@ -28,6 +28,7 @@ import { updateApiKeyLastUsedAt } from './mockdata-api-key-last-used.js'
 import { createMockUsers, createProxies } from './mockdata-business-foundation.js'
 import {
   createAnnouncements,
+  createCustomProviderModels,
   createExternalSources,
   createResponseInspectionPolicies,
   seedOauthUsageSnapshots
@@ -41,6 +42,7 @@ import {
 import { createTeams } from './mockdata-core-teams.js'
 import { createClientIpPolicyMockdata } from './mockdata-client-ip-policy.js'
 import { cleanupMockdata } from './mockdata-cleanup.js'
+import { assertMockdataCoverage } from './mockdata-coverage.js'
 import { rebuildDerivedCaches } from './mockdata-derived-cache.js'
 import {
   createAuditMockdata,
@@ -85,6 +87,7 @@ function main(): void {
   const clientIpPolicyCounts = createClientIpPolicyMockdata(created)
   createStorageMockdata(created, options)
   updateApiKeyLastUsedAt(usageRecords)
+  assertMockdataCoverage(created)
   writeSummary(
     created,
     usageRecords,
@@ -151,6 +154,7 @@ function printHelp(): void {
 function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
   const unscopedAdminAccess: AccessScope = { systemAccountId: admin.id, role: adminAccess.role }
   const users = createMockUsers(admin)
+  const customProviderModels = createCustomProviderModels(admin.id, users)
   const proxies = createProxies(adminAccess)
   const groups = createGroups(adminAccess, users, defaultGptGroup)
   const accounts = createAccounts(adminAccess, groups, users, proxies)
@@ -173,7 +177,8 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
     teams,
     authorizations,
     externalSources,
-    responseInspectionPolicies
+    responseInspectionPolicies,
+    customProviderModels
   }
 }
 
@@ -184,12 +189,19 @@ function tuneGroupAccountBindings(groups: MockGroups, accounts: MockAccounts): v
     [1, 0, groups.main, accounts.primary],
     [0, 0, groups.main, accounts.proxied],
     [0, 0, groups.main, accounts.normal],
+    [0, 0, groups.main, accounts.standardClient],
+    [0, 0, groups.main, accounts.multiKeyPool],
     [1, 0, groups.highConcurrency, accounts.burstFast],
     [0, 0, groups.highConcurrency, accounts.burstImage],
     [0, 1, groups.highConcurrency, accounts.burstFallback],
     [0, 1, groups.backup, accounts.fallback],
     [0, 0, groups.oauth, accounts.oauth],
     [0, 1, groups.oauth, accounts.oauthBackup],
+    [0, 0, groups.experiment, accounts.image],
+    [0, 0, groups.experiment, accounts.pendingTest],
+    [0, 0, groups.experiment, accounts.disabled],
+    [0, 0, groups.experiment, accounts.unschedulable],
+    [0, 0, groups.experiment, accounts.scheduledInactive],
     [0, 0, groups.managerMain, accounts.managerPrimary],
     [1, 0, groups.managerHighConcurrency, accounts.managerBurst]
   ]

@@ -573,7 +573,7 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
   }
 }
 
-function buildGatewayUsageContext(input: {
+export function buildGatewayUsageContext(input: {
   traceId: string
   clientIp?: string
   identity: OpenAIGatewayRequestIdentity

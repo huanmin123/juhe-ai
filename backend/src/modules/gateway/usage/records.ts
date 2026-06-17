@@ -294,14 +294,20 @@ export function recordGatewayFailure(
     startedAt: number
     responsePayload: GatewayErrorPayload
     errorMessage?: string
+    errorCode?: string
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
 ): void {
   const errorMessage = input.errorMessage ?? input.responsePayload.error.message
+  const errorCode = input.errorCode
+    ?? (typeof input.responsePayload.error.code === 'string' ? input.responsePayload.error.code : undefined)
+    ?? (typeof input.responsePayload.error.type === 'string' ? input.responsePayload.error.type : undefined)
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
     durationMs: Date.now() - input.startedAt,
     errorMessage,
+    errorCode,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     endpoint: usageContext.endpoint
@@ -326,9 +332,13 @@ export function recordGatewayFailure(
     statusCode: input.statusCode,
     success: false,
     durationMs: Date.now() - input.startedAt,
+    errorCode,
     errorMessage,
     requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
-    responseSnapshot: usageRecordSnapshot(usageContext, buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload))
+    responseSnapshot: usageRecordSnapshot(
+      usageContext,
+      input.responseSnapshot ?? buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload)
+    )
   })
 }
 
