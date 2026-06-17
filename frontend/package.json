@@ -13,10 +13,12 @@
     "test:account-status-formatters": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/account-status-formatters-regression.ts",
     "test:account-usage-formatters": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/account-usage-formatters-regression.ts",
     "test:account-test-session-client": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/account-test-session-client-regression.ts",
+    "test:account-provider-model-cache": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/account-provider-model-cache-regression.ts",
     "test:account-test-models": "..\\backend\\node_modules\\.bin\\tsx.CMD scripts/regression/account-test-models-regression.ts",
     "test:account-test-task-polling": "..\\backend\\node_modules\\.bin\\tsx.CMD scripts/regression/account-test-task-polling-regression.ts",
     "test:account-edit-save-flow": "..\\backend\\node_modules\\.bin\\tsx.CMD scripts/regression/account-edit-save-flow-regression.ts",
     "test:account-test-display-formatters": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/account-test-display-formatters-regression.ts",
+    "test:provider-model-source-operation": "..\\backend\\node_modules\\.bin\\tsx.CMD scripts/regression/provider-model-source-operation-regression.ts",
     "test:authorization-search-scheduler": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/authorization-search-scheduler-regression.ts",
     "test:authorization-user-usage-route-filters": "..\\backend\\node_modules\\.bin\\tsx.CMD src/scripts/regression/authorization-user-usage-route-filters-regression.ts"
   },

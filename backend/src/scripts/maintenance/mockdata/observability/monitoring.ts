@@ -1,5 +1,5 @@
-import { getStatsDatabase, nowIso } from '../../storage/database.js'
-import { hourKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
+import { getStatsDatabase, nowIso } from '../../../../storage/database.js'
+import { hourKey, usageStatsTimezone } from '../../../../storage/usage-stats-helpers.js'
 import {
   dayMs,
   emptyMetricRow,
@@ -10,7 +10,7 @@ import {
   type AccountMetricRow,
   type MockdataOptions,
   type ProcessMetricRow
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
 

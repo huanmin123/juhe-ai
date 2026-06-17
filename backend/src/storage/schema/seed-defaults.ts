@@ -42,7 +42,7 @@ export function seedDefaults(database: DatabaseSync): void {
       'super_admin',
       'active',
       hashPassword('admin'),
-      1,
+      0,
       0,
       now,
       now

@@ -32,6 +32,7 @@ import {
   accountTypeChoicesForProfile
 } from './accountEditFormDisplay'
 import { defaultAccountClientCompatibility, defaultAccountForm } from './accountFormDefaults'
+import { defaultAccountEndpointModes } from './accountEndpointModes'
 import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
@@ -277,13 +278,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = undefined
     const providerCode = form.providerCode
     const providerProtocolProfileId = form.providerProtocolProfileId
+    const clientCompatibility = defaultAccountClientCompatibility(providerCode)
     Object.assign(form, {
       ...defaultForm(providerCode, type, providerProtocolProfileId),
       groupId: form.groupId,
       group: form.group,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
-      clientCompatibility: defaultAccountClientCompatibility(providerCode),
+      clientCompatibility,
+      supportedEndpointModes: defaultAccountEndpointModes(providerCode, type, clientCompatibility),
       supportedModels: form.supportedModels,
       modelMappings: form.modelMappings,
       tags: form.tags,

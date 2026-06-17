@@ -15,6 +15,7 @@ interface CooldownAccountRetestQueueItem {
   accountName: string
   maxPauseMinutes: number
   maxRecoveryHours: number
+  longTermIntervalHours: number
 }
 
 const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy('cooldown_account_retest_revival', [], 0)
@@ -36,13 +37,14 @@ const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueIt
 
 export function enqueueCooldownAccountRetest(
   account: AccountSummary,
-  strategy: { maxPauseMinutes: number; maxRecoveryHours: number }
+  strategy: { maxPauseMinutes: number; maxRecoveryHours: number; longTermIntervalHours: number }
 ): boolean {
   return cooldownAccountRetestQueue.enqueue(account.id, {
     accountId: account.id,
     accountName: account.name,
     maxPauseMinutes: strategy.maxPauseMinutes,
-    maxRecoveryHours: strategy.maxRecoveryHours
+    maxRecoveryHours: strategy.maxRecoveryHours,
+    longTermIntervalHours: strategy.longTermIntervalHours
   })
 }
 
@@ -118,7 +120,8 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: result.errorCode,
     errorMessage: result.message,
     maxPauseMinutes: item.maxPauseMinutes,
-    maxRecoveryHours: item.maxRecoveryHours
+    maxRecoveryHours: item.maxRecoveryHours,
+    longTermIntervalHours: item.longTermIntervalHours
   })
 
   const logFields = {
@@ -138,13 +141,14 @@ async function runCooldownAccountRetestQueueItem(
     nextBackoffSeconds: failure.backoffSeconds,
     maxPauseSeconds: failure.maxPauseSeconds,
     maxRecoverySeconds: failure.maxRecoverySeconds,
+    longTermIntervalSeconds: failure.longTermIntervalSeconds,
     maxedFailureCount: failure.maxedFailureCount,
     observationStartedAt: failure.observationStartedAt,
     observationElapsedSeconds: failure.observationElapsedSeconds,
     message: result.message
   }
-  if (failure.action === 'exception') {
-    logger.warn(logFields, '冷却账户复测超过最大恢复窗口，已标记异常并停止自动复测')
+  if (failure.recoveryStage === 'long_term') {
+    logger.warn(logFields, '冷却账户复测超过自动恢复观察窗口，已进入长期不可用低频复测')
   } else if (failure.recoveryStage === 'slow') {
     logger.warn(logFields, '冷却账户复测未通过，已进入慢速恢复通道')
   } else {

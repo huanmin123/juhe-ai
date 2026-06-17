@@ -74,6 +74,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "openai-key-001",
       "name": "OpenAI 兼容 API Key 账号 1",
       "providerCode": "openai",
+      "clientCompatibility": "openai_standard",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 OpenAI 兼容分组",
@@ -83,7 +84,8 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "proxyRef": "proxy-hk-1",
       "credentials": {
         "api_key": "sk-xxx",
-        "base_url": "https://api.openai.com/v1"
+        "base_url": "https://api.openai.com/v1",
+        "supported_endpoint_modes": ["chat_json", "chat_sse"]
       },
       "notes": "通用 OpenAI-compatible API Key 账号"
     },
@@ -91,6 +93,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "gpt-oauth-001",
       "name": "GPT OAuth 账号 1",
       "providerCode": "gpt",
+      "clientCompatibility": "codex_responses",
       "type": "oauth",
       "status": "active",
       "groupName": "默认 GPT 分组",
@@ -102,6 +105,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
         "access_token": "access-token-xxx",
         "id_token": "id-token-xxx",
         "base_url": "https://api.openai.com/v1",
+        "supported_endpoint_modes": ["responses_json", "responses_sse"],
         "account_id": "acct_xxx",
         "email": "user@example.com"
       },
@@ -127,6 +131,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
 | `providerCode` | 是 | 当前支持 `openai` 和 `gpt`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商。 |
+| `clientCompatibility` | 否 | 客户端兼容模式，支持 `openai_standard` 和 `codex_responses`；省略时按供应商和账户类型默认。 |
 | `type` | 是 | `api_key` 或 `oauth`。 |
 | `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
@@ -151,6 +156,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `proxyRef` 和 `proxyProfileId` 不能同时填写。
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
+- 通用 OpenAI-compatible 上游如果要支持 Codex Responses，请把 `clientCompatibility` 填为 `codex_responses`，并在 `credentials.supported_endpoint_modes` 中包含 `responses_sse`。
 - `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内大小写重复标签会去重。
 - `modelMappings` 的 sourceModel 是下游请求模型，upstreamModel 是该账户实际转发模型。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
@@ -163,7 +169,8 @@ API Key 账户：
 ```json
 {
   "api_key": "sk-xxx",
-  "base_url": "https://api.openai.com/v1"
+  "base_url": "https://api.openai.com/v1",
+  "supported_endpoint_modes": ["chat_json", "chat_sse"]
 }
 ```
 
@@ -175,6 +182,7 @@ OAuth 账户：
   "access_token": "access-token-xxx",
   "id_token": "id-token-xxx",
   "base_url": "https://api.openai.com/v1",
+  "supported_endpoint_modes": ["responses_json", "responses_sse"],
   "account_id": "acct_xxx",
   "email": "user@example.com"
 }
@@ -186,6 +194,8 @@ OAuth 账户：
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
+- `credentials.supported_endpoint_modes` 可限制 OpenAI v1 接口能力，枚举值为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；省略时通用 `openai` API Key 默认 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE。
+- `clientCompatibility = codex_responses` 时必须启用 `credentials.supported_endpoint_modes` 中的 `responses_sse`。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
 

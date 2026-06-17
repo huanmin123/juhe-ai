@@ -1,5 +1,5 @@
-import { getBusinessDatabase } from '../../storage/database.js'
-import type { UsageRecordSeed } from './mockdata-shared.js'
+import { getBusinessDatabase } from '../../../../storage/database.js'
+import type { UsageRecordSeed } from '../shared.js'
 
 export function updateApiKeyLastUsedAt(records: UsageRecordSeed[]): void {
   const lastUsedByKey = new Map<string, string>()

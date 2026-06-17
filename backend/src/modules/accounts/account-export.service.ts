@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountClientCompatibility, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getProxyTestConfig, listAccounts, type ProxyProfileTestConfig } from '../../storage/repositories.js'
 import {
@@ -31,6 +31,7 @@ export interface AccountExportAccount {
   ref: string
   name: string
   providerCode: string
+  clientCompatibility?: AccountClientCompatibility
   type: AccountType
   status: AccountExportStatus
   groupId?: string
@@ -73,6 +74,7 @@ const apiKeyExportCredentialKeys = [
   'api_key_strategy',
   'api_key_weights',
   'base_url',
+  'supported_endpoint_modes',
   'error_handling_rules',
   'response_inspection_rules'
 ]
@@ -84,6 +86,7 @@ const oauthExportCredentialKeys = [
   'client_id',
   'id_token',
   'base_url',
+  'supported_endpoint_modes',
   'account_id',
   'email',
   'chatgpt_user_id',
@@ -153,6 +156,7 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
     ref: account.id,
     name: account.name,
     providerCode: account.providerCode,
+    clientCompatibility: account.clientCompatibility,
     type: account.type,
     status,
     credentials: exportCredentials(account.type, account.credentials)

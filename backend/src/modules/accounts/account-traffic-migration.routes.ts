@@ -5,13 +5,14 @@ import { migrateAccountTraffic } from '../../storage/repositories.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { migrateOpenAIAccountSessionAffinity } from '../gateway/runtime/session-affinity.service.js'
+import { migrateServerOpenAIAccountTrafficRuntime } from '../db-service/db-service-ipc.js'
+import type { OpenAIAccountTrafficMigrationRuntimeRequest } from '../db-service/db-service-types.js'
 import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { accountTrafficMigrationSchema } from './account-request.schemas.js'
 import { sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 
 export function registerAccountTrafficMigrationRoutes(router: Router): void {
-  router.post('/:id/traffic-migration', (req, res) => {
+  router.post('/:id/traffic-migration', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -25,24 +26,32 @@ export function registerAccountTrafficMigrationRoutes(router: Router): void {
     }
 
     try {
-      let affinityResult = { migratedSessionCount: 0 }
+      let runtimeMigrationInput: OpenAIAccountTrafficMigrationRuntimeRequest | undefined
+      const sourceStatus = parsed.data.sourceStatus ?? 'temporary_unavailable'
       const migration = runLoggedOperation(() => {
         const migration = migrateAccountTraffic({
           sourceAccountId: req.params.id,
           targetAccountId: parsed.data.targetAccountId,
-          sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
+          sourceStatus
         }, requestAccess)
         if (!migration) {
           throw new Error('账户不存在或无权迁移')
         }
         const ownerSystemAccountId = authorizedLocalOperationOwner(migration.sourceAccount, requestAccess)
           ?? resolveOperationOwner(migration.sourceAccount as unknown as Record<string, unknown>, requestAccess)
+        const affinityScope = authorizedMigrationAffinityScope(migration.sourceAccount, requestAccess)
+        const preferenceScope = sourceStatus === 'unchanged'
+          ? undefined
+          : trafficMigrationPreferenceScope(migration.sourceAccount, requestAccess, migration.groupId)
+        runtimeMigrationInput = {
+          sourceAccountId: migration.sourceAccount.id,
+          targetAccountId: migration.targetAccount.id,
+          ...(sourceStatus === 'unchanged' ? { preferMigratedSessions: true } : {}),
+          ...(affinityScope ? { affinityScope } : {}),
+          ...(preferenceScope ? { preferenceScope } : {})
+        }
         return {
           result: migration,
-          afterCommit: () => {
-            const affinityScope = authorizedMigrationAffinityScope(migration.sourceAccount, requestAccess)
-            affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId, affinityScope)
-          },
           log: {
             operationScopeSystemAccountId: ownerSystemAccountId,
             mode: operationMode(requestAccess),
@@ -55,7 +64,7 @@ export function registerAccountTrafficMigrationRoutes(router: Router): void {
             summary: `迁移账户流量：${migration.sourceAccount.name} -> ${migration.targetAccount.name}`,
             changes: [
               safeChange('targetAccountId', '目标账户', undefined, migration.targetAccount.name),
-              safeChange('sourceStatus', '源账户状态', undefined, parsed.data.sourceStatus ?? 'temporary_unavailable')
+              safeChange('sourceStatus', '源账户状态', undefined, sourceStatus)
             ],
             targets: [
               {
@@ -70,10 +79,15 @@ export function registerAccountTrafficMigrationRoutes(router: Router): void {
           }
         }
       }, req)
+      const affinityResult = runtimeMigrationInput
+        ? await migrateServerOpenAIAccountTrafficRuntime(runtimeMigrationInput) ?? { migratedSessionCount: 0 }
+        : { migratedSessionCount: 0 }
       res.json(ok(sanitizeAccountTrafficMigrationResponse({
-        ...migration,
+        sourceAccount: migration.sourceAccount,
+        targetAccount: migration.targetAccount,
+        sourceCooldownUntil: migration.sourceCooldownUntil,
         ...affinityResult,
-        sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
+        sourceStatus
       })))
     } catch (error) {
       if (error instanceof Error && error.message === '账户不存在或无权迁移') {
@@ -93,6 +107,16 @@ function authorizedMigrationAffinityScope(account: AccountSummary, access?: Requ
   const systemAccountId = effectiveRequestSystemAccountId(access)
   return account.accessType === 'authorized' && account.boundGroupId && systemAccountId
     ? { systemAccountId, groupId: account.boundGroupId }
+    : undefined
+}
+
+function trafficMigrationPreferenceScope(account: AccountSummary, access?: RequestAccessScope, migrationGroupId?: string): { systemAccountId: string; groupId: string } | undefined {
+  const systemAccountId = account.accessType === 'authorized'
+    ? effectiveRequestSystemAccountId(access)
+    : account.ownerSystemAccountId ?? account.systemAccountId ?? effectiveRequestSystemAccountId(access)
+  const groupId = migrationGroupId?.trim() || account.boundGroupId
+  return systemAccountId && groupId
+    ? { systemAccountId, groupId }
     : undefined
 }
 

@@ -197,7 +197,8 @@ try {
     assert(dueForRecovery, '冷却复测前应能读取临时不可调用账号')
     assert.equal(cooldownRetestService.enqueueCooldownAccountRetest(dueForRecovery, {
       maxPauseMinutes: 10,
-      maxRecoveryHours: 1
+      maxRecoveryHours: 1,
+      longTermIntervalHours: 24
     }), true, '临时不可调用账号应能进入冷却复测队列')
     const recovered = await waitForAccountStatus(failureAccount.id, 'active')
     assert(recovered, 'mock 上游恢复后冷却复测应把账号恢复正常')

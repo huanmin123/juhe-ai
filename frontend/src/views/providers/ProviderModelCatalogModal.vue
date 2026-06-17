@@ -54,6 +54,7 @@
           <template v-if="column.key === 'model'">
             <a-space size="small">
               <span class="mono-cell">{{ record.model }}</span>
+              <a-tag color="default">{{ record.providerCode }}</a-tag>
               <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
             </a-space>
           </template>
@@ -121,11 +122,14 @@
             <div class="model-mobile-card-head">
               <strong class="mono-cell">{{ record.model }}</strong>
               <a-space size="small" wrap>
+                <a-tag color="default">{{ record.providerCode }}</a-tag>
                 <a-tag>{{ formatModelCategory(record) }}</a-tag>
                 <a-tag :color="modelStatusColor(record.status)">{{ formatModelStatus(record.status) }}</a-tag>
               </a-space>
             </div>
             <div class="model-mobile-card-grid">
+              <span>供应商</span>
+              <strong>{{ record.providerCode }}</strong>
               <span>来源</span>
               <strong>{{ formatModelScope(record.scope) }}</strong>
               <span>发布时间</span>

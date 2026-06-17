@@ -1,6 +1,7 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import type { AccountClientCompatibility, AccountType, GroupType, ProviderCode } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { normalizeOpenAIEndpointModesForRuntime } from '../domain/openai-endpoint-modes.js'
 import { isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
@@ -193,6 +194,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
   copyRuntimeCredentialText(credentials, output, 'api_key_strategy')
+  copyRuntimeCredentialValue(credentials, output, 'supported_endpoint_modes')
   copyRuntimeCredentialValue(credentials, output, 'api_key_weights')
   copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')
   copyRuntimeCredentialValue(credentials, output, 'response_inspection_rules')
@@ -363,9 +365,16 @@ function openAIAccountSecretFromRow(
   const accountOwnerSystemAccountId = isAccountAuthorized
     ? accountAccess.accountOwnerSystemAccountId ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
     : row.system_account_id
+  const providerCode = openAIAccountResourceProviderCode(row)
+  const clientCompatibility = openAIAccountResourceClientCompatibility(row)
+  const supportedEndpointModes = normalizeOpenAIEndpointModesForRuntime(credentials.supported_endpoint_modes, {
+    providerCode,
+    accountType: resourceType,
+    clientCompatibility
+  })
   return {
     id: row.id,
-    providerCode: openAIAccountResourceProviderCode(row),
+    providerCode,
     providerProtocolProfileId: openAIAccountResourceProviderProtocolProfileId(row),
     protocolCode: openAIAccountResourceProtocolCode(row),
     protocolVersion: openAIAccountResourceProtocolVersion(row),
@@ -393,7 +402,8 @@ function openAIAccountSecretFromRow(
     priority: dispatchPriority,
     superPriorityEnabled: runtimeStatus === 'active' && dispatchSuperPriorityEnabled,
     fallbackEnabled: runtimeStatus === 'active' && dispatchFallbackEnabled,
-    clientCompatibility: openAIAccountResourceClientCompatibility(row),
+    clientCompatibility,
+    supportedEndpointModes,
     supportedModels: [...(options.supportedModelsByAccountId?.get(resourceAccountId) ?? [])],
     modelMappings: [...(options.modelMappingsByAccountId?.get(resourceAccountId) ?? [])],
     lastSuccessfulTestModel: row.last_successful_test_model?.trim() || undefined,

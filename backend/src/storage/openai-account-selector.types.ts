@@ -1,5 +1,6 @@
 import type {
   AccountClientCompatibility,
+  AccountSupportedEndpointMode,
   AccountModelMapping,
   AccountStatus,
   AccountType,
@@ -43,6 +44,7 @@ export interface OpenAIAccountSecret {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   lastSuccessfulTestModel?: string

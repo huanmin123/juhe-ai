@@ -25,6 +25,7 @@ export function credentialsRecordValue(value: unknown): Record<string, unknown> 
 export function mergeAccountCredentialsForUpdate(account: AccountSummary, requested: Record<string, unknown>): Record<string, unknown> {
   const credentials = { ...requested }
   preserveCredentialText(credentials, account.credentials, 'base_url')
+  preserveCredentialArray(credentials, account.credentials, 'supported_endpoint_modes')
   if (account.type === 'api_key') {
     preserveCredentialText(credentials, account.credentials, 'api_key')
     preserveCredentialArray(credentials, account.credentials, 'api_keys')

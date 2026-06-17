@@ -1,16 +1,16 @@
 import { join } from 'node:path'
 
-import { backendRoot } from '../../config/runtime.js'
-import type { AuditLogInput } from '../../storage/audit-logs.repository.js'
+import { backendRoot } from '../../../../config/runtime.js'
+import type { AuditLogInput } from '../../../../storage/audit-logs.repository.js'
 import {
   builtInExternalIntegrationTestSourceId,
   builtInExternalIntegrationTestTokenId,
   findExternalIntegrationSource
-} from '../../storage/external-integration-source.repository.js'
-import type { OperationLogInput } from '../../storage/operation-logs.repository.js'
-import { createPublicApiLog } from '../../storage/public-api-logs.repository.js'
-import * as repositories from '../../storage/repositories.js'
-import { createRuntimeLogsBatch, type RuntimeLogIndexInput } from '../../storage/runtime-logs.repository.js'
+} from '../../../../storage/external-integration-source.repository.js'
+import type { OperationLogInput } from '../../../../storage/operation-logs.repository.js'
+import { createPublicApiLog } from '../../../../storage/public-api-logs.repository.js'
+import * as repositories from '../../../../storage/repositories.js'
+import { createRuntimeLogsBatch, type RuntimeLogIndexInput } from '../../../../storage/runtime-logs.repository.js'
 import {
   chunks,
   dayMs,
@@ -27,7 +27,7 @@ import {
   type CreatedMockdata,
   type MockdataOptions,
   type UsageRecordSeed
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 export function createAuditMockdata(records: UsageRecordSeed[]): void {
   const auditLogs: AuditLogInput[] = records

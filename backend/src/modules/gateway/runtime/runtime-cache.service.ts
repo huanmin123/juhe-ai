@@ -400,6 +400,7 @@ function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAcc
   return {
     ...account,
     currentConcurrency: undefined,
+    supportedEndpointModes: account.supportedEndpointModes ? [...account.supportedEndpointModes] : undefined,
     supportedModels: [...(account.supportedModels ?? [])],
     apiKeys: account.apiKeys ? [...account.apiKeys] : undefined,
     apiKeyRuntimeStates: account.apiKeyRuntimeStates ? account.apiKeyRuntimeStates.map((state) => ({ ...state })) : undefined,

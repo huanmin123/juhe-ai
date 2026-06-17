@@ -4,6 +4,7 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse'
 
 export interface AccountCredentials {
   api_key?: string
@@ -11,6 +12,7 @@ export interface AccountCredentials {
   api_key_strategy?: 'round_robin' | 'weighted_round_robin'
   api_key_weights?: number[]
   base_url?: string
+  supported_endpoint_modes?: AccountSupportedEndpointMode[]
   access_token?: string
   refresh_token?: string
   client_id?: string

@@ -1,10 +1,14 @@
 import type {
   GroupSummary,
   SystemAccountSummary
-} from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import * as repositories from '../../storage/repositories.js'
-import { refreshAccount } from './mockdata-account-helpers.js'
+} from '../../../../domain/types.js'
+import type { AccessScope } from '../../../../storage/access-scope.js'
+import * as repositories from '../../../../storage/repositories.js'
+import {
+  activeAccountAvailabilitySchedule,
+  inactiveAccountAvailabilitySchedule
+} from './availability-schedules.js'
+import { refreshAccount } from './account-helpers.js'
 import {
   dayMs,
   namePrefix,
@@ -12,7 +16,7 @@ import {
   type MockAccounts,
   type MockGroups,
   type MockSystemAccounts
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 type DefaultGptGroupResolver = (systemAccountId: string) => GroupSummary
 
@@ -154,6 +158,7 @@ export function createAccounts(
     concurrencyLimit: 80,
     priority: 0,
     superPriorityEnabled: true,
+    availabilitySchedule: activeAccountAvailabilitySchedule(),
     notes: 'Mockdata 主力账号，超级优先'
   }, adminAccess)
 
@@ -181,6 +186,7 @@ export function createAccounts(
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini', 'gpt-4o-mini'],
     concurrencyLimit: 35,
     priority: 30,
+    availabilitySchedule: inactiveAccountAvailabilitySchedule(),
     notes: 'Mockdata 普通账号'
   }, adminAccess)
 
@@ -351,6 +357,7 @@ export function createAccounts(
     concurrencyLimit: 120,
     priority: 4,
     superPriorityEnabled: true,
+    availabilitySchedule: activeAccountAvailabilitySchedule(),
     notes: 'Mockdata 普通管理员高并发账号，用于管理员角色高并发分组验收'
   }, mockUserAccess(users.manager))
 

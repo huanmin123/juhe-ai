@@ -13,6 +13,7 @@ import {
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
+import { validateAccountEndpointModes } from './accountEndpointModes'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -82,6 +83,12 @@ export function validateAccountSaveForm(input: {
   if (tagValidation) return tagValidation
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
   if (scheduleValidation) return scheduleValidation
+  const endpointModeValidation = validateAccountEndpointModes({
+    modes: form.supportedEndpointModes,
+    type: form.type,
+    clientCompatibility: form.clientCompatibility
+  })
+  if (endpointModeValidation) return endpointModeValidation
   const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)

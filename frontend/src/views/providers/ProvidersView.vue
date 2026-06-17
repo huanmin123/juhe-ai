@@ -248,11 +248,13 @@ const modelModalOpen = ref(false)
 const customModelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
 const editingCustomModelId = ref<string>()
+const editingCustomModelProviderCode = ref<string>()
 const modelSystemAccountId = ref<string>()
 const modelSystemAccountSelection = ref<PrincipalSelection | undefined>()
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canCreateGlobalModel = computed(() => authState.isAdmin.value && isManagementView.value)
+const canManageVisibleCustomModels = computed(() => authState.isAdmin.value && isManagementView.value)
 const canCreatePersonalModel = computed(() => !isManagementView.value || selectedModelCatalogSystemAccountId() === authState.currentUser.value?.id)
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
 const {
@@ -357,6 +359,7 @@ function openEditCustomModel(record: ProviderModelPricing) {
   if (!record.id || record.scope === 'built_in') return
   resetCustomModelForm()
   editingCustomModelId.value = record.id
+  editingCustomModelProviderCode.value = record.providerCode
   Object.assign(customModelForm, createCustomModelFormFromPricing(record, providerModels.value))
   customModelModalOpen.value = true
 }
@@ -365,16 +368,19 @@ async function saveCustomModel() {
   if (!activeProvider.value) return
   const payload = buildCurrentCustomModelPayload()
   if (!payload) return
+  const targetProviderCode = editingCustomModelId.value
+    ? editingCustomModelProviderCode.value ?? activeProvider.value.code
+    : activeProvider.value.code
   customModelSaving.value = true
   try {
     if (editingCustomModelId.value) {
-      await api.providers.updateModel(activeProvider.value.code, editingCustomModelId.value, payload)
+      await api.providers.updateModel(targetProviderCode, editingCustomModelId.value, payload)
       message.success('自定义模型已更新')
     } else {
-      await api.providers.createModel(activeProvider.value.code, payload)
+      await api.providers.createModel(targetProviderCode, payload)
       message.success('自定义模型已创建')
     }
-    invalidateAccountProviderModelOptionsCache(activeProvider.value.code)
+    invalidateAccountProviderModelOptionsCache()
     customModelModalOpen.value = false
     resetCustomModelForm()
     await reloadActiveProviderModels()
@@ -390,8 +396,8 @@ async function deleteCustomModel(record: ProviderModelPricing) {
   if (!activeProvider.value || !record.id) return
   modelLoading.value = true
   try {
-    await api.providers.deleteModel(activeProvider.value.code, record.id)
-    invalidateAccountProviderModelOptionsCache(activeProvider.value.code)
+    await api.providers.deleteModel(record.providerCode, record.id)
+    invalidateAccountProviderModelOptionsCache()
     message.success('自定义模型已删除')
     await reloadActiveProviderModels()
   } catch (error) {
@@ -420,6 +426,7 @@ async function reloadActiveProviderModels() {
 
 function resetCustomModelForm() {
   editingCustomModelId.value = undefined
+  editingCustomModelProviderCode.value = undefined
   Object.assign(customModelForm, {
     ...emptyCustomModelForm,
     supportedApiProtocols: [...emptyCustomModelForm.supportedApiProtocols]
@@ -497,8 +504,8 @@ function handleModelAction(key: string, record: ProviderModelPricing) {
 
 function canMutateModel(record: ProviderModelPricing): boolean {
   if (!record.id || record.scope === 'built_in') return false
-  if (activeProvider.value && record.providerCode !== activeProvider.value.code) return false
-  if (record.scope === 'global') return canCreateGlobalModel.value
+  if (record.scope === 'global') return canManageVisibleCustomModels.value
+  if (record.scope === 'personal' && canManageVisibleCustomModels.value) return true
   return record.systemAccountId === authState.currentUser.value?.id
 }
 

@@ -1,6 +1,6 @@
-import type { AccountSummary, SystemAccountSummary } from '../../domain/types.js'
-import { getBusinessDatabase } from '../../storage/database.js'
-import * as repositories from '../../storage/repositories.js'
+import type { AccountSummary, SystemAccountSummary } from '../../../../domain/types.js'
+import { getBusinessDatabase } from '../../../../storage/database.js'
+import * as repositories from '../../../../storage/repositories.js'
 
 export function refreshAccount(id: string): AccountSummary {
   const account = repositories.findAccountSummary(id, { systemAccountId: 'sys_admin', role: 'admin' })

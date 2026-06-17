@@ -87,6 +87,10 @@ try {
   const oauthNonIsolationScenario = createGptOAuthNonIsolationScenario(upstreamBaseUrl)
   const authorizedScenario = createAuthorizedApiKeyScenario(upstreamBaseUrl)
   const allBadScenario = createGatewayApiKeyAllBadScenario(upstreamBaseUrl)
+  const superPriorityGatewayApiKey = createGatewaySuperPriorityScenario(upstreamBaseUrl)
+  const fallbackGatewayApiKey = createGatewayFallbackScenario(upstreamBaseUrl)
+  const fallbackFailureGatewayApiKey = createGatewayFallbackFailureScenario(upstreamBaseUrl)
+  const trafficMigrationOverrideScenario = createTrafficMigrationOverrideScenario(upstreamBaseUrl)
   const oauthCandidate = repositories.selectOpenAIAccountForGroup(oauthNonIsolationScenario.groupId, access.systemAccountId)
   assert.equal(oauthCandidate?.type, 'oauth', 'GPT OAuth 非 Key 隔离场景应优先读到 OAuth 候选账户')
   assert.equal(oauthCandidate?.apiKeyRuntimeStates, undefined, 'GPT OAuth 候选账户不应挂载 API Key 运行态')
@@ -225,6 +229,56 @@ try {
   const allBadTemporaryOptionIds = repositories.listAccountOptions(access, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
   assert(!allBadTemporaryOptionIds.includes(allBadScenario.sourceAccountId), '单来源打穿全部 Key 后账户 options 不应归入临时不可调用状态筛选')
 
+  const superPriorityStartHitCount = mockHits.length
+  await postChatCompletions(backendBaseUrl, superPriorityGatewayApiKey, 1)
+  const superPriorityAuthorizations = mockHits.slice(superPriorityStartHitCount).map((hit) => hit.authorization)
+  assert.deepEqual(
+    superPriorityAuthorizations,
+    ['Bearer sk-gateway-super-priority'],
+    '真实网关请求应优先命中同分组超级优先账户'
+  )
+
+  const fallbackStartHitCount = mockHits.length
+  await postChatCompletions(backendBaseUrl, fallbackGatewayApiKey, 1)
+  const fallbackAuthorizations = mockHits.slice(fallbackStartHitCount).map((hit) => hit.authorization)
+  assert.deepEqual(
+    fallbackAuthorizations,
+    ['Bearer sk-gateway-fallback-primary'],
+    '真实网关请求在主池可用时不应先打到降级备用账户'
+  )
+
+  const fallbackFailureStartHitCount = mockHits.length
+  await postChatCompletions(backendBaseUrl, fallbackFailureGatewayApiKey, 1)
+  const fallbackFailureAuthorizations = mockHits.slice(fallbackFailureStartHitCount).map((hit) => hit.authorization)
+  assert.equal(fallbackFailureAuthorizations[0], 'Bearer sk-gateway-fallback-bad-primary', '真实网关请求应先尝试主池账户')
+  assert.equal(
+    fallbackFailureAuthorizations.at(-1),
+    'Bearer sk-gateway-fallback-after-failure',
+    '真实网关请求在主池失败后应降级切到备用账户'
+  )
+  assert(
+    fallbackFailureAuthorizations.slice(0, -1).every((authorization) => authorization === 'Bearer sk-gateway-fallback-bad-primary'),
+    '切到备用前不应提前命中其他备用或无关账户'
+  )
+
+  await postAdminEnvelope(
+    backendBaseUrl,
+    `/__aisys__/api/accounts/${trafficMigrationOverrideScenario.sourceAccountId}/traffic-migration?systemAccountId=${access.systemAccountId}`,
+    cookie,
+    {
+      targetAccountId: trafficMigrationOverrideScenario.targetAccountId,
+      sourceStatus: 'temporary_unavailable'
+    }
+  )
+  const trafficMigrationStartHitCount = mockHits.length
+  await postChatCompletions(backendBaseUrl, trafficMigrationOverrideScenario.apiKey, 1)
+  const trafficMigrationAuthorizations = mockHits.slice(trafficMigrationStartHitCount).map((hit) => hit.authorization)
+  assert.deepEqual(
+    trafficMigrationAuthorizations,
+    ['Bearer sk-gateway-migration-target'],
+    '迁移流量后真实网关请求应短期优先命中目标账户，即使目标是备用且同组存在超级优先账户'
+  )
+
   console.log(JSON.stringify({
     message: '单账户多 API Key 网关 mock AI 回归通过',
     backendBaseUrl,
@@ -242,7 +296,11 @@ try {
       authorizations: authorizedAuthorizations,
       runtimeStateAccountId: authorizedRuntimeTarget ?? 'not_written_for_single_source'
     },
-    allBad: allBadAuthorizations
+    allBad: allBadAuthorizations,
+    superPriority: superPriorityAuthorizations,
+    fallbackPrimaryFirst: fallbackAuthorizations,
+    fallbackAfterFailure: fallbackFailureAuthorizations,
+    trafficMigrationOverride: trafficMigrationAuthorizations
   }, null, 2))
 } finally {
   await stopBackendServer(backendProcess)
@@ -506,6 +564,193 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
   return { apiKey: apiKey.key, sourceAccountId: sourceAccount.id }
 }
 
+function createGatewaySuperPriorityScenario(upstreamBaseUrl: string): string {
+  const group = repositories.createGroup({
+    name: '超级优先真实网关分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A 超级优先普通账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-super-normal',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B 超级优先账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-super-priority',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 50,
+    superPriorityEnabled: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '超级优先真实网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '超级优先真实网关场景未返回网关 API Key 明文')
+  return apiKey.key
+}
+
+function createGatewayFallbackScenario(upstreamBaseUrl: string): string {
+  const group = repositories.createGroup({
+    name: '备用降级真实网关分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A 备用降级主池账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-fallback-primary',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 50
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B 备用降级备用账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-fallback-reserve',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    fallbackEnabled: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '备用降级真实网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '备用降级真实网关场景未返回网关 API Key 明文')
+  return apiKey.key
+}
+
+function createGatewayFallbackFailureScenario(upstreamBaseUrl: string): string {
+  const group = repositories.createGroup({
+    name: '备用失败接管真实网关分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A 备用失败主池账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-fallback-bad-primary',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 50
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B 备用失败接管账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-fallback-after-failure',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    fallbackEnabled: true
+  }, access)
+  forcedFailureAuthorizations.add('Bearer sk-gateway-fallback-bad-primary')
+  const apiKey = repositories.createApiKeyRecord({
+    name: '备用失败接管真实网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '备用失败接管真实网关场景未返回网关 API Key 明文')
+  return apiKey.key
+}
+
+function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiKey: string; sourceAccountId: string; targetAccountId: string } {
+  const group = repositories.createGroup({
+    name: '迁移覆盖真实网关分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  const sourceAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'A 迁移覆盖源账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-migration-source',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'B 迁移覆盖超级优先账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-migration-super',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    superPriorityEnabled: true
+  }, access)
+  const targetAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'C 迁移覆盖目标备用账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-gateway-migration-target',
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 50,
+    fallbackEnabled: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '迁移覆盖真实网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '迁移覆盖真实网关场景未返回网关 API Key 明文')
+  return {
+    apiKey: apiKey.key,
+    sourceAccountId: sourceAccount.id,
+    targetAccountId: targetAccount.id
+  }
+}
+
 async function postChatCompletions(backendBaseUrl: string, apiKey: string, count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
     const response = await fetch(`${backendBaseUrl}/v1/chat/completions`, {
@@ -523,6 +768,20 @@ async function postChatCompletions(backendBaseUrl: string, apiKey: string, count
     const text = await response.text()
     assert.equal(response.status, 200, `网关请求应成功，实际 HTTP ${response.status}: ${text}`)
   }
+}
+
+async function postAdminEnvelope(backendBaseUrl: string, path: string, cookie: string, body: Record<string, unknown>): Promise<unknown> {
+  const response = await fetch(`${backendBaseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert.equal(response.ok, true, `${path} 应成功，实际 HTTP ${response.status}: ${text}`)
+  return text ? JSON.parse(text) : undefined
 }
 
 function lastAuthorizations(count: number): string[] {

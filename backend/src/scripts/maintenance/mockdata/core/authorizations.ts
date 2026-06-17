@@ -3,9 +3,9 @@ import type {
   GroupSummary,
   ResourceAuthorizationSummary,
   SystemAccountSummary
-} from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import * as repositories from '../../storage/repositories.js'
+} from '../../../../domain/types.js'
+import type { AccessScope } from '../../../../storage/access-scope.js'
+import * as repositories from '../../../../storage/repositories.js'
 import {
   dayMs,
   namePrefix,
@@ -13,8 +13,8 @@ import {
   type MockGroups,
   type MockSystemAccounts,
   type MockTeams
-} from './mockdata-shared.js'
-import { quotaLimits } from './mockdata-quota-limits.js'
+} from '../shared.js'
+import { quotaLimits } from './quota-limits.js'
 
 export type DefaultGroupResolver = (systemAccountId: string) => GroupSummary
 

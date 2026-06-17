@@ -1,5 +1,6 @@
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
@@ -850,7 +851,12 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   if (!providerProfile.accountTypes.includes(accountType as AccountType)) {
     throw new Error(`供应商协议档案 ${providerProfile.name} 不支持账户类型 ${accountType}`)
   }
-  const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials)
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
+  const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials, {
+    providerCode,
+    accountType,
+    clientCompatibility
+  })
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
@@ -879,7 +885,11 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
+  assertOpenAIEndpointModesCompatible({
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    accountType,
+    clientCompatibility
+  })
   if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
     throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
   }
@@ -1036,9 +1046,24 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
+  const nextClientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    current.providerCode,
+    current.type,
+    hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
+    current.clientCompatibility,
+    current
+  )
   const credentials = hasOwnInput(input, 'credentials')
-    ? normalizeAccountCredentialsForWrite(current.type, input.credentials)
-    : normalizeAccountCredentialsForWrite(current.type, current.credentials)
+    ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
+      providerCode: current.providerCode,
+      accountType: current.type,
+      clientCompatibility: nextClientCompatibility
+    })
+    : normalizeAccountCredentialsForWrite(current.type, current.credentials, {
+      providerCode: current.providerCode,
+      accountType: current.type,
+      clientCompatibility: nextClientCompatibility
+    })
   const credentialSource = requiredAccountCredentialSource(current.type, credentials)
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
@@ -1150,13 +1175,11 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasFallbackInput && nextFallbackEnabled) {
     nextSuperPriorityEnabled = false
   }
-  const nextClientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    current.providerCode,
-    current.type,
-    hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
-    current.clientCompatibility,
-    current
-  )
+  assertOpenAIEndpointModesCompatible({
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    accountType: current.type,
+    clientCompatibility: nextClientCompatibility
+  })
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
   const updateNowMs = Date.now()

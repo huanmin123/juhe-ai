@@ -1,4 +1,5 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
@@ -129,12 +130,18 @@ export async function testOpenAIAccount(
     accountClientCompatibility,
     account
   )
+  const supportedEndpointModes = normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+    providerCode: account.providerCode,
+    accountType: account.type,
+    clientCompatibility
+  })
   const testRequest = createOpenAITestRequest({
     explicitModel,
     fallbackModel: model,
     prompt,
     isOAuth: account.type === 'oauth',
     clientCompatibility,
+    supportedEndpointModes,
     requestShape: input.requestShape
   })
   const requestBody = testRequest.body

@@ -1,5 +1,5 @@
-import type { AccountSummary, GroupSummary, SystemAccountSummary } from '../../domain/types.js'
-import * as repositories from '../../storage/repositories.js'
+import type { AccountSummary, GroupSummary, SystemAccountSummary } from '../../../../domain/types.js'
+import * as repositories from '../../../../storage/repositories.js'
 import {
   chunks,
   dayMs,
@@ -14,8 +14,8 @@ import {
   type CreatedMockdata,
   type MockdataOptions,
   type UsageRecordSeed
-} from './mockdata-shared.js'
-import { authorizationInstanceAccount } from './mockdata-account-helpers.js'
+} from '../shared.js'
+import { authorizationInstanceAccount } from '../core/account-helpers.js'
 
 interface KeyScenario {
   key: ApiKeyWithSecret

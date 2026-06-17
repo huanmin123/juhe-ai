@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import { isSuperAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
+import { isAdminRole, isSuperAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
 import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPasswordAsync } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
@@ -280,14 +280,15 @@ export function createSystemAccountWithPasswordHash(input: {
   const database = getBusinessDatabase()
   ensureSystemAccountUsernameUnique(username, undefined, database)
   ensureSystemAccountDisplayNameUnique(displayName, undefined, database)
+  const role = normalizeSystemAccountRole(input.role, 'user')
   const summary: SystemAccountSummary = {
     id,
     username,
     displayName,
     description: normalizeNullableText(input.description, '说明') ?? undefined,
-    role: normalizeSystemAccountRole(input.role, 'user'),
+    role,
     status: normalizeSystemAccountStatus(input.status, 'active'),
-    mustChangePassword: normalizeOptionalBoolean(input.mustChangePassword, true, '下次登录改密'),
+    mustChangePassword: normalizeSystemAccountMustChangePassword(input.mustChangePassword, true, role),
     imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, false, '支持图像生成'),
     createdAt: now,
     updatedAt: now
@@ -360,13 +361,14 @@ export function updateSystemAccountWithPasswordHash(id: string, input: {
     return undefined
   }
 
+  const nextRole = normalizeSystemAccountRole(input.role, current.role)
   const next = {
     ...current,
     displayName: input.displayName === undefined ? current.displayName : normalizeRequiredText(input.displayName, '用户名称'),
     description: input.description === undefined ? current.description : normalizeNullableText(input.description, '说明') ?? undefined,
-    role: normalizeSystemAccountRole(input.role, current.role),
+    role: nextRole,
     status: normalizeSystemAccountStatus(input.status, current.status),
-    mustChangePassword: normalizeOptionalBoolean(input.mustChangePassword, current.mustChangePassword, '下次登录改密'),
+    mustChangePassword: normalizeSystemAccountMustChangePassword(input.mustChangePassword, current.mustChangePassword, nextRole),
     imageGenerationEnabled: normalizeOptionalBoolean(input.imageGenerationEnabled, current.imageGenerationEnabled, '支持图像生成')
   }
   const now = nowIso()
@@ -548,6 +550,10 @@ function normalizeOptionalBoolean(value: unknown, fallback: boolean, label: stri
     throw new Error(`${label}必须是布尔值`)
   }
   return value
+}
+
+function normalizeSystemAccountMustChangePassword(value: unknown, fallback: boolean, role: SystemAccountRole): boolean {
+  return !isAdminRole(role) && normalizeOptionalBoolean(value, fallback, '下次登录改密')
 }
 
 function normalizeSystemAccountPassword(value: unknown): string {

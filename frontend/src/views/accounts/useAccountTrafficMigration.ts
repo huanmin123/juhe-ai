@@ -36,7 +36,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
   const trafficMigrationForm = reactive({
     targetAccountId: '',
     targetAccount: undefined as AccountSelection | undefined,
-    sourceStatus: 'temporary_unavailable' as AccountTrafficMigrationSourceStatus
+    sourceStatus: 'unchanged' as AccountTrafficMigrationSourceStatus
   })
 
   const trafficMigrationTargetOptions = computed(() => (
@@ -74,7 +74,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       return
     }
     trafficMigrationSourceAccount.value = account
-    trafficMigrationForm.sourceStatus = 'temporary_unavailable'
+    trafficMigrationForm.sourceStatus = 'unchanged'
     const target = options.accounts.value.find((candidate) => (
       canUseAsTrafficMigrationTarget(account, candidate, options.groupIdForAccount)
     ))
@@ -108,10 +108,14 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       const result = options.isManagementView.value
         ? await api.accounts.migrateTraffic(source.id, payload, accountOperationScopeParams(source, options.accountScopeParams.value))
         : await api.myAccounts.migrateTraffic(source.id, payload)
-      const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
       const sourceText = isAuthorizedAccount(source) ? '当前授权实例' : '原账户'
-      const scopeText = isAuthorizedAccount(source) ? '你的分组内' : ''
-      message.success(`后续请求将在${scopeText}切到 ${result.targetAccount.name}，当前连接不中断；${sourceText}已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
+      if (result.sourceStatus === 'unchanged') {
+        message.success(`已把当前命中${sourceText}的客户端会话迁到 ${result.targetAccount.name}；${sourceText}状态不变，会话迁移 ${result.migratedSessionCount} 个`)
+      } else {
+        const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
+        const routeText = isAuthorizedAccount(source) ? '在你的分组内短期优先' : '短期优先'
+        message.success(`后续请求将${routeText}切到 ${result.targetAccount.name}，当前连接不中断；${sourceText}已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
+      }
       trafficMigrationModalOpen.value = false
       trafficMigrationSourceAccount.value = undefined
       trafficMigrationForm.targetAccount = undefined

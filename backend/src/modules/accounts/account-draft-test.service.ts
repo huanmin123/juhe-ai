@@ -1,6 +1,7 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountStatus, AccountSummary } from '../../domain/types.js'
+import type { AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson
@@ -103,9 +104,6 @@ export function prepareAccountDraftTestSnapshot(input: {
   if (!ownerSystemAccountId) {
     throw new Error('账户分组缺少归属用户，无法测试')
   }
-  const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl))
-  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
-  const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
     accountInput.providerCode,
     accountInput.type,
@@ -113,6 +111,18 @@ export function prepareAccountDraftTestSnapshot(input: {
     'openai_standard',
     providerProfile
   )
+  const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {
+    providerCode: accountInput.providerCode,
+    accountType: accountInput.type,
+    clientCompatibility
+  })
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
+  const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
+  assertOpenAIEndpointModesCompatible({
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    accountType: accountInput.type,
+    clientCompatibility
+  })
   const account = draftTestAccountSummary({
     id: input.draftAccountId,
     account: accountInput,
@@ -252,8 +262,6 @@ function accountCreateActivationFingerprintSnapshot(input: {
   ownerSystemAccountId: string
 }): Record<string, unknown> {
   const account = accountDraftRequestFromCreate(input.account)
-  const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl))
-  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
     account.providerCode,
     account.type,
@@ -261,6 +269,12 @@ function accountCreateActivationFingerprintSnapshot(input: {
     'openai_standard',
     { protocolCode: input.protocolCode, protocolVersion: input.protocolVersion }
   )
+  const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl), {
+    providerCode: account.providerCode,
+    accountType: account.type,
+    clientCompatibility
+  })
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
   return {
     ownerSystemAccountId: input.ownerSystemAccountId,
     groupId: account.groupId,
