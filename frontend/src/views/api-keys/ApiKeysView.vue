@@ -128,10 +128,12 @@
     <ApiKeyCreatedSecretModal
       v-model:open="createdKeyOpen"
       :api-key="createdKey"
+      :client-config-example="createdKeyClientConfigExample"
       :gateway-base-url="gatewayBaseUrl"
       :message="createdKeyModalMessage"
       :title="createdKeyModalTitle"
       @copy-api-key="copyCreatedKey"
+      @copy-client-config="copyCreatedClientConfig"
       @copy-gateway-base-url="copyGatewayBaseUrl"
     />
   </a-card>
@@ -179,7 +181,7 @@ const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
 const createdKey = ref('')
 const createdKeyModalTitle = ref('API Key 已创建')
-const createdKeyModalMessage = ref('复制下方 API Key 和 Base URL；统计、会话亲和和缓存按本地 API Key 与分组保持连续。')
+const createdKeyModalMessage = ref('按下面 3 步完成客户端接入；完整密钥只在此处直接展示，请先复制保存。')
 const apiKeyEditModalRef = ref<InstanceType<typeof ApiKeyEditModal>>()
 const pageSize = 50
 const pageStateCache = usePageStateCache<ApiKeysPageState>(undefined, () => defaultApiKeysPageState(pageSize))
@@ -321,6 +323,11 @@ const activeFilterCount = computed(() => [
 const advancedFilterCount = computed(() => 0)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填复制到的完整密钥'].join('\n'))
+const createdKeyClientConfigExample = computed(() => [
+  `Base URL：${gatewayBaseUrl.value}`,
+  'API Key：填入上方复制的完整密钥',
+  '常用验证：拉取模型列表或发送一次最小对话请求'
+].join('\n'))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = apiKeyScopeParams.value?.systemAccountId
@@ -453,6 +460,10 @@ async function copyGatewayBaseUrl() {
 
 async function copyCreatedKey() {
   await copyText(createdKey.value)
+}
+
+async function copyCreatedClientConfig() {
+  await copyText(createdKeyClientConfigExample.value)
 }
 
 function inferGatewayBaseUrl() {

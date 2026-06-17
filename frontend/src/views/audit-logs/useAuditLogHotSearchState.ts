@@ -28,16 +28,13 @@ export function useAuditLogHotSearchState(options: AuditLogHotSearchStateOptions
 
   const hotSearchActiveFilterCount = computed(() => auditLogHotSearchActiveFilterCount(hotSearchKeywordFilter.value))
   const hotSearchTablePagination = computed(() => {
-    const hasMore = hotSearchResult.value?.hasMore === true
     const count = hotSearchRecords.value.length
     return {
       current: 1,
       pageSize: options.pageSize(),
-      total: hasMore ? count + 1 : count,
+      total: count,
       showSizeChanger: false,
-      showTotal: () => hasMore
-        ? `已显示前 ${count} 条匹配审计，还有更多`
-        : `共 ${count} 条匹配审计`
+      showTotal: () => `共 ${count} 条匹配审计`
     }
   })
 

@@ -7,7 +7,7 @@
     :loading="loading"
     :scroll-x="1580"
     :pagination="pagination"
-    mobile-pagination
+    :mobile-pagination="mobilePagination"
     :mobile-has-more="mobileHasMore"
     :loading-more="loadingMore"
     pull-refresh-enabled
@@ -126,10 +126,12 @@ const props = withDefaults(defineProps<{
   loading: boolean
   loadingMore: boolean
   mobileHasMore: boolean
+  mobilePagination?: boolean
   pagination: Record<string, unknown>
   records: AuditLogSummary[]
 }>(), {
-  columns: () => auditLogColumns
+  columns: () => auditLogColumns,
+  mobilePagination: true
 })
 
 const emit = defineEmits<{

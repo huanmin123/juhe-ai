@@ -330,7 +330,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
       emit('created', {
         key: result.key,
         title: 'API Key 已创建',
-        message: '复制下方 API Key 和 Base URL；统计、会话亲和和缓存按本地 API Key 与分组保持连续。'
+        message: '按下面 3 步完成客户端接入；完整密钥只在此处直接展示，请先复制保存。'
       })
       message.success('API Key 已创建')
       emit('reload')

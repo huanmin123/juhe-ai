@@ -35,6 +35,7 @@
     "test:openai-oauth-credentials-patch": "pnpm --filter juhe-ai-backend test:openai-oauth-credentials-patch",
     "test:db-service-role-boundary": "pnpm --filter juhe-ai-backend test:db-service-role-boundary",
     "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard",
+    "test:account-health-check": "pnpm --filter juhe-ai-backend test:account-health-check",
     "test:account-list-stable-sort": "pnpm --filter juhe-ai-backend test:account-list-stable-sort",
     "test:account-tags": "pnpm --filter juhe-ai-backend test:account-tags",
     "test:account-response-credentials-redaction": "pnpm --filter juhe-ai-backend test:account-response-credentials-redaction",

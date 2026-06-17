@@ -190,8 +190,9 @@ watch(
 
 .endpoint-mode-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(140px, 1fr));
-  gap: 8px 16px;
+  grid-template-columns: repeat(4, max-content);
+  gap: 8px 24px;
+  align-items: center;
 }
 
 .model-mapping-row {
@@ -224,13 +225,22 @@ watch(
     grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
   }
 
-  .endpoint-mode-grid {
-    grid-template-columns: 1fr;
-  }
-
   .model-mapping-row :deep(.ant-switch),
   .model-mapping-row :deep(.ant-btn) {
     justify-self: end;
+  }
+}
+
+@media (max-width: 576px) {
+  .endpoint-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 16px;
+  }
+}
+
+@media (max-width: 400px) {
+  .endpoint-mode-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
