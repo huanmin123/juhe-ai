@@ -45,6 +45,7 @@ import {
 } from './modules/gateway/usage/record-queue.service.js'
 import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
 import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/background/account-api-key-cooldown-retest.service.js'
+import { getAccountHealthCheckQueueSnapshot } from './modules/background/account-health-check.service.js'
 import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
 import {
   cancelAccountTestTaskLocal,
@@ -222,6 +223,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
     }),
     runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime),
+    accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
     cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot(),
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
     accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),

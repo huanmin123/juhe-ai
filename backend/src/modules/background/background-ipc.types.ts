@@ -76,6 +76,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
   auditLogQueue: BackgroundWorkerQueueRuntime
   runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
+  accountHealthCheckQueue?: BackgroundWorkerRetryQueueRuntime
   cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
   accountApiKeyCooldownRetestQueue?: BackgroundWorkerRetryQueueRuntime
   accountQualityFailurePrecheckQueue?: BackgroundWorkerRetryQueueRuntime

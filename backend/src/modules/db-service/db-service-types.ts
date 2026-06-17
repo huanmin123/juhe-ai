@@ -114,6 +114,12 @@ export interface DbServiceServerRuntimeSnapshot {
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
+      accountHealthCheckQueue?: {
+        name: string
+        pendingCount: number
+        runningCount: number
+        nextRunAt?: string
+      }
       cooldownAccountRetestQueue?: {
         name: string
         pendingCount: number
@@ -283,6 +289,12 @@ export interface DbServiceServerRuntimeSnapshot {
         failureCount: number
         skippedCount: number
       }>
+      accountHealthCheckQueue?: {
+        name: string
+        pendingCount: number
+        runningCount: number
+        nextRunAt?: string
+      }
       cooldownAccountRetestQueue?: {
         name: string
         pendingCount: number

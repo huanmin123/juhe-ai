@@ -53,6 +53,14 @@ export interface AccountRow {
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
   last_successful_test_model: string | null
+  health_check_enabled: number
+  last_health_check_at: string | null
+  next_health_check_at: string | null
+  last_health_success_at: string | null
+  health_check_failure_count: number
+  last_health_check_status_code: number | null
+  last_health_check_error_code: string | null
+  last_health_check_error_message: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
   authorization_instance_source_account_id: string | null

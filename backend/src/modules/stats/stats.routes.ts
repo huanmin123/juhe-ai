@@ -139,6 +139,9 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
     snapshotWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: snapshotWorkerSnapshot.workerRole })),
     probeWorkerSnapshot?.jobs?.map((job) => {
       const roleAwareJob = { ...job, workerRole: probeWorkerSnapshot.workerRole }
+      if (job.name === 'account-health-check' && probeWorkerSnapshot.accountHealthCheckQueue) {
+        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountHealthCheckQueue }
+      }
       if (job.name === 'cooldown-account-retest' && probeWorkerSnapshot.cooldownAccountRetestQueue) {
         return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.cooldownAccountRetestQueue }
       }

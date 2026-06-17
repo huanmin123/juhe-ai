@@ -258,6 +258,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       last_successful_test_model TEXT,
+      health_check_enabled INTEGER NOT NULL DEFAULT 1,
+      last_health_check_at TEXT,
+      next_health_check_at TEXT,
+      last_health_success_at TEXT,
+      health_check_failure_count INTEGER NOT NULL DEFAULT 0,
+      last_health_check_status_code INTEGER,
+      last_health_check_error_code TEXT,
+      last_health_check_error_message TEXT,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
       authorization_instance_source_account_id TEXT,
@@ -662,6 +670,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due
       ON accounts(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_health_check_due
+      ON accounts(health_check_enabled, status, next_health_check_at, updated_at, id)
+      WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;

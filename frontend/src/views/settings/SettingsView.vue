@@ -73,6 +73,42 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
+              <h3>正常账号健康检测</h3>
+              <p>只检测长期没有真实成功请求的正常账号，避免列表里长期显示正常但实际不可用。</p>
+            </div>
+          </div>
+
+          <a-alert class="setting-alert section-alert" type="info" show-icon>
+            <template #message>真实请求成功会顺延下次检测；后台只分批探测到期账号，并复用账号测试链路、账号代理和 OAuth 刷新逻辑。</template>
+          </a-alert>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="检测间隔（小时）" extra="默认 12 小时；账号近期已有真实成功请求时不再额外探测。">
+                <a-input-number v-model:value="systemForm.accountHealthCheckIntervalHours" :min="1" :max="168" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="错峰窗口（分钟）" extra="默认 120 分钟；按账号 ID 稳定错峰，避免大量账号同时探测。">
+                <a-input-number v-model:value="systemForm.accountHealthCheckJitterMinutes" :min="0" :max="1440" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="单轮账号数" extra="默认 20；probe-worker 每轮只拉取到期账号，避免一次性全量扫描和集中打上游。">
+                <a-input-number v-model:value="systemForm.accountHealthCheckBatchSize" :min="1" :max="100" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="连续失败阈值" extra="默认 3 次；达到阈值后才允许进入临时不可调用处理，降低网络抖动误杀。">
+                <a-input-number v-model:value="systemForm.accountHealthCheckFailureThreshold" :min="1" :max="10" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
               <h3>后台接口限流</h3>
               <p>保护后台管理 API，避免同一来源或同一登录用户在短时间内压垮 DB service。</p>
             </div>

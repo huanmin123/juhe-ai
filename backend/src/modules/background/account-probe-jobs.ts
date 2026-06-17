@@ -1,12 +1,14 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   listAccountQualityFailurePrecheckCandidates,
+  listAccountsDueForHealthCheck,
   listAccountsDueForCooldownRetest,
   refreshAccountQualityFromUsage
 } from '../../storage/repositories.js'
 import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { enqueueAccountApiKeyCooldownRetest, getAccountApiKeyCooldownRetestQueueSnapshot } from './account-api-key-cooldown-retest.service.js'
+import { enqueueAccountHealthCheck, getAccountHealthCheckQueueSnapshot } from './account-health-check.service.js'
 import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
 import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
 
@@ -89,6 +91,43 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
       retryQueueNextRunAt: queue.nextRunAt,
       elapsedMs: Date.now() - startedAtMs
     }, '冷却账户复测候选已加入异步队列')
+  }
+}
+
+export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
+  const batchSize = deps.settingsNumber('accountHealthCheckBatchSize', 1, 100)
+  const intervalHours = deps.settingsNumber('accountHealthCheckIntervalHours', 1, 168)
+  const jitterMinutes = deps.settingsNumber('accountHealthCheckJitterMinutes', 0, 1440)
+  const failureThreshold = deps.settingsNumber('accountHealthCheckFailureThreshold', 1, 10)
+  const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
+  const candidates = listAccountsDueForHealthCheck({
+    limit: batchSize,
+    intervalHours,
+    jitterMinutes,
+    failureThreshold
+  })
+  const startedAtMs = Date.now()
+  let enqueuedCount = 0
+  let skippedQueuedCount = 0
+  for (const account of candidates) {
+    if (enqueueAccountHealthCheck(account, { intervalHours, jitterMinutes, failureThreshold, maxPauseMinutes })) {
+      enqueuedCount += 1
+    } else {
+      skippedQueuedCount += 1
+    }
+  }
+  if (candidates.length > 0) {
+    const queue = getAccountHealthCheckQueueSnapshot()
+    logger.info({
+      event: 'background_account_health_check_candidates_completed',
+      candidateCount: candidates.length,
+      enqueuedCount,
+      skippedQueuedCount,
+      healthCheckQueuePendingCount: queue.pendingCount,
+      healthCheckQueueRunningCount: queue.runningCount,
+      healthCheckQueueNextRunAt: queue.nextRunAt,
+      elapsedMs: Date.now() - startedAtMs
+    }, '账号健康检测候选已加入异步队列')
   }
 }
 

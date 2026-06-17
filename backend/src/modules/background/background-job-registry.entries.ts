@@ -253,6 +253,19 @@ export const backgroundScheduledJobs = [
     writes: ['business:accounts']
   }),
   scheduled({
+    jobName: 'account-health-check',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'probe-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
+  }),
+  scheduled({
     jobName: 'cooldown-account-retest',
     category: 'scheduled',
     kind: 'probe',

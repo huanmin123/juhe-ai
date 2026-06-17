@@ -24,6 +24,10 @@ export interface SystemForm {
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   accountTestTaskConcurrency: number
+  accountHealthCheckIntervalHours: number
+  accountHealthCheckJitterMinutes: number
+  accountHealthCheckBatchSize: number
+  accountHealthCheckFailureThreshold: number
   cooldownAccountRetestMaxBackoffHours: number
   cooldownAccountRetestLongTermIntervalHours: number
 }
@@ -51,6 +55,10 @@ export const defaultSystemSettings: SystemForm = {
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 10,
   accountTestTaskConcurrency: 100,
+  accountHealthCheckIntervalHours: 12,
+  accountHealthCheckJitterMinutes: 120,
+  accountHealthCheckBatchSize: 20,
+  accountHealthCheckFailureThreshold: 3,
   cooldownAccountRetestMaxBackoffHours: 12,
   cooldownAccountRetestLongTermIntervalHours: 24
 }
@@ -81,6 +89,10 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '失败触发次数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '失败统计窗口', 1, 1440),
     accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),
+    accountHealthCheckIntervalHours: integerValue(settings.accountHealthCheckIntervalHours, '正常账号健康检测间隔', 1, 168),
+    accountHealthCheckJitterMinutes: integerValue(settings.accountHealthCheckJitterMinutes, '健康检测错峰窗口', 0, 1440),
+    accountHealthCheckBatchSize: integerValue(settings.accountHealthCheckBatchSize, '健康检测单轮账号数', 1, 100),
+    accountHealthCheckFailureThreshold: integerValue(settings.accountHealthCheckFailureThreshold, '健康检测连续失败阈值', 1, 10),
     cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),
     cooldownAccountRetestLongTermIntervalHours: integerValue(settings.cooldownAccountRetestLongTermIntervalHours, '长期不可用复测间隔', 1, 720)
   }

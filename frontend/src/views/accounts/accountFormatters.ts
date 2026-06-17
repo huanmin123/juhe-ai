@@ -79,6 +79,7 @@ export function accountErrorCodeText(code?: string): string {
   if (code === 'account_expired') return '账户过期'
   if (code === 'cooldown_retest_failed') return '后台复测失败'
   if (code === 'cooldown_retest_long_term_unavailable') return '长期不可用低频复测'
+  if (code === 'account_health_check_failed') return '后台健康检测失败'
   return code || '未分类异常'
 }
 
@@ -245,6 +246,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (qualityStatus) {
     lines.push(...qualityStatus.tooltipLines)
   }
+  lines.push(...accountHealthCheckTooltipLines(account))
   if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
@@ -311,12 +313,50 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
       lines.push('正在冷却，不参与调度')
     }
   }
+  lines.push(...accountHealthCheckTooltipLines(account))
   lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
     reasonLabel: '最后错误',
     statusCode: account.cooldownRetestLastStatusCode,
     concise: true
   }))
   return lines
+}
+
+function accountHealthCheckTooltipLines(account: AccountSummary): string[] {
+  const lines: string[] = []
+  if (account.healthCheckEnabled === false) {
+    lines.push('后台健康检测已关闭')
+    return lines
+  }
+  if (account.lastHealthCheckAt) {
+    lines.push(`最近后台检测：${formatDateTime(account.lastHealthCheckAt)}`)
+  }
+  if (account.lastHealthSuccessAt) {
+    lines.push(`最近健康成功信号：${formatDateTime(account.lastHealthSuccessAt)}`)
+  }
+  if (account.nextHealthCheckAt) {
+    const nextTimestamp = serverDateTimeTimestamp(account.nextHealthCheckAt)
+    const nextText = nextTimestamp !== undefined && nextTimestamp <= Date.now()
+      ? `检测排队中（计划 ${formatDateTime(account.nextHealthCheckAt)}）`
+      : formatDateTime(account.nextHealthCheckAt)
+    lines.push(`下次后台检测：${nextText}`)
+  }
+  if (account.healthCheckFailureCount) {
+    const status = account.lastHealthCheckStatusCode ? `，HTTP ${account.lastHealthCheckStatusCode}` : ''
+    const code = account.lastHealthCheckErrorCode ? `，${accountErrorCodeText(account.lastHealthCheckErrorCode)}` : ''
+    lines.push(`后台健康检测连续失败：${formatNumber(account.healthCheckFailureCount)} 次${status}${code}`)
+  }
+  const message = formatAccountHealthCheckError(account.lastHealthCheckErrorMessage)
+  if (message) {
+    lines.push(`健康检测原因：${message}`)
+  }
+  return lines
+}
+
+function formatAccountHealthCheckError(message?: string): string {
+  const value = conciseAccountLastErrorText(message)
+  const maxLength = 120
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
 }
 
 function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {

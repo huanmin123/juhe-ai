@@ -27,6 +27,10 @@ export interface SystemSettings {
   accountQualityRefreshIntervalSeconds: number
   accountQualityWindowMinutes: number
   accountTestTaskConcurrency: number
+  accountHealthCheckIntervalHours: number
+  accountHealthCheckJitterMinutes: number
+  accountHealthCheckBatchSize: number
+  accountHealthCheckFailureThreshold: number
   cooldownAccountRetestIntervalSeconds: number
   cooldownAccountRetestBatchSize: number
   cooldownAccountRetestMaxBackoffHours: number

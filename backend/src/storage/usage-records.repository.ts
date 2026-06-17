@@ -22,6 +22,7 @@ import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from './provider.repository.js'
+import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -319,6 +320,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     ON CONFLICT(id) DO NOTHING
   `
   const accountLastUsedAt = new Map<string, string>()
+  const accountHealthSuccessAt = new Map<string, string>()
   const accessLookupContext = buildUsageAccessLookupContext(inputs)
   const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordInsertRow[] }>()
   const shardEntries: UsageRecordShardEntryInput[] = []
@@ -380,7 +382,8 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
           now
         ],
         accountId: input.accountId,
-        accountLastUsedAt: trafficSource !== 'cooldown_retest' ? now : undefined
+        accountLastUsedAt: trafficSource !== 'cooldown_retest' ? now : undefined,
+        accountHealthSuccessAt: trafficSource !== 'cooldown_retest' && input.success ? now : undefined
       }
 
       const location = usageRecordShardLocationForRecord(id, now)
@@ -412,19 +415,29 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
       const insertStatement = shardDatabase.prepare(insertSql)
       const transactionStarted = beginDatabaseTransaction(shardDatabase)
       const shardAccountLastUsedAt = new Map<string, string>()
+      const shardAccountHealthSuccessAt = new Map<string, string>()
       try {
         for (const row of shardRows.rows) {
           const result = insertStatement.run(...row.params)
-          if (Number(result.changes ?? 0) === 0 || !row.accountId || !row.accountLastUsedAt) {
+          if (Number(result.changes ?? 0) === 0 || !row.accountId) {
             continue
           }
-          const previous = shardAccountLastUsedAt.get(row.accountId)
-          if (!previous || row.accountLastUsedAt > previous) {
-            shardAccountLastUsedAt.set(row.accountId, row.accountLastUsedAt)
+          if (row.accountLastUsedAt) {
+            const previous = shardAccountLastUsedAt.get(row.accountId)
+            if (!previous || row.accountLastUsedAt > previous) {
+              shardAccountLastUsedAt.set(row.accountId, row.accountLastUsedAt)
+            }
+          }
+          if (row.accountHealthSuccessAt) {
+            const previous = shardAccountHealthSuccessAt.get(row.accountId)
+            if (!previous || row.accountHealthSuccessAt > previous) {
+              shardAccountHealthSuccessAt.set(row.accountId, row.accountHealthSuccessAt)
+            }
           }
         }
         commitDatabaseTransaction(shardDatabase, transactionStarted)
         mergeAccountLastUsedAt(accountLastUsedAt, shardAccountLastUsedAt)
+        mergeAccountLastUsedAt(accountHealthSuccessAt, shardAccountHealthSuccessAt)
       } catch (error) {
         rollbackDatabaseTransaction(shardDatabase, transactionStarted)
         throw error
@@ -432,12 +445,14 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
 
     updateAccountLastUsedAt(accountLastUsedAt, businessDatabase)
+    recordAccountHealthSuccessSignals(accountHealthSuccessAt)
     recordUsageRecordShardEntries(shardEntries)
     accountLastUsedFlushed = true
   } catch (error) {
     if (!accountLastUsedFlushed && accountLastUsedAt.size > 0) {
       try {
         updateAccountLastUsedAt(accountLastUsedAt, businessDatabase)
+        recordAccountHealthSuccessSignals(accountHealthSuccessAt)
       } catch {
       }
     }
@@ -449,6 +464,7 @@ interface UsageRecordInsertRow {
   params: Array<string | number | null>
   accountId?: string
   accountLastUsedAt?: string
+  accountHealthSuccessAt?: string
 }
 
 interface UsageRecordEntryRow {
@@ -675,4 +691,3 @@ function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSo
   }
   throw new Error('使用记录来源无效')
 }
-

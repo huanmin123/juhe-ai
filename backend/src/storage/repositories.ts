@@ -147,6 +147,17 @@ export {
   type CooldownAccountRetestFailureInput,
   type CooldownAccountRetestFailureResult
 } from './account-cooldown-retest.repository.js'
+export {
+  findAccountForHealthCheck,
+  listAccountsDueForHealthCheck,
+  normalizedHealthCheckSettings,
+  recordAccountHealthCheckFailure,
+  recordAccountHealthCheckSuccess,
+  recordAccountHealthSuccessSignals,
+  type AccountHealthCheckFailureResult,
+  type AccountHealthCheckListOptions,
+  type AccountHealthCheckSettings
+} from './account-health-check.repository.js'
 import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -1368,4 +1379,3 @@ export function findResourceAuthorization(authorizationId: string, access?: Acce
   expireDueResourceAuthorizations()
   return findResourceAuthorizationSummary(authorizationId, access, options)
 }
-

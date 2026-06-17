@@ -867,6 +867,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           recordMaintenanceQueue: { ...workerSnapshot.recordMaintenanceQueue },
           auditLogQueue: { ...workerSnapshot.auditLogQueue },
           runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue },
+          accountHealthCheckQueue: workerSnapshot.accountHealthCheckQueue
+            ? { ...workerSnapshot.accountHealthCheckQueue }
+            : undefined,
           cooldownAccountRetestQueue: workerSnapshot.cooldownAccountRetestQueue
             ? { ...workerSnapshot.cooldownAccountRetestQueue }
             : undefined,
@@ -966,6 +969,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           ready: probeWorkerSnapshot.ready,
           workerRole: probeWorkerSnapshot.workerRole,
           jobs: probeWorkerSnapshot.jobs.map((job) => ({ ...job })),
+          accountHealthCheckQueue: probeWorkerSnapshot.accountHealthCheckQueue
+            ? { ...probeWorkerSnapshot.accountHealthCheckQueue }
+            : undefined,
           cooldownAccountRetestQueue: probeWorkerSnapshot.cooldownAccountRetestQueue
             ? { ...probeWorkerSnapshot.cooldownAccountRetestQueue }
             : undefined,
