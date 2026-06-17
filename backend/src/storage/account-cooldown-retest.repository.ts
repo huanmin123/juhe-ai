@@ -40,6 +40,7 @@ import { optionalString } from './value-utils.js'
 const temporaryUnavailableInitialBackoffSeconds = 3
 const temporaryUnavailableFastThresholdSeconds = 60
 const temporaryUnavailableBackoffMultiplier = 2
+const cooldownRetestLongTermUnavailableCode = 'cooldown_retest_long_term_unavailable'
 
 export interface CooldownAccountRetestFailureInput {
   traceId?: string
@@ -50,21 +51,23 @@ export interface CooldownAccountRetestFailureInput {
   fastThresholdSeconds?: number
   maxPauseMinutes?: number
   maxRecoveryHours?: number
+  longTermIntervalHours?: number
   backoffMultiplier?: number
 }
 
 export interface CooldownAccountRetestFailureResult {
-  action: 'retry_immediately' | 'cooldown' | 'exception' | 'discard'
+  action: 'retry_immediately' | 'cooldown' | 'long_term_cooldown' | 'discard'
   changed: boolean
   failureCount: number
   account?: AccountSummary
   cooldownUntil?: string
   backoffSeconds?: number
   backoffMinutes?: number
-  recoveryStage?: 'fast' | 'slow'
+  recoveryStage?: 'fast' | 'slow' | 'long_term'
   fastThresholdSeconds?: number
   maxPauseSeconds?: number
   maxRecoverySeconds?: number
+  longTermIntervalSeconds?: number
   maxedFailureCount?: number
   observationStartedAt?: string
   observationElapsedSeconds?: number
@@ -105,53 +108,13 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
   const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
   const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt)
 
-  if (recovery.observationElapsedSeconds >= recovery.maxRecoverySeconds) {
-    const exceptionMessage = cooldownRetestExceptionMessage(failureCount, recovery.maxRecoverySeconds, testErrorMessage)
-    const result = getBusinessDatabase()
-      .prepare(`
-        UPDATE accounts
-        SET status = 'error',
-            schedulable = 0,
-            cooldown_until = NULL,
-            last_error_code = 'cooldown_retest_max_recovery_exceeded',
-            last_error_message = ?,
-            cooldown_retest_failure_count = ?,
-            cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
-            cooldown_retest_last_at = ?,
-            cooldown_retest_last_status_code = ?,
-            stream_failure_count = 0,
-            stream_failure_window_started_at = NULL,
-            updated_at = ?
-        WHERE id = ?
-          AND deleted_at IS NULL
-          AND status = ?
-      `)
-      .run(exceptionMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id, current.status)
-    const changed = Number(result.changes ?? 0) > 0
-    if (changed) {
-      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_exception' })
-      invalidateAccountLookupCache(id)
-      invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_exception')
-    }
-    return {
-      action: 'exception',
-      changed,
-      failureCount,
-      account: failureAccountSummary(id, current),
-      recoveryStage: recovery.stage,
-      fastThresholdSeconds: recovery.fastThresholdSeconds,
-      maxPauseSeconds: recovery.maxPauseSeconds,
-      maxRecoverySeconds: recovery.maxRecoverySeconds,
-      maxedFailureCount: recovery.maxedFailureCount,
-      observationStartedAt: recovery.observationStartedAt,
-      observationElapsedSeconds: recovery.observationElapsedSeconds,
-      errorCode: 'cooldown_retest_max_recovery_exceeded',
-      errorMessage: exceptionMessage
-    }
-  }
-
   const cooldownUntil = new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
-  const cooldownMessage = cooldownRetestCooldownMessage(failureCount, recovery.backoffSeconds, recovery.stage, testErrorMessage)
+  const persistedErrorCode = recovery.stage === 'long_term'
+    ? cooldownRetestLongTermUnavailableCode
+    : errorCode
+  const cooldownMessage = recovery.stage === 'long_term'
+    ? cooldownRetestLongTermMessage(failureCount, recovery.maxRecoverySeconds, recovery.backoffSeconds, testErrorMessage)
+    : cooldownRetestCooldownMessage(failureCount, recovery.backoffSeconds, recovery.stage, testErrorMessage)
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
@@ -170,14 +133,16 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
         AND deleted_at IS NULL
         AND status = ?
     `)
-    .run(cooldownUntil, errorCode, cooldownMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id, current.status)
+    .run(cooldownUntil, persistedErrorCode, cooldownMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id, current.status)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_backoff' })
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_backoff')
   }
-  const action = recovery.stage === 'fast' ? 'retry_immediately' : 'cooldown'
+  const action = recovery.stage === 'fast'
+    ? 'retry_immediately'
+    : recovery.stage === 'long_term' ? 'long_term_cooldown' : 'cooldown'
   return {
     action,
     changed,
@@ -190,10 +155,11 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
     fastThresholdSeconds: recovery.fastThresholdSeconds,
     maxPauseSeconds: recovery.maxPauseSeconds,
     maxRecoverySeconds: recovery.maxRecoverySeconds,
+    longTermIntervalSeconds: recovery.longTermIntervalSeconds,
     maxedFailureCount: recovery.maxedFailureCount,
     observationStartedAt: recovery.observationStartedAt,
     observationElapsedSeconds: recovery.observationElapsedSeconds,
-    errorCode,
+    errorCode: persistedErrorCode,
     errorMessage: cooldownMessage
   }
 }
@@ -433,11 +399,12 @@ function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailur
 }
 
 interface CooldownRetestRecoveryPlan {
-  stage: 'fast' | 'slow'
+  stage: 'fast' | 'slow' | 'long_term'
   backoffSeconds: number
   fastThresholdSeconds: number
   maxPauseSeconds: number
   maxRecoverySeconds: number
+  longTermIntervalSeconds: number
   maxedFailureCount: number
   observationStartedAt: string
   observationElapsedSeconds: number
@@ -447,21 +414,28 @@ function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccount
   const initialBackoffSeconds = boundedInteger(input.initialBackoffSeconds, temporaryUnavailableInitialBackoffSeconds, 1, 3600)
   const fastThresholdSeconds = boundedInteger(input.fastThresholdSeconds, temporaryUnavailableFastThresholdSeconds, initialBackoffSeconds, 3600)
   const maxPauseSeconds = boundedInteger(input.maxPauseMinutes, defaultTemporaryUnschedulableMinutes(), 1, 1440) * 60
-  const maxRecoverySeconds = boundedInteger(input.maxRecoveryHours, 24, 1, 24 * 30) * 60 * 60
+  const maxRecoverySeconds = boundedInteger(input.maxRecoveryHours, 12, 1, 24 * 30) * 60 * 60
+  const longTermIntervalSeconds = boundedInteger(input.longTermIntervalHours, 24, 1, 24 * 30) * 60 * 60
   const multiplier = boundedInteger(input.backoffMultiplier, temporaryUnavailableBackoffMultiplier, 2, 10)
   const exponent = Math.max(0, Math.min(failureCount, 30))
   const uncappedBackoffSeconds = Math.min(Number.MAX_SAFE_INTEGER, initialBackoffSeconds * Math.pow(multiplier, exponent))
-  const backoffSeconds = Math.min(uncappedBackoffSeconds, maxPauseSeconds)
-  const stage = backoffSeconds <= fastThresholdSeconds ? 'fast' : 'slow'
   const firstMaxedFailureCount = firstCappedBackoffFailureCount(initialBackoffSeconds, multiplier, maxPauseSeconds)
   const maxedFailureCount = failureCount >= firstMaxedFailureCount ? failureCount - firstMaxedFailureCount + 1 : 0
   const observationElapsedSeconds = cooldownRetestObservationElapsedSeconds(observationStartedAt, nowDate)
+  const inLongTermStage = observationElapsedSeconds >= maxRecoverySeconds
+  const backoffSeconds = inLongTermStage
+    ? longTermIntervalSeconds
+    : Math.min(uncappedBackoffSeconds, maxPauseSeconds)
+  const stage = inLongTermStage
+    ? 'long_term'
+    : backoffSeconds <= fastThresholdSeconds ? 'fast' : 'slow'
   return {
     stage,
     backoffSeconds,
     fastThresholdSeconds,
     maxPauseSeconds,
     maxRecoverySeconds,
+    longTermIntervalSeconds,
     maxedFailureCount,
     observationStartedAt,
     observationElapsedSeconds
@@ -489,8 +463,8 @@ function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: num
   return `后台冷却复测连续失败 ${failureCount} 次，${stageText}下次复测延后 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
 }
 
-function cooldownRetestExceptionMessage(failureCount: number, maxRecoverySeconds: number, lastError: string): string {
-  return `后台冷却复测连续失败 ${failureCount} 次，已超过最大恢复观察窗口 ${formatDurationSeconds(maxRecoverySeconds)}，已停止自动复测并标记为异常；最后错误：${lastError}`.slice(0, 1000)
+function cooldownRetestLongTermMessage(failureCount: number, maxRecoverySeconds: number, backoffSeconds: number, lastError: string): string {
+  return `后台冷却复测连续失败 ${failureCount} 次，已超过自动恢复观察窗口 ${formatDurationSeconds(maxRecoverySeconds)}，进入长期不可用低频复测；下次复测延后 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
 }
 
 function secondsToCeilMinutes(seconds: number): number {

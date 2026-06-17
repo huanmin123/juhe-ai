@@ -53,6 +53,7 @@
     "test:system-account-list-query-guard": "pnpm --filter juhe-ai-backend test:system-account-list-query-guard",
     "test:system-account-options-lightweight": "pnpm --filter juhe-ai-backend test:system-account-options-lightweight",
     "test:account-test-limited-diagnostics": "pnpm --filter juhe-ai-backend test:account-test-limited-diagnostics",
+    "test:openai-endpoint-modes": "pnpm --filter juhe-ai-backend test:openai-endpoint-modes",
     "test:model-check-trusted-comparison": "pnpm --filter juhe-ai-backend test:model-check-trusted-comparison",
     "test:model-check-trusted-comparison-success": "pnpm --filter juhe-ai-backend test:model-check-trusted-comparison-success",
     "test:model-check-full-profile": "pnpm --filter juhe-ai-backend test:model-check-full-profile",

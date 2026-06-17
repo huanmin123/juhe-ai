@@ -32,7 +32,7 @@ try {
     gatewayJsonParser
   ] = await Promise.all([
     import('../../storage/repositories.js'),
-    import('../maintenance/mockdata-fixtures.js'),
+    import('../maintenance/mockdata/fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
     import('../../modules/gateway/usage/record-queue.service.js'),
     import('../../modules/gateway/request/json-parser.js')

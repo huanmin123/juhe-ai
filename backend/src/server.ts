@@ -8,7 +8,11 @@ import { startBackgroundWorkerSupervisor } from './modules/background/background
 import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
 import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/routes.js'
-import { captureGatewayRawBody, recordGatewayBodyRejection } from './modules/gateway/request/body-middleware.js'
+import {
+  captureGatewayRawBody,
+  recordGatewayBodyRejection,
+  rejectGatewayRawBodyByContentLength
+} from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
@@ -154,6 +158,7 @@ app.use(systemPrefix, (_req, res) => {
 app.use(
   preResolveGatewayRuntime,
   handleGatewayDbServiceUnavailable,
+  rejectGatewayRawBodyByContentLength,
   express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
   handleGatewayRawBodyError,
   captureGatewayRawBody,

@@ -18,6 +18,10 @@ import { isAuthorizedAccount, parseStrictDatePickerValue } from './accountFormat
 import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
 import { GPT_VENDOR_CODE } from './accountOptions'
+import {
+  defaultAccountEndpointModes,
+  normalizeAccountEndpointModes
+} from './accountEndpointModes'
 
 export class AccountEditFormLoadError extends Error {
   readonly cause: unknown
@@ -67,6 +71,7 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     clientCompatibility: accountClientCompatibilityForForm(account),
+    supportedEndpointModes: accountEndpointModesForForm(account, credentials, defaults),
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt,
     groupId: selectedGroup?.id ?? fallbackGroupId,
@@ -112,6 +117,7 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     clientCompatibility: accountClientCompatibilityForForm(account),
+    supportedEndpointModes: accountEndpointModesForForm(account, credentials, defaults),
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt,
     groupId: selectedGroup?.id ?? fallbackGroupId,
@@ -150,6 +156,17 @@ function accountClientCompatibilityForForm(account: AccountSummary): AccountForm
   return account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth'
     ? 'codex_responses'
     : account.clientCompatibility ?? defaultAccountClientCompatibility(account.providerCode)
+}
+
+function accountEndpointModesForForm(
+  account: AccountSummary,
+  credentials: Record<string, unknown>,
+  defaults: AccountFormModel
+): AccountFormModel['supportedEndpointModes'] {
+  return normalizeAccountEndpointModes(
+    credentials.supported_endpoint_modes,
+    defaultAccountEndpointModes(account.providerCode, account.type, accountClientCompatibilityForForm(account) ?? defaults.clientCompatibility)
+  )
 }
 
 function credentialBaseUrlForForm(credentials: Record<string, unknown>, label: string): string {

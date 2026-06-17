@@ -1,11 +1,11 @@
-import { getDatasetDatabase, nowIso } from '../../storage/database.js'
+import { getDatasetDatabase, nowIso } from '../../../../storage/database.js'
 import {
   dayMs,
   idPrefix,
   minuteMs,
   namePrefix,
   type RecordCleanupMockdataCounts
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 export function createRecordCleanupMockdata(): RecordCleanupMockdataCounts {
   const database = getDatasetDatabase()

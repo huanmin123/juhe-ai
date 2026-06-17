@@ -37,6 +37,7 @@ type ProtocolVersion = 'v1'
 type ProviderCode = 'openai' | 'gpt'
 type ProviderProtocolProfileId = 'profile_openai_openai_v1' | 'profile_gpt_openai_v1'
 type EndpointFamily = 'chat_completions' | 'responses'
+type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse'
 type OpenAICompatibleAccountType = 'api_key'
 type GptAccountType = 'api_key' | 'oauth'
 ```
@@ -61,6 +62,8 @@ type GptAccountType = 'api_key' | 'oauth'
 
 - Responses
 - Chat
+
+账户级接口能力限制保存于凭据的非敏感字段 `credentials.supported_endpoint_modes`，用于表达当前上游实际支持的 OpenAI v1 请求形态：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。网关候选账号筛选和账户测试都必须遵守该矩阵；例如只支持 `chat_json/chat_sse` 的通用 OpenAI-compatible 上游不会参与 `/v1/responses` 调度，手动测试也会改用 `/v1/chat/completions`。省略该字段时，通用 `openai` API Key 默认启用 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE。`clientCompatibility = codex_responses` 必须启用 `responses_sse`；OAuth 账户只能选择 Responses JSON/SSE，不支持 Chat Completions。
 
 默认测试模型：
 
@@ -121,6 +124,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
+- 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；测试和网关调度都会按该配置筛选，不做 Chat 与 Responses 自动互转。
 - `base_url` 保存时按 OpenAI-compatible 上游根地址严格校验：必须是完整绝对地址，公网生产地址只允许 `https`，本地 mock / 回归测试才可通过私网上游放行配置使用 `http`；禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
@@ -226,7 +230,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
 - 账户时间计划只作为网关候选过滤条件，不改变手动启用/停用、异常、冷却和到期状态。后台 `account-availability-schedule-status-sync` 维护候选派生字段并在变更后清理 runtime cache；请求热链路不解析计划 JSON，允许一个后台同步周期的切换延迟。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期由请求前懒刷新和后台 Access Token 预刷新维护，额度快照由真实请求响应头被动维护。
-- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；前端测试模型默认来自账户所属供应商的 `default_test_model`，手动测试成功后把本次成功模型写入账户 `last_successful_test_model`。API Key 账户测试会优先复用最近真实请求的 endpoint/stream 形态，但手动测试模型以显式传入值为准，客户端兼容临时选择只对 API Key 生效；OAuth 账户测试固定使用 Codex Responses。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；测试输入由后端使用默认探活输入生成。手动账户测试、后台冷却复测和事前确认探针的诊断等待策略固定为 `10s -> 20s -> 30s` 三次真实网关请求尝试，总等待不超过 60 秒；未保存草稿 OAuth 测试如果需要先刷新 Access Token，刷新请求也纳入同一次诊断 attempt 的等待上限。每次尝试仍使用账号自己的凭据、Base URL、代理、兼容模式、分组上下文和请求形态，只按测试成功与否决定是否继续，不按上游状态码、错误码或错误文案分类重试。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号；复测模型优先使用账户 `last_successful_test_model`，没有手动成功记录时使用供应商 `default_test_model`。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常；失败会继续按指数退避，超过 `cooldownAccountRetestMaxBackoffHours` 表达的最长自动恢复观察窗口后转为 `status = error`，错误码为 `cooldown_retest_max_recovery_exceeded`，之后需要通过“恢复异常”人工清理。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
+- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。账户创建、导入和离线修复都不得自动绑定本机固定端口代理，代理必须由用户显式配置。账户测试必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试服务里单独直连上游；前端测试模型默认来自账户所属供应商的 `default_test_model`，手动测试成功后把本次成功模型写入账户 `last_successful_test_model`。API Key 账户测试会优先复用最近真实请求的 endpoint/stream 形态，但手动测试模型以显式传入值为准，客户端兼容临时选择只对 API Key 生效；OAuth 账户测试固定使用 Codex Responses。API Key 账户的 Responses 测试按当前契约不发送 `max_output_tokens`；测试输入由后端使用默认探活输入生成。手动账户测试、后台冷却复测和事前确认探针的诊断等待策略固定为 `10s -> 20s -> 30s` 三次真实网关请求尝试，总等待不超过 60 秒；未保存草稿 OAuth 测试如果需要先刷新 Access Token，刷新请求也纳入同一次诊断 attempt 的等待上限。每次尝试仍使用账号自己的凭据、Base URL、代理、兼容模式、分组上下文和请求形态，只按测试成功与否决定是否继续，不按上游状态码、错误码或错误文案分类重试。后台账号质量主动探测能力已删除；后台冷却复测固定启用，复用同一网关模型请求链路去恢复冷却到期的 `temporary_unavailable` 和 `rate_limited` 账号；复测模型优先使用账户 `last_successful_test_model`，没有手动成功记录时使用供应商 `default_test_model`。账号进入冷却态后先按 3 秒进入快速恢复通道，复测失败后按 `3s -> 6s -> 12s -> 24s -> ...` 翻倍；超过快速阈值后退化为慢速恢复通道，单次等待不超过 `defaultTemporaryUnschedulableMinutes` 表达的最大暂停时间。后台复测成功恢复正常；失败会继续按指数退避，超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后保持原状态并按 `cooldownAccountRetestLongTermIntervalHours` 低频复测，`last_error_code` 记为 `cooldown_retest_long_term_unavailable`。恢复探活使用 `traffic_source = cooldown_retest` 写入使用记录和审计，避免污染业务统计、账户质量和真实请求形态学习；写入账号 `last_error_code/last_error_message` 时使用本次上游真实错误摘要，避免把网关最终兜底 503 覆盖成账号原因；如果响应里带有 Codex 额度头，额度快照来源也记录为 `cooldown_retest`，不伪装成真实网关流量。
 
 账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。频繁失败确认只由真实网关质量样本触发，按账户所属系统账户和绑定分组上下文执行确认探针；确认成功不改状态，确认失败且属于账号故障时才写入 `temporary_unavailable`。该确认探针使用 `traffic_source = cooldown_retest`，不进入业务统计、账号质量统计或真实请求形态学习。
 
@@ -236,7 +240,7 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 
 - 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
 - 亲和键按 `system_account_id + api_key_id + session` 隔离，避免不同本地 API Key 或系统账户共享同一个上游会话绑定；`group_id` 不参与亲和键。
-- 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；同一 API Key 下不同分组仍共享同一亲和绑定。
+- 手动迁移流量时，会话亲和迁移按源账号、系统账户和可选 API Key 反向索引定位候选绑定，不扫描全部亲和缓存；默认的“不影响原账户”只把已有且当前命中源账号的客户端会话迁到目标账户，不写源账号状态，也不记录整组新请求目标偏向。选择“临时不可调用”或“停用账户”时，才同时按本地系统账户和分组记录短期运行态目标偏向，在源账号仍未回到候选池前，后续请求会优先尝试迁移目标账户。迁移目标偏向是当前作用域内的短期最高排序覆盖，优先于会话亲和、超级优先、主池 / 备用池分层、账号优先级和质量分；但不绕过 API Key / 系统账户 / 分组 / 授权作用域 / 模型 / 状态 / 额度 / 硬并发等候选硬条件。同一 API Key 下不同分组仍共享同一亲和绑定。
 - OAuth Codex adapter 写入上游的 `session_id`、`conversation_id` 和 `prompt_cache_key` 也按同一层本地边界隔离，不把上游账号 ID、账号类型或分组 ID 写进隔离 key；同一个本地 API Key 路由下因失败、冷却或并发切换上游账号时，尽量保留客户端会话和 prompt cache 连续性。
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
@@ -275,7 +279,7 @@ GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括�
 - 到期时间（授权账户优先展示授权到期时间；没有授权到期时间时展示账户到期时间）
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、标签、并发、优先级、代理、过期时间、备注、账户错误处理规则、账户响应检查规则和 API Key 账户客户端兼容等配置；GPT OAuth 账户客户端兼容固定显示 Codex Responses，不提供切换。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖测试、后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。`待测试` 是新建账户的默认隔离状态，不能参与调度，不能通过启用账户或恢复正常绕过测试；手动测试失败仍保持待测试，手动测试通过后才恢复为正常并开启调度。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；超过最长自动恢复观察窗口后会转为 `status = error`，需要通过“恢复异常”清理。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”入口，非停用自有异常账户手动测试成功也可作为人工恢复入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发账户错误处理策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
+操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、标签、并发、优先级、代理、过期时间、备注、账户错误处理规则、账户响应检查规则和 API Key 账户客户端兼容等配置；GPT OAuth 账户客户端兼容固定显示 Codex Responses，不提供切换。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖测试、后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认“不影响原账户”，只把已识别且当前命中源账户的客户端会话迁到目标账户；也可把原账户改为临时不可调用或停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接；只有选择临时不可调用或停用时，迁移后当前分组才会在源账号仍不可候选时短期偏向目标账户，目标不可用或并发不可承接时继续按原有候选顺序降级。`待测试` 是新建账户的默认隔离状态，不能参与调度，不能通过启用账户或恢复正常绕过测试；手动测试失败仍保持待测试，手动测试通过后才恢复为正常并开启调度。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；超过长期不可用观察阈值后不会转异常，而是显示“长期不可用”并继续低频自动复测。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”入口，非停用自有异常账户手动测试成功也可作为人工恢复入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发账户错误处理策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
 
 “频繁失败”和“近期不稳”是账号质量反馈标签，不是新的物理状态；状态筛选仍按 `status`、冷却和实际可用性判断。频繁失败标签会触发后台故障确认，确认失败后才会升级为“临时不可调用”，确认成功则继续保持正常。
 

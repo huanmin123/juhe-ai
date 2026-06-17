@@ -1,14 +1,14 @@
 import type {
   SystemAccountRole,
   SystemAccountSummary
-} from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import * as repositories from '../../storage/repositories.js'
+} from '../../../../domain/types.js'
+import type { AccessScope } from '../../../../storage/access-scope.js'
+import * as repositories from '../../../../storage/repositories.js'
 import {
   mockPassword,
   namePrefix,
   type MockSystemAccounts
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 export function createMockUsers(admin: SystemAccountSummary): MockSystemAccounts {
   return {

@@ -105,14 +105,13 @@
       <a-col :xs="24" :xl="14">
         <StatsChartCard
           :title="`进程事件循环延迟（${currentWindowLabel}）`"
-          description="主进程、常驻 worker、临时维护 worker 和 DB service 独立采样；下方趋势按后台窗口缓存展示。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
         >
-          <StatsProcessEventLoopTable :rows="processEventLoopRows" />
           <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
           <a-empty v-else class="process-event-loop-trend-empty" :description="processEventLoopTrendEmptyDescription" />
+          <StatsProcessEventLoopTable :rows="processEventLoopRows" />
         </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="10">

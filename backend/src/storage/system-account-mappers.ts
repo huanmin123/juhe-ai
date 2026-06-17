@@ -1,4 +1,4 @@
-import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
+import { isAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
 
 export interface SystemAccountRow {
   id: string
@@ -25,12 +25,16 @@ export function systemAccountSummaryFromRow(row: SystemAccountSummaryRow): Syste
     description: row.description ?? undefined,
     role: row.role,
     status: row.status,
-    mustChangePassword: row.must_change_password === 1,
+    mustChangePassword: effectiveMustChangePassword(row.role, row.must_change_password === 1),
     imageGenerationEnabled: row.image_generation_enabled === 1,
     lastLoginAt: row.last_login_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
+}
+
+function effectiveMustChangePassword(role: SystemAccountRole, mustChangePassword: boolean): boolean {
+  return mustChangePassword && !isAdminRole(role)
 }
 
 export function systemAccountPrincipalSummaryFromRow(row: Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>): SystemAccountPrincipalSummary {

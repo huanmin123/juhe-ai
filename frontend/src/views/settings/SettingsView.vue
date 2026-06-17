@@ -164,18 +164,23 @@
           <div class="section-heading">
             <div>
               <h3>冷却账户复测</h3>
-              <p>仅复测临时不可调用账户；先快速恢复，再退化到慢速恢复，超过最长观察后转为异常。</p>
+              <p>仅复测临时不可调用和限流中的账户；先快速恢复，再退化到慢速恢复，长期不可用后继续低频复测。</p>
             </div>
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>后台复测只处理“临时不可调用”状态。账号先进入快速恢复通道，按 3 秒起步、失败翻倍；超过快速阈值后进入慢速恢复通道，单次等待不超过最大暂停时间；慢速恢复失败发生在最长自动恢复观察之后会转为异常并保留最后一次测试错误。</template>
+            <template #message>后台复测处理“临时不可调用”和“限流中”状态。账号先进入快速恢复通道，失败后翻倍退避；超过观察阈值后显示为长期不可用，并按低频间隔继续自动复测。</template>
           </a-alert>
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="最长自动恢复观察（小时）" extra="默认 24 小时；从进入临时不可调用开始计时，慢速恢复失败超过该观察时间后，账户会转为异常并停止自动复测。">
+              <a-form-item label="长期不可用观察阈值（小时）" extra="默认 12 小时；从进入临时不可调用或限流中开始计时，超过后不转异常，而是显示为长期不可用。">
                 <a-input-number v-model:value="systemForm.cooldownAccountRetestMaxBackoffHours" :min="1" :max="720" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="长期不可用复测间隔（小时）" extra="默认 24 小时；账号进入长期不可用后按该间隔继续自动复测，复测成功会恢复正常。">
+                <a-input-number v-model:value="systemForm.cooldownAccountRetestLongTermIntervalHours" :min="1" :max="720" style="width: 100%" />
               </a-form-item>
             </div>
           </div>

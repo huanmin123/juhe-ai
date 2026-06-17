@@ -158,6 +158,52 @@ export async function captureGatewayRawBody(
   }
 }
 
+export function rejectGatewayRawBodyByContentLength(
+  req: GatewayRawBodyRequest,
+  res: Response,
+  next: NextFunction
+): void {
+  const contentLength = requestContentLengthBytes(req)
+  if (contentLength === undefined) {
+    next()
+    return
+  }
+  const requestLimit = resolveGatewayRawBodyContentLengthLimit(req)
+  if (!requestLimit) {
+    next()
+    return
+  }
+  if (contentLength <= requestLimit.limitBytes) {
+    next()
+    return
+  }
+  getRequestLogger().warn({
+    event: 'gateway_raw_body_content_length_limit_rejected',
+    method: req.method,
+    path: req.path,
+    originalUrl: sanitizeUrlForLog(req.originalUrl),
+    rawBodyBytes: contentLength,
+    rawBodyLimitBytes: requestLimit.limitBytes,
+    rawBodyLimitScope: requestLimit.scope
+  }, '网关请求体 Content-Length 超过当前请求类型上限，已在读取 body 前拒绝')
+  recordGatewayBodyRejection(req, {
+    statusCode: 413,
+    responsePayload: gatewayErrorPayload('请求体过大', 'request_too_large'),
+    rawBodyBytes: contentLength,
+    reason: 'gateway_body_size_limit',
+    errorCode: 'request_too_large',
+    errorMessage: '请求体过大'
+  })
+  if (!res.headersSent) {
+    res.status(413).json({
+      error: {
+        message: '请求体过大',
+        type: 'request_too_large'
+      }
+    })
+  }
+}
+
 function rejectGatewayRawBodyByRequestLane(
   req: GatewayRawBodyRequest,
   res: Response,
@@ -175,6 +221,27 @@ function resolveGatewayRawBodyRequestLimit(req: GatewayRawBodyRequest): { limitB
   return resolveOpenAIGatewayRequestLane(req) === 'image'
     ? { limitBytes: gatewayImageRawBodyHardLimitBytes, scope: 'image' }
     : { limitBytes: gatewayTextRawBodyLimitBytes(req.gatewayRuntime?.settings?.gatewayTextRawBodyLimitMegabytes), scope: 'text' }
+}
+
+function resolveGatewayRawBodyContentLengthLimit(req: GatewayRawBodyRequest): { limitBytes: number; scope: GatewayRawBodyLimitScope } | undefined {
+  const path = String(req.path || req.originalUrl || '').split('?')[0]?.toLowerCase() ?? ''
+  if (path === '/images' || path.startsWith('/images/') || path === '/v1/images' || path.startsWith('/v1/images/')) {
+    return { limitBytes: gatewayImageRawBodyHardLimitBytes, scope: 'image' }
+  }
+  if (path === '/chat/completions' || path === '/v1/chat/completions') {
+    return { limitBytes: gatewayTextRawBodyLimitBytes(req.gatewayRuntime?.settings?.gatewayTextRawBodyLimitMegabytes), scope: 'text' }
+  }
+  return undefined
+}
+
+function requestContentLengthBytes(req: GatewayRawBodyRequest): number | undefined {
+  const value = req.headers['content-length']
+  const text = Array.isArray(value) ? value[0] : value
+  if (typeof text !== 'string' || text.trim() === '') {
+    return undefined
+  }
+  const parsed = Number(text)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
 }
 
 function rejectGatewayRawBodyTooLarge(

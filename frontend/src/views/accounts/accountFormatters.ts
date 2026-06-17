@@ -78,6 +78,7 @@ export function accountErrorCodeText(code?: string): string {
   if (code === 'upstream_failure') return '上游调用失败'
   if (code === 'account_expired') return '账户过期'
   if (code === 'cooldown_retest_failed') return '后台复测失败'
+  if (code === 'cooldown_retest_long_term_unavailable') return '长期不可用低频复测'
   return code || '未分类异常'
 }
 
@@ -273,6 +274,9 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
       lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
     }
+    if (isLongTermUnavailableAccount(account)) {
+      lines.push('已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
+    }
     lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, { reasonLabel: '原因' }))
   }
   return lines
@@ -296,6 +300,9 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
   if (isTemporaryAccountStatus(account)) {
     const retestText = accountCooldownRetestText(account)
     if (retestText) lines.push(retestText)
+    if (isLongTermUnavailableAccount(account)) {
+      lines.push('已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
+    }
   } else if (account.effectiveAvailability?.status === 'instance_cooldown') {
     const cooldownText = accountCooldownText(account)
     if (cooldownText) {
@@ -345,6 +352,9 @@ function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): str
   if (isTemporaryAccountStatus(account)) {
     const retestText = accountCooldownRetestText(account)
     if (retestText) lines.push(`本地${retestText}`)
+    if (isLongTermUnavailableAccount(account)) {
+      lines.push('本地已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
+    }
   }
   lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
     reasonLabel: '本地最后错误',
@@ -363,6 +373,7 @@ function isAuthorizedInstanceLocalStatusHandledAsContext(account: AccountSummary
 
 function localAccountStatusText(account: AccountSummary): string {
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
+  if (isLongTermUnavailableAccount(account)) return '长期不可用'
   if (account.status !== 'active') return statusText(account.status)
   if (isFutureTime(account.cooldownUntil)) return '冷却中'
   if (!account.schedulable) return '停调'
@@ -376,6 +387,10 @@ export function authorizationSourceAccountStatusTag(account: AccountSummary): Ac
   if (sourceStatus === 'pending_test') return { color: 'blue', label: '来源待测试' }
   if (sourceStatus === 'disabled') return { color: 'orange', label: '来源停用' }
   if (sourceStatus === 'error') return { color: 'red', label: '来源异常' }
+  if ((sourceStatus === 'rate_limited' || sourceStatus === 'temporary_unavailable')
+    && account.authorizationInstanceSourceAccountLastErrorCode === 'cooldown_retest_long_term_unavailable') {
+    return { color: 'gold', label: '来源长期不可用' }
+  }
   if (sourceStatus === 'rate_limited') return { color: 'orange', label: '来源限流中' }
   if (sourceStatus === 'temporary_unavailable') return { color: 'gold', label: '来源临时不可调用' }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) return { color: 'gold', label: '来源冷却' }
@@ -396,7 +411,10 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   } else if (sourceStatus === 'error') {
     lines.push('授权方原账户处于异常状态，授权实例实际不可调用')
   } else if (sourceStatus === 'rate_limited' || sourceStatus === 'temporary_unavailable') {
-    lines.push(`授权方原账户状态：${statusText(sourceStatus)}，授权实例实际不可调用`)
+    const sourceStatusText = account.authorizationInstanceSourceAccountLastErrorCode === 'cooldown_retest_long_term_unavailable'
+      ? '长期不可用'
+      : statusText(sourceStatus)
+    lines.push(`授权方原账户状态：${sourceStatusText}，授权实例实际不可调用`)
   } else if (sourceStatus && sourceStatus !== 'active') {
     lines.push(`授权方原账户状态：${statusText(sourceStatus)}，授权实例实际不可调用`)
   }
@@ -494,6 +512,11 @@ export function isTemporaryAccountStatus(account: AccountSummary) {
   return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
 }
 
+function isLongTermUnavailableAccount(account: AccountSummary): boolean {
+  return isTemporaryAccountStatus(account)
+    && account.lastErrorCode === 'cooldown_retest_long_term_unavailable'
+}
+
 function isDirectAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
   return status.startsWith('instance_') && !isScheduleInactiveStatus(status)
 }
@@ -517,6 +540,7 @@ function directAccountStatusText(account: AccountSummary): string {
   if (status === 'instance_pending_test') return '待测试'
   if (status === 'instance_disabled') return '停用'
   if (status === 'instance_error') return '异常'
+  if (isLongTermUnavailableAccount(account)) return '长期不可用'
   if (status === 'instance_rate_limited') return '限流中'
   if (status === 'instance_temporary_unavailable') return '临时不可调用'
   if (status === 'instance_cooldown') return '冷却中'

@@ -5,7 +5,7 @@
     width="560px"
     :confirm-loading="saving"
     :ok-button-props="{ type: 'primary', danger: sourceStatus === 'disabled', disabled: !sourceAccount || !targetAccountId || !targetOptions.length }"
-    ok-text="确认迁移"
+    :ok-text="sourceStatus === 'unchanged' ? '迁移客户端' : '确认迁移'"
     cancel-text="取消"
     @ok="$emit('save')"
     @update:open="$emit('update:open', $event)"
@@ -15,7 +15,7 @@
         class="form-alert"
         type="warning"
         show-icon
-        :message="isAuthorizedSource ? '只影响你自己分组内的授权账户调度；不会修改账户所有者的原账户配置。' : '不会打断当前正在输出的连接；当前请求继续跑完，从下一次请求开始切到目标账户。'"
+        :message="migrationAlertMessage"
       />
       <a-form-item label="当前账户">
         <a-input :value="sourceAccount?.name || '-'" readonly />
@@ -35,10 +35,11 @@
       </a-form-item>
       <a-form-item :label="isAuthorizedSource ? '迁移后当前授权实例状态' : '迁移后原账户状态'">
         <a-radio-group :value="sourceStatus" @update:value="handleSourceStatusChange">
+          <a-radio value="unchanged">不影响原账户</a-radio>
           <a-radio value="temporary_unavailable">临时不可调用</a-radio>
           <a-radio value="disabled">停用账户</a-radio>
         </a-radio-group>
-        <div class="form-help">{{ isAuthorizedSource ? '该状态只更新你自己的授权实例账户；不会停用、冷却或修改账户所有者的原账户。' : '迁移只影响后续请求；已经建立的流式输出不会被这次操作中断。' }}</div>
+        <div class="form-help">{{ sourceStatusHelpText }}</div>
       </a-form-item>
     </a-form>
   </a-modal>
@@ -62,6 +63,23 @@ const props = defineProps<{
 }>()
 
 const isAuthorizedSource = computed(() => props.sourceAccount?.accessType === 'authorized')
+const migrationAlertMessage = computed(() => {
+  if (props.sourceStatus === 'unchanged') {
+    return '不会打断当前正在输出的连接；只把当前已识别的客户端会话迁到目标账户。'
+  }
+  return isAuthorizedSource.value
+    ? '只影响你自己分组内的授权账户调度；从下一次请求开始短期优先切到目标账户。'
+    : '不会打断当前正在输出的连接；从下一次请求开始短期优先切到目标账户。'
+})
+const sourceStatusHelpText = computed(() => {
+  if (props.sourceStatus === 'unchanged') {
+    return '只把已识别且当前命中该账户的客户端会话迁到目标账户，不修改原账户状态，也不影响新客户端正常调度。'
+  }
+  if (isAuthorizedSource.value) {
+    return '该状态只更新你自己的授权实例账户；不会停用、冷却或修改账户所有者的原账户。'
+  }
+  return '迁移是短期最高排序覆盖；目标不可用、硬并发已满或不支持本次请求时按候选顺序降级。'
+})
 
 const emit = defineEmits<{
   (event: 'save'): void
@@ -79,7 +97,7 @@ function filterOption(input: string, option?: { label?: string | number }) {
 }
 
 function handleSourceStatusChange(value: unknown) {
-  if (value === 'temporary_unavailable' || value === 'disabled') {
+  if (value === 'unchanged' || value === 'temporary_unavailable' || value === 'disabled') {
     emit('update:sourceStatus', value)
   }
 }

@@ -11,6 +11,12 @@ import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-la
 interface SessionBinding {
   accountId: string
   scope?: OpenAIGatewaySessionAffinityScope
+  trafficMigrationPreferred?: boolean
+}
+
+interface TrafficMigrationPreference {
+  sourceAccountId: string
+  targetAccountId: string
 }
 
 interface HighConcurrencyCandidate {
@@ -23,11 +29,13 @@ interface HighConcurrencyCandidate {
   firstOutputSlowCount: number
   oldestInFlightMs: number
   affinityAllowed: boolean
+  trafficMigrationPreferred: boolean
   hardBusy: boolean
   softBusy: boolean
 }
 
 const sessionAffinityTtlMs = 60 * 60 * 1000
+const trafficMigrationPreferenceTtlMs = sessionAffinityTtlMs
 
 const sessionAffinityCache = createAppCache<string, SessionBinding>({
   name: 'gateway:openai-session-affinity',
@@ -45,6 +53,11 @@ const sessionAffinityBindingByKey = new Map<string, SessionBinding>()
 const sessionAffinityKeysByAccountId = new Map<string, Set<string>>()
 const sessionAffinityKeysByAccountSystemScope = new Map<string, Set<string>>()
 const sessionAffinityKeysByAccountSystemApiKeyScope = new Map<string, Set<string>>()
+const trafficMigrationPreferenceCache = createAppCache<string, TrafficMigrationPreference>({
+  name: 'gateway:openai-traffic-migration-preference',
+  max: 1000,
+  ttlMs: trafficMigrationPreferenceTtlMs
+})
 
 export interface OpenAIGatewaySessionAffinityScope {
   systemAccountId: string
@@ -55,6 +68,7 @@ export interface OpenAIGatewaySessionAffinityScope {
 export interface OpenAIAccountDispatchOrderingOptions {
   groupType?: GroupType
   schedulingPolicy?: GroupSchedulingPolicy
+  trafficMigrationScope?: Partial<OpenAIGatewaySessionAffinityScope>
 }
 
 export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
@@ -80,10 +94,27 @@ export function orderOpenAIAccountsBySessionAffinity(
   sessionAffinityKey?: string,
   options: OpenAIAccountDispatchOrderingOptions = {}
 ): OpenAIAccountSecret[] {
+  const trafficMigrationPreference = trafficMigrationPreferenceForAccounts(accounts, options.trafficMigrationScope)
+  const sessionTrafficMigrationTargetAccountId = trafficMigrationPreference
+    ? undefined
+    : sessionTrafficMigrationTargetForAccounts(accounts, sessionAffinityKey)
+  const trafficMigrationTargetAccountId = trafficMigrationPreference?.targetAccountId ?? sessionTrafficMigrationTargetAccountId
+  const preferenceOrderedAccounts = orderOpenAIAccountsByTrafficMigrationPreference(
+    accounts,
+    trafficMigrationTargetAccountId
+  )
   if (options.groupType === 'high_concurrency') {
-    return orderOpenAIHighConcurrencyAccounts(accounts, sessionAffinityKey, options.schedulingPolicy)
+    return orderOpenAIHighConcurrencyAccounts(
+      preferenceOrderedAccounts,
+      sessionAffinityKey,
+      options.schedulingPolicy,
+      trafficMigrationTargetAccountId
+    )
   }
-  return orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey)
+  if (trafficMigrationTargetAccountId) {
+    return preferenceOrderedAccounts
+  }
+  return orderOpenAIPersonalAccountsBySessionAffinity(preferenceOrderedAccounts, sessionAffinityKey)
 }
 
 export function areOpenAIHighConcurrencyAccountsHardBusy(accounts: OpenAIAccountSecret[], options: OpenAIAccountDispatchOrderingOptions = {}): boolean {
@@ -156,14 +187,17 @@ function orderOpenAIPersonalAccountsBySessionAffinity(
 function orderOpenAIHighConcurrencyAccounts(
   accounts: OpenAIAccountSecret[],
   sessionAffinityKey: string | undefined,
-  policyInput: GroupSchedulingPolicy | undefined
+  policyInput: GroupSchedulingPolicy | undefined,
+  trafficMigrationTargetAccountId?: string
 ): OpenAIAccountSecret[] {
   if (accounts.length < 2) {
     return accounts
   }
   const policy = resolveGroupSchedulingPolicy('high_concurrency', policyInput) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
   if (policy.fastFirstEnabled === false) {
-    return orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey)
+    return trafficMigrationTargetAccountId
+      ? orderOpenAIHighConcurrencyHardBusyLast(accounts)
+      : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey)
   }
   const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
   const inFlightStats = loadAccountInFlightStatsByIds(accounts.map((account) => account.id), {
@@ -192,6 +226,7 @@ function orderOpenAIHighConcurrencyAccounts(
       firstOutputSlowCount: runtimeStats?.firstOutputSlowCount ?? 0,
       oldestInFlightMs: runtimeStats?.oldestInFlightMs ?? 0,
       affinityAllowed,
+      trafficMigrationPreferred: account.id === trafficMigrationTargetAccountId,
       hardBusy: currentConcurrency >= hardLimit,
       softBusy: policy.breakAffinityOnSoftLimit === false && boundToSession
         ? false
@@ -204,6 +239,24 @@ function orderOpenAIHighConcurrencyAccounts(
     .map((candidate) => candidate.account)
 }
 
+function orderOpenAIHighConcurrencyHardBusyLast(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
+  if (accounts.length < 2) {
+    return accounts
+  }
+  const available: OpenAIAccountSecret[] = []
+  const hardBusy: OpenAIAccountSecret[] = []
+  for (const account of accounts) {
+    if (accountCurrentConcurrency(account) >= accountHardConcurrencyLimit(account)) {
+      hardBusy.push(account)
+    } else {
+      available.push(account)
+    }
+  }
+  return available.length > 0 && hardBusy.length > 0
+    ? [...available, ...hardBusy]
+    : accounts
+}
+
 function compareHighConcurrencyCandidates(
   left: HighConcurrencyCandidate,
   right: HighConcurrencyCandidate,
@@ -211,6 +264,9 @@ function compareHighConcurrencyCandidates(
   primarySoftAvailable: boolean
 ): number {
   if (left.hardBusy !== right.hardBusy) return left.hardBusy ? 1 : -1
+  if (left.trafficMigrationPreferred !== right.trafficMigrationPreferred) {
+    return left.trafficMigrationPreferred ? -1 : 1
+  }
   if (policy.fallbackOnQueueEnabled === false || primarySoftAvailable) {
     const fallbackDelta = accountFallbackRank(left.account) - accountFallbackRank(right.account)
     if (fallbackDelta !== 0) return fallbackDelta
@@ -240,7 +296,29 @@ export function rememberOpenAIAccountForSession(sessionAffinityKey: string | und
   if (!sessionAffinityKey) {
     return
   }
-  setSessionAffinityBinding(sessionAffinityKey, { accountId, scope })
+  const previous = sessionAffinityCache.get(sessionAffinityKey)
+  setSessionAffinityBinding(sessionAffinityKey, {
+    accountId,
+    scope,
+    ...(previous?.accountId === accountId && previous.trafficMigrationPreferred ? { trafficMigrationPreferred: true } : {})
+  })
+}
+
+export function rememberOpenAIAccountTrafficMigrationPreference(
+  sourceAccountId: string,
+  targetAccountId: string,
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>
+): void {
+  const source = stringValue(sourceAccountId)
+  const target = stringValue(targetAccountId)
+  const key = trafficMigrationPreferenceScopeKey(scope)
+  if (!source || !target || !key || source === target) {
+    return
+  }
+  trafficMigrationPreferenceCache.set(key, {
+    sourceAccountId: source,
+    targetAccountId: target
+  })
 }
 
 export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undefined, accountId?: string): void {
@@ -257,7 +335,12 @@ export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undef
   sessionAffinityCache.delete(sessionAffinityKey)
 }
 
-export function migrateOpenAIAccountSessionAffinity(sourceAccountId: string, targetAccountId: string, scope?: Partial<OpenAIGatewaySessionAffinityScope>): { migratedSessionCount: number } {
+export function migrateOpenAIAccountSessionAffinity(
+  sourceAccountId: string,
+  targetAccountId: string,
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>,
+  options: { preferMigratedSessions?: boolean } = {}
+): { migratedSessionCount: number } {
   let migratedSessionCount = 0
   for (const key of sessionAffinityMigrationCandidateKeys(sourceAccountId, scope)) {
     const binding = sessionAffinityCache.get(key)
@@ -270,7 +353,11 @@ export function migrateOpenAIAccountSessionAffinity(sourceAccountId: string, tar
     if (scope && !sessionBindingMatchesScope(binding, scope)) {
       continue
     }
-    setSessionAffinityBinding(key, { accountId: targetAccountId, scope: binding.scope })
+    setSessionAffinityBinding(key, {
+      accountId: targetAccountId,
+      scope: binding.scope,
+      ...(options.preferMigratedSessions === true ? { trafficMigrationPreferred: true } : {})
+    })
     migratedSessionCount += 1
   }
   return { migratedSessionCount }
@@ -368,6 +455,105 @@ function sessionBindingMatchesScope(binding: SessionBinding, scope: Partial<Open
     return false
   }
   return true
+}
+
+function trafficMigrationPreferenceForAccounts(
+  accounts: OpenAIAccountSecret[],
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>
+): TrafficMigrationPreference | undefined {
+  if (accounts.length < 2) {
+    return undefined
+  }
+  const scopedPreference = trafficMigrationPreferenceForScope(scope)
+  if (!scopedPreference) {
+    return undefined
+  }
+  const { key, preference } = scopedPreference
+  if (accounts.some((account) => account.id === preference.sourceAccountId)) {
+    trafficMigrationPreferenceCache.delete(key)
+    return undefined
+  }
+  return accounts.some((account) => account.id === preference.targetAccountId)
+    ? preference
+    : undefined
+}
+
+function trafficMigrationPreferenceForScope(
+  scope?: Partial<OpenAIGatewaySessionAffinityScope>
+): { key: string; preference: TrafficMigrationPreference } | undefined {
+  for (const key of trafficMigrationPreferenceScopeKeys(scope)) {
+    const preference = trafficMigrationPreferenceCache.get(key)
+    if (preference) {
+      return { key, preference }
+    }
+  }
+  return undefined
+}
+
+function sessionTrafficMigrationTargetForAccounts(
+  accounts: OpenAIAccountSecret[],
+  sessionAffinityKey?: string
+): string | undefined {
+  if (!sessionAffinityKey || accounts.length < 2) {
+    return undefined
+  }
+  const binding = sessionAffinityCache.get(sessionAffinityKey)
+  if (!binding?.trafficMigrationPreferred) {
+    return undefined
+  }
+  return accounts.some((account) => account.id === binding.accountId)
+    ? binding.accountId
+    : undefined
+}
+
+function orderOpenAIAccountsByTrafficMigrationPreference(
+  accounts: OpenAIAccountSecret[],
+  targetAccountId?: string
+): OpenAIAccountSecret[] {
+  if (!targetAccountId || accounts.length < 2) {
+    return accounts
+  }
+  const originalTargetIndex = accounts.findIndex((account) => account.id === targetAccountId)
+  if (originalTargetIndex <= 0) {
+    return accounts
+  }
+  const targetAccount = accounts[originalTargetIndex]
+  return [
+    targetAccount,
+    ...accounts.slice(0, originalTargetIndex),
+    ...accounts.slice(originalTargetIndex + 1)
+  ]
+}
+
+function trafficMigrationPreferenceScopeKeys(scope?: Partial<OpenAIGatewaySessionAffinityScope>): string[] {
+  const systemAccountId = stringValue(scope?.systemAccountId)
+  const groupId = stringValue(scope?.groupId)
+  if (!systemAccountId || !groupId) {
+    return []
+  }
+  const apiKeyId = stringValue(scope?.apiKeyId)
+  return apiKeyId
+    ? [
+        `${systemAccountId}:${apiKeyId}:${groupId}`,
+        trafficMigrationGroupPreferenceScopeKey(systemAccountId, groupId)
+      ]
+    : [trafficMigrationGroupPreferenceScopeKey(systemAccountId, groupId)]
+}
+
+function trafficMigrationPreferenceScopeKey(scope?: Partial<OpenAIGatewaySessionAffinityScope>): string | undefined {
+  const systemAccountId = stringValue(scope?.systemAccountId)
+  const groupId = stringValue(scope?.groupId)
+  if (!systemAccountId || !groupId) {
+    return undefined
+  }
+  const apiKeyId = stringValue(scope?.apiKeyId)
+  return apiKeyId
+    ? `${systemAccountId}:${apiKeyId}:${groupId}`
+    : trafficMigrationGroupPreferenceScopeKey(systemAccountId, groupId)
+}
+
+function trafficMigrationGroupPreferenceScopeKey(systemAccountId: string, groupId: string): string {
+  return `${systemAccountId}:*:${groupId}`
 }
 
 function extractSessionIdentity(req: Request): { source: string; value: string } | undefined {

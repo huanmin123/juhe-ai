@@ -163,9 +163,10 @@ try {
 
   const migration = await postEnvelope<TrafficMigrationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/traffic-migration`, seed.adminCookie, {
     targetAccountId: seed.targetAccountId,
-    sourceStatus: 'disabled'
+    sourceStatus: 'unchanged'
   })
   assertNoCredentialLeak(migration, '账户流量迁移响应')
+  assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.status, 'active', '不影响原账户迁移不应修改源账户状态')
   assertOAuthRoutesUseAccountResponseSanitizer()
 
   console.log('AI 账户响应凭据边界回归通过：详情按权限返回明文凭据，列表、创建、编辑、绑定分组和迁移响应仍不返回明文凭据，编辑留空保留原凭据')

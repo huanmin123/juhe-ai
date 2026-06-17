@@ -1,5 +1,5 @@
-import { getStatsDatabase, nowIso } from '../../storage/database.js'
-import { recordClientIpPolicyHits } from '../../storage/client-ip-stats.repository.js'
+import { getStatsDatabase, nowIso } from '../../../../storage/database.js'
+import { recordClientIpPolicyHits } from '../../../../storage/client-ip-stats.repository.js'
 import {
   dayMs,
   idPrefix,
@@ -7,7 +7,7 @@ import {
   namePrefix,
   type ClientIpPolicyMockdataCounts,
   type CreatedMockdata
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 export function createClientIpPolicyMockdata(created: CreatedMockdata): ClientIpPolicyMockdataCounts {
   const database = getStatsDatabase()

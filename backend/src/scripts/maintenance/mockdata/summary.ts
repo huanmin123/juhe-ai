@@ -1,10 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import type { GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary } from '../../domain/types.js'
-import { runtimeConfig } from '../../config/runtime.js'
-import { nowIso } from '../../storage/database.js'
-import type { ModelCheckMockdataCounts } from './mockdata-model-checks.js'
+import type { GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary } from '../../../domain/types.js'
+import { runtimeConfig } from '../../../config/runtime.js'
+import { nowIso } from '../../../storage/database.js'
+import type { ModelCheckMockdataCounts } from './records/model-checks.js'
 import {
   apiKeyAuthorizedGroupBindingRule,
   mockPassword,
@@ -16,7 +16,7 @@ import {
   type MockGroups,
   type MockSystemAccounts,
   type UsageRecordSeed
-} from './mockdata-shared.js'
+} from './shared.js'
 
 function mockUserSummaries(users: MockSystemAccounts): Array<Record<string, unknown>> {
   return Object.entries(users)

@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express'
 
 import { logger } from '../../../shared/logger.js'
-import type { GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import {
   AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
@@ -36,7 +35,8 @@ import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   areOpenAIHighConcurrencyAccountsBusyForLane,
-  orderOpenAIAccountsBySessionAffinity
+  orderOpenAIAccountsBySessionAffinity,
+  type OpenAIAccountDispatchOrderingOptions
 } from '../runtime/session-affinity.service.js'
 import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
@@ -78,7 +78,12 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
 }): Promise<DispatchPreparationResult> {
   const dispatchOrderingOptions = {
     groupType: input.groupAccess.groupType,
-    schedulingPolicy: input.groupAccess.schedulingPolicy
+    schedulingPolicy: input.groupAccess.schedulingPolicy,
+    trafficMigrationScope: {
+      systemAccountId: input.systemAccountId,
+      apiKeyId: input.apiKeyId,
+      groupId: input.groupId
+    }
   }
 
   const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
@@ -247,7 +252,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   clientIp?: string
   requestLane: OpenAIGatewayRequestLane
   signal?: AbortSignal
-  dispatchOrderingOptions: { groupType: GroupUsageAccessMetadata['groupType']; schedulingPolicy?: GroupSchedulingPolicy }
+  dispatchOrderingOptions: OpenAIAccountDispatchOrderingOptions
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
 }): Promise<DispatchPreparationResult> {
   let authorizationQuotaDeniedAccountCount = 0

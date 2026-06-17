@@ -1,4 +1,9 @@
 import type { AccountClientCompatibility } from '../../domain/types.js'
+import type { AccountSupportedEndpointMode } from '../../domain/types.js'
+import {
+  defaultOpenAIEndpointModes,
+  openAIEndpointModeForRequestShape
+} from '../../domain/openai-endpoint-modes.js'
 import type { RecentOpenAIRequestShape } from '../../storage/repositories.js'
 
 export const accountTestDefaultPrompt = '只输出 OK'
@@ -13,6 +18,7 @@ export type AccountTestRequestInput = {
   prompt: string
   isOAuth: boolean
   clientCompatibility: AccountClientCompatibility
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
   requestShape?: RecentOpenAIRequestShape
 }
 
@@ -23,29 +29,69 @@ export type AccountTestRequest = {
 }
 
 export function createOpenAITestRequest(input: AccountTestRequestInput): AccountTestRequest {
-  const path = testPathFromRecentShape(input.requestShape, input.isOAuth, input.clientCompatibility)
+  const mode = testEndpointModeFromRecentShape(
+    input.requestShape,
+    input.isOAuth,
+    input.clientCompatibility,
+    input.supportedEndpointModes
+  )
+  const path = testPathFromEndpointMode(mode)
+  const stream = mode === 'chat_sse' || mode === 'responses_sse'
   const model = stringValue(input.explicitModel) || input.fallbackModel
   return {
     path,
     body: path === gatewayChatCompletionsPath
-      ? createOpenAIChatCompletionsTestPayload(model, input.prompt, input.requestShape?.stream ?? true)
-      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, input.requestShape?.stream ?? true),
+      ? createOpenAIChatCompletionsTestPayload(model, input.prompt, stream)
+      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, stream),
     model
   }
 }
 
-export function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, isOAuth: boolean, clientCompatibility: AccountClientCompatibility): string {
-  if (isOAuth) {
-    return gatewayTestPath
+export function testPathFromRecentShape(
+  shape: RecentOpenAIRequestShape | undefined,
+  isOAuth: boolean,
+  clientCompatibility: AccountClientCompatibility,
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
+): string {
+  return testPathFromEndpointMode(testEndpointModeFromRecentShape(shape, isOAuth, clientCompatibility, supportedEndpointModes))
+}
+
+export function testEndpointModeFromRecentShape(
+  shape: RecentOpenAIRequestShape | undefined,
+  isOAuth: boolean,
+  clientCompatibility: AccountClientCompatibility,
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
+): AccountSupportedEndpointMode {
+  const supportedModes = supportedEndpointModes?.length
+    ? supportedEndpointModes
+    : defaultOpenAIEndpointModes({
+      accountType: isOAuth ? 'oauth' : 'api_key',
+      clientCompatibility
+    })
+  const preferredModes: AccountSupportedEndpointMode[] = []
+  if (isOAuth || clientCompatibility === 'codex_responses') {
+    preferredModes.push('responses_sse')
   }
-  if (clientCompatibility === 'codex_responses') {
-    return gatewayTestPath
+  const recentMode = openAIEndpointModeForRequestShape({
+    endpoint: shape?.endpoint,
+    stream: shape?.stream ?? true
+  })
+  if (recentMode) {
+    preferredModes.push(recentMode)
   }
-  const endpoint = stringValue(shape?.endpoint).toLowerCase()
-  if (endpoint.includes('/v1/chat/completions')) {
-    return gatewayChatCompletionsPath
+  preferredModes.push('responses_sse', 'responses_json', 'chat_sse', 'chat_json')
+  for (const mode of preferredModes) {
+    if (supportedModes.includes(mode)) {
+      return mode
+    }
   }
-  return gatewayTestPath
+  return supportedModes[0] ?? 'responses_sse'
+}
+
+function testPathFromEndpointMode(mode: AccountSupportedEndpointMode): string {
+  return mode === 'chat_json' || mode === 'chat_sse'
+    ? gatewayChatCompletionsPath
+    : gatewayTestPath
 }
 
 export function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth: boolean, clientCompatibility: AccountClientCompatibility, stream: boolean): Record<string, unknown> {

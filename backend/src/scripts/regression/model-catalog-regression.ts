@@ -362,6 +362,20 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert.equal(userAUpstreamTarget.model, 'gpt-http-user-a-upstream-target', '个人自定义模型应直接保存')
 
+    const userAGptModel = await postEnvelope<{ id: string; model: string; providerCode: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/gpt/models',
+      userACookie,
+      {
+        model: 'gpt-http-user-a-gpt',
+        scope: 'personal',
+        supportedApiProtocols: ['responses'],
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2
+      }
+    )
+    assert.equal(userAGptModel.providerCode, 'gpt', 'GPT 目录新建的个人模型应归属 GPT 供应商')
+
     const userADraft = await postEnvelope<{ id: string; model: string; status: string }>(
       baseUrl,
       '/__aisys__/api/providers/openai/models',
@@ -436,6 +450,13 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       adminCookie,
       { maxOutputTokens: 4096 }
     )
+    const adminUpdatedUserAGptModel = await patchEnvelope<{ providerCode: string; maxOutputTokens?: number }>(
+      baseUrl,
+      `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
+      adminCookie,
+      { maxOutputTokens: 3072 }
+    )
+    assert.equal(adminUpdatedUserAGptModel.maxOutputTokens, 3072, '管理员应能操作可见的目标用户个人模型')
     const userAUpdatedModel = await patchEnvelope<{ model: string; maxOutputTokens?: number }>(
       baseUrl,
       `/__aisys__/api/providers/openai/models/${userAModel.id}`,
@@ -526,24 +547,26 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       '启用模型清空价格且没有 pricingModel 时应拒绝保存'
     )
 
-    const userAVisible = await getEnvelope<Array<{ model: string; scope: string; status: string }>>(
+    const userAVisible = await getEnvelope<Array<{ model: string; scope: string; status: string; providerCode: string }>>(
       baseUrl,
       '/__aisys__/api/providers/openai/models',
       userACookie
     )
     assert(userAVisible.some((item) => item.model === 'gpt-http-user-a' && item.scope === 'personal'), '用户应能看到自己的公开个人模型')
     assert(userAVisible.some((item) => item.model === 'gpt-http-user-a-upstream-target' && item.scope === 'personal'), '用户应能看到自己的个人自定义模型')
+    assert(userAVisible.some((item) => item.model === 'gpt-http-user-a-gpt' && item.providerCode === 'gpt'), 'OpenAI 聚合目录应包含 GPT 目录的个人自定义模型')
     assert(userAVisible.some((item) => item.model === 'gpt-http-global' && item.scope === 'global'), '用户应能看到管理员全局模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '默认管理模型目录不应返回草稿模型')
 
-    const userAMaintenanceVisible = await getEnvelope<Array<{ model: string; status: string }>>(
+    const userAMaintenanceVisible = await getEnvelope<Array<{ model: string; status: string; providerCode: string }>>(
       baseUrl,
       '/__aisys__/api/providers/openai/models?includeInactive=true&includeUnpriced=true',
       userACookie
     )
     assert(userAMaintenanceVisible.some((item) => item.model === 'gpt-http-user-a-draft' && item.status === 'draft'), '普通用户维护视图应能看到自己的草稿模型')
+    assert(userAMaintenanceVisible.some((item) => item.model === 'gpt-http-user-a-gpt' && item.providerCode === 'gpt'), '普通用户维护视图应能看到 GPT 目录的个人模型')
 
-    const adminDefaultVisible = await getEnvelope<Array<{ model: string; scope: string }>>(
+    const adminDefaultVisible = await getEnvelope<Array<{ model: string; scope: string; providerCode: string }>>(
       baseUrl,
       '/__aisys__/api/providers/openai/models?includeInactive=true&includeUnpriced=true',
       adminCookie
@@ -551,23 +574,25 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(adminDefaultVisible.some((item) => item.model === 'gpt-http-admin-personal' && item.scope === 'personal'), '管理员默认模型目录应按管理员自己账号查看个人模型')
     assert.equal(adminDefaultVisible.some((item) => item.model === 'gpt-http-user-a'), false, '管理员默认模型目录不应混入其他用户个人模型')
 
-    const adminUserAVisible = await getEnvelope<Array<{ model: string; status: string }>>(
+    const adminUserAVisible = await getEnvelope<Array<{ model: string; status: string; providerCode: string }>>(
       baseUrl,
       `/__aisys__/api/providers/openai/models?systemAccountId=${encodeURIComponent(userA.id)}&includeInactive=true&includeUnpriced=true`,
       adminCookie
     )
     assert(adminUserAVisible.some((item) => item.model === 'gpt-http-user-a'), '管理员切换目标用户后应能看到该用户个人模型')
     assert(adminUserAVisible.some((item) => item.model === 'gpt-http-user-a-draft' && item.status === 'draft'), '管理员切换目标用户维护视图应能看到该用户草稿模型')
+    assert(adminUserAVisible.some((item) => item.model === 'gpt-http-user-a-gpt' && item.providerCode === 'gpt'), '管理员切换目标用户后应能看到该用户 GPT 个人模型')
     assert.equal(adminUserAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '管理员切换目标用户后不应混入管理员个人模型')
     assert.equal(adminUserAVisible.some((item) => item.model === 'gpt-http-user-b'), false, '管理员切换目标用户后不应混入其他用户个人模型')
 
-    const userBVisible = await getEnvelope<Array<{ model: string }>>(
+    const userBVisible = await getEnvelope<Array<{ model: string; providerCode: string }>>(
       baseUrl,
       `/__aisys__/api/providers/openai/models?systemAccountId=${encodeURIComponent(userA.id)}&includeInactive=true&includeUnpriced=true`,
       userBCookie
     )
     assert.equal(userBVisible.some((item) => item.model === 'gpt-http-user-a'), false, '个人模型不应泄露给其他用户')
     assert.equal(userBVisible.some((item) => item.model === 'gpt-http-user-a-upstream-target'), false, '个人自定义模型不应泄露给其他用户')
+    assert.equal(userBVisible.some((item) => item.model === 'gpt-http-user-a-gpt'), false, '其他用户不应看到 GPT 目录的个人模型')
     assert.equal(userBVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '个人草稿模型不应泄露给其他用户')
     assert(userBVisible.some((item) => item.model === 'gpt-http-user-b'), '普通用户传 systemAccountId 时仍应固定查看自己的个人模型')
   } finally {

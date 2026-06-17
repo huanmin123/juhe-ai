@@ -25,12 +25,14 @@ const [
   { captchaAnswerForTest },
   { requireAuth },
   { requestContextMiddleware },
+  repositories,
   databaseModule
 ] = await Promise.all([
   import('../../modules/auth/auth.routes.js'),
   import('../../modules/auth/captcha.service.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
+  import('../../storage/repositories.js'),
   import('../../storage/database.js')
 ])
 
@@ -62,20 +64,46 @@ async function main(): Promise<void> {
     server = app.listen(0, '127.0.0.1')
     await listen(server)
     const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
-    const cookie = await login(baseUrl)
+    databaseModule.getBusinessDatabase()
+      .prepare("UPDATE system_accounts SET must_change_password = 1 WHERE id = 'sys_admin'")
+      .run()
 
+    const adminCookie = await login(baseUrl)
+    const currentAdmin = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', adminCookie)
+    assert(currentAdmin.username === 'admin', '默认管理员登录后应能读取当前用户')
+    assert(currentAdmin.mustChangePassword === false, '管理员账户不应触发初始密码强制修改')
+
+    const adminAllowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', adminCookie)
+    assert(adminAllowed.protected === true, '管理员账户即使存在旧改密标记也应允许访问受保护接口')
+    await assertJsonStatus(baseUrl, '/__aisys__/api/auth/me', adminCookie, 'PATCH', {
+      displayName: ''
+    }, 400, '管理员修改显示名称仍应校验显示名称不能为空')
+    const renamedAdmin = await patchEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', adminCookie, {
+      displayName: '控制台管理员'
+    })
+    assert(renamedAdmin.displayName === '控制台管理员', `管理员修改显示名称后响应应返回新名称，实际：${renamedAdmin.displayName}`)
+
+    const createdUser = repositories.createSystemAccount({
+      username: 'locked_user',
+      displayName: '待改密用户',
+      password: 'user-password',
+      role: 'user',
+      mustChangePassword: true
+    })
+    assert(createdUser.mustChangePassword === true, '普通用户仍应保留初始密码修改标记')
+    const cookie = await login(baseUrl, 'locked_user', 'user-password')
     const currentUser = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie)
-    assert(currentUser.username === 'admin', '默认管理员登录后应能读取当前用户')
-    assert(currentUser.mustChangePassword === true, '默认管理员应保留初始密码修改标记')
+    assert(currentUser.username === 'locked_user', '普通用户登录后应能读取当前用户')
+    assert(currentUser.mustChangePassword === true, '普通用户应保留初始密码修改标记')
 
     const blocked = await fetch(`${baseUrl}/__aisys__/api/protected`, { headers: { cookie } })
     const blockedText = await blocked.text()
-    assert(blocked.status === 403, `初始密码未修改时受保护接口应返回 403，实际 HTTP ${blocked.status}: ${blockedText}`)
+    assert(blocked.status === 403, `普通用户初始密码未修改时受保护接口应返回 403，实际 HTTP ${blocked.status}: ${blockedText}`)
     const blockedBody = JSON.parse(blockedText) as ApiEnvelope<unknown>
     assert(blockedBody.code === 'must_change_password', `初始密码拦截 code 异常：${blockedBody.code}`)
     await assertJsonStatus(baseUrl, '/__aisys__/api/auth/me', cookie, 'PATCH', {
       displayName: '未改密用户'
-    }, 403, '初始密码未修改时不能修改显示名称')
+    }, 403, '普通用户初始密码未修改时不能修改显示名称')
 
     const changedUser = await postEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/change-password', cookie, {
       newPassword: 'changed-password'
@@ -88,13 +116,13 @@ async function main(): Promise<void> {
       displayName: ''
     }, 400, '显示名称不能为空')
     const renamedUser = await patchEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie, {
-      displayName: '控制台管理员'
+      displayName: '普通控制台用户'
     })
-    assert(renamedUser.displayName === '控制台管理员', `修改显示名称后响应应返回新名称，实际：${renamedUser.displayName}`)
+    assert(renamedUser.displayName === '普通控制台用户', `修改显示名称后响应应返回新名称，实际：${renamedUser.displayName}`)
     const renamedCurrentUser = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie)
-    assert(renamedCurrentUser.displayName === '控制台管理员', '修改显示名称后当前会话应读取到新名称')
+    assert(renamedCurrentUser.displayName === '普通控制台用户', '修改显示名称后当前会话应读取到新名称')
 
-    const secondCookie = await login(baseUrl, 'changed-password')
+    const secondCookie = await login(baseUrl, 'locked_user', 'changed-password')
     await assertPostStatus(baseUrl, '/__aisys__/api/auth/change-password', secondCookie, {
       newPassword: 'missing-old-password'
     }, 400, '普通改密必须填写当前密码')
@@ -112,7 +140,7 @@ async function main(): Promise<void> {
     const currentAllowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', secondCookie)
     assert(currentAllowed.protected === true, '普通改密后当前会话应继续可用')
 
-    console.log('初始密码、普通改密与显示名称修改边界回归通过：初始改密放行，普通改密校验旧密码，显示名称自助修改受会话状态约束')
+    console.log('初始密码、管理员免强制改密、普通改密与显示名称修改边界回归通过：管理员直接进入控制台，普通用户初始改密放行，普通改密校验旧密码')
   } finally {
     await closeServer(server)
     try {
@@ -123,7 +151,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function login(baseUrl: string, password = 'admin'): Promise<string> {
+async function login(baseUrl: string, username = 'admin', password = 'admin'): Promise<string> {
   const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
   const captchaCode = captchaAnswerForTest(captcha.captchaId)
   assert(captchaCode, '测试夹具无法读取登录验证码')
@@ -132,7 +160,7 @@ async function login(baseUrl: string, password = 'admin'): Promise<string> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      username: 'admin',
+      username,
       password,
       captchaId: captcha.captchaId,
       captchaCode

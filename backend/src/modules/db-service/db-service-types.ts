@@ -41,6 +41,24 @@ export interface AccountRuntimeAvailabilityClearResult {
   clearedKeys: string[]
 }
 
+export interface OpenAIAccountTrafficMigrationRuntimeScope {
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+}
+
+export interface OpenAIAccountTrafficMigrationRuntimeRequest {
+  sourceAccountId: string
+  targetAccountId: string
+  affinityScope?: Partial<OpenAIAccountTrafficMigrationRuntimeScope>
+  preferenceScope?: Partial<OpenAIAccountTrafficMigrationRuntimeScope>
+  preferMigratedSessions?: boolean
+}
+
+export interface OpenAIAccountTrafficMigrationRuntimeResult {
+  migratedSessionCount: number
+}
+
 export interface DbServiceRuntimeSnapshot {
   pid: number
   ready: boolean
@@ -604,6 +622,18 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'db_service_openai_traffic_migration_runtime_response'
+    requestId: string
+    ok: true
+    result: OpenAIAccountTrafficMigrationRuntimeResult
+  }
+  | {
+    type: 'db_service_openai_traffic_migration_runtime_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -638,6 +668,11 @@ export type DbServiceChildMessage =
     type: 'db_service_server_account_runtime_clear_request'
     requestId: string
     target: AccountRuntimeAvailabilityClearTarget
+  }
+  | {
+    type: 'db_service_openai_traffic_migration_runtime_request'
+    requestId: string
+    input: OpenAIAccountTrafficMigrationRuntimeRequest
   }
   | {
     type: 'gateway_runtime_cache_invalidate'

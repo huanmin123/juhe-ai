@@ -1,5 +1,9 @@
 import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
+import {
+  normalizeOpenAIEndpointModesForWrite,
+  type OpenAIEndpointModeDefaultContext
+} from '../domain/openai-endpoint-modes.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
@@ -9,6 +13,7 @@ const apiKeyAccountCredentialKeys = new Set([
   'api_key_strategy',
   'api_key_weights',
   'base_url',
+  'supported_endpoint_modes',
   'error_handling_rules',
   'response_inspection_rules'
 ])
@@ -24,6 +29,7 @@ const oauthAccountCredentialKeys = new Set([
   'chatgpt_user_id',
   'plan_type',
   'base_url',
+  'supported_endpoint_modes',
   'error_handling_rules',
   'response_inspection_rules'
 ])
@@ -34,14 +40,18 @@ const accountCredentialMetadataMaxBytes = 4096
 const accountCredentialsJsonMaxBytes = 32 * 1024
 const accountApiKeyListMaxItems = 50
 
-export function normalizeAccountCredentialsForWrite(accountType: string, value: unknown): Record<string, unknown> {
+export function normalizeAccountCredentialsForWrite(
+  accountType: string,
+  value: unknown,
+  endpointModeDefaults: OpenAIEndpointModeDefaultContext = { accountType }
+): Record<string, unknown> {
   const input = accountCredentialsRecord(value)
   assertKnownInputKeys(input, accountCredentialAllowedKeys(accountType), '账户凭据')
   if (accountType === 'api_key') {
-    return normalizeApiKeyAccountCredentials(input)
+    return normalizeApiKeyAccountCredentials(input, endpointModeDefaults)
   }
   if (accountType === 'oauth') {
-    return normalizeOAuthAccountCredentials(input)
+    return normalizeOAuthAccountCredentials(input, endpointModeDefaults)
   }
   throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
 }
@@ -77,13 +87,20 @@ function accountApiKeys(credentials: Record<string, unknown>): string[] {
   return typeof credentials.api_key === 'string' ? [credentials.api_key] : []
 }
 
-function normalizeApiKeyAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
+function normalizeApiKeyAccountCredentials(
+  input: Record<string, unknown>,
+  endpointModeDefaults: OpenAIEndpointModeDefaultContext
+): Record<string, unknown> {
   const baseUrl = requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes)
   assertSafeUpstreamBaseUrl(baseUrl)
   const apiKeys = normalizeApiKeyCredentialList(input)
   const credentials: Record<string, unknown> = {
     api_key: apiKeys[0],
-    base_url: baseUrl
+    base_url: baseUrl,
+    supported_endpoint_modes: normalizeOpenAIEndpointModesForWrite(input.supported_endpoint_modes, {
+      ...endpointModeDefaults,
+      accountType: 'api_key'
+    })
   }
   if (apiKeys.length > 1) {
     credentials.api_keys = apiKeys
@@ -135,7 +152,10 @@ function normalizeApiKeyWeight(value: unknown): number {
   return value
 }
 
-function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Record<string, unknown> {
+function normalizeOAuthAccountCredentials(
+  input: Record<string, unknown>,
+  endpointModeDefaults: OpenAIEndpointModeDefaultContext
+): Record<string, unknown> {
   const accessToken = optionalCredentialText(input.access_token, 'Access Token', accountCredentialSecretMaxBytes)
   const refreshToken = optionalCredentialText(input.refresh_token, 'Refresh Token', accountCredentialSecretMaxBytes)
   if (!refreshToken && !accessToken) {
@@ -143,7 +163,12 @@ function normalizeOAuthAccountCredentials(input: Record<string, unknown>): Recor
   }
 
   const credentials: Record<string, unknown> = {
-    base_url: requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes)
+    base_url: requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes),
+    supported_endpoint_modes: normalizeOpenAIEndpointModesForWrite(input.supported_endpoint_modes, {
+      ...endpointModeDefaults,
+      accountType: 'oauth',
+      clientCompatibility: 'codex_responses'
+    })
   }
   assertSafeUpstreamBaseUrl(String(credentials.base_url))
   if (accessToken) credentials.access_token = accessToken

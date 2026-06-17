@@ -1,14 +1,14 @@
-import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
-import { getBusinessDatabase, nowIso } from '../../storage/database.js'
+import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../../../../domain/provider-protocol.js'
+import { getBusinessDatabase, nowIso } from '../../../../storage/database.js'
 import {
   createExternalIntegrationSourceAuthorization,
   createExternalIntegrationSourceToken,
   externalIntegrationScopeOptions
-} from '../../storage/external-integration-source.repository.js'
-import { upsertCustomProviderModel } from '../../storage/custom-provider-models.repository.js'
-import { createAnnouncement, markPublicAnnouncementsRead, upsertAccountUsageSnapshots } from '../../storage/repositories.js'
-import { createResponseInspectionPolicy } from '../../storage/response-inspection-policy.repository.js'
-import { dayMs, namePrefix, type MockAccounts, type MockExternalSources, type MockSystemAccounts } from './mockdata-shared.js'
+} from '../../../../storage/external-integration-source.repository.js'
+import { upsertCustomProviderModel } from '../../../../storage/custom-provider-models.repository.js'
+import { createAnnouncement, markPublicAnnouncementsRead, upsertAccountUsageSnapshots } from '../../../../storage/repositories.js'
+import { createResponseInspectionPolicy } from '../../../../storage/response-inspection-policy.repository.js'
+import { dayMs, namePrefix, type MockAccounts, type MockExternalSources, type MockSystemAccounts } from '../shared.js'
 
 export function createCustomProviderModels(adminId: string, users: MockSystemAccounts): number {
   const models = [

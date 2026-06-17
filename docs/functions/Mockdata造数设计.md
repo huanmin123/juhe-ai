@@ -16,7 +16,7 @@
 
 Mockdata 是项目里“可复用本地造数”的唯一职责入口：
 
-- 本地演示、页面验收、联调排障、空库补数据、压测临时网关数据和后续新增的通用测试数据，都应扩展 `backend/src/scripts/maintenance/mockdata.ts` 或 `backend/src/scripts/maintenance/mockdata-fixtures.ts`。
+- 本地演示、页面验收、联调排障、空库补数据、压测临时网关数据和后续新增的通用测试数据，都应扩展 `backend/src/scripts/maintenance/mockdata/` 下的对应业务文件；`backend/src/scripts/maintenance/mockdata.ts` 只保留命令入口。
 - 不再新增独立的 `seed-*`、`demo-*`、`sample-*`、`fixture-*` 造数脚本；如果某段造数逻辑会被多个脚本、页面验收或人工联调用到，必须收口到 Mockdata。
 - `seedDefaults()` 只负责系统启动所需的最小默认数据，例如默认超级管理员、GPT 供应商、默认分组和系统设置；它不是业务演示 / 测试造数入口。
 - 回归脚本内部为了断言某个 bug 的最小私有 fixture 可以保留在对应脚本内，但不能被文档、人工联调或其他脚本当作通用造数方案；一旦需要复用，就移动到 Mockdata。
@@ -29,8 +29,18 @@ Mockdata 是项目里“可复用本地造数”的唯一职责入口：
 
 当前已收口的散落入口：
 
-- `pnpm test:perf` 的临时压测 GPT 分组、GPT API Key 类型账户和本地网关 API Key 由 `mockdata-fixtures.ts` 生成。
-- `pnpm test:smoke` 在空库且未指定真实账户时，使用 `mockdata-fixtures.ts` 生成临时 mock GPT 账户、分组和本地网关 Key，再接入烟测自己的本机 mock OpenAI-compatible 上游。
+- `pnpm test:perf` 的临时压测 GPT 分组、GPT API Key 类型账户和本地网关 API Key 由 `mockdata/fixtures.ts` 生成。
+- `pnpm test:smoke` 在空库且未指定真实账户时，使用 `mockdata/fixtures.ts` 生成临时 mock GPT 账户、分组和本地网关 Key，再接入烟测自己的本机 mock OpenAI-compatible 上游。
+
+当前目录结构：
+
+- `mockdata/cli.ts`：Mockdata 主流程编排、参数解析、清理 / 创建 / 聚合 / 摘要调用顺序。
+- `mockdata/core/`：系统团队、AI 分组、AI 账户、授权、API Key、额度和时间计划等核心资源造数。
+- `mockdata/business/`：配套用户、代理、公告、外部来源系统、响应检查策略和 OAuth 用量快照。
+- `mockdata/records/`：使用记录、模型检测历史和后台记录清理目标。
+- `mockdata/observability/`：审计日志、操作日志、公开接口日志、运行日志、系统监控、表空间监控和 IP 策略。
+- `mockdata/maintenance/`：重复执行清理、派生缓存重建和 API Key last used 回写。
+- `mockdata/shared.ts` / `summary.ts` / `fixtures.ts`：共享类型常量、摘要写出和回归 / 烟测复用夹具。
 
 ## 3. 命令
 
@@ -60,6 +70,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - admin 拥有核心业务资源：AI 账户、分组、代理、账户级错误处理规则、团队、授权、公告和主要 API Key。
 - admin 作为超级管理员通过管理权限查看和操作全局业务数据；Mockdata 同时生成少量普通用户授权给 admin 的分组和 AI 账户样本，用于管理端验证超级管理员作为被授权方时的分组展示、账户实例、权限和授权状态，但仍不生成 `资源归属人 = 被授权人` 的自授权业务记录或运行时授权。
 - 分组会同时生成个人分组和高并发 AI 分组；高并发分组会带调度策略样本、专用 API Key、专用账户和对应使用记录，用于分组管理页验收。
+- 账号和 API Key 会包含时间计划样本：主力资源保留当前可用计划，备用 / 普通资源保留已结束计划，用于列表“时间计划”列、状态筛选和网关运行态可用性验收。Mockdata 写入后会显式同步账号和 API Key 时间计划状态。
 - 授权样例必须覆盖个人直授权、团队授权、AI 账户授权、分组授权、有效授权、暂停授权、过期授权、回收授权和归还授权；授权调用方至少覆盖研发、测试、运维、财务、观察用户和超级管理员，不能只围绕单一用户或单一团队造数。
 - 授权分组既作为分组列表、我的授权和授权用量统计样本展示，也会作为授权调用方 API Key 的直接号池样本。`mockdata-summary.json` 会通过 `apiKeyBindingRule` 和 `authorizationSamples[].bindableToApiKey` 显式标记有效授权分组可绑定。
 - 授权调用方的 Mock API Key 会混合绑定有效授权分组和该调用方自己的默认分组；admin 也会生成一个绑定有效授权分组的 Mock API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证 API Key 直连授权分组后的统计和审计口径。
@@ -91,6 +102,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 
 - 默认入口相关页面、账号、分组、API Key、授权、团队、公告均有 `造数-` 数据。
 - `系统账户` 和 `AI 分组管理` 应同时出现普通管理员 `造数-管理员用户` 与普通用户样本；筛选 `造数-管理员用户` 时应看到管理员自有分组和高并发分组。
+- `AI 账户` 与 `API Key` 列表应能看到时间计划样本，并同时覆盖当前可用和计划外不可用展示。
 - 授权列表中应出现普通用户授权给 admin 的分组和 AI 账户记录，用于超级管理员被授权资源验收；不应出现资源归属人给自己授权的记录。
 - 使用记录、审计日志、操作日志、运行日志均可按 `mockdata` 或 `造数` 检索。
 - 公开接口日志、外部来源系统、响应检查策略、IP 统计、IP 封禁策略、后台清理目标、用量统计、AI 性能监控、授权用量、API Key 额度窗口、系统指标趋势和表空间监控均有近 31 天数据。

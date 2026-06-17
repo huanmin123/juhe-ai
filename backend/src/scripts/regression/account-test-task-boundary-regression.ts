@@ -277,6 +277,7 @@ assert(
   frontendAccountTestModalSource.includes('runBatchAccountTestItem(account, index, controller, session.id)')
     && frontendAccountTestModalSource.includes('const result = await waitForSubmittedAccountTestResult(task, account, controller.signal,')
     && frontendAccountTestTaskPollingSource.includes('accountTestTaskMaxWaitMs')
+    && frontendAccountTestTaskPollingSource.includes('await cancelTask(task.id, account)')
     && frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
   '前端批量测试应让每个任务独立完成提交、轮询和运行超时取消'
 )

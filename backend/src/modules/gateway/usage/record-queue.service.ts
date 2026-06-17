@@ -8,6 +8,7 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
+import { sanitizeHeaderRecord } from '../upstream/headers.js'
 
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
@@ -379,7 +380,18 @@ function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext)
 }
 
 function sanitizeSnapshotField(key: string, value: unknown): unknown {
+  if (isHeaderSnapshotField(key, value)) {
+    return sanitizeHeaderRecord(value as Record<string, string | string[]>)
+  }
   return value
+}
+
+function isHeaderSnapshotField(key: string, value: unknown): boolean {
+  return key.toLowerCase() === 'headers'
+    && typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && !Buffer.isBuffer(value)
 }
 
 interface SnapshotSanitizeContext {

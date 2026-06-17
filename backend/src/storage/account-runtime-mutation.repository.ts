@@ -693,7 +693,7 @@ export function migrateAccountTraffic(input: {
   sourceAccountId: string
   targetAccountId: string
   sourceStatus: AccountTrafficMigrationSourceStatus
-}, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
+}, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string; groupId?: string } | undefined {
   const sourceVisibleAccount = findAccountSummary(input.sourceAccountId, access)
   if (sourceVisibleAccount?.accessType === 'authorized') {
     return migrateAuthorizedAccountBindingTraffic(input, access)
@@ -724,6 +724,15 @@ export function migrateAccountTraffic(input: {
   const targetCooldownUntil = targetRow.cooldown_until ?? undefined
   if (targetRow.status !== 'active' || targetRow.schedulable !== 1 || isAccountExpired(targetRow.account_expires_at) || isLaterIso(targetCooldownUntil, nowIso())) {
     throw new Error('目标账户当前不可调度，请选择正常可用的账户')
+  }
+
+  const ownerAccess = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
+  if (input.sourceStatus === 'unchanged') {
+    const sourceAccount = findAccountSummary(input.sourceAccountId, ownerAccess)
+    const targetAccount = findAccountSummary(input.targetAccountId, ownerAccess)
+    return sourceAccount && targetAccount
+      ? { sourceAccount, targetAccount, groupId: sourceGroupId }
+      : undefined
   }
 
   const nowMs = Date.now()
@@ -785,13 +794,12 @@ export function migrateAccountTraffic(input: {
   refreshGroupAccountStatsAfterWrite({ accountIds: [sourceRow.id], reason: 'traffic_migration' })
   invalidateGatewayRuntimeAfterBusinessWrite('traffic_migration')
 
-  const ownerAccess = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
   const sourceAccount = findAccountSummary(input.sourceAccountId, ownerAccess)
   const targetAccount = findAccountSummary(input.targetAccountId, ownerAccess)
   if (!sourceAccount || !targetAccount) {
     return undefined
   }
-  return { sourceAccount, targetAccount, sourceCooldownUntil: sourceCooldownUntil ?? undefined }
+  return { sourceAccount, targetAccount, sourceCooldownUntil: sourceCooldownUntil ?? undefined, groupId: sourceGroupId }
 }
 
 export function updateAuthorizedAccountBindingDispatch(
@@ -908,7 +916,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   sourceAccountId: string
   targetAccountId: string
   sourceStatus: AccountTrafficMigrationSourceStatus
-}, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
+}, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string; groupId?: string } | undefined {
   const systemAccountId = authorizedBindingSystemAccountId(access)
   if (input.sourceAccountId === input.targetAccountId) {
     throw new Error('目标账户不能和当前账户相同')
@@ -931,6 +939,9 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   const targetUnavailableMessage = accountDispatchUnavailableMessage(targetAccount, { requireAuthorizedBinding: targetAccount.accessType === 'authorized' })
   if (targetUnavailableMessage) {
     throw new Error(targetUnavailableMessage)
+  }
+  if (input.sourceStatus === 'unchanged') {
+    return { sourceAccount, targetAccount, groupId: sourceAccount.boundGroupId }
   }
   const sourceTemporaryState = input.sourceStatus === 'temporary_unavailable'
     ? temporaryUnavailableRuntimeState()
@@ -989,7 +1000,9 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_migration')
   const nextSource = findAccountSummary(input.sourceAccountId, accountAccess)
   const nextTarget = findAccountSummary(input.targetAccountId, accountAccess)
-  return nextSource && nextTarget ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined } : undefined
+  return nextSource && nextTarget
+    ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined, groupId: sourceAccount.boundGroupId }
+    : undefined
 }
 
 export function markAccountException(

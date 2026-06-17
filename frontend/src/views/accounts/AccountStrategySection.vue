@@ -63,6 +63,22 @@
         :options="clientCompatibilityOptions"
       />
     </a-form-item>
+    <a-form-item label="接口能力限制">
+      <a-checkbox-group
+        v-model:value="form.supportedEndpointModes"
+        :disabled="authorizedEditing || isOAuthForm"
+      >
+        <div class="endpoint-mode-grid">
+          <a-checkbox
+            v-for="option in accountEndpointModeOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </a-checkbox>
+        </div>
+      </a-checkbox-group>
+    </a-form-item>
     <div class="strategy-grid">
       <a-form-item label="并发上限">
         <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
@@ -84,10 +100,12 @@
 </template>
 
 <script setup lang="ts">
+import { watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import type { AccountFormModel } from './accountFormTypes'
+import { accountEndpointModeOptions, defaultAccountEndpointModes, endpointModesEqual } from './accountEndpointModes'
 
 const clientCompatibilityOptions = [
   { label: 'OpenAI 标准', value: 'openai_standard' },
@@ -116,6 +134,16 @@ function addModelMapping(): void {
 function removeModelMapping(index: number): void {
   props.form.modelMappings.splice(index, 1)
 }
+
+watch(
+  () => props.form.clientCompatibility,
+  (nextValue, previousValue) => {
+    if (props.authorizedEditing || props.isOAuthForm || !previousValue || nextValue === previousValue) return
+    const previousDefault = defaultAccountEndpointModes(props.form.providerCode, props.form.type, previousValue)
+    if (!endpointModesEqual(props.form.supportedEndpointModes, previousDefault)) return
+    props.form.supportedEndpointModes = defaultAccountEndpointModes(props.form.providerCode, props.form.type, nextValue)
+  }
+)
 </script>
 
 <style scoped>
@@ -160,6 +188,12 @@ function removeModelMapping(index: number): void {
   margin-bottom: 8px;
 }
 
+.endpoint-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 8px 16px;
+}
+
 .model-mapping-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) auto 32px;
@@ -188,6 +222,10 @@ function removeModelMapping(index: number): void {
 
   .model-mapping-row {
     grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+  }
+
+  .endpoint-mode-grid {
+    grid-template-columns: 1fr;
   }
 
   .model-mapping-row :deep(.ant-switch),

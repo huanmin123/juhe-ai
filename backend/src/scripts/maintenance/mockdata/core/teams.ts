@@ -1,11 +1,11 @@
-import type { SystemTeamSummary } from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import * as repositories from '../../storage/repositories.js'
+import type { SystemTeamSummary } from '../../../../domain/types.js'
+import type { AccessScope } from '../../../../storage/access-scope.js'
+import * as repositories from '../../../../storage/repositories.js'
 import {
   namePrefix,
   type MockSystemAccounts,
   type MockTeams
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 export function createTeams(adminAccess: AccessScope, users: MockSystemAccounts): MockTeams {
   const teamAccess: AccessScope = { systemAccountId: adminAccess.systemAccountId, role: 'admin' }

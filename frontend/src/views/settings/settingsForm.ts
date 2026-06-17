@@ -25,6 +25,7 @@ export interface SystemForm {
   streamFailureThresholdWindowMinutes: number
   accountTestTaskConcurrency: number
   cooldownAccountRetestMaxBackoffHours: number
+  cooldownAccountRetestLongTermIntervalHours: number
 }
 
 export const defaultGlobalSettings: GlobalForm = {
@@ -50,7 +51,8 @@ export const defaultSystemSettings: SystemForm = {
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 10,
   accountTestTaskConcurrency: 100,
-  cooldownAccountRetestMaxBackoffHours: 24
+  cooldownAccountRetestMaxBackoffHours: 12,
+  cooldownAccountRetestLongTermIntervalHours: 24
 }
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
@@ -79,7 +81,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '失败触发次数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '失败统计窗口', 1, 1440),
     accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),
-    cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '最长自动恢复观察', 1, 720)
+    cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),
+    cooldownAccountRetestLongTermIntervalHours: integerValue(settings.cooldownAccountRetestLongTermIntervalHours, '长期不可用复测间隔', 1, 720)
   }
 }
 

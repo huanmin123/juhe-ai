@@ -67,6 +67,32 @@ assertStatus('持久临时不可调用', accountFixture({
     reason: '慢速通道确认失败'
   }
 }), '临时不可调用', 'gold')
+const longTermUnavailableAccount = accountFixture({
+  status: 'temporary_unavailable',
+  lastErrorCode: 'cooldown_retest_long_term_unavailable',
+  lastErrorMessage: '后台冷却复测连续失败，进入长期不可用低频复测',
+  cooldownUntil: '2099-01-01T00:00:00.000Z',
+  cooldownRetestFailureCount: 8,
+  cooldownRetestObservationStartedAt: '2026-06-16T00:00:00.000Z',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_temporary_unavailable',
+    label: '账户临时不可调用',
+    color: 'gold',
+    blockerScope: 'account',
+    reason: '进入长期不可用低频复测'
+  }
+})
+assertStatus('长期不可用', longTermUnavailableAccount, '长期不可用', 'gold')
+assertTrue(
+  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('长期不可用低频复测')),
+  '长期不可用 tooltip 应说明后台仍会低频复测'
+)
+assertEqual(
+  filterAccounts({ accounts: [longTermUnavailableAccount], filters: accountFilters(['temporary_unavailable']), isManagementView: false }).length,
+  1,
+  '长期不可用仍应归入临时不可调用筛选'
+)
 const scheduleInactiveAccount = accountFixture({
   effectiveAvailability: {
     available: false,
@@ -200,7 +226,7 @@ assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', '
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划等待同步时状态颜色仍应使用停用颜色')
 assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('等待后台同步停用')), 'API Key 时间计划等待同步时 tooltip 应展示同步提示')
 
-console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态短暂避让、运行态事前确认、持久临时不可调用、时间计划提示、无可用权限均可显示和筛选')
+console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态短暂避让、运行态事前确认、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)

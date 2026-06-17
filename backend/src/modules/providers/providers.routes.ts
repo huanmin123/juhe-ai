@@ -301,7 +301,8 @@ function canMutateCustomModel(
   ownerSystemAccountId: string | undefined,
   context: { systemAccountId: string; role: string }
 ): boolean {
-  if (scope === 'global') return isAdminRole(context.role)
+  if (isAdminRole(context.role)) return true
+  if (scope === 'global') return false
   return ownerSystemAccountId === context.systemAccountId
 }
 

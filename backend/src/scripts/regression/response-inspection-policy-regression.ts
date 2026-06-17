@@ -656,6 +656,60 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
+  let failureCalled = false
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write() {
+      return true
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    yield sseEvent('response.completed', {
+      type: 'response.completed',
+      response: { status: 'completed' }
+    })
+    yield sseEvent('response.failed', {
+      type: 'response.failed',
+      response: {
+        status: 'failed',
+        error: {
+          code: 'server_overloaded',
+          message: 'late failure next chunk'
+        }
+      }
+    })
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    settings,
+    Date.now(),
+    () => { failureCalled = true },
+    undefined,
+    {
+      endpointFamily: 'responses'
+    }
+  )
+  assert.equal(result.completed, false, '终止事件后一批失败也应返回失败结果')
+  assert.equal(result.errorCode, 'server_overloaded', '终止事件后一批失败应保留失败错误码')
+  assert.equal(failureCalled, true, '终止事件后一批失败应触发失败回调')
+  assert.equal(response.writableEnded, true, '终止事件后一批失败应结束客户端响应')
+}
+
+{
   const repositorySource = readFileSync(new URL('../../storage/response-inspection-policy.repository.ts', import.meta.url), 'utf8')
   const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
   const routeSource = readFileSync(new URL('../../modules/response-inspection-policies/response-inspection-policies.routes.ts', import.meta.url), 'utf8')

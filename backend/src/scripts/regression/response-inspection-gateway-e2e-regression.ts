@@ -119,7 +119,8 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     type: 'api_key',
     credentials: {
       api_key: `sk-upstream-polluted-${scenario}`,
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
     groupId: group.id,
     status: 'active',
@@ -132,7 +133,8 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     type: 'api_key',
     credentials: {
       api_key: `sk-upstream-clean-${scenario}`,
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
     groupId: group.id,
     status: 'active',

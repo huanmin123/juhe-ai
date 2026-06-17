@@ -2,6 +2,7 @@ import type { AccountSummary } from '../../domain/types.js'
 
 const publicCredentialKeys = new Set([
   'base_url',
+  'supported_endpoint_modes',
   'expires_at',
   'client_id',
   'email',

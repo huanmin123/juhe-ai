@@ -206,6 +206,7 @@ async function runFieldScenario(
     credentials: {
       api_key: `sk-mock-polluted-${scenarioId}`,
       base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_json', 'responses_sse'],
       ...(layer === 'account'
         ? {
             response_inspection_rules: [{
@@ -229,7 +230,8 @@ async function runFieldScenario(
     type: 'api_key',
     credentials: {
       api_key: `sk-mock-clean-${scenarioId}`,
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     groupId: group.id,
     status: 'active',

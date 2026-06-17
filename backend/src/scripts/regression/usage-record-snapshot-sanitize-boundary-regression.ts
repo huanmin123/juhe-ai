@@ -97,17 +97,20 @@ try {
     'top-usage-client-secret',
     'sk-top-usage-secret-token',
     'request-url-secret',
-    'request-header-secret',
     'request-body-client-secret',
     'url-user',
     'url-password',
     'response-url-secret',
-    'response-cookie-secret',
     'response-body-client-secret',
     'sk-response-body-secret-token',
     'response-error-id-token',
     'sk-response-error-secret-token'
   ], '使用记录落库内容应保留原文')
+  assertAllAbsent(detailText, [
+    'request-header-secret',
+    'response-cookie-secret'
+  ], '使用记录 header snapshot 不应保留敏感原文')
+  assert(detailText.includes('[redacted]'), '使用记录 header snapshot 应写入脱敏占位')
   assert(String(detail.responseSnapshot?.upstreamUrl ?? '').includes('safe=ok'), 'URL 安全查询参数应保留')
   assert(String(detail.requestSnapshot?.bodyText ?? '').includes('"safe":"ok"'), 'bodyText 中安全字段应保留')
 
@@ -138,5 +141,11 @@ function buildTrapSnapshot(): Record<string, string> {
 function assertAllPresent(text: string, markers: string[], message: string): void {
   for (const marker of markers) {
     assert(text.includes(marker), `${message}：${marker}`)
+  }
+}
+
+function assertAllAbsent(text: string, markers: string[], message: string): void {
+  for (const marker of markers) {
+    assert(!text.includes(marker), `${message}：${marker}`)
   }
 }

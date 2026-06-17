@@ -1,5 +1,5 @@
-import { runtimeConfig } from '../../config/runtime.js'
-import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from '../../storage/database.js'
+import { runtimeConfig } from '../../../../config/runtime.js'
+import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from '../../../../storage/database.js'
 import {
   dayMs,
   idPrefix,
@@ -7,7 +7,7 @@ import {
   tableStorageValues,
   type CreatedMockdata,
   type MockdataOptions
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 type Database = ReturnType<typeof getBusinessDatabase>
 

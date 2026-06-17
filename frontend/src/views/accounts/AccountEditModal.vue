@@ -160,6 +160,11 @@ import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPoli
 import AccountStrategySection from './AccountStrategySection.vue'
 import { statusText } from './accountFormatters'
 import { defaultAccountClientCompatibility } from './accountFormDefaults'
+import {
+  accountEndpointModeText,
+  defaultAccountEndpointModes,
+  endpointModesEqual
+} from './accountEndpointModes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
@@ -227,7 +232,8 @@ const publicCredentialItems = computed(() => {
     credentialItem('email', '邮箱', credentials.email),
     credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
     credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
-    credentialItem('plan_type', '套餐类型', credentials.plan_type)
+    credentialItem('plan_type', '套餐类型', credentials.plan_type),
+    credentialItem('supported_endpoint_modes', '接口能力', accountEndpointModeText(credentials.supported_endpoint_modes))
   ]
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
 })
@@ -250,6 +256,7 @@ const advancedConfiguredCount = computed(() => {
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
     form.clientCompatibility !== defaultAccountClientCompatibility(form.providerCode),
+    !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, form.clientCompatibility)),
     form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     form.priority !== 0,
     Boolean(form.proxyProfileId),

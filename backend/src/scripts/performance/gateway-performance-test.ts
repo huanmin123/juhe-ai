@@ -177,7 +177,7 @@ const [
   import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
-  import('../maintenance/mockdata-fixtures.js'),
+  import('../maintenance/mockdata/fixtures.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),

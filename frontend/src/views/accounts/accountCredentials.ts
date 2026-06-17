@@ -17,7 +17,8 @@ const oauthCredentialMetadataKeys = [
   'account_id',
   'chatgpt_user_id',
   'plan_type',
-  'base_url'
+  'base_url',
+  'supported_endpoint_modes'
 ] as const
 
 export function buildAccountCredentials(input: {
@@ -44,7 +45,8 @@ function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown>
   const apiKey = apiKeys[0] ?? form.apiKey
   const credentials = compactAccountCredentials({
     api_key: apiKey,
-    base_url: form.baseUrl
+    base_url: form.baseUrl,
+    supported_endpoint_modes: [...form.supportedEndpointModes]
   })
   if (apiKeys.length > 1) {
     credentials.api_keys = apiKeys
@@ -82,7 +84,8 @@ function buildOAuthCredentials(form: AccountFormModel, currentCredentials: Recor
   return compactAccountCredentials({
     ...pickOAuthCredentialMetadata(currentCredentials),
     access_token: form.accessToken,
-    refresh_token: form.refreshToken
+    refresh_token: form.refreshToken,
+    supported_endpoint_modes: [...form.supportedEndpointModes]
   })
 }
 

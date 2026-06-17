@@ -8,6 +8,7 @@ import {
   forgetOpenAIAccountForSession,
   migrateOpenAIAccountSessionAffinity,
   orderOpenAIAccountsBySessionAffinity,
+  rememberOpenAIAccountTrafficMigrationPreference,
   rememberOpenAIAccountForSession,
   resolveOpenAIGatewaySessionAffinityKey
 } from '../../modules/gateway/runtime/session-affinity.service.js'
@@ -26,6 +27,18 @@ async function main(): Promise<void> {
   testAffinityPromotesAcrossAccountTypesWithinSameBucket()
   testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard()
   testScopedMigrationOnlyMovesMatchingBindings()
+  testTrafficMigrationPreferenceBiasesNewRequests()
+  testTrafficMigrationPreferenceBypassesSuperPriority()
+  testTrafficMigrationPreferencePromotesFallbackTarget()
+  testTrafficMigrationPreferenceIsScopedByGroup()
+  testTrafficMigrationPreferenceOverridesExistingSessionAffinity()
+  testTrafficMigrationSessionPreferenceOverridesAvailableSource()
+  testTrafficMigrationPreferenceStopsWhenSourceReturns()
+  testTrafficMigrationPreferenceBiasesHighConcurrency()
+  testTrafficMigrationPreferenceBypassesHighConcurrencySuperPriority()
+  testTrafficMigrationPreferencePromotesHighConcurrencyFallbackTarget()
+  testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusy()
+  testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusyWithoutFastFirst()
   testHighConcurrencyUsesLeastLoadedWithinSameTier()
   testHighConcurrencyBreaksAffinityAtSoftLimit()
   testHighConcurrencyKeepsAffinityBelowSoftLimitWhenLoadTied()
@@ -39,6 +52,7 @@ function testSessionAffinityMigrationUsesReverseIndex(): void {
   const source = readFileSync(new URL('../../modules/gateway/runtime/session-affinity.service.ts', import.meta.url), 'utf8')
   assert(source.includes('sessionAffinityKeysByAccountId'), '会话亲和迁移应维护按账号反查的索引')
   assert(source.includes('sessionAffinityKeysByAccountSystemScope'), '会话亲和迁移应维护按账号+系统账户反查的索引')
+  assert(source.includes('trafficMigrationPreferenceCache'), '手动迁移流量应维护同分组目标偏向运行态')
   assert(!source.includes('for (const [key, binding] of sessionAffinityCache.entries())'), '迁移会话亲和不能扫描全部亲和缓存')
   assert(source.includes('for (const key of sessionAffinityMigrationCandidateKeys(sourceAccountId, scope))'), '迁移会话亲和应只遍历源账号相关候选 key')
 }
@@ -220,6 +234,226 @@ function testScopedMigrationOnlyMovesMatchingBindings(): void {
   forgetOpenAIAccountForSession(otherApiKey)
   forgetOpenAIAccountForSession(ownerKey)
   forgetOpenAIAccountForSession(unscopedKey)
+}
+
+function testTrafficMigrationPreferenceBiasesNewRequests(): void {
+  const scope = { systemAccountId: 'migration-pref-system-a', groupId: 'migration-pref-group-a' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-a', 'target-a', scope)
+  const accounts = [
+    createAccount('peer-a', { priority: 0 }),
+    createAccount('target-a', { priority: 50, qualityScore: 500 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, { trafficMigrationScope: scope }).map((account) => account.id),
+    ['target-a', 'peer-a'],
+    '手动迁移后没有会话亲和的新请求应优先尝试目标账户'
+  )
+}
+
+function testTrafficMigrationPreferenceBypassesSuperPriority(): void {
+  const scope = { systemAccountId: 'migration-pref-system-super', groupId: 'migration-pref-group-super' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-super', 'target-super', scope)
+  const accounts = [
+    createAccount('super-peer', { priority: 0, superPriorityEnabled: true }),
+    createAccount('target-super', { priority: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, { trafficMigrationScope: scope }).map((account) => account.id),
+    ['target-super', 'super-peer'],
+    '手动迁移目标应作为短期最高排序覆盖越过同分组超级优先账户'
+  )
+}
+
+function testTrafficMigrationPreferencePromotesFallbackTarget(): void {
+  const scope = { systemAccountId: 'migration-pref-system-fallback', groupId: 'migration-pref-group-fallback' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-fallback', 'target-fallback', scope)
+  const accounts = [
+    createAccount('primary-peer', { priority: 0 }),
+    createAccount('target-fallback', { priority: 0, fallbackEnabled: true })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, { trafficMigrationScope: scope }).map((account) => account.id),
+    ['target-fallback', 'primary-peer'],
+    '手动迁移目标应作为短期最高排序覆盖把目标备用账户提前到主池账户前'
+  )
+}
+
+function testTrafficMigrationPreferenceIsScopedByGroup(): void {
+  const scope = { systemAccountId: 'migration-pref-system-b', groupId: 'migration-pref-group-b' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-b', 'target-b', scope)
+  const accounts = [
+    createAccount('peer-b', { priority: 0 }),
+    createAccount('target-b', { priority: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      trafficMigrationScope: { systemAccountId: scope.systemAccountId, groupId: 'migration-pref-other-group' }
+    }).map((account) => account.id),
+    ['peer-b', 'target-b'],
+    '迁移目标偏向只能影响当前系统账户和当前分组'
+  )
+}
+
+function testTrafficMigrationPreferenceOverridesExistingSessionAffinity(): void {
+  const scope = { systemAccountId: 'migration-pref-system-c', groupId: 'migration-pref-group-c' }
+  const sessionKey = 'session-affinity-regression:migration-pref-existing-session'
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-c', 'target-c', scope)
+  rememberOpenAIAccountForSession(sessionKey, 'sticky-peer-c', { ...scope, apiKeyId: 'key-c' })
+  const accounts = [
+    createAccount('sticky-peer-c', { priority: 0 }),
+    createAccount('target-c', { priority: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, sessionKey, { trafficMigrationScope: { ...scope, apiKeyId: 'key-c' } }).map((account) => account.id),
+    ['target-c', 'sticky-peer-c'],
+    '手动迁移目标应作为短期最高排序覆盖已有会话亲和'
+  )
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testTrafficMigrationSessionPreferenceOverridesAvailableSource(): void {
+  const sessionKey = 'session-affinity-regression:migration-session-preference'
+  const accounts = [
+    createAccount('source-still-active', { priority: 0, superPriorityEnabled: true }),
+    createAccount('target-session-only', { priority: 50, fallbackEnabled: true }),
+    createAccount('peer-session-only', { priority: 10 })
+  ]
+  rememberOpenAIAccountForSession(sessionKey, 'source-still-active')
+
+  assert.equal(
+    migrateOpenAIAccountSessionAffinity('source-still-active', 'target-session-only', undefined, { preferMigratedSessions: true }).migratedSessionCount,
+    1,
+    '不改源账户状态的迁移仍应迁移当前已识别客户端会话'
+  )
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, sessionKey).map((account) => account.id),
+    ['target-session-only', 'source-still-active', 'peer-session-only'],
+    '只迁移当前客户端时，即使源账户仍可用，已迁移会话也应优先命中目标账户'
+  )
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined).map((account) => account.id),
+    ['source-still-active', 'target-session-only', 'peer-session-only'],
+    '只迁移当前客户端不应影响没有会话亲和的新客户端调度'
+  )
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testTrafficMigrationPreferenceStopsWhenSourceReturns(): void {
+  const scope = { systemAccountId: 'migration-pref-system-d', groupId: 'migration-pref-group-d' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-returned-d', 'target-d', scope)
+  const accountsWithSource = [
+    createAccount('peer-d', { priority: 0 }),
+    createAccount('target-d', { priority: 10 }),
+    createAccount('source-returned-d', { priority: 20 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accountsWithSource, undefined, { trafficMigrationScope: scope }).map((account) => account.id),
+    ['peer-d', 'target-d', 'source-returned-d'],
+    '源账户重新进入候选池后应停止迁移目标偏向'
+  )
+  const accountsWithoutSource = accountsWithSource.filter((account) => account.id !== 'source-returned-d')
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accountsWithoutSource, undefined, { trafficMigrationScope: scope }).map((account) => account.id),
+    ['peer-d', 'target-d'],
+    '源账户恢复后迁移目标偏向应被清理，避免后续再次劫持普通调度'
+  )
+}
+
+function testTrafficMigrationPreferenceBiasesHighConcurrency(): void {
+  const scope = { systemAccountId: 'migration-pref-system-e', groupId: 'migration-pref-group-e' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-e', 'target-e', scope)
+  const accounts = [
+    createAccount('idle-peer-e', { priority: 0, currentConcurrency: 0, concurrencyLimit: 20 }),
+    createAccount('target-e', { priority: 50, currentConcurrency: 8, concurrencyLimit: 20 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      trafficMigrationScope: scope
+    }).map((account) => account.id),
+    ['target-e', 'idle-peer-e'],
+    '高并发分组应在目标未硬满时优先尝试手动迁移目标'
+  )
+}
+
+function testTrafficMigrationPreferenceBypassesHighConcurrencySuperPriority(): void {
+  const scope = { systemAccountId: 'migration-pref-system-hc-super', groupId: 'migration-pref-group-hc-super' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-hc-super', 'target-hc-super', scope)
+  const accounts = [
+    createAccount('super-peer-hc', { priority: 0, superPriorityEnabled: true, currentConcurrency: 1, concurrencyLimit: 20 }),
+    createAccount('target-hc-super', { priority: 0, currentConcurrency: 0, concurrencyLimit: 20 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      trafficMigrationScope: scope
+    }).map((account) => account.id),
+    ['target-hc-super', 'super-peer-hc'],
+    '高并发分组的手动迁移目标应作为短期最高排序覆盖越过超级优先账户'
+  )
+}
+
+function testTrafficMigrationPreferencePromotesHighConcurrencyFallbackTarget(): void {
+  const scope = { systemAccountId: 'migration-pref-system-hc-fallback', groupId: 'migration-pref-group-hc-fallback' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-hc-fallback', 'target-hc-fallback', scope)
+  const accounts = [
+    createAccount('primary-peer-hc', { priority: 0, currentConcurrency: 0, concurrencyLimit: 20 }),
+    createAccount('target-hc-fallback', { priority: 0, currentConcurrency: 0, concurrencyLimit: 20, fallbackEnabled: true })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      trafficMigrationScope: scope
+    }).map((account) => account.id),
+    ['target-hc-fallback', 'primary-peer-hc'],
+    '高并发分组的手动迁移目标应作为短期最高排序覆盖把目标备用账户提前到可用主池前'
+  )
+}
+
+function testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusy(): void {
+  const scope = { systemAccountId: 'migration-pref-system-hc-hard-busy', groupId: 'migration-pref-group-hc-hard-busy' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-hc-hard-busy', 'target-hc-hard-busy', scope)
+  const accounts = [
+    createAccount('idle-peer-hc-hard-busy', { priority: 0, currentConcurrency: 0, concurrencyLimit: 20 }),
+    createAccount('target-hc-hard-busy', { priority: 50, currentConcurrency: 20, concurrencyLimit: 20 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      trafficMigrationScope: scope
+    }).map((account) => account.id),
+    ['idle-peer-hc-hard-busy', 'target-hc-hard-busy'],
+    '高并发分组的手动迁移目标达到硬并发后不应继续抢首位'
+  )
+}
+
+function testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusyWithoutFastFirst(): void {
+  const scope = { systemAccountId: 'migration-pref-system-hc-no-fast-first', groupId: 'migration-pref-group-hc-no-fast-first' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-hc-no-fast-first', 'target-hc-no-fast-first', scope)
+  const accounts = [
+    createAccount('idle-peer-hc-no-fast-first', { priority: 0, currentConcurrency: 0, concurrencyLimit: 20 }),
+    createAccount('target-hc-no-fast-first', { priority: 50, currentConcurrency: 20, concurrencyLimit: 20 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      schedulingPolicy: { fastFirstEnabled: false },
+      trafficMigrationScope: scope
+    }).map((account) => account.id),
+    ['idle-peer-hc-no-fast-first', 'target-hc-no-fast-first'],
+    '高并发快速优先关闭时，手动迁移目标达到硬并发也不应越过可用账号'
+  )
 }
 
 function testHighConcurrencyUsesLeastLoadedWithinSameTier(): void {

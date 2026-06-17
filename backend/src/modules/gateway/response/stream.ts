@@ -249,20 +249,28 @@ export async function pipeUpstreamStream(
     totalResponseBytes,
     uncommittedStreamResponseBody(preCommitBuffer)
   )
-  const finishTerminalSuccess = (
+  const finishTerminalSuccess = async (
     inspection: OpenAIStreamInspection,
     input: { drainForKeepAlive?: boolean; eofPendingFlush?: boolean } = {}
-  ): StreamPipeResult => {
-    omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: input.eofPendingFlush })
-    if (inspection.failedReceived) {
-      const message = inspection.errorMessage ?? '上游流式响应失败'
+  ): Promise<StreamPipeResult> => {
+    let finalInspection = inspection
+    omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: input.eofPendingFlush })
+    if (input.drainForKeepAlive && !finalInspection.failedReceived) {
+      res.off('close', closeIterator)
+      finalInspection = await drainIteratorAfterTerminalForInspection(iterator, inspector, {
+        lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
+      })
+      omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: true })
+    }
+    if (finalInspection.failedReceived) {
+      const message = finalInspection.errorMessage ?? '上游流式响应失败'
       const errorCode = streamClientFailureCode(
-        inspection.errorCode ?? gatewayStreamFailureCode(message),
-        inspection.outputReceived,
+        finalInspection.errorCode ?? gatewayStreamFailureCode(message),
+        finalInspection.outputReceived,
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
+      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived))
       void closeAsyncIterator(iterator)
       endResponse(res)
       streamLogger.warn({
@@ -274,22 +282,16 @@ export async function pipeUpstreamStream(
         firstTokenMs,
         message,
         errorCode,
-        sseEventCount: inspection.eventCount,
-        sseEventTypeCounts: inspection.eventTypeCounts,
-        recentSseEventTypes: inspection.recentEventTypes,
-        outputReceived: inspection.outputReceived,
-        outputEventCount: inspection.outputEventCount,
+        sseEventCount: finalInspection.eventCount,
+        sseEventTypeCounts: finalInspection.eventTypeCounts,
+        recentSseEventTypes: finalInspection.recentEventTypes,
+        outputReceived: finalInspection.outputReceived,
+        outputEventCount: finalInspection.outputEventCount,
         eofPendingFlush: input.eofPendingFlush === true || undefined
       }, '网关在终止事件后解析到失败事件，按失败流式响应收尾')
-      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
-    }
-    if (input.drainForKeepAlive) {
-      res.off('close', closeIterator)
+      return finishStreamResult(false, message, errorCode, firstTokenMs, finalInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, finalInspection.outputReceived, finalInspection.estimatedOutputTokens, finalInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(finalInspection))
     }
     endResponse(res)
-    if (input.drainForKeepAlive) {
-      void drainIteratorAfterTerminalForKeepAlive(iterator)
-    }
     streamLogger.info({
       event: 'gateway_stream_finished_success_after_terminal',
       elapsedMs: Date.now() - startedAt,
@@ -297,15 +299,15 @@ export async function pipeUpstreamStream(
       totalUpstreamBytes,
       totalResponseBytes,
       firstTokenMs,
-      sseEventCount: inspection.eventCount,
-      sseEventTypeCounts: inspection.eventTypeCounts,
-      recentSseEventTypes: inspection.recentEventTypes,
-      outputReceived: inspection.outputReceived,
-      outputEventCount: inspection.outputEventCount,
+      sseEventCount: finalInspection.eventCount,
+      sseEventTypeCounts: finalInspection.eventTypeCounts,
+      recentSseEventTypes: finalInspection.recentEventTypes,
+      outputReceived: finalInspection.outputReceived,
+      outputEventCount: finalInspection.outputEventCount,
       upstreamDrainScheduledForKeepAlive: input.drainForKeepAlive === true || undefined,
       eofPendingFlush: input.eofPendingFlush === true || undefined
     }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
-    return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return finishStreamResult(true, '已完成', undefined, firstTokenMs, finalInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, finalInspection.outputReceived, finalInspection.estimatedOutputTokens, finalInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(finalInspection))
   }
   res.once('close', closeIterator)
 
@@ -548,7 +550,7 @@ export async function pipeUpstreamStream(
       if ((chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !latestInspection.failedReceived && chunkCanEndAfterTerminal) {
         await flushPreCommitChunks()
         terminalEventWritten = true
-        return finishTerminalSuccess(inspector.finish(), { drainForKeepAlive: true, eofPendingFlush: true })
+        return await finishTerminalSuccess(inspector.finish(), { drainForKeepAlive: true, eofPendingFlush: true })
       }
     }
 
@@ -719,7 +721,7 @@ export async function pipeUpstreamStream(
       if ((eofWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !latestInspection.failedReceived && eofCanEndAfterTerminal) {
         await flushPreCommitChunks()
         terminalEventWritten = true
-        return finishTerminalSuccess(latestInspection, { eofPendingFlush: true })
+        return await finishTerminalSuccess(latestInspection, { eofPendingFlush: true })
       }
     }
   } catch (error) {
@@ -1023,24 +1025,31 @@ function readNextStreamChunk(
   )
 }
 
-async function drainIteratorAfterTerminalForKeepAlive(iterator: AsyncIterator<Uint8Array>): Promise<boolean> {
+async function drainIteratorAfterTerminalForInspection(
+  iterator: AsyncIterator<Uint8Array>,
+  inspector: OpenAIStreamInspector,
+  options: { lightweightImageStream?: boolean } = {}
+): Promise<OpenAIStreamInspection> {
   const deadline = Date.now() + streamTerminalKeepAliveDrainMs
   try {
     while (Date.now() < deadline) {
       const result = await readIteratorNextWithTimeout(iterator, Math.max(1, deadline - Date.now()))
       if (!result) {
         await closeAsyncIterator(iterator)
-        return false
+        return inspector.finish()
       }
       if (result.done) {
-        return true
+        return inspector.finish()
       }
+      inspector.pushChunk(bufferFromUint8Array(result.value), {
+        lightweightImageStream: options.lightweightImageStream
+      })
     }
     await closeAsyncIterator(iterator)
-    return false
+    return inspector.finish()
   } catch {
     await closeAsyncIterator(iterator)
-    return false
+    return inspector.finish()
   }
 }
 

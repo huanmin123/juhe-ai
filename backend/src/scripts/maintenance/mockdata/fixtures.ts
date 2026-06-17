@@ -1,6 +1,6 @@
-import type { AccountClientCompatibility, AccountSummary, ApiKeySummary, GroupSummary } from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import * as repositories from '../../storage/repositories.js'
+import type { AccountClientCompatibility, AccountSummary, ApiKeySummary, GroupSummary } from '../../../domain/types.js'
+import type { AccessScope } from '../../../storage/access-scope.js'
+import * as repositories from '../../../storage/repositories.js'
 
 type ApiKeyWithSecret = ApiKeySummary & { key: string }
 

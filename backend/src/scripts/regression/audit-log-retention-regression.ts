@@ -76,7 +76,7 @@ try {
   assert.equal(sensitiveHeaderSerializedDetail.includes('token=%5Bredacted%5D'), false, '审计 attempt upstreamUrl 不应写入脱敏占位')
   const sensitiveHeaderPayloads = await Promise.all(sensitiveHeaderDetail.payloads.map((payload) => repositories.getAuditLogPayload(sensitiveHeaderAuditId, payload.id)))
   const sensitiveHeaderSerialized = JSON.stringify(sensitiveHeaderPayloads)
-  assertAllPresent(sensitiveHeaderSerialized, [
+  assertAllAbsent(sensitiveHeaderSerialized, [
     'Bearer client-secret-token',
     'Bearer upstream-secret-token',
     'session-secret-cookie',
@@ -86,8 +86,8 @@ try {
     'audit-google-key-secret',
     'upstream-google-key-secret',
     'sk-account-secret'
-  ], '审计 payload header 应保留敏感原文')
-  assert.equal(sensitiveHeaderSerialized.includes('[redacted]'), false, '审计 payload header 不应写入脱敏占位')
+  ], '审计 payload header 不应保留敏感原文')
+  assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload header 应写入脱敏占位')
 
   const proxyCredentialTraceId = 'trace-proxy-credential-redaction'
   finalizeProxyCredentialAudit(proxyCredentialTraceId)
@@ -159,7 +159,7 @@ try {
     requestSnapshot: sensitiveUsageRecord?.requestSnapshot,
     responseSnapshot: sensitiveUsageRecord?.responseSnapshot
   })
-  assertAllPresent(sensitiveUsageSerialized, [
+  assertAllAbsent(sensitiveUsageSerialized, [
     'usage-client-token',
     'usage-api-key-secret',
     'usage-openai-api-key-secret',
@@ -169,11 +169,13 @@ try {
     'usage-last-upstream-token',
     'usage-proxy-token',
     'usage-last-upstream-google-key',
+  ], '使用记录 header snapshot 不应保留敏感原文')
+  assertAllPresent(sensitiveUsageSerialized, [
     'usage-query-token',
     'usage-upstream-query-key'
-  ], '使用记录 header snapshot 应保留敏感原文')
+  ], '使用记录 URL 查询参数仍按原文保留')
   assert(sensitiveUsageSerialized.includes('safe=ok'), '使用记录请求 snapshot 应保留安全查询参数')
-  assert.equal(sensitiveUsageSerialized.includes('[redacted]'), false, '使用记录 header snapshot 不应写入脱敏占位')
+  assert(sensitiveUsageSerialized.includes('[redacted]'), '使用记录 header snapshot 应写入脱敏占位')
 
   const overflowTraceId = 'trace-overflow-retained'
   finalizeOverflowFailedRequest(overflowTraceId)

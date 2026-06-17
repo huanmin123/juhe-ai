@@ -91,6 +91,7 @@ try {
   })
   const session = repositories.createSession(admin.id, 1)
   const cookie = `juhe_ai_session=${session.token}`
+  repositories.updateSettings({ systemApiRateLimitEnabled: false })
 
   backendProcess = startBackendServer(backendPort)
   await waitForHealth(backendBaseUrl, backendProcess)

@@ -4,7 +4,11 @@ import type { Request } from 'express'
 import {
   buildGatewayRequestBodySummary
 } from '../request/body.js'
-import { headersToObject } from '../upstream/headers.js'
+import {
+  headersToSafeObject,
+  sanitizeHeaderRecord,
+  sanitizeStringHeaderRecord
+} from '../upstream/headers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
 
 export interface UsageRequestSnapshot {
@@ -61,7 +65,7 @@ export function sanitizeRequestHeaders(headers: IncomingHttpHeaders): Record<str
     if (value === undefined) continue
     output[name] = value
   }
-  return output
+  return sanitizeHeaderRecord(output)
 }
 
 export function buildUsageResponseSnapshot(input: {
@@ -76,7 +80,9 @@ export function buildUsageResponseSnapshot(input: {
   return {
     upstreamUrl: input.upstreamUrl,
     statusCode: input.statusCode,
-    headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers,
+    headers: input.headers instanceof Headers
+      ? headersToSafeObject(input.headers)
+      : input.headers ? sanitizeStringHeaderRecord(input.headers) : undefined,
     bodyText: input.bodyText,
     bodyOmission: input.bodyOmission,
     errorMessage: input.errorMessage,
@@ -105,7 +111,7 @@ export function buildGatewayErrorResponseSnapshot(
       accountName: lastAttempt.accountName,
       upstreamUrl: lastAttempt.upstreamUrl,
       statusCode: lastAttempt.status,
-      headers: lastAttempt.responseHeaders,
+      headers: lastAttempt.responseHeaders ? sanitizeStringHeaderRecord(lastAttempt.responseHeaders) : undefined,
       bodyText: lastAttempt.responseBodyText,
       errorMessage: lastAttempt.message
     }

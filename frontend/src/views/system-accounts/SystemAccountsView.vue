@@ -83,7 +83,7 @@
           <a-select v-model:value="form.status" :options="statusOptions" />
         </a-form-item>
         <a-form-item label="登录后提醒改密">
-          <a-switch v-model:checked="form.mustChangePassword" checked-children="是" un-checked-children="否" />
+          <a-switch v-model:checked="form.mustChangePassword" :disabled="systemAccountMustChangePasswordDisabled" checked-children="是" un-checked-children="否" />
         </a-form-item>
         <a-form-item label="支持图像生成">
           <a-switch v-model:checked="form.imageGenerationEnabled" checked-children="支持" un-checked-children="不支持" />
@@ -96,7 +96,7 @@
         <a-form-item label="新密码" required>
           <a-input-password v-model:value="resetPassword" placeholder="请输入不含空格的新密码" />
         </a-form-item>
-        <a-alert type="info" show-icon message="密码不能包含空格，保存后该账户下次登录会收到修改密码提醒。" />
+        <a-alert type="info" show-icon :message="resetPasswordHint" />
       </a-form>
     </a-modal>
   </a-card>
@@ -104,7 +104,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -116,7 +116,7 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
-import { isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
+import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const pageSize = 20
@@ -127,6 +127,7 @@ const modalOpen = ref(false)
 const passwordModalOpen = ref(false)
 const editingId = ref<string>()
 const resettingId = ref<string>()
+const resettingAccountRole = ref<SystemAccountRole>()
 const resetPassword = ref('')
 const keyword = ref('')
 const canManageSystemAccounts = computed(() => isSuperAdminRole(authState.currentUser.value?.role))
@@ -157,6 +158,10 @@ const statusOptions = [
   { label: '启用', value: 'active' },
   { label: '停用', value: 'disabled' }
 ]
+const systemAccountMustChangePasswordDisabled = computed(() => isAdminRole(form.role))
+const resetPasswordHint = computed(() => isAdminRole(resettingAccountRole.value)
+  ? '密码不能包含空格，管理员账户保存后可直接进入控制台。'
+  : '密码不能包含空格，保存后该账户下次登录会收到修改密码提醒。')
 
 const baseColumns = [
   { title: '用户名', dataIndex: 'username', key: 'username', width: 160 },
@@ -231,6 +236,7 @@ function openEdit(record: SystemAccountSummary) {
 function openResetPassword(record: SystemAccountSummary) {
   if (!canManageSystemAccounts.value) return
   resettingId.value = record.id
+  resettingAccountRole.value = record.role
   resetPassword.value = ''
   passwordModalOpen.value = true
 }
@@ -281,7 +287,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
       description: form.description,
       role: form.role,
       status: form.status,
-      mustChangePassword: form.mustChangePassword,
+      mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword,
       imageGenerationEnabled: form.imageGenerationEnabled
     }
     if (basePayload.role === 'super_admin') {
@@ -319,7 +325,7 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
     return
   }
   try {
-    await api.systemAccounts.update(resettingId.value, { password: resetPassword.value, mustChangePassword: true })
+    await api.systemAccounts.update(resettingId.value, { password: resetPassword.value, mustChangePassword: !isAdminRole(resettingAccountRole.value) })
     message.success('密码已重置')
     passwordModalOpen.value = false
     await loadData()
@@ -350,6 +356,12 @@ function hasWhitespace(value: string): boolean {
 }
 
 onMounted(loadData)
+
+watch(() => form.role, (role) => {
+  if (isAdminRole(role)) {
+    form.mustChangePassword = false
+  }
+})
 </script>
 
 <style scoped>

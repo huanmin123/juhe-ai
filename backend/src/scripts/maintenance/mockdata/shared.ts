@@ -5,10 +5,10 @@ import type {
   ResourceAuthorizationSummary,
   SystemAccountSummary,
   SystemTeamSummary
-} from '../../domain/types.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
-import type { CreatedExternalIntegrationSourceAuthorization } from '../../storage/external-integration-source-types.js'
-import type { UsageRecordInput } from '../../storage/usage-records.repository.js'
+} from '../../../domain/types.js'
+import { GPT_VENDOR_CODE } from '../../../domain/provider-protocol.js'
+import type { CreatedExternalIntegrationSourceAuthorization } from '../../../storage/external-integration-source-types.js'
+import type { UsageRecordInput } from '../../../storage/usage-records.repository.js'
 
 export type SqlValue = string | number | null
 

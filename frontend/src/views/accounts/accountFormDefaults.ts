@@ -1,6 +1,7 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
 import { defaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
+import { defaultAccountEndpointModes } from './accountEndpointModes'
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 
@@ -22,6 +23,7 @@ export function defaultAccountForm(
     ?? provider?.protocolProfiles[0]
   const accountTypes = profile?.accountTypes ?? provider?.accountTypes ?? []
   const resolvedType = type || (accountTypes.includes('api_key') ? 'api_key' : accountTypes[0] ?? '')
+  const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode)
   return {
     providerCode: resolvedProviderCode,
     providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
@@ -41,7 +43,8 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
-    clientCompatibility: defaultAccountClientCompatibility(resolvedProviderCode),
+    clientCompatibility,
+    supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, clientCompatibility),
     supportedModels: [],
     modelMappings: [],
     tags: [],

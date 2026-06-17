@@ -561,6 +561,7 @@ assert.match(accountProbeJobsSource, /getCooldownAccountRetestQueueSnapshot/)
 assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 1, 100\)/)
 assert.match(accountProbeJobsSource, /settingsNumber\('defaultTemporaryUnschedulableMinutes', 1, 1440\)/)
 assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 1, 24 \* 30\)/)
+assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestLongTermIntervalHours', 1, 24 \* 30\)/)
 
 const cooldownAccountRetestSource = readSource('modules/background/cooldown-account-retest.service.ts')
 assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_account_retest_revival', \[\], 0\)/)
@@ -920,7 +921,8 @@ assert.match(cooldownRetestRepositorySource, /status IN \('temporary_unavailable
 assert.match(cooldownRetestRepositorySource, /rate_limited/)
 assert.match(cooldownRetestRepositorySource, /recordCooldownAccountRetestFailure/)
 assert.match(cooldownRetestRepositorySource, /cooldownRetestObservationElapsedSeconds/)
-assert.doesNotMatch(cooldownRetestRepositorySource, /SET status = 'error'[\s\S]+account_cooldown_retest_exhausted/)
+assert.match(cooldownRetestRepositorySource, /cooldown_retest_long_term_unavailable/)
+assert.doesNotMatch(cooldownRetestRepositorySource, /SET status = 'error'[\s\S]+cooldown_retest_max_recovery_exceeded/)
 
 const accountQualityRepositorySource = readSource('storage/account-quality.repository.ts')
 assert.match(accountQualityRepositorySource, /refreshAccountQualityFromUsage/)

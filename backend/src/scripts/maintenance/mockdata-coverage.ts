@@ -5,7 +5,7 @@ import {
   listUsageRecordShardLocations,
   getUsageRecordShardDatabase
 } from '../../storage/usage-record-shards.js'
-import { chunks, idPrefix, type CreatedMockdata } from './mockdata-shared.js'
+import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
 
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 

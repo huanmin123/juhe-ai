@@ -27,6 +27,7 @@ const [
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   { testOpenAIAccount },
+  { orderOpenAIAccountsBySessionAffinity },
   { flushAllUsageRecordQueue },
   { flushAllOperationLogQueue },
   databaseModule,
@@ -36,6 +37,7 @@ const [
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../modules/accounts/account-test.service.js'),
+  import('../../modules/gateway/runtime/session-affinity.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../storage/database.js'),
@@ -81,8 +83,12 @@ assert(
   '账户流量迁移子路由必须保留操作日志 operationKey'
 )
 assert(
-  accountTrafficMigrationRoutesSource.includes('migrateOpenAIAccountSessionAffinity'),
-  '账户流量迁移子路由必须同步迁移 OpenAI 会话亲和'
+  accountTrafficMigrationRoutesSource.includes('migrateServerOpenAIAccountTrafficRuntime'),
+  '账户流量迁移子路由必须通过网关 server 运行态迁移 OpenAI 会话亲和'
+)
+assert(
+  accountTrafficMigrationRoutesSource.includes('migrateServerOpenAIAccountTrafficRuntime'),
+  '账户流量迁移子路由必须把会话亲和迁移和目标偏向投递到网关 server 运行态'
 )
 
 interface ApiEnvelope<T> {
@@ -371,6 +377,14 @@ try {
   assert.equal(migration.targetAccount.id, seed.granteeTargetAccountId, '迁移目标应使用被授权用户分组内的可用账户')
   assert.equal(repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const }).find((account) => account.id === seed.ownerSourceAccountId)?.status, 'active', '管理员迁移授权账户不应修改账户所有者原账户状态')
   assert.equal(repositories.listAccounts({ systemAccountId: seed.granteeId, role: 'user' as const }).find((account) => account.id === seed.ownerAccountId)?.status, 'temporary_unavailable', '管理员迁移授权账户应只写入被授权用户授权实例状态')
+  const postMigrationCandidates = repositories.listOpenAIAccountsForGroup(seed.granteeGroupId, seed.granteeId)
+  const postMigrationOrderedCandidates = orderOpenAIAccountsBySessionAffinity(postMigrationCandidates, undefined, {
+    trafficMigrationScope: {
+      systemAccountId: seed.granteeId,
+      groupId: seed.granteeGroupId
+    }
+  })
+  assert.equal(postMigrationOrderedCandidates[0]?.id, seed.granteeTargetAccountId, '迁移后同分组新请求应优先尝试迁移目标账户')
 
   console.log('管理员代操作授权账户调度回归通过')
 } finally {
@@ -493,7 +507,8 @@ function seedData(mockBaseUrl: string): SeedState {
     credentials: { api_key: 'sk-admin-authorized-dispatch-target', base_url: mockBaseUrl },
     groupId: granteeDefaultGroup.id,
     status: 'active',
-    schedulable: true
+    schedulable: true,
+    priority: 0
   }, granteeAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',

@@ -17,7 +17,10 @@ import type {
   DbServiceRuntimeQueueSnapshot,
   DbServiceRuntimeSnapshot,
   DbServiceServerRuntimeSnapshot,
-  DbServiceServerRuntimeSnapshotScope
+  DbServiceServerRuntimeSnapshotScope,
+  OpenAIAccountTrafficMigrationRuntimeRequest,
+  OpenAIAccountTrafficMigrationRuntimeResult,
+  OpenAIAccountTrafficMigrationRuntimeScope
 } from './db-service-types.js'
 
 interface PendingRequest {
@@ -68,6 +71,7 @@ let dbServiceHttpPort: number | undefined
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>()
 let pendingServerAccountRuntimeClearRequests = new Map<string, PendingServerAccountRuntimeClearRequest>()
+let pendingOpenAIAccountTrafficMigrationRuntimeRequests = new Map<string, PendingOpenAIAccountTrafficMigrationRuntimeRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
@@ -88,6 +92,11 @@ interface PendingServerRuntimeRequest {
 
 interface PendingServerAccountRuntimeClearRequest {
   resolve: (result: AccountRuntimeAvailabilityClearResult | undefined) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingOpenAIAccountTrafficMigrationRuntimeRequest {
+  resolve: (result: OpenAIAccountTrafficMigrationRuntimeResult | undefined) => void
   timeout: NodeJS.Timeout
 }
 
@@ -362,6 +371,39 @@ export async function clearServerAccountRuntimeAvailability(
   })
 }
 
+export async function migrateServerOpenAIAccountTrafficRuntime(
+  input: OpenAIAccountTrafficMigrationRuntimeRequest,
+  timeoutMs = 1000
+): Promise<OpenAIAccountTrafficMigrationRuntimeResult | undefined> {
+  const normalizedInput = normalizeOpenAIAccountTrafficMigrationRuntimeInput(input)
+  if (!normalizedInput) {
+    return undefined
+  }
+  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+    return migrateOpenAIAccountTrafficRuntimeLocal(normalizedInput)
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<OpenAIAccountTrafficMigrationRuntimeResult | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingOpenAIAccountTrafficMigrationRuntimeRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      pendingOpenAIAccountTrafficMigrationRuntimeRequests.delete(requestId)
+      pending.resolve(undefined)
+    }, timeoutMs)
+    pendingOpenAIAccountTrafficMigrationRuntimeRequests.set(requestId, { resolve, timeout })
+    sendDbServiceChildMessage({
+      type: 'db_service_openai_traffic_migration_runtime_request',
+      requestId,
+      input: normalizedInput
+    }, () => {
+      finishOpenAIAccountTrafficMigrationRuntimeRequest(requestId, undefined)
+    })
+  })
+}
+
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return false
@@ -382,6 +424,14 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     finishServerAccountRuntimeClearRequest(
       record.requestId,
       record.ok === true ? record.result as AccountRuntimeAvailabilityClearResult : undefined
+    )
+    return true
+  }
+
+  if (record.type === 'db_service_openai_traffic_migration_runtime_response' && typeof record.requestId === 'string') {
+    finishOpenAIAccountTrafficMigrationRuntimeRequest(
+      record.requestId,
+      record.ok === true ? record.result as OpenAIAccountTrafficMigrationRuntimeResult : undefined
     )
     return true
   }
@@ -445,6 +495,14 @@ function handleDbServiceMessage(message: unknown): void {
     case 'db_service_server_account_runtime_clear_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && isAccountRuntimeClearTarget(record.target)) {
         void respondToServerAccountRuntimeClearRequest(record.requestId, record.target)
+      }
+      break
+    case 'db_service_openai_traffic_migration_runtime_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
+        const input = normalizeOpenAIAccountTrafficMigrationRuntimeInput(record.input)
+        if (input) {
+          void respondToOpenAIAccountTrafficMigrationRuntimeRequest(record.requestId, input)
+        }
       }
       break
     case 'gateway_runtime_cache_invalidate':
@@ -543,6 +601,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingServerAccountRuntimeClearRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingOpenAIAccountTrafficMigrationRuntimeRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingOpenAIAccountTrafficMigrationRuntimeRequests.delete(requestId)
   }
 }
 
@@ -707,6 +770,20 @@ function finishServerAccountRuntimeClearRequest(
 
   clearTimeout(pending.timeout)
   pendingServerAccountRuntimeClearRequests.delete(requestId)
+  pending.resolve(result)
+}
+
+function finishOpenAIAccountTrafficMigrationRuntimeRequest(
+  requestId: string,
+  result: OpenAIAccountTrafficMigrationRuntimeResult | undefined
+): void {
+  const pending = pendingOpenAIAccountTrafficMigrationRuntimeRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingOpenAIAccountTrafficMigrationRuntimeRequests.delete(requestId)
   pending.resolve(result)
 }
 
@@ -976,6 +1053,51 @@ async function respondToServerAccountRuntimeClearRequest(
   }
 }
 
+async function respondToOpenAIAccountTrafficMigrationRuntimeRequest(
+  requestId: string,
+  input: OpenAIAccountTrafficMigrationRuntimeRequest
+): Promise<void> {
+  const child = dbServiceProcess
+  if (!child) {
+    return
+  }
+
+  try {
+    const result = await migrateOpenAIAccountTrafficRuntimeLocal(input)
+    sendToDbServiceProcess(child, {
+      type: 'db_service_openai_traffic_migration_runtime_response',
+      requestId,
+      ok: true,
+      result
+    })
+  } catch (error) {
+    sendToDbServiceProcess(child, {
+      type: 'db_service_openai_traffic_migration_runtime_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
+  }
+}
+
+async function migrateOpenAIAccountTrafficRuntimeLocal(
+  input: OpenAIAccountTrafficMigrationRuntimeRequest
+): Promise<OpenAIAccountTrafficMigrationRuntimeResult> {
+  const sessionAffinity = await import('../gateway/runtime/session-affinity.service.js')
+  const affinityResult = sessionAffinity.migrateOpenAIAccountSessionAffinity(
+    input.sourceAccountId,
+    input.targetAccountId,
+    input.affinityScope,
+    { preferMigratedSessions: input.preferMigratedSessions === true }
+  )
+  sessionAffinity.rememberOpenAIAccountTrafficMigrationPreference(
+    input.sourceAccountId,
+    input.targetAccountId,
+    input.preferenceScope
+  )
+  return affinityResult
+}
+
 function isAccountRuntimeClearTarget(value: unknown): value is AccountRuntimeAvailabilityClearTarget {
   return Boolean(normalizeAccountRuntimeClearTarget(value))
 }
@@ -1005,6 +1127,45 @@ function normalizeAccountRuntimeClearTarget(value: unknown): AccountRuntimeAvail
     }
   }
   return target
+}
+
+function normalizeOpenAIAccountTrafficMigrationRuntimeInput(value: unknown): OpenAIAccountTrafficMigrationRuntimeRequest | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  const sourceAccountId = normalizedString(record.sourceAccountId)
+  const targetAccountId = normalizedString(record.targetAccountId)
+  if (!sourceAccountId || !targetAccountId || sourceAccountId === targetAccountId) {
+    return undefined
+  }
+  const affinityScope = normalizeOpenAIAccountTrafficMigrationRuntimeScope(record.affinityScope, false)
+  const preferenceScope = normalizeOpenAIAccountTrafficMigrationRuntimeScope(record.preferenceScope, true)
+  return {
+    sourceAccountId,
+    targetAccountId,
+    ...(affinityScope ? { affinityScope } : {}),
+    ...(preferenceScope ? { preferenceScope } : {}),
+    ...(record.preferMigratedSessions === true ? { preferMigratedSessions: true } : {})
+  }
+}
+
+function normalizeOpenAIAccountTrafficMigrationRuntimeScope(value: unknown, requireGroupId: boolean): Partial<OpenAIAccountTrafficMigrationRuntimeScope> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  const systemAccountId = normalizedString(record.systemAccountId)
+  const groupId = normalizedString(record.groupId)
+  const apiKeyId = normalizedString(record.apiKeyId)
+  if (!systemAccountId || (requireGroupId && !groupId)) {
+    return undefined
+  }
+  return {
+    systemAccountId,
+    ...(apiKeyId ? { apiKeyId } : {}),
+    ...(groupId ? { groupId } : {})
+  }
 }
 
 function backgroundPendingQueuesSnapshot(queues: BackgroundWorkerIpcQueuesRuntime): Record<string, DbServiceRuntimeQueueSnapshot> {

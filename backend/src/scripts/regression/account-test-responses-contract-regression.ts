@@ -57,6 +57,23 @@ try {
     name: '账户测试 Responses 当前契约分组',
     providerCode: 'gpt'
   }, access)
+  const openAICompatibleGroup = repositories.createGroup({
+    name: 'OpenAI 兼容 Codex 默认能力分组',
+    providerCode: 'openai'
+  }, access)
+  const openAICompatibleCodexAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '测试 OpenAI 兼容 Codex 默认能力账户',
+    type: 'api_key',
+    groupId: openAICompatibleGroup.id,
+    clientCompatibility: 'codex_responses',
+    credentials: { api_key: 'sk-openai-compatible-codex-default-modes', base_url: mockBaseUrl }
+  }, access)
+  assert.deepEqual(
+    openAICompatibleCodexAccount.credentials.supported_endpoint_modes,
+    ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+    '通用 OpenAI 兼容账户选择 Codex Responses 时，省略 supported_endpoint_modes 也应默认包含 Responses SSE'
+  )
   const oauthAccount = repositories.createAccount({
     providerCode: 'gpt',
     name: '测试 OAuth 固定 Codex 账户',

@@ -1,13 +1,16 @@
 import type {
-  AccountAvailabilitySchedule,
   GroupSummary,
   SystemAccountSummary
-} from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import { getBusinessDatabase, newId, nowIso } from '../../storage/database.js'
-import * as repositories from '../../storage/repositories.js'
-import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
-import { refreshAccount } from './mockdata-account-helpers.js'
+} from '../../../../domain/types.js'
+import type { AccessScope } from '../../../../storage/access-scope.js'
+import { getBusinessDatabase, nowIso } from '../../../../storage/database.js'
+import * as repositories from '../../../../storage/repositories.js'
+import { accountApiKeyEntries } from '../../../../storage/account-api-key-rotation.js'
+import {
+  activeAccountAvailabilitySchedule,
+  inactiveAccountAvailabilitySchedule
+} from './availability-schedules.js'
+import { refreshAccount } from './account-helpers.js'
 import {
   dayMs,
   idPrefix,
@@ -16,7 +19,7 @@ import {
   type MockAccounts,
   type MockGroups,
   type MockSystemAccounts
-} from './mockdata-shared.js'
+} from '../shared.js'
 
 type DefaultGptGroupResolver = (systemAccountId: string) => GroupSummary
 
@@ -158,6 +161,7 @@ export function createAccounts(
     concurrencyLimit: 80,
     priority: 0,
     superPriorityEnabled: true,
+    availabilitySchedule: activeAccountAvailabilitySchedule(),
     notes: 'Mockdata 主力账号，超级优先'
   }, adminAccess)
 
@@ -185,6 +189,7 @@ export function createAccounts(
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini', 'gpt-4o-mini'],
     concurrencyLimit: 35,
     priority: 30,
+    availabilitySchedule: inactiveAccountAvailabilitySchedule(),
     notes: 'Mockdata 普通账号'
   }, adminAccess)
 
@@ -370,7 +375,7 @@ export function createAccounts(
     groupId: groups.experiment.id,
     credentials: apiKeyCredentials('scheduled-inactive'),
     supportedModels: ['gpt-5.4-mini'],
-    availabilitySchedule: inactiveAvailabilitySchedule(),
+    availabilitySchedule: inactiveAccountAvailabilitySchedule(),
     tags: ['时间计划'],
     concurrencyLimit: 8,
     priority: 100,
@@ -461,6 +466,7 @@ export function createAccounts(
     concurrencyLimit: 120,
     priority: 4,
     superPriorityEnabled: true,
+    availabilitySchedule: activeAccountAvailabilitySchedule(),
     notes: 'Mockdata 普通管理员高并发账号，用于管理员角色高并发分组验收'
   }, mockUserAccess(users.manager))
 
@@ -591,19 +597,6 @@ function oauthCredentials(suffix: string, expiresHours: number): Record<string, 
     account_id: `mockdata-openai-user-${suffix}`,
     expires_at: new Date(Date.now() + expiresHours * 60 * 60_000).toISOString(),
     base_url: 'https://api.openai.com/v1'
-  }
-}
-
-function inactiveAvailabilitySchedule(): AccountAvailabilitySchedule {
-  return {
-    enabled: true,
-    timezone: 'UTC',
-    mode: 'allow_windows',
-    windows: [{ daysOfWeek: [1], start: '00:00', end: '00:01' }],
-    dateRange: {
-      startDate: new Date(Date.now() + 14 * dayMs).toISOString().slice(0, 10),
-      endDate: new Date(Date.now() + 21 * dayMs).toISOString().slice(0, 10)
-    }
   }
 }
 

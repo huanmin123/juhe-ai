@@ -65,12 +65,13 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
+  const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
   const candidates = listAccountsDueForCooldownRetest(batchSize)
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0
   for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours })) {
+    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours, longTermIntervalHours })) {
       enqueuedCount += 1
     } else {
       skippedQueuedCount += 1

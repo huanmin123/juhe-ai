@@ -3,7 +3,7 @@ import http from 'node:http'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createSession, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { systemSettingKeys } from '../../storage/settings.repository.js'
-import { createMockGatewayFixture } from '../maintenance/mockdata-fixtures.js'
+import { createMockGatewayFixture } from '../maintenance/mockdata/fixtures.js'
 
 const backendUrl = trimTrailingSlash(runtimeConfig.smokeTest.backendUrl)
 const accountName = runtimeConfig.smokeTest.accountName
@@ -136,6 +136,7 @@ interface SystemSettings {
   cooldownAccountRetestIntervalSeconds?: number
   cooldownAccountRetestBatchSize?: number
   cooldownAccountRetestMaxBackoffHours?: number
+  cooldownAccountRetestLongTermIntervalHours?: number
   oauthAccessTokenRefreshIntervalSeconds?: number
   oauthAccessTokenRefreshLeadSeconds?: number
   oauthAccessTokenRefreshBatchSize?: number
@@ -209,6 +210,7 @@ async function main(): Promise<void> {
     assert(typeof settings.cooldownAccountRetestIntervalSeconds === 'number', '系统设置缺少 cooldownAccountRetestIntervalSeconds')
     assert(typeof settings.cooldownAccountRetestBatchSize === 'number', '系统设置缺少 cooldownAccountRetestBatchSize')
     assert(typeof settings.cooldownAccountRetestMaxBackoffHours === 'number', '系统设置缺少 cooldownAccountRetestMaxBackoffHours')
+    assert(typeof settings.cooldownAccountRetestLongTermIntervalHours === 'number', '系统设置缺少 cooldownAccountRetestLongTermIntervalHours')
     assert(typeof settings.oauthAccessTokenRefreshIntervalSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshIntervalSeconds')
     assert(typeof settings.oauthAccessTokenRefreshLeadSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshLeadSeconds')
     assert(typeof settings.oauthAccessTokenRefreshBatchSize === 'number', '系统设置缺少 oauthAccessTokenRefreshBatchSize')

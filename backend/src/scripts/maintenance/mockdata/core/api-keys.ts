@@ -1,14 +1,17 @@
-import type { ApiKeyAvailabilitySchedule } from '../../domain/types.js'
-import type { AccessScope } from '../../storage/access-scope.js'
-import * as repositories from '../../storage/repositories.js'
+import type { AccessScope } from '../../../../storage/access-scope.js'
+import * as repositories from '../../../../storage/repositories.js'
 import {
   dayMs,
   namePrefix,
   type MockApiKeys,
   type MockGroups,
   type MockSystemAccounts
-} from './mockdata-shared.js'
-import { quotaLimits } from './mockdata-quota-limits.js'
+} from '../shared.js'
+import {
+  activeApiKeyAvailabilitySchedule,
+  inactiveApiKeyAvailabilitySchedule
+} from './availability-schedules.js'
+import { quotaLimits } from './quota-limits.js'
 
 export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: MockSystemAccounts): MockApiKeys {
   const adminMain = repositories.createApiKeyRecord({
@@ -16,7 +19,8 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     description: 'Mockdata 主力本地网关 Key，绑定主力分组',
     groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
     status: 'active',
-    quotaLimits: quotaLimits(35, 260, 1000)
+    quotaLimits: quotaLimits(35, 260, 1000),
+    availabilitySchedule: activeApiKeyAvailabilitySchedule()
   }, adminAccess)
   const adminHighConcurrency = repositories.createApiKeyRecord({
     name: `${namePrefix}高并发 AI Key`,
@@ -80,7 +84,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     description: 'Mockdata 当前不在允许时段内的 API Key，用于时间计划运行态和网关拒绝状态展示',
     groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
     status: 'active',
-    availabilitySchedule: inactiveAvailabilitySchedule(),
+    availabilitySchedule: inactiveApiKeyAvailabilitySchedule(),
     quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
   const adminBackup = repositories.createApiKeyRecord({
@@ -88,7 +92,8 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     description: 'Mockdata 备用 Key，绑定备用分组',
     groupBindings: [{ groupId: groups.backup.id, priority: 1, status: 'active' }],
     status: 'active',
-    quotaLimits: quotaLimits(20, 120, 480)
+    quotaLimits: quotaLimits(20, 120, 480),
+    availabilitySchedule: inactiveApiKeyAvailabilitySchedule()
   }, adminAccess)
   const adminOAuth = repositories.createApiKeyRecord({
     name: `${namePrefix}OAuth 网关 Key`,
@@ -217,18 +222,5 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     opsAccountAuthorized,
     financeAuthorized,
     viewerAuthorized
-  }
-}
-
-function inactiveAvailabilitySchedule(): ApiKeyAvailabilitySchedule {
-  return {
-    enabled: true,
-    timezone: 'UTC',
-    mode: 'allow_windows',
-    windows: [{ daysOfWeek: [1], start: '00:00', end: '00:01' }],
-    dateRange: {
-      startDate: new Date(Date.now() + 14 * dayMs).toISOString().slice(0, 10),
-      endDate: new Date(Date.now() + 21 * dayMs).toISOString().slice(0, 10)
-    }
   }
 }

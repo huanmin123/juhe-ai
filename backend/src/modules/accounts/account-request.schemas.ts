@@ -97,7 +97,7 @@ export const accountTagsUpdateSchema = z.object({
 
 export const accountTrafficMigrationSchema = z.object({
   targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
-  sourceStatus: z.enum(['temporary_unavailable', 'disabled']).optional()
+  sourceStatus: z.enum(['temporary_unavailable', 'disabled', 'unchanged']).optional()
 }).strict()
 
 export const authorizedAccountDispatchSchema = z.object({

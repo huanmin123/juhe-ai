@@ -19,6 +19,8 @@ assert.equal(testPathFromRecentShape(undefined, true, 'openai_standard'), '/v1/r
 assert.equal(testPathFromRecentShape(recentShape('/v1/chat/completions', false), false, 'codex_responses'), '/v1/responses', 'Codex Responses 兼容必须固定走 Responses')
 assert.equal(testPathFromRecentShape(recentShape('/v1/chat/completions', false), false, 'openai_standard'), '/v1/chat/completions', '普通 API Key 可沿用近期 chat completions 形态')
 assert.equal(testPathFromRecentShape(recentShape('/v1/responses', true), false, 'openai_standard'), '/v1/responses', '普通 API Key 默认走 Responses')
+assert.equal(testPathFromRecentShape(undefined, false, 'openai_standard', ['chat_json', 'chat_sse']), '/v1/chat/completions', 'Chat-only 账户测试不能默认走 Responses')
+assert.equal(testPathFromRecentShape(recentShape('/v1/responses', true), false, 'openai_standard', ['chat_json']), '/v1/chat/completions', '近期 Responses 形态不应覆盖 Chat-only 能力限制')
 
 const chatRequest = createOpenAITestRequest({
   explicitModel: '  gpt-5.5-chat  ',
@@ -52,7 +54,7 @@ const oauthRequest = createOpenAITestRequest({
 assert.equal(oauthRequest.path, '/v1/responses', 'OAuth 即使近期是 chat 也必须走 Responses')
 assert.equal(oauthRequest.model, 'gpt-5.5-oauth', '无显式模型时应使用 fallback model')
 assert.equal(oauthRequest.body.model, 'gpt-5.5-oauth', 'Responses payload 应写入模型')
-assert.equal(oauthRequest.body.stream, false, 'OAuth Responses 应继承 recent stream 标记')
+assert.equal(oauthRequest.body.stream, true, 'OAuth Responses 测试应按有效 Codex SSE 形态执行')
 assert.equal(oauthRequest.body.store, false, 'OAuth Responses 测试不应存储')
 assert.equal(oauthRequest.body.max_output_tokens, 1, 'OAuth Responses 测试应限制输出 token')
 
@@ -76,6 +78,17 @@ assert.deepEqual(
   },
   'chat completions payload helper 应保持原字段'
 )
+
+const chatOnlyRequest = createOpenAITestRequest({
+  fallbackModel: 'chat-only-model',
+  prompt: 'ok',
+  isOAuth: false,
+  clientCompatibility: 'openai_standard',
+  supportedEndpointModes: ['chat_json'],
+  requestShape: recentShape('/v1/responses', true)
+})
+assert.equal(chatOnlyRequest.path, '/v1/chat/completions', 'Chat JSON-only 账户应构造 chat completions 测试路径')
+assert.equal(chatOnlyRequest.body.stream, false, 'Chat JSON-only 账户测试必须使用非流式 JSON')
 
 const requestSource = readFileSync(resolve('src/modules/accounts/account-test-request.ts'), 'utf8')
 assert.doesNotMatch(requestSource, /handleOpenAIGatewayRequest|findAccountForTest|flushGatewayAccountSideEffects/, '测试请求 payload 模块不能依赖真实网关编排或账号解析')

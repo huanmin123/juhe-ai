@@ -85,7 +85,7 @@ function formatJobDuration(value?: number) {
 
 <style scoped>
 :deep(.process-event-loop-table) {
-  margin-bottom: 12px;
+  margin-top: 12px;
 }
 
 :deep(.process-event-loop-table .ant-table-tbody > tr > td) {
@@ -122,7 +122,7 @@ function formatJobDuration(value?: number) {
 
 @media (max-width: 768px) {
   :deep(.process-event-loop-table) {
-    margin-bottom: 10px;
+    margin-top: 10px;
   }
 }
 </style>

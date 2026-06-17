@@ -37,6 +37,7 @@ const [
   usageRecordQueue,
   auditLogQueue,
   gatewayCache,
+  clientIpErrorCircuit,
   backgroundIpc
 ] = await Promise.all([
   import('../../storage/database.js'),
@@ -52,6 +53,7 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
   import('../../modules/background/background-ipc.js')
 ])
 
@@ -132,11 +134,20 @@ try {
     assert.equal(rawBodyMiddlewareHitCount, 0, '无效 API Key 不应进入 raw body 读取链路')
     assert.equal(fakeChild.sentOperationCount, 1, '无效 API Key 只需要一次运行配置读取')
 
+    for (let index = 0; index < 8; index += 1) {
+      await postJson(`${baseUrl}/v1/responses`, authRejectBody, 'sk-pre-auth-circuit', `preAuthCircuitSeed${index}`)
+    }
+    const preAuthCircuitLargeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(1024 * 1024) })
+    const preAuthCircuit = await postJson(`${baseUrl}/v1/responses`, preAuthCircuitLargeBody, 'sk-pre-auth-circuit', 'preAuthCircuitLargeBody')
+    assert.equal(preAuthCircuit.status, 429, '认证前来源熔断应在读取大 body 前返回 429')
+    assert.equal(rawBodyMiddlewareHitCount, 0, '认证前 429 熔断不应进入 raw body 读取链路')
+
+    const dbOperationCountBeforeDisabledImage = fakeChild.sentOperationCount
     const disabledImage = await postJson(`${baseUrl}/v1/images/generations`, authRejectBody, apiKey.key, 'disabledImage')
     assert.equal(disabledImage.status, 403, '未开启图像生成权限的 API Key 应在读取 body 前返回 403')
     assert.match(disabledImage.text, /当前用户图像生成被禁用了，请联系管理员开启/, '图像生成权限禁用应返回中文错误')
     assert.equal(rawBodyMiddlewareHitCount, 0, '路径可识别的图像请求被禁用时不应读取 raw body')
-    assert.equal(fakeChild.sentOperationCount, 2, '图像权限早拒绝只需要复用一次运行配置读取')
+    assert.equal(fakeChild.sentOperationCount, dbOperationCountBeforeDisabledImage + 1, '图像权限早拒绝只需要一次运行配置读取')
 
     const valid = await postJson(`${baseUrl}/v1/responses`, body, apiKey.key, 'valid')
     assert.equal(valid.status, 200, `合法 API Key 应继续进入网关 body 读取链路：${valid.text}`)
@@ -149,11 +160,17 @@ try {
     repositories.updateSettings({ gatewayTextRawBodyLimitMegabytes: 2 })
     gatewayCache.clearGatewayRuntimeCacheLocal()
     const configuredTextLimitBytes = gatewayRequestBody.gatewayTextRawBodyLimitBytes(2)
+    const rawBodyHitsBeforeChatOversize = rawBodyMiddlewareHitCount
+    const chatOversizeBody = JSON.stringify({ model: 'gpt-5.4', messages: [{ role: 'user', content: 'x'.repeat(configuredTextLimitBytes) }] })
+    const chatOversize = await postJson(`${baseUrl}/v1/chat/completions`, chatOversizeBody, apiKey.key, 'chatOversize')
+    assert.equal(chatOversize.status, 413, '超过系统设置里的 Chat Completions 文本请求体上限应在读取 body 前返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeChatOversize, '超过动态文本上限且 URL 可确定文本端点时不应进入 raw body 读取链路')
+
     const oversizeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(configuredTextLimitBytes) })
     const usageQueueLengthBeforeOversize = backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.queueLength
     const oversize = await postJson(`${baseUrl}/v1/responses`, oversizeBody, apiKey.key, 'oversize')
-    assert.equal(oversize.status, 413, '超过系统设置里的文本请求体上限应在进入业务解析前返回 413')
-    assert.equal(rawBodyMiddlewareHitCount, 2, '超过动态文本上限但未超过入口上限的合法请求会进入 raw body 限额判定')
+    assert.equal(oversize.status, 413, '超过系统设置里的 Responses 文本请求体上限应在完成 metadata 扫描后返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeChatOversize + 1, 'Responses 端点需要先扫描 body model，才能区分文本和图像模型')
     assert.equal(
       backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.queueLength,
       usageQueueLengthBeforeOversize + 1,
@@ -175,6 +192,7 @@ try {
   console.log('网关认证预解析回归通过：无效请求不读取大 body，合法请求复用 runtime 后继续处理')
 } finally {
   await gatewayJsonParser.stopGatewayJsonParseWorker()
+  clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
@@ -221,6 +239,7 @@ async function listen(): Promise<Server> {
   app.use(requestContext.requestContextMiddleware)
   app.use(gatewayRequest.preResolveGatewayRuntime)
   app.use(gatewayRoutes.handleGatewayDbServiceUnavailable)
+  app.use(gatewayBodyMiddleware.rejectGatewayRawBodyByContentLength)
   app.use(express.raw({ type: () => true, limit: gatewayRequestBody.gatewayRawBodyHardLimit }))
   app.use(handleRawBodyErrorForTest)
   app.use((_req, _res, next) => {
