@@ -198,6 +198,15 @@ try {
   assert.equal(restored?.fallbackEnabled, true, '恢复后应继续保留被授权人的实例降级备用')
   assert(repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === granteeNormalAccount.id), '恢复后授权实例应重新参与被授权人调度')
 
+  const unchangedAuthorizedMigration = repositories.migrateAccountTraffic({
+    sourceAccountId: granteeSuperAccount.id,
+    targetAccountId: granteeOwnedAccount.id,
+    sourceStatus: 'unchanged'
+  }, granteeAccess)
+  assert.equal(unchangedAuthorizedMigration?.sourceAccount.status, 'active', '不影响原账户迁移不应改变授权实例状态')
+  assert.equal(repositories.listAccounts(ownerAccess).find((account) => account.id === superAccount.id)?.status, 'active', '不影响原账户迁移不应修改所有者原账户状态')
+  assert(repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === granteeSuperAccount.id), '不影响原账户迁移后源授权实例仍应参与调度')
+
   const granteeAccounts = repositories.listAccounts(granteeAccess)
   const granteeSuperView = granteeAccounts.find((account) => account.id === granteeSuperAccount.id)
   const granteeNormalView = granteeAccounts.find((account) => account.id === granteeNormalAccount.id)
