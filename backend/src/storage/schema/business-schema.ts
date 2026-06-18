@@ -595,6 +595,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       executed_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS account_schedule_status_events (
+      event_key TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      executed_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS system_settings (
       system_account_id TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -765,6 +772,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_group_key ON api_key_group_bindings(system_account_id, group_id, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_schedule_status_events_api_key
       ON api_key_schedule_status_events(api_key_id, executed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_schedule_status_events_account
+      ON account_schedule_status_events(account_id, executed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_resource ON resource_authorization_grants(resource_type, resource_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_user ON resource_authorization_grants(grantee_system_account_id, status);

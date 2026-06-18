@@ -153,6 +153,26 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
       return
     }
+    if (key === 'schedule-enable' || key === 'schedule-disable') {
+      if (isAuthorizedAccount(account)) {
+        message.warning('授权账户的时间计划由来源账户控制')
+        return
+      }
+      if (account.status !== 'active') {
+        message.warning('只有正常状态的账户可以提前启停时间计划')
+        return
+      }
+      if (!account.availabilitySchedule?.enabled) {
+        message.warning('当前账户未启用时间计划')
+        return
+      }
+      await updateAccountState(
+        account,
+        { availabilityScheduleActive: key === 'schedule-enable' },
+        key === 'schedule-enable' ? '账户已提前启用' : '账户已提前关闭'
+      )
+      return
+    }
     if (key === 'super-priority-on' || key === 'super-priority-off') {
       const enabled = key === 'super-priority-on'
       if (enabled && isAuthorizedAccount(account) && !canUseBoundAuthorizedAccount(account)) {

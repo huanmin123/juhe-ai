@@ -20,6 +20,7 @@ export const accountCreateInputKeys = new Set([
   'groupId',
   'accountExpiresAt',
   'availabilitySchedule',
+  'availabilityScheduleActive',
   'notes'
 ])
 
@@ -39,6 +40,7 @@ export const accountUpdateInputKeys = new Set([
   'schedulable',
   'accountExpiresAt',
   'availabilitySchedule',
+  'availabilityScheduleActive',
   'notes'
 ])
 

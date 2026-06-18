@@ -7,9 +7,11 @@
 - `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合所有启用 OpenAI v1 供应商的模型。
 - `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。
 
-这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 GLM、Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。
+智谱 GLM 的接入细节单独写在 [智谱 GLM 账号接入](智谱GLM账号接入.md)，DeepSeek 的接入细节单独写在 [DeepSeek 账号接入](DeepSeek账号接入.md)。本文只维护 OpenAI 与 GPT 语义，避免把 GLM、DeepSeek 的厂商兼容差异和 OpenAI / GPT 账户接入混在一起。
 
-当前可创建和可调度的供应商协议档案有两个：`profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或由供应商解析出档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
+这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。智谱 GLM 和 DeepSeek 虽然都提供 OpenAI-compatible surface，但已按独立专题接入。
+
+本文覆盖的可创建和可调度供应商协议档案有两个：`profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。目标 GLM 档案 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1` 单独见 [智谱 GLM 账号接入](智谱GLM账号接入.md)；目标 DeepSeek 档案 `profile_deepseek_openai_v1` 与 `profile_deepseek_anthropic_v1` 单独见 [DeepSeek 账号接入](DeepSeek账号接入.md)。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或由供应商解析出档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 `API Key 管理` 或 `我的 API Key` 页面生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
@@ -41,6 +43,8 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 type OpenAICompatibleAccountType = 'api_key'
 type GptAccountType = 'api_key' | 'oauth'
 ```
+
+上面的类型块只表达本文覆盖的 OpenAI / GPT 范围；目标 GLM 类型扩展为 `ProviderCode = 'glm'`，并新增 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1`，详见 GLM 专题文档；目标 DeepSeek 类型扩展为 `ProviderCode = 'deepseek'`，并新增 `profile_deepseek_openai_v1` 与 `profile_deepseek_anthropic_v1`，详见 DeepSeek 专题文档。
 
 默认协议定义：
 
@@ -96,7 +100,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
-- 时间计划不改写账户 `status`；后台同步任务维护 `availability_schedule_active` 派生字段，网关候选 SQL 只读取该字段。时段外退出网关账号候选，进入允许时段后在下一轮同步后重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。
+- 时间计划不改写账户 `status`；后台同步任务维护 `availability_schedule_active` 派生字段，网关候选 SQL 只读取该字段。后台只在计划开始 / 结束边界自动切换该派生字段，时段外也可通过“提前启用”或提交 `availabilityScheduleActive: true` 立即参与调度，计划内也可通过“提前关闭”或提交 `availabilityScheduleActive: false` 立即退出调度；后续仍按下一次计划边界自动切换。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
 
@@ -128,7 +132,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - `base_url` 保存时按 OpenAI-compatible 上游根地址严格校验：必须是完整绝对地址，公网生产地址只允许 `https`，本地 mock / 回归测试才可通过私网上游放行配置使用 `http`；禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
-- 时间计划不改写账户 `status`；后台同步任务维护 `availability_schedule_active` 派生字段，网关候选 SQL 只读取该字段。时段外退出网关账号候选，进入允许时段后在下一轮同步后重新参与调度。时区跟随系统默认值，用户表单不提供时区配置。
+- 时间计划不改写账户 `status`；后台同步任务维护 `availability_schedule_active` 派生字段，网关候选 SQL 只读取该字段。后台只在计划开始 / 结束边界自动切换该派生字段，时段外也可通过“提前启用”或提交 `availabilityScheduleActive: true` 立即参与调度，计划内也可通过“提前关闭”或提交 `availabilityScheduleActive: false` 立即退出调度；后续仍按下一次计划边界自动切换。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 
 透传策略：GPT 账户默认按供应商网关策略透传，用户侧不提供通用透传开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。GPT API Key 账号默认使用 `codex_responses`，对 `POST /responses` / `POST /v1/responses` 按 Codex Responses 形态补齐请求体和必要流式请求头，其他路径继续使用客户端 `rawBody`；如需所有路径都按公开 OpenAI-compatible API 原样透传，可显式切换为 `openai_standard`。Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。OAuth 账号固定进入 `openai_oauth_codex` adapter，不读取也不接受用户侧客户端兼容模式覆盖。
@@ -144,7 +148,7 @@ type GptAccountType = 'api_key' | 'oauth'
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
-- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；当前内置值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。
+- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；本文当前内置值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，目标 GLM 还会新增 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1`，目标 DeepSeek 还会新增 `profile_deepseek_openai_v1` 与 `profile_deepseek_anthropic_v1`。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 账户标签按系统账户维度保存，一个账户可以绑定多个标签；新增和编辑弹窗支持从下拉选择已有标签，也支持直接输入新标签。下拉内可删除未绑定任何账户的标签；标签已绑定账户时禁止删除。
@@ -279,7 +283,7 @@ GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括�
 - 到期时间（授权账户优先展示授权到期时间；没有授权到期时间时展示账户到期时间）
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、标签、并发、优先级、代理、过期时间、备注、账户错误处理规则、账户响应检查规则和 API Key 账户客户端兼容等配置；GPT OAuth 账户客户端兼容固定显示 Codex Responses，不提供切换。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖测试、后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认“不影响原账户”，只把已识别且当前命中源账户的客户端会话迁到目标账户；也可把原账户改为临时不可调用或停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接；只有选择临时不可调用或停用时，迁移后当前分组才会在源账号仍不可候选时短期偏向目标账户，目标不可用或并发不可承接时继续按原有候选顺序降级。`待测试` 是新建账户的默认隔离状态，不能参与调度，不能通过启用账户或恢复正常绕过测试；手动测试失败仍保持待测试，手动测试通过后才恢复为正常并开启调度。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；超过长期不可用观察阈值后不会转异常，而是显示“长期不可用”并继续低频自动复测。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”入口，非停用自有异常账户手动测试成功也可作为人工恢复入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发账户错误处理策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
+操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户、时间计划提前启用/提前关闭和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、标签、并发、优先级、代理、过期时间、备注、账户错误处理规则、账户响应检查规则和 API Key 账户客户端兼容等配置；GPT OAuth 账户客户端兼容固定显示 Codex Responses，不提供切换。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖测试、后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认“不影响原账户”，只把已识别且当前命中源账户的客户端会话迁到目标账户；也可把原账户改为临时不可调用或停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接；只有选择临时不可调用或停用时，迁移后当前分组才会在源账号仍不可候选时短期偏向目标账户，目标不可用或并发不可承接时继续按原有候选顺序降级。`待测试` 是新建账户的默认隔离状态，不能参与调度，不能通过启用账户或恢复正常绕过测试；手动测试失败仍保持待测试，手动测试通过后才恢复为正常并开启调度。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。时间计划提前启用/提前关闭只改 `availabilityScheduleActive`，不改 `status`、冷却或错误状态；只对正常自有账户开放，授权账户的可用时段由来源账户控制。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；超过长期不可用观察阈值后不会转异常，而是显示“长期不可用”并继续低频自动复测。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”入口，非停用自有异常账户手动测试成功也可作为人工恢复入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发账户错误处理策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
 
 “频繁失败”和“近期不稳”是账号质量反馈标签，不是新的物理状态；状态筛选仍按 `status`、冷却和实际可用性判断。频繁失败标签会触发后台故障确认，确认失败后才会升级为“临时不可调用”，确认成功则继续保持正常。
 

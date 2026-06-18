@@ -2,7 +2,11 @@ import type { ProcessEventLoopSample } from '../../shared/process-event-loop-mon
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
-import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
+import type { AccountRuntimeAvailabilityClearTarget, DbServiceOperation } from '../db-service/db-service-types.js'
+import type {
+  BackgroundStatsWriteOperation,
+  BackgroundStatsWriteOperationResult
+} from './background-stats-writer.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
@@ -116,6 +120,12 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
   | { type: 'background_worker_ingest_status_request'; requestId: string }
   | { type: 'background_worker_ingest_status_response'; requestId: string; status?: BackgroundWorkerIngestDrainStatus }
+  | { type: 'background_worker_db_service_request'; requestId: string; operation: DbServiceOperation }
+  | { type: 'background_worker_db_service_response'; requestId: string; ok: true; result: unknown }
+  | { type: 'background_worker_db_service_response'; requestId: string; ok: false; errorMessage: string }
+  | { type: 'background_worker_stats_write_request'; requestId: string; operation: BackgroundStatsWriteOperation }
+  | { type: 'background_worker_stats_write_response'; requestId: string; ok: true; result: BackgroundStatsWriteOperationResult }
+  | { type: 'background_worker_stats_write_response'; requestId: string; ok: false; errorMessage: string }
   | { type: 'background_worker_process_event_loop_request'; requestId: string }
   | { type: 'background_worker_process_event_loop_response'; requestId: string; samples: ProcessEventLoopSample[] }
   | { type: 'server_account_runtime_clear'; target: AccountRuntimeAvailabilityClearTarget }

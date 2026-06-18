@@ -47,15 +47,11 @@ try {
   await recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
 
   const runId = latestTemporaryRunId('record-maintenance:usage_records_cleanup')
-  assert(runId, '临时维护任务应创建 background_task_runs 记录')
-  const completed = await waitForTaskRun(runId)
-  assert.equal(completed.status, 'completed', `临时维护任务应完成：${JSON.stringify(completed)}`)
-  assert.equal(Number(completed.result.deletedRows ?? 0), 1, `临时维护任务应实际删除 1 条记录：${JSON.stringify(completed)}`)
+  assert.equal(runId, undefined, '使用记录清理不应再 fork 临时维护 worker')
   assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, '临时维护 worker 应删除符合条件的使用记录')
-  assert.equal(activeLeaseCount(runId), 0, '临时维护 worker 完成后应释放租约')
-  assert(eventLoopSampleCount('temporary-maintenance-worker') > 0, '临时维护 worker 运行期间应写入自身事件循环采样')
+  assert.equal(eventLoopSampleCount('temporary-maintenance-worker'), 0, '临时维护 worker 禁止直接写入 stats 事件循环采样')
 
-  console.log('临时维护 worker 回归通过：常驻 worker 只投递任务，临时进程执行、记录状态、释放租约并写入事件循环采样')
+  console.log('临时维护 worker 回归通过：使用记录清理由 ingest 本地队列执行，不再 fork 临时 worker 且不直写 stats 采样')
 } finally {
   await databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

@@ -56,6 +56,7 @@ export {
   markGroupAccountStatsDirty,
   markGroupAccountStatsDirtyByAccountIds,
   refreshDirtyGroupAccountStatsCache,
+  refreshDirtyGroupAccountStatsCacheWithWriter,
   refreshGroupAccountStatsCache
 } from './group-account-stats-cache.repository.js'
 export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'

@@ -3,11 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createProxy, deleteProxy, findProxy, listProxiesPage, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
+import { createProxy, deleteProxy, findProxy, listProxiesPage, listProxyOptions, ProxyInUseError, updateProxy } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
 import { testProxyById } from './proxy-test.service.js'
 
@@ -180,20 +181,24 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
       res.status(404).json({ message: '代理不存在' })
       return
     }
-    runLoggedOperation(() => {
-      const after = updateProxyTestState(report.proxyId, {
+    const after = await requestDbService({
+      type: 'update_proxy_test_state',
+      proxyId: report.proxyId,
+      input: {
         testStatus: report.status,
         latencyMs: report.baseLatencyMs,
         outboundIp: report.outboundIp,
         outboundRegion: report.outboundRegion,
         lastTestMessage: report.message,
         lastTestedAt: report.testedAt
-      })
-      if (!after) {
-        throw new Error('代理不存在')
       }
+    })
+    if (!after.updated) {
+      throw new Error('代理不存在')
+    }
+    runLoggedOperation(() => {
       return {
-        result: after,
+        result: report,
         log: {
           mode: 'admin',
           module: 'proxies',
@@ -204,7 +209,15 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
           resourceName: report.proxyName,
           summary: `检测代理：${report.proxyName}`,
           visibilityScope: 'admin_only',
-          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, after as unknown as Record<string, unknown> | undefined, {
+          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, {
+            ...before,
+            testStatus: report.status,
+            latencyMs: report.baseLatencyMs,
+            outboundIp: report.outboundIp,
+            outboundRegion: report.outboundRegion,
+            lastTestMessage: report.message,
+            lastTestedAt: report.testedAt
+          } as Record<string, unknown>, {
             testStatus: '检测状态',
             latencyMs: '延迟',
             outboundIp: '出口 IP',

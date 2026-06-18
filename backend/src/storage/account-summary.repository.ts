@@ -6,10 +6,7 @@ import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrenc
 import { userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
-import {
-  isAccountAvailabilityScheduleAllowed,
-  parseAccountAvailabilityScheduleJson
-} from './account-availability-schedule.js'
+import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
 import { loadAccountTagsByAccountIds } from './account-tags.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
@@ -132,7 +129,7 @@ function accountSummariesFromRows(
         && isAuthorizedSourceAccountAvailableForDispatch(row, currentNow)
         && row.status === 'active'
         && row.schedulable === 1
-        && isAccountAvailabilityScheduleAllowed(row.availability_schedule_json, new Date(Date.parse(currentNow)))
+        && row.availability_schedule_active !== 0
         && !isLaterIso(row.cooldown_until ?? undefined, currentNow)
       : row.schedulable === 1
     const displayOwnerSystemAccountId = isAuthorizedView
@@ -145,11 +142,9 @@ function accountSummariesFromRows(
     const dispatchFallbackEnabled = isAuthorizedView ? row.bound_group_local_fallback_enabled === 1 : row.fallback_enabled === 1
     const clientCompatibility = accountResourceClientCompatibility(row)
     const availabilitySchedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
-    const currentNowMs = Date.parse(currentNow)
-    const currentNowDate = Number.isFinite(currentNowMs) ? new Date(currentNowMs) : new Date()
-    const availabilityScheduleActive = isAccountAvailabilityScheduleAllowed(row.availability_schedule_json, currentNowDate)
+    const availabilityScheduleActive = row.availability_schedule_active !== 0
     const sourceAvailabilityScheduleActive = isAuthorizedView
-      ? isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json, currentNowDate)
+      ? row.source_availability_schedule_active !== 0
       : undefined
     const authorizationSources = row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : []
     const authorizationQuotaExceeded = row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined
@@ -352,7 +347,7 @@ export function isAuthorizedSourceAccountAvailableForDispatch(row: AccountListRo
   return Boolean(row.source_status)
     && row.source_status === 'active'
     && row.source_schedulable === 1
-    && isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json, nowDate)
+    && row.source_availability_schedule_active !== 0
     && row.source_last_error_code !== 'account_expired'
     && !isAccountExpired(row.source_account_expires_at ?? undefined, Number.isFinite(nowMs) ? nowMs : undefined)
     && !isLaterIso(row.source_cooldown_until ?? undefined, now)

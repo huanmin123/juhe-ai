@@ -14,7 +14,9 @@
   - [../架构总览.md](../架构总览.md)
   - [../../functions/请求处理分层设计.md](../../functions/请求处理分层设计.md)
   - [../../functions/OpenAI账号接入.md](../../functions/OpenAI账号接入.md)
+  - [../../functions/智谱GLM账号接入.md](../../functions/智谱GLM账号接入.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
+  - [../../functions/SQLite单写者写队列治理设计.md](../../functions/SQLite单写者写队列治理设计.md)
   - [后台任务使用说明](后台任务使用说明.md)
   - [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)
   - [开发运行说明](../../develop/运行说明.md)
@@ -23,7 +25,7 @@
 ## 2. 后端范围
 
 - 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、使用记录、原始审计日志、统计聚合和后台任务承载层。
-- 当前后端已覆盖 GPT 供应商、OpenAI v1 协议适配、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、原始审计日志、统计缓存、系统设置、后台 worker、DB service 和 GPT OAuth/API Key 账号接入闭环。
+- 当前后端已覆盖 GPT 供应商、OpenAI v1 协议适配、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、原始审计日志、统计缓存、系统设置、后台 worker、DB service 和 GPT OAuth/API Key 账号接入闭环；目标新增智谱 GLM 供应商，分为通用 GLM API Key 和 GLM Coding Plan Key 两套 OpenAI v1 Chat 档案。
 - 后端只暴露两类入口：系统管理面 `/__aisys__/api/*` 和 OpenAI 兼容网关 `/*` / `/v1/*`；客户端不直接访问上游账号凭据。
 - 后端是业务事实源；前端不传系统账户归属字段，不自行决定数据隔离、调度状态或敏感字段展示。
 
@@ -33,8 +35,9 @@
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行。新写入的 `usage_records` 已通过 `JUHE_AI_USAGE_SHARD_ROOT` / `JUHE_AI_USAGE_SHARD_COUNT` 拆到多个本地 SQLite shard 文件；数据集目录库继续保存审计、操作日志、运行日志索引、模型检测和 shard 元数据。
+- 写入边界：同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
-- 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前启用 `openai` 通用 OpenAI-compatible 供应商和 `gpt` 子供应商；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。
+- 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前启用 `openai` 通用 OpenAI-compatible 供应商和 `gpt` 子供应商，目标新增 `glm` 子供应商；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
 
 ## 4. 目录规划
@@ -68,7 +71,7 @@
 | 模块 | 后端落点 | 说明 |
 | --- | --- | --- |
 | 登录与系统账户 | `modules/auth/`、`modules/system-accounts/` | 登录、会话、验证码、失败防护和系统账户管理 |
-| 协议与供应商 | `modules/providers/` | 当前内置并启用 `openai` 通用供应商、`gpt` 子供应商、`profile_openai_openai_v1` 和 `profile_gpt_openai_v1` 协议档案，`openai/v1` 属于协议层 |
+| 协议与供应商 | `modules/providers/` | 当前内置并启用 `openai` 通用供应商、`gpt` 子供应商、`profile_openai_openai_v1` 和 `profile_gpt_openai_v1` 协议档案；目标新增 `glm` 供应商、`profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1`，`openai/v1` 属于协议层 |
 | AI 账户 | `modules/accounts/` | 账号 CRUD、账号测试、凭据展示边界和调度属性 |
 | OpenAI OAuth | `modules/openai-oauth/` | PKCE、refresh token 创建账户和 token 刷新；额度快照由网关响应头被动写入 |
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
@@ -147,12 +150,13 @@ flowchart LR
 
 - SQLite 是当前唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
 - 运行时必须明确区分业务库、统计数据集域和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志、运行日志索引、模型检测和 shard 元数据，新写入的使用记录保存到 usage shard 文件；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
+- 多进程写入必须按 SQLite 文件级单写者治理。WAL 和 `busy_timeout` 只能吸收短冲突，不能允许多个 worker 长期并发写同一个数据库文件。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
 - 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
 - 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
 - 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引。
-- 启动时通过 `seedDefaults()` 写入默认超级管理员、OpenAI v1 协议、`openai` 通用供应商、`gpt` 子供应商、两个供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、全局设置和系统设置。
+- 启动时通过 `seedDefaults()` 写入默认超级管理员、OpenAI v1 协议、`openai` 通用供应商、`gpt` 子供应商、目标 `glm` 供应商、OpenAI / GPT / GLM 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
 - 当前项目以最新完整模型为准，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
 - 禁止在后端启动、repository、routes 或前端页面里挂载一次性数据处理、临时同步修复、临时表改名或迁移标记代码。
@@ -289,7 +293,7 @@ erDiagram
 - 涉及数据库表、字段、统计缓存、敏感字段或 schema 演进时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
 - 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
-- 涉及 GPT OAuth、API Key 账户、上游请求或账号测试时，同时看 [OpenAI 账号接入](../../functions/OpenAI账号接入.md) 和 [请求处理分层设计](../../functions/请求处理分层设计.md)。
+- 涉及 GPT OAuth、OpenAI-compatible API Key 账户、上游请求或账号测试时，同时看 [OpenAI 账号接入](../../functions/OpenAI账号接入.md) 和 [请求处理分层设计](../../functions/请求处理分层设计.md)；涉及智谱 GLM 通用 API 或 GLM Coding Plan 时，同时看 [智谱 GLM 账号接入](../../functions/智谱GLM账号接入.md)。
 - 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)；涉及多 worker 拆分、热点隔离、任务租约或 worker 角色配置时，同时看 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
 - 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。

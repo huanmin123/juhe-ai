@@ -47,13 +47,14 @@ import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cool
 import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/background/account-api-key-cooldown-retest.service.js'
 import { getAccountHealthCheckQueueSnapshot } from './modules/background/account-health-check.service.js'
 import { getAccountQualityFailurePrecheckQueueSnapshot } from './modules/background/account-quality-failure-precheck.service.js'
+import { handleStatsWriteOperation, type BackgroundStatsWriteOperation } from './modules/background/background-stats-writer.js'
 import {
   cancelAccountTestTaskLocal,
   enqueueAccountTestTaskLocal,
   getManualAccountTestQueueSnapshot,
   startAccountTestTaskQueue
 } from './modules/accounts/account-test-task-queue.service.js'
-import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from './storage/database.js'
+import { datasetDatabasePath, getDatasetDatabase, statsDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
@@ -68,10 +69,9 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
   | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
+  | { type: 'background_worker_stats_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_process_event_loop_request'; requestId: unknown }
 
-getBusinessDatabase()
-getStatsDatabase()
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
 installWorkerSignalShutdownHooks()
@@ -83,13 +83,12 @@ if (isIngestWorker()) {
   installRuntimeLogIndexQueueShutdownHooks()
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
+  installRecordMaintenanceQueueShutdownHooks()
   setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
   startRuntimeLogFileImport()
 } else if (isMaintenanceWorker()) {
-  getDatasetDatabase()
   installRecordMaintenanceQueueShutdownHooks()
 } else if (isProbeWorker()) {
-  getDatasetDatabase()
   startAccountTestTaskQueue()
 }
 startBackgroundJobs()
@@ -156,6 +155,11 @@ process.on('message', (message: unknown) => {
           requestId: message.requestId,
           snapshot: buildRuntimeSnapshot()
         })
+      }
+      break
+    case 'background_worker_stats_write_request':
+      if (typeof message.requestId === 'string' && isStatsWorker()) {
+        void respondToStatsWriteRequest(message.requestId, message.operation)
       }
       break
     case 'background_worker_process_event_loop_request':
@@ -228,6 +232,25 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     accountApiKeyCooldownRetestQueue: getAccountApiKeyCooldownRetestQueueSnapshot(),
     accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),
     manualAccountTestQueue: getManualAccountTestQueueSnapshot()
+  }
+}
+
+async function respondToStatsWriteRequest(requestId: string, operation: unknown): Promise<void> {
+  try {
+    const result = await handleStatsWriteOperation(operation as BackgroundStatsWriteOperation)
+    sendWorkerMessage({
+      type: 'background_worker_stats_write_response',
+      requestId,
+      ok: true,
+      result
+    })
+  } catch (error) {
+    sendWorkerMessage({
+      type: 'background_worker_stats_write_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
   }
 }
 
@@ -349,6 +372,7 @@ function isDefaultWorker(): boolean {
 
 function isWorkerControlMessage(message: WorkerIncomingMessage): boolean {
   return message.type === 'background_worker_status_request'
+    || message.type === 'background_worker_stats_write_request'
     || message.type === 'background_worker_process_event_loop_request'
 }
 
@@ -358,6 +382,7 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_audit_logs'
     || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
+    || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_runtime_log_line'
 }
 

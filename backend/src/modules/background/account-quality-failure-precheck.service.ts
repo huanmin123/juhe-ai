@@ -5,10 +5,10 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   findAccountForTest,
   findRecentOpenAIRequestShapeForAccount,
-  markAccountTestTemporaryUnavailable,
   type AccountQualityFailurePrecheckCandidate
 } from '../../storage/repositories.js'
 import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
   enqueuedAt: string
@@ -113,7 +113,12 @@ async function runAccountQualityFailurePrecheckQueueItem(
     return true
   }
 
-  const updated = markAccountTestTemporaryUnavailable(account, accountQualityFailurePrecheckReason(item, result), accountAccess)
+  const updated = await requestBackgroundWorkerDbService({
+    type: 'mark_account_test_temporary_unavailable',
+    accountId: account.id,
+    reason: accountQualityFailurePrecheckReason(item, result),
+    access: accountAccess
+  })
   logger.warn({
     event: 'background_account_quality_failure_precheck_marked',
     accountId: account.id,
@@ -123,8 +128,8 @@ async function runAccountQualityFailurePrecheckQueueItem(
     durationMs: result.durationMs,
     recentRequestCount: item.recentRequestCount,
     recentErrorCount: item.recentErrorCount,
-    accountStatus: updated?.status,
-    updated: Boolean(updated)
+    accountStatus: updated?.accountStatus,
+    updated: updated?.updated ?? false
   }, '账户近期频繁失败且后台确认未通过，已尝试标记为临时不可调用')
   return true
 }

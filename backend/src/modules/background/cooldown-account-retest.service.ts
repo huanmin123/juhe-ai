@@ -3,12 +3,11 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
-  clearAccountFailureStateResult,
   findAccountForCooldownRetest,
-  findRecentOpenAIRequestShapeForAccount,
-  recordCooldownAccountRetestFailure
+  findRecentOpenAIRequestShapeForAccount
 } from '../../storage/repositories.js'
 import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
@@ -84,7 +83,10 @@ async function runCooldownAccountRetestQueueItem(
     }
   })
   if (result.success) {
-    const restored = clearAccountFailureStateResult(account.id)
+    const restored = await requestBackgroundWorkerDbService({
+      type: 'clear_account_failure_state',
+      accountId: account.id
+    })
     logger.info({
       event: 'background_cooldown_account_retest_restored',
       accountId: account.id,
@@ -93,8 +95,8 @@ async function runCooldownAccountRetestQueueItem(
       retryNumber: context.retryNumber,
       statusCode: result.statusCode,
       durationMs: result.durationMs,
-      accountStatus: restored.account?.status ?? result.accountStatus,
-      restored: restored.changed
+      accountStatus: restored?.accountStatus ?? result.accountStatus,
+      restored: restored?.changed ?? false
     }, '冷却账户复测通过，账号已尝试恢复到可用状态')
     return true
   }
@@ -115,13 +117,17 @@ async function runCooldownAccountRetestQueueItem(
     return true
   }
 
-  const failure = recordCooldownAccountRetestFailure(account.id, {
+  const failure = await requestBackgroundWorkerDbService({
+    type: 'record_cooldown_account_retest_failure',
+    accountId: account.id,
+    input: {
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     errorMessage: result.message,
     maxPauseMinutes: item.maxPauseMinutes,
     maxRecoveryHours: item.maxRecoveryHours,
     longTermIntervalHours: item.longTermIntervalHours
+    }
   })
 
   const logFields = {
@@ -134,22 +140,22 @@ async function runCooldownAccountRetestQueueItem(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     durationMs: result.durationMs,
-    retestFailureCount: failure.failureCount,
-    retestAction: failure.action,
-    recoveryStage: failure.recoveryStage,
-    nextCooldownUntil: failure.cooldownUntil,
-    nextBackoffSeconds: failure.backoffSeconds,
-    maxPauseSeconds: failure.maxPauseSeconds,
-    maxRecoverySeconds: failure.maxRecoverySeconds,
-    longTermIntervalSeconds: failure.longTermIntervalSeconds,
-    maxedFailureCount: failure.maxedFailureCount,
-    observationStartedAt: failure.observationStartedAt,
-    observationElapsedSeconds: failure.observationElapsedSeconds,
+    retestFailureCount: failure?.failureCount ?? 0,
+    retestAction: failure?.action,
+    recoveryStage: failure?.recoveryStage,
+    nextCooldownUntil: failure?.cooldownUntil,
+    nextBackoffSeconds: failure?.backoffSeconds,
+    maxPauseSeconds: failure?.maxPauseSeconds,
+    maxRecoverySeconds: failure?.maxRecoverySeconds,
+    longTermIntervalSeconds: failure?.longTermIntervalSeconds,
+    maxedFailureCount: failure?.maxedFailureCount,
+    observationStartedAt: failure?.observationStartedAt,
+    observationElapsedSeconds: failure?.observationElapsedSeconds,
     message: result.message
   }
-  if (failure.recoveryStage === 'long_term') {
+  if (failure?.recoveryStage === 'long_term') {
     logger.warn(logFields, '冷却账户复测超过自动恢复观察窗口，已进入长期不可用低频复测')
-  } else if (failure.recoveryStage === 'slow') {
+  } else if (failure?.recoveryStage === 'slow') {
     logger.warn(logFields, '冷却账户复测未通过，已进入慢速恢复通道')
   } else {
     logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')

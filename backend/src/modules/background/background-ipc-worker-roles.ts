@@ -15,7 +15,7 @@ export function workerMessageTargetRole(message: BackgroundWorkerMessage): Backg
     case 'background_worker_account_test_cancel':
       return 'probe-worker'
     case 'background_worker_record_maintenance':
-      return 'maintenance-worker'
+      return 'ingest-worker'
     default:
       return 'worker'
   }

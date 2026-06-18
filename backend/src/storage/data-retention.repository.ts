@@ -227,9 +227,14 @@ export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: st
   }
 }
 
-export async function cleanupNonBusinessDataBeforeWithResult(input: { cutoffAt: string; limit?: number }): Promise<NonBusinessDataHardCleanupResult> {
+export async function cleanupNonBusinessDataBeforeWithResult(input: {
+  cutoffAt: string
+  limit?: number
+  scope?: 'all' | 'dataset' | 'stats'
+}): Promise<NonBusinessDataHardCleanupResult> {
   const batchLimit = positiveLimit(input.limit)
   const cutoffs = hardCleanupCutoffs(input.cutoffAt)
+  const scope = input.scope ?? 'all'
   const tableRows: Record<string, number> = {}
   const fileDeletes: Record<string, number> = {}
   let deletedRows = 0
@@ -250,22 +255,26 @@ export async function cleanupNonBusinessDataBeforeWithResult(input: { cutoffAt: 
     deletedFiles += count
   }
 
-  const oldAuditBlobs = await cleanupAuditPayloadBlobsBeforeAsync(cutoffs.iso, batchLimit)
-  addRows('dataset.audit_payload_blobs', oldAuditBlobs.deletedRows)
-  addFiles('audit_payload_blobs', oldAuditBlobs.deletedFiles)
+  if (scope === 'all' || scope === 'dataset') {
+    const oldAuditBlobs = await cleanupAuditPayloadBlobsBeforeAsync(cutoffs.iso, batchLimit)
+    addRows('dataset.audit_payload_blobs', oldAuditBlobs.deletedRows)
+    addFiles('audit_payload_blobs', oldAuditBlobs.deletedFiles)
 
-  const usageRecords = cleanupUsageRecordsBeforeWithResult(cutoffs.iso, batchLimit)
-  addRows('usage_shards.usage_records', usageRecords.deletedRows)
-  hasMore = hasMore || usageRecords.hasMore
+    const usageRecords = cleanupUsageRecordsBeforeWithResult(cutoffs.iso, batchLimit)
+    addRows('usage_shards.usage_records', usageRecords.deletedRows)
+    hasMore = hasMore || usageRecords.hasMore
 
-  cleanupDiscoveredHardCleanupTablesBefore('dataset', cutoffs, batchLimit, addRows)
+    cleanupDiscoveredHardCleanupTablesBefore('dataset', cutoffs, batchLimit, addRows)
 
-  const emptyUsageShards = await cleanupEmptyUsageRecordShardFilesBefore(cutoffs.iso, batchLimit)
-  addRows('dataset.usage_record_shards', emptyUsageShards.usageRecordShards)
-  addFiles('usage_shard_files', emptyUsageShards.usageShardFiles)
-  hasMore = hasMore || emptyUsageShards.hasMore
+    const emptyUsageShards = await cleanupEmptyUsageRecordShardFilesBefore(cutoffs.iso, batchLimit)
+    addRows('dataset.usage_record_shards', emptyUsageShards.usageRecordShards)
+    addFiles('usage_shard_files', emptyUsageShards.usageShardFiles)
+    hasMore = hasMore || emptyUsageShards.hasMore
+  }
 
-  cleanupDiscoveredHardCleanupTablesBefore('stats', cutoffs, batchLimit, addRows)
+  if (scope === 'all' || scope === 'stats') {
+    cleanupDiscoveredHardCleanupTablesBefore('stats', cutoffs, batchLimit, addRows)
+  }
 
   return {
     cutoffAt: cutoffs.iso,

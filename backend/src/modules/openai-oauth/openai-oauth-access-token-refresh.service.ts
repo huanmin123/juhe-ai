@@ -16,7 +16,8 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import type { DbServiceOpenAIOAuthRefreshAccount } from '../db-service/db-service-types.js'
+import type { DbServiceOpenAIOAuthRefreshAccount, DbServiceOperation } from '../db-service/db-service-types.js'
+import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import {
   buildOpenAIOAuthCredentials,
@@ -252,7 +253,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
     try {
       await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false })
       refreshFailureStateByAccountId.delete(account.id)
-      restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account)
+      await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account)
       result.refreshed += 1
     } catch (error) {
       result.failed += 1
@@ -268,12 +269,13 @@ export async function refreshDueOpenAIOAuthAccessTokens(
       }), 'OpenAI OAuth 访问令牌刷新失败')
 
       if (failureState.count >= oauthTokenRefreshFailureThreshold && account.status !== 'pending_test') {
-        const updated = markAccountException(
-          account.id,
-          OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
-          openAIOAuthTokenRefreshStoppedMessage(failureState.count, message)
-        )
-        if (updated) {
+        const updated = await requestOpenAIOAuthDbService({
+          type: 'mark_account_exception',
+          accountId: account.id,
+          errorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
+          reason: openAIOAuthTokenRefreshStoppedMessage(failureState.count, message)
+        })
+        if (updated.updated) {
           clearGatewayRuntimeCache()
           refreshFailureStateByAccountId.delete(account.id)
           result.exceptioned += 1
@@ -356,7 +358,7 @@ async function findLatestRefreshableOpenAIOAuthAccount(
   persistMode: 'sync' | 'db-service'
 ): Promise<OpenAIOAuthRefreshAccount | undefined> {
   if (persistMode === 'db-service') {
-    const latest = await requestDbService({
+    const latest = await requestOpenAIOAuthDbService({
       type: 'find_openai_oauth_account_for_refresh',
       accountId: account.id
     })
@@ -370,12 +372,15 @@ async function findLatestRefreshableOpenAIOAuthAccount(
   return latest
 }
 
-function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary): void {
+async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary): Promise<void> {
   if (account.status !== 'error' || account.lastErrorCode !== OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE) {
     return
   }
-  const restored = clearAccountFailureState(account.id)
-  if (restored?.status === 'active') {
+  const restored = await requestOpenAIOAuthDbService({
+    type: 'clear_account_failure_state',
+    accountId: account.id
+  })
+  if (restored.changed && restored.accountStatus === 'active') {
     clearGatewayRuntimeCache()
     logger.info({
       event: 'openai_oauth_access_token_refresh_account_restored',
@@ -493,7 +498,18 @@ function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode:
 }
 
 function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
-  return options.persistMode ?? (runtimeConfig.processRole === 'server' ? 'db-service' : 'sync')
+  return options.persistMode ?? (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'worker' ? 'db-service' : 'sync')
+}
+
+async function requestOpenAIOAuthDbService<T extends DbServiceOperation>(operation: T): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T>> {
+  if (runtimeConfig.processRole === 'worker') {
+    const result = await requestBackgroundWorkerDbService(operation)
+    if (result === undefined) {
+      throw new Error(`后台 worker DB service 请求失败：${operation.type}`)
+    }
+    return result
+  }
+  return await requestDbService(operation)
 }
 
 function isRecoverableOpenAIOAuthRefreshRaceError(error: unknown): boolean {

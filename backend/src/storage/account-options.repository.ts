@@ -28,6 +28,7 @@ interface AccountOptionRow {
   schedulable: number
   account_expires_at: string | null
   availability_schedule_json?: string | null
+  availability_schedule_active?: number | null
   cooldown_until?: string | null
   last_error_code?: string | null
   priority: number
@@ -48,6 +49,7 @@ interface AccountOptionRow {
   source_status?: AccountStatus | null
   source_schedulable?: number | null
   source_availability_schedule_json?: string | null
+  source_availability_schedule_active?: number | null
   source_account_expires_at?: string | null
   source_cooldown_until?: string | null
   source_last_error_code?: string | null
@@ -196,6 +198,7 @@ function emptySourceAccountOptionColumns(): string {
   return `NULL AS source_status,
       NULL AS source_schedulable,
       NULL AS source_availability_schedule_json,
+      NULL AS source_availability_schedule_active,
       NULL AS source_account_expires_at,
       NULL AS source_cooldown_until,
       NULL AS source_last_error_code`
@@ -205,6 +208,7 @@ function sourceAccountOptionColumns(): string {
   return `source_accounts.status AS source_status,
       source_accounts.schedulable AS source_schedulable,
       source_accounts.availability_schedule_json AS source_availability_schedule_json,
+      source_accounts.availability_schedule_active AS source_availability_schedule_active,
       source_accounts.account_expires_at AS source_account_expires_at,
       source_accounts.cooldown_until AS source_cooldown_until,
       source_accounts.last_error_code AS source_last_error_code`
@@ -277,6 +281,7 @@ function accountOptionSelectColumns(): string {
     'accounts.schedulable',
     'accounts.account_expires_at',
     'accounts.availability_schedule_json',
+    'accounts.availability_schedule_active',
     'accounts.cooldown_until',
     'accounts.last_error_code',
     'accounts.priority',
@@ -358,13 +363,13 @@ function buildAccountOptionFilters(
     WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN source_accounts.status
     WHEN source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN source_accounts.schedulable <> 1 THEN 'disabled'
-    WHEN account_schedule_allowed(source_accounts.availability_schedule_json) = 0 THEN 'disabled'
+    WHEN COALESCE(source_accounts.availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
     WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'disabled'
+    WHEN COALESCE(accounts.availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN ${authorizedOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
     ELSE accounts.status
@@ -466,7 +471,7 @@ function ownerOptionStatusExpression(): string {
     THEN 'disabled'
     WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    WHEN account_schedule_allowed(accounts.availability_schedule_json) = 0 THEN 'disabled'
+    WHEN COALESCE(accounts.availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN ${ownerOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
     ELSE accounts.status

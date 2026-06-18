@@ -1,4 +1,6 @@
 import type { AccountSummary } from '../../domain/types.js'
+import type { AccountTestResult } from '../../domain/types.js'
+import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
@@ -539,6 +541,163 @@ export type DbServiceOperation =
     reason: string
   }
   | {
+    type: 'clear_account_failure_state'
+    accountId: string
+    allowPendingTestRestore?: boolean
+    allowErrorRestore?: boolean
+    authorizedBinding?: {
+      systemAccountId: string
+      groupId: string
+      accountAuthorizationId: string
+    }
+  }
+  | {
+    type: 'mark_account_test_temporary_unavailable'
+    accountId: string
+    reason: string
+    access?: {
+      systemAccountId: string
+      role: 'super_admin' | 'admin' | 'user'
+      systemAccountFilterId?: string
+    }
+  }
+  | {
+    type: 'record_account_health_check_success'
+    accountId: string
+    input: {
+      intervalHours: number
+      jitterMinutes: number
+      failureThreshold: number
+      statusCode?: number
+    }
+  }
+  | {
+    type: 'record_account_health_check_failure'
+    accountId: string
+    input: {
+      intervalHours: number
+      jitterMinutes: number
+      failureThreshold: number
+      statusCode?: number
+      errorCode?: string
+      errorMessage?: string
+    }
+  }
+  | {
+    type: 'record_cooldown_account_retest_failure'
+    accountId: string
+    input: {
+      traceId?: string
+      statusCode?: number
+      errorCode?: string
+      errorMessage?: string
+      maxPauseMinutes?: number
+      maxRecoveryHours?: number
+      longTermIntervalHours?: number
+    }
+  }
+  | {
+    type: 'mark_account_exception'
+    accountId: string
+    errorCode: string
+    reason: string
+    preserveDisabled?: boolean
+  }
+  | {
+    type: 'update_proxy_test_state'
+    proxyId: string
+    input: {
+      testStatus: string
+      latencyMs?: number | null
+      outboundIp?: string | null
+      outboundRegion?: string | null
+      lastTestMessage?: string | null
+      lastTestedAt?: string
+    }
+  }
+  | {
+    type: 'mark_all_group_account_stats_dirty'
+    reason: string
+  }
+  | {
+    type: 'delete_group_account_stats_dirty_rows'
+    rows: Array<{
+      groupId: string
+      updatedAt: string
+    }>
+  }
+  | {
+    type: 'update_group_account_stats_all_cursor'
+    cursorGroupId: string
+  }
+  | {
+    type: 'sync_api_key_availability_schedule_statuses'
+  }
+  | {
+    type: 'sync_account_availability_schedule_statuses'
+  }
+  | {
+    type: 'expire_due_resource_authorizations'
+  }
+  | {
+    type: 'cleanup_expired_deleted_accounts'
+  }
+  | {
+    type: 'cleanup_expired_system_sessions'
+    expiredBefore: string
+    limit: number
+  }
+  | {
+    type: 'account_test_task_maintenance'
+    action: 'start' | 'sweep'
+    maxQueuedMs?: number
+    sweepLimit?: number
+    refillLimit?: number
+  }
+  | {
+    type: 'mark_account_test_task_running'
+    taskId: string
+  }
+  | {
+    type: 'mark_account_test_task_canceled'
+    taskId: string
+    message: string
+  }
+  | {
+    type: 'complete_account_test_task'
+    taskId: string
+    result: AccountTestResult
+  }
+  | {
+    type: 'fail_account_test_task'
+    taskId: string
+    message: string
+    result?: AccountTestResult
+  }
+  | {
+    type: 'update_account_test_task_message'
+    taskId: string
+    message: string
+  }
+  | {
+    type: 'is_account_test_task_cancel_requested'
+    taskId: string
+  }
+  | {
+    type: 'read_account_test_task_cancel_message'
+    taskId: string
+  }
+  | {
+    type: 'record_account_successful_test_model'
+    accountId: string
+    model: string
+    access?: {
+      systemAccountId: string
+      role: 'super_admin' | 'admin' | 'user'
+      systemAccountFilterId?: string
+    }
+  }
+  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -589,6 +748,30 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
+  T extends { type: 'clear_account_failure_state' } ? { changed: boolean; accountStatus?: string } :
+  T extends { type: 'mark_account_test_temporary_unavailable' } ? { updated: boolean; accountStatus?: string } :
+  T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
+  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
+  T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :
+  T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
+  T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :
+  T extends { type: 'mark_all_group_account_stats_dirty' } ? { marked: true } :
+  T extends { type: 'delete_group_account_stats_dirty_rows' } ? { deleted: true } :
+  T extends { type: 'update_group_account_stats_all_cursor' } ? { updated: true } :
+  T extends { type: 'sync_api_key_availability_schedule_statuses' } ? import('../../storage/repositories.js').ApiKeyScheduleStatusSyncResult :
+  T extends { type: 'sync_account_availability_schedule_statuses' } ? import('../../storage/repositories.js').AccountAvailabilityScheduleStatusSyncResult :
+  T extends { type: 'expire_due_resource_authorizations' } ? { expired: number } :
+  T extends { type: 'cleanup_expired_deleted_accounts' } ? import('../../storage/repositories.js').ExpiredDeletedAccountCleanupResult :
+  T extends { type: 'cleanup_expired_system_sessions' } ? { deleted: number } :
+  T extends { type: 'account_test_task_maintenance' } ? { taskIds: string[]; canceledTaskIds: string[]; expiredQueuedTaskIds: string[] } :
+  T extends { type: 'mark_account_test_task_running' } ? AccountTestTaskRecord | undefined :
+  T extends { type: 'mark_account_test_task_canceled' } ? AccountTestTaskRecord | undefined :
+  T extends { type: 'complete_account_test_task' } ? AccountTestTaskRecord | undefined :
+  T extends { type: 'fail_account_test_task' } ? AccountTestTaskRecord | undefined :
+  T extends { type: 'update_account_test_task_message' } ? AccountTestTaskRecord | undefined :
+  T extends { type: 'is_account_test_task_cancel_requested' } ? { canceled: boolean } :
+  T extends { type: 'read_account_test_task_cancel_message' } ? { message: string } :
+  T extends { type: 'record_account_successful_test_model' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :

@@ -25,15 +25,15 @@ const [databaseModule, usageRecordShards] = await Promise.all([
 ])
 
 try {
-  assert(sqliteBusyTimeoutMs <= 100, `SQLite busy_timeout 应保持在 100ms 以内，当前为 ${sqliteBusyTimeoutMs}ms`)
-  assert.equal(readBusyTimeout(databaseModule.getBusinessDatabase()), sqliteBusyTimeoutMs, '业务库 busy_timeout 应使用统一低等待配置')
-  assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集目录库 busy_timeout 应使用统一低等待配置')
-  assert.equal(readBusyTimeout(databaseModule.getStatsDatabase()), sqliteBusyTimeoutMs, '统计库 busy_timeout 应使用统一低等待配置')
+  assert(sqliteBusyTimeoutMs >= 1000 && sqliteBusyTimeoutMs <= 5000, `SQLite busy_timeout 应保持在 1-5 秒内，当前为 ${sqliteBusyTimeoutMs}ms`)
+  assert.equal(readBusyTimeout(databaseModule.getBusinessDatabase()), sqliteBusyTimeoutMs, '业务库 busy_timeout 应使用统一锁等待配置')
+  assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集目录库 busy_timeout 应使用统一锁等待配置')
+  assert.equal(readBusyTimeout(databaseModule.getStatsDatabase()), sqliteBusyTimeoutMs, '统计库 busy_timeout 应使用统一锁等待配置')
 
   const shardLocation = usageRecordShards.usageRecordShardLocationForRecord('usage_20260101_s00_boundary', '2026-01-01T00:00:00.000Z')
-  assert.equal(readBusyTimeout(usageRecordShards.getUsageRecordShardDatabase(shardLocation)), sqliteBusyTimeoutMs, 'usage shard busy_timeout 应使用统一低等待配置')
+  assert.equal(readBusyTimeout(usageRecordShards.getUsageRecordShardDatabase(shardLocation)), sqliteBusyTimeoutMs, 'usage shard busy_timeout 应使用统一锁等待配置')
 
-  console.log('SQLite busy timeout 边界回归通过：所有运行库锁等待保持在 100ms 以内，避免 DB service 秒级事件循环阻塞')
+  console.log('SQLite busy timeout 边界回归通过：所有运行库锁等待保持在 1-5 秒内，降低瞬时写锁冲突导致的统计停摆风险')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })

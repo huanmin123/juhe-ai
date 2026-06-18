@@ -1,1 +1,1 @@
-export const sqliteBusyTimeoutMs = 50
+export const sqliteBusyTimeoutMs = 5000

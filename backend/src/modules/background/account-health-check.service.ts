@@ -5,12 +5,10 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   findAccountForHealthCheck,
   findRecentOpenAIRequestShapeForAccount,
-  markAccountTestTemporaryUnavailable,
-  recordAccountHealthCheckFailure,
-  recordAccountHealthCheckSuccess,
   type AccountHealthCheckSettings
 } from '../../storage/repositories.js'
 import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
@@ -87,12 +85,17 @@ async function runAccountHealthCheckQueueItem(
   })
 
   if (result.success) {
-    const changed = recordAccountHealthCheckSuccess(account.id, {
+    const healthCheckResult = await requestBackgroundWorkerDbService({
+      type: 'record_account_health_check_success',
+      accountId: account.id,
+      input: {
       intervalHours: item.intervalHours,
       jitterMinutes: item.jitterMinutes,
       failureThreshold: item.failureThreshold,
       statusCode: result.statusCode
+      }
     })
+    const changed = healthCheckResult?.changed ?? false
     logger.info({
       event: 'background_account_health_check_passed',
       accountId: account.id,
@@ -106,23 +109,28 @@ async function runAccountHealthCheckQueueItem(
     return true
   }
 
-  const failure = recordAccountHealthCheckFailure(account.id, {
-    intervalHours: item.intervalHours,
-    jitterMinutes: item.jitterMinutes,
-    failureThreshold: item.failureThreshold,
-    statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    errorMessage: result.message
+  const failure = await requestBackgroundWorkerDbService({
+    type: 'record_account_health_check_failure',
+    accountId: account.id,
+    input: {
+      intervalHours: item.intervalHours,
+      jitterMinutes: item.jitterMinutes,
+      failureThreshold: item.failureThreshold,
+      statusCode: result.statusCode,
+      errorCode: result.errorCode,
+      errorMessage: result.message
+    }
   })
 
   let markedTemporaryUnavailable = false
-  if (failure.reachedThreshold && result.accountFailureEligible !== false) {
-    const updated = markAccountTestTemporaryUnavailable(
-      account,
-      accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result),
-      { systemAccountId: account.systemAccountId ?? '', role: 'user' }
-    )
-    markedTemporaryUnavailable = Boolean(updated)
+  if (failure?.reachedThreshold && result.accountFailureEligible !== false) {
+    const updated = await requestBackgroundWorkerDbService({
+      type: 'mark_account_test_temporary_unavailable',
+      accountId: account.id,
+      reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result),
+      access: { systemAccountId: account.systemAccountId ?? '', role: 'user' }
+    })
+    markedTemporaryUnavailable = updated?.updated ?? false
   }
 
   const logFields = {
@@ -132,16 +140,16 @@ async function runAccountHealthCheckQueueItem(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     durationMs: result.durationMs,
-    failureCount: failure.failureCount,
-    reachedThreshold: failure.reachedThreshold,
+    failureCount: failure?.failureCount ?? 0,
+    reachedThreshold: failure?.reachedThreshold ?? false,
     accountFailureEligible: result.accountFailureEligible,
-    nextHealthCheckAt: failure.nextHealthCheckAt,
+    nextHealthCheckAt: failure?.nextHealthCheckAt,
     markedTemporaryUnavailable,
     attemptIndex: context.attemptIndex,
     retryNumber: context.retryNumber,
     message: result.message
   }
-  if (failure.reachedThreshold && result.accountFailureEligible !== false) {
+  if (failure?.reachedThreshold && result.accountFailureEligible !== false) {
     logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
   } else {
     logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')

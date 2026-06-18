@@ -1,12 +1,11 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
-  listAccountQualityFailurePrecheckCandidates,
   listAccountsDueForHealthCheck,
-  listAccountsDueForCooldownRetest,
-  refreshAccountQualityFromUsage
+  listAccountsDueForCooldownRetest
 } from '../../storage/repositories.js'
 import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
+import { requestStatsWriter } from './background-stats-writer.js'
 import { enqueueAccountApiKeyCooldownRetest, getAccountApiKeyCooldownRetestQueueSnapshot } from './account-api-key-cooldown-retest.service.js'
 import { enqueueAccountHealthCheck, getAccountHealthCheckQueueSnapshot } from './account-health-check.service.js'
 import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
@@ -31,8 +30,12 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
     await deps.ensureUsageRecordsIngestedBeforeStatsAggregation()
     await deps.yieldToEventLoop()
     const windowMinutes = deps.settingsNumber('accountQualityWindowMinutes', 1, 60)
-    const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
-    const failureCandidates = listAccountQualityFailurePrecheckCandidates(accountQualityFailurePrecheckBatchSize)
+    const realtimeResult = await requestStatsWriter({
+      type: 'refresh_account_quality',
+      windowMinutes,
+      failureCandidateLimit: accountQualityFailurePrecheckBatchSize
+    })
+    const failureCandidates = realtimeResult.failureCandidates
     let failurePrecheckEnqueuedCount = 0
     let failurePrecheckSkippedQueuedCount = 0
     for (const candidate of failureCandidates) {

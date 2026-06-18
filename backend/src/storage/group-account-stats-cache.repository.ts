@@ -8,10 +8,16 @@ export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 const GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX = 'all_cursor:'
 const groupAccountStatsFullRefreshBatchLimit = 1000
 
-interface GroupAccountStatsDirtyRow {
+export interface GroupAccountStatsDirtyRow {
   groupId: string
   reason: string | null
   updatedAt: string
+}
+
+export interface GroupAccountStatsDirtyStateWriter {
+  markAllDirty(reason: string): Promise<void>
+  deleteRows(rows: GroupAccountStatsDirtyRow[]): Promise<void>
+  updateAllCursor(cursorGroupId: string): Promise<void>
 }
 
 interface GroupAccountStatsAccumulator {
@@ -86,6 +92,36 @@ export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
 
   refreshGroupAccountStatsCache(rows.map((row) => row.groupId))
   deleteGroupAccountStatsDirtyRows(businessDatabase, rows)
+  return rows.length
+}
+
+export async function refreshDirtyGroupAccountStatsCacheWithWriter(
+  writer: GroupAccountStatsDirtyStateWriter,
+  limit = 1000
+): Promise<number> {
+  const businessDatabase = getBusinessDatabase()
+  const statsDatabase = getStatsDatabase()
+  const normalizedLimit = Math.max(1, Math.min(groupAccountStatsFullRefreshBatchLimit, Math.trunc(limit)))
+  const allDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
+  if (allDirtyRows.length > 0) {
+    return await refreshAllDirtyGroupAccountStatsCacheBatchWithWriter(businessDatabase, allDirtyRows[0], normalizedLimit, writer)
+  }
+
+  const rows = loadGroupAccountStatsDirtyRows(businessDatabase, normalizedLimit)
+  if (!rows.length) {
+    const hasStats = statsDatabase.prepare('SELECT 1 FROM group_account_stats LIMIT 1').get()
+    if (!hasStats) {
+      await writer.markAllDirty('initial_cache_build')
+      const initialAllDirtyRows = loadAllGroupAccountStatsDirtyRows(businessDatabase)
+      return initialAllDirtyRows[0]
+        ? await refreshAllDirtyGroupAccountStatsCacheBatchWithWriter(businessDatabase, initialAllDirtyRows[0], normalizedLimit, writer)
+        : 0
+    }
+    return 0
+  }
+
+  refreshGroupAccountStatsCache(rows.map((row) => row.groupId))
+  await writer.deleteRows(rows)
   return rows.length
 }
 
@@ -184,13 +220,34 @@ function refreshAllDirtyGroupAccountStatsCacheBatch(
   return 1
 }
 
+async function refreshAllDirtyGroupAccountStatsCacheBatchWithWriter(
+  businessDatabase: DatabaseSync,
+  dirtyRow: GroupAccountStatsDirtyRow,
+  limit: number,
+  writer: GroupAccountStatsDirtyStateWriter
+): Promise<number> {
+  const cursorGroupId = groupAccountStatsAllCursor(dirtyRow.reason)
+  const groups = loadGroupAccountStatsGroupsPage(businessDatabase, cursorGroupId, limit)
+  if (groups.length === 0) {
+    await writer.deleteRows([dirtyRow])
+    return 1
+  }
+  refreshGroupAccountStatsCache(groups.map((group) => group.id))
+  if (groups.length < limit) {
+    await writer.deleteRows([dirtyRow])
+    return 1
+  }
+  await writer.updateAllCursor(groups[groups.length - 1].id)
+  return 1
+}
+
 function groupAccountStatsAllCursor(reason: string | null | undefined): string | undefined {
   return reason?.startsWith(GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX)
     ? reason.slice(GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX.length)
     : undefined
 }
 
-function updateGroupAccountStatsAllCursor(businessDatabase: DatabaseSync, cursorGroupId: string): void {
+export function updateGroupAccountStatsAllCursor(businessDatabase: DatabaseSync, cursorGroupId: string): void {
   businessDatabase
     .prepare(`
       UPDATE group_account_stats_dirty
@@ -199,6 +256,10 @@ function updateGroupAccountStatsAllCursor(businessDatabase: DatabaseSync, cursor
       WHERE group_id = ?
     `)
     .run(`${GROUP_ACCOUNT_STATS_DIRTY_ALL_CURSOR_PREFIX}${cursorGroupId}`, nowIso(), GROUP_ACCOUNT_STATS_DIRTY_ALL)
+}
+
+export function updateGroupAccountStatsAllCursorLocal(cursorGroupId: string): void {
+  updateGroupAccountStatsAllCursor(getBusinessDatabase(), cursorGroupId)
 }
 
 function loadGroupAccountStatsDirtyRows(
@@ -223,7 +284,7 @@ function mapGroupAccountStatsDirtyRow(row: { group_id: string; reason?: string |
   }
 }
 
-function deleteGroupAccountStatsDirtyRows(
+export function deleteGroupAccountStatsDirtyRows(
   businessDatabase: DatabaseSync,
   rows: GroupAccountStatsDirtyRow[]
 ): void {
@@ -231,6 +292,10 @@ function deleteGroupAccountStatsDirtyRows(
   for (const row of rows) {
     deleteBusinessDirty.run(row.groupId, row.updatedAt)
   }
+}
+
+export function deleteGroupAccountStatsDirtyRowsLocal(rows: GroupAccountStatsDirtyRow[]): void {
+  deleteGroupAccountStatsDirtyRows(getBusinessDatabase(), rows)
 }
 
 function loadGroupAccountStatsGroups(

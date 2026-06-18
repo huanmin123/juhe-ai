@@ -1,5 +1,5 @@
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
-import { evaluateApiKeyAvailabilitySchedule } from './api-key-availability-schedule.js'
+import { dueApiKeyAvailabilityScheduleEvent } from './api-key-availability-schedule.js'
 import {
   beginDatabaseTransaction,
   commitDatabaseTransaction,
@@ -7,6 +7,8 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
+import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { invalidateAccountLookupCache } from './repository-lookups.js'
 
 interface ScheduledAccountAvailabilityRow {
   id: string
@@ -17,6 +19,8 @@ interface ScheduledAccountAvailabilityRow {
 interface ScheduledAccountAvailabilityUpdate {
   id: string
   active: number
+  eventKey?: string
+  status?: 'active' | 'disabled'
 }
 
 export interface AccountAvailabilityScheduleStatusSyncResult {
@@ -25,6 +29,7 @@ export interface AccountAvailabilityScheduleStatusSyncResult {
   disabled: number
   unchanged: number
   invalid: number
+  skipped: number
   changedIds: string[]
   invalidIds: string[]
 }
@@ -46,6 +51,7 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
     disabled: 0,
     unchanged: 0,
     invalid: 0,
+    skipped: 0,
     changedIds: [],
     invalidIds: []
   }
@@ -54,12 +60,17 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
   for (const row of rows) {
     try {
       const schedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
-      const active = evaluateApiKeyAvailabilitySchedule(schedule, now).allowed ? 1 : 0
-      if (active === row.availability_schedule_active) {
+      const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
+      if (!event) {
         result.unchanged += 1
         continue
       }
-      updates.push({ id: row.id, active })
+      updates.push({
+        id: row.id,
+        active: event.status === 'active' ? 1 : 0,
+        eventKey: `${row.id}:${event.eventKey}`,
+        status: event.status
+      })
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
@@ -76,6 +87,10 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
   const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const insertEvent = database.prepare(`
+      INSERT OR IGNORE INTO account_schedule_status_events (event_key, account_id, status, executed_at)
+      VALUES (?, ?, ?, ?)
+    `)
     const updateStatus = database.prepare(`
       UPDATE accounts
       SET availability_schedule_active = ?, updated_at = ?
@@ -85,6 +100,13 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
         AND availability_schedule_active <> ?
     `)
     for (const update of updates) {
+      if (update.eventKey && update.status) {
+        const eventChanges = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
+        if (eventChanges <= 0) {
+          result.skipped += 1
+          continue
+        }
+      }
       const changes = updateStatus.run(update.active, updatedAt, update.id, update.active).changes ?? 0
       if (changes <= 0) {
         result.unchanged += 1
@@ -104,6 +126,13 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
     } catch {
     }
     throw error
+  }
+
+  if (result.changedIds.length > 0) {
+    for (const id of result.changedIds) {
+      invalidateAccountLookupCache(id)
+    }
+    invalidateGroupAccountIdsCache()
   }
 
   return result

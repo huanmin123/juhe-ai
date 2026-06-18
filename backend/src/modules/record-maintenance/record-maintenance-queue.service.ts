@@ -17,10 +17,10 @@ import {
   createBackgroundTaskRun,
   cleanupDeletedAccountRelatedRecordDataAsync,
   cleanupDeletedApiKeyRelatedRecordDataAsync,
-  upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput
 } from '../../storage/repositories.js'
 import { sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -196,7 +196,7 @@ export async function flushRecordMaintenanceQueue(options: RecordMaintenanceFlus
         const snapshotJobs = collectAccountUsageSnapshotJobs(batchJobs, index)
         try {
           if (snapshotJobs.length > 0) {
-            processAccountUsageSnapshotUpsertJobs(snapshotJobs)
+            await processAccountUsageSnapshotUpsertJobs(snapshotJobs)
             removeRecordMaintenanceJobsFromHead(snapshotJobs.length)
             completedCount += snapshotJobs.length
             index += snapshotJobs.length - 1
@@ -377,7 +377,7 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
       return result as unknown as Record<string, unknown>
     }
     case 'account_usage_snapshot_upsert':
-      processAccountUsageSnapshotUpsertJobs([job])
+      await processAccountUsageSnapshotUpsertJobs([job])
       return { upsertedCount: 1 }
     default:
       assertNever(job)
@@ -440,7 +440,8 @@ function resolveTemporaryMaintenanceWorkerEntry(): { modulePath: string; execArg
 }
 
 function isTemporaryRecordMaintenanceJob(job: RecordMaintenanceJob): boolean {
-  return job.type === 'usage_records_cleanup' || job.type === 'non_business_data_cleanup'
+  void job
+  return false
 }
 
 type AccountUsageSnapshotUpsertJob = Extract<RecordMaintenanceJob, { type: 'account_usage_snapshot_upsert' }>
@@ -455,7 +456,7 @@ function collectAccountUsageSnapshotJobs(batch: RecordMaintenanceJob[], startInd
   return output
 }
 
-function processAccountUsageSnapshotUpsertJobs(jobs: AccountUsageSnapshotUpsertJob[]): void {
+async function processAccountUsageSnapshotUpsertJobs(jobs: AccountUsageSnapshotUpsertJob[]): Promise<void> {
   const inputs: AccountUsageSnapshotUpsertInput[] = jobs.map((job) => ({
     accountId: job.accountId,
     kind: job.kind,
@@ -463,7 +464,7 @@ function processAccountUsageSnapshotUpsertJobs(jobs: AccountUsageSnapshotUpsertJ
     snapshot: job.snapshot,
     updatedAt: job.updatedAt
   }))
-  upsertAccountUsageSnapshots(inputs)
+  await requestStatsWriter({ type: 'upsert_account_usage_snapshots', inputs })
   logger.info({
     event: 'record_maintenance_account_usage_snapshots_upserted',
     jobCount: jobs.length,
@@ -561,13 +562,20 @@ async function cleanupNonBusinessDataBefore(input: { cutoffAt: string; batchSize
   for (let index = 0; index < input.maxBatches; index += 1) {
     const batch = await cleanupNonBusinessDataBeforeWithResult({
       cutoffAt: input.cutoffAt,
+      limit: input.batchSize,
+      scope: 'dataset'
+    })
+    const statsBatch = await requestStatsWriter({
+      type: 'cleanup_non_business_stats_data',
+      cutoffAt: input.cutoffAt,
       limit: input.batchSize
     })
-    result = mergeNonBusinessCleanupResult(result, batch)
-    if (batch.deletedRows > 0 || batch.deletedFiles > 0) {
+    const mergedBatch = mergeNonBusinessCleanupResult(batch, statsBatch)
+    result = mergeNonBusinessCleanupResult(result, mergedBatch)
+    if (mergedBatch.deletedRows > 0 || mergedBatch.deletedFiles > 0) {
       batches += 1
     }
-    if (!batch.hasMore || (batch.deletedRows === 0 && batch.deletedFiles === 0)) {
+    if (!mergedBatch.hasMore || (mergedBatch.deletedRows === 0 && mergedBatch.deletedFiles === 0)) {
       break
     }
   }
@@ -596,7 +604,7 @@ function mergeNonBusinessCleanupResult(
     cutoffAt: batch.cutoffAt,
     deletedRows: current.deletedRows + batch.deletedRows,
     deletedFiles: current.deletedFiles + batch.deletedFiles,
-    hasMore: batch.hasMore,
+    hasMore: current.hasMore || batch.hasMore,
     tableRows,
     fileDeletes
   }

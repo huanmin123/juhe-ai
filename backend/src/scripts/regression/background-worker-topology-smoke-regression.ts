@@ -36,7 +36,7 @@ try {
   assert.equal(workerChildren.length, 7, `server 必须拉起默认 worker、metrics-worker、ingest-worker、stats-worker、snapshot-worker、probe-worker 和 maintenance-worker 七个子进程，实际 worker 子进程数：${workerChildren.length}`)
   assert.equal(dbServiceChildren.length, 1, `server 必须拉起一个 db-service 子进程，实际 db-service 子进程数：${dbServiceChildren.length}`)
 
-  const rows = await waitForProcessEventLoopRoles(statsDatabasePath, ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'db-service'])
+  const rows = await waitForProcessEventLoopRoles(statsDatabasePath, ['server', 'worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'db-service'])
   console.log(`后台 worker 拓扑 smoke 通过：entry=${serverEntryMode} serverPid=${child.pid} workerChildren=${workerChildren.length} dbServiceChildren=${dbServiceChildren.length} roles=${rows.map((row) => `${row.processRole}:${row.count}`).join(',')}`)
 } finally {
   await stopProcessTree(child)

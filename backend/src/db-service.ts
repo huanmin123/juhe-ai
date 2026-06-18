@@ -6,7 +6,7 @@ import { handleDbServiceOperation, setDbServiceHttpEndpoint } from './modules/db
 import type { DbServiceParentMessage } from './modules/db-service/db-service-types.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
-import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from './storage/database.js'
+import { datasetDatabasePath, statsDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
@@ -29,9 +29,6 @@ interface DbServiceHttpEndpoint {
 }
 
 async function startDbService(): Promise<void> {
-  getBusinessDatabase()
-  getDatasetDatabase()
-  getStatsDatabase()
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
   startLogMaintenance()

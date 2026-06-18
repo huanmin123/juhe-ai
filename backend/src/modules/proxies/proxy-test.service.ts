@@ -3,6 +3,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 
 import type { ProviderDefinition } from '../../domain/types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { listProviders } from '../../storage/provider.repository.js'
 import {
   getProxyTestConfig,
@@ -11,6 +12,7 @@ import {
   type ProxyProfileTestConfig
 } from '../../storage/proxy.repository.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
+import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 
 export type ProxyTestItemStatus = 'passed' | 'warning' | 'failed'
@@ -82,7 +84,7 @@ export async function refreshProxyLatencyBatch(limit: number): Promise<void> {
       await testProxy(proxy, { persist: true, includeOutboundInfo: false })
     } catch (error) {
       const message = error instanceof Error ? error.message : '代理检测失败'
-      updateProxyTestState(proxy.id, {
+      await persistProxyTestState(proxy.id, {
         testStatus: 'failed',
         lastTestMessage: message
       })
@@ -116,7 +118,7 @@ async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: bool
   }
 
   if (options.persist) {
-    updateProxyTestState(proxy.id, {
+    await persistProxyTestState(proxy.id, {
       testStatus: report.status,
       latencyMs: report.baseLatencyMs,
       outboundIp: options.includeOutboundInfo ? report.outboundIp : undefined,
@@ -127,6 +129,23 @@ async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: bool
   }
 
   return report
+}
+
+async function persistProxyTestState(
+  proxyId: string,
+  input: Parameters<typeof updateProxyTestState>[1]
+): Promise<void> {
+  const result = await requestBackgroundWorkerDbService({
+    type: 'update_proxy_test_state',
+    proxyId,
+    input
+  })
+  if (result === undefined) {
+    if (runtimeConfig.processRole === 'worker') {
+      throw new Error('DB service 未返回代理检测状态写入结果')
+    }
+    updateProxyTestState(proxyId, input)
+  }
 }
 
 async function testProvider(proxy: ProxyProfileTestConfig, provider: ProviderDefinition): Promise<ProxyTestItem> {

@@ -1,7 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
-import { cleanupExpiredLogicallyDeletedAccounts } from '../../storage/repositories.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 
@@ -45,7 +45,10 @@ export async function runAuditHotRetentionCleanup(): Promise<void> {
 
 export async function runExpiredDeletedAccountCleanup(): Promise<void> {
   try {
-    const summary = cleanupExpiredLogicallyDeletedAccounts()
+    const summary = await requestBackgroundWorkerDbService({ type: 'cleanup_expired_deleted_accounts' })
+    if (!summary) {
+      throw new Error('DB service 未返回逻辑删除 AI 账户清理结果')
+    }
     if (summary.attempted > 0 || summary.orphanedAuthorizationInstances > 0) {
       logger.info({
         event: 'background_expired_deleted_account_cleanup_completed',

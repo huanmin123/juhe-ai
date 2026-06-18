@@ -27,6 +27,7 @@ export const accountCreateSchema = z.object({
   groupId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  availabilityScheduleActive: z.boolean().optional(),
   notes: z.string().optional()
 }).strict()
 
@@ -47,6 +48,7 @@ export const accountUpdateSchema = z.object({
   groupId: z.string().trim().min(1, '账户分组不能为空').optional(),
   accountExpiresAt: z.string().nullable().optional(),
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  availabilityScheduleActive: z.boolean().optional(),
   notes: z.string().optional(),
   clearFailureState: z.boolean().optional()
 }).strict()

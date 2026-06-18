@@ -116,6 +116,7 @@ try {
   }
   usageRecordQueue.flushAllUsageRecordQueue()
   assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 0, '恢复后保留的使用记录应可继续 flush 完成')
+  assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().flushFailureCount, 0, '恢复后成功 flush 应清除使用记录队列当前失败计数，避免统计聚合被历史失败永久阻塞')
   assert.equal(usageRecordExists(retryRecord.id ?? ''), 1, '恢复后应写入保留的使用记录')
 
   console.log('使用记录批量查询回归通过：批量写入预加载归属，避免逐条查询 API Key/分组/账户')

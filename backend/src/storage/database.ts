@@ -14,6 +14,17 @@ let statsDatabase: DatabaseSync | undefined
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
 
+export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'stats'
+export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer'
+
+export interface SqliteDatabaseRuntimeInfo {
+  kind: SqliteMainDatabaseKind
+  path: string
+  writerOwner: SqliteWriterOwner
+  currentProcessOwner: boolean
+  queryOnly: boolean
+}
+
 export function getBusinessDatabase(): DatabaseSync {
   assertDistinctStoragePaths()
   if (businessDatabase) {
@@ -24,9 +35,11 @@ export function getBusinessDatabase(): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
 
   businessDatabase = new DatabaseSync(databasePath)
-  configureDatabase(businessDatabase)
-  applyBusinessSchema(businessDatabase)
-  seedDefaults(businessDatabase)
+  configureDatabase(businessDatabase, 'business')
+  if (shouldApplyMainDatabaseSchema('business')) {
+    applyBusinessSchema(businessDatabase)
+    seedDefaults(businessDatabase)
+  }
   return businessDatabase
 }
 
@@ -71,16 +84,20 @@ export function statsDatabasePath(): string {
 function openDatasetDatabase(databasePath: string): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
   const database = new DatabaseSync(databasePath)
-  configureDatabase(database)
-  applyDatasetSchema(database)
+  configureDatabase(database, 'dataset')
+  if (shouldApplyMainDatabaseSchema('dataset')) {
+    applyDatasetSchema(database)
+  }
   return database
 }
 
 function openStatsDatabase(databasePath: string): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
   const database = new DatabaseSync(databasePath)
-  configureDatabase(database)
-  applyStatsSchema(database)
+  configureDatabase(database, 'stats')
+  if (shouldApplyMainDatabaseSchema('stats')) {
+    applyStatsSchema(database)
+  }
   return database
 }
 
@@ -129,10 +146,11 @@ export function runInDatabaseTransaction<T>(operation: () => T, target = getBusi
   }
 }
 
-function configureDatabase(database: DatabaseSync): void {
+function configureDatabase(database: DatabaseSync, kind: SqliteMainDatabaseKind): void {
   database.exec(`
     PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};
   `)
+  applySqliteWriterBoundary(database, kind)
 }
 
 function closeDatabaseHandle(database: DatabaseSync | undefined): void {
@@ -166,6 +184,48 @@ export function nowIso(): string {
   return new Date().toISOString()
 }
 
+export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): SqliteWriterOwner {
+  if (kind === 'business') {
+    return 'db-service'
+  }
+  if (kind === 'dataset') {
+    return 'ingest-worker'
+  }
+  return 'stats-writer'
+}
+
+export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKind): boolean {
+  if (kind === 'business') {
+    return runtimeConfig.processRole === 'db-service'
+  }
+  if (kind === 'dataset') {
+    return runtimeConfig.processRole === 'worker'
+      && runtimeConfig.workerRole === 'ingest-worker'
+  }
+  return runtimeConfig.processRole === 'worker'
+    && runtimeConfig.workerRole === 'stats-worker'
+}
+
+export function sqliteWriterBoundaryStrictModeEnabled(): boolean {
+  return process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT === '1'
+    || process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT === 'true'
+}
+
+export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDatabaseRuntimeInfo {
+  const path = kind === 'business'
+    ? runtimeConfig.databasePath
+    : kind === 'dataset'
+      ? datasetDatabasePath()
+      : statsDatabasePath()
+  return {
+    kind,
+    path,
+    writerOwner: sqliteWriterOwnerForMainDatabase(kind),
+    currentProcessOwner: currentProcessOwnsSqliteMainDatabase(kind),
+    queryOnly: sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsSqliteMainDatabase(kind)
+  }
+}
+
 export function isSqliteDatabaseLocked(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false
@@ -175,6 +235,17 @@ export function isSqliteDatabaseLocked(error: unknown): boolean {
     || sqliteError.errstr === 'database is locked'
     || error.message.includes('database is locked')
     || error.message.includes('SQLITE_BUSY')
+}
+
+function applySqliteWriterBoundary(database: DatabaseSync, kind: SqliteMainDatabaseKind): void {
+  if (!sqliteWriterBoundaryStrictModeEnabled() || currentProcessOwnsSqliteMainDatabase(kind)) {
+    return
+  }
+  database.exec('PRAGMA query_only = ON')
+}
+
+function shouldApplyMainDatabaseSchema(kind: SqliteMainDatabaseKind): boolean {
+  return currentProcessOwnsSqliteMainDatabase(kind) || !sqliteWriterBoundaryStrictModeEnabled()
 }
 
 export function newId(prefix: string): string {

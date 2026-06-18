@@ -5,18 +5,16 @@ import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repos
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import { cleanupPublicApiLogsBefore } from '../../storage/public-api-logs.repository.js'
 import {
-  cleanupExpiredSystemSessions,
   cleanupModelCheckRunsBefore,
-  cleanupProcessedUsageRecordsBeforeWithResult,
-  cleanupSystemMetricsBefore,
-  cleanupUsageStatsBucketsBefore
+  cleanupProcessedUsageRecordsBeforeWithResult
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogFileCursorsBefore, cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
-import { cleanupTableStorageSnapshotsBefore, tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
+import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
-import { getBusinessDatabase } from '../../storage/database.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { requestStatsWriter } from './background-stats-writer.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 7
@@ -34,6 +32,28 @@ const operationLogRetentionMaxDays = 3650
 const publicApiLogRetentionDays = 7
 const modelCheckRetentionMaxDays = 365
 let cleanupRunning = false
+
+interface DataRetentionPolicy {
+  auditLogSuccessHotHours: number
+  auditLogSuccessDays: number
+  auditLogFailureDays: number
+  auditErrorGroupDays: number
+  operationLogDays: number
+  runtimeLogDays: number
+  modelCheckDays: number
+  usageRecordDays: number
+  statsMinuteHours: number
+  statsHourlyDays: number
+  statsDailyDays: number
+  statsWeeklyWeeks: number
+  statsMonthlyMonths: number
+  rankSnapshotDays: number
+  systemMetricsSampleDays: number
+  systemMetricsHourlyDays: number
+  accountUsageSnapshotDays: number
+  fixedWindowDays: number
+  tableStorageSnapshotDays: number
+}
 
 export interface DataRetentionCleanupResult {
   operationLogs: number
@@ -106,7 +126,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, 2)
     const now = Date.now()
     const auditSettings = readAuditLogSettings()
-    const retention = {
+    const retention: DataRetentionPolicy = {
       auditLogSuccessHotHours: auditSettings.successHotRetentionHours,
       auditLogSuccessDays: auditSettings.successRetentionDays,
       auditLogFailureDays: auditSettings.failureRetentionDays,
@@ -129,89 +149,50 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     }
 
     const result = emptyCleanupResult()
-    result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
-    await yieldToEventLoop()
-    result.publicApiLogs = await cleanupInBatches(() => cleanupPublicApiLogsBefore(cutoffIso(now, publicApiLogRetentionDays), batchSize), batchSize, maxBatches)
-    await yieldToEventLoop()
-    result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
-      successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
-      successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
-      failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
-      errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
-      successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000),
-      limit: batchSize
-    }), batchSize, maxBatches)
-    await yieldToEventLoop()
-    result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
-    await yieldToEventLoop()
-    result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
-    await yieldToEventLoop()
-    result.runtimeLogFileCursors = await cleanupInBatches(
-      () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
-      batchSize,
-      maxBatches
-    )
-    await yieldToEventLoop()
-    await cleanupRetentionInBatches(
-      result,
-      () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
-      maxBatches
-    )
-    await yieldToEventLoop()
-    const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
-    result.usageRecords = usageRecordCleanup.deletedRows
-    if (usageRecordCleanup.blockedReason) {
-      logger.warn({
-        event: 'data_retention_usage_records_cleanup_blocked',
-        blockedReason: usageRecordCleanup.blockedReason,
-        cutoffCreatedAt: usageRecordCleanup.cutoffCreatedAt,
-        deletedRows: usageRecordCleanup.deletedRows,
-        batches: usageRecordCleanup.batches
-      }, '使用记录保留清理被统计安全游标拦截')
+    if (runtimeConfig.workerRole === 'ingest-worker') {
+      addCleanupResult(result, await cleanupDatasetAndUsageRetainedData({
+        now,
+        retention,
+        batchSize,
+        maxBatches,
+        successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000)
+      }))
     }
-
-    await yieldToEventLoop()
-    await cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({
-      accountQualityMinuteCutoffMinute: cutoffMinuteKey(now, accountQualityMinuteRetentionHours, timezone),
-      minuteCutoffMinute: cutoffMinuteKey(now, retention.statsMinuteHours, timezone),
-      hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays, timezone),
-      dailyCutoffDate: cutoffDateKey(now, retention.statsDailyDays, timezone),
-      weeklyCutoffWeek: cutoffWeekKey(now, retention.statsWeeklyWeeks, timezone),
-      monthlyCutoffMonth: cutoffMonthKey(now, retention.statsMonthlyMonths, timezone),
-      rankSnapshotCutoffIso: cutoffIso(now, retention.rankSnapshotDays),
-      windowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
-      windowCutoffIso: cutoffIso(now, retention.accountUsageSnapshotDays),
-      limit: batchSize
-    }), maxBatches)
-
-    await yieldToEventLoop()
-    await cleanupRetentionInBatches(result, () => cleanupSystemMetricsBefore({
-      samplesCutoffIso: cutoffIso(now, retention.systemMetricsSampleDays),
-      hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone),
-      trendWindowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
-      limit: batchSize
-    }), maxBatches)
-
-    await yieldToEventLoop()
-    result.tableStorageSnapshots = await cleanupInBatches(
-      () => cleanupTableStorageSnapshotsBefore(cutoffIso(now, retention.tableStorageSnapshotDays), batchSize),
-      batchSize,
-      maxBatches
-    )
-
-    await yieldToEventLoop()
-    result.systemSessions = await cleanupInBatches(
-      () => cleanupExpiredSystemSessions(new Date(now).toISOString(), batchSize),
-      batchSize,
-      maxBatches
-    )
+    if (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'maintenance-worker') {
+      await cleanupRetentionInBatches(result, () => requestStatsWriter({
+        type: 'cleanup_usage_stats_retention',
+        input: usageStatsRetentionInput(now, retention, timezone, batchSize)
+      }), maxBatches)
+      await cleanupRetentionInBatches(result, () => requestStatsWriter({
+        type: 'cleanup_system_metrics_retention',
+        input: systemMetricsRetentionInput(now, retention, timezone, batchSize)
+      }), maxBatches)
+      const tableCleanup = await cleanupInBatches(async () => {
+        const cleanupResult = await requestStatsWriter({
+          type: 'cleanup_table_storage_snapshots_retention',
+          cutoffIso: cutoffIso(now, retention.tableStorageSnapshotDays),
+          limit: batchSize
+        })
+        return cleanupResult.deleted
+      }, batchSize, maxBatches)
+      result.tableStorageSnapshots = tableCleanup
+      result.systemSessions = await cleanupInBatches(async () => {
+        const cleanupResult = await requestBackgroundWorkerDbService({
+          type: 'cleanup_expired_system_sessions',
+          expiredBefore: new Date(now).toISOString(),
+          limit: batchSize
+        })
+        return cleanupResult?.deleted ?? 0
+      }, batchSize, maxBatches)
+    }
 
     logger.info({
       event: 'data_retention_cleanup_completed',
       deleted: result,
       retention,
       batchSize,
-      maxBatches
+      maxBatches,
+      workerRole: runtimeConfig.workerRole
     }, '数据保留清理完成')
 
     return result
@@ -221,6 +202,58 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
   } finally {
     cleanupRunning = false
   }
+}
+
+async function cleanupDatasetAndUsageRetainedData(input: {
+  now: number
+  retention: DataRetentionPolicy
+  batchSize: number
+  maxBatches: number
+  successSampleBucketThreshold: number
+}): Promise<Partial<Record<keyof DataRetentionCleanupResult, number>>> {
+  const result = emptyCleanupResult()
+  const { now, retention, batchSize, maxBatches } = input
+  result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
+  await yieldToEventLoop()
+  result.publicApiLogs = await cleanupInBatches(() => cleanupPublicApiLogsBefore(cutoffIso(now, publicApiLogRetentionDays), batchSize), batchSize, maxBatches)
+  await yieldToEventLoop()
+  result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
+      successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
+      successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
+      failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
+      errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
+      successSampleBucketThreshold: input.successSampleBucketThreshold,
+      limit: batchSize
+    }), batchSize, maxBatches)
+  await yieldToEventLoop()
+  result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
+  await yieldToEventLoop()
+  result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
+  await yieldToEventLoop()
+  result.runtimeLogFileCursors = await cleanupInBatches(
+    () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
+    batchSize,
+    maxBatches
+  )
+  await yieldToEventLoop()
+  await cleanupRetentionInBatches(
+    result,
+    () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
+    maxBatches
+  )
+  await yieldToEventLoop()
+  const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
+  result.usageRecords = usageRecordCleanup.deletedRows
+  if (usageRecordCleanup.blockedReason) {
+    logger.warn({
+      event: 'data_retention_usage_records_cleanup_blocked',
+      blockedReason: usageRecordCleanup.blockedReason,
+      cutoffCreatedAt: usageRecordCleanup.cutoffCreatedAt,
+      deletedRows: usageRecordCleanup.deletedRows,
+      batches: usageRecordCleanup.batches
+    }, '使用记录保留清理被统计安全游标拦截')
+  }
+  return result
 }
 
 async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, batchSize: number, maxBatches: number): Promise<number> {
@@ -267,16 +300,56 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
 
 async function cleanupRetentionInBatches(
   result: DataRetentionCleanupResult,
-  cleanupBatch: () => Partial<Record<keyof DataRetentionCleanupResult, number>>,
+  cleanupBatch: () => Partial<Record<keyof DataRetentionCleanupResult, number>> | Promise<Partial<Record<keyof DataRetentionCleanupResult, number>>>,
   maxBatches: number
 ): Promise<void> {
   for (let index = 0; index < maxBatches; index += 1) {
-    const deleted = cleanupBatch()
+    const deleted = await cleanupBatch()
     addCleanupResult(result, deleted)
     await yieldToEventLoop()
     if (sumDeleted(deleted) === 0) {
       break
     }
+  }
+}
+
+function usageStatsRetentionInput(now: number, retention: DataRetentionPolicy, timezone: string, batchSize: number): {
+  accountQualityMinuteCutoffMinute: string
+  minuteCutoffMinute: string
+  hourlyCutoffHour: string
+  dailyCutoffDate: string
+  weeklyCutoffWeek: string
+  monthlyCutoffMonth: string
+  rankSnapshotCutoffIso: string
+  windowCutoffDate: string
+  windowCutoffIso: string
+  limit: number
+} {
+  return {
+    accountQualityMinuteCutoffMinute: cutoffMinuteKey(now, accountQualityMinuteRetentionHours, timezone),
+    minuteCutoffMinute: cutoffMinuteKey(now, retention.statsMinuteHours, timezone),
+    hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays, timezone),
+    dailyCutoffDate: cutoffDateKey(now, retention.statsDailyDays, timezone),
+    weeklyCutoffWeek: cutoffWeekKey(now, retention.statsWeeklyWeeks, timezone),
+    monthlyCutoffMonth: cutoffMonthKey(now, retention.statsMonthlyMonths, timezone),
+    rankSnapshotCutoffIso: cutoffIso(now, retention.rankSnapshotDays),
+    windowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
+    windowCutoffIso: cutoffIso(now, retention.accountUsageSnapshotDays),
+    limit: batchSize
+  }
+}
+
+function systemMetricsRetentionInput(now: number, retention: DataRetentionPolicy, timezone: string, batchSize: number): {
+  samplesCutoffIso: string
+  hourlyCutoffHour: string
+  trendWindowCutoffDate: string
+  limit: number
+} {
+  return {
+    samplesCutoffIso: cutoffIso(now, retention.systemMetricsSampleDays),
+    hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone),
+    trendWindowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
+    limit: batchSize
   }
 }
 

@@ -37,13 +37,26 @@ assert(serverSource.includes('startDbServiceSupervisor({ onReady: startBackgroun
 assert(serverSource.includes('backgroundWorkerStartupFallbackMs'), 'server 等待 DB service ready 必须有兜底超时，避免 DB service 异常时 worker 永久不启动')
 assert(!serverSource.includes('startDbServiceSupervisor()\nstartBackgroundWorkerSupervisor()'), 'server 不能背靠背启动 DB service 和后台 worker')
 
-assert(backgroundJobsSource.includes("case 'metrics-worker':"), 'background-jobs 必须按 workerRole 过滤 metrics-worker 任务')
-assert(backgroundJobsSource.includes("backgroundScheduledJobName('system-metrics-sample')"), 'metrics-worker 必须注册 system-metrics-sample')
-assertRoleBlockContainsOnly('metrics-worker', ['system-metrics-sample'])
-assertRoleBlockContainsOnly('stats-worker', ['usage-stats-aggregation', 'client-ip-stats-aggregation', 'group-account-stats-refresh'])
-assertRoleBlockContainsOnly('snapshot-worker', ['usage-rank-snapshots-refresh', 'system-metrics-trend-windows-refresh', 'usage-overview-windows-refresh', 'usage-scope-range-windows-refresh', 'authorization-usage-range-windows-refresh'])
-assertRoleBlockContainsOnly('probe-worker', ['proxy-latency-refresh', 'account-quality-refresh', 'cooldown-account-retest', 'account-api-key-cooldown-retest', 'openai-oauth-access-token-refresh'])
-assertRoleBlockContainsOnly('maintenance-worker', ['api-key-record-cleanup-retry', 'api-key-availability-schedule-status-sync', 'account-availability-schedule-status-sync', 'account-record-cleanup-retry', 'resource-authorization-expiry-sweep', 'table-storage-monitor', 'usage-stats-consistency-check', 'audit-hot-retention-cleanup', 'data-retention-cleanup', 'expired-deleted-account-cleanup'])
+assert(backgroundJobsSource.includes("case 'metrics-worker':"), 'background-jobs 必须按 workerRole 保留 metrics-worker 分支')
+assertRoleBlockContainsOnly('metrics-worker', [])
+assertRoleBlockContainsOnly('ingest-worker', ['api-key-record-cleanup-retry', 'account-record-cleanup-retry', 'audit-hot-retention-cleanup', 'data-retention-cleanup', 'runtime-log-index-maintenance'])
+assertRoleBlockContainsOnly('stats-worker', [
+  'system-metrics-sample',
+  'usage-stats-aggregation',
+  'client-ip-stats-aggregation',
+  'group-account-stats-refresh',
+  'usage-rank-snapshots-refresh',
+  'system-metrics-trend-windows-refresh',
+  'usage-overview-windows-refresh',
+  'usage-scope-range-windows-refresh',
+  'authorization-usage-range-windows-refresh',
+  'account-quality-refresh',
+  'table-storage-monitor',
+  'usage-stats-consistency-check'
+])
+assertRoleBlockContainsOnly('snapshot-worker', [])
+assertRoleBlockContainsOnly('probe-worker', ['proxy-latency-refresh', 'account-health-check', 'cooldown-account-retest', 'account-api-key-cooldown-retest', 'openai-oauth-access-token-refresh'])
+assertRoleBlockContainsOnly('maintenance-worker', ['api-key-availability-schedule-status-sync', 'account-availability-schedule-status-sync', 'resource-authorization-expiry-sweep', 'expired-deleted-account-cleanup'])
 assert(!backgroundJobsSource.includes("buildProcessEventLoopSample('worker')"), 'system-metrics-sample 已在 metrics-worker 内运行，不能把本地事件循环样本硬编码成 worker')
 assert(backgroundJobsSource.includes('const localProcessEventLoopSample = buildProcessEventLoopSample()'), 'system-metrics-sample 本地事件循环样本必须使用当前 workerRole')
 
@@ -68,17 +81,17 @@ for (const role of expectedSupervisedRoles) {
 
 const metricsJob = registryByName.get('system-metrics-sample')
 assert(metricsJob, 'system-metrics-sample 必须登记到 registry')
-assert.equal(metricsJob.defaultRole, 'metrics-worker', 'system-metrics-sample 默认角色必须是 metrics-worker')
+assert.equal(metricsJob.defaultRole, 'stats-worker', 'system-metrics-sample 默认角色必须是 stats-worker，避免 metrics-worker 抢写 stats 库')
 assert.equal(metricsJob.lifecycle, 'persistent', 'system-metrics-sample 必须是持久 worker 任务')
 
 for (const job of backgroundWorkerRegistry) {
-  if (job.jobName === 'system-metrics-sample' || job.category !== 'scheduled') {
+  if (job.category !== 'scheduled') {
     continue
   }
   assert.notEqual(job.defaultRole, 'metrics-worker', `${job.jobName} 不应默认挂到 metrics-worker`)
 }
 
-console.log('metrics-worker 角色回归通过：系统采样独立到 metrics-worker，默认 worker 不再承载采样任务，metrics-worker 不启动业务队列')
+console.log('worker 角色回归通过：stats 写任务集中到 stats-worker，metrics/snapshot worker 不再抢写 stats 库')
 
 function readSource(path: string): string {
   return readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n')

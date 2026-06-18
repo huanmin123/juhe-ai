@@ -1,28 +1,22 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, installProcessLogHandlers, logger } from '../../shared/logger.js'
-import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from '../../shared/process-event-loop-monitor.js'
-import { getBusinessDatabase, getDatasetDatabase, getStatsDatabase } from '../../storage/database.js'
+import { startProcessEventLoopMonitor } from '../../shared/process-event-loop-monitor.js'
 import {
   finishBackgroundTaskRun,
   getBackgroundTaskRun,
   heartbeatBackgroundTaskRun,
   tryStartBackgroundTaskRun
 } from '../../storage/repositories.js'
-import { insertProcessEventLoopSample } from '../../storage/system-metrics.repository.js'
 import { isRecordMaintenanceJob, runRecordMaintenanceJobOnce, type RecordMaintenanceJob } from './record-maintenance-queue.service.js'
 
 const temporaryMaintenanceLeaseMs = 5 * 60 * 1000
 const temporaryMaintenanceHeartbeatMs = 30 * 1000
-const temporaryMaintenanceEventLoopSampleMs = 10 * 1000
 const temporaryMaintenanceEventLoopWarmupMs = 20
 
 export async function runTemporaryMaintenanceWorker(runId: string): Promise<number> {
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'temporary-maintenance-worker'
   installProcessLogHandlers()
-  getBusinessDatabase()
-  getDatasetDatabase()
-  getStatsDatabase()
   startProcessEventLoopMonitor()
 
   const ownerId = `temporary-maintenance-worker:${process.pid}:${Date.now()}`
@@ -51,10 +45,6 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
     heartbeatBackgroundTaskRun(runId, ownerId, leaseUntilIso())
   }, temporaryMaintenanceHeartbeatMs)
   heartbeatTimer.unref()
-  const eventLoopSampleTimer = setInterval(() => {
-    recordTemporaryMaintenanceEventLoopSample(runId)
-  }, temporaryMaintenanceEventLoopSampleMs)
-  eventLoopSampleTimer.unref()
 
   try {
     const run = getBackgroundTaskRun(runId)
@@ -92,9 +82,7 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
     }), '临时维护 worker 执行失败')
     return 1
   } finally {
-    recordTemporaryMaintenanceEventLoopSample(runId)
     clearInterval(heartbeatTimer)
-    clearInterval(eventLoopSampleTimer)
   }
 }
 
@@ -110,15 +98,4 @@ function warmupTemporaryMaintenanceEventLoopMonitor(): Promise<void> {
   return new Promise((resolvePromise) => {
     setTimeout(resolvePromise, temporaryMaintenanceEventLoopWarmupMs)
   })
-}
-
-function recordTemporaryMaintenanceEventLoopSample(runId: string): void {
-  try {
-    insertProcessEventLoopSample(buildProcessEventLoopSample('temporary-maintenance-worker'))
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'temporary_maintenance_worker_event_loop_sample_failed',
-      runId
-    }), '临时维护 worker 事件循环采样写入失败')
-  }
 }

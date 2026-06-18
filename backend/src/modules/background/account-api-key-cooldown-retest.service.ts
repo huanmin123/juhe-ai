@@ -6,11 +6,10 @@ import {
   findOpenAIAccountForGroup
 } from '../../storage/repositories.js'
 import {
-  recordAccountApiKeyRuntimeFailure,
-  recordAccountApiKeyRuntimeSuccess,
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { preferredSystemAccountTestModel, testOpenAIAccount } from '../accounts/account-test.service.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
   maxRecoveryHours: number
@@ -95,7 +94,10 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   })
 
   if (result.success) {
-    const restored = recordAccountApiKeyRuntimeSuccess(fixedKeyCandidate)
+    const restored = await requestBackgroundWorkerDbService({
+      type: 'record_account_api_key_success',
+      account: fixedKeyCandidate
+    })
     logger.info({
       event: 'background_account_api_key_cooldown_retest_restored',
       accountId: account.id,
@@ -105,17 +107,20 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       retryNumber: context.retryNumber,
       statusCode: result.statusCode,
       durationMs: result.durationMs,
-      restored: restored.changed
+      restored: restored?.changed ?? false
     }, '账户内 API Key 复测通过，Key 已恢复可调度')
     return true
   }
 
-  const failure = recordAccountApiKeyRuntimeFailure({
+  const failure = await requestBackgroundWorkerDbService({
+    type: 'record_account_api_key_failure',
     account: fixedKeyCandidate,
-    status: 'temporary_unavailable',
-    statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    errorMessage: result.message
+    input: {
+      status: 'temporary_unavailable',
+      statusCode: result.statusCode,
+      errorCode: result.errorCode,
+      errorMessage: result.message
+    }
   })
   logger.debug({
     event: 'background_account_api_key_cooldown_retest_failed',
@@ -127,7 +132,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     durationMs: result.durationMs,
-    changed: failure.changed,
+    changed: failure?.changed ?? false,
     message: result.message
   }, '账户内 API Key 复测未通过，已按 Key 运行态退避等待下次复测')
   return true

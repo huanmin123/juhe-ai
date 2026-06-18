@@ -8,7 +8,7 @@ import {
   type ActiveClientIpPolicy,
   type ClientIpPolicyHitInput
 } from '../../../storage/client-ip-stats.repository.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
+import { requestStatsWriter } from '../../background/background-stats-writer.js'
 
 export interface ClientIpPolicyDecision {
   blocked: boolean
@@ -73,8 +73,8 @@ export function replaceClientIpPolicyCacheLocal(policies: ActiveClientIpPolicy[]
 }
 
 export async function reloadClientIpPolicyCacheLocal(): Promise<void> {
-  const policies = runtimeConfig.processRole === 'server'
-    ? await requestDbService({ type: 'list_active_client_ip_policies' }, { timeoutMs: 1000 })
+  const policies = shouldUseStatsWriterBridge()
+    ? await requestStatsWriter({ type: 'list_active_client_ip_policies' }, 1000)
     : listActiveClientIpPolicies()
   replaceClientIpPolicyCacheLocal(policies)
 }
@@ -188,8 +188,8 @@ async function flushClientIpPolicyHits(): Promise<void> {
   }
   const hits = entries.map(([, hit]) => hit)
   try {
-    if (runtimeConfig.processRole === 'server') {
-      await requestDbService({ type: 'record_client_ip_policy_hits', hits }, { timeoutMs: 1000 })
+    if (shouldUseStatsWriterBridge()) {
+      await requestStatsWriter({ type: 'record_client_ip_policy_hits', hits }, 1000)
     } else {
       recordClientIpPolicyHits(hits)
     }
@@ -203,4 +203,9 @@ async function flushClientIpPolicyHits(): Promise<void> {
       scheduleClientIpPolicyHitFlush(0)
     }
   }
+}
+
+function shouldUseStatsWriterBridge(): boolean {
+  return runtimeConfig.processRole === 'server'
+    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'stats-worker')
 }

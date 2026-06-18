@@ -3,10 +3,7 @@ import { GPT_OPENAI_V1_PROFILE_ID } from '../domain/provider-protocol.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { loadAccountCurrentConcurrencyByIds } from '../shared/account-concurrency.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import {
-  isAccountAvailabilityScheduleAllowed,
-  parseAccountAvailabilityScheduleJson
-} from './account-availability-schedule.js'
+import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { hydrateAccountRowsWithRuntimeState } from './account-read.repository.js'
 import { disableExpiredAccounts } from './account-runtime-status.js'
 import {
@@ -221,7 +218,7 @@ function queryAccountsDueForCooldownRetest(limit: number, accountId?: string): A
       LIMIT ?
     `)
     .all(...params) as unknown as AccountListRow[]
-  const scheduledRows = rows.filter((row) => isAccountAvailabilityScheduleAllowed(row.availability_schedule_json))
+  const scheduledRows = rows.filter((row) => row.availability_schedule_active !== 0)
   return hydrateAccountRowsWithRuntimeState(scheduledRows, { includeCredentials: true })
     .filter((row) => row.access_type !== 'authorized' || (
       Boolean(row.source_provider_code)
@@ -304,6 +301,7 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
+      availabilityScheduleActive: row.availability_schedule_active !== 0,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
@@ -323,7 +321,7 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
       authorizationInstanceSourceAccountStatus: isAuthorizedView ? row.source_status ?? undefined : undefined,
       authorizationInstanceSourceAccountSchedulable: isAuthorizedView && typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
       authorizationInstanceSourceAccountAvailabilitySchedule: isAuthorizedView ? parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json) : undefined,
-      authorizationInstanceSourceAccountScheduleActive: isAuthorizedView ? isAccountAvailabilityScheduleAllowed(row.source_availability_schedule_json) : undefined,
+      authorizationInstanceSourceAccountScheduleActive: isAuthorizedView ? row.source_availability_schedule_active !== 0 : undefined,
       authorizationInstanceSourceAccountExpiresAt: isAuthorizedView ? row.source_account_expires_at ?? undefined : undefined,
       authorizationInstanceSourceAccountCooldownUntil: isAuthorizedView ? row.source_cooldown_until ?? undefined : undefined,
       authorizationInstanceSourceAccountLastErrorCode: isAuthorizedView ? row.source_last_error_code ?? undefined : undefined,

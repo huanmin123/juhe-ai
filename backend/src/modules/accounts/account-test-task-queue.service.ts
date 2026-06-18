@@ -5,13 +5,9 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
-  clearAuthorizedAccountBindingFailureState,
-  clearAccountFailureStateResult,
   findAccountForTest,
   findRecentOpenAIRequestShapeForAccount,
   getAccountPrecheckMutationState,
-  markAccountTestTemporaryUnavailable,
-  recordAccountSuccessfulTestModel,
   resolveProxyUrlForProfile,
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
@@ -22,20 +18,9 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import {
   accountTestTaskCancelMessage,
   type AccountTestDraftSnapshot,
-  cancelExpiredAccountTestSessions,
-  cleanupExpiredAccountTestTasks,
-  completeAccountTestTask,
-  failExpiredQueuedAccountTestTasks,
-  failAccountTestTask,
-  getAccountTestTaskRecord,
-  isAccountTestTaskCancelRequested,
-  listRunnableAccountTestTaskIds,
-  markAccountTestTaskCanceled,
-  markAccountTestTaskRunning,
-  requeueInterruptedAccountTestTasks,
-  updateAccountTestTaskMessage
+  getAccountTestTaskRecord
 } from '../../storage/account-test-tasks.repository.js'
-import { sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
+import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
@@ -82,7 +67,7 @@ const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
     refillManualAccountTestQueue()
   },
   onExhausted: (event) => {
-    failAccountTestTask(event.item.taskId, event.error instanceof Error ? event.error.message : '账号测试任务执行失败')
+    void failAccountTestTaskViaDbService(event.item.taskId, event.error instanceof Error ? event.error.message : '账号测试任务执行失败')
     refillManualAccountTestQueue()
   }
 })
@@ -149,15 +134,22 @@ export function cancelAccountTestTaskLocal(taskId: string): void {
     controller.abort()
     return
   }
-  markAccountTestTaskCanceled(normalizedId, '已停止测试')
+  void markAccountTestTaskCanceledViaDbService(normalizedId, '已停止测试')
 }
 
 export function startAccountTestTaskQueue(): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
-  cleanupExpiredAccountTestTasks()
-  requeueInterruptedAccountTestTasks()
+  void runAccountTestTaskMaintenance('start').then((taskIds) => {
+    for (const taskId of taskIds) {
+      enqueueAccountTestTaskLocal(taskId)
+    }
+  }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'manual_account_test_start_maintenance_failed'
+    }), '账号测试队列启动维护失败')
+  })
   startAccountTestSessionStaleSweep()
   refillManualAccountTestQueue()
 }
@@ -166,12 +158,16 @@ function refillManualAccountTestQueue(): void {
   if (runtimeConfig.processRole !== 'worker') {
     return
   }
-  sweepManualAccountTestQueue()
   manualAccountTestQueue.setConcurrency(accountTestTaskConcurrency())
-  const taskIds = listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize())
-  for (const taskId of taskIds) {
-    enqueueAccountTestTaskLocal(taskId)
-  }
+  void runAccountTestTaskMaintenance('sweep').then((taskIds) => {
+    for (const taskId of taskIds) {
+      enqueueAccountTestTaskLocal(taskId)
+    }
+  }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'manual_account_test_refill_failed'
+    }), '账号测试队列补充任务失败')
+  })
 }
 
 function accountTestTaskConcurrency(): number {
@@ -197,27 +193,7 @@ function startAccountTestSessionStaleSweep(): void {
 }
 
 function sweepManualAccountTestQueue(): void {
-  abortExpiredAccountTestSessions()
-  const taskIds = failExpiredQueuedAccountTestTasks(manualAccountTestQueuedMaxWaitMs, manualAccountTestQueuedSweepBatchSize)
-  if (taskIds.length === 0) {
-    return
-  }
-  for (const taskId of taskIds) {
-    manualAccountTestQueue.delete(taskId)
-  }
-  logger.warn({
-    event: 'manual_account_test_queued_wait_expired',
-    taskCount: taskIds.length,
-    maxQueuedMs: manualAccountTestQueuedMaxWaitMs
-  }, '账号测试 queued 等待超过后台上限，已自动失败收口')
-}
-
-function abortExpiredAccountTestSessions(): void {
-  const taskIds = cancelExpiredAccountTestSessions()
-  for (const taskId of taskIds) {
-    manualAccountTestQueue.delete(taskId)
-    runningAccountTestControllers.get(taskId)?.abort()
-  }
+  void runAccountTestTaskMaintenance('sweep')
 }
 
 export function getManualAccountTestQueueSnapshot() {
@@ -225,7 +201,7 @@ export function getManualAccountTestQueueSnapshot() {
 }
 
 async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<boolean> {
-  const task = markAccountTestTaskRunning(item.taskId)
+  const task = await markAccountTestTaskRunningViaDbService(item.taskId)
   if (!task) {
     return true
   }
@@ -240,8 +216,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id)
 
   try {
-    if (isAccountTestTaskCancelRequested(task.id)) {
-      markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
+    if (await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
+      await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
       return true
     }
 
@@ -249,7 +225,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       const draft = task.draftAccount
       const draftAccount = accountSummaryFromDraftSnapshot(draft)
       if (!isOpenAIProtocolProfile(draftAccount)) {
-        failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(draftAccount, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+          await failAccountTestTaskViaDbService(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(draftAccount, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
         return true
       }
 
@@ -257,20 +233,20 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       if (stateTargetAccountId) {
         const account = findAccountForTest(stateTargetAccountId, access)
         if (!account) {
-          failAccountTestTask(task.id, '账户不存在')
+          await failAccountTestTaskViaDbService(task.id, '账户不存在')
           return true
         }
         if (account.accessType === 'authorized') {
-          failAccountTestTask(task.id, '授权账户测试不支持使用未保存表单配置', failedAccountTestResult(account, task.message ?? '授权账户测试不支持使用未保存表单配置', task.model))
+          await failAccountTestTaskViaDbService(task.id, '授权账户测试不支持使用未保存表单配置', failedAccountTestResult(account, task.message ?? '授权账户测试不支持使用未保存表单配置', task.model))
           return true
         }
         if (!isOpenAIProtocolProfile(account)) {
-          failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+          await failAccountTestTaskViaDbService(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
           return true
         }
         const unavailableMessage = accountTestUnavailableMessage(account)
         if (unavailableMessage) {
-          failAccountTestTask(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
+          await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
           return true
         }
         const result = await runOpenAIAccountTestWithSideEffects(account, access, {
@@ -281,11 +257,11 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           draftAccount: draft,
           onDiagnosticAttemptProgress
         })
-        if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-          markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
+        if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
+          await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
           return true
         }
-        completeAccountTestTask(task.id, result)
+        await completeAccountTestTaskViaDbService(task.id, result)
         return true
       }
 
@@ -296,26 +272,26 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
         signal: controller.signal,
         onDiagnosticAttemptProgress
       })
-      if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-        markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
+      if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
+        await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
         return true
       }
-      completeAccountTestTask(task.id, result)
+      await completeAccountTestTaskViaDbService(task.id, result)
       return true
     }
 
     const account = findAccountForTest(task.accountId, access)
     if (!account) {
-      failAccountTestTask(task.id, '账户不存在')
+      await failAccountTestTaskViaDbService(task.id, '账户不存在')
       return true
     }
     if (!isOpenAIProtocolProfile(account)) {
-      failAccountTestTask(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+      await failAccountTestTaskViaDbService(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
       return true
     }
     const unavailableMessage = accountTestUnavailableMessage(account)
     if (unavailableMessage) {
-      failAccountTestTask(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
+      await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
       return true
     }
 
@@ -327,16 +303,16 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       onDiagnosticAttemptProgress
     })
 
-    if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-      markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
+    if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
+      await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
       return true
     }
 
-    completeAccountTestTask(task.id, result)
+    await completeAccountTestTaskViaDbService(task.id, result)
     return true
   } catch (error) {
-    if (controller.signal.aborted || isAccountTestTaskCancelRequested(task.id)) {
-      markAccountTestTaskCanceled(task.id, accountTestTaskCancelMessage(task.id))
+    if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
+      await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
       return true
     }
     logger.warn(errorLogFields(error, {
@@ -344,7 +320,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       taskId: task.id,
       accountId: task.accountId
     }), '账号测试后台任务执行失败')
-    failAccountTestTask(task.id, error instanceof Error ? error.message : '账号测试任务执行失败')
+    await failAccountTestTaskViaDbService(task.id, error instanceof Error ? error.message : '账号测试任务执行失败')
     return true
   } finally {
     runningAccountTestControllers.delete(task.id)
@@ -353,8 +329,99 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
 function accountTestTaskProgressReporter(taskId: string): (progress: AccountDiagnosticAttemptProgress) => void {
   return (progress) => {
-    updateAccountTestTaskMessage(taskId, accountDiagnosticAttemptMessage(progress))
+    void updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress))
   }
+}
+
+async function runAccountTestTaskMaintenance(action: 'start' | 'sweep'): Promise<string[]> {
+  const result = await requestBackgroundWorkerDbService({
+    type: 'account_test_task_maintenance',
+    action,
+    maxQueuedMs: manualAccountTestQueuedMaxWaitMs,
+    sweepLimit: manualAccountTestQueuedSweepBatchSize,
+    refillLimit: manualAccountTestRefillBatchSize()
+  })
+  if (!result) {
+    return []
+  }
+  const expiredTaskIds = [...result.canceledTaskIds, ...result.expiredQueuedTaskIds]
+  for (const taskId of expiredTaskIds) {
+    manualAccountTestQueue.delete(taskId)
+    runningAccountTestControllers.get(taskId)?.abort()
+  }
+  if (result.expiredQueuedTaskIds.length > 0) {
+    logger.warn({
+      event: 'manual_account_test_queued_wait_expired',
+      taskCount: result.expiredQueuedTaskIds.length,
+      maxQueuedMs: manualAccountTestQueuedMaxWaitMs
+    }, '账号测试 queued 等待超过后台上限，已自动失败收口')
+  }
+  return result.taskIds
+}
+
+async function markAccountTestTaskRunningViaDbService(taskId: string) {
+  return await requestBackgroundWorkerDbService({
+    type: 'mark_account_test_task_running',
+    taskId
+  })
+}
+
+async function markAccountTestTaskCanceledViaDbService(taskId: string, message: string) {
+  return await requestBackgroundWorkerDbService({
+    type: 'mark_account_test_task_canceled',
+    taskId,
+    message
+  })
+}
+
+async function completeAccountTestTaskViaDbService(taskId: string, result: AccountTestResult) {
+  return await requestBackgroundWorkerDbService({
+    type: 'complete_account_test_task',
+    taskId,
+    result
+  })
+}
+
+async function failAccountTestTaskViaDbService(taskId: string, message: string, result?: AccountTestResult) {
+  return await requestBackgroundWorkerDbService({
+    type: 'fail_account_test_task',
+    taskId,
+    message,
+    result
+  })
+}
+
+async function updateAccountTestTaskMessageViaDbService(taskId: string, message: string) {
+  return await requestBackgroundWorkerDbService({
+    type: 'update_account_test_task_message',
+    taskId,
+    message
+  })
+}
+
+async function isAccountTestTaskCancelRequestedViaDbService(taskId: string): Promise<boolean> {
+  const result = await requestBackgroundWorkerDbService({
+    type: 'is_account_test_task_cancel_requested',
+    taskId
+  })
+  return result?.canceled ?? false
+}
+
+async function accountTestTaskCancelMessageViaDbService(taskId: string): Promise<string> {
+  const result = await requestBackgroundWorkerDbService({
+    type: 'read_account_test_task_cancel_message',
+    taskId
+  })
+  return result?.message ?? accountTestTaskCancelMessage(taskId)
+}
+
+async function recordAccountSuccessfulTestModelViaDbService(accountId: string, model: string, access: AccessScope): Promise<void> {
+  await requestBackgroundWorkerDbService({
+    type: 'record_account_successful_test_model',
+    accountId,
+    model,
+    access
+  })
 }
 
 function accountDiagnosticAttemptMessage(progress: AccountDiagnosticAttemptProgress): string {
@@ -476,19 +543,23 @@ async function runOpenAIAccountTestWithSideEffects(
   }
 
   if (result.success && shouldClearAccountAfterSuccessfulTest(account)) {
-    const restored = clearAccountAfterSuccessfulTest(account, access)
-    if (restored.changed && restored.account) {
-      accountTestStatusChanges = accountTestStatusLogChanges(account, restored.account)
+    const restored = await clearAccountAfterSuccessfulTest(account, access)
+    if (restored.changed && restored.accountStatus) {
+      const restoredStatus = restored.accountStatus as AccountSummary['status']
+      accountTestStatusChanges = accountTestStatusLogChanges(account, {
+        ...account,
+        status: restoredStatus
+      })
       result = {
         ...result,
         accountStatusChanged: restored.changed,
-        accountStatus: restored.account.status
+        accountStatus: restoredStatus
       }
     }
   }
 
   if (result.success) {
-    recordAccountSuccessfulTestModel(account.id, result.model ?? '', access)
+    await recordAccountSuccessfulTestModelViaDbService(account.id, result.model ?? '', access)
     clearAccountGatewayRuntimeAfterRestore(account, access)
   }
 
@@ -659,10 +730,19 @@ async function runManualAccountTestFailurePrecheckQueueItem(
   }
 
   const reason = accountTestFailurePrecheckCooldownReason(item, result)
-  const updatedAccount = markAccountTestTemporaryUnavailable(latestAccount, reason, item.access)
-  if (updatedAccount) {
-    const changes = accountTestStatusLogChanges(latestAccount, updatedAccount)
-    recordAccountTestPrecheckStatusChangedOperation(latestAccount, updatedAccount, item.access, changes)
+  const updatedAccount = await requestBackgroundWorkerDbService({
+    type: 'mark_account_test_temporary_unavailable',
+    accountId: latestAccount.id,
+    reason,
+    access: item.access
+  })
+  if (updatedAccount?.updated) {
+    const nextAccount = {
+      ...latestAccount,
+      status: (updatedAccount.accountStatus ?? latestAccount.status) as AccountSummary['status']
+    }
+    const changes = accountTestStatusLogChanges(latestAccount, nextAccount)
+    recordAccountTestPrecheckStatusChangedOperation(latestAccount, nextAccount, item.access, changes)
   }
   logger.warn({
     event: 'manual_account_test_failure_precheck_marked',
@@ -673,8 +753,8 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     durationMs: result.durationMs,
     originalTraceId: item.originalResult.traceId,
     precheckTraceId: result.traceId,
-    accountStatus: updatedAccount?.status,
-    updated: Boolean(updatedAccount)
+    accountStatus: updatedAccount?.accountStatus,
+    updated: updatedAccount?.updated ?? false
   }, '账号测试失败且事前确认未通过，已尝试标记为临时不可调用')
   return true
 }
@@ -851,11 +931,23 @@ function shouldClearAccountAfterSuccessfulTest(account: AccountSummary): boolean
   )
 }
 
-function clearAccountAfterSuccessfulTest(account: AccountSummary, access: AccessScope) {
-  if (account.accessType === 'authorized') {
-    return clearAuthorizedAccountBindingFailureState(account.id, access, { allowPendingTestRestore: true })
-  }
-  return clearAccountFailureStateResult(account.id, access, { allowPendingTestRestore: true })
+async function clearAccountAfterSuccessfulTest(account: AccountSummary, access: AccessScope): Promise<{ changed: boolean; accountStatus?: string }> {
+  const systemAccountId = account.accessType === 'authorized'
+    ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
+    : undefined
+  const result = await requestBackgroundWorkerDbService({
+    type: 'clear_account_failure_state',
+    accountId: account.id,
+    allowPendingTestRestore: true,
+    authorizedBinding: account.accessType === 'authorized' && systemAccountId && account.boundGroupId && account.accountAuthorizationId
+      ? {
+          systemAccountId,
+          groupId: account.boundGroupId,
+          accountAuthorizationId: account.accountAuthorizationId
+        }
+      : undefined
+  })
+  return result ?? { changed: false }
 }
 
 function accountTestStatusLogChanges(before: AccountSummary, after: AccountSummary): ReturnType<typeof safeChange>[] {

@@ -9,6 +9,7 @@
 - 后续多 worker 必须基于 job / 队列盘点和热点隔离推进，不按 CPU 核数复制同构 worker。
 - worker 数量不设固定上限，由热点隔离、队列积压、事件循环延迟、统计滞后和 SQLite 锁等待实测决定。
 - 热点功能必须完全隔离：使用记录写入、日志 / 审计写入、系统采样、重型统计窗口、外部探测和维护清理不能共用一个会被大任务长期占满的事件循环。
+- 多 worker 角色隔离不能突破 SQLite 文件级单写者边界；同一个业务库、数据集目录库、统计结果库或 usage shard 文件仍只能有一个写 owner / writer 队列。写 owner 和 typed command 规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
 - 保持轻量部署边界：当前不引入 Redis、Kafka、BullMQ、Kubernetes job 或新的外部调度服务。
 
 ## 2. 非目标
@@ -276,3 +277,4 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 - 禁止把表管理硬清理、历史重建或一次性修复长期挂在常驻维护 worker 里执行。
 - 禁止多个 worker 同时无租约执行同一全局 job。
 - 禁止为了拆 worker 在请求路径做统计汇总或同步写大表。
+- 禁止用新增 worker 直接并发写同一个 SQLite 文件；新增写路径必须先确认目标库 owner，非 owner 只能投递 typed command。

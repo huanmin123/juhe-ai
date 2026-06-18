@@ -117,6 +117,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
       try {
         createUsageRecordsBatch(batch.map((item) => item.input))
         removeUsageRecordFlushBatch(batch.length, batchBytes)
+        flushFailureCount = 0
       } catch (error) {
         failed = true
         flushFailureCount += 1

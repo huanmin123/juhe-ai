@@ -1,5 +1,22 @@
 import {
+  accountTestTaskCancelMessage,
+  cancelExpiredAccountTestSessions,
+  cleanupExpiredAccountTestTasks,
+  completeAccountTestTask,
+  failAccountTestTask,
+  failExpiredQueuedAccountTestTasks,
+  isAccountTestTaskCancelRequested,
+  listRunnableAccountTestTaskIds,
+  markAccountTestTaskCanceled,
+  markAccountTestTaskRunning,
+  requeueInterruptedAccountTestTasks,
+  updateAccountTestTaskMessage
+} from '../../storage/account-test-tasks.repository.js'
+import {
   clearGatewayApiKeyValidationCache,
+  clearAuthorizedAccountBindingFailureStateByContext,
+  clearAccountFailureStateResult,
+  cleanupExpiredLogicallyDeletedAccounts,
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
@@ -7,18 +24,27 @@ import {
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listPublicGlobalSettings,
+  markAccountException,
   markAccountCooldown,
   markAccountDisabledByFailure,
+  markAccountTestTemporaryUnavailable,
   markAccountTemporaryUnavailable,
   markAuthorizedAccountBindingCooldownByContext,
   markAuthorizedAccountBindingDisabledByFailure,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
   recordAccountStreamFailure,
+  recordAccountHealthCheckFailure,
+  recordAccountHealthCheckSuccess,
+  recordCooldownAccountRetestFailure,
+  recordAccountSuccessfulTestModel,
   recordAuthorizedAccountBindingStreamFailure,
   resolveGroupUsageAccessMetadata,
   resolveProxyUrlForProfile,
+  syncAccountAvailabilityScheduleStatuses,
+  syncApiKeyAvailabilityScheduleStatuses,
   type OpenAIAccountSecret,
   updateAccount,
+  updateProxyTestState,
   validateGatewayApiKey
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -29,9 +55,15 @@ import {
 } from '../../storage/runtime-logs.repository.js'
 import {
   listActiveClientIpPolicies,
-  recordClientIpPolicyHits
 } from '../../storage/client-ip-stats.repository.js'
 import { listActiveResponseInspectionPoliciesForGateway } from '../../storage/response-inspection-policy.repository.js'
+import { cleanupExpiredSystemSessions } from '../../storage/data-retention.repository.js'
+import {
+  deleteGroupAccountStatsDirtyRowsLocal,
+  markAllGroupAccountStatsDirty,
+  updateGroupAccountStatsAllCursorLocal,
+  type GroupAccountStatsDirtyRow
+} from '../../storage/group-account-stats-cache.repository.js'
 import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
@@ -55,6 +87,7 @@ import type {
   DbServiceRuntimeSnapshot
 } from './db-service-types.js'
 import { currentProcessEventLoopLagMs } from '../../shared/process-event-loop-monitor.js'
+import { expireDueResourceAuthorizations } from '../../storage/repositories.js'
 
 let handledRequestCount = 0
 let failedRequestCount = 0
@@ -211,6 +244,168 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
       return { updated: Boolean(updated) }
     }
+    case 'clear_account_failure_state': {
+      const result = operation.authorizedBinding
+        ? clearAuthorizedAccountBindingFailureStateByContext({
+            accountId: operation.accountId,
+            ...operation.authorizedBinding
+          }, {
+            allowPendingTestRestore: operation.allowPendingTestRestore,
+            allowErrorRestore: operation.allowErrorRestore
+          })
+        : clearAccountFailureStateResult(operation.accountId, internalDbServiceAccountAccess, {
+        allowPendingTestRestore: operation.allowPendingTestRestore,
+        allowErrorRestore: operation.allowErrorRestore
+        })
+      if (result.changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { changed: result.changed, accountStatus: result.account?.status }
+    }
+    case 'mark_account_test_temporary_unavailable': {
+      const account = findAccountForTest(operation.accountId, operation.access ?? internalDbServiceAccountAccess)
+      const updated = account
+        ? markAccountTestTemporaryUnavailable(account, operation.reason, operation.access ?? internalDbServiceAccountAccess)
+        : undefined
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated), accountStatus: updated?.status }
+    }
+    case 'record_account_health_check_success': {
+      const changed = recordAccountHealthCheckSuccess(operation.accountId, operation.input)
+      if (changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { changed }
+    }
+    case 'record_account_health_check_failure': {
+      const result = recordAccountHealthCheckFailure(operation.accountId, operation.input)
+      if (result.changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'record_cooldown_account_retest_failure': {
+      const result = recordCooldownAccountRetestFailure(operation.accountId, operation.input)
+      if (result.changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return {
+        changed: result.changed,
+        failureCount: result.failureCount,
+        action: result.action,
+        cooldownUntil: result.cooldownUntil,
+        backoffSeconds: result.backoffSeconds,
+        backoffMinutes: result.backoffMinutes,
+        recoveryStage: result.recoveryStage,
+        fastThresholdSeconds: result.fastThresholdSeconds,
+        maxPauseSeconds: result.maxPauseSeconds,
+        maxRecoverySeconds: result.maxRecoverySeconds,
+        longTermIntervalSeconds: result.longTermIntervalSeconds,
+        maxedFailureCount: result.maxedFailureCount,
+        observationStartedAt: result.observationStartedAt,
+        observationElapsedSeconds: result.observationElapsedSeconds,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage
+      }
+    }
+    case 'mark_account_exception': {
+      const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
+        preserveDisabled: operation.preserveDisabled
+      })
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated), accountStatus: updated?.status }
+    }
+    case 'update_proxy_test_state': {
+      const updated = updateProxyTestState(operation.proxyId, operation.input)
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated), proxyStatus: updated?.testStatus }
+    }
+    case 'mark_all_group_account_stats_dirty':
+      markAllGroupAccountStatsDirty(operation.reason)
+      return { marked: true }
+    case 'delete_group_account_stats_dirty_rows': {
+      deleteGroupAccountStatsDirtyRowsLocal(
+        operation.rows.map((row): GroupAccountStatsDirtyRow => ({
+          groupId: row.groupId,
+          reason: null,
+          updatedAt: row.updatedAt
+        }))
+      )
+      return { deleted: true }
+    }
+    case 'update_group_account_stats_all_cursor':
+      updateGroupAccountStatsAllCursorLocal(operation.cursorGroupId)
+      return { updated: true }
+    case 'sync_api_key_availability_schedule_statuses': {
+      const result = syncApiKeyAvailabilityScheduleStatuses()
+      if (result.changedIds.length > 0) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'sync_account_availability_schedule_statuses': {
+      const result = syncAccountAvailabilityScheduleStatuses()
+      if (result.changedIds.length > 0) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'expire_due_resource_authorizations': {
+      const expired = expireDueResourceAuthorizations()
+      if (expired > 0) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { expired }
+    }
+    case 'cleanup_expired_deleted_accounts': {
+      const result = cleanupExpiredLogicallyDeletedAccounts()
+      if (result.attempted > 0 || result.orphanedAuthorizationInstances > 0) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'cleanup_expired_system_sessions':
+      return { deleted: cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit) }
+    case 'account_test_task_maintenance': {
+      cleanupExpiredAccountTestTasks()
+      const canceledTaskIds = operation.action === 'start' || operation.action === 'sweep'
+        ? cancelExpiredAccountTestSessions()
+        : []
+      const expiredQueuedTaskIds = operation.action === 'sweep'
+        ? failExpiredQueuedAccountTestTasks(operation.maxQueuedMs ?? 10 * 60_000, operation.sweepLimit ?? 500)
+        : []
+      const taskIds = operation.action === 'start'
+        ? requeueInterruptedAccountTestTasks()
+        : listRunnableAccountTestTaskIds(operation.refillLimit ?? 100)
+      return { taskIds, canceledTaskIds, expiredQueuedTaskIds }
+    }
+    case 'mark_account_test_task_running':
+      return markAccountTestTaskRunning(operation.taskId)
+    case 'mark_account_test_task_canceled':
+      return markAccountTestTaskCanceled(operation.taskId, operation.message)
+    case 'complete_account_test_task':
+      return completeAccountTestTask(operation.taskId, operation.result)
+    case 'fail_account_test_task':
+      return failAccountTestTask(operation.taskId, operation.message, operation.result)
+    case 'update_account_test_task_message':
+      return updateAccountTestTaskMessage(operation.taskId, operation.message)
+    case 'is_account_test_task_cancel_requested':
+      return { canceled: isAccountTestTaskCancelRequested(operation.taskId) }
+    case 'read_account_test_task_cancel_message':
+      return { message: accountTestTaskCancelMessage(operation.taskId) }
+    case 'record_account_successful_test_model': {
+      const updated = recordAccountSuccessfulTestModel(operation.accountId, operation.model, operation.access ?? internalDbServiceAccountAccess)
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated), accountStatus: updated?.status }
+    }
     case 'clear_account_stream_failure_state': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
       const accountId = operation.account?.id ?? operation.accountId
@@ -236,7 +431,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         providerCode: operation.providerCode
       })
     case 'record_client_ip_policy_hits':
-      return recordClientIpPolicyHits(operation.hits)
+      throw new Error('record_client_ip_policy_hits 必须投递 stats-writer，禁止在 DB service 写 stats DB')
     case 'list_runtime_logs':
       return listRuntimeLogs(operation.options)
     case 'get_runtime_log_detail':

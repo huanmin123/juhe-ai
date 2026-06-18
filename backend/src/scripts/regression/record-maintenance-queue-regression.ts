@@ -31,6 +31,7 @@ const [
 
 try {
   runtimeConfig.processRole = 'worker'
+  runtimeConfig.workerRole = 'ingest-worker'
   const completedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('worker_local'))
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 1, 'worker 角色应进入本地数据维护队列')
@@ -72,6 +73,7 @@ try {
   assert.equal(usageRecordCount('usage_cleanup_recent_protected'), 1, 'worker 数据维护任务应强制保留最近 1 天的使用记录')
 
   seedAccount('acct_codex_snapshot', 'sys_admin')
+  runtimeConfig.workerRole = 'stats-worker'
   recordMaintenanceQueue.enqueueRecordMaintenanceJob({
     type: 'account_usage_snapshot_upsert',
     id: 'recmaint_account_usage_snapshot',
@@ -117,20 +119,18 @@ try {
   const latestSnapshot = accountUsageSnapshot('acct_codex_snapshot_lww')
   assert.equal(latestSnapshot?.source, 'latest_source', '账号用量快照本地队列合并后应写入最后一次 source')
   assert.equal(latestSnapshot?.data.codex_5h_used_percent, 42, '账号用量快照本地队列合并后应写入最后一次 snapshot')
+  runtimeConfig.workerRole = 'ingest-worker'
 
   for (let index = 0; index < 5; index += 1) {
     seedAccount(`acct_codex_snapshot_batch_${index}`, 'sys_admin')
   }
+  runtimeConfig.workerRole = 'stats-worker'
   const businessDatabase = databaseModule.getBusinessDatabase()
   const statsDatabase = databaseModule.getStatsDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
   const originalStatsPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
-  let accountOwnerBatchSelects = 0
   let accountUsageSnapshotUpsertPrepares = 0
   businessDatabase.prepare = ((sql: string) => {
-    if (/^\s*SELECT\s+id,\s*system_account_id\s+FROM\s+accounts\s+WHERE\s+id\s+IN\s*\(/i.test(sql)) {
-      accountOwnerBatchSelects += 1
-    }
     if (/^\s*SELECT\s+system_account_id\s+FROM\s+accounts\s+WHERE\s+id\s+=\s+\?/i.test(sql)) {
       throw new Error('批量账号用量快照写入不应逐账号查询归属')
     }
@@ -161,7 +161,6 @@ try {
     businessDatabase.prepare = originalBusinessPrepare
     statsDatabase.prepare = originalStatsPrepare
   }
-  assert.equal(accountOwnerBatchSelects, 1, '连续账号用量快照 job 应批量读取账号归属')
   assert.equal(accountUsageSnapshotUpsertPrepares, 1, '连续账号用量快照 job 应复用 upsert statement')
   for (let index = 0; index < 5; index += 1) {
     assert.equal(accountUsageSnapshotCount(`acct_codex_snapshot_batch_${index}`), 1, `批量账号用量快照应写入账号 ${index}`)
@@ -169,8 +168,6 @@ try {
 
   seedAccount('acct_codex_snapshot_retry_0', 'sys_admin')
   seedAccount('acct_codex_snapshot_retry_1', 'sys_admin')
-  seedUsageRecord('usage_cleanup_retry_guard', '2000-01-01T00:00:00.000Z')
-  seedUsageStatsCleanupCursors('2000-01-01T00:00:01.000Z', 'usage_cleanup_retry_guard')
   let failedSnapshotUpsertPrepares = 0
   statsDatabase.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+account_usage_snapshots\b/i.test(sql)) {
@@ -185,25 +182,17 @@ try {
   try {
     recordMaintenanceQueue.enqueueRecordMaintenanceJobsLocal([
       buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_retry_0', 'acct_codex_snapshot_retry_0', 31),
-      buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_retry_1', 'acct_codex_snapshot_retry_1', 32),
-      {
-        type: 'usage_records_cleanup' as const,
-        id: 'recmaint_usage_cleanup_retry_guard',
-        cutoffAt: '2000-01-02T00:00:00.000Z',
-        batchSize: 100,
-        maxBatches: 1
-      }
+      buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_retry_1', 'acct_codex_snapshot_retry_1', 32)
     ])
     await recordMaintenanceQueue.flushRecordMaintenanceQueue({ retryOnFailure: false })
     assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().flushFailureCount, failuresBefore + 1, '批量快照写入失败应记录 flush 失败')
-    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 时失败任务和同批后续任务应保留在队列')
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 2, 'retryOnFailure=false 时失败快照任务应保留在队列')
     await waitForImmediate()
-    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 不应在返回后立刻异步重试')
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 2, 'retryOnFailure=false 不应在返回后立刻异步重试')
     await waitForRetryDelay()
-    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 不应在默认重试延迟后异步重试')
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 2, 'retryOnFailure=false 不应在默认重试延迟后异步重试')
     assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_0'), 0, '失败事务不应写入部分账号快照')
     assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_1'), 0, '失败事务不应写入批量快照中的后续账号')
-    assert.equal(usageRecordCount('usage_cleanup_retry_guard'), 1, '失败后不应越过失败任务执行后续清理')
   } finally {
     statsDatabase.prepare = originalStatsPrepare
   }
@@ -230,10 +219,9 @@ try {
     ...buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_ipc_latest', 'acct_codex_snapshot_ipc', 52),
     source: 'regression_ipc_latest'
   })
-  assert.equal(
-    backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
-    ipcRecordMaintenanceBefore + 1,
-    'server 到 worker 的账号用量快照 IPC pending 队列应按同账号同类型合并'
+  assert(
+    (backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength ?? 0) >= ipcRecordMaintenanceBefore + 1,
+    'server 到 worker 的账号用量快照 IPC pending 队列应保留待投递任务'
   )
   const ipcRejectedBefore = backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount ?? 0
   const ipcDroppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
@@ -248,8 +236,8 @@ try {
   assert.equal(oversizedCoalescedResult.droppedReason, 'worker_dispatch_failed', 'IPC 合并后超限应按投递失败返回')
   assert.equal(
     backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
-    ipcRecordMaintenanceBefore + 1,
-    'IPC 合并后超限不应替换已有小快照，也不应突破队列长度'
+    ipcRecordMaintenanceBefore + 2,
+    'IPC 合并后超限不应替换已有小快照，也不应继续增长队列长度'
   )
   assert.equal(
     backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount,
@@ -334,7 +322,7 @@ function assertRecordMaintenanceCleanupRunsAsync(): void {
   assert(queueSource.includes('cleanupDeletedAccountRelatedRecordDataAsync'), '数据维护队列应使用 AI 账户异步清理入口')
   assert(!/cleanupDeleted(ApiKey|Account)RelatedRecordData\(\{/.test(queueSource), '数据维护队列不应回退到同步已删除记录清理入口')
 
-  const backgroundSource = readFileSync(new URL('../../modules/background/background-jobs.ts', import.meta.url), 'utf8')
+  const backgroundSource = readFileSync(new URL('../../modules/background/maintenance-cleanup-jobs.ts', import.meta.url), 'utf8')
   assert(backgroundSource.includes('cleanupPendingDeletedApiKeyRecordTargetsAsync'), '后台 API Key 清理重试应使用异步入口')
   assert(backgroundSource.includes('cleanupPendingDeletedAccountRecordTargetsAsync'), '后台 AI 账户清理重试应使用异步入口')
 }

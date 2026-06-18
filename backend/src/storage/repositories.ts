@@ -877,6 +877,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
+  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
   const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId) ?? []
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
@@ -908,6 +909,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
+  const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
+    ? normalizeAccountAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
+    : isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs))
   const account: AccountSummary = accountSummaryWithEffectiveAvailability({
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
@@ -934,7 +938,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     proxyProfileId,
     schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
-    availabilityScheduleActive: isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs)),
+    availabilityScheduleActive,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
@@ -1099,6 +1103,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     ? normalizeAccountTagNamesInput(input.tags) ?? []
     : (current.tags ?? []).map((tag) => tag.name)
   const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
+  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? accountAvailabilityScheduleFromRequest(input)
     : current.availabilitySchedule
@@ -1217,7 +1222,16 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         ? true
         : requestedSchedulable,
     availabilitySchedule: nextAvailabilitySchedule,
-    availabilityScheduleActive: isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(nextAvailabilitySchedule), new Date(updateNowMs)),
+    availabilityScheduleActive: nextAccountAvailabilityScheduleActiveValue({
+      currentActive: current.availabilityScheduleActive === true,
+      hasScheduleInput: hasAvailabilityScheduleInput,
+      hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
+      hasStatusInput,
+      nextStatus,
+      nextSchedule: nextAvailabilitySchedule,
+      scheduleActiveInput: input.availabilityScheduleActive,
+      now: new Date(updateNowMs)
+    }),
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
@@ -1326,6 +1340,44 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   }
 
   return { ...next, tags: savedTags }
+}
+
+function nextAccountAvailabilityScheduleActiveValue(input: {
+  currentActive: boolean
+  hasScheduleInput: boolean
+  hasScheduleActiveInput: boolean
+  hasStatusInput: boolean
+  nextStatus: AccountStatus
+  nextSchedule: AccountSummary['availabilitySchedule']
+  scheduleActiveInput: unknown
+  now: Date
+}): boolean {
+  if (!input.nextSchedule?.enabled) {
+    return true
+  }
+  if (input.hasScheduleActiveInput) {
+    return normalizeAccountAvailabilityScheduleActiveOverride(input.scheduleActiveInput, input.nextSchedule)
+  }
+  if (input.hasScheduleInput) {
+    return isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(input.nextSchedule), input.now)
+  }
+  if (input.hasStatusInput && input.nextStatus === 'active') {
+    return true
+  }
+  return input.currentActive
+}
+
+function normalizeAccountAvailabilityScheduleActiveOverride(
+  value: unknown,
+  schedule: AccountSummary['availabilitySchedule']
+): boolean {
+  if (!schedule?.enabled) {
+    throw new Error('只有启用时间计划的账户才可以调整时间计划派生状态')
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error('账户时间计划派生状态必须是布尔值')
+  }
+  return value
 }
 
 export function deleteAccount(id: string, access?: AccessScope): boolean {

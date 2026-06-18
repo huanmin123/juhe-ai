@@ -46,11 +46,11 @@ function authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota = 
     WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
     WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
-    WHEN account_schedule_allowed(account_rows.source_availability_schedule_json) = 0 THEN 'disabled'
+    WHEN COALESCE(account_rows.source_availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql} THEN 'disabled'
     WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    WHEN account_schedule_allowed(account_rows.availability_schedule_json) = 0 THEN 'disabled'
+    WHEN COALESCE(account_rows.availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN ${accountApiKeyPoolAllUnavailableSql({
       accountIdSql: `CASE
@@ -85,7 +85,7 @@ function ownerAccountEffectiveStatusExpression(): string {
     THEN 'disabled'
     WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
-    WHEN account_schedule_allowed(account_rows.availability_schedule_json) = 0 THEN 'disabled'
+    WHEN COALESCE(account_rows.availability_schedule_active, 1) = 0 THEN 'disabled'
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN ${accountApiKeyPoolAllUnavailableSql({
       accountIdSql: 'account_rows.id',
@@ -444,6 +444,7 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.client_compatibility',
     'accounts.schedulable',
     'accounts.availability_schedule_json',
+    'accounts.availability_schedule_active',
     'accounts.account_expires_at',
     'accounts.last_used_at',
     'accounts.cooldown_until',
@@ -485,6 +486,7 @@ function sourceAccountSelectColumns(includeCredentials: boolean): string {
     'source_accounts.status AS source_status',
     'source_accounts.schedulable AS source_schedulable',
     'source_accounts.availability_schedule_json AS source_availability_schedule_json',
+    'source_accounts.availability_schedule_active AS source_availability_schedule_active',
     'source_accounts.account_expires_at AS source_account_expires_at',
     'source_accounts.cooldown_until AS source_cooldown_until',
     'source_accounts.last_error_code AS source_last_error_code',
@@ -519,6 +521,7 @@ function accountListOuterSelectColumns(): string {
     'client_compatibility',
     'schedulable',
     'availability_schedule_json',
+    'availability_schedule_active',
     'account_expires_at',
     'last_used_at',
     'cooldown_until',
@@ -563,6 +566,7 @@ function accountListOuterSelectColumns(): string {
     'source_status',
     'source_schedulable',
     'source_availability_schedule_json',
+    'source_availability_schedule_active',
     'source_account_expires_at',
     'source_cooldown_until',
     'source_last_error_code',
@@ -680,6 +684,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     status: AccountListRow['status']
     schedulable: number
     availability_schedule_json: string | null
+    availability_schedule_active: number
     account_expires_at: string | null
     cooldown_until: string | null
     last_error_code: string | null
@@ -694,7 +699,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
   for (const chunk of chunkValues(sourceIds, 900)) {
     sourceRows.push(...database
       .prepare(`
-        SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
+        SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, availability_schedule_active, account_expires_at, cooldown_until,
           last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
           proxy_profile_id, concurrency_limit, client_compatibility
@@ -720,6 +725,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_status: source.status,
       source_schedulable: source.schedulable,
       source_availability_schedule_json: source.availability_schedule_json,
+      source_availability_schedule_active: source.availability_schedule_active,
       source_account_expires_at: source.account_expires_at,
       source_cooldown_until: source.cooldown_until,
       source_last_error_code: source.last_error_code,

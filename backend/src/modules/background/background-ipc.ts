@@ -116,6 +116,7 @@ const probePendingQueueRuntime = emptyIpcQueuesRuntime()
 const maintenancePendingQueueRuntime = emptyIpcQueuesRuntime()
 let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
+let pendingStatsWriteRequests = new Map<string, PendingStatsWriteRequest>()
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let backgroundWorkerReadyHandler: (() => void) | undefined
@@ -777,6 +778,20 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
         void respondToIngestStatusRequest(record.requestId, child)
       }
       break
+    case 'background_worker_db_service_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
+        void respondToDbServiceRequest(record.requestId, record.operation, child)
+      }
+      break
+    case 'background_worker_stats_write_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
+        void forwardStatsWriteRequest(record.requestId, record.operation as import('./background-stats-writer.js').BackgroundStatsWriteOperation, child)
+      }
+      break
+    case 'background_worker_stats_write_response':
+      if (typeof record.requestId !== 'string') break
+      finishStatsWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'stats-writer 请求失败' })
+      break
     case 'background_worker_process_event_loop_response':
       if (typeof record.requestId !== 'string' || !Array.isArray(record.samples)) break
       finishProcessEventLoopRequest(record.requestId, nonEmptyProcessEventLoopSamples(record.samples))
@@ -823,7 +838,105 @@ function handleParentMessage(message: unknown): void {
   }
   if (record.type === 'background_worker_ingest_status_response' && typeof record.requestId === 'string') {
     finishParentIngestStatusRequest(record.requestId, record.status as BackgroundWorkerIngestDrainStatus | undefined)
+    return
   }
+  if (record.type === 'background_worker_db_service_response' && typeof record.requestId === 'string') {
+    finishBackgroundDbServiceRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : '本地数据库服务请求失败' })
+    return
+  }
+  if (record.type === 'background_worker_stats_write_response' && typeof record.requestId === 'string') {
+    finishStatsWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'stats-writer 请求失败' })
+  }
+}
+
+interface PendingStatsWriteRequest {
+  resolve: (result: unknown) => void
+  reject: (error: Error) => void
+  timeout: NodeJS.Timeout
+}
+
+export async function requestBackgroundWorkerStatsWrite<T extends import('./background-stats-writer.js').BackgroundStatsWriteOperation>(
+  operation: T,
+  timeoutMs = 10_000
+): Promise<import('./background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined> {
+  if (runtimeConfig.processRole === 'worker') {
+    if (runtimeConfig.workerRole === 'stats-worker') {
+      const { handleStatsWriteOperation } = await import('./background-stats-writer.js')
+      return await handleStatsWriteOperation(operation) as import('./background-stats-writer.js').BackgroundStatsWriteOperationResult<T>
+    }
+    if (typeof process.send !== 'function') {
+      return undefined
+    }
+    const requestId = randomUUID()
+    return await new Promise<import('./background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const pending = pendingStatsWriteRequests.get(requestId)
+        if (!pending) {
+          return
+        }
+        pendingStatsWriteRequests.delete(requestId)
+        pending.reject(new Error('后台 stats-writer 请求超时'))
+      }, timeoutMs)
+      pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+      sendToParentOrServer({
+        type: 'background_worker_stats_write_request',
+        requestId,
+        operation
+      }, (error) => {
+        finishStatsWriteRequest(requestId, undefined)
+        markParentIpcBroken(error)
+      })
+    })
+  }
+
+  if (runtimeConfig.processRole !== 'server') {
+    return undefined
+  }
+
+  const child = statsWorkerProcess
+  if (!child || !child.connected || !statsWorkerReady) {
+    return undefined
+  }
+  const requestId = randomUUID()
+  return await new Promise<import('./background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      finishStatsWriteRequest(requestId, undefined)
+    }, timeoutMs)
+    pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout })
+    try {
+      child.send({
+        type: 'background_worker_stats_write_request',
+        requestId,
+        operation
+      } satisfies BackgroundWorkerMessage, (error) => {
+        if (error) {
+          finishStatsWriteRequest(requestId, undefined)
+          markRoleWorkerIpcBroken('stats-worker', error, child)
+        }
+      })
+    } catch (error) {
+      finishStatsWriteRequest(requestId, undefined)
+      markRoleWorkerIpcBroken('stats-worker', error, child)
+    }
+  })
+}
+
+function finishStatsWriteRequest(requestId: string, response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined): void {
+  const pending = pendingStatsWriteRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+  clearTimeout(pending.timeout)
+  pendingStatsWriteRequests.delete(requestId)
+  if (!response) {
+    pending.resolve(undefined)
+    return
+  }
+  if (response.ok) {
+    pending.resolve(response.result)
+    return
+  }
+  pending.reject(new Error(response.errorMessage))
 }
 
 function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
@@ -1690,5 +1803,159 @@ async function dbServiceProcessEventLoopSample(): Promise<ProcessEventLoopSample
     return await dbServiceIpc.requestDbServiceProcessEventLoopSample(800)
   } catch {
     return undefined
+  }
+}
+
+async function respondToDbServiceRequest(requestId: string, operation: import('../db-service/db-service-types.js').DbServiceOperation, targetChild: ChildProcess | undefined): Promise<void> {
+  const child = targetChild
+  if (!child || !child.connected) {
+    return
+  }
+  try {
+    const { requestDbService } = await import('../db-service/db-service-ipc.js')
+    const result = await requestDbService(operation)
+    child.send({
+      type: 'background_worker_db_service_response',
+      requestId,
+      ok: true,
+      result
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markIpcBrokenForChild(roleForChild(child), error, child)
+      }
+    })
+  } catch (error) {
+    try {
+      child.send({
+        type: 'background_worker_db_service_response',
+        requestId,
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      } satisfies BackgroundWorkerMessage, (sendError) => {
+        if (sendError) {
+          markIpcBrokenForChild(roleForChild(child), sendError, child)
+        }
+      })
+    } catch (sendError) {
+      markIpcBrokenForChild(roleForChild(child), sendError, child)
+    }
+  }
+}
+
+async function forwardStatsWriteRequest(
+  requestId: string,
+  operation: import('./background-stats-writer.js').BackgroundStatsWriteOperation,
+  requesterChild: ChildProcess | undefined
+): Promise<void> {
+  const requester = requesterChild
+  if (!requester || !requester.connected) {
+    return
+  }
+  try {
+    const result = await requestBackgroundWorkerStatsWrite(operation)
+    if (result === undefined) {
+      throw new Error(`stats-writer 不可用，无法执行统计写操作：${operation.type}`)
+    }
+    requester.send({
+      type: 'background_worker_stats_write_response',
+      requestId,
+      ok: true,
+      result
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markIpcBrokenForChild(roleForChild(requester), error, requester)
+      }
+    })
+  } catch (error) {
+    try {
+      requester.send({
+        type: 'background_worker_stats_write_response',
+        requestId,
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      } satisfies BackgroundWorkerMessage, (sendError) => {
+        if (sendError) {
+          markIpcBrokenForChild(roleForChild(requester), sendError, requester)
+        }
+      })
+    } catch (sendError) {
+      markIpcBrokenForChild(roleForChild(requester), sendError, requester)
+    }
+  }
+}
+
+interface PendingDbServiceRequest {
+  resolve: (result: unknown) => void
+  reject: (error: Error) => void
+  timeout: NodeJS.Timeout
+}
+
+const pendingBackgroundDbServiceRequests = new Map<string, PendingDbServiceRequest>()
+
+export async function requestBackgroundWorkerDbService<T extends import('../db-service/db-service-types.js').DbServiceOperation>(
+  operation: T,
+  timeoutMs = 5000
+): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T> | undefined> {
+  if (runtimeConfig.processRole === 'server') {
+    const { requestDbService } = await import('../db-service/db-service-ipc.js')
+    return await requestDbService(operation, { timeoutMs })
+  }
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
+    return undefined
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T> | undefined>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingBackgroundDbServiceRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      pendingBackgroundDbServiceRequests.delete(requestId)
+      pending.reject(new Error('后台 DB service 请求超时'))
+    }, timeoutMs)
+    pendingBackgroundDbServiceRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+    sendToParentOrServer({
+      type: 'background_worker_db_service_request',
+      requestId,
+      operation
+    }, (error) => {
+      finishBackgroundDbServiceRequest(requestId, undefined)
+      markParentIpcBroken(error)
+    })
+  })
+}
+
+function finishBackgroundDbServiceRequest(requestId: string, response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined): void {
+  const pending = pendingBackgroundDbServiceRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+  clearTimeout(pending.timeout)
+  pendingBackgroundDbServiceRequests.delete(requestId)
+  if (!response) {
+    pending.resolve(undefined)
+    return
+  }
+  if (response.ok) {
+    pending.resolve(response.result)
+    return
+  }
+  pending.reject(new Error(response.errorMessage))
+}
+
+function sendToParentOrServer(message: BackgroundWorkerMessage, onFailure?: (error: unknown) => void): void {
+  if (typeof process.send !== 'function') {
+    onFailure?.(new Error('process.send unavailable'))
+    return
+  }
+  try {
+    process.send(message, (error) => {
+      if (error) {
+        onFailure?.(error)
+      }
+    })
+  } catch (error) {
+    onFailure?.(error)
   }
 }
