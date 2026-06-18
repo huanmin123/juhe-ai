@@ -178,6 +178,7 @@ export interface PublicApiKeyAddInput {
   expiresAt?: string
   quotaLimits?: Record<string, unknown> | null
   availabilitySchedule?: Record<string, unknown> | null
+  availabilityScheduleActive?: boolean
 }
 
 export interface PublicApiKeyUpdateInput {
@@ -191,6 +192,7 @@ export interface PublicApiKeyUpdateInput {
   expiresAt?: string | null
   quotaLimits?: Record<string, unknown> | null
   availabilitySchedule?: Record<string, unknown> | null
+  availabilityScheduleActive?: boolean
 }
 
 export interface PublicApiKeyDeleteInput {

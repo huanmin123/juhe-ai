@@ -27,7 +27,8 @@ const apiKeyMutationSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
-  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional()
+  availabilitySchedule: apiKeyAvailabilityScheduleSchema.nullable().optional(),
+  availabilityScheduleActive: z.boolean().optional()
 }).strict()
 const apiKeyCreateSchema = apiKeyMutationSchema.refine((value) => Boolean(value.groupBindings?.length), {
   message: 'API Key 至少需要绑定一个分组'
@@ -214,7 +215,8 @@ apiKeysRouter.patch('/:id', (req, res) => {
             groupBindings: '绑定分组路由',
             expiresAt: '过期时间',
             quotaLimits: '额度限制',
-            availabilitySchedule: '时间计划'
+            availabilitySchedule: '时间计划',
+            availabilityScheduleActive: '时间计划派生状态'
           }),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }

@@ -62,13 +62,17 @@ export function apiKeyStatusTooltipLines(apiKey: ApiKeySummary): string[] {
   if (!isApiKeyScheduleInactive(apiKey)) return []
   return [
     apiKey.status === 'disabled'
-      ? '时间计划当前不在允许时段，API Key 已停用'
-      : '时间计划当前不在允许时段，等待后台同步停用'
+      ? 'API Key 已停用；时间计划派生状态当前为停用'
+      : '时间计划派生状态当前为停用，可提前启用到下一次计划边界'
   ]
 }
 
-function isApiKeyScheduleInactive(apiKey: ApiKeySummary): boolean {
+export function isApiKeyScheduleInactive(apiKey: ApiKeySummary): boolean {
   return Boolean(apiKey.availabilitySchedule?.enabled && apiKey.availabilityScheduleActive === false)
+}
+
+export function isApiKeyScheduleActive(apiKey: ApiKeySummary): boolean {
+  return Boolean(apiKey.availabilitySchedule?.enabled && apiKey.availabilityScheduleActive === true)
 }
 
 export function apiKeyScheduleSummary(schedule?: ApiKeyAvailabilitySchedule, active?: boolean): string {

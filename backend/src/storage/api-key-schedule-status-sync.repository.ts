@@ -1,5 +1,5 @@
 import {
-  evaluateApiKeyAvailabilitySchedule,
+  dueApiKeyAvailabilityScheduleEvent,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
 import {
@@ -19,6 +19,8 @@ interface ScheduledApiKeyStatusRow {
 interface ScheduledApiKeyStatusUpdate {
   id: string
   active: number
+  eventKey?: string
+  status?: 'active' | 'disabled'
 }
 
 export interface ApiKeyScheduleStatusSyncResult {
@@ -57,12 +59,17 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
   for (const row of rows) {
     try {
       const schedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
-      const active = evaluateApiKeyAvailabilitySchedule(schedule, now).allowed ? 1 : 0
-      if (active === row.availability_schedule_active) {
+      const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
+      if (!event) {
         result.unchanged += 1
         continue
       }
-      updates.push({ id: row.id, active })
+      updates.push({
+        id: row.id,
+        active: event.status === 'active' ? 1 : 0,
+        eventKey: `${row.id}:${event.eventKey}`,
+        status: event.status
+      })
     } catch {
       result.invalid += 1
       result.invalidIds.push(row.id)
@@ -79,6 +86,10 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
   const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const insertEvent = database.prepare(`
+      INSERT OR IGNORE INTO api_key_schedule_status_events (event_key, api_key_id, status, executed_at)
+      VALUES (?, ?, ?, ?)
+    `)
     const updateStatus = database.prepare(`
       UPDATE api_keys
       SET availability_schedule_active = ?, updated_at = ?
@@ -87,6 +98,13 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
         AND availability_schedule_active <> ?
     `)
     for (const update of updates) {
+      if (update.eventKey && update.status) {
+        const eventChanges = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
+        if (eventChanges <= 0) {
+          result.skipped += 1
+          continue
+        }
+      }
       const changes = updateStatus.run(update.active, updatedAt, update.id, update.active).changes ?? 0
       if (changes <= 0) {
         result.unchanged += 1

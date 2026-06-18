@@ -11,6 +11,7 @@ import { apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canBindApiKeyGroup,
 import {
   apiKeyAvailabilityScheduleFromRequest,
   apiKeyAvailabilityScheduleJson,
+  evaluateApiKeyAvailabilitySchedule,
   isApiKeyAvailabilityScheduleInputPresent
 } from './api-key-availability-schedule.js'
 import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
@@ -36,7 +37,8 @@ const apiKeyMutationInputKeys = new Set([
   'status',
   'expiresAt',
   'quotaLimits',
-  'availabilitySchedule'
+  'availabilitySchedule',
+  'availabilityScheduleActive'
 ])
 const apiKeyGroupBindingInputKeys = new Set([
   'groupId',
@@ -163,7 +165,8 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
 
 export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 创建参数')
-  const now = nowIso()
+  const nowDate = new Date()
+  const now = nowDate.toISOString()
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
@@ -181,6 +184,10 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
+  const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
+  const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
+    ? normalizeApiKeyAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
+    : apiKeyAvailabilityScheduleActiveValue(availabilitySchedule, nowDate)
   const groupRouteStrategy = normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
   const groupBindings = apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), bindings)
   const record: ApiKeySummary & { key: string } = {
@@ -197,6 +204,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
     availabilitySchedule,
+    availabilityScheduleActive: availabilitySchedule?.enabled ? availabilityScheduleActive !== 0 : undefined,
     usage: emptyAccountUsageSummary(),
     key
   }
@@ -219,6 +227,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       'expires_at',
       'quota_limits_json',
       'availability_schedule_json',
+      'availability_schedule_active',
       'created_at',
       'updated_at'
     ]
@@ -236,6 +245,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       record.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
+      availabilityScheduleActive,
       now,
       now
     ]
@@ -292,6 +302,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
     : current.expiresAt
   const hasAvailabilityScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
+  const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
   const nextAvailabilitySchedule = hasAvailabilityScheduleInput
     ? apiKeyAvailabilityScheduleFromRequest(input)
     : current.availabilitySchedule
@@ -299,9 +310,19 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const nextGroupRouteStrategy = hasGroupRouteStrategyInput
     ? normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
     : current.groupRouteStrategy
-  const nextManualStatus = Object.prototype.hasOwnProperty.call(input, 'status')
+  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
+  const nextManualStatus = hasStatusInput
     ? normalizeApiKeyStatus(input.status, current.status)
     : current.status
+  const nextAvailabilityScheduleActive = nextApiKeyAvailabilityScheduleActiveValue({
+    currentActive: currentRow?.availability_schedule_active,
+    hasScheduleInput: hasAvailabilityScheduleInput,
+    hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
+    hasStatusInput,
+    nextManualStatus,
+    nextSchedule: nextAvailabilitySchedule,
+    scheduleActiveInput: input.availabilityScheduleActive
+  })
   const next: ApiKeySummary = {
     ...current,
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
@@ -327,6 +348,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       'expires_at = ?',
       'quota_limits_json = ?',
       'availability_schedule_json = ?',
+      'availability_schedule_active = ?',
       'updated_at = ?'
     ]
     const updateValues = [
@@ -337,6 +359,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       next.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
+      nextAvailabilityScheduleActive,
       now
     ]
     updateValues.push(id, systemAccountId)
@@ -363,6 +386,47 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   notifyGatewayRuntimeCacheInvalidation('api_key_updated')
   notifyApiKeyQuotaCacheInvalidation(id, 'api_key_updated')
   return findApiKeySummary(id, access) ?? next
+}
+
+function nextApiKeyAvailabilityScheduleActiveValue(input: {
+  currentActive: number | null | undefined
+  hasScheduleInput: boolean
+  hasScheduleActiveInput: boolean
+  hasStatusInput: boolean
+  nextManualStatus: 'active' | 'disabled'
+  nextSchedule: ApiKeySummary['availabilitySchedule']
+  scheduleActiveInput: unknown
+}): number {
+  if (input.hasScheduleActiveInput) {
+    return normalizeApiKeyAvailabilityScheduleActiveOverride(input.scheduleActiveInput, input.nextSchedule)
+  }
+  if (input.hasScheduleInput) {
+    return apiKeyAvailabilityScheduleActiveValue(input.nextSchedule)
+  }
+  if (input.hasStatusInput && input.nextManualStatus === 'active') {
+    return 1
+  }
+  return input.currentActive === 0 ? 0 : 1
+}
+
+function normalizeApiKeyAvailabilityScheduleActiveOverride(
+  value: unknown,
+  schedule: ApiKeySummary['availabilitySchedule']
+): number {
+  if (!schedule?.enabled) {
+    throw new Error('只有启用时间计划的 API Key 才能调整时间计划派生状态')
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error('API Key 时间计划派生状态必须是布尔值')
+  }
+  return value ? 1 : 0
+}
+
+function apiKeyAvailabilityScheduleActiveValue(
+  schedule: ApiKeySummary['availabilitySchedule'],
+  now = new Date()
+): number {
+  return evaluateApiKeyAvailabilitySchedule(schedule, now).allowed ? 1 : 0
 }
 
 export function refreshApiKeySecret(id: string, access?: AccessScope): (ApiKeySummary & { key: string }) | undefined {

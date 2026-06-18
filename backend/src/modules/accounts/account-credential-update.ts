@@ -27,10 +27,16 @@ export function mergeAccountCredentialsForUpdate(account: AccountSummary, reques
   preserveCredentialText(credentials, account.credentials, 'base_url')
   preserveCredentialArray(credentials, account.credentials, 'supported_endpoint_modes')
   if (account.type === 'api_key') {
+    const requestedApiKeyReplacement = hasCredentialText(requested.api_key) || hasCredentialStringArray(requested.api_keys)
     preserveCredentialText(credentials, account.credentials, 'api_key')
-    preserveCredentialArray(credentials, account.credentials, 'api_keys')
-    preserveCredentialText(credentials, account.credentials, 'api_key_strategy')
-    preserveCredentialArray(credentials, account.credentials, 'api_key_weights')
+    if (!requestedApiKeyReplacement) {
+      preserveCredentialArray(credentials, account.credentials, 'api_keys')
+      preserveCredentialText(credentials, account.credentials, 'api_key_strategy')
+      preserveCredentialArray(credentials, account.credentials, 'api_key_weights')
+    } else if (hasCredentialStringArray(credentials.api_keys)) {
+      preserveCredentialText(credentials, account.credentials, 'api_key_strategy')
+      preserveCredentialArray(credentials, account.credentials, 'api_key_weights')
+    }
   } else if (account.type === 'oauth') {
     for (const key of [
       'access_token',
@@ -67,6 +73,10 @@ function preserveCredentialArray(output: Record<string, unknown>, source: Record
 
 function hasCredentialText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function hasCredentialStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.some(hasCredentialText)
 }
 
 function apiKeyCredentialFingerprintSource(record: Record<string, unknown>): string | undefined {

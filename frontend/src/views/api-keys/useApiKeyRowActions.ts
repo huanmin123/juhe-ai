@@ -6,6 +6,7 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ApiKeySummary } from '@/types/domain'
+import { isApiKeyScheduleActive, isApiKeyScheduleInactive } from './apiKeyFormatters'
 import type { ApiKeyScopeParams } from './useApiKeyGroupOptions'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
@@ -66,23 +67,45 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   function apiKeyMoreActions(apiKey: ApiKeySummary): RowActionItem[] {
     const busy = apiKeyActionBusy(apiKey)
     const refreshDisabled = Boolean(keyRefreshingId.value) || statusUpdatingId.value === apiKey.id
-    const statusAction: RowActionItem = apiKey.status === 'active'
+    const scheduleInactive = isApiKeyScheduleInactive(apiKey)
+    const scheduleActive = isApiKeyScheduleActive(apiKey)
+    const statusAction: RowActionItem = apiKey.status === 'active' && scheduleActive
       ? {
-          key: 'disable',
-          label: '停用',
+          key: 'schedule-disable',
+          label: '提前关闭',
           icon: 'disable',
           tone: 'warning',
           disabled: busy,
-          confirmTitle: '确认停用这个 API Key？停用后后续请求会立即被拒绝。',
-          confirmOkText: '停用'
+          confirmTitle: '确认提前关闭这个 API Key？关闭后会立即拒绝请求，下一次计划开始边界会自动恢复。',
+          confirmOkText: '提前关闭'
         }
-      : {
-          key: 'enable',
-          label: '启用',
-          icon: 'enable',
-          tone: 'success',
-          disabled: busy
-        }
+      : apiKey.status === 'active' && scheduleInactive
+        ? {
+            key: 'schedule-enable',
+            label: '提前启用',
+            icon: 'enable',
+            tone: 'success',
+            disabled: busy,
+            confirmTitle: '当前时间计划派生状态为停用。确认提前启用后会立即放行，后续仍按下一次计划边界切换。',
+            confirmOkText: '提前启用'
+          }
+        : apiKey.status === 'active'
+          ? {
+              key: 'disable',
+              label: '停用',
+              icon: 'disable',
+              tone: 'warning',
+              disabled: busy,
+              confirmTitle: '确认停用这个 API Key？停用后后续请求会立即被拒绝。',
+              confirmOkText: '停用'
+            }
+          : {
+              key: 'enable',
+              label: '启用',
+              icon: 'enable',
+              tone: 'success',
+              disabled: busy
+            }
     return [
       statusAction,
       {
@@ -104,6 +127,10 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     }
     if (key === 'enable' || key === 'disable') {
       void updateApiKeyStatus(apiKey, key === 'enable' ? 'active' : 'disabled')
+      return
+    }
+    if (key === 'schedule-enable' || key === 'schedule-disable') {
+      void updateApiKeyScheduleActive(apiKey, key === 'schedule-enable')
       return
     }
     if (key === 'refresh-key') {
@@ -129,6 +156,23 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, status === 'active' ? '启用 API Key 失败' : '停用 API Key 失败'))
+    } finally {
+      if (statusUpdatingId.value === apiKey.id) {
+        statusUpdatingId.value = ''
+      }
+    }
+  }
+
+  async function updateApiKeyScheduleActive(apiKey: ApiKeySummary, active: boolean) {
+    statusUpdatingId.value = apiKey.id
+    try {
+      const updated = await input.apiKeysApi.update(apiKey.id, { availabilityScheduleActive: active }, input.operationScopeParams(apiKey))
+      input.updateItems((item) => item.id === apiKey.id, () => updated)
+      message.success(active ? 'API Key 已提前启用' : 'API Key 已提前关闭')
+      void input.reload()
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, active ? '提前启用 API Key 失败' : '提前关闭 API Key 失败'))
     } finally {
       if (statusUpdatingId.value === apiKey.id) {
         statusUpdatingId.value = ''

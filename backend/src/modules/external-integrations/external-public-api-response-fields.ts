@@ -265,7 +265,7 @@ function publicApiKeyFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.groupBindings[].groupEnabled`, 'boolean', false, '绑定分组当前是否启用。', true),
     apiDocField(`${prefix}.expiresAt`, 'string', false, 'API Key 到期时间，ISO 8601 字符串；未设置时缺省。', '2026-12-31T23:59:59.000Z'),
     apiDocField(`${prefix}.availabilitySchedule`, 'object', false, 'API Key 时间计划；未设置时缺省。'),
-    apiDocField(`${prefix}.availabilityScheduleActive`, 'boolean', false, 'API Key 时间计划当前是否命中允许时段；真实可用性仍以 status 为准，未设置计划时缺省。', true)
+    apiDocField(`${prefix}.availabilityScheduleActive`, 'boolean', false, 'API Key 时间计划当前派生状态；真实可用性仍需同时满足 status、过期时间和系统账户状态，未设置计划时缺省。', true)
   ]
 }
 

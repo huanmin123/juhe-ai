@@ -68,8 +68,8 @@ export function validateAccountSaveForm(input: {
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
   if (!form.groupId) return '请选择加入分组'
   const apiKeyCount = normalizedAccountApiKeys(form).length
-  if (!editingId && form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'
-  if (!editingId && form.type === 'api_key' && apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
+  if (form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'
+  if (form.type === 'api_key' && apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
   if (form.type === 'api_key' && !form.baseUrl.trim()) return '请填写 Base URL'
   if (form.type === 'api_key') {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)

@@ -298,7 +298,7 @@ CREATE INDEX idx_api_key_group_bindings_owner_group_key
 
 `api_keys` 不再保存单独的主号池字段。API Key 到分组的唯一事实来源是 `api_key_group_bindings`；列表、详情、筛选和网关运行态都从绑定表读取。网关运行态里的 `apiKey.selected_group_id` 表示本次已经选中的实际分组，避免把运行态选路结果伪装成 `api_keys` 表字段。
 
-API Key 时间计划是入口凭据级运行状态：人工启停只写 `api_keys.status`，后台 `api-key-availability-schedule-status-sync` 每轮按当前时间补偿 `api_keys.availability_schedule_active`。网关热链路不解析 `availability_schedule_json`，只读取人工状态、派生计划状态、过期时间和系统账户状态；计划切换允许一个后台同步周期的延迟，同步任务变更派生状态后必须清理 API Key 校验缓存和 runtime cache。
+API Key 时间计划是入口凭据级运行状态：人工启停只写 `api_keys.status`；创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active`；后台 `api-key-availability-schedule-status-sync` 只在开始 / 结束边界按分钟事件切换该派生字段。人工可以在计划外提前把派生字段置为可用，也可以在计划内提前把派生字段置为停用；后续仍由下一次计划边界继续接管。网关热链路不解析 `availability_schedule_json`，只读取人工状态、派生计划状态、过期时间和系统账户状态；计划切换允许一个后台同步周期的延迟，同步任务变更派生状态后必须清理 API Key 校验缓存和 runtime cache。
 
 分组删除规则：
 
@@ -332,6 +332,7 @@ type ApiKeyCreateOrUpdateInput = {
   expiresAt?: string | null
   quotaLimits?: Record<string, unknown> | null
   availabilitySchedule?: Record<string, unknown> | null
+  availabilityScheduleActive?: boolean
 }
 ```
 
@@ -340,7 +341,7 @@ type ApiKeyCreateOrUpdateInput = {
 - 创建 API Key 必须显式提交 `groupBindings`，不能由数据层隐式绑定默认分组；这样前端、接口和存储层都能统一拦截“未选择号池”的配置。
 - 更新 API Key 未提交 `groupBindings` 时保留现有绑定；提交时按数组整体替换。
 - 刷新 API Key 密钥通过 `POST /api-keys/:id/refresh-key` 或用户侧 `POST /my-api-keys/:id/refresh-key` 执行，只更新本地密钥 hash、前后缀和加密明文，不改变绑定号池、状态、额度、时间计划和历史统计归属；旧密钥立即失效，刷新响应只在本次操作返回新明文密钥。
-- API Key 时间计划使用 `allow_windows` 语义；提交 `availabilitySchedule: null` 清空计划，未提交时保留现有计划。
+- API Key 时间计划使用 `allow_windows` 语义；提交 `availabilitySchedule: null` 清空计划，未提交时保留现有计划。提交 `availabilityScheduleActive: true/false` 可人工改写当前派生计划状态，用于提前启用或提前关闭；该字段只影响启用时间计划的 API Key，不改变 `status`。
 - 未提交 `groupRouteStrategy` 时默认 `priority_failover`。
 - 当前实现后端校验重复分组、active 绑定数量、优先级唯一、权重范围、分组归属、分组启用状态和供应商协议档案一致性。
 - 模型路由落地后，后端不再要求 API Key 绑定分组供应商协议档案一致；运行时必须按请求 `model` 先筛目标档案分组，再执行分组路由策略。

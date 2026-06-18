@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url'
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
 
+const apiKeySectionSource = readSource('src/views/accounts/AccountApiKeySection.vue')
+const credentialsSource = readSource('src/views/accounts/accountCredentials.ts')
 const editFormSource = readSource('src/views/accounts/useAccountEditForm.ts')
+const savePayloadSource = readSource('src/views/accounts/accountSavePayload.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
 const packageJson = JSON.parse(readSource('package.json')) as { scripts?: Record<string, string> }
 
@@ -23,6 +26,12 @@ assertIncludes(editFormSource, 'async function loadAccountDetailForForm(', '账�
 assertIncludes(editFormSource, 'function editingAccountScopeParams()', '账户编辑表单应继续提供编辑账号 scope 桥接')
 assertIncludes(editFormSource, 'function accountCreatePayloadWithActivationTest(', '账户编辑表单应继续桥接草稿测试激活来源')
 assertIncludes(editFormSource, 'function openAuthUrl()', '账户编辑表单应继续只负责打开已生成授权链接')
+
+assertNotIncludes(apiKeySectionSource, 'v-if="editing"', 'API Key 编辑态不应降级为单输入框')
+assertIncludes(apiKeySectionSource, 'const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)', 'API Key 策略切换应按有效 Key 数量展示')
+assertIncludes(credentialsSource, 'api_keys: apiKeys.length ? apiKeys : undefined', 'API Key 保存 payload 应显式携带当前 Key 数组，支持多 Key 编辑成单 Key')
+assertIncludes(savePayloadSource, "if (form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'", 'API Key 编辑和创建都必须至少保留一个 Key')
+assertNotIncludes(savePayloadSource, "!editingId && form.type === 'api_key' && apiKeyCount", 'API Key 数量校验不应只限制创建态')
 
 for (const marker of [
   "submitAction('accounts.save'",

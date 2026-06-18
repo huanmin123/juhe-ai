@@ -64,6 +64,7 @@ export function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUp
   if ('expiresAt' in input && input.expiresAt !== undefined) payload.expiresAt = input.expiresAt
   if ('quotaLimits' in input && input.quotaLimits !== undefined) payload.quotaLimits = input.quotaLimits
   if ('availabilitySchedule' in input && input.availabilitySchedule !== undefined) payload.availabilitySchedule = input.availabilitySchedule
+  if ('availabilityScheduleActive' in input && input.availabilityScheduleActive !== undefined) payload.availabilityScheduleActive = input.availabilityScheduleActive
   if ('groupRouteStrategy' in input && input.groupRouteStrategy !== undefined) payload.groupRouteStrategy = input.groupRouteStrategy
   if (input.groupBindings?.length) {
     payload.groupBindings = input.groupBindings

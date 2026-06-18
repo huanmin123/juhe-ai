@@ -64,7 +64,10 @@ const secretValues = [
   'oauth-redaction-refreshed-access-token',
   'oauth-redaction-refreshed-refresh-token',
   'oauth-redaction-refreshed-id-token',
-  'sk-redaction-target-api-key'
+  'sk-redaction-target-api-key',
+  'sk-redaction-multi-a',
+  'sk-redaction-multi-b',
+  'sk-redaction-single-replacement'
 ]
 
 let server: http.Server | undefined
@@ -99,6 +102,9 @@ try {
   }], '详情响应应返回账户级响应检查策略供编辑弹窗维护')
   assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
 
+  const multiKeyDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}`, seed.adminCookie)
+  assert.deepEqual(multiKeyDetail.credentials.api_keys, ['sk-redaction-multi-a', 'sk-redaction-multi-b'], '详情响应应返回完整多 API Key 列表供编辑弹窗查看')
+
   const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
     providerCode: 'gpt',
     name: '响应脱敏新建账号',
@@ -121,6 +127,19 @@ try {
   })
   assertNoCredentialLeak(updatedApiKey, 'API Key 编辑响应')
   assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.credentials.api_key, 'sk-redaction-existing-api-key', 'API Key 编辑留空时应保留原密钥')
+
+  const replacedMultiApiKey = await patchEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}`, seed.adminCookie, {
+    name: '响应脱敏多 Key 已改单 Key',
+    credentials: {
+      api_key: 'sk-redaction-single-replacement',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: seed.groupAId
+  })
+  assertNoCredentialLeak(replacedMultiApiKey, '多 API Key 改单 API Key 编辑响应')
+  const latestMultiApiKey = repositories.findAccountForTest(seed.multiApiKeyAccountId)
+  assert.equal(latestMultiApiKey?.credentials.api_key, 'sk-redaction-single-replacement', '多 API Key 改单 API Key 时应保存新的单 Key')
+  assert.equal(Array.isArray(latestMultiApiKey?.credentials.api_keys), false, '多 API Key 改单 API Key 时不应保留旧 api_keys 数组')
 
   const updatedOAuth = await patchEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.oauthAccountId}`, seed.adminCookie, {
     name: '响应脱敏 OAuth 已更新',
@@ -184,6 +203,7 @@ try {
 function seedData(): {
   adminCookie: string
   apiKeyAccountId: string
+  multiApiKeyAccountId: string
   groupAId: string
   groupBId: string
   oauthAccountId: string
@@ -247,6 +267,20 @@ function seedData(): {
     status: 'active',
     groupId: groupA.id
   }, access)
+  const multiApiKeyAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '响应脱敏多 API Key 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-redaction-multi-a',
+      api_keys: ['sk-redaction-multi-a', 'sk-redaction-multi-b'],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [2, 1],
+      base_url: 'https://api.openai.com/v1'
+    },
+    status: 'active',
+    groupId: groupA.id
+  }, access)
   const targetAccount = repositories.createAccount({
     providerCode: 'gpt',
     name: '响应脱敏迁移目标账号',
@@ -261,6 +295,7 @@ function seedData(): {
   return {
     adminCookie: `juhe_ai_session=${repositories.createSession(admin.id, 1).token}`,
     apiKeyAccountId: apiKeyAccount.id,
+    multiApiKeyAccountId: multiApiKeyAccount.id,
     groupAId: groupA.id,
     groupBId: groupB.id,
     oauthAccountId: oauthAccount.id,

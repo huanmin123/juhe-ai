@@ -217,14 +217,14 @@ const apiKeyScheduleInactive = apiKeyFixture({
 })
 assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 时间计划外状态标签仍应显示停用')
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
-assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('时间计划当前不在允许时段')), 'API Key 时间计划外应在状态 tooltip 展示原因')
+assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('时间计划派生状态当前为停用')), 'API Key 时间计划外应在状态 tooltip 展示原因')
 const apiKeyScheduleInactiveWaitingSync = apiKeyFixture({
   status: 'active',
   availabilityScheduleActive: false
 })
-assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', 'API Key 时间计划等待同步时状态标签仍应显示停用')
-assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划等待同步时状态颜色仍应使用停用颜色')
-assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('等待后台同步停用')), 'API Key 时间计划等待同步时 tooltip 应展示同步提示')
+assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', 'API Key 时间计划外状态标签仍应显示停用')
+assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
+assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('可提前启用')), 'API Key 时间计划外 tooltip 应展示提前启用提示')
 
 console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态短暂避让、运行态事前确认、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
 

@@ -5,7 +5,7 @@
         <h4>{{ title }} 配置</h4>
       </div>
     </div>
-    <a-form-item :required="!editing">
+    <a-form-item required>
       <template #label>
         <div class="api-key-label">
           <span>API Key</span>
@@ -19,17 +19,7 @@
           </a-radio-group>
         </div>
       </template>
-      <a-input-password
-        v-if="editing"
-        :value="form.apiKey"
-        autocomplete="new-password"
-        data-lpignore="true"
-        data-1p-ignore="true"
-        data-form-type="other"
-        placeholder="留空保留原 API Key"
-        @update:value="updateSingleApiKey"
-      />
-      <div v-else class="api-key-input-list">
+      <div class="api-key-input-list">
         <div v-for="(_, index) in form.apiKeys" :key="index" class="api-key-input-row">
           <div :class="['api-key-credential-controls', { 'has-weight': showWeightInputs }]">
             <a-input-password
@@ -96,9 +86,9 @@ const props = defineProps<{
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)
-const showApiKeyStrategy = computed(() => !props.editing && props.form.apiKeys.length > 1)
+const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
-const showBatchDeleteApiKeys = computed(() => !props.editing && props.form.apiKeys.some((value) => value.trim()))
+const showBatchDeleteApiKeys = computed(() => props.form.apiKeys.some((value) => value.trim()))
 
 watch(
   [() => props.form.apiKeys.length, () => props.form.apiKeyStrategy],
@@ -107,12 +97,6 @@ watch(
   },
   { immediate: true },
 )
-
-function updateSingleApiKey(value: string): void {
-  props.form.apiKey = value
-  props.form.apiKeys = value.trim() ? [value] : []
-  props.form.apiKeyWeights = value.trim() ? [1] : []
-}
 
 function addApiKeyInput(index: number): void {
   ensureApiKeyInputs()

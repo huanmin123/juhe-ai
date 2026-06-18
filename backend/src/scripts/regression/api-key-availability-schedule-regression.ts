@@ -201,7 +201,7 @@ assert.equal(
 
 await assertApiKeyScheduleStatusSyncAndGatewayGuard()
 
-console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、派生状态同步和热链路不解析计划符合预期')
+console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、边界同步、人工提前启用/关闭和热链路不解析计划符合预期')
 
 async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
   const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-availability-schedule-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -234,8 +234,14 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
       providerCode: 'gpt',
       enabled: true
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
-      name: 'API Key 时间计划补偿回归 Key',
+    const beforeStartAt = Date.parse('2026-05-31T13:59:00.000Z')
+    const startBoundaryAt = Date.parse('2026-05-31T14:00:00.000Z')
+    const allowedAt = Date.parse('2026-05-31T14:30:00.000Z')
+    const endBoundaryAt = Date.parse('2026-05-31T15:55:00.000Z')
+    const afterEndAt = Date.parse('2026-05-31T15:56:00.000Z')
+    const nextEndBoundaryAt = Date.parse('2026-06-01T15:55:00.000Z')
+    const apiKey = await withMockedNow(beforeStartAt, () => repositories.createApiKeyRecord({
+      name: 'API Key 时间计划边界回归 Key',
       status: 'active',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       availabilitySchedule: {
@@ -246,41 +252,99 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
           { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '22:00', end: '23:55' }
         ]
       }
-    }, access)
+    }, access))
 
-    const allowedAt = Date.parse('2026-05-31T14:30:00.000Z')
-    const missedEndBoundaryAt = Date.parse('2026-05-31T15:56:00.000Z')
+    const initialSummary = repositories.findApiKeySummary(apiKey.id, access)
+    assert.equal(initialSummary?.status, 'active', '保存计划时不应改写 API Key 手动启停状态')
+    assert.equal(initialSummary?.availabilityScheduleActive, false, '保存计划时应按当前时间初始化计划派生状态')
     assert.equal(
-      await withMockedNow(missedEndBoundaryAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
-      apiKey.id,
-      '后台尚未同步计划派生状态前，网关热链路不解析时间计划，允许存在一个同步周期内的状态延迟'
-    )
-
-    const disabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(missedEndBoundaryAt))
-    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(disabledResult.disabled, 1, '时段外后下一轮同步应把 API Key 计划派生状态标记为不可用')
-    const inactiveSummary = repositories.findApiKeySummary(apiKey.id, access)
-    assert.equal(inactiveSummary?.status, 'active', '时间计划外不应改写 API Key 手动启停状态')
-    assert.equal(inactiveSummary?.availabilityScheduleActive, false, '时间计划外应通过 availabilityScheduleActive 暴露')
-    assert(repositories.listApiKeysPage(access, { status: 'disabled', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 应归入停用父筛选')
-    assert(!repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 不应归入启用父筛选')
-    assert.equal(
-      await withMockedNow(missedEndBoundaryAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      await withMockedNow(beforeStartAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
       undefined,
-      '后台同步计划派生状态并清缓存后，网关应拒绝时段外 API Key'
+      '保存计划后处于允许时段外的 API Key 应被网关拒绝'
     )
 
-    const activatedResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(allowedAt))
+    const activatedResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(startBoundaryAt))
     gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
-    assert.equal(activatedResult.activated, 1, '进入允许时段后下一轮同步应把 API Key 计划派生状态标记为可用')
+    assert.equal(activatedResult.activated, 1, '开始边界应把 API Key 计划派生状态标记为可用')
     const activeSummary = repositories.findApiKeySummary(apiKey.id, access)
-    assert.equal(activeSummary?.status, 'active', '计划恢复可用后仍不改写 API Key 手动启停状态')
-    assert.equal(activeSummary?.availabilityScheduleActive, true, '计划恢复可用后应通过 availabilityScheduleActive 暴露')
+    assert.equal(activeSummary?.status, 'active', '计划开始边界不应改写 API Key 手动启停状态')
+    assert.equal(activeSummary?.availabilityScheduleActive, true, '计划开始边界后应通过 availabilityScheduleActive 暴露')
     assert(repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '计划命中且手动启用的 API Key 应归入启用父筛选')
     assert.equal(
       await withMockedNow(allowedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
       apiKey.id,
       'API Key 允许时段内应通过网关校验'
+    )
+
+    const earlyClosedAt = allowedAt + 5 * 60_000
+    const earlyCloseSyncAt = allowedAt + 6 * 60_000
+    const earlyReopenedAt = allowedAt + 7 * 60_000
+    const manuallyDeactivated = await withMockedNow(earlyClosedAt, () => repositories.updateApiKey(apiKey.id, { availabilityScheduleActive: false }, access))
+    assert.equal(manuallyDeactivated?.status, 'active', '计划内人工提前关闭不应改写 API Key 手动启停状态')
+    assert.equal(manuallyDeactivated?.availabilityScheduleActive, false, '计划内人工提前关闭应立即改写计划派生状态')
+    assert.equal(
+      await withMockedNow(earlyClosedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      undefined,
+      '计划内人工提前关闭后应立即被网关拒绝'
+    )
+
+    const earlyCloseNonBoundaryResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(earlyCloseSyncAt))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert.equal(earlyCloseNonBoundaryResult.activated, 0, '非边界同步不应把人工提前关闭再次打开')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.availabilityScheduleActive, false, '非边界同步后人工提前关闭状态应保留')
+    assert.equal(
+      await withMockedNow(earlyCloseSyncAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      undefined,
+      '非边界同步后人工提前关闭仍应被网关拒绝'
+    )
+
+    const manuallyReopened = await withMockedNow(earlyReopenedAt, () => repositories.updateApiKey(apiKey.id, { availabilityScheduleActive: true }, access))
+    assert.equal(manuallyReopened?.availabilityScheduleActive, true, '计划内人工提前关闭后应支持再次提前启用')
+    assert.equal(
+      await withMockedNow(earlyReopenedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
+      apiKey.id,
+      '计划内再次提前启用后应通过网关校验'
+    )
+
+    const disabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(endBoundaryAt))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert.equal(disabledResult.disabled, 1, '结束边界应把 API Key 计划派生状态标记为不可用')
+    const inactiveSummary = repositories.findApiKeySummary(apiKey.id, access)
+    assert.equal(inactiveSummary?.status, 'active', '时间计划结束边界不应改写 API Key 手动启停状态')
+    assert.equal(inactiveSummary?.availabilityScheduleActive, false, '时间计划外应通过 availabilityScheduleActive 暴露')
+    assert(repositories.listApiKeysPage(access, { status: 'disabled', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 应归入停用父筛选')
+    assert(!repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 不应归入启用父筛选')
+    assert.equal(
+      await withMockedNow(afterEndAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      undefined,
+      '结束边界后网关应拒绝时段外 API Key'
+    )
+
+    const manuallyActivated = await withMockedNow(afterEndAt, () => repositories.updateApiKey(apiKey.id, { availabilityScheduleActive: true }, access))
+    assert.equal(manuallyActivated?.availabilityScheduleActive, true, '时间计划外人工提前启用应立即改写计划派生状态')
+    assert.equal(
+      await withMockedNow(afterEndAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
+      apiKey.id,
+      '时间计划外人工提前启用后应立即通过网关校验'
+    )
+
+    const nonBoundaryResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(afterEndAt))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert.equal(nonBoundaryResult.disabled, 0, '非边界同步不应把人工提前启用再次关闭')
+    assert.equal(repositories.findApiKeySummary(apiKey.id, access)?.availabilityScheduleActive, true, '非边界同步后人工提前启用状态应保留')
+    assert.equal(
+      await withMockedNow(afterEndAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
+      apiKey.id,
+      '非边界同步后人工提前启用仍应通过网关校验'
+    )
+
+    const nextDisabledResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date(nextEndBoundaryAt))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert.equal(nextDisabledResult.disabled, 1, '下一次结束边界应再次关闭提前启用的 API Key')
+    assert.equal(
+      await withMockedNow(nextEndBoundaryAt + 60_000, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
+      undefined,
+      '下一次结束边界后提前启用的 API Key 应重新被网关拒绝'
     )
 
     databaseModule.getBusinessDatabase().prepare("UPDATE api_keys SET status = 'disabled' WHERE id = ?").run(apiKey.id)

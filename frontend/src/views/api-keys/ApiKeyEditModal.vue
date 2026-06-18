@@ -80,7 +80,7 @@
             :bordered="false"
             label="时间计划"
             row-key-prefix="api_key_schedule_window"
-            help-message="时间计划开启后，只在开始时间启用一次，在结束时间关闭一次；边界之后的手动启停不会被持续覆盖。"
+            help-message="时间计划开启后，保存时按当前时间初始化；之后只在开始和结束边界切换，手动提前启用或提前关闭会保留到下一次计划边界。"
           />
         </div>
       </a-form-item>

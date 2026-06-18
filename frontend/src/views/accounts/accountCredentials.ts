@@ -45,6 +45,7 @@ function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown>
   const apiKey = apiKeys[0] ?? form.apiKey
   const credentials = compactAccountCredentials({
     api_key: apiKey,
+    api_keys: apiKeys.length ? apiKeys : undefined,
     base_url: form.baseUrl,
     supported_endpoint_modes: [...form.supportedEndpointModes]
   })
