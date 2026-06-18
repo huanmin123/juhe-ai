@@ -147,6 +147,7 @@ import {
   accountStatusColor,
   accountStatusText
 } from './accountFormatters'
+import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 
 const props = defineProps<{
   account?: AccountSummary
@@ -185,8 +186,13 @@ const batchFailedCount = computed(() => batchCounts.value.failed)
 const batchStoppedCount = computed(() => batchCounts.value.stopped)
 const batchCompletedCount = computed(() => batchCounts.value.completed)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
-const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key'))
-const fixedOAuthCompatibilityText = computed(() => 'Codex Responses（OAuth 固定）')
+const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key' && isOpenAIProtocolProfile(account)))
+const fixedOAuthCompatibilityText = computed(() => {
+  if (testTargetAccounts.value.some((account) => isAnthropicProtocolProfile(account))) {
+    return 'Anthropic 原生'
+  }
+  return 'Codex Responses（OAuth 固定）'
+})
 const batchSelectedCompatibilityText = computed(() => accountTestBatchSelectedCompatibilityText({
   clientCompatibility: props.clientCompatibility,
   fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,

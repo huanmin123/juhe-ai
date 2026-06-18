@@ -56,6 +56,9 @@
     <a-form-item v-if="isOAuthForm" label="客户端兼容">
       <a-input value="Codex Responses（OAuth 固定）" disabled />
     </a-form-item>
+    <a-form-item v-else-if="isAnthropicForm" label="客户端兼容">
+      <a-input value="Anthropic 原生" disabled />
+    </a-form-item>
     <a-form-item v-else label="客户端兼容">
       <a-select
         v-model:value="form.clientCompatibility"
@@ -69,8 +72,8 @@
         :disabled="authorizedEditing || isOAuthForm"
       >
         <div class="endpoint-mode-grid">
-          <a-checkbox
-            v-for="option in accountEndpointModeOptions"
+            <a-checkbox
+            v-for="option in endpointModeOptions"
             :key="option.value"
             :value="option.value"
           >
@@ -100,12 +103,13 @@
 </template>
 
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import type { AccountFormModel } from './accountFormTypes'
-import { accountEndpointModeOptions, defaultAccountEndpointModes, endpointModesEqual } from './accountEndpointModes'
+import { accountEndpointModeOptions, anthropicAccountEndpointModes, defaultAccountEndpointModes, endpointModesEqual } from './accountEndpointModes'
+import { ANTHROPIC_PROVIDER_CODE, normalizeProviderToken } from '@/shared/providerProtocol'
 
 const clientCompatibilityOptions = [
   { label: 'OpenAI 标准', value: 'openai_standard' },
@@ -122,6 +126,14 @@ const props = defineProps<{
   modelsLoading: boolean
   proxyOptions: SelectOption[]
 }>()
+
+const isAnthropicForm = computed(() => normalizeProviderToken(props.form.providerCode) === ANTHROPIC_PROVIDER_CODE)
+
+const endpointModeOptions = computed(() => {
+  return accountEndpointModeOptions.filter((option) => isAnthropicForm.value
+    ? anthropicAccountEndpointModes.includes(option.value)
+    : !anthropicAccountEndpointModes.includes(option.value))
+})
 
 function addModelMapping(): void {
   props.form.modelMappings.push({

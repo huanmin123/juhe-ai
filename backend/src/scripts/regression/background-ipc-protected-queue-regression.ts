@@ -43,14 +43,35 @@ try {
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, 1, 'server IPC runtime 应记录维护任务拒绝次数')
 
   const runtimeLogAccepted = backgroundIpc.sendRuntimeLogLineToWorker('{"level":"info","event":"runtime_log_after_default_queue_limit"}')
-  assert.equal(runtimeLogAccepted, true, 'maintenance-worker IPC 队列满时运行日志仍应进入 ingest-worker 队列')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5001, '运行日志进入独立 ingest 队列后总 pending 数应增长')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, '运行日志不应挤掉 maintenance-worker 维护任务')
+  assert.equal(runtimeLogAccepted, true, 'ingest recordMaintenance 低优先级队列满时运行日志仍应进入 ingest 高优先级队列')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5001, '运行日志进入 ingest 高优先级队列后总 pending 数应增长')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, '运行日志不应挤掉 ingest recordMaintenance 维护任务')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.queueLength, 1, 'server IPC runtime 应按类型展示 ingest 运行日志排队数')
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
   runtimeLogIndexQueue.enqueueRuntimeLogLine('{"level":"info","event":"runtime_log_server_dispatch_to_ingest"}')
   assert.equal(runtimeLogIndexQueue.getRuntimeLogIndexRuntime().queueLength, 0, 'server 运行日志只投递 ingest-worker，不应回退到本地 SQLite 队列')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.runtimeLogLines.queueLength, 2, '运行日志索引队列应同样投递到 ingest-worker IPC')
+
+  withMockProcessSend((messages) => {
+    const previousProcessRole = runtimeConfig.processRole
+    const previousWorkerRole = runtimeConfig.workerRole
+    try {
+      runtimeConfig.processRole = 'db-service'
+      runtimeConfig.workerRole = 'worker'
+      runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
+      runtimeLogIndexQueue.enqueueRuntimeLogLine('{"level":"info","event":"runtime_log_db_service_dispatch_to_ingest"}', {
+        sourceKey: 'db-service-runtime-log-regression'
+      })
+      assert.equal(runtimeLogIndexQueue.getRuntimeLogIndexRuntime().queueLength, 0, 'DB service 运行日志只投递父进程，不应回退到本地 SQLite 队列')
+      assert.equal(messages.length, 1, 'DB service 运行日志应生成父进程转发消息')
+      const message = messages[0] as { type?: unknown; line?: unknown; sourceKey?: unknown }
+      assert.equal(message.type, 'background_worker_runtime_log_line', 'DB service 运行日志应转为 ingest-worker runtime log 消息')
+      assert.equal(message.sourceKey, 'db-service-runtime-log-regression', 'DB service 运行日志转发应保留 sourceKey')
+    } finally {
+      runtimeConfig.processRole = previousProcessRole
+      runtimeConfig.workerRole = previousWorkerRole
+    }
+  })
 
   for (let index = 3; index <= 5000; index += 1) {
     const accepted = backgroundIpc.sendRuntimeLogLineToWorker(`{"level":"info","event":"runtime_log_fill_ingest_queue","index":${index}}`)
@@ -114,7 +135,7 @@ try {
   assert.equal(usageOverflowAccepted, false, '超过 usage IPC 队列上限后使用记录应快速拒绝')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.rejectedCount, 1, 'server IPC runtime 应记录使用记录拒绝次数')
 
-  console.log('后台 IPC 队列回归通过：server 到 maintenance-worker 与 ingest-worker 的 regular/usage IPC 队列达到上限后会快速拒绝并记录指标，避免请求侧副作用无限堆积')
+  console.log('后台 IPC 队列回归通过：server 到 ingest-worker 的 usage / 高优先级 regular / recordMaintenance 队列达到上限后会快速拒绝并记录指标，避免请求侧副作用无限堆积')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -165,5 +186,27 @@ function buildPublicApiLog(index: number) {
     startedAt: '2000-01-01T00:00:00.000Z',
     endedAt: '2000-01-01T00:00:00.000Z',
     createdAt: '2000-01-01T00:00:00.000Z'
+  }
+}
+
+function withMockProcessSend(callback: (messages: unknown[]) => void): void {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'send')
+  const messages: unknown[] = []
+  Object.defineProperty(process, 'send', {
+    configurable: true,
+    value: (message: unknown, sendCallback?: (error?: Error | null) => void) => {
+      messages.push(message)
+      sendCallback?.()
+      return true
+    }
+  })
+  try {
+    callback(messages)
+  } finally {
+    if (originalDescriptor) {
+      Object.defineProperty(process, 'send', originalDescriptor)
+    } else {
+      delete (process as NodeJS.Process & { send?: unknown }).send
+    }
   }
 }

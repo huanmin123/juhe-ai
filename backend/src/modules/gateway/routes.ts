@@ -411,6 +411,7 @@ export async function handleOpenAIGatewayRequest(
               signal: abortController.signal,
               sessionAffinityKey,
               responseInspectionPolicies,
+              clientStrategy,
               markFirstOutput,
               clientIpAccountAvoidanceTracker,
               accountStateMutationEnabled: options.disableAccountStateMutation !== true

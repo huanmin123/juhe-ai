@@ -16,6 +16,15 @@
           <a-form-item label="策略名称" required>
             <a-input v-model:value="form.name" :disabled="readOnly" placeholder="例如 中转广告污染拦截" />
           </a-form-item>
+          <a-form-item label="协议" required>
+            <a-select
+              v-model:value="form.protocolCode"
+              :disabled="readOnly"
+              :options="protocolOptions"
+              placeholder="选择协议"
+              @change="handleProtocolChange"
+            />
+          </a-form-item>
           <a-form-item label="作用层级" required>
             <a-segmented v-model:value="form.scopeType" :disabled="readOnly" :options="scopeOptions" block @change="handleScopeChange" />
           </a-form-item>
@@ -23,8 +32,8 @@
             <a-select
               v-model:value="form.providerCode"
               :disabled="readOnly"
-              :options="providerOptions"
-              placeholder="选择 OpenAI v1 供应商"
+              :options="protocolProviderOptions"
+              placeholder="选择同协议供应商"
               show-search
               option-filter-prop="label"
             />
@@ -85,6 +94,7 @@ interface ResponseInspectionPolicyForm extends ResponseInspectionMatchFormFields
   enabled: boolean
   priority: number
   scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: string
   providerCode: string
   clientProfiles: ResponseInspectionMatchFormFields['clientProfiles']
   accountClientCompatibilities: ResponseInspectionMatchFormFields['accountClientCompatibilities']
@@ -106,7 +116,7 @@ const props = withDefaults(defineProps<{
   mode: ResponseInspectionPolicyFormMode
   policy?: ResponseInspectionPolicySummary
   saving?: boolean
-  providerOptions: Array<{ label: string; value: string }>
+  providerOptions: Array<{ label: string; value: string; protocolCode: string }>
   defaultPriority: number
   defaultProviderCode: string
 }>(), {
@@ -122,8 +132,13 @@ const scopeOptions = [
   { label: '供应商层', value: 'provider' },
   { label: '协议层', value: 'protocol' }
 ]
+const protocolOptions = [
+  { label: 'OpenAI v1', value: 'openai' },
+  { label: 'Anthropic v1', value: 'anthropic' }
+]
 const form = reactive<ResponseInspectionPolicyForm>(defaultForm())
 const readOnly = computed(() => props.mode === 'view')
+const protocolProviderOptions = computed(() => props.providerOptions.filter((option) => option.protocolCode === form.protocolCode))
 const modalTitle = computed(() => {
   if (props.mode === 'view') return '查看默认策略'
   return props.mode === 'edit' ? '编辑响应检查策略' : '新建响应检查策略'
@@ -152,6 +167,7 @@ function defaultForm(): ResponseInspectionPolicyForm {
     enabled: true,
     priority: 1,
     scopeType: 'provider',
+    protocolCode: 'openai',
     providerCode: '',
     clientProfiles: [],
     accountClientCompatibilities: [],
@@ -163,7 +179,7 @@ function defaultForm(): ResponseInspectionPolicyForm {
     rawTextIncludes: '',
     outputTextExcludes: '',
     jsonPathsExists: '',
-    action: 'avoid_account_ttl',
+    action: 'retry_no_avoidance',
     notes: ''
   }
 }
@@ -174,6 +190,7 @@ function fillForm(policy: ResponseInspectionPolicySummary): void {
     enabled: policy.enabled,
     priority: policy.priority,
     scopeType: policy.scopeType,
+    protocolCode: policy.protocolCode,
     providerCode: policy.providerCode ?? '',
     clientProfiles: normalizeResponseInspectionClientProfiles(policy.match.clientProfiles),
     accountClientCompatibilities: normalizeResponseInspectionAccountCompatibilities(policy.match.accountClientCompatibilities),
@@ -206,6 +223,7 @@ function buildPayload(): ResponseInspectionPolicyPayload {
     enabled: form.enabled,
     priority: requiredPositiveInt(form.priority, '优先级', 9999),
     scopeType: form.scopeType,
+    protocolCode: form.protocolCode,
     providerCode: form.scopeType === 'provider' ? form.providerCode.trim() : undefined,
     match: buildResponseInspectionMatchPayload(form),
     action: form.action,
@@ -215,6 +233,7 @@ function buildPayload(): ResponseInspectionPolicyPayload {
 
 function validateForm(): string | undefined {
   if (!form.name.trim()) return '请填写策略名称'
+  if (!protocolOptions.some((option) => option.value === form.protocolCode)) return '请选择协议'
   if (form.scopeType === 'provider' && !form.providerCode.trim()) return '请选择供应商'
   if (!positiveInt(form.priority, 9999)) return '优先级必须是 1-9999 的整数'
   const listValidation = validateResponseInspectionMatchFields(form)
@@ -226,11 +245,23 @@ function validateForm(): string | undefined {
 function handleScopeChange(): void {
   if (readOnly.value) return
   if (form.scopeType === 'provider' && !form.providerCode) {
-    form.providerCode = props.defaultProviderCode
+    form.providerCode = defaultProviderCodeForProtocol()
   }
   if (form.scopeType === 'protocol') {
     form.providerCode = ''
   }
+}
+
+function handleProtocolChange(): void {
+  if (readOnly.value) return
+  if (form.scopeType === 'provider') {
+    form.providerCode = defaultProviderCodeForProtocol()
+  }
+}
+
+function defaultProviderCodeForProtocol(): string {
+  const preferred = protocolProviderOptions.value.find((option) => option.value === props.defaultProviderCode)
+  return preferred?.value ?? protocolProviderOptions.value[0]?.value ?? ''
 }
 
 function positiveInt(value: unknown, max = Number.POSITIVE_INFINITY): number | undefined {

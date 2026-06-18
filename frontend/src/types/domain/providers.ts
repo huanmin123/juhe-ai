@@ -4,7 +4,7 @@ export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
 export type ProviderModelMode = 'text' | 'image' | 'audio'
-export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
+export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'completions' | 'images' | 'audio' | 'realtime'
 
 export interface ProviderDefinition {
   id: string

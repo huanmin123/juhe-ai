@@ -94,6 +94,15 @@ interface ApiKeyDatasetCleanupStepResult {
   hasAuditMore: boolean
 }
 
+export interface DeletedApiKeyRecordStatsCleanupInput {
+  target: DeletedApiKeyRecordCleanupTarget
+  rows: Array<UsageStatsRecordRow & { source_shard_key: string }>
+  updatedAt: string
+  shardDeleted?: boolean
+}
+
+export type DeletedApiKeyRecordStatsCleanupWriter = (input: DeletedApiKeyRecordStatsCleanupInput) => Promise<void>
+
 const apiKeyScopeStatsTables = [
   'usage_stats_totals',
   'usage_stats_minute',
@@ -144,7 +153,10 @@ export function cleanupPendingDeletedApiKeyRecordTargets(limit = 50): PendingDel
   return summary
 }
 
-export async function cleanupPendingDeletedApiKeyRecordTargetsAsync(limit = 50): Promise<PendingDeletedApiKeyRecordCleanupSummary> {
+export async function cleanupPendingDeletedApiKeyRecordTargetsAsync(
+  limit = 50,
+  statsWriter?: DeletedApiKeyRecordStatsCleanupWriter
+): Promise<PendingDeletedApiKeyRecordCleanupSummary> {
   const targets = listDeletedApiKeyRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
   const summary: PendingDeletedApiKeyRecordCleanupSummary = {
     attempted: 0,
@@ -156,7 +168,7 @@ export async function cleanupPendingDeletedApiKeyRecordTargetsAsync(limit = 50):
   for (const target of targets) {
     summary.attempted += 1
     try {
-      const result = await cleanupDeletedApiKeyRelatedRecordDataAsync(target)
+      const result = await cleanupDeletedApiKeyRelatedRecordDataAsync(target, statsWriter)
       summary.deletedRows += result.deletedRows
       if (result.hasMore || result.blockedReason) {
         summary.deferred += 1
@@ -254,8 +266,11 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
   return cleanup.result
 }
 
-export async function cleanupDeletedApiKeyRelatedRecordDataAsync(input: DeletedApiKeyRecordCleanupTarget): Promise<DeletedApiKeyRecordCleanupResult> {
-  const cleanup = cleanupDeletedApiKeyRelatedRecordDataCore(input)
+export async function cleanupDeletedApiKeyRelatedRecordDataAsync(
+  input: DeletedApiKeyRecordCleanupTarget,
+  statsWriter?: DeletedApiKeyRecordStatsCleanupWriter
+): Promise<DeletedApiKeyRecordCleanupResult> {
+  const cleanup = await cleanupDeletedApiKeyRelatedRecordDataCoreAsync(input, statsWriter)
   await cleanupAuditPayloadBlobsBestEffortAsync(cleanup.batchLimit)
   return cleanup.result
 }
@@ -321,6 +336,91 @@ function cleanupDeletedApiKeyRelatedRecordDataCore(input: DeletedApiKeyRecordCle
   }
 }
 
+async function cleanupDeletedApiKeyRelatedRecordDataCoreAsync(
+  input: DeletedApiKeyRecordCleanupTarget,
+  statsWriter?: DeletedApiKeyRecordStatsCleanupWriter
+): Promise<{
+  result: DeletedApiKeyRecordCleanupResult
+  batchLimit: number
+}> {
+  if (!statsWriter) {
+    return cleanupDeletedApiKeyRelatedRecordDataCore(input)
+  }
+  const database = getDatasetDatabase()
+  const updatedAt = nowIso()
+  upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
+  const batchLimit = deletedApiKeyRecordCleanupBatchLimit
+  try {
+    const usageCleanup = selectDeletedApiKeyUsageData(input, batchLimit)
+    const rowsToDelete = usageCleanup.usageBatch.rows.slice(0, batchLimit)
+    let blockedReason = usageCleanup.blockedReason
+    if (!blockedReason && rowsToDelete.length > 0) {
+      await statsWriter({
+        target: input,
+        rows: rowsToDelete.map(apiKeyUsageShardStatsCleanupRow),
+        updatedAt,
+        shardDeleted: false
+      })
+    }
+    const deletedUsageRows = blockedReason ? 0 : deleteApiKeyUsageRows(rowsToDelete, input)
+    const datasetCleanup = cleanupDeletedApiKeyDatasetRecordData(database, input, batchLimit)
+    if (!blockedReason && rowsToDelete.length > 0) {
+      await statsWriter({
+        target: input,
+        rows: rowsToDelete.map(apiKeyUsageShardStatsCleanupRow),
+        updatedAt,
+        shardDeleted: true
+      })
+    }
+    let hasUsageMore = true
+    if (blockedReason) {
+      hasUsageMore = true
+    } else {
+      try {
+        hasUsageMore = hasApiKeyUsageRecords(input)
+      } catch (error) {
+        if (!isSqliteDatabaseLocked(error)) {
+          throw error
+        }
+        blockedReason = apiKeyCleanupSqliteBusyBlockedReason()
+        hasUsageMore = true
+      }
+    }
+    const hasAuditMore = datasetCleanup.hasAuditMore
+    let hasMore = hasUsageMore || hasAuditMore || Boolean(blockedReason)
+    if (!blockedReason && !hasMore) {
+      await statsWriter({
+        target: input,
+        rows: [],
+        updatedAt,
+        shardDeleted: true
+      })
+      hasMore = false
+    }
+    const result: DeletedApiKeyRecordCleanupResult = {
+      ...input,
+      deletedRows: deletedUsageRows + datasetCleanup.deletedRows,
+      hasMore,
+      blockedReason: blockedReason ?? (hasMore
+        ? apiKeyCleanupPendingReason({
+          hasAuditMore,
+          hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
+          hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
+        })
+        : undefined)
+    }
+    if (result.hasMore || result.blockedReason) {
+      markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
+    } else {
+      clearDeletedApiKeyRecordCleanupTarget(database, input)
+    }
+    return { result, batchLimit }
+  } catch (error) {
+    markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
+    throw error
+  }
+}
+
 function cleanupDeletedApiKeyUsageData(
   statsDatabase: DatabaseSync,
   input: DeletedApiKeyRecordCleanupTarget,
@@ -344,6 +444,26 @@ function cleanupDeletedApiKeyUsageData(
     }
     return {
       deletedRows,
+      usageBatch,
+      blockedReason: apiKeyCleanupSqliteBusyBlockedReason()
+    }
+  }
+}
+
+function selectDeletedApiKeyUsageData(
+  input: DeletedApiKeyRecordCleanupTarget,
+  batchLimit: number
+): ApiKeyUsageCleanupStepResult {
+  let usageBatch = emptyApiKeyUsageShardBatch()
+  try {
+    usageBatch = selectApiKeyUsageRowsCoveredByShardCursors(getStatsDatabase(), input, batchLimit)
+    return { deletedRows: 0, usageBatch }
+  } catch (error) {
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    return {
+      deletedRows: 0,
       usageBatch,
       blockedReason: apiKeyCleanupSqliteBusyBlockedReason()
     }
@@ -522,6 +642,36 @@ function usageStatsShardCursor(database: DatabaseSync, shardKey: string): { curs
 function usageStatsRecordForCleanup(row: ApiKeyUsageShardRow): UsageStatsRecordRow {
   const { location: _location, ...record } = row
   return record
+}
+
+function apiKeyUsageShardStatsCleanupRow(row: ApiKeyUsageShardRow): UsageStatsRecordRow & { source_shard_key: string } {
+  return {
+    ...usageStatsRecordForCleanup(row),
+    source_shard_key: row.source_shard_key
+  }
+}
+
+export function cleanupDeletedApiKeyRecordStatsData(input: DeletedApiKeyRecordStatsCleanupInput): void {
+  const database = getStatsDatabase()
+  const rows = input.rows.map((row) => ({
+    ...row,
+    location: {
+      shardKey: row.source_shard_key,
+      databasePath: '',
+      filePath: ''
+    }
+  } as unknown as ApiKeyUsageShardRow))
+  subtractApiKeyUsageRowsOnce(database, rows, input.target, input.updatedAt)
+  if (input.shardDeleted) {
+    markApiKeyUsageCleanupRowsDeleted(database, rows, input.target, input.updatedAt)
+  }
+  if (rows.length === 0) {
+    cleanupDeletedApiKeyFinalStats(database, input.target)
+    const blockedReason = refreshDeletedApiKeyDerivedWindowsIfNeeded(input.target, true)
+    if (blockedReason) {
+      throw new Error(blockedReason)
+    }
+  }
 }
 
 function subtractApiKeyUsageRowsOnce(

@@ -4,6 +4,7 @@ import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import { gatewayErrorPayload } from './responses.js'
 import { buildOpenAIModelsResponse } from '../protocols/openai-v1/route-helpers.js'
+import { buildAnthropicModelsResponse } from '../protocols/anthropic-v1/route-helpers.js'
 import { listCachedProviderModelCatalogAsync } from '../runtime/runtime-cache.service.js'
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
@@ -61,13 +62,23 @@ export function finalizeGatewayAuthFailureAudit(
 }
 
 export async function sendOpenAIModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
+  await sendModelsGatewayResponse(input, 'openai')
+}
+
+export async function sendAnthropicModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
+  await sendModelsGatewayResponse(input, 'anthropic')
+}
+
+async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic'): Promise<void> {
   const { req, res, auditCapture, usageContext, startedAt } = input
   const providerCode = usageContext.providerCode ?? GPT_VENDOR_CODE
   const catalog = await listCachedProviderModelCatalogAsync({
     providerCode,
     systemAccountId: usageContext.systemAccountId
   })
-  const responsePayload = buildOpenAIModelsResponse(catalog, req)
+  const responsePayload = protocol === 'anthropic'
+    ? buildAnthropicModelsResponse(catalog)
+    : buildOpenAIModelsResponse(catalog, req)
   res.status(200).json(responsePayload)
   enqueueUsageRecord({
     ...usageContext,

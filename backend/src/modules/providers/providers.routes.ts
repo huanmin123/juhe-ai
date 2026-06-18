@@ -76,7 +76,7 @@ const customModelSchema = z.object({
   scope: z.enum(['global', 'personal']).default('personal'),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
   mode: nullableModelModeSchema,
-  supportedApiProtocols: z.array(z.enum(['chat_completions', 'responses', 'completions', 'images', 'audio', 'realtime'])).optional(),
+  supportedApiProtocols: z.array(z.enum(['chat_completions', 'responses', 'messages', 'message_token_counting', 'completions', 'images', 'audio', 'realtime'])).optional(),
   pricingModel: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,

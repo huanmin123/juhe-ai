@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { backendRoot } from '../../config/runtime.js'
+import { dbServiceOperationPriority } from '../../modules/db-service/db-service-request-priority.js'
 
 const serverSource = readFileSync(resolve(backendRoot, 'src/server.ts'), 'utf8')
+const dbServiceSource = readFileSync(resolve(backendRoot, 'src/db-service.ts'), 'utf8')
 const systemApiSource = readFileSync(resolve(backendRoot, 'src/modules/system-api/system-api-app.ts'), 'utf8')
 const proxySource = readFileSync(resolve(backendRoot, 'src/modules/db-service/db-service-http-proxy.ts'), 'utf8')
+const dbServicePrioritySource = readFileSync(resolve(backendRoot, 'src/modules/db-service/db-service-request-priority.ts'), 'utf8')
 
 const forbiddenServerImports = [
   'modules/accounts/',
@@ -56,5 +59,23 @@ assert(publicProxyIndex < gatewayRawIndex, '公开系统 API 代理必须早于�
 assert(systemApiSource.includes("systemApiJsonBodyLimit = '256kb'"), 'DB service system API JSON 请求体上限必须保持 256KB')
 assert(proxySource.includes('dbServiceHttpProxyMaxInFlight'), 'DB service HTTP proxy 必须保留最大并发保护')
 assert(proxySource.includes('dbServiceHttpProxyTimeoutMs'), 'DB service HTTP proxy 必须保留内部超时保护')
+assert(dbServiceSource.includes('enqueueDbServiceRequest'), 'DB service 父进程 IPC 请求必须先进入内部优先级队列')
+assert(dbServiceSource.includes('shiftNextDbServiceRequest'), 'DB service 内部队列必须按优先级取下一个请求')
+assert(dbServiceSource.includes('yieldDbServiceRequestQueue'), 'DB service 内部队列每个请求后必须让出事件循环，避免后台 IPC 长时间压住 HTTP 管理请求')
+assert(
+  dbServiceSource.indexOf('queuedDbServiceRequests.high.shift()') < dbServiceSource.indexOf('queuedDbServiceRequests.low.shift()'),
+  'DB service 内部队列出队必须先 high 后 low，不能退回普通 FIFO'
+)
+assert(dbServicePrioritySource.includes('cleanup_expired_system_sessions'), 'DB service 维护类操作必须登记为低优先级候选')
+assert.equal(
+  dbServiceOperationPriority({ type: 'cleanup_expired_system_sessions', expiredBefore: '2000-01-01T00:00:00.000Z', limit: 1 }),
+  'low',
+  '后台系统会话清理必须低优先级，不能压住管理操作'
+)
+assert.equal(
+  dbServiceOperationPriority({ type: 'mark_account_exception', accountId: 'acct_priority_regression', errorCode: 'manual', reason: 'regression' }),
+  'high',
+  '用户可感知账号状态写入必须高优先级'
+)
 
 console.log('DB service system API 边界回归通过：主进程不直接挂载管理 API / storage，系统 API 由 DB service 承载且代理具备并发与超时边界')

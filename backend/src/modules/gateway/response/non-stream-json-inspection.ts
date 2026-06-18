@@ -15,6 +15,12 @@ import {
 } from '../protocols/openai-v1/response-semantics.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
 import {
+  anthropicResponseEndpointFamilyFromPath,
+  extractAnthropicJsonSemanticFrames
+} from '../protocols/anthropic-v1/response-semantics.js'
+import { parseAnthropicUsageFromJsonBuffer } from '../protocols/anthropic-v1/usage.js'
+import { isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
+import {
   forgetOpenAIAccountForSession
 } from '../runtime/session-affinity.service.js'
 import {
@@ -70,8 +76,16 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
   } catch {
     return undefined
   }
-  const endpointFamily = openAIResponseEndpointFamilyFromRequest(input.req)
-  const frames = extractOpenAIJsonSemanticFrames(parsedJson, endpointFamily)
+  const anthropicProtocol = isAnthropicProtocolProfile(input.account)
+  const frames = anthropicProtocol
+    ? extractAnthropicJsonSemanticFrames(
+        parsedJson,
+        anthropicResponseEndpointFamilyFromPath(input.req.originalUrl || input.req.path)
+      )
+    : extractOpenAIJsonSemanticFrames(
+        parsedJson,
+        openAIResponseEndpointFamilyFromRequest(input.req)
+      )
   if (frames.length === 0) return undefined
 
   const policies = resolveRuntimeResponseInspectionPolicies({
@@ -84,7 +98,7 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
     downstreamWritten: false,
     transport: 'json',
     context: {
-      clientProfile: input.clientStrategy?.clientProfile ?? 'generic_openai',
+      clientProfile: input.clientStrategy?.clientProfile ?? (anthropicProtocol ? 'generic_anthropic' : 'generic_openai'),
       accountClientCompatibility: input.account.clientCompatibility
     }
   })
@@ -104,7 +118,9 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
     label: 'response_inspection',
     metadata: responseInspectionAuditMetadata(decision)
   })
-  const usage = parseOpenAIUsageFromJsonBuffer(input.responseBody)
+  const usage = anthropicProtocol
+    ? parseAnthropicUsageFromJsonBuffer(input.responseBody)
+    : parseOpenAIUsageFromJsonBuffer(input.responseBody)
   const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
   const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
   forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)

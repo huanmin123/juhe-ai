@@ -16,6 +16,12 @@ import { requestStream } from '../request/metadata.js'
 import { buildOpenAIModelMappedJsonBody, resolveOpenAIRequestModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody, type OpenAIClientCompatibilityAccount } from '../protocols/openai-v1/api-key-client-compatibility.js'
 import {
+  isAnthropicProtocolProfile
+} from '../../../domain/provider-protocol.js'
+import {
+  gatewayClientProfileHeader
+} from '../client-profiles/strategy.js'
+import {
   openAICodexOriginator,
   openAICodexResponsesBetaHeader,
   openAICodexUserAgent,
@@ -62,6 +68,7 @@ const gatewayUpstreamAgentOptions: http.AgentOptions = {
 let directHttpAgent: http.Agent | undefined
 let directHttpsAgent: https.Agent | undefined
 const proxyAgents = new Map<string, http.Agent>()
+const defaultAnthropicVersion = '2023-06-01'
 
 class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
   constructor(private readonly message: IncomingMessage) {}
@@ -258,6 +265,9 @@ export async function buildUpstreamRequestParts(
   identity: OpenAIOAuthCodexIdentity,
   signal?: AbortSignal
 ): Promise<{ headers: Headers; body?: Buffer | string }> {
+  if (isAnthropicProtocolProfile(account)) {
+    return buildAnthropicUpstreamRequestParts(req, account)
+  }
   const modelMapping = resolveOpenAIRequestModelMapping(req, account)
   if (account.type === 'oauth') {
     return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
@@ -276,6 +286,15 @@ export async function buildUpstreamRequestParts(
 }
 
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {
+  const headers = copySafeUpstreamRequestHeaders(inputHeaders)
+  headers.set('authorization', `Bearer ${account.apiKey}`)
+  if (account.type === 'oauth') {
+    applyOpenAICodexHeaders(headers, account)
+  }
+  return headers
+}
+
+export function copySafeUpstreamRequestHeaders(inputHeaders: Record<string, string | string[] | undefined>): Headers {
   const headers = new Headers()
   for (const [name, value] of Object.entries(inputHeaders)) {
     const lowerName = name.toLowerCase()
@@ -288,11 +307,68 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
       headers.set(name, value)
     }
   }
-  headers.set('authorization', `Bearer ${account.apiKey}`)
-  if (account.type === 'oauth') {
-    applyOpenAICodexHeaders(headers, account)
-  }
   return headers
+}
+
+function buildAnthropicUpstreamRequestParts(req: Request, account: UpstreamHeaderAccount): { headers: Headers; body?: Buffer | string } {
+  if (account.type !== 'api_key') {
+    throw new Error('Anthropic 当前仅支持 API Key 账户')
+  }
+  const headers = copySafeUpstreamRequestHeaders(req.headers)
+  headers.set('x-api-key', account.apiKey)
+  headers.set('anthropic-version', anthropicVersionHeader(req, account))
+  const betaHeader = anthropicBetaHeader(req, account)
+  if (betaHeader) {
+    headers.set('anthropic-beta', betaHeader)
+  }
+  if (!headers.get('content-type') && req.method !== 'GET' && req.method !== 'HEAD') {
+    headers.set('content-type', 'application/json')
+  }
+  if (!headers.get('accept')) {
+    headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
+  }
+  return {
+    headers,
+    body: buildUpstreamRequestBody(req)
+  }
+}
+
+function anthropicVersionHeader(req: Request, account: UpstreamHeaderAccount): string {
+  return headerText(req, 'anthropic-version')
+    ?? stringCredential(account.credentials, 'anthropic_version')
+    ?? defaultAnthropicVersion
+}
+
+function anthropicBetaHeader(req: Request, account: UpstreamHeaderAccount): string | undefined {
+  const values = [
+    headerText(req, 'anthropic-beta'),
+    stringCredential(account.credentials, 'anthropic_beta')
+  ]
+  const normalized = new Map<string, string>()
+  for (const value of values) {
+    for (const item of splitAnthropicBetaHeader(value)) {
+      const key = item.toLowerCase()
+      if (!normalized.has(key)) {
+        normalized.set(key, item)
+      }
+    }
+  }
+  const merged = [...normalized.values()]
+  return merged.length ? merged.join(',') : undefined
+}
+
+function splitAnthropicBetaHeader(value: string | undefined): string[] {
+  if (!value) return []
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function headerText(req: Request, name: string): string | undefined {
+  const value = typeof req.header === 'function' ? req.header(name) : undefined
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text || undefined
 }
 
 export function copyResponseHeaders(upstreamResponse: GatewayUpstreamResponse, res: { setHeader: (name: string, value: string) => void }): void {
@@ -456,6 +532,7 @@ const skippedUpstreamRequestHeaders = new Set([
   'chatgpt-account-id',
   'openai-organization',
   'openai-project',
+  gatewayClientProfileHeader,
   'x-request-id',
   'traceparent',
   'tracestate',

@@ -1,7 +1,8 @@
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
-import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isGptVendorCode } from '../domain/provider-protocol.js'
+import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
@@ -181,6 +182,30 @@ const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const deletedAccountPhysicalCleanupRetentionMonths = 1
 const deletedAccountPhysicalCleanupBatchSize = 20
+
+function assertAccountEndpointModesCompatible(
+  protocolProfile: { protocolCode?: string; protocolVersion?: string },
+  input: {
+    modes: readonly AccountSupportedEndpointMode[]
+    accountType?: string
+    clientCompatibility: AccountClientCompatibility
+  }
+): void {
+  if (isAnthropicProtocolProfile(protocolProfile)) {
+    assertAnthropicEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType
+    })
+    return
+  }
+  if (isOpenAIProtocolProfile(protocolProfile)) {
+    assertOpenAIEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType,
+      clientCompatibility: input.clientCompatibility
+    })
+  }
+}
 
 function findInternalAccountSummary(accountId: string): AccountSummary | undefined {
   return findAccountSummary(accountId, internalAccountReadAccess)
@@ -866,7 +891,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials, {
     providerCode,
     accountType,
-    clientCompatibility
+    clientCompatibility,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
   })
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
@@ -897,7 +924,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
   const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
-  assertOpenAIEndpointModesCompatible({
+  assertAccountEndpointModesCompatible(providerProfile, {
     modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
     accountType,
     clientCompatibility
@@ -1072,12 +1099,16 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
       providerCode: current.providerCode,
       accountType: current.type,
-      clientCompatibility: nextClientCompatibility
+      clientCompatibility: nextClientCompatibility,
+      protocolCode: current.protocolCode,
+      protocolVersion: current.protocolVersion
     })
     : normalizeAccountCredentialsForWrite(current.type, current.credentials, {
       providerCode: current.providerCode,
       accountType: current.type,
-      clientCompatibility: nextClientCompatibility
+      clientCompatibility: nextClientCompatibility,
+      protocolCode: current.protocolCode,
+      protocolVersion: current.protocolVersion
     })
   const credentialSource = requiredAccountCredentialSource(current.type, credentials)
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
@@ -1191,7 +1222,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasFallbackInput && nextFallbackEnabled) {
     nextSuperPriorityEnabled = false
   }
-  assertOpenAIEndpointModesCompatible({
+  assertAccountEndpointModesCompatible(current, {
     modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
     accountType: current.type,
     clientCompatibility: nextClientCompatibility

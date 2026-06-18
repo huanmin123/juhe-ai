@@ -8,7 +8,7 @@
 
 - 通用 GLM API：支持 OpenAI API 兼容调用，OpenAI SDK 只需要替换 API Key 和 `base_url`，默认地址为 `https://open.bigmodel.cn/api/paas/v4/`。参考 [OpenAI API 兼容](https://docs.bigmodel.cn/cn/guide/develop/openai/introduction) 和 [HTTP API](https://docs.bigmodel.cn/cn/guide/develop/http/introduction)。
 - GLM Coding Plan 的 OpenAI Chat Completions 端点：官方文档明确给出 `OpenAI Chat Completions` 协议端点 `https://open.bigmodel.cn/api/coding/paas/v4`，用于支持 OpenAI Compatible 的编程工具。参考 [GLM Coding Plan 接入工具](https://docs.bigmodel.cn/cn/coding-plan/tool/others)。
-- GLM Coding Plan 的 Anthropic Messages 端点：官方文档给出 `Anthropic Messages` 协议端点 `https://open.bigmodel.cn/api/anthropic`。该端点不是 OpenAI v1，后续必须新增 Anthropic 协议档案和 adapter 后再接入，第一阶段不混入 OpenAI v1 档案。
+- GLM Coding Plan 的 Anthropic Messages 端点：官方文档给出 `Anthropic Messages` 协议端点 `https://open.bigmodel.cn/api/anthropic`。该端点不是 OpenAI v1，如果接入必须新增 Anthropic 协议档案和 adapter，不混入 OpenAI v1 档案。
 
 结论：
 
@@ -72,13 +72,13 @@ GLM OpenAI v1 档案复用 OpenAI v1 Chat Completions 协议适配器，但有�
 - 客户端可请求 `/chat/completions` 或 `/v1/chat/completions`。
 - 网关按当前上游 URL 归一化规则把请求发往所选档案的 `base_url + /chat/completions`。
 - `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不主动请求智谱上游模型列表。
-- `/responses` 和 `/v1/responses` 第一阶段不进入 GLM 候选账号；如果当前 API Key 只绑定 GLM Chat 档案分组，应返回本地“没有支持该端点的上游账户”类错误，而不是自动改写为 Chat Completions。
+- `/responses` 和 `/v1/responses` 当前不进入 GLM 候选账号；如果当前 API Key 只绑定 GLM Chat 档案分组，应返回本地“没有支持该端点的上游账户”类错误，而不是自动改写为 Chat Completions。
 
 请求体：
 
 - 默认保持 raw body passthrough，保留智谱扩展字段，例如 `thinking`、`reasoning_effort`、`tool_stream`、`do_sample` 等官方支持字段。
 - 账户测试请求必须使用 Chat Completions 形态，避免沿用 GPT OAuth / Responses 测试路径。
-- GLM 对 Chat Completions `messages[].role` 的支持应以官方文档和真实测试为准。若客户端传入 OpenAI 新式 `developer` role，GLM 可能返回角色错误；第一阶段应在 GLM 供应商兼容层中把 `developer` 限定性降级为 `system`，或在本地提前返回清晰错误，不能把该规则写进全局 OpenAI v1 协议层。
+- GLM 对 Chat Completions `messages[].role` 的支持应以官方文档和真实测试为准。若客户端传入 OpenAI 新式 `developer` role，GLM 可能返回角色错误；应在 GLM 供应商兼容层中把 `developer` 限定性降级为 `system`，或在本地提前返回清晰错误，不能把该规则写进全局 OpenAI v1 协议层。
 - 一些 OpenAI 客户端允许 `temperature` 大于 `1`，而 GLM 可能只接受更窄范围。默认透传时让上游返回真实错误；如果后续需要本地纠偏，应作为 GLM 供应商兼容规则配置，不能影响 GPT 或其他 OpenAI-compatible 供应商。
 
 请求头：
@@ -100,7 +100,7 @@ GLM Chat Completions 返回应优先按 OpenAI v1 Chat 语义解析：
 
 - 通用 GLM API 的 token 成本按 GLM 模型目录价格估算。
 - GLM Coding Plan 是套餐权益和 prompt / 周期额度语义，不等同于普通 API 余额扣费。本地仍可记录 token、请求数、错误数和成本估算，但不能把本地美元成本当作 Coding Plan 官方额度。
-- Coding Plan 官方文档提到 5 小时和每周使用额度、不同套餐 prompts 额度和模型倍率；这些属于 Coding Plan 专属展示信息。第一阶段不主动抓取或猜测套餐额度，只记录真实上游响应和本地使用统计。
+- Coding Plan 官方文档提到 5 小时和每周使用额度、不同套餐 prompts 额度和模型倍率；这些属于 Coding Plan 专属展示信息。当前不主动抓取或猜测套餐额度，只记录真实上游响应和本地使用统计。
 - 不要臆造智谱 rate-limit header。只有真实请求或官方文档确认的响应头才能进入额度快照设计。
 
 ## 模型目录
@@ -116,7 +116,7 @@ GLM 模型目录必须单独维护在 `glm` 供应商下，不要混进 GPT 价�
 
 - `providerCode = glm`
 - `model` 使用智谱官方模型 ID，小写和连字符按官方写法保留。
-- `supportedApiProtocols` 第一阶段填 `chat_completions`。
+- `supportedApiProtocols` 当前填 `chat_completions`。
 - `contextWindowTokens` 以官方模型页或 Coding Plan 工具文档为准；例如 Coding Plan 文档提示 `glm-5.2` 可按 `1000000` 上下文配置，其他模型常见为 `200000`，实际落库前仍需以官方模型页复核。
 - `releaseDate` 用官方发布日期或官方文档可确认的上线日期，不确定时留空，不为了排序编造。
 - 价格只采信智谱官方价格页或官方模型页；第三方价格库和社区表格只能作为线索。
@@ -183,7 +183,7 @@ GLM 账户测试必须复用真实网关链路：
 
 ## 验证要求
 
-第一阶段代码落地后至少覆盖：
+当前代码落地后至少覆盖：
 
 - 创建通用 GLM API Key 账户，保存后落到 `profile_glm_general_openai_v1`。
 - 创建 GLM Coding Plan Key 账户，保存后落到 `profile_glm_coding_openai_v1`。

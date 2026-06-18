@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 
 import type { OpenAIAccountSecret } from '../../../../storage/repositories.js'
+import { isAnthropicProtocolProfile } from '../../../../domain/provider-protocol.js'
 import {
   buildCodexModelsResponseFromCatalog,
   buildOpenAIModelsResponseFromCatalog,
@@ -8,6 +9,7 @@ import {
   type OpenAIModelsListResponse,
   type ProviderModelCatalogItem
 } from '../../../model-pricing/model-catalog.service.js'
+import { buildAnthropicUpstreamUrlsForAccount, isAnthropicNativeRequest } from '../anthropic-v1/route-helpers.js'
 
 export type UpstreamAccount = OpenAIAccountSecret
 
@@ -21,6 +23,12 @@ export function buildUpstreamUrls(baseUrl: string, pathAndQuery: string): string
 }
 
 export function buildUpstreamUrlsForAccount(account: UpstreamAccount, req: Request): string[] {
+  if (isAnthropicProtocolProfile(account)) {
+    return buildAnthropicUpstreamUrlsForAccount(account, req)
+  }
+  if (isAnthropicNativeRequest(req)) {
+    return []
+  }
   if (account.type === 'oauth') {
     return buildOpenAICodexUpstreamUrls(req)
   }

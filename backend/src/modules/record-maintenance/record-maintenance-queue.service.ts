@@ -149,6 +149,29 @@ export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJo
     return { job, queued: false, droppedReason: 'worker_ipc_unavailable' }
   }
 
+  if (runtimeConfig.processRole === 'worker'
+    && runtimeConfig.workerRole !== 'ingest-worker'
+    && !canProcessRecordMaintenanceJobLocally(job)) {
+    if (process.send && process.connected !== false) {
+      try {
+        process.send({
+          type: 'background_worker_record_maintenance',
+          items: [job]
+        }, (error) => {
+          if (error) {
+            recordRecordMaintenanceDispatchFailure(error, job)
+          }
+        })
+        return { job, queued: true }
+      } catch (error) {
+        recordRecordMaintenanceDispatchFailure(error, job)
+        return { job, queued: false, droppedReason: 'worker_dispatch_failed' }
+      }
+    }
+    recordRecordMaintenanceDispatchFailure(new Error('非 ingest worker 无父进程 IPC'), job)
+    return { job, queued: false, droppedReason: 'worker_ipc_unavailable' }
+  }
+
   const queued = enqueueRecordMaintenanceJobLocal(job)
   return {
     job,
@@ -158,7 +181,7 @@ export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJo
 }
 
 export function enqueueRecordMaintenanceJobsLocal(inputs: RecordMaintenanceJob[]): void {
-  assertLocalRecordMaintenanceWriteAllowed('enqueueRecordMaintenanceJobsLocal')
+  assertLocalRecordMaintenanceJobsAllowed('enqueueRecordMaintenanceJobsLocal', inputs)
   for (const input of inputs) {
     enqueueRecordMaintenanceJobLocal(normalizeRecordMaintenanceJob(input))
   }
@@ -271,7 +294,7 @@ export function installRecordMaintenanceQueueShutdownHooks(): void {
 }
 
 function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
-  assertLocalRecordMaintenanceWriteAllowed('enqueueRecordMaintenanceJobLocal')
+  assertLocalRecordMaintenanceJobAllowed('enqueueRecordMaintenanceJobLocal', job)
   const queued = {
     job,
     bytes: estimateRecordMaintenanceJobBytes(job)
@@ -325,6 +348,8 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
       const result = await cleanupDeletedApiKeyRelatedRecordDataAsync({
         apiKeyId: job.apiKeyId,
         systemAccountId: job.systemAccountId
+      }, async (input) => {
+        await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
       })
       const deferred = result.hasMore || Boolean(result.blockedReason)
       logger.info({
@@ -341,6 +366,8 @@ export async function runRecordMaintenanceJobOnce(job: RecordMaintenanceJob): Pr
         relatedAccountIds: job.relatedAccountIds,
         authorizationIds: job.authorizationIds,
         teamScopeIds: job.teamScopeIds
+      }, async (input) => {
+        await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
       })
       const deferred = result.hasMore || Boolean(result.blockedReason)
       logger.info({
@@ -781,10 +808,24 @@ function recordRecordMaintenanceLocalDrop(item: QueuedRecordMaintenanceJob, reas
   }, '数据维护队列达到保护上限，已丢弃新任务')
 }
 
-function assertLocalRecordMaintenanceWriteAllowed(operation: string): void {
-  if (runtimeConfig.processRole !== 'worker') {
-    throw new Error(`${runtimeConfig.processRole} 角色禁止直接执行数据维护：${operation} 必须投递 background worker`)
+function assertLocalRecordMaintenanceJobsAllowed(operation: string, jobs: RecordMaintenanceJob[]): void {
+  for (const job of jobs) {
+    assertLocalRecordMaintenanceJobAllowed(operation, normalizeRecordMaintenanceJob(job))
   }
+}
+
+function assertLocalRecordMaintenanceJobAllowed(operation: string, job: RecordMaintenanceJob): void {
+  if (!canProcessRecordMaintenanceJobLocally(job)) {
+    throw new Error(`${runtimeConfig.processRole}/${runtimeConfig.workerRole} 角色禁止直接执行数据维护：${operation} 必须投递对应 writer`)
+  }
+}
+
+function canProcessRecordMaintenanceJobLocally(job: RecordMaintenanceJob): boolean {
+  return runtimeConfig.processRole === 'worker'
+    && (
+      runtimeConfig.workerRole === 'ingest-worker'
+      || (runtimeConfig.workerRole === 'stats-worker' && job.type === 'account_usage_snapshot_upsert')
+    )
 }
 
 function assertNever(value: never): never {

@@ -53,19 +53,19 @@ try {
   assert.equal(operationAfterOverflow.droppedOverflowCount, 1, '操作日志 worker 本地队列满后应记录溢出丢弃')
   operationLogQueue.clearOperationLogQueueForTest()
 
-  runtimeConfig.workerRole = 'maintenance-worker'
+  runtimeConfig.workerRole = 'ingest-worker'
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
   for (let index = 0; index < 5000; index += 1) {
     const result = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildRecordMaintenanceJob(index))
-    assert.equal(result.queued, true, `数据维护任务 ${index} 应进入 maintenance-worker 本地队列`)
+    assert.equal(result.queued, true, `数据维护任务 ${index} 应进入 ingest-worker 本地队列`)
   }
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 5000, '数据维护 maintenance-worker 本地队列应达到硬上限')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 5000, '数据维护 ingest-worker 本地队列应达到硬上限')
   const recordOverflow = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildRecordMaintenanceJob(5000))
   const recordAfterOverflow = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime()
-  assert.equal(recordOverflow.queued, false, '数据维护 maintenance-worker 本地队列满后应返回未入队')
+  assert.equal(recordOverflow.queued, false, '数据维护 ingest-worker 本地队列满后应返回未入队')
   assert.equal(recordOverflow.droppedReason, 'worker_local_queue_full')
-  assert.equal(recordAfterOverflow.queueLength, 5000, '数据维护 maintenance-worker 本地队列满后不应继续增长')
-  assert.equal(recordAfterOverflow.droppedOverflowCount, 1, '数据维护 maintenance-worker 本地队列满后应记录溢出丢弃')
+  assert.equal(recordAfterOverflow.queueLength, 5000, '数据维护 ingest-worker 本地队列满后不应继续增长')
+  assert.equal(recordAfterOverflow.droppedOverflowCount, 1, '数据维护 ingest-worker 本地队列满后应记录溢出丢弃')
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
 
   recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildAccountUsageSnapshotJob('first'))
@@ -73,6 +73,14 @@ try {
   const mergedSnapshotRuntime = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime()
   assert.equal(mergedSnapshotRuntime.queueLength, 1, '同账号同来源用量快照维护任务应在 worker 本地队列内合并')
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
+
+  runtimeConfig.workerRole = 'maintenance-worker'
+  const nonOwnerDroppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
+  const nonOwnerResult = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildRecordMaintenanceJob('maintenance_non_owner'))
+  assert.equal(nonOwnerResult.queued, false, 'maintenance-worker 不能本地写数据维护队列')
+  assert.equal(nonOwnerResult.droppedReason, 'worker_ipc_unavailable', 'maintenance-worker 无父 IPC 时应按投递不可用拒绝')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'maintenance-worker 不应产生本地数据维护积压')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, nonOwnerDroppedBefore + 1, 'maintenance-worker 本地写保护应记录投递失败')
 
   runtimeConfig.workerRole = 'ingest-worker'
   auditLogQueue.clearAuditLogQueueForTest()
@@ -108,7 +116,7 @@ try {
   assert.equal(runtimeLogAfterOverflow.droppedOverflowCount, 1, '运行日志索引 worker 本地队列满后应记录溢出丢弃')
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
 
-  console.log('worker 本地队列回归通过：使用记录、操作日志、数据维护、审计、公开接口日志和运行日志索引队列均有硬上限，用量快照任务可合并')
+  console.log('worker 本地队列回归通过：使用记录、操作日志、ingest 数据维护、审计、公开接口日志和运行日志索引队列均有硬上限，非 owner worker 不能本地维护写库')
 } finally {
   usageRecordQueue.clearUsageRecordQueueForTest()
   operationLogQueue.clearOperationLogQueueForTest()
@@ -149,7 +157,7 @@ function buildOperationLog(index: number) {
   }
 }
 
-function buildRecordMaintenanceJob(index: number) {
+function buildRecordMaintenanceJob(index: number | string) {
   return {
     type: 'usage_records_cleanup' as const,
     id: `recmaint_worker_local_${index}`,

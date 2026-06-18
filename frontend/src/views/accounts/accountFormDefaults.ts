@@ -36,6 +36,8 @@ export function defaultAccountForm(
     apiKeyStrategy: 'round_robin',
     apiKeyWeights: [1],
     baseUrl: profile?.baseUrl ?? provider?.baseUrl ?? '',
+    anthropicVersion: resolvedProviderCode === 'anthropic' ? '2023-06-01' : '',
+    anthropicBeta: '',
     accessToken: '',
     refreshToken: '',
     oauthMode: 'manual',

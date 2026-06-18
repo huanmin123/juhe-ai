@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, currentSystemAccountId, type AccessScope } from './access-scope.js'
-import { cleanupDeletedAccountRelatedRecordData as cleanupDeletedAccountRelatedRecordDataTarget, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
+import { hasDeletedAccountRelatedRecordData, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { deleteAccountTagBindingsForAccounts } from './account-tags.repository.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -109,6 +109,7 @@ export interface ExpiredDeletedAccountCleanupResult {
   physicallyDeletedAuthorizations: number
   physicallyDeletedGrants: number
   physicallyDeletedGroupBindings: number
+  recordCleanupTargets: DeletedAccountRecordCleanupTarget[]
 }
 
 export function deleteAccountWithRelatedCleanup(id: string, access?: AccessScope): AccountDeleteResult {
@@ -304,7 +305,8 @@ export function cleanupExpiredLogicallyDeletedAccounts(options: ExpiredDeletedAc
     physicallyDeletedAccounts: 0,
     physicallyDeletedAuthorizations: 0,
     physicallyDeletedGrants: 0,
-    physicallyDeletedGroupBindings: 0
+    physicallyDeletedGroupBindings: 0,
+    recordCleanupTargets: []
   }
   const orphanedInstanceIds = logicallyDeleteOrphanedAuthorizationInstancesForDeletedSources(database, limit)
   result.orphanedAuthorizationInstances = orphanedInstanceIds.length
@@ -323,10 +325,9 @@ export function cleanupExpiredLogicallyDeletedAccounts(options: ExpiredDeletedAc
     result.attempted += 1
     try {
       const target = buildExpiredDeletedAccountBusinessCleanupTarget(database, candidate)
-      const recordCleanup = cleanupDeletedAccountRelatedRecordDataTarget(target)
-      result.deletedRows += recordCleanup.deletedRows
-      if (recordCleanup.hasMore || recordCleanup.blockedReason) {
+      if (hasDeletedAccountRelatedRecordData(target)) {
         result.deferred += 1
+        result.recordCleanupTargets.push(target)
         continue
       }
       const businessCleanup = physicallyDeleteExpiredDeletedAccountBusinessRows(database, target)

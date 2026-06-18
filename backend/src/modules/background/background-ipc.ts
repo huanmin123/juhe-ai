@@ -116,6 +116,7 @@ const probePendingQueueRuntime = emptyIpcQueuesRuntime()
 const maintenancePendingQueueRuntime = emptyIpcQueuesRuntime()
 let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
+let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingStatsWriteRequests = new Map<string, PendingStatsWriteRequest>()
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
@@ -768,6 +769,7 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
     case 'background_worker_audit_logs':
     case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
+    case 'background_worker_record_maintenance':
     case 'background_worker_runtime_log_line':
       if (runtimeConfig.processRole === 'server') {
         queueWorkerMessage(record as BackgroundWorkerMessage)
@@ -782,6 +784,15 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
         void respondToDbServiceRequest(record.requestId, record.operation, child)
       }
+      break
+    case 'background_worker_dataset_write_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
+        void forwardDatasetWriteRequest(record.requestId, record.operation as import('./background-dataset-writer.js').BackgroundDatasetWriteOperation, child)
+      }
+      break
+    case 'background_worker_dataset_write_response':
+      if (typeof record.requestId !== 'string') break
+      finishDatasetWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' })
       break
     case 'background_worker_stats_write_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
@@ -844,15 +855,114 @@ function handleParentMessage(message: unknown): void {
     finishBackgroundDbServiceRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : '本地数据库服务请求失败' })
     return
   }
+  if (record.type === 'background_worker_dataset_write_response' && typeof record.requestId === 'string') {
+    finishDatasetWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' })
+    return
+  }
   if (record.type === 'background_worker_stats_write_response' && typeof record.requestId === 'string') {
     finishStatsWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'stats-writer 请求失败' })
   }
+}
+
+interface PendingDatasetWriteRequest {
+  resolve: (result: unknown) => void
+  reject: (error: Error) => void
+  timeout: NodeJS.Timeout
 }
 
 interface PendingStatsWriteRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
+}
+
+export async function requestBackgroundWorkerDatasetWrite<T extends import('./background-dataset-writer.js').BackgroundDatasetWriteOperation>(
+  operation: T,
+  timeoutMs = 30_000
+): Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined> {
+  if (runtimeConfig.processRole === 'worker') {
+    if (runtimeConfig.workerRole === 'ingest-worker') {
+      const { handleDatasetWriteOperation } = await import('./background-dataset-writer.js')
+      return await handleDatasetWriteOperation(operation) as import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T>
+    }
+    if (typeof process.send !== 'function') {
+      return undefined
+    }
+    const requestId = randomUUID()
+    return await new Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const pending = pendingDatasetWriteRequests.get(requestId)
+        if (!pending) {
+          return
+        }
+        pendingDatasetWriteRequests.delete(requestId)
+        pending.reject(new Error('后台 dataset-writer 请求超时'))
+      }, timeoutMs)
+      pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+      sendToParentOrServer({
+        type: 'background_worker_dataset_write_request',
+        requestId,
+        operation
+      }, (error) => {
+        finishDatasetWriteRequest(requestId, undefined)
+        markParentIpcBroken(error)
+      })
+    })
+  }
+
+  if (runtimeConfig.processRole === 'db-service') {
+    const { requestDbServiceDatasetWrite } = await import('../db-service/db-service-ipc.js')
+    return await requestDbServiceDatasetWrite(operation, timeoutMs) as import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined
+  }
+
+  if (runtimeConfig.processRole !== 'server') {
+    return undefined
+  }
+
+  const child = ingestWorkerProcess
+  if (!child || !child.connected || !ingestWorkerReady) {
+    return undefined
+  }
+  const requestId = randomUUID()
+  return await new Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      finishDatasetWriteRequest(requestId, undefined)
+    }, timeoutMs)
+    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout })
+    try {
+      child.send({
+        type: 'background_worker_dataset_write_request',
+        requestId,
+        operation
+      } satisfies BackgroundWorkerMessage, (error) => {
+        if (error) {
+          finishDatasetWriteRequest(requestId, undefined)
+          markIpcBrokenForChild('ingest-worker', error, child)
+        }
+      })
+    } catch (error) {
+      finishDatasetWriteRequest(requestId, undefined)
+      markIpcBrokenForChild('ingest-worker', error, child)
+    }
+  })
+}
+
+function finishDatasetWriteRequest(requestId: string, response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined): void {
+  const pending = pendingDatasetWriteRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+  clearTimeout(pending.timeout)
+  pendingDatasetWriteRequests.delete(requestId)
+  if (!response) {
+    pending.resolve(undefined)
+    return
+  }
+  if (response.ok) {
+    pending.resolve(response.result)
+    return
+  }
+  pending.reject(new Error(response.errorMessage))
 }
 
 export async function requestBackgroundWorkerStatsWrite<T extends import('./background-stats-writer.js').BackgroundStatsWriteOperation>(
@@ -948,7 +1058,7 @@ function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
   const targetRole = workerMessageTargetRole(message)
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
-  if (!canQueueWorkerMessage(targetRole, message, messageBytes)) {
+  if (!canQueueWorkerMessage(targetRole, message, messageBytes, queueKey)) {
     const runtime = pendingQueueRuntimeForTarget(targetRole)
     runtime[queueKey].rejectedCount = (runtime[queueKey].rejectedCount ?? 0) + 1
     return false
@@ -1019,14 +1129,14 @@ function coalesceRecordMaintenanceJobIntoPendingQueue(job: RecordMaintenanceJob)
   if (!key) {
     return false
   }
-  const queueIndex = maintenanceWorkerMessageQueue.findIndex((queued) => (
+  const queueIndex = ingestRegularWorkerMessageQueue.findIndex((queued) => (
     queued.type === 'background_worker_record_maintenance'
     && queued.items.some((item) => recordMaintenanceJobCoalescingKey(item) === key)
   ))
   if (queueIndex < 0) {
     return false
   }
-  const current = maintenanceWorkerMessageQueue.at(queueIndex)
+  const current = ingestRegularWorkerMessageQueue.at(queueIndex)
   if (!current || current.type !== 'background_worker_record_maintenance') {
     return false
   }
@@ -1036,13 +1146,13 @@ function coalesceRecordMaintenanceJobIntoPendingQueue(job: RecordMaintenanceJob)
   )))
   const nextMessage: BackgroundWorkerMessage = { ...current, items: nextItems }
   const nextBytes = estimateWorkerMessageBytes(nextMessage)
-  const nextQueueBytes = maintenanceWorkerMessageQueueBytes - currentBytes + nextBytes
+  const runtime = ingestPendingQueueRuntime.recordMaintenance
+  const nextQueueBytes = (runtime.queueBytes ?? 0) - currentBytes + nextBytes
   if (nextBytes > regularWorkerMessageMaxBytes || nextQueueBytes > regularWorkerMessageQueueMaxBytes) {
     return false
   }
-  maintenanceWorkerMessageQueue.set(queueIndex, nextMessage)
-  maintenanceWorkerMessageQueueBytes = Math.max(0, maintenanceWorkerMessageQueueBytes - currentBytes + nextBytes)
-  const runtime = maintenancePendingQueueRuntime.recordMaintenance
+  ingestRegularWorkerMessageQueue.set(queueIndex, nextMessage)
+  ingestRegularWorkerMessageQueueBytes = Math.max(0, ingestRegularWorkerMessageQueueBytes - currentBytes + nextBytes)
   runtime.queueBytes = Math.max(0, (runtime.queueBytes ?? 0) - currentBytes + nextBytes)
   return true
 }
@@ -1056,7 +1166,8 @@ function recordMaintenanceJobCoalescingKey(job: RecordMaintenanceJob): string | 
 function canQueueWorkerMessage(
   targetRole: BackgroundWorkerQueueTargetRole,
   message: BackgroundWorkerMessage,
-  messageBytes: number
+  messageBytes: number,
+  queueKey: IpcQueueKey
 ): boolean {
   if (message.type === 'background_worker_usage_records') {
     return targetRole === 'ingest-worker'
@@ -1064,20 +1175,9 @@ function canQueueWorkerMessage(
       && messageBytes <= usageRecordWorkerMessageMaxBytes
       && ingestUsageRecordMessageQueueBytes + messageBytes <= usageRecordMessageQueueMaxBytes
   }
-  const regularQueueLength = targetRole === 'ingest-worker'
-    ? ingestRegularWorkerMessageQueue.length
-    : targetRole === 'probe-worker'
-      ? probeWorkerMessageQueue.length
-      : targetRole === 'maintenance-worker'
-        ? maintenanceWorkerMessageQueue.length
-    : regularWorkerMessageQueue.length
-  const regularQueueBytes = targetRole === 'ingest-worker'
-    ? ingestRegularWorkerMessageQueueBytes
-    : targetRole === 'probe-worker'
-      ? probeWorkerMessageQueueBytes
-      : targetRole === 'maintenance-worker'
-        ? maintenanceWorkerMessageQueueBytes
-    : regularWorkerMessageQueueBytes
+  const regularQueueRuntime = regularQueueCapacityRuntimeForMessage(targetRole, queueKey)
+  const regularQueueLength = regularQueueRuntime.queueLength
+  const regularQueueBytes = regularQueueRuntime.queueBytes
   if (message.type === 'background_worker_audit_logs') {
     return regularQueueLength < regularWorkerMessageQueueMaxMessages
       && messageBytes <= auditWorkerMessageMaxBytes
@@ -1091,6 +1191,39 @@ function canQueueWorkerMessage(
   return regularQueueLength < regularWorkerMessageQueueMaxMessages
     && messageBytes <= regularWorkerMessageMaxBytes
     && regularQueueBytes + messageBytes <= regularWorkerMessageQueueMaxBytes
+}
+
+function regularQueueCapacityRuntimeForMessage(
+  targetRole: BackgroundWorkerQueueTargetRole,
+  queueKey: IpcQueueKey
+): { queueLength: number; queueBytes: number } {
+  if (targetRole === 'ingest-worker') {
+    return queueKey === 'recordMaintenance'
+      ? {
+          queueLength: ingestPendingQueueRuntime.recordMaintenance.queueLength,
+          queueBytes: ingestPendingQueueRuntime.recordMaintenance.queueBytes ?? 0
+        }
+      : ingestHighPriorityRegularQueueRuntime()
+  }
+  if (targetRole === 'probe-worker') {
+    return { queueLength: probeWorkerMessageQueue.length, queueBytes: probeWorkerMessageQueueBytes }
+  }
+  if (targetRole === 'maintenance-worker') {
+    return { queueLength: maintenanceWorkerMessageQueue.length, queueBytes: maintenanceWorkerMessageQueueBytes }
+  }
+  return { queueLength: regularWorkerMessageQueue.length, queueBytes: regularWorkerMessageQueueBytes }
+}
+
+function ingestHighPriorityRegularQueueRuntime(): { queueLength: number; queueBytes: number } {
+  const runtime = buildIngestPendingQueuesRuntime()
+  runtime.usageRecords.queueLength = 0
+  runtime.usageRecords.queueBytes = 0
+  runtime.recordMaintenance.queueLength = 0
+  runtime.recordMaintenance.queueBytes = 0
+  return {
+    queueLength: Object.values(runtime).reduce((total, queue) => total + queue.queueLength, 0),
+    queueBytes: Object.values(runtime).reduce((total, queue) => total + (queue.queueBytes ?? 0), 0)
+  }
 }
 
 function flushTargetWorkerMessageQueue(role: BackgroundWorkerQueueTargetRole): void {
@@ -1290,7 +1423,7 @@ function shiftWorkerMessage(): BackgroundWorkerMessage | undefined {
 function shiftIngestWorkerMessage(): BackgroundWorkerMessage | undefined {
   let queueKey: IpcQueueKey | undefined
   const usageMessage = ingestUsageRecordMessageQueue.shift()
-  const message = usageMessage ?? ingestRegularWorkerMessageQueue.shift()
+  const message = usageMessage ?? shiftIngestRegularWorkerMessage()
   if (message) {
     queueKey = ipcQueueKeyForMessage(message)
     const messageBytes = estimateWorkerMessageBytes(message)
@@ -1302,6 +1435,16 @@ function shiftIngestWorkerMessage(): BackgroundWorkerMessage | undefined {
     removePendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
   }
   return message
+}
+
+function shiftIngestRegularWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const highPriorityIndex = ingestRegularWorkerMessageQueue.findIndex((message) => (
+    ipcQueueKeyForMessage(message) !== 'recordMaintenance'
+  ))
+  if (highPriorityIndex >= 0) {
+    return ingestRegularWorkerMessageQueue.removeAt(highPriorityIndex)
+  }
+  return ingestRegularWorkerMessageQueue.shift()
 }
 
 function shiftProbeWorkerMessage(): BackgroundWorkerMessage | undefined {
@@ -1543,10 +1686,19 @@ function failMetricsPendingRequests(): void {
 
 function failIngestPendingRequests(): void {
   failWorkerSnapshotPendingRequests('ingest-worker')
+  failDatasetPendingRequests()
 }
 
 function failStatsPendingRequests(): void {
   failWorkerSnapshotPendingRequests('stats-worker')
+}
+
+function failDatasetPendingRequests(): void {
+  for (const [requestId, pending] of pendingDatasetWriteRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingDatasetWriteRequests.delete(requestId)
+  }
 }
 
 function failSnapshotPendingRequests(): void {
@@ -1838,6 +1990,48 @@ async function respondToDbServiceRequest(requestId: string, operation: import('.
       })
     } catch (sendError) {
       markIpcBrokenForChild(roleForChild(child), sendError, child)
+    }
+  }
+}
+
+async function forwardDatasetWriteRequest(
+  requestId: string,
+  operation: import('./background-dataset-writer.js').BackgroundDatasetWriteOperation,
+  requesterChild: ChildProcess | undefined
+): Promise<void> {
+  const requester = requesterChild
+  if (!requester || !requester.connected) {
+    return
+  }
+  try {
+    const result = await requestBackgroundWorkerDatasetWrite(operation)
+    if (result === undefined) {
+      throw new Error(`dataset-writer 不可用，无法执行数据集写操作：${operation.type}`)
+    }
+    requester.send({
+      type: 'background_worker_dataset_write_response',
+      requestId,
+      ok: true,
+      result
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markIpcBrokenForChild(roleForChild(requester), error, requester)
+      }
+    })
+  } catch (error) {
+    try {
+      requester.send({
+        type: 'background_worker_dataset_write_response',
+        requestId,
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      } satisfies BackgroundWorkerMessage, (sendError) => {
+        if (sendError) {
+          markIpcBrokenForChild(roleForChild(requester), sendError, requester)
+        }
+      })
+    } catch (sendError) {
+      markIpcBrokenForChild(roleForChild(requester), sendError, requester)
     }
   }
 }

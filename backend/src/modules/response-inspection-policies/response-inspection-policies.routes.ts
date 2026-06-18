@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROTOCOL_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
   createResponseInspectionPolicy,
@@ -17,7 +17,7 @@ import { recordOperationLog, safeChange } from '../operation-logs/operation-log.
 export const responseInspectionPoliciesRouter = Router()
 
 const textListSchema = z.array(z.string().trim().min(1).max(200)).max(50).optional()
-const clientProfileListSchema = z.array(z.enum(['codex', 'generic_openai'])).max(2).optional()
+const clientProfileListSchema = z.array(z.enum(['codex', 'generic_openai', 'claude_code', 'generic_anthropic'])).max(4).optional()
 const accountClientCompatibilityListSchema = z.array(z.enum(['openai_standard', 'codex_responses'])).max(2).optional()
 
 const matchSchema = z.object({
@@ -40,6 +40,10 @@ const policyBodySchema = z.object({
   scopeType: z.enum(['protocol', 'provider'], {
     required_error: '请选择响应检查策略作用层级',
     invalid_type_error: '响应检查策略作用层级无效'
+  }),
+  protocolCode: z.enum([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE], {
+    required_error: '请选择响应检查策略协议',
+    invalid_type_error: '响应检查策略协议无效'
   }),
   providerCode: z.string().trim().min(1, '请选择供应商').max(80, '供应商编码不能超过 80 个字符').nullable().optional(),
   match: matchSchema,
@@ -99,6 +103,7 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
   fingerprint: (req) => ({
     name: normalizedText(bodyField(req, 'name')),
     scopeType: bodyField(req, 'scopeType'),
+    protocolCode: bodyField(req, 'protocolCode'),
     providerCode: normalizedText(bodyField(req, 'providerCode')),
     priority: bodyField(req, 'priority')
   })
@@ -110,13 +115,14 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
   }
   let policy: ResponseInspectionPolicySummary
   try {
-    policy = createResponseInspectionPolicy({ ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
+    policy = createResponseInspectionPolicy(parsed.data)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略创建失败'))
     return
   }
   recordPolicyOperation(req, 'create', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
+    safeChange('protocolCode', '协议', undefined, policy.protocolCode),
     safeChange('scopeType', '作用层级', undefined, policy.scopeType),
     safeChange('providerCode', '供应商', undefined, policy.providerCode ?? ''),
     safeChange('enabled', '启用状态', undefined, policy.enabled),
@@ -131,6 +137,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
     id: req.params.id,
     name: normalizedText(bodyField(req, 'name')),
     scopeType: bodyField(req, 'scopeType'),
+    protocolCode: bodyField(req, 'protocolCode'),
     providerCode: normalizedText(bodyField(req, 'providerCode')),
     enabled: bodyField(req, 'enabled'),
     priority: bodyField(req, 'priority'),
@@ -144,7 +151,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
   }
   let policy: ResponseInspectionPolicySummary | undefined
   try {
-    policy = updateResponseInspectionPolicy(req.params.id, { ...parsed.data, protocolCode: OPENAI_PROTOCOL_CODE })
+    policy = updateResponseInspectionPolicy(req.params.id, parsed.data)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略更新失败'))
     return
@@ -155,6 +162,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
   }
   recordPolicyOperation(req, 'update', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
+    safeChange('protocolCode', '协议', undefined, policy.protocolCode),
     safeChange('scopeType', '作用层级', undefined, policy.scopeType),
     safeChange('providerCode', '供应商', undefined, policy.providerCode ?? ''),
     safeChange('enabled', '启用状态', undefined, policy.enabled),

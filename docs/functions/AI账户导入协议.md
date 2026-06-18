@@ -19,8 +19,8 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
-- 当前 `providerCode` 可填 `openai`、`gpt` 或 `glm`；系统会按供应商自动匹配内部协议配置。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`；`glm` 表示智谱 GLM 供应商，支持通用 GLM API Key 和 GLM Coding Plan Key，底层都保存为 `api_key`。
-- `connectionType` 是可选的接入类型标识；`glm` 场景建议显式填写 `general_api_key` 或 `coding_api_key`，用于区分通用 GLM API 与 GLM Coding Plan。
+- 当前 `providerCode` 可填 `openai`、`gpt`、`anthropic` 或 `glm`；系统会按供应商自动匹配内部协议配置。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`；`anthropic` 表示官方 Anthropic Claude 供应商，当前只支持 API Key；`glm` 表示智谱 GLM 供应商，支持通用 GLM API Key 和 GLM Coding Plan Key，底层都保存为 `api_key`。
+- `connectionType` 是可选的接入类型标识；`anthropic` 可填 `api_key` 或省略；`glm` 场景建议显式填写 `general_api_key` 或 `coding_api_key`，用于区分通用 GLM API 与 GLM Coding Plan。
 - 不确定是否可立即调度时，`status` 填 `pending_test` 或 `disabled`，不要默认填 `active`；即使导入文件写 `active`，导入落库也会转为 `pending_test`，必须在本系统测试通过后才参与调度。
 - 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。
 - 外部来源字段如果没有本协议对应字段，不要塞进 `credentials`，可以整理到 `notes`。
@@ -113,6 +113,26 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "notes": "OAuth 账号"
     },
     {
+      "ref": "anthropic-key-001",
+      "name": "Anthropic Claude API Key 账号 1",
+      "providerCode": "anthropic",
+      "connectionType": "api_key",
+      "clientCompatibility": "openai_standard",
+      "type": "api_key",
+      "status": "active",
+      "groupName": "默认 Anthropic 分组",
+      "concurrencyLimit": 3,
+      "priority": 50,
+      "tags": ["Claude"],
+      "credentials": {
+        "api_key": "sk-ant-api03-xxx",
+        "base_url": "https://api.anthropic.com/v1",
+        "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"],
+        "anthropic_version": "2023-06-01"
+      },
+      "notes": "Anthropic 官方 Messages API Key 账号"
+    },
+    {
       "ref": "glm-coding-001",
       "name": "智谱 GLM Coding 账号 1",
       "providerCode": "glm",
@@ -149,9 +169,9 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | --- | --- | --- |
 | `ref` | 否 | 导入预览和错误定位用，不写入数据库。 |
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
-| `providerCode` | 是 | 当前支持 `openai`、`gpt` 和 `glm`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商，`glm` 表示智谱 GLM 供应商。 |
-| `connectionType` | 否 | 同供应商多接入类型标识；`glm` 可填 `general_api_key` 或 `coding_api_key`。 |
-| `clientCompatibility` | 否 | 客户端兼容模式，支持 `openai_standard` 和 `codex_responses`；省略时按供应商和账户类型默认。`glm` 默认使用 `openai_standard`。 |
+| `providerCode` | 是 | 当前支持 `openai`、`gpt`、`anthropic` 和 `glm`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商，`anthropic` 表示官方 Anthropic Claude 供应商，`glm` 表示智谱 GLM 供应商。 |
+| `connectionType` | 否 | 同供应商多接入类型标识；`anthropic` 可填 `api_key` 或省略，`glm` 可填 `general_api_key` 或 `coding_api_key`。 |
+| `clientCompatibility` | 否 | 客户端兼容模式，支持 `openai_standard` 和 `codex_responses`；省略时按供应商和账户类型默认。`anthropic` 和 `glm` 默认使用 `openai_standard`。 |
 | `type` | 是 | `api_key` 或 `oauth`。 |
 | `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
@@ -194,6 +214,18 @@ API Key 账户：
 }
 ```
 
+Anthropic API Key 账户：
+
+```json
+{
+  "api_key": "sk-ant-api03-xxx",
+  "base_url": "https://api.anthropic.com/v1",
+  "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"],
+  "anthropic_version": "2023-06-01",
+  "anthropic_beta": ""
+}
+```
+
 OAuth 账户：
 
 ```json
@@ -213,11 +245,12 @@ OAuth 账户：
 - `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
+- `providerCode = anthropic` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。当前导入协议不接受 Anthropic OAuth、Setup Token、Claude Code token、`refresh_token` 或 `access_token`。
 - `providerCode = glm` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = glm` 且填写 `connectionType` 时，`general_api_key` 对应通用 GLM API，`coding_api_key` 对应 GLM Coding Plan。
 - `providerCode = glm` 的通用 GLM API 和 GLM Coding Plan 都要求 `credentials.base_url` 显式填写到对应协议档案可接受的根地址，不能依赖后端猜测。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
-- `credentials.supported_endpoint_modes` 可限制 OpenAI v1 接口能力，枚举值为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；省略时通用 `openai` API Key 默认 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE，GLM 默认 Chat JSON/SSE。
+- `credentials.supported_endpoint_modes` 可限制协议端点能力。OpenAI v1 枚举值为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；Anthropic 枚举值为 `messages_json`、`messages_sse`、`message_token_counting`。省略时通用 `openai` API Key 默认 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE，Anthropic 默认 Messages JSON/SSE/Count Tokens，GLM 默认 Chat JSON/SSE。
 - `clientCompatibility = codex_responses` 时必须启用 `credentials.supported_endpoint_modes` 中的 `responses_sse`。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。

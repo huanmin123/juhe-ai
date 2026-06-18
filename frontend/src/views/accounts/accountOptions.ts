@@ -1,5 +1,12 @@
 import type { AccountStatus, ProviderDefinition } from '@/types/domain'
 import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
+  ANTHROPIC_MESSAGES_FAMILY,
+  ANTHROPIC_MODELS_FAMILY,
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  ANTHROPIC_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
@@ -77,7 +84,40 @@ export const GPT_PROVIDER: ProviderDefinition = {
   ]
 }
 
-export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, OPENAI_COMPATIBLE_PROVIDER]
+export const ANTHROPIC_PROVIDER: ProviderDefinition = {
+  id: ANTHROPIC_PROVIDER_CODE,
+  code: ANTHROPIC_PROVIDER_CODE,
+  name: 'Anthropic',
+  enabled: true,
+  defaultProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  baseUrl: 'https://api.anthropic.com/v1',
+  defaultTestModel: 'claude-haiku-4-5',
+  accountTypes: ['api_key'],
+  capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
+  protocolProfiles: [
+    {
+      id: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      name: 'Anthropic / Anthropic v1',
+      enabled: true,
+      protocolCode: ANTHROPIC_PROTOCOL_CODE,
+      protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+      baseUrl: 'https://api.anthropic.com/v1',
+      defaultTestModel: 'claude-haiku-4-5',
+      accountTypes: ['api_key'],
+      capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
+      endpointFamilies: [
+        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' },
+        { code: ANTHROPIC_MODELS_FAMILY, name: 'Models' },
+        { code: ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY, name: 'Message Token Counting' }
+      ]
+    }
+  ]
+}
+
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20

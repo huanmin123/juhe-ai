@@ -1,8 +1,4 @@
 import {
-  OpenAIStreamInspector,
-  type OpenAIStreamInspection
-} from '../protocols/openai-v1/stream-inspection.js'
-import {
   LimitedBufferCapture
 } from '../upstream/body.js'
 import type { ParsedUsage } from '../usage/types.js'
@@ -37,6 +33,15 @@ export interface StreamBodyOmissionSummary {
   sseEventCount: number
   lastSseEventType?: string
   recentSseEventTypes: string[]
+  imageOutputReceived: boolean
+  terminalReceived: boolean
+  failedReceived: boolean
+}
+
+interface StreamInspectionSummaryInput {
+  eventCount: number
+  lastEventType?: string
+  recentEventTypes: string[]
   imageOutputReceived: boolean
   terminalReceived: boolean
   failedReceived: boolean
@@ -92,7 +97,7 @@ export function streamResult(
 }
 
 export function streamBodyOmissionSummary(
-  inspection: OpenAIStreamInspection | ReturnType<OpenAIStreamInspector['snapshot']>,
+  inspection: StreamInspectionSummaryInput,
   totalUpstreamBytes: number,
   totalResponseBytes: number
 ): StreamBodyOmissionSummary {

@@ -21,7 +21,7 @@
     <ResponseInspectionPolicyList
       :loading="loading"
       :policies="filteredPolicies"
-      :providers="openAIProviders"
+      :providers="policyProviders"
       @delete="removePolicy"
       @edit="openEdit"
       @refresh="loadPageData"
@@ -35,7 +35,7 @@
       :saving="saving"
       :provider-options="providerSelectOptions"
       :default-priority="nextPriority()"
-      :default-provider-code="defaultProviderCode()"
+      :default-provider-code="defaultProviderCode('openai')"
       @submit="savePolicy"
       @cancel="resetModal"
     />
@@ -43,7 +43,7 @@
     <ResponseInspectionPolicyGuideModal
       v-model:open="guideOpen"
       title="响应检查策略配置指南"
-      intro="这类策略检查上游返回的 JSON 或 SSE 流。协议层规则会作用到所有 OpenAI v1 账号；供应商层规则只作用到选中的供应商，例如 GPT。"
+      intro="这类策略检查上游返回的 JSON 或 SSE 流。协议层规则会作用到同协议账号；供应商层规则只作用到选中的同协议供应商。"
     />
   </a-card>
 </template>
@@ -56,7 +56,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
+import { isAnthropicProtocolProfile, isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type {
   ProviderDefinition,
   ResponseInspectionPolicySummary
@@ -89,13 +89,16 @@ const editingId = ref<string>()
 const activePolicy = ref<ResponseInspectionPolicySummary>()
 
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
-const openAIProviders = computed(() => providers.value
-  .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && isOpenAIProtocolProfile(profile)))
+const policyProviders = computed(() => providers.value
+  .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && (isOpenAIProtocolProfile(profile) || isAnthropicProtocolProfile(profile))))
   .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN') || left.code.localeCompare(right.code)))
-const providerSelectOptions = computed(() => openAIProviders.value.map((provider) => ({
-  label: provider.name,
-  value: provider.code
-})))
+const providerSelectOptions = computed(() => policyProviders.value.flatMap((provider) => provider.protocolProfiles
+  .filter((profile) => profile.enabled && (isOpenAIProtocolProfile(profile) || isAnthropicProtocolProfile(profile)))
+  .map((profile) => ({
+    label: provider.name,
+    value: provider.code,
+    protocolCode: profile.protocolCode
+  }))))
 const filteredPolicies = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   if (!text) return allPolicies.value
@@ -222,7 +225,7 @@ function searchableText(policy: ResponseInspectionPolicySummary): string {
     policy.name,
     responseInspectionPolicyScopeText(policy),
     responseInspectionPolicyProtocolText(policy.protocolCode),
-    responseInspectionPolicyProviderText(policy.providerCode, openAIProviders.value),
+    responseInspectionPolicyProviderText(policy.providerCode, policyProviders.value),
     responseInspectionPolicyClientProfileText(policy.match.clientProfiles),
     responseInspectionPolicyAccountCompatibilityText(policy.match.accountClientCompatibilities),
     responseInspectionPolicyMatchSummary(policy),
@@ -234,8 +237,8 @@ function searchableText(policy: ResponseInspectionPolicySummary): string {
   ].filter(Boolean).join(' ').toLowerCase()
 }
 
-function defaultProviderCode(): string {
-  return preferredDefaultProviderCode(openAIProviders.value)
+function defaultProviderCode(protocolCode: string): string {
+  return preferredDefaultProviderCode(policyProviders.value.filter((provider) => provider.protocolProfiles.some((profile) => profile.enabled && profile.protocolCode === protocolCode)))
 }
 
 onMounted(loadPageData)

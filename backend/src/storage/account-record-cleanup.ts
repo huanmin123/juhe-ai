@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
 import { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -67,6 +67,15 @@ interface AccountDatasetCleanupStepResult {
   hasModelCheckMore: boolean
 }
 
+export interface DeletedAccountRecordStatsCleanupInput {
+  target: DeletedAccountRecordCleanupTarget
+  rows: Array<UsageStatsRecordRow & { source_shard_key: string }>
+  updatedAt: string
+  shardDeleted?: boolean
+}
+
+export type DeletedAccountRecordStatsCleanupWriter = (input: DeletedAccountRecordStatsCleanupInput) => Promise<void>
+
 const accountScopeStatsTables = [
   'usage_stats_totals',
   'usage_stats_minute',
@@ -118,7 +127,10 @@ export function cleanupPendingDeletedAccountRecordTargets(limit = 50): PendingDe
   return summary
 }
 
-export async function cleanupPendingDeletedAccountRecordTargetsAsync(limit = 50): Promise<PendingDeletedAccountRecordCleanupSummary> {
+export async function cleanupPendingDeletedAccountRecordTargetsAsync(
+  limit = 50,
+  statsWriter?: DeletedAccountRecordStatsCleanupWriter
+): Promise<PendingDeletedAccountRecordCleanupSummary> {
   const targets = listDeletedAccountRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
   const summary: PendingDeletedAccountRecordCleanupSummary = {
     attempted: 0,
@@ -130,7 +142,7 @@ export async function cleanupPendingDeletedAccountRecordTargetsAsync(limit = 50)
   for (const target of targets) {
     summary.attempted += 1
     try {
-      const result = await cleanupDeletedAccountRelatedRecordDataAsync(target)
+      const result = await cleanupDeletedAccountRelatedRecordDataAsync(target, statsWriter)
       summary.deletedRows += result.deletedRows
       if (result.hasMore || result.blockedReason) {
         summary.deferred += 1
@@ -166,6 +178,20 @@ export function listDeletedAccountRecordCleanupTargets(limit = 50): DeletedAccou
     .filter((row) => row.accountId && row.systemAccountId)
 }
 
+export function hasDeletedAccountRelatedRecordData(input: DeletedAccountRecordCleanupTarget): boolean {
+  if (hasDeletedAccountRecordCleanupTarget(input)) {
+    return true
+  }
+  if (hasAccountUsageRecords(input)) {
+    return true
+  }
+  const datasetDatabase = getDatasetDatabase()
+  if (hasAccountAuditData(datasetDatabase, input) || hasAccountModelCheckRuns(datasetDatabase, input)) {
+    return true
+  }
+  return hasDeletedAccountStatsRows(getStatsDatabase(), input)
+}
+
 export function cleanupDeletedAccountDetachedStats(input: DeletedAccountDetachedStatsCleanupTarget): void {
   const database = getStatsDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
@@ -188,8 +214,11 @@ export function cleanupDeletedAccountRelatedRecordData(input: DeletedAccountReco
   return cleanup.result
 }
 
-export async function cleanupDeletedAccountRelatedRecordDataAsync(input: DeletedAccountRecordCleanupTarget): Promise<DeletedAccountRecordCleanupResult> {
-  const cleanup = cleanupDeletedAccountRelatedRecordDataCore(input)
+export async function cleanupDeletedAccountRelatedRecordDataAsync(
+  input: DeletedAccountRecordCleanupTarget,
+  statsWriter?: DeletedAccountRecordStatsCleanupWriter
+): Promise<DeletedAccountRecordCleanupResult> {
+  const cleanup = await cleanupDeletedAccountRelatedRecordDataCoreAsync(input, statsWriter)
   await cleanupAuditPayloadBlobsBestEffortAsync(cleanup.batchLimit)
   return cleanup.result
 }
@@ -257,6 +286,93 @@ function cleanupDeletedAccountRelatedRecordDataCore(input: DeletedAccountRecordC
   }
 }
 
+async function cleanupDeletedAccountRelatedRecordDataCoreAsync(
+  input: DeletedAccountRecordCleanupTarget,
+  statsWriter?: DeletedAccountRecordStatsCleanupWriter
+): Promise<{
+  result: DeletedAccountRecordCleanupResult
+  batchLimit: number
+}> {
+  if (!statsWriter) {
+    return cleanupDeletedAccountRelatedRecordDataCore(input)
+  }
+  const database = getDatasetDatabase()
+  const updatedAt = nowIso()
+  upsertDeletedAccountRecordCleanupTarget(database, input, updatedAt)
+  const batchLimit = deletedAccountRecordCleanupBatchLimit
+  try {
+    const usageCleanup = selectDeletedAccountUsageData(input, batchLimit)
+    const rowsToDelete = usageCleanup.usageBatch.rows.slice(0, batchLimit)
+    let blockedReason = usageCleanup.blockedReason
+    if (!blockedReason && rowsToDelete.length > 0) {
+      await statsWriter({
+        target: input,
+        rows: rowsToDelete.map(accountUsageShardStatsCleanupRow),
+        updatedAt,
+        shardDeleted: false
+      })
+    }
+    const deletedUsageRows = blockedReason ? 0 : deleteAccountUsageRows(rowsToDelete, input)
+    const datasetCleanup = cleanupDeletedAccountDatasetRecordData(database, input, batchLimit)
+    if (!blockedReason && rowsToDelete.length > 0) {
+      await statsWriter({
+        target: input,
+        rows: rowsToDelete.map(accountUsageShardStatsCleanupRow),
+        updatedAt,
+        shardDeleted: true
+      })
+    }
+    let hasUsageMore = true
+    if (blockedReason) {
+      hasUsageMore = true
+    } else {
+      try {
+        hasUsageMore = hasAccountUsageRecords(input)
+      } catch (error) {
+        if (!isSqliteDatabaseLocked(error)) {
+          throw error
+        }
+        blockedReason = accountCleanupSqliteBusyBlockedReason()
+        hasUsageMore = true
+      }
+    }
+    const hasAuditMore = datasetCleanup.hasAuditMore
+    const hasModelCheckMore = datasetCleanup.hasModelCheckMore
+    let hasMore = hasUsageMore || hasAuditMore || hasModelCheckMore || Boolean(blockedReason)
+    if (!blockedReason && !hasMore) {
+      await statsWriter({
+        target: input,
+        rows: [],
+        updatedAt,
+        shardDeleted: true
+      })
+      hasMore = false
+    }
+    const result: DeletedAccountRecordCleanupResult = {
+      ...input,
+      deletedRows: deletedUsageRows + datasetCleanup.deletedRows,
+      hasMore,
+      blockedReason: blockedReason ?? (hasMore
+        ? accountCleanupPendingReason({
+          hasAuditMore,
+          hasModelCheckMore,
+          hasMoreCoveredRows: usageCleanup.usageBatch.hasMoreCoveredRows,
+          hasUncoveredRows: usageCleanup.usageBatch.hasUncoveredRows
+        })
+        : undefined)
+    }
+    if (result.hasMore || result.blockedReason) {
+      markDeletedAccountRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
+    } else {
+      clearDeletedAccountRecordCleanupTarget(database, input)
+    }
+    return { result, batchLimit }
+  } catch (error) {
+    markDeletedAccountRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
+    throw error
+  }
+}
+
 function cleanupDeletedAccountUsageData(
   statsDatabase: DatabaseSync,
   input: DeletedAccountRecordCleanupTarget,
@@ -280,6 +396,26 @@ function cleanupDeletedAccountUsageData(
     }
     return {
       deletedRows,
+      usageBatch,
+      blockedReason: accountCleanupSqliteBusyBlockedReason()
+    }
+  }
+}
+
+function selectDeletedAccountUsageData(
+  input: DeletedAccountRecordCleanupTarget,
+  batchLimit: number
+): AccountUsageCleanupStepResult {
+  let usageBatch = emptyAccountUsageShardBatch()
+  try {
+    usageBatch = selectAccountUsageRowsCoveredByShardCursors(getStatsDatabase(), input, batchLimit)
+    return { deletedRows: 0, usageBatch }
+  } catch (error) {
+    if (!isSqliteDatabaseLocked(error)) {
+      throw error
+    }
+    return {
+      deletedRows: 0,
       usageBatch,
       blockedReason: accountCleanupSqliteBusyBlockedReason()
     }
@@ -415,6 +551,13 @@ function clearDeletedAccountRecordCleanupTarget(database: DatabaseSync, input: D
     .run(input.accountId, input.systemAccountId)
 }
 
+function hasDeletedAccountRecordCleanupTarget(input: DeletedAccountRecordCleanupTarget): boolean {
+  const row = getDatasetDatabase()
+    .prepare('SELECT account_id FROM account_record_cleanup_targets WHERE account_id = ? AND system_account_id = ? LIMIT 1')
+    .get(input.accountId, input.systemAccountId) as unknown as { account_id?: string } | undefined
+  return Boolean(row?.account_id)
+}
+
 function deletedAccountCleanupAccountIds(input: DeletedAccountRecordCleanupTarget): string[] {
   return uniqueNonEmpty([input.accountId, ...(input.relatedAccountIds ?? [])])
 }
@@ -492,6 +635,39 @@ function usageStatsShardCursor(database: DatabaseSync, shardKey: string): { curs
 function usageStatsRecordForCleanup(row: AccountUsageShardRow): UsageStatsRecordRow {
   const { location: _location, ...record } = row
   return record
+}
+
+function accountUsageShardStatsCleanupRow(row: AccountUsageShardRow): UsageStatsRecordRow & { source_shard_key: string } {
+  return {
+    ...usageStatsRecordForCleanup(row),
+    source_shard_key: row.source_shard_key
+  }
+}
+
+export function cleanupDeletedAccountRecordStatsData(input: DeletedAccountRecordStatsCleanupInput): void {
+  const database = getStatsDatabase()
+  const rows = input.rows.map((row) => ({
+    ...row,
+    location: {
+      shardKey: row.source_shard_key,
+      databasePath: '',
+      filePath: ''
+    }
+  } as unknown as AccountUsageShardRow))
+  subtractAccountUsageRowsOnce(database, rows, input.target, input.updatedAt)
+  if (input.shardDeleted) {
+    markAccountUsageCleanupRowsDeleted(database, rows, input.updatedAt)
+  }
+  if (rows.length === 0) {
+    const blockedReason = cleanupDeletedAccountFinalStats(database, input.target)
+    if (blockedReason) {
+      throw new Error(blockedReason)
+    }
+    const refreshBlockedReason = refreshDeletedAccountDerivedWindowsIfNeeded(input.target, true)
+    if (refreshBlockedReason) {
+      throw new Error(refreshBlockedReason)
+    }
+  }
 }
 
 function subtractAccountUsageRowsOnce(
@@ -733,6 +909,74 @@ function deleteAccountScopeStatsRows(
     database.prepare('DELETE FROM account_usage_snapshots WHERE account_id = ?').run(accountId)
     deleteAccountAuthorizationReportRows(database, accountId)
   }
+}
+
+function hasDeletedAccountStatsRows(database: DatabaseSync, input: DeletedAccountRecordCleanupTarget): boolean {
+  const accountIds = deletedAccountCleanupAccountIds(input)
+  for (const accountId of accountIds) {
+    if (hasStatsRow(database, accountScopeStatsTables, "scope_type IN ('account', 'caller_account') AND scope_id = ?", [accountId])) {
+      return true
+    }
+    if (hasStatsRow(database, accountScopeStatsTables, "scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'", [`${escapeLikePrefix(accountId)}:%`])) {
+      return true
+    }
+    if (singleStatsRowExists(database, 'stats_job_state', "scope_type IN ('account', 'caller_account') AND scope_id = ?", [accountId])) {
+      return true
+    }
+    if (singleStatsRowExists(database, 'stats_job_state', "scope_type = 'account_authorization_team' AND scope_id LIKE ? ESCAPE '\\'", [`${escapeLikePrefix(accountId)}:%`])) {
+      return true
+    }
+    if (singleStatsRowExists(database, 'account_quality_scores', 'account_id = ?', [accountId])
+      || singleStatsRowExists(database, 'account_quality_dirty_accounts', 'account_id = ?', [accountId])
+      || singleStatsRowExists(database, 'account_quality_minute_stats', 'account_id = ?', [accountId])
+      || singleStatsRowExists(database, 'account_usage_snapshots', 'account_id = ?', [accountId])
+      || hasAccountAuthorizationReportRows(database, accountId)) {
+      return true
+    }
+  }
+  for (const chunk of chunkValues(uniqueNonEmpty(input.authorizationIds ?? []), 400)) {
+    if (hasStatsRow(database, accountScopeStatsTables, `scope_type = 'account_authorization' AND scope_id IN (${sqlPlaceholders(chunk.length)})`, chunk)
+      || singleStatsRowExists(database, 'stats_job_state', `scope_type = 'account_authorization' AND scope_id IN (${sqlPlaceholders(chunk.length)})`, chunk)) {
+      return true
+    }
+  }
+  for (const chunk of chunkValues(uniqueNonEmpty(input.teamScopeIds ?? []), 400)) {
+    if (hasStatsRow(database, accountScopeStatsTables, `scope_type = 'account_authorization_team' AND scope_id IN (${sqlPlaceholders(chunk.length)})`, chunk)
+      || singleStatsRowExists(database, 'stats_job_state', `scope_type = 'account_authorization_team' AND scope_id IN (${sqlPlaceholders(chunk.length)})`, chunk)) {
+      return true
+    }
+  }
+  for (const accountId of accountIds) {
+    if (singleStatsRowExists(database, 'usage_record_cleanup_deductions', 'account_id = ?', [accountId])) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasStatsRow(database: DatabaseSync, tables: readonly string[], condition: string, params: SQLInputValue[]): boolean {
+  return tables.some((tableName) => singleStatsRowExists(database, tableName, condition, params))
+}
+
+function singleStatsRowExists(database: DatabaseSync, tableName: string, condition: string, params: SQLInputValue[]): boolean {
+  const row = database.prepare(`SELECT 1 AS found FROM ${tableName} WHERE ${condition} LIMIT 1`)
+    .get(...params) as unknown as { found?: number } | undefined
+  return Boolean(row?.found)
+}
+
+function hasAccountAuthorizationReportRows(database: DatabaseSync, accountId: string): boolean {
+  const reportTables = [
+    'authorization_team_usage_summary_daily',
+    'authorization_team_usage_range_windows',
+    'authorization_user_usage_summary_daily',
+    'authorization_user_usage_range_windows'
+  ] as const
+  return reportTables.some((tableName) => singleStatsRowExists(
+    database,
+    tableName,
+    "resource_filter_type = 'account' AND resource_filter_id = ?",
+    [accountId]
+  ))
 }
 
 function deleteAccountAuthorizationReportRows(database: DatabaseSync, accountId: string): void {

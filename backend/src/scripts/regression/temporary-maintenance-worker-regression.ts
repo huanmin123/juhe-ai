@@ -13,7 +13,7 @@ runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.processRole = 'worker'
-runtimeConfig.workerRole = 'worker'
+runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
@@ -48,7 +48,7 @@ try {
 
   const runId = latestTemporaryRunId('record-maintenance:usage_records_cleanup')
   assert.equal(runId, undefined, '使用记录清理不应再 fork 临时维护 worker')
-  assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, '临时维护 worker 应删除符合条件的使用记录')
+  assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, 'ingest-worker 应删除符合条件的使用记录')
   assert.equal(eventLoopSampleCount('temporary-maintenance-worker'), 0, '临时维护 worker 禁止直接写入 stats 事件循环采样')
 
   console.log('临时维护 worker 回归通过：使用记录清理由 ingest 本地队列执行，不再 fork 临时 worker 且不直写 stats 采样')

@@ -73,6 +73,7 @@ let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>(
 let pendingServerAccountRuntimeClearRequests = new Map<string, PendingServerAccountRuntimeClearRequest>()
 let pendingOpenAIAccountTrafficMigrationRuntimeRequests = new Map<string, PendingOpenAIAccountTrafficMigrationRuntimeRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
+let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
@@ -102,6 +103,12 @@ interface PendingOpenAIAccountTrafficMigrationRuntimeRequest {
 
 interface PendingProcessEventLoopRequest {
   resolve: (sample: ProcessEventLoopSample | undefined) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingDatasetWriteRequest {
+  resolve: (result: unknown) => void
+  reject: (error: Error) => void
   timeout: NodeJS.Timeout
 }
 
@@ -404,6 +411,39 @@ export async function migrateServerOpenAIAccountTrafficRuntime(
   })
 }
 
+export async function requestDbServiceDatasetWrite<T extends import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation>(
+  operation: T,
+  timeoutMs = 30_000
+): Promise<import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined> {
+  if (runtimeConfig.processRole === 'server') {
+    const backgroundIpc = await import('../background/background-ipc.js')
+    return await backgroundIpc.requestBackgroundWorkerDatasetWrite(operation, timeoutMs) as import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined
+  }
+  if (runtimeConfig.processRole !== 'db-service' || typeof process.send !== 'function') {
+    return undefined
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingDatasetWriteRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      pendingDatasetWriteRequests.delete(requestId)
+      pending.reject(new Error('后台 dataset-writer 请求超时'))
+    }, timeoutMs)
+    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+    sendDbServiceChildMessage({
+      type: 'background_worker_dataset_write_request',
+      requestId,
+      operation
+    }, () => {
+      finishDatasetWriteRequest(requestId, undefined)
+    })
+  })
+}
+
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return false
@@ -432,6 +472,14 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     finishOpenAIAccountTrafficMigrationRuntimeRequest(
       record.requestId,
       record.ok === true ? record.result as OpenAIAccountTrafficMigrationRuntimeResult : undefined
+    )
+    return true
+  }
+
+  if (record.type === 'background_worker_dataset_write_response' && typeof record.requestId === 'string') {
+    finishDatasetWriteRequest(
+      record.requestId,
+      record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' }
     )
     return true
   }
@@ -505,6 +553,11 @@ function handleDbServiceMessage(message: unknown): void {
         }
       }
       break
+    case 'background_worker_dataset_write_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
+        void respondToDatasetWriteRequest(record.requestId, record.operation as import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation)
+      }
+      break
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole === 'server') {
         void clearServerGatewayRuntimeCache()
@@ -539,6 +592,16 @@ function handleDbServiceMessage(message: unknown): void {
     case 'background_worker_public_api_logs':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
         void forwardPublicApiLogsToWorker(record.items)
+      }
+      break
+    case 'background_worker_runtime_log_line':
+      if (runtimeConfig.processRole === 'server' && typeof record.line === 'string') {
+        void forwardRuntimeLogLineToWorker(record.line, {
+          sourceKey: typeof record.sourceKey === 'string' ? record.sourceKey : undefined,
+          logFile: typeof record.logFile === 'string' ? record.logFile : undefined,
+          logOffset: typeof record.logOffset === 'number' ? record.logOffset : undefined,
+          lineNumber: typeof record.lineNumber === 'number' ? record.lineNumber : undefined
+        })
       }
       break
     case 'background_worker_record_maintenance':
@@ -606,6 +669,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingOpenAIAccountTrafficMigrationRuntimeRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingDatasetWriteRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingDatasetWriteRequests.delete(requestId)
   }
 }
 
@@ -785,6 +853,28 @@ function finishOpenAIAccountTrafficMigrationRuntimeRequest(
   clearTimeout(pending.timeout)
   pendingOpenAIAccountTrafficMigrationRuntimeRequests.delete(requestId)
   pending.resolve(result)
+}
+
+function finishDatasetWriteRequest(
+  requestId: string,
+  response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined
+): void {
+  const pending = pendingDatasetWriteRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingDatasetWriteRequests.delete(requestId)
+  if (!response) {
+    pending.resolve(undefined)
+    return
+  }
+  if (response.ok) {
+    pending.resolve(response.result)
+    return
+  }
+  pending.reject(new Error(response.errorMessage))
 }
 
 function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
@@ -1086,6 +1176,37 @@ async function respondToOpenAIAccountTrafficMigrationRuntimeRequest(
   }
 }
 
+async function respondToDatasetWriteRequest(
+  requestId: string,
+  operation: import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation
+): Promise<void> {
+  const child = dbServiceProcess
+  if (!child) {
+    return
+  }
+
+  try {
+    const backgroundIpc = await import('../background/background-ipc.js')
+    const result = await backgroundIpc.requestBackgroundWorkerDatasetWrite(operation)
+    if (result === undefined) {
+      throw new Error(`dataset-writer 不可用，无法执行数据集写操作：${operation.type}`)
+    }
+    sendToDbServiceProcess(child, {
+      type: 'background_worker_dataset_write_response',
+      requestId,
+      ok: true,
+      result
+    })
+  } catch (error) {
+    sendToDbServiceProcess(child, {
+      type: 'background_worker_dataset_write_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
+  }
+}
+
 async function migrateOpenAIAccountTrafficRuntimeLocal(
   input: OpenAIAccountTrafficMigrationRuntimeRequest
 ): Promise<OpenAIAccountTrafficMigrationRuntimeResult> {
@@ -1269,6 +1390,19 @@ async function forwardPublicApiLogsToWorker(items: unknown[]): Promise<void> {
       event: 'db_service_public_api_logs_forward_failed',
       itemCount: publicApiLogs.length
     }, 'DB service 转发公开接口日志到后台 worker 失败')
+  }
+}
+
+async function forwardRuntimeLogLineToWorker(
+  line: string,
+  options: import('../runtime-logs/runtime-log-index-queue.service.js').RuntimeLogLineIndexOptions
+): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  if (!backgroundIpc.sendRuntimeLogLineToWorker(line, options)) {
+    logger.warn({
+      event: 'db_service_runtime_log_line_forward_failed',
+      lineBytes: Buffer.byteLength(line, 'utf8')
+    }, 'DB service 转发运行日志索引到后台 worker 失败')
   }
 }
 

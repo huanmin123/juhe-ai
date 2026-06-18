@@ -93,8 +93,21 @@ export function listOpenAIProtocolProfileIds(): string[] {
 }
 
 export function isOpenAIProtocolProviderCode(providerCode: string): boolean {
+  return isProtocolProviderCode(providerCode, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION)
+}
+
+export function isProtocolProviderCode(providerCode: string, protocolCode: string, protocolVersion?: string): boolean {
   const code = providerCode.trim()
   if (!code) return false
+  const normalizedProtocolCode = protocolCode.trim()
+  const normalizedProtocolVersion = protocolVersion?.trim()
+  if (!normalizedProtocolCode) return false
+  const versionClause = normalizedProtocolVersion
+    ? 'AND protocol_version = ?'
+    : ''
+  const params = normalizedProtocolVersion
+    ? [code, normalizedProtocolCode, normalizedProtocolVersion]
+    : [code, normalizedProtocolCode]
   const row = getBusinessDatabase()
     .prepare(`
       SELECT 1
@@ -104,10 +117,10 @@ export function isOpenAIProtocolProviderCode(providerCode: string): boolean {
         AND providers.enabled = 1
         AND provider_protocol_profiles.enabled = 1
         AND protocol_code = ?
-        AND protocol_version = ?
+        ${versionClause}
       LIMIT 1
     `)
-    .get(code, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION) as unknown
+    .get(...params) as unknown
   return Boolean(row)
 }
 

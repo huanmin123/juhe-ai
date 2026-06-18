@@ -76,9 +76,16 @@ import {
   parseOpenAIUsageFromJsonTextFragment
 } from '../protocols/openai-v1/usage.js'
 import {
+  parseAnthropicUsageFromJsonBuffer,
+  parseAnthropicUsageFromJsonTextFragment
+} from '../protocols/anthropic-v1/usage.js'
+import { isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
+import {
   requestModel
 } from '../request/metadata.js'
 import { applyOpenAIStreamUsageFallback } from '../protocols/openai-v1/stream-inspection.js'
+import { applyAnthropicStreamUsageFallback } from '../protocols/anthropic-v1/stream-inspection.js'
+import { anthropicResponseEndpointFamilyFromPath } from '../protocols/anthropic-v1/response-semantics.js'
 import {
   recordGatewayUpstreamBucketSuccess,
   suppressGatewayUpstreamBucketLocallyForSeconds
@@ -156,6 +163,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     accountStateMutationEnabled
   } = input
 
+  const anthropicProtocol = isAnthropicProtocolProfile(account)
   if (!upstreamResponse.body) {
     const responsePayload = gatewayErrorPayload('上游响应体为空', 'upstream_response_error')
     sendGatewayErrorResponse(res, upstreamResponse.status, responsePayload)
@@ -220,7 +228,10 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           clientProfile: clientStrategy?.clientProfile ?? 'generic_openai',
           accountClientCompatibility: account.clientCompatibility
         },
-        endpointFamily: openAIResponseEndpointFamilyFromRequest(req),
+        responseProtocol: anthropicProtocol ? 'anthropic_v1' : 'openai_v1',
+        endpointFamily: anthropicProtocol
+          ? anthropicResponseEndpointFamilyFromPath(req.originalUrl || req.path)
+          : openAIResponseEndpointFamilyFromRequest(req),
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
       }
     )
@@ -252,7 +263,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     throw error
   }
 
-  const streamUsageFallback = applyOpenAIStreamUsageFallback(req, streamResult.usage, {
+  const streamUsageFallback = (anthropicProtocol ? applyAnthropicStreamUsageFallback : applyOpenAIStreamUsageFallback)(req, streamResult.usage, {
     outputReceived: streamResult.outputReceived,
     estimatedOutputTokens: streamResult.estimatedOutputTokens
   })
@@ -793,9 +804,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     throw error
   }
   if (responseBody) {
-    usage = parseOpenAIUsageFromJsonBuffer(responseBody)
+    usage = parseGatewayUsageFromJsonBuffer(account, responseBody)
   } else if (upstreamResponse.ok) {
-    usage = parseOpenAIUsageFromJsonTextFragment(responseUsageText)
+    usage = parseGatewayUsageFromJsonTextFragment(account, responseUsageText)
   }
   if (!upstreamResponse.ok) {
     errorPayload = parseErrorPayload(responseBodyText ?? '', upstreamResponse.headers)
@@ -817,6 +828,18 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     errorPayload
   }
+}
+
+function parseGatewayUsageFromJsonBuffer(account: UpstreamAccount, responseBody: Buffer): ParsedUsage {
+  return isAnthropicProtocolProfile(account)
+    ? parseAnthropicUsageFromJsonBuffer(responseBody)
+    : parseOpenAIUsageFromJsonBuffer(responseBody)
+}
+
+function parseGatewayUsageFromJsonTextFragment(account: UpstreamAccount, text?: string): ParsedUsage {
+  return isAnthropicProtocolProfile(account)
+    ? parseAnthropicUsageFromJsonTextFragment(text)
+    : parseOpenAIUsageFromJsonTextFragment(text)
 }
 
 export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): void {

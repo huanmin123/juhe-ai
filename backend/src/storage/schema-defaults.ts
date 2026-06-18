@@ -1,4 +1,11 @@
 import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
+  ANTHROPIC_MESSAGES_FAMILY,
+  ANTHROPIC_MODELS_FAMILY,
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  ANTHROPIC_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -31,9 +38,21 @@ export const DEFAULT_OPENAI_COMPATIBLE_GROUP = {
   description: ''
 } as const
 
+export const DEFAULT_ANTHROPIC_GROUP = {
+  id: 'grp_default_anthropic_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 Anthropic 分组',
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  description: ''
+} as const
+
 export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_OPENAI_COMPATIBLE_GROUP,
-  DEFAULT_GPT_GROUP
+  DEFAULT_GPT_GROUP,
+  DEFAULT_ANTHROPIC_GROUP
 ] as const
 
 export const DEFAULT_GLOBAL_SETTINGS = [
@@ -59,12 +78,30 @@ export const OPENAI_COMPATIBLE_PROVIDER_SEED = {
   enabled: 1
 } as const
 
+export const ANTHROPIC_PROVIDER_SEED = {
+  id: ANTHROPIC_PROVIDER_CODE,
+  code: ANTHROPIC_PROVIDER_CODE,
+  name: 'Anthropic',
+  parentCode: null,
+  description: 'Anthropic 官方供应商，当前支持官方 API Key 与 Anthropic Messages 原生协议直连',
+  enabled: 1
+} as const
+
 export const OPENAI_PROTOCOL_SEED = {
   id: `${OPENAI_PROTOCOL_CODE}_${OPENAI_PROTOCOL_VERSION}`,
   code: OPENAI_PROTOCOL_CODE,
   version: OPENAI_PROTOCOL_VERSION,
   name: 'OpenAI v1',
   description: 'OpenAI-compatible v1 协议；接口族包含 Chat Completions 与 Responses',
+  enabled: 1
+} as const
+
+export const ANTHROPIC_PROTOCOL_SEED = {
+  id: `${ANTHROPIC_PROTOCOL_CODE}_${ANTHROPIC_PROTOCOL_VERSION}`,
+  code: ANTHROPIC_PROTOCOL_CODE,
+  version: ANTHROPIC_PROTOCOL_VERSION,
+  name: 'Anthropic v1',
+  description: 'Anthropic 官方 v1 协议；接口族包含 Messages、Models 与 Message Token Counting',
   enabled: 1
 } as const
 
@@ -85,6 +122,36 @@ export const OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS = [
     code: OPENAI_RESPONSES_FAMILY,
     name: 'Responses',
     description: 'OpenAI v1 /responses 接口族',
+    enabled: 1
+  }
+] as const
+
+export const ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS = [
+  {
+    id: `${ANTHROPIC_PROTOCOL_CODE}_${ANTHROPIC_PROTOCOL_VERSION}_${ANTHROPIC_MESSAGES_FAMILY}`,
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    code: ANTHROPIC_MESSAGES_FAMILY,
+    name: 'Messages',
+    description: 'Anthropic v1 /messages 接口族',
+    enabled: 1
+  },
+  {
+    id: `${ANTHROPIC_PROTOCOL_CODE}_${ANTHROPIC_PROTOCOL_VERSION}_${ANTHROPIC_MODELS_FAMILY}`,
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    code: ANTHROPIC_MODELS_FAMILY,
+    name: 'Models',
+    description: 'Anthropic v1 /models 接口族',
+    enabled: 1
+  },
+  {
+    id: `${ANTHROPIC_PROTOCOL_CODE}_${ANTHROPIC_PROTOCOL_VERSION}_${ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY}`,
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    code: ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
+    name: 'Message Token Counting',
+    description: 'Anthropic v1 /messages/count_tokens 接口族',
     enabled: 1
   }
 ] as const
@@ -117,6 +184,21 @@ export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED = {
   accountTypes: ['api_key'],
   capabilities: ['responses', 'chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
+} as const
+
+export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
+  id: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  name: 'Anthropic / Anthropic v1',
+  description: 'Anthropic 官方 API Key 协议档案，仅承载 x-api-key、anthropic-version 与 Messages 原生协议',
+  enabled: 1,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  baseUrl: 'https://api.anthropic.com/v1',
+  defaultTestModel: 'claude-haiku-4-5',
+  accountTypes: ['api_key'],
+  capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
+  endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [

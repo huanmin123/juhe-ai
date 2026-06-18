@@ -56,7 +56,9 @@ export const responseInspectionMatchFieldDefinitions: readonly { key: ResponseIn
 
 export const responseInspectionClientProfileOptions: Array<{ label: string; value: ResponseInspectionPolicyClientProfile }> = [
   { label: 'Codex', value: 'codex' },
-  { label: '通用 OpenAI', value: 'generic_openai' }
+  { label: '通用 OpenAI', value: 'generic_openai' },
+  { label: 'Claude Code', value: 'claude_code' },
+  { label: '通用 Anthropic', value: 'generic_anthropic' }
 ]
 
 export const responseInspectionAccountCompatibilityOptions: Array<{ label: string; value: AccountClientCompatibility }> = [

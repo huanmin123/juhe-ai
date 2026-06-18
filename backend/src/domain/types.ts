@@ -4,7 +4,7 @@ export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | '
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled' | 'unchanged'
 export const ACCOUNT_CLIENT_COMPATIBILITIES = ['openai_standard', 'codex_responses'] as const
 export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[number]
-export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse'
+export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'messages_json' | 'messages_sse' | 'message_token_counting'
 export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
 export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
 export type ManagementSystemAccountRole = Extract<SystemAccountRole, 'super_admin' | 'admin'>
@@ -177,7 +177,7 @@ export interface ProviderModelPricing {
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number
-  supportedApiProtocols: Array<'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'>
+  supportedApiProtocols: Array<'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'completions' | 'images' | 'audio' | 'realtime'>
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number

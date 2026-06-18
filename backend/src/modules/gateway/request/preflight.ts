@@ -29,11 +29,12 @@ import {
   inspectClientIpErrorCircuit,
   recordClientIpErrorCircuitSuccess
 } from '../runtime/client-ip-error-circuit.service.js'
-import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from '../response/fixed-responses.js'
+import { finalizeGatewayAuthFailureAudit, sendAnthropicModelsGatewayResponse, sendOpenAIModelsGatewayResponse } from '../response/fixed-responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { resolveGatewayRuntimeAsync } from './pre-auth.js'
 import { isOpenAIModelsRequest, type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
 import {
   resolveOpenAIGatewaySessionAffinityKey
 } from '../runtime/session-affinity.service.js'
@@ -45,7 +46,7 @@ import {
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import type { GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
-import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
+import { OPENAI_PROTOCOL_CODE, isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
 import {
   canAttemptApiKeyGroupFallback,
   resolveNextApiKeyGroupFallbackCandidate
@@ -278,7 +279,11 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    endpoint
+    endpoint,
+    providerCode: groupAccess?.providerCode,
+    providerProtocolProfileId: groupAccess?.providerProtocolProfileId,
+    protocolCode: groupAccess?.protocolCode,
+    protocolVersion: groupAccess?.protocolVersion
   })
   const clientIpAccountAvoidanceTracker = createClientIpAccountAvoidanceTracker({
     systemAccountId,
@@ -286,7 +291,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     clientIp: gatewayClientIp
   })
-  if (clientStrategy.clientProfile === 'codex') {
+  if (clientStrategy.clientProfile === 'codex' || clientStrategy.clientProfile === 'claude_code') {
     auditCapture.addGatewayMetadata({
       label: 'client_strategy',
       metadata: openAIGatewayClientStrategyAuditMetadata(clientStrategy)
@@ -353,7 +358,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  if (isOpenAIModelsRequest(req)) {
+  if (isGatewayModelsRequest(req, groupAccess)) {
     recordClientIpErrorCircuitSuccess({
       systemAccountId,
       apiKeyId,
@@ -361,7 +366,10 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp,
       endpoint
     })
-    await sendOpenAIModelsGatewayResponse({
+    const sender = isAnthropicProtocolProfile(groupAccess)
+      ? sendAnthropicModelsGatewayResponse
+      : sendOpenAIModelsGatewayResponse
+    await sender({
       req,
       res,
       auditCapture,
@@ -484,6 +492,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
+}
+
+function isGatewayModelsRequest(req: Request, groupAccess: GroupUsageAccessMetadata): boolean {
+  return isAnthropicProtocolProfile(groupAccess)
+    ? isAnthropicModelsRequest(req)
+    : isOpenAIModelsRequest(req)
 }
 
 interface ApiKeyGroupFallbackDispatchInput {

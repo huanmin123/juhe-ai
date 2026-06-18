@@ -1,7 +1,12 @@
+import { anthropicModelPricingData } from './anthropic-model-pricing.data.js'
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
-import { isOpenAICompatibleProviderCode, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_PROVIDER_CODE,
+  isOpenAICompatibleProviderCode,
+  normalizeProviderToken
+} from '../../domain/provider-protocol.js'
 
-export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
+export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'completions' | 'images' | 'audio' | 'realtime'
 
 export interface ProviderModelPricing {
   providerCode: string
@@ -90,30 +95,32 @@ export interface ProviderCostBreakdown {
 }
 
 const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
+const anthropicModels = anthropicModelPricingData as readonly RawModelPricing[]
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
-  if (!isOpenAIProvider(providerCode)) return []
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
-  const pricing = openAIModels
+  const models = rawModelsForProvider(normalizedProviderCode)
+  if (!models.length) return []
+  const pricing = models
     .filter((item) => !hasModelShutdown(item))
     .map((item) => toProviderModelPricing(item, normalizedProviderCode))
   return pricing.sort(compareProviderModels)
 }
 
 export function getProviderModelPricing(providerCode: string, model?: string): ProviderModelPricing | undefined {
-  if (!isOpenAIProvider(providerCode) || !model) return undefined
-  const raw = findOpenAIModelPricing(model)
   const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode || !model) return undefined
+  const raw = findProviderModelPricing(normalizedProviderCode, model)
   return raw && normalizedProviderCode ? toProviderModelPricing(raw, normalizedProviderCode) : undefined
 }
 
 export function estimateProviderCostUsd(input: CostInput): number | undefined {
-  if (!isOpenAIProvider(input.providerCode) || !input.model || !hasAnyCostDimension(input)) {
+  if (!input.model || !hasAnyCostDimension(input)) {
     return undefined
   }
 
-  const pricing = findOpenAIModelPricing(input.model)
+  const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
   const inputPrice = normalizePrice(pricing.input_cost_per_token)
@@ -148,11 +155,11 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
 }
 
 export function estimateProviderCacheReadCostUsd(input: CostInput): number | undefined {
-  if (!isOpenAIProvider(input.providerCode) || !input.model || input.cacheReadTokens === undefined) {
+  if (!input.model || input.cacheReadTokens === undefined) {
     return undefined
   }
 
-  const pricing = findOpenAIModelPricing(input.model)
+  const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost)
@@ -164,9 +171,9 @@ export function estimateProviderCacheReadCostUsd(input: CostInput): number | und
 }
 
 export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderCostBreakdown | undefined {
-  if (!isOpenAIProvider(input.providerCode) || !input.model) return undefined
+  if (!input.model) return undefined
 
-  const pricing = findOpenAIModelPricing(input.model)
+  const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
   const inputPrice = normalizePrice(pricing.input_cost_per_token)
@@ -218,20 +225,30 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   }
 }
 
-function findOpenAIModelPricing(model: string): RawModelPricing | undefined {
+function findProviderModelPricing(providerCode: string, model: string): RawModelPricing | undefined {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode) return undefined
+  const models = rawModelsForProvider(normalizedProviderCode)
+  if (!models.length) return undefined
   const normalized = normalizeModel(model)
   if (!normalized) return undefined
-  if (isUnavailableOpenAIModel(normalized)) return undefined
+  if (isOpenAIProvider(normalizedProviderCode) && isUnavailableOpenAIModel(normalized)) return undefined
 
-  const byExactName = openAIModels.find((item) => normalizeModel(item.model) === normalized)
+  const byExactName = models.find((item) => normalizeModel(item.model) === normalized)
   if (byExactName && !hasModelShutdown(byExactName)) return byExactName
 
-  for (const candidate of buildModelCandidates(normalized)) {
-    const matched = openAIModels.find((item) => normalizeModel(item.model) === candidate)
+  for (const candidate of buildModelCandidates(normalized, normalizedProviderCode)) {
+    const matched = models.find((item) => normalizeModel(item.model) === candidate)
     if (matched && !hasModelShutdown(matched)) return matched
   }
 
   return undefined
+}
+
+function rawModelsForProvider(providerCode: string): readonly RawModelPricing[] {
+  if (isOpenAIProvider(providerCode)) return openAIModels
+  if (normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE) return anthropicModels
+  return []
 }
 
 function defaultImageOutputTokens(input: CostInput, pricing: RawModelPricing): number {
@@ -296,35 +313,44 @@ const unavailableOpenAIModels = new Set([
   'gpt-4-32k-0613'
 ])
 
-function buildModelCandidates(model: string): string[] {
+function buildModelCandidates(model: string, providerCode: string): string[] {
   const candidates = new Set<string>()
   const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
-  if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
-  if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
-  if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
-  if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
-  if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
-  if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
-  if (model.startsWith('gpt-realtime-mini-')) candidates.add('gpt-realtime-mini')
-  if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
-  if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
-  if (model.startsWith('gpt-4.1-')) candidates.add('gpt-4.1')
-  if (model.startsWith('gpt-4o-mini-transcribe-')) candidates.add('gpt-4o-mini-transcribe')
-  if (model.startsWith('gpt-4o-mini-tts-')) candidates.add('gpt-4o-mini-tts')
+  if (isOpenAIProvider(providerCode)) {
+    if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
+    if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
+    if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
+    if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
+    if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
+    if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
+    if (model.startsWith('gpt-realtime-mini-')) candidates.add('gpt-realtime-mini')
+    if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
+    if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
+    if (model.startsWith('gpt-4.1-')) candidates.add('gpt-4.1')
+    if (model.startsWith('gpt-4o-mini-transcribe-')) candidates.add('gpt-4o-mini-transcribe')
+    if (model.startsWith('gpt-4o-mini-tts-')) candidates.add('gpt-4o-mini-tts')
+  }
+
+  if (normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE) {
+    for (const base of anthropicModelCandidateBases) {
+      if (model === base || model.startsWith(`${base}-`)) candidates.add(base)
+    }
+  }
 
   return Array.from(candidates)
 }
 
 function toProviderModelPricing(item: RawModelPricing, providerCode: string): ProviderModelPricing {
+  const source = providerPricingSource(providerCode)
   return {
     providerCode,
     model: item.model,
     mode: item.mode,
-    releaseDate: getOpenAIModelReleaseDate(item),
+    releaseDate: getProviderModelReleaseDate(item, providerCode),
     shutdownDate: item.shutdown_date,
-    supportedApiProtocols: inferOpenAIModelApiProtocols(item),
+    supportedApiProtocols: inferProviderModelApiProtocols(item, providerCode),
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
@@ -340,14 +366,17 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     maxTokens: item.max_tokens,
     supportsPromptCaching: item.supports_prompt_caching === true,
     supportsServiceTier: item.supports_service_tier === true,
-    source: 'openai-pricing-snapshot'
+    source
   }
 }
 
-function getOpenAIModelReleaseDate(item: RawModelPricing): string | undefined {
-  return item.release_date
-    ?? extractModelReleaseDate(item.model)
-    ?? inferOpenAIModelReleaseDate(item.model)
+function getProviderModelReleaseDate(item: RawModelPricing, providerCode: string): string | undefined {
+  if (isOpenAIProvider(providerCode)) {
+    return item.release_date
+      ?? extractModelReleaseDate(item.model)
+      ?? inferOpenAIModelReleaseDate(item.model)
+  }
+  return item.release_date ?? extractModelReleaseDate(item.model)
 }
 
 const openAIModelReleaseDates = new Map<string, string>([
@@ -419,10 +448,11 @@ function inferOpenAIModelReleaseDate(model: string): string | undefined {
   return undefined
 }
 
-function inferOpenAIModelApiProtocols(item: RawModelPricing): ProviderModelApiProtocol[] {
+function inferProviderModelApiProtocols(item: RawModelPricing, providerCode: string): ProviderModelApiProtocol[] {
   if (item.supported_api_protocols?.length) {
     return item.supported_api_protocols
   }
+  if (!isOpenAIProvider(providerCode)) return []
 
   const model = normalizeModel(item.model)
   const mode = (item.mode ?? '').trim()
@@ -474,6 +504,24 @@ function hasModelShutdown(item: RawModelPricing): boolean {
 
 function isOpenAIProvider(providerCode: string): boolean {
   return isOpenAICompatibleProviderCode(providerCode)
+}
+
+const anthropicModelCandidateBases = [
+  'claude-fable-5',
+  'claude-mythos-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-opus-4-5',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5'
+]
+
+function providerPricingSource(providerCode: string): string {
+  return normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE
+    ? 'anthropic-pricing-snapshot'
+    : 'openai-pricing-snapshot'
 }
 
 function normalizeModel(value: string): string {

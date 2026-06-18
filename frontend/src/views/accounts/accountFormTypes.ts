@@ -17,6 +17,8 @@ export interface AccountFormModel {
   apiKeyStrategy: 'round_robin' | 'weighted_round_robin'
   apiKeyWeights: number[]
   baseUrl: string
+  anthropicVersion: string
+  anthropicBeta: string
   accessToken: string
   refreshToken: string
   oauthMode: 'manual' | 'refresh_token'

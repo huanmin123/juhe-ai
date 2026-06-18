@@ -1,5 +1,7 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
+import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
+import { isAnthropicProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
@@ -37,6 +39,7 @@ import {
 import {
   accountTestDefaultPrompt,
   accountTestModelsPath,
+  createAnthropicTestRequest,
   createOpenAITestRequest
 } from './account-test-request.js'
 
@@ -135,15 +138,31 @@ export async function testOpenAIAccount(
     accountType: account.type,
     clientCompatibility
   })
-  const testRequest = createOpenAITestRequest({
-    explicitModel,
-    fallbackModel: model,
-    prompt,
-    isOAuth: account.type === 'oauth',
-    clientCompatibility,
-    supportedEndpointModes,
-    requestShape: input.requestShape
-  })
+  const anthropicProtocol = isAnthropicProtocolProfile(account)
+  const gatewaySupportedEndpointModes = anthropicProtocol
+    ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      accountType: account.type,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion
+    })
+    : supportedEndpointModes
+  const testRequest = anthropicProtocol
+    ? createAnthropicTestRequest({
+      explicitModel,
+      fallbackModel: model,
+      prompt,
+      supportedEndpointModes: gatewaySupportedEndpointModes
+    })
+    : createOpenAITestRequest({
+      explicitModel,
+      fallbackModel: model,
+      prompt,
+      isOAuth: account.type === 'oauth',
+      clientCompatibility,
+      supportedEndpointModes: gatewaySupportedEndpointModes,
+      requestShape: input.requestShape
+    })
   const requestBody = testRequest.body
   const requestBodyText = JSON.stringify(requestBody)
   const requestUrl = testRequest.path
@@ -199,10 +218,16 @@ export async function testOpenAIAccount(
       : findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
-    const upstreamMessage = parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
+    const upstreamMessage = anthropicProtocol
+      ? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
+      : parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
     const upstreamErrorCode = parseUpstreamErrorCode(responseText)
-    const streamFailureMessage = parseOpenAIStreamFailureMessage(responseText)
-    const outputText = extractOpenAIResponseOutputText(responseText)
+    const streamFailureMessage = anthropicProtocol
+      ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
+      : parseOpenAIStreamFailureMessage(responseText)
+    const outputText = anthropicProtocol
+      ? extractAnthropicResponseOutputText(responseText)
+      : extractOpenAIResponseOutputText(responseText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
@@ -221,7 +246,7 @@ export async function testOpenAIAccount(
       statusCode: response.statusCode,
       errorCode: success ? undefined : upstreamErrorCode,
       message: success
-        ? responseTruncated ? 'OpenAI Responses 测试通过（响应体过大，已截断展示）' : 'OpenAI Responses 测试通过'
+        ? accountTestSuccessMessage(anthropicProtocol, responseTruncated)
         : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
       model: testRequest.model,
       requestUrl,
@@ -242,7 +267,7 @@ export async function testOpenAIAccount(
     }), limitedDiagnostics)
   } catch (error) {
     const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
-    const message = normalizedError instanceof Error ? normalizedError.message : 'OpenAI Responses 测试失败'
+    const message = normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(anthropicProtocol)
     const accountFailureEligible = accountTestFailureEligible(normalizedError)
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
@@ -436,6 +461,105 @@ function parseUpstreamErrorCode(bodyText: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function accountTestSuccessMessage(anthropicProtocol: boolean, responseTruncated: boolean): string {
+  const protocolName = anthropicProtocol ? 'Anthropic Messages' : 'OpenAI Responses'
+  return responseTruncated
+    ? `${protocolName} 测试通过（响应体过大，已截断展示）`
+    : `${protocolName} 测试通过`
+}
+
+function accountTestFailureMessage(anthropicProtocol: boolean): string {
+  return anthropicProtocol ? 'Anthropic Messages 测试失败' : 'OpenAI Responses 测试失败'
+}
+
+function parseAnthropicUpstreamMessage(bodyText: string): string | undefined {
+  if (!bodyText) return undefined
+  const jsonMessage = parseAnthropicJsonMessage(bodyText)
+  if (jsonMessage) return jsonMessage
+  for (const event of anthropicSseEvents(bodyText)) {
+    if (event.event === 'error') {
+      const message = parseAnthropicJsonMessage(event.data)
+      if (message) return message
+    }
+  }
+  return undefined
+}
+
+function parseAnthropicStreamFailureMessage(bodyText: string): string | undefined {
+  for (const event of anthropicSseEvents(bodyText)) {
+    if (event.event === 'error') {
+      return parseAnthropicJsonMessage(event.data) ?? 'Anthropic 流式响应失败'
+    }
+  }
+  return undefined
+}
+
+function extractAnthropicResponseOutputText(bodyText: string): string | undefined {
+  if (!bodyText) return undefined
+  const jsonText = extractAnthropicJsonOutputText(bodyText)
+  if (jsonText) return jsonText
+  const chunks: string[] = []
+  for (const event of anthropicSseEvents(bodyText)) {
+    try {
+      const payload = JSON.parse(event.data) as Record<string, unknown>
+      const delta = typeof payload.delta === 'object' && payload.delta !== null
+        ? payload.delta as Record<string, unknown>
+        : undefined
+      const text = stringValue(delta?.text)
+      if (text) chunks.push(text)
+    } catch {
+      // Ignore partial or non-JSON SSE lines in diagnostics.
+    }
+  }
+  return chunks.length ? chunks.join('') : undefined
+}
+
+function extractAnthropicJsonOutputText(bodyText: string): string | undefined {
+  try {
+    const payload = JSON.parse(bodyText) as Record<string, unknown>
+    const content = Array.isArray(payload.content) ? payload.content : []
+    const parts = content
+      .map((item) => typeof item === 'object' && item !== null ? stringValue((item as Record<string, unknown>).text) : '')
+      .filter(Boolean)
+    return parts.length ? parts.join('') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function parseAnthropicJsonMessage(text: string): string | undefined {
+  try {
+    const payload = JSON.parse(text) as Record<string, unknown>
+    const error = typeof payload.error === 'object' && payload.error !== null
+      ? payload.error as Record<string, unknown>
+      : undefined
+    return stringValue(error?.message) || stringValue(payload.message)
+  } catch {
+    return undefined
+  }
+}
+
+function anthropicSseEvents(text: string): Array<{ event: string; data: string }> {
+  const events: Array<{ event: string; data: string }> = []
+  const blocks = text.split(/\r?\n\r?\n/)
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/)
+    let event = ''
+    const data: string[] = []
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        event = line.slice(6).trim()
+      } else if (line.startsWith('data:')) {
+        data.push(line.slice(5).trimStart())
+      }
+    }
+    if (data.length) {
+      events.push({ event, data: data.join('\n') })
+    }
+  }
+  return events
 }
 
 function stringValue(value: unknown): string {

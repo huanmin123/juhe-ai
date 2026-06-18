@@ -4,8 +4,19 @@ import {
   normalizeOpenAIEndpointModesForWrite,
   type OpenAIEndpointModeDefaultContext
 } from '../domain/openai-endpoint-modes.js'
+import {
+  normalizeAnthropicEndpointModesForWrite
+} from '../domain/anthropic-endpoint-modes.js'
+import {
+  isAnthropicProtocolProfile
+} from '../domain/provider-protocol.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
+
+type AccountEndpointModeDefaultContext = OpenAIEndpointModeDefaultContext & {
+  protocolCode?: string
+  protocolVersion?: string
+}
 
 const apiKeyAccountCredentialKeys = new Set([
   'api_key',
@@ -13,6 +24,8 @@ const apiKeyAccountCredentialKeys = new Set([
   'api_key_strategy',
   'api_key_weights',
   'base_url',
+  'anthropic_version',
+  'anthropic_beta',
   'supported_endpoint_modes',
   'error_handling_rules',
   'response_inspection_rules'
@@ -43,7 +56,7 @@ const accountApiKeyListMaxItems = 50
 export function normalizeAccountCredentialsForWrite(
   accountType: string,
   value: unknown,
-  endpointModeDefaults: OpenAIEndpointModeDefaultContext = { accountType }
+  endpointModeDefaults: AccountEndpointModeDefaultContext = { accountType }
 ): Record<string, unknown> {
   const input = accountCredentialsRecord(value)
   assertKnownInputKeys(input, accountCredentialAllowedKeys(accountType), '账户凭据')
@@ -89,7 +102,7 @@ function accountApiKeys(credentials: Record<string, unknown>): string[] {
 
 function normalizeApiKeyAccountCredentials(
   input: Record<string, unknown>,
-  endpointModeDefaults: OpenAIEndpointModeDefaultContext
+  endpointModeDefaults: AccountEndpointModeDefaultContext
 ): Record<string, unknown> {
   const baseUrl = requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes)
   assertSafeUpstreamBaseUrl(baseUrl)
@@ -97,10 +110,11 @@ function normalizeApiKeyAccountCredentials(
   const credentials: Record<string, unknown> = {
     api_key: apiKeys[0],
     base_url: baseUrl,
-    supported_endpoint_modes: normalizeOpenAIEndpointModesForWrite(input.supported_endpoint_modes, {
-      ...endpointModeDefaults,
-      accountType: 'api_key'
-    })
+    supported_endpoint_modes: normalizeApiKeyEndpointModesForWrite(input.supported_endpoint_modes, endpointModeDefaults)
+  }
+  if (isAnthropicProtocolProfile(endpointModeDefaults)) {
+    copyOptionalCredentialText(input, credentials, 'anthropic_version', 'Anthropic-Version', accountCredentialMetadataMaxBytes)
+    copyOptionalCredentialText(input, credentials, 'anthropic_beta', 'Anthropic-Beta', accountCredentialMetadataMaxBytes)
   }
   if (apiKeys.length > 1) {
     credentials.api_keys = apiKeys
@@ -112,6 +126,19 @@ function normalizeApiKeyAccountCredentials(
   normalizeAccountCredentialPolicies(input, credentials)
   assertAccountCredentialsJsonSize(credentials)
   return credentials
+}
+
+function normalizeApiKeyEndpointModesForWrite(value: unknown, endpointModeDefaults: AccountEndpointModeDefaultContext): string[] {
+  if (isAnthropicProtocolProfile(endpointModeDefaults)) {
+    return normalizeAnthropicEndpointModesForWrite(value, {
+      ...endpointModeDefaults,
+      accountType: 'api_key'
+    })
+  }
+  return normalizeOpenAIEndpointModesForWrite(value, {
+    ...endpointModeDefaults,
+    accountType: 'api_key'
+  })
 }
 
 function normalizeApiKeyCredentialList(input: Record<string, unknown>): string[] {

@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, normalize } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { runtimeConfig } from '../config/runtime.js'
+import { isProductionRuntime, runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { applyBusinessSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
@@ -207,8 +207,14 @@ export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKin
 }
 
 export function sqliteWriterBoundaryStrictModeEnabled(): boolean {
-  return process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT === '1'
-    || process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT === 'true'
+  const configured = process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT?.trim().toLowerCase()
+  if (configured && ['1', 'true', 'yes', 'on'].includes(configured)) {
+    return true
+  }
+  if (configured && ['0', 'false', 'no', 'off'].includes(configured)) {
+    return isProductionRuntime()
+  }
+  return !isOfflineSqliteScriptRuntime()
 }
 
 export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDatabaseRuntimeInfo {
@@ -246,6 +252,16 @@ function applySqliteWriterBoundary(database: DatabaseSync, kind: SqliteMainDatab
 
 function shouldApplyMainDatabaseSchema(kind: SqliteMainDatabaseKind): boolean {
   return currentProcessOwnsSqliteMainDatabase(kind) || !sqliteWriterBoundaryStrictModeEnabled()
+}
+
+function isOfflineSqliteScriptRuntime(): boolean {
+  const entry = process.argv[1]
+  if (!entry) {
+    return false
+  }
+  const normalized = normalize(entry).replace(/\\/g, '/').toLowerCase()
+  return normalized.includes('/src/scripts/')
+    || normalized.includes('/dist/scripts/')
 }
 
 export function newId(prefix: string): string {

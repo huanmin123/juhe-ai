@@ -23,10 +23,10 @@ export const responseInspectionPolicyGuideFields = [
   {
     key: 'clientProfiles',
     field: '客户端画像',
-    source: '检查当前下游请求被网关识别成 Codex 还是通用 OpenAI 客户端',
-    example: 'Codex',
+    source: '检查当前下游请求被网关识别成 Codex、通用 OpenAI、Claude Code 或通用 Anthropic 客户端',
+    example: 'Codex, Claude Code',
     required: '否，适用范围',
-    note: '只限制规则适用的客户端范围，不能单独构成命中；Codex 专属错误改写必须用它收窄。'
+    note: '只限制规则适用的客户端范围，不能单独构成命中；Codex 专属错误改写必须用它收窄，Claude Code 不复用 Codex 失败事件。'
   },
   {
     key: 'accountClientCompatibilities',
@@ -56,7 +56,7 @@ export const responseInspectionPolicyGuideFields = [
     key: 'errorCodes',
     field: 'error.code',
     source: '检查上游返回的 error.code',
-    example: 'cyber_policy',
+    example: 'cyber_policy, overloaded_error',
     required: '否，正向条件之一',
     note: '必须和错误码完全一致；适合上游错误码稳定的情况。'
   },
@@ -64,7 +64,7 @@ export const responseInspectionPolicyGuideFields = [
     key: 'errorTypes',
     field: 'error.type',
     source: '检查上游返回的 error.type',
-    example: 'server_error',
+    example: 'server_error, overloaded_error',
     required: '否，正向条件之一',
     note: '必须和错误类型完全一致；常和 error.code 一起填，减少误命中。'
   },

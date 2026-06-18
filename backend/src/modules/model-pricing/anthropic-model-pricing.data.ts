@@ -1,0 +1,112 @@
+export const anthropicModelPricingData = [
+  {
+    model: 'claude-fable-5',
+    input_cost_per_token: 10 / 1_000_000,
+    output_cost_per_token: 50 / 1_000_000,
+    cache_creation_input_token_cost: 12.5 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 20 / 1_000_000,
+    cache_read_input_token_cost: 1 / 1_000_000,
+    max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-mythos-5',
+    input_cost_per_token: 10 / 1_000_000,
+    output_cost_per_token: 50 / 1_000_000,
+    cache_creation_input_token_cost: 12.5 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 20 / 1_000_000,
+    cache_read_input_token_cost: 1 / 1_000_000,
+    max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-opus-4-8',
+    input_cost_per_token: 5 / 1_000_000,
+    output_cost_per_token: 25 / 1_000_000,
+    cache_creation_input_token_cost: 6.25 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 10 / 1_000_000,
+    cache_read_input_token_cost: 0.5 / 1_000_000,
+    max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-opus-4-7',
+    input_cost_per_token: 5 / 1_000_000,
+    output_cost_per_token: 25 / 1_000_000,
+    cache_creation_input_token_cost: 6.25 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 10 / 1_000_000,
+    cache_read_input_token_cost: 0.5 / 1_000_000,
+    max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-opus-4-6',
+    input_cost_per_token: 5 / 1_000_000,
+    output_cost_per_token: 25 / 1_000_000,
+    cache_creation_input_token_cost: 6.25 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 10 / 1_000_000,
+    cache_read_input_token_cost: 0.5 / 1_000_000,
+    max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-opus-4-5',
+    input_cost_per_token: 5 / 1_000_000,
+    output_cost_per_token: 25 / 1_000_000,
+    cache_creation_input_token_cost: 6.25 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 10 / 1_000_000,
+    cache_read_input_token_cost: 0.5 / 1_000_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-sonnet-4-6',
+    input_cost_per_token: 3 / 1_000_000,
+    output_cost_per_token: 15 / 1_000_000,
+    cache_creation_input_token_cost: 3.75 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
+    cache_read_input_token_cost: 0.3 / 1_000_000,
+    max_input_tokens: 1_000_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-sonnet-4-5',
+    input_cost_per_token: 3 / 1_000_000,
+    output_cost_per_token: 15 / 1_000_000,
+    cache_creation_input_token_cost: 3.75 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
+    cache_read_input_token_cost: 0.3 / 1_000_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-haiku-4-5',
+    input_cost_per_token: 1 / 1_000_000,
+    output_cost_per_token: 5 / 1_000_000,
+    cache_creation_input_token_cost: 1.25 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 2 / 1_000_000,
+    cache_read_input_token_cost: 0.1 / 1_000_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  }
+]

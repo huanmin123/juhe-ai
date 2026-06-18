@@ -102,11 +102,11 @@ for (let index = 0; index < 6000; index += 1) {
   acceptedFillCount += 1
 }
 assert(acceptedFillCount > 0, '队列饱和前应至少接受一条维护任务')
-assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, 'maintenance-worker IPC 队列应填充到当前保护上限')
+assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, 'ingest recordMaintenance IPC 队列应填充到当前保护上限')
 const rejectedMaintenanceCountBeforeSaturation = backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount ?? 0
 const rejectedMaintenanceJob = backgroundIpc.sendRecordMaintenanceJobsToWorker([recordMaintenanceJob(6001)])
-assert.equal(rejectedMaintenanceJob, false, 'maintenance-worker IPC 队列饱和时维护任务应快速拒绝')
-assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, rejectedMaintenanceCountBeforeSaturation + 1, 'maintenance-worker 队列饱和应计入维护任务拒绝指标')
+assert.equal(rejectedMaintenanceJob, false, 'ingest recordMaintenance IPC 队列饱和时维护任务应快速拒绝')
+assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount, rejectedMaintenanceCountBeforeSaturation + 1, 'ingest recordMaintenance 队列饱和应计入维护任务拒绝指标')
 
 console.log('后台 worker snapshot current-only 回归通过：不可观测时返回 undefined，不复用留存快照')
 

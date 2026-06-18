@@ -32,6 +32,14 @@ import {
   cleanupUsageStatsBucketsBefore
 } from '../../storage/data-retention.repository.js'
 import {
+  cleanupDeletedAccountRecordStatsData,
+  type DeletedAccountRecordStatsCleanupInput
+} from '../../storage/account-record-cleanup.js'
+import {
+  cleanupDeletedApiKeyRecordStatsData,
+  type DeletedApiKeyRecordStatsCleanupInput
+} from '../../storage/api-key-record-cleanup.js'
+import {
   listAccountQualityFailurePrecheckCandidates,
   refreshAccountQualityFromUsage,
   upsertAccountUsageSnapshots,
@@ -116,6 +124,14 @@ export type BackgroundStatsWriteOperation =
     cutoffAt: string
     limit: number
   }
+  | {
+    type: 'cleanup_deleted_api_key_record_stats'
+    input: DeletedApiKeyRecordStatsCleanupInput
+  }
+  | {
+    type: 'cleanup_deleted_account_record_stats'
+    input: DeletedAccountRecordStatsCleanupInput
+  }
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
   T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean } :
@@ -133,6 +149,8 @@ export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOp
   T extends { type: 'cleanup_system_metrics_retention' } ? ReturnType<typeof cleanupSystemMetricsBefore> :
   T extends { type: 'cleanup_table_storage_snapshots_retention' } ? { deleted: number } :
   T extends { type: 'cleanup_non_business_stats_data' } ? NonBusinessDataHardCleanupResult :
+  T extends { type: 'cleanup_deleted_api_key_record_stats' } ? { cleaned: true } :
+  T extends { type: 'cleanup_deleted_account_record_stats' } ? { cleaned: true } :
   unknown
 
 export async function requestStatsWriter<T extends BackgroundStatsWriteOperation>(
@@ -195,6 +213,12 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         limit: operation.limit,
         scope: 'stats'
       })
+    case 'cleanup_deleted_api_key_record_stats':
+      cleanupDeletedApiKeyRecordStatsData(operation.input)
+      return { cleaned: true }
+    case 'cleanup_deleted_account_record_stats':
+      cleanupDeletedAccountRecordStatsData(operation.input)
+      return { cleaned: true }
     default:
       return assertNever(operation)
   }

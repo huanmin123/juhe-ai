@@ -28,6 +28,8 @@ export const modelCategoryLabels: Record<ModelCategoryKey, string> = {
 export const apiProtocolLabels: Record<string, string> = {
   chat_completions: 'Chat Completions',
   responses: 'Responses',
+  messages: 'Messages',
+  message_token_counting: 'Message Token Counting',
   completions: 'Completions',
   images: 'Images API',
   audio: 'Audio API',
@@ -72,10 +74,12 @@ const hiddenProviderCapabilities = new Set(['models', 'passthrough', 'stream'])
 const providerCapabilityLabels: Record<string, string> = {
   responses: 'Responses',
   chat: 'Chat',
-  chat_completions: 'Chat'
+  chat_completions: 'Chat',
+  messages: 'Messages',
+  count_tokens: 'Count Tokens'
 }
 
-const providerCapabilityOrder = ['responses', 'chat'] as const
+const providerCapabilityOrder = ['responses', 'chat', 'messages', 'count_tokens'] as const
 
 export function hasAnyNumber(...values: Array<number | undefined>): boolean {
   return values.some((value) => typeof value === 'number')
@@ -198,6 +202,10 @@ export function getApiProtocolTagColor(protocol?: string): string {
       return 'blue'
     case 'responses':
       return 'purple'
+    case 'messages':
+      return 'green'
+    case 'message_token_counting':
+      return 'lime'
     case 'images':
       return 'cyan'
     case 'audio':

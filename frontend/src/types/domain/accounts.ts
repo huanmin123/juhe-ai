@@ -4,7 +4,7 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
-export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse'
+export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'messages_json' | 'messages_sse' | 'message_token_counting'
 
 export interface AccountCredentials {
   api_key?: string

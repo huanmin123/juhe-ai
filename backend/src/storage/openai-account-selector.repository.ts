@@ -2,7 +2,8 @@ import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/gr
 import type { AccountClientCompatibility, AccountType, GroupType, ProviderCode } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../domain/openai-endpoint-modes.js'
-import { isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
+import { normalizeAnthropicEndpointModesForRuntime } from '../domain/anthropic-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile } from '../domain/provider-protocol.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
@@ -150,7 +151,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
   const protocolCode = groupRow.protocol_code?.trim()
   const protocolVersion = groupRow.protocol_version?.trim()
   if (!providerProtocolProfileId || !protocolCode || !protocolVersion) return undefined
-  if (!isOpenAIProtocolProfile({ protocolCode, protocolVersion })) return undefined
+  if (!isGatewaySupportedProtocolProfile({ protocolCode, protocolVersion })) return undefined
   if (groupRow.enabled !== 1) return undefined
   const groupType = normalizeGroupType(groupRow?.group_type)
   const schedulingPolicy = parseGroupSchedulingPolicyJson(groupRow?.scheduling_policy_json ?? null, groupType)
@@ -193,6 +194,8 @@ export function listOpenAIAccountsForGroup(
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
+  copyRuntimeCredentialText(credentials, output, 'anthropic_version')
+  copyRuntimeCredentialText(credentials, output, 'anthropic_beta')
   copyRuntimeCredentialText(credentials, output, 'api_key_strategy')
   copyRuntimeCredentialValue(credentials, output, 'supported_endpoint_modes')
   copyRuntimeCredentialValue(credentials, output, 'api_key_weights')
@@ -366,18 +369,22 @@ function openAIAccountSecretFromRow(
     ? accountAccess.accountOwnerSystemAccountId ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
     : row.system_account_id
   const providerCode = openAIAccountResourceProviderCode(row)
+  const protocolCode = openAIAccountResourceProtocolCode(row)
+  const protocolVersion = openAIAccountResourceProtocolVersion(row)
   const clientCompatibility = openAIAccountResourceClientCompatibility(row)
-  const supportedEndpointModes = normalizeOpenAIEndpointModesForRuntime(credentials.supported_endpoint_modes, {
+  const supportedEndpointModes = normalizeGatewayEndpointModesForRuntime(credentials.supported_endpoint_modes, {
     providerCode,
     accountType: resourceType,
-    clientCompatibility
+    clientCompatibility,
+    protocolCode,
+    protocolVersion
   })
   return {
     id: row.id,
     providerCode,
     providerProtocolProfileId: openAIAccountResourceProviderProtocolProfileId(row),
-    protocolCode: openAIAccountResourceProtocolCode(row),
-    protocolVersion: openAIAccountResourceProtocolVersion(row),
+    protocolCode,
+    protocolVersion,
     systemAccountId: row.system_account_id,
     accountOwnerSystemAccountId,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
@@ -410,7 +417,7 @@ function openAIAccountSecretFromRow(
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
-    baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
+    baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : defaultBaseUrlForProtocol(protocolCode, protocolVersion),
     apiKey,
     apiKeys,
     apiKeyRuntimeStates: apiKeyPoolEnabled
@@ -431,6 +438,37 @@ function openAIAccountSecretFromRow(
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials: runtimeOpenAIAccountCredentials(credentials)
   }
+}
+
+function normalizeGatewayEndpointModesForRuntime(
+  value: unknown,
+  input: {
+    providerCode: string
+    accountType: AccountType
+    clientCompatibility: AccountClientCompatibility
+    protocolCode: string
+    protocolVersion: string
+  }
+) {
+  if (isAnthropicProtocolProfile(input)) {
+    return normalizeAnthropicEndpointModesForRuntime(value, {
+      providerCode: input.providerCode,
+      accountType: input.accountType,
+      protocolCode: input.protocolCode,
+      protocolVersion: input.protocolVersion
+    })
+  }
+  return normalizeOpenAIEndpointModesForRuntime(value, {
+    providerCode: input.providerCode,
+    accountType: input.accountType,
+    clientCompatibility: input.clientCompatibility
+  })
+}
+
+function defaultBaseUrlForProtocol(protocolCode: string, protocolVersion: string): string {
+  return isAnthropicProtocolProfile({ protocolCode, protocolVersion })
+    ? 'https://api.anthropic.com/v1'
+    : 'https://api.openai.com/v1'
 }
 
 function copyRuntimeCredentialText(input: Record<string, unknown>, output: Record<string, unknown>, key: string): void {

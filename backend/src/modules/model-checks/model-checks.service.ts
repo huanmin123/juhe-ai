@@ -12,11 +12,8 @@ import { logger } from '../../shared/logger.js'
 import { createTraceId } from '../../shared/request-context.js'
 import {
   accountTestUnavailableMessage,
-  createModelCheckItems,
-  createModelCheckRun,
   findAccountForTest,
   findOpenAIAccountForGroup,
-  finishModelCheckRun,
   getModelCheckRunDetail,
   listModelCheckRuns,
   type ModelCheckItemCreateInput,
@@ -80,6 +77,7 @@ import {
   runGatewayProbe,
   type ModelCheckGatewayProbeTarget
 } from './model-checks-gateway-probe.js'
+import { requestDatasetWriter } from '../background/background-dataset-writer.js'
 
 export class ModelCheckRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -218,33 +216,36 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
   const runTraceId = createTraceId()
-  const run = createModelCheckRun({
-    systemAccountId: target.identity.systemAccountId,
-    actorSystemAccountId,
-    providerCode: target.providerCode,
-    targetType: target.targetType,
-    targetId: target.targetId,
-    targetName: target.targetName,
-    targetOwnerSystemAccountId: target.targetOwnerSystemAccountId,
-    accountId: target.accountId,
-    groupId: target.groupId,
-    apiKeyId: target.apiKeyId,
-    model,
-    profile: defaultProfile,
-    trustedComparison,
-    trustedComparisonAvailable: Boolean(comparison),
-    traceId: runTraceId,
-    probeSetVersion,
-    startedAt,
-    requestSummary: {
+  const run = await requestDatasetWriter({
+    type: 'create_model_check_run',
+    input: {
+      systemAccountId: target.identity.systemAccountId,
+      actorSystemAccountId,
+      providerCode: target.providerCode,
       targetType: target.targetType,
       targetId: target.targetId,
       targetName: target.targetName,
+      targetOwnerSystemAccountId: target.targetOwnerSystemAccountId,
+      accountId: target.accountId,
+      groupId: target.groupId,
+      apiKeyId: target.apiKeyId,
       model,
       profile: defaultProfile,
       trustedComparison,
-      trustedComparisonAccountId: comparison?.targetId,
-      trustedComparisonAccountName: comparison?.targetName
+      trustedComparisonAvailable: Boolean(comparison),
+      traceId: runTraceId,
+      probeSetVersion,
+      startedAt,
+      requestSummary: {
+        targetType: target.targetType,
+        targetId: target.targetId,
+        targetName: target.targetName,
+        model,
+        profile: defaultProfile,
+        trustedComparison,
+        trustedComparisonAccountId: comparison?.targetId,
+        trustedComparisonAccountName: comparison?.targetName
+      }
     }
   })
   emitModelCheckProgress(progress, {
@@ -283,35 +284,47 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       ...(trustedComparisonItem ? [trustedComparisonItem] : []),
       ...(distributionSimilarityItem ? [distributionSimilarityItem] : [])
     ]
-    const checks = createModelCheckItems(run.id, itemInputs)
+    const checks = await requestDatasetWriter({
+      type: 'create_model_check_items',
+      runId: run.id,
+      items: itemInputs
+    })
     const summary = summarizeChecks(checks, { trustedComparison })
-    finishModelCheckRun(run.id, {
-      ...summary,
-      status: 'completed',
-      finishedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAtMs,
-      resultSummary: {
-        itemCount: checks.length,
-        passedCount: checks.filter((item) => item.status === 'passed').length,
-        warningCount: checks.filter((item) => item.status === 'warning').length,
-        failedCount: checks.filter((item) => item.status === 'failed').length,
-        trustedComparison,
-        trustedComparisonAccountId: comparison?.targetId
+    await requestDatasetWriter({
+      type: 'finish_model_check_run',
+      runId: run.id,
+      input: {
+        ...summary,
+        status: 'completed',
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAtMs,
+        resultSummary: {
+          itemCount: checks.length,
+          passedCount: checks.filter((item) => item.status === 'passed').length,
+          warningCount: checks.filter((item) => item.status === 'warning').length,
+          failedCount: checks.filter((item) => item.status === 'failed').length,
+          trustedComparison,
+          trustedComparisonAccountId: comparison?.targetId
+        }
       }
     })
   } catch (error) {
     const message = signal?.aborted ? '模型检测已取消' : error instanceof Error ? error.message : '模型检测失败'
     const status: ModelCheckRunStatus = signal?.aborted ? 'canceled' : 'failed'
-    finishModelCheckRun(run.id, {
-      level: 'unavailable',
-      score: 0,
-      status,
-      message,
-      finishedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAtMs,
-      resultSummary: { errorMessage: message },
-      errorCode: status,
-      errorMessage: message
+    await requestDatasetWriter({
+      type: 'finish_model_check_run',
+      runId: run.id,
+      input: {
+        level: 'unavailable',
+        score: 0,
+        status,
+        message,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAtMs,
+        resultSummary: { errorMessage: message },
+        errorCode: status,
+        errorMessage: message
+      }
     })
   }
 

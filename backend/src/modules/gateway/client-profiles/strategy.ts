@@ -1,18 +1,25 @@
 import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
+import { isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { requestStream } from '../request/metadata.js'
 
-export type OpenAIGatewayClientProfile = 'codex' | 'generic_openai'
-export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'json' | 'unknown_stream'
-export type OpenAIGatewayUpstreamAdapter = 'openai_api_key' | 'openai_oauth_codex' | 'openai_mixed'
+export const gatewayClientProfileHeader = 'x-juhe-client-profile'
+
+export type OpenAIGatewayClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic'
+export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'messages_sse' | 'json' | 'unknown_stream'
+export type OpenAIGatewayUpstreamAdapter = 'openai_api_key' | 'openai_oauth_codex' | 'openai_mixed' | 'anthropic_api_key'
 
 export interface OpenAIGatewayClientStrategyIdentity {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
   endpoint: string
+  providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
 }
 
 export interface OpenAIGatewayCodexTurnContext {
@@ -28,6 +35,7 @@ export interface OpenAIGatewayClientStrategyContext {
   downstreamProtocol: OpenAIGatewayDownstreamProtocol
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
   codexTurn?: OpenAIGatewayCodexTurnContext
+  clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata'
   allowCodexStreamClientRetry: boolean
   allowCodexTurnAccountAvoidance: boolean
 }
@@ -52,6 +60,9 @@ export function resolveOpenAIGatewayClientStrategy(
   req: Request,
   identity: OpenAIGatewayClientStrategyIdentity
 ): OpenAIGatewayClientStrategyContext {
+  if (isAnthropicProtocolProfile(identity)) {
+    return resolveAnthropicGatewayClientStrategy(req)
+  }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)
   const codexMetadata = parseCodexTurnMetadata(req.header('x-codex-turn-metadata'))
   const canUseCodexProfile = downstreamProtocol === 'responses_sse' && Boolean(codexMetadata?.turnId)
@@ -64,8 +75,23 @@ export function resolveOpenAIGatewayClientStrategy(
     downstreamProtocol,
     upstreamAdapter: 'openai_mixed',
     codexTurn,
+    clientProfileSource: codexTurn ? 'codex_turn_metadata' : 'default',
     allowCodexStreamClientRetry: Boolean(codexTurn),
     allowCodexTurnAccountAvoidance: Boolean(codexTurn)
+  }
+}
+
+export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
+  const downstreamProtocol = resolveAnthropicGatewayDownstreamProtocol(req)
+  const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
+  const claudeCode = explicitProfile === 'claude_code' && downstreamProtocol !== 'unknown_stream'
+  return {
+    clientProfile: claudeCode ? 'claude_code' : 'generic_anthropic',
+    downstreamProtocol,
+    upstreamAdapter: 'anthropic_api_key',
+    clientProfileSource: claudeCode ? 'explicit_header' : 'default',
+    allowCodexStreamClientRetry: false,
+    allowCodexTurnAccountAvoidance: false
   }
 }
 
@@ -85,11 +111,25 @@ export function resolveOpenAIGatewayDownstreamProtocol(req: Request): OpenAIGate
   return 'json'
 }
 
+export function resolveAnthropicGatewayDownstreamProtocol(req: Request): OpenAIGatewayDownstreamProtocol {
+  const normalizedPath = normalizedAnthropicRequestPath(req)
+  const acceptsEventStream = requestAcceptsEventStream(req)
+  const streamRequested = requestStream(req) || acceptsEventStream
+  if (req.method.toUpperCase() === 'POST' && normalizedPath === '/messages' && streamRequested) {
+    return 'messages_sse'
+  }
+  if (streamRequested || acceptsEventStream) {
+    return 'unknown_stream'
+  }
+  return 'json'
+}
+
 export function openAIGatewayClientStrategyAuditMetadata(
   strategy: OpenAIGatewayClientStrategyContext
 ): Record<string, unknown> {
   return {
     clientProfile: strategy.clientProfile,
+    clientProfileSource: strategy.clientProfileSource,
     downstreamProtocol: strategy.downstreamProtocol,
     upstreamAdapter: strategy.upstreamAdapter,
     codexTurnIdPresent: Boolean(strategy.codexTurn?.turnId),
@@ -100,6 +140,11 @@ export function openAIGatewayClientStrategyAuditMetadata(
     allowCodexStreamClientRetry: strategy.allowCodexStreamClientRetry,
     allowCodexTurnAccountAvoidance: strategy.allowCodexTurnAccountAvoidance
   }
+}
+
+function parseGatewayClientProfileHeader(value: string | undefined): OpenAIGatewayClientProfile | undefined {
+  const normalized = stringValue(value)?.toLowerCase().replace(/[-\s]+/g, '_')
+  return normalized === 'claude_code' ? 'claude_code' : undefined
 }
 
 function buildCodexTurnContext(
@@ -287,6 +332,12 @@ function updateHashWithBoundedString(hash: ReturnType<typeof createHash>, value:
 }
 
 function normalizedOpenAIRequestPath(req: Request): string {
+  const rawPath = (req.originalUrl || req.path || '').split('?', 1)[0] || '/'
+  const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
+  return path.replace(/^\/v1(?=\/|$)/, '') || '/'
+}
+
+function normalizedAnthropicRequestPath(req: Request): string {
   const rawPath = (req.originalUrl || req.path || '').split('?', 1)[0] || '/'
   const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
   return path.replace(/^\/v1(?=\/|$)/, '') || '/'

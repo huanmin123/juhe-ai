@@ -64,6 +64,10 @@ export interface RuntimeLogIndexRuntime {
 }
 
 export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
+  if (runtimeConfig.processRole === 'db-service') {
+    sendRuntimeLogLineFromDbServiceToServer(rawLine, options)
+    return
+  }
   if (shouldDispatchRuntimeLogToIngestWorker()) {
     sendRuntimeLogLineToWorker(rawLine, options)
     return
@@ -326,6 +330,29 @@ function scheduleRuntimeLogFlush(delayMs: number): void {
 
 function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
+}
+
+function sendRuntimeLogLineFromDbServiceToServer(rawLine: string, options: RuntimeLogLineIndexOptions): void {
+  if (!process.send || process.connected === false) {
+    writeRuntimeLogIndexError('DB service 无法投递运行日志索引到 ingest-worker，已丢弃日志行')
+    return
+  }
+  try {
+    process.send({
+      type: 'background_worker_runtime_log_line',
+      line: rawLine,
+      sourceKey: options.sourceKey,
+      logFile: options.logFile,
+      logOffset: options.logOffset,
+      lineNumber: options.lineNumber
+    }, (error) => {
+      if (error) {
+        writeRuntimeLogIndexError(`DB service 投递运行日志索引到 ingest-worker 失败：${error.message}`)
+      }
+    })
+  } catch (error) {
+    writeRuntimeLogIndexError(`DB service 投递运行日志索引到 ingest-worker 失败：${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 function assertLocalRuntimeLogIndexAllowed(operation: string): void {

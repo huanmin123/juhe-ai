@@ -74,6 +74,8 @@ const apiKeyExportCredentialKeys = [
   'api_key_strategy',
   'api_key_weights',
   'base_url',
+  'anthropic_version',
+  'anthropic_beta',
   'supported_endpoint_modes',
   'error_handling_rules',
   'response_inspection_rules'

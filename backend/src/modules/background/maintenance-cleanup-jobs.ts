@@ -2,12 +2,16 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupPendingDeletedAccountRecordTargetsAsync } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargetsAsync } from '../../storage/api-key-record-cleanup.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { requestStatsWriter } from './background-stats-writer.js'
 import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
+import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export async function runApiKeyRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1)
+    const summary = await cleanupPendingDeletedApiKeyRecordTargetsAsync(1, async (input) => {
+      await requestStatsWriter({ type: 'cleanup_deleted_api_key_record_stats', input })
+    })
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_api_key_record_cleanup_retry_completed',
@@ -22,7 +26,9 @@ export async function runApiKeyRecordCleanupRetry(): Promise<void> {
 
 export async function runAccountRecordCleanupRetry(): Promise<void> {
   try {
-    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1)
+    const summary = await cleanupPendingDeletedAccountRecordTargetsAsync(1, async (input) => {
+      await requestStatsWriter({ type: 'cleanup_deleted_account_record_stats', input })
+    })
     if (summary.attempted > 0) {
       logger.info({
         event: 'background_account_record_cleanup_retry_completed',
@@ -48,6 +54,24 @@ export async function runExpiredDeletedAccountCleanup(): Promise<void> {
     const summary = await requestBackgroundWorkerDbService({ type: 'cleanup_expired_deleted_accounts' })
     if (!summary) {
       throw new Error('DB service 未返回逻辑删除 AI 账户清理结果')
+    }
+    for (const target of summary.recordCleanupTargets ?? []) {
+      const enqueueResult = enqueueRecordMaintenanceJobWithResult({
+        type: 'account_related_cleanup',
+        accountId: target.accountId,
+        systemAccountId: target.systemAccountId,
+        relatedAccountIds: target.relatedAccountIds,
+        authorizationIds: target.authorizationIds,
+        teamScopeIds: target.teamScopeIds
+      })
+      if (!enqueueResult.queued) {
+        logger.warn({
+          event: 'background_expired_deleted_account_record_cleanup_enqueue_failed',
+          accountId: target.accountId,
+          systemAccountId: target.systemAccountId,
+          droppedReason: enqueueResult.droppedReason
+        }, '逻辑删除 AI 账户物理清理发现关联记录未清空，投递记录清理失败')
+      }
     }
     if (summary.attempted > 0 || summary.orphanedAuthorizationInstances > 0) {
       logger.info({

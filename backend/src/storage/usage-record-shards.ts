@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:pa
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, nowIso, rollbackDatabaseTransaction, sqliteWriterBoundaryStrictModeEnabled } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 
@@ -111,10 +111,18 @@ export function getUsageRecordShardDatabase(location: UsageRecordShardLocation):
   mkdirSync(dirname(location.filePath), { recursive: true })
   const database = new DatabaseSync(location.filePath)
   configureUsageRecordShardDatabase(database)
-  applyUsageRecordShardSchema(database)
+  if (shouldApplyUsageRecordShardSchema()) {
+    applyUsageRecordShardSchema(database)
+  }
   shardDatabases.set(location.filePath, database)
-  registerUsageRecordShardLocation(location)
+  if (shouldApplyUsageRecordShardSchema()) {
+    registerUsageRecordShardLocation(location)
+  }
   return database
+}
+
+export function currentProcessOwnsUsageShardWriter(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
 }
 
 export function closeUsageRecordShardDatabases(): void {
@@ -765,8 +773,16 @@ function formatShardId(shardId: number): string {
 function configureUsageRecordShardDatabase(database: DatabaseSync): void {
   database.exec(`
     PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};
-    PRAGMA journal_mode = WAL;
   `)
+  if (sqliteWriterBoundaryStrictModeEnabled() && !currentProcessOwnsUsageShardWriter()) {
+    database.exec('PRAGMA query_only = ON')
+    return
+  }
+  database.exec('PRAGMA journal_mode = WAL')
+}
+
+function shouldApplyUsageRecordShardSchema(): boolean {
+  return currentProcessOwnsUsageShardWriter() || !sqliteWriterBoundaryStrictModeEnabled()
 }
 
 function applyUsageRecordShardSchema(database: DatabaseSync): void {

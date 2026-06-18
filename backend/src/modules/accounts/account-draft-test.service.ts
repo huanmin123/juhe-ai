@@ -1,6 +1,7 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
-import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
@@ -94,8 +95,8 @@ export function prepareAccountDraftTestSnapshot(input: {
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${accountInput.providerCode}`)
   }
-  if (group.providerProtocolProfileId !== providerProfile.id || !isOpenAIProtocolProfile(providerProfile)) {
-    throw new Error('当前仅支持测试 OpenAI 协议账户')
+  if (group.providerProtocolProfileId !== providerProfile.id || !isGatewaySupportedProtocolProfile(providerProfile)) {
+    throw new Error('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
   }
   const ownerSystemAccountId = group.ownerSystemAccountId
     ?? group.systemAccountId
@@ -114,11 +115,13 @@ export function prepareAccountDraftTestSnapshot(input: {
   const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {
     providerCode: accountInput.providerCode,
     accountType: accountInput.type,
-    clientCompatibility
+    clientCompatibility,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
   })
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
   const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
-  assertOpenAIEndpointModesCompatible({
+  assertDraftEndpointModesCompatible(providerProfile, {
     modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
     accountType: accountInput.type,
     clientCompatibility
@@ -272,7 +275,9 @@ function accountCreateActivationFingerprintSnapshot(input: {
   const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl), {
     providerCode: account.providerCode,
     accountType: account.type,
-    clientCompatibility
+    clientCompatibility,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
   })
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
   return {
@@ -296,6 +301,30 @@ function accountCreateActivationFingerprintSnapshot(input: {
     accountExpiresAt: optionalText(account.accountExpiresAt),
     availabilityScheduleJson: accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined,
     notes: optionalText(account.notes)
+  }
+}
+
+function assertDraftEndpointModesCompatible(
+  providerProfile: { protocolCode?: string; protocolVersion?: string },
+  input: {
+    modes: readonly AccountSupportedEndpointMode[]
+    accountType?: string
+    clientCompatibility: AccountSummary['clientCompatibility']
+  }
+): void {
+  if (isAnthropicProtocolProfile(providerProfile)) {
+    assertAnthropicEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType
+    })
+    return
+  }
+  if (isOpenAIProtocolProfile(providerProfile)) {
+    assertOpenAIEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType,
+      clientCompatibility: input.clientCompatibility
+    })
   }
 }
 

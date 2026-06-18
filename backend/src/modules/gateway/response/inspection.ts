@@ -3,7 +3,7 @@ import {
   gatewayStreamClientRetryMessage
 } from './responses.js'
 import {
-  type OpenAIResponseEndpointFamily,
+  type ResponseEndpointFamily,
   type ResponseSemanticFrame
 } from '../protocols/openai-v1/response-semantics.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -59,7 +59,7 @@ export interface ResponseInspectionDecision {
   action: 'client_retry' | 'discard_event' | 'discard_response' | 'replace_with_failure' | 'dry_run'
   transport: 'json' | 'sse'
   triggerPhase: 'before_downstream_write' | 'after_downstream_write'
-  endpointFamily: OpenAIResponseEndpointFamily
+  endpointFamily: ResponseEndpointFamily
   frameType: ResponseSemanticFrame['frameType']
   upstreamEventType?: string
   upstreamErrorCode?: string

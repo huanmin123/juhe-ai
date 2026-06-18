@@ -12,7 +12,9 @@ import {
 } from './stream-events.js'
 import {
   extractOpenAISseSemanticFrames,
-  type OpenAIResponseEndpointFamily
+  type OpenAIResponseEndpointFamily,
+  type ResponseEndpointFamily,
+  type ResponseSemanticFrame
 } from './response-semantics.js'
 
 export interface ResponseInspectionSseResult {
@@ -25,8 +27,10 @@ export interface ResponseInspectionSseResult {
 export interface OpenAIResponseInspectionBufferOptions {
   clientRetryEnabled?: boolean
   policies?: RuntimeResponseInspectionPolicy[]
-  endpointFamily: OpenAIResponseEndpointFamily
+  endpointFamily: ResponseEndpointFamily
   context?: ResponseInspectionRuntimeContext
+  extractSemanticFrames?: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
+  buildFailureEvent?: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
 }
 
 const maxBufferedSseEventBytes = 256 * 1024
@@ -36,8 +40,10 @@ export class OpenAIResponseInspectionBuffer {
   private readonly clientRetryEnabled: boolean
   private readonly policies: RuntimeResponseInspectionPolicy[]
   private readonly inspectVisibleOutputTextEvents: boolean
-  private readonly endpointFamily: OpenAIResponseEndpointFamily
+  private readonly endpointFamily: ResponseEndpointFamily
   private readonly context: ResponseInspectionRuntimeContext | undefined
+  private readonly extractSemanticFrames: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
+  private readonly buildFailureEvent: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
   private readonly deferredLeadingNoopChunks: Buffer[] = []
   private parserSkipped = false
   private downstreamWritten = false
@@ -48,6 +54,8 @@ export class OpenAIResponseInspectionBuffer {
     this.inspectVisibleOutputTextEvents = this.policies.some(policyRequiresVisibleOutputTextInspection)
     this.endpointFamily = options.endpointFamily
     this.context = options.context
+    this.extractSemanticFrames = options.extractSemanticFrames ?? ((event) => extractOpenAISseSemanticFrames(event, openAIEndpointFamilyOrUnknown(this.endpointFamily)))
+    this.buildFailureEvent = options.buildFailureEvent ?? failureEventForDecision
   }
 
   markDownstreamWrite(): void {
@@ -91,7 +99,7 @@ export class OpenAIResponseInspectionBuffer {
         chunks.push(rawBuffer)
         continue
       }
-      const frames = extractOpenAISseSemanticFrames(event, this.endpointFamily)
+      const frames = this.extractSemanticFrames(event)
       const inspection = inspectResponseSemanticFrames({
         frames,
         policies: this.policies,
@@ -109,7 +117,7 @@ export class OpenAIResponseInspectionBuffer {
         if (!this.downstreamWritten) {
           chunks.length = 0
         }
-        const failureEvent = failureEventForDecision(decision, this.clientRetryEnabled)
+        const failureEvent = this.buildFailureEvent(decision, this.clientRetryEnabled)
         if (failureEvent) {
           chunks.push(failureEvent)
         }
@@ -164,7 +172,7 @@ export class OpenAIResponseInspectionBuffer {
         parserSkipped: this.parserSkipped
       }
     }
-    const frames = extractOpenAISseSemanticFrames(event, this.endpointFamily)
+    const frames = this.extractSemanticFrames(event)
     const inspection = inspectResponseSemanticFrames({
       frames,
       policies: this.policies,
@@ -188,7 +196,7 @@ export class OpenAIResponseInspectionBuffer {
       }
     }
     this.clearDeferredLeadingNoopChunks()
-    const failureEvent = failureEventForDecision(decision, this.clientRetryEnabled)
+    const failureEvent = this.buildFailureEvent(decision, this.clientRetryEnabled)
     return {
       chunks: failureEvent ? [failureEvent] : [],
       intercepted: decision,
@@ -227,6 +235,12 @@ export class OpenAIResponseInspectionBuffer {
     if (this.inspectVisibleOutputTextEvents) return false
     return isCommonResponsesTextDeltaSseBuffer(rawBuffer)
   }
+}
+
+function openAIEndpointFamilyOrUnknown(endpointFamily: ResponseEndpointFamily): OpenAIResponseEndpointFamily {
+  return endpointFamily === 'chat_completions' || endpointFamily === 'responses'
+    ? endpointFamily
+    : 'unknown'
 }
 
 

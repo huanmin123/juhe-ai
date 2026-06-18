@@ -4,9 +4,14 @@ import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.rep
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
+import type {
+  BackgroundDatasetWriteOperation,
+  BackgroundDatasetWriteOperationResult
+} from '../background/background-dataset-writer.js'
 import type { ApiKeyQuotaDecision } from '../gateway/quota/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
@@ -829,6 +834,18 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'background_worker_dataset_write_response'
+    requestId: string
+    ok: true
+    result: BackgroundDatasetWriteOperationResult
+  }
+  | {
+    type: 'background_worker_dataset_write_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -894,6 +911,10 @@ export type DbServiceChildMessage =
     type: 'background_worker_public_api_logs'
     items: PublicApiLogInput[]
   }
+  | ({
+    type: 'background_worker_runtime_log_line'
+    line: string
+  } & RuntimeLogLineIndexOptions)
   | {
     type: 'background_worker_record_maintenance'
     items: RecordMaintenanceJob[]
@@ -905,4 +926,9 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_account_test_cancel'
     taskId: string
+  }
+  | {
+    type: 'background_worker_dataset_write_request'
+    requestId: string
+    operation: BackgroundDatasetWriteOperation
   }

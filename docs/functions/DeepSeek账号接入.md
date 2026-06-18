@@ -72,7 +72,7 @@ DeepSeek OpenAI v1 档案优先复用现有 OpenAI v1 Chat Completions 协议适
 - 客户端可请求 `/chat/completions` 或 `/v1/chat/completions`
 - beta 能力按 `https://api.deepseek.com/beta` 单独拼接
 - `GET /models` 和 `GET /v1/models` 继续由本地模型目录返回，不主动请求 DeepSeek 上游模型列表
-- 第一阶段不把 `/responses` 作为 DeepSeek OpenAI 档案默认候选；如果后续官方能力和本地适配都确认，再单独放开
+- 当前不把 `/responses` 作为 DeepSeek OpenAI 档案默认候选；如果后续官方能力和本地适配都确认，再单独放开
 
 请求头：
 
@@ -112,7 +112,7 @@ DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混�
 
 - `providerCode = deepseek`
 - `model` 使用 DeepSeek 官方模型 ID，小写和连字符按官方写法保留
-- `supportedApiProtocols` 第一阶段只放 OpenAI-compatible 档案对应的 `chat_completions`，Anthropic-compatible 档案单独维护
+- `supportedApiProtocols` 当前只放 OpenAI-compatible 档案对应的 `chat_completions`，Anthropic-compatible 档案单独维护
 - `contextWindowTokens` 和 `releaseDate` 以官方模型页或官方文档为准
 - 价格只采信 DeepSeek 官方文档或官方 API 文档；第三方价格库和社区表格只能作为线索
 
@@ -162,7 +162,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 
 ## 验证要求
 
-第一阶段文档落地后至少覆盖：
+当前文档落地后至少覆盖：
 
 - DeepSeek 作为独立供应商，不复用 GPT 供应商编码
 - DeepSeek OpenAI 账户保存后落到 `profile_deepseek_openai_v1`
@@ -172,4 +172,3 @@ DeepSeek 账户测试必须复用真实网关链路：
 - Anthropic-compatible 面只声明 Messages 语义
 - `GET /v1/models` 继续由本地模型目录返回，不请求 DeepSeek 上游
 - 旧别名 `deepseek-chat`、`deepseek-reasoner` 不作为新默认模型
-

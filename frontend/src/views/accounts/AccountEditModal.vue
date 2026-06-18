@@ -233,6 +233,8 @@ const publicCredentialItems = computed(() => {
     credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
     credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
     credentialItem('plan_type', '套餐类型', credentials.plan_type),
+    credentialItem('anthropic_version', 'Anthropic-Version', credentials.anthropic_version),
+    credentialItem('anthropic_beta', 'Anthropic-Beta', credentials.anthropic_beta),
     credentialItem('supported_endpoint_modes', '接口能力', accountEndpointModeText(credentials.supported_endpoint_modes))
   ]
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
@@ -255,6 +257,8 @@ const advancedConfiguredCount = computed(() => {
   const checks = [
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
+    Boolean(form.anthropicVersion && form.anthropicVersion !== '2023-06-01'),
+    Boolean(form.anthropicBeta),
     form.clientCompatibility !== defaultAccountClientCompatibility(form.providerCode),
     !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, form.clientCompatibility)),
     form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,

@@ -12,6 +12,14 @@ import {
   type OpenAIStreamInspection
 } from '../protocols/openai-v1/stream-inspection.js'
 import {
+  AnthropicStreamInspector,
+  type AnthropicStreamInspection
+} from '../protocols/anthropic-v1/stream-inspection.js'
+import {
+  extractAnthropicSseSemanticFrames,
+  type AnthropicResponseEndpointFamily
+} from '../protocols/anthropic-v1/response-semantics.js'
+import {
   isUpstreamRequestAbortedError,
   readStreamChunkWithAbort,
   readStreamChunkWithTimeout
@@ -73,7 +81,8 @@ export interface StreamPipeOptions {
   retryBeforeDownstreamWriteUntilOutput?: boolean
   responseInspectionPolicies?: RuntimeResponseInspectionPolicy[]
   responseInspectionContext?: ResponseInspectionRuntimeContext
-  endpointFamily?: OpenAIResponseEndpointFamily
+  responseProtocol?: 'openai_v1' | 'anthropic_v1'
+  endpointFamily?: OpenAIResponseEndpointFamily | AnthropicResponseEndpointFamily
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
@@ -85,6 +94,8 @@ const streamTerminalKeepAliveDrainMs = 50
 const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
+type GatewayStreamInspection = OpenAIStreamInspection | AnthropicStreamInspection
+type GatewayStreamInspector = OpenAIStreamInspector | AnthropicStreamInspector
 
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
@@ -96,14 +107,21 @@ export async function pipeUpstreamStream(
   options: StreamPipeOptions = {}
 ): Promise<StreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
-  const inspector = new OpenAIStreamInspector()
+  const responseProtocol = options.responseProtocol ?? 'openai_v1'
+  const inspector = createGatewayStreamInspector(responseProtocol)
   const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,
       policies: options.responseInspectionPolicies,
-      endpointFamily: options.endpointFamily ?? 'unknown',
-      context: options.responseInspectionContext
+      endpointFamily: responseProtocol === 'openai_v1' && isOpenAIEndpointFamily(options.endpointFamily) ? options.endpointFamily : 'unknown',
+      context: options.responseInspectionContext,
+      ...(responseProtocol === 'anthropic_v1'
+        ? {
+            extractSemanticFrames: (event) => extractAnthropicSseSemanticFrames(event, isAnthropicEndpointFamily(options.endpointFamily) ? options.endpointFamily : 'messages'),
+            buildFailureEvent: () => undefined
+          }
+        : {})
     })
     : undefined
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
@@ -150,7 +168,7 @@ export async function pipeUpstreamStream(
     totalResponseBytes += chunk.length
     return writeResult
   }
-  const canKeepPreCommitBuffered = (inspection: OpenAIStreamInspection, chunk: Buffer) => {
+  const canKeepPreCommitBuffered = (inspection: GatewayStreamInspection, chunk: Buffer) => {
     return canKeepStreamPreCommitChunk(preCommitBuffer, {
       inspection,
       chunk,
@@ -188,7 +206,7 @@ export async function pipeUpstreamStream(
     void closeAsyncIterator(iterator)
   }
   const omitBodyCaptureIfImageStream = (
-    inspection: ReturnType<OpenAIStreamInspector['snapshot']>,
+    inspection: GatewayStreamInspection,
     input: { eofPendingFlush?: boolean } = {}
   ) => {
     if (!inspection.imageOutputReceived || bodyCaptureOmitted) {
@@ -211,7 +229,7 @@ export async function pipeUpstreamStream(
       eofPendingFlush: input.eofPendingFlush
     }, '网关识别到图像流输出，已省略流式响应正文捕获，仅保留元信息')
   }
-  const bodyOmissionFor = (inspection: OpenAIStreamInspection) => bodyCaptureOmitted
+  const bodyOmissionFor = (inspection: GatewayStreamInspection) => bodyCaptureOmitted
     ? streamBodyOmissionSummary(inspection, totalUpstreamBytes, totalResponseBytes)
     : undefined
   const finishStreamResult = (
@@ -250,10 +268,11 @@ export async function pipeUpstreamStream(
     uncommittedStreamResponseBody(preCommitBuffer)
   )
   const finishTerminalSuccess = async (
-    inspection: OpenAIStreamInspection,
+    inspection: GatewayStreamInspection,
     input: { drainForKeepAlive?: boolean; eofPendingFlush?: boolean } = {}
   ): Promise<StreamPipeResult> => {
     let finalInspection = inspection
+    let closeIteratorAfterEnd = false
     omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: input.eofPendingFlush })
     if (input.drainForKeepAlive && !finalInspection.failedReceived) {
       res.off('close', closeIterator)
@@ -261,6 +280,9 @@ export async function pipeUpstreamStream(
         lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
       })
       omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: true })
+    } else {
+      res.off('close', closeIterator)
+      closeIteratorAfterEnd = true
     }
     if (finalInspection.failedReceived) {
       const message = finalInspection.errorMessage ?? '上游流式响应失败'
@@ -271,8 +293,10 @@ export async function pipeUpstreamStream(
         totalResponseBytes
       )
       handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived))
-      void closeAsyncIterator(iterator)
       endResponse(res)
+      if (closeIteratorAfterEnd) {
+        void closeAsyncIterator(iterator)
+      }
       streamLogger.warn({
         event: 'gateway_stream_failed_after_terminal',
         elapsedMs: Date.now() - startedAt,
@@ -292,6 +316,9 @@ export async function pipeUpstreamStream(
       return finishStreamResult(false, message, errorCode, firstTokenMs, finalInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, finalInspection.outputReceived, finalInspection.estimatedOutputTokens, finalInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(finalInspection))
     }
     endResponse(res)
+    if (closeIteratorAfterEnd) {
+      void closeAsyncIterator(iterator)
+    }
     streamLogger.info({
       event: 'gateway_stream_finished_success_after_terminal',
       elapsedMs: Date.now() - startedAt,
@@ -306,7 +333,7 @@ export async function pipeUpstreamStream(
       outputEventCount: finalInspection.outputEventCount,
       upstreamDrainScheduledForKeepAlive: input.drainForKeepAlive === true || undefined,
       eofPendingFlush: input.eofPendingFlush === true || undefined
-    }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
+    }, '网关已收到协议终止事件并成功结束流式响应')
     return finishStreamResult(true, '已完成', undefined, firstTokenMs, finalInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, finalInspection.outputReceived, finalInspection.estimatedOutputTokens, finalInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(finalInspection))
   }
   res.once('close', closeIterator)
@@ -550,7 +577,10 @@ export async function pipeUpstreamStream(
       if ((chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !latestInspection.failedReceived && chunkCanEndAfterTerminal) {
         await flushPreCommitChunks()
         terminalEventWritten = true
-        return await finishTerminalSuccess(inspector.finish(), { drainForKeepAlive: true, eofPendingFlush: true })
+        return await finishTerminalSuccess(inspector.finish(), {
+          drainForKeepAlive: responseProtocol !== 'anthropic_v1',
+          eofPendingFlush: true
+        })
       }
     }
 
@@ -747,7 +777,7 @@ export async function pipeUpstreamStream(
           parserSkipped: inspection.skipped,
           skipReason: inspection.skipReason,
           errorMessage: error instanceof Error ? error.message : String(error)
-        }, '客户端在 OpenAI 终止事件后关闭连接，按成功流式响应收尾')
+        }, '客户端在协议终止事件后关闭连接，按成功流式响应收尾')
         return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
       }
       streamLogger.warn({
@@ -891,7 +921,7 @@ export async function pipeUpstreamStream(
     return finishStreamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
   if (!inspection.terminalReceived) {
-    const message = '上游流在 OpenAI 终止事件前结束'
+    const message = '上游流在协议终止事件前结束'
     const errorCode = streamClientFailureCode(
       gatewayStreamFailureCode(message),
       inspection.outputReceived,
@@ -908,7 +938,7 @@ export async function pipeUpstreamStream(
       sseEventCount: inspection.eventCount,
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
-    }, '上游 EOF 前未收到 OpenAI 终止事件')
+    }, '上游 EOF 前未收到协议终止事件')
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
         event: 'gateway_stream_missing_terminal_before_downstream_commit',
@@ -1027,9 +1057,9 @@ function readNextStreamChunk(
 
 async function drainIteratorAfterTerminalForInspection(
   iterator: AsyncIterator<Uint8Array>,
-  inspector: OpenAIStreamInspector,
+  inspector: GatewayStreamInspector,
   options: { lightweightImageStream?: boolean } = {}
-): Promise<OpenAIStreamInspection> {
+): Promise<GatewayStreamInspection> {
   const deadline = Date.now() + streamTerminalKeepAliveDrainMs
   try {
     while (Date.now() < deadline) {
@@ -1051,6 +1081,20 @@ async function drainIteratorAfterTerminalForInspection(
     await closeAsyncIterator(iterator)
     return inspector.finish()
   }
+}
+
+function createGatewayStreamInspector(protocol: 'openai_v1' | 'anthropic_v1'): GatewayStreamInspector {
+  return protocol === 'anthropic_v1'
+    ? new AnthropicStreamInspector()
+    : new OpenAIStreamInspector()
+}
+
+function isOpenAIEndpointFamily(value: unknown): value is OpenAIResponseEndpointFamily {
+  return value === 'chat_completions' || value === 'responses' || value === 'unknown'
+}
+
+function isAnthropicEndpointFamily(value: unknown): value is AnthropicResponseEndpointFamily {
+  return value === 'messages' || value === 'models' || value === 'message_token_counting'
 }
 
 async function readIteratorNextWithTimeout(

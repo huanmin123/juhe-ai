@@ -79,10 +79,11 @@ export async function resolveGatewayRuntimeAsync(
   }
   const clientIp = extractClientIp(req)
   const authorization = req.header('authorization')
+  const gatewayAuthSource = gatewayPreAuthSource(req, authorization)
   if (await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
     return undefined
   }
-  const preAuthDecision = inspectGatewayPreAuthCircuit({ clientIp, authorization })
+  const preAuthDecision = inspectGatewayPreAuthCircuit({ clientIp, authorization: gatewayAuthSource })
   if (preAuthDecision.blocked) {
     getRequestLogger().warn({
       event: 'gateway_pre_auth_error_circuit_blocked',
@@ -95,7 +96,7 @@ export async function resolveGatewayRuntimeAsync(
     sendPreAuthCircuitResponse(res, preAuthDecision)
     return undefined
   }
-  const gatewayApiKey = extractBearerToken(authorization)
+  const gatewayApiKey = extractGatewayApiKey(req, authorization)
   if (!gatewayApiKey) {
     const failureDecision = recordPreAuthFailure(req, res, 'missing_bearer_token', options)
     if (failureDecision.blocked) {
@@ -178,7 +179,7 @@ function recordPreAuthFailure(
 ): GatewayCircuitDecision {
   const decision = recordGatewayPreAuthFailure({
     clientIp: extractClientIp(req),
-    authorization: req.header('authorization'),
+    authorization: gatewayPreAuthSource(req, req.header('authorization')),
     reason
   })
   if (!decision.blocked) {
@@ -194,6 +195,23 @@ function recordPreAuthFailure(
   prepareEarlyAuthFailureResponse(res, options)
   sendPreAuthCircuitResponse(res, decision)
   return decision
+}
+
+function extractGatewayApiKey(req: Request, authorization?: string): string | undefined {
+  return extractBearerToken(authorization) ?? headerToken(req, 'x-api-key')
+}
+
+function gatewayPreAuthSource(req: Request, authorization?: string): string | undefined {
+  const bearer = extractBearerToken(authorization)
+  if (bearer) return authorization
+  const apiKey = headerToken(req, 'x-api-key')
+  return apiKey ? `x-api-key ${apiKey}` : authorization
+}
+
+function headerToken(req: Request, name: string): string | undefined {
+  const value = req.header(name)
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text || undefined
 }
 
 function sendPreAuthCircuitResponse(res: Response, decision: GatewayCircuitDecision): void {

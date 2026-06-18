@@ -8,7 +8,7 @@ export interface AccountResponseInspectionPolicyValidationResult {
 }
 
 const textListSchema = z.array(z.string().trim().min(1).max(200)).max(50).optional()
-const clientProfileListSchema = z.array(z.enum(['codex', 'generic_openai'])).max(2).optional()
+const clientProfileListSchema = z.array(z.enum(['codex', 'generic_openai', 'claude_code', 'generic_anthropic'])).max(4).optional()
 const accountClientCompatibilityListSchema = z.array(z.enum(['openai_standard', 'codex_responses'])).max(2).optional()
 const actionSchema = z.enum([
   'observe',

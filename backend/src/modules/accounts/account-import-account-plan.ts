@@ -1,6 +1,8 @@
 import { type AccountAvailabilitySchedule, type AccountClientCompatibility, type AccountModelMapping, type AccountType } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
+import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
 import {
@@ -144,6 +146,7 @@ export function planImportAccount(
     ? normalizeImportAvailabilitySchedule(availabilityScheduleInput.value, item.messages)
     : undefined
   source.notes = optionalTextField(value, 'notes', '账户 notes', item.messages)
+  applyImportAccountProtocolProfileDefaults(source, context)
   try {
     const clientCompatibility = source.clientCompatibility
       ? normalizeOpenAIAccountClientCompatibility(
@@ -158,7 +161,9 @@ export function planImportAccount(
     source.credentials = normalizeAccountCredentialsForWrite(source.type, value.credentials, {
       providerCode: source.providerCode,
       accountType: source.type,
-      clientCompatibility
+      clientCompatibility,
+      protocolCode: source.protocolCode,
+      protocolVersion: source.protocolVersion
     })
   } catch (error) {
     item.messages.push(errorMessage(error))
@@ -216,13 +221,52 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
       'openai_standard',
       { protocolCode: account.protocolCode, protocolVersion: account.protocolVersion }
     )
-    assertOpenAIEndpointModesCompatible({
+    assertImportEndpointModesCompatible(account, {
       modes: account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
       accountType: account.type,
       clientCompatibility
     })
   } catch (error) {
     account.messages.push(errorMessage(error))
+  }
+}
+
+function applyImportAccountProtocolProfileDefaults(account: NormalizedImportAccount, context: AccountImportProviderContext): void {
+  const provider = context.providerByCode.get(account.providerCode)
+  if (!provider) return
+  const requestedProfileId = account.providerProtocolProfileId?.trim()
+  const profile = requestedProfileId
+    ? provider.protocolProfiles.find((item) => item.id === requestedProfileId)
+    : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+      ?? provider.protocolProfiles.find((item) => item.enabled)
+      ?? provider.protocolProfiles[0]
+  if (!profile || profile.providerCode !== account.providerCode) return
+  account.providerProtocolProfileId = profile.id
+  account.protocolCode = profile.protocolCode
+  account.protocolVersion = profile.protocolVersion
+}
+
+function assertImportEndpointModesCompatible(
+  account: Pick<NormalizedImportAccount, 'protocolCode' | 'protocolVersion'>,
+  input: {
+    modes: readonly AccountSupportedEndpointMode[]
+    accountType?: string
+    clientCompatibility: AccountClientCompatibility
+  }
+): void {
+  if (isAnthropicProtocolProfile(account)) {
+    assertAnthropicEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType
+    })
+    return
+  }
+  if (isOpenAIProtocolProfile(account)) {
+    assertOpenAIEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType,
+      clientCompatibility: input.clientCompatibility
+    })
   }
 }
 

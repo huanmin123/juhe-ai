@@ -7,7 +7,7 @@
 
 - 一条命令给本地 `admin` 用户生成完整业务闭环数据。
 - 覆盖系统账户、团队、授权、代理、带账户级错误处理规则的 AI 账户、分组、API Key、公告、使用记录、模型检测、审计日志、操作日志、运行日志、公开接口日志、外部来源系统、响应检查策略、IP 统计与封禁策略、后台记录清理目标、账号质量、用量统计、系统监控和表空间监控。
-- 覆盖 OpenAI OAuth、OpenAI API Key、标准 OpenAI 兼容客户端、Codex Responses 兼容客户端、多上游 Key 账号、图像生成账号、自定义模型目录、模型映射、账号调度停用、时间计划停用、待测试、停用、限流、冷却和错误等状态 / 类型样本。
+- 覆盖 OpenAI OAuth、OpenAI API Key、Anthropic API Key、标准 OpenAI 兼容客户端、Anthropic native Messages 客户端、Codex Responses 兼容客户端、多上游 Key 账号、图像生成账号、自定义模型目录、模型映射、账号调度停用、时间计划停用、待测试、停用、限流、冷却和错误等状态 / 类型样本。
 - 覆盖 API Key 的优先级故障转移、轮询、加权轮询、绑定禁用、额度窗口、过期、停用和时间计划样本，保证调度、筛选、详情和统计页面都有可见数据。
 - 默认生成近 31 天数据，并重建所有用量统计窗口、排行窗口、额度窗口、授权统计、账号质量缓存、运行日志分面和系统监控窗口。
 - 脚本可重复执行；每次先清理上一批 `造数-` / `mockdata_` 数据，再重新插入。
@@ -74,10 +74,10 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 授权样例必须覆盖个人直授权、团队授权、AI 账户授权、分组授权、有效授权、暂停授权、过期授权、回收授权和归还授权；授权调用方至少覆盖研发、测试、运维、财务、观察用户和超级管理员，不能只围绕单一用户或单一团队造数。
 - 授权分组既作为分组列表、我的授权和授权用量统计样本展示，也会作为授权调用方 API Key 的直接号池样本。`mockdata-summary.json` 会通过 `apiKeyBindingRule` 和 `authorizationSamples[].bindableToApiKey` 显式标记有效授权分组可绑定。
 - 授权调用方的 Mock API Key 会混合绑定有效授权分组和该调用方自己的默认分组；admin 也会生成一个绑定有效授权分组的 Mock API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证 API Key 直连授权分组后的统计和审计口径。
-- AI 账户必须覆盖 API Key、OAuth、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待测试、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本。
+- AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待测试、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
 - API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
 - 自定义模型目录必须覆盖 global / personal 范围，active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。
-- 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本。
+- 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本。
 - 脚本会创建一个 `mockdata_admin` 普通管理员账号，以及若干 `mockdata_*` 普通用户。普通管理员用于管理员模式下验证管理员自有分组、AI 账户、API Key、筛选和创建目标；普通用户用于团队成员、授权调用方、公告已读和操作日志可见性。这些账号都是配套数据。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求 OpenAI。
 - 统计数据来自脚本写入的 `usage_records`，再通过现有聚合器重建预聚合表；页面读取路径仍然和真实数据一致。

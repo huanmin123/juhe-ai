@@ -1,7 +1,7 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
+import { ANTHROPIC_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
-import { isOpenAIProtocolProviderCode } from './provider.repository.js'
+import { isProtocolProviderCode } from './provider.repository.js'
 import {
   ACCOUNT_CLIENT_COMPATIBILITIES,
   type AccountClientCompatibility
@@ -9,7 +9,7 @@ import {
 
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
 export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
-export type ResponseInspectionPolicyClientProfile = 'codex' | 'generic_openai'
+export type ResponseInspectionPolicyClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic'
 export type ResponseInspectionPolicyAction =
   | 'observe'
   | 'drop_event'
@@ -108,9 +108,10 @@ const inputKeys = new Set([
   'notes'
 ])
 
-const clientProfiles = ['codex', 'generic_openai'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
+const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
 const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
 const accountClientCompatibilityValues = new Set<AccountClientCompatibility>(ACCOUNT_CLIENT_COMPATIBILITIES)
+const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE])
 
 const matchKeys = [
   'clientProfiles',
@@ -212,6 +213,21 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     },
     action: 'retry_no_avoidance',
     notes: 'GPT / Codex 上游 cyber_policy 局部规则；不能扩散为所有 OpenAI-compatible 供应商语义。'
+  },
+  {
+    id: 'default_anthropic_error_object',
+    defaultRule: true,
+    editable: false,
+    name: 'Anthropic error 对象',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'Anthropic Messages JSON / SSE event:error 默认检查规则；错误类型只作为响应语义输入，不直接写账号状态。'
   }
 ]
 
@@ -230,7 +246,10 @@ export function listActiveResponseInspectionPoliciesForGateway(input: {
   protocolCode: string
   providerCode?: string
 }): ResponseInspectionPolicySummary[] {
-  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  const protocolCode = normalizeGatewayPolicyProtocolCode(input.protocolCode)
+  if (!protocolCode) {
+    return []
+  }
   const providerCode = normalizeOptionalText(input.providerCode, '供应商编码')
   const scopeFilter = providerCode
     ? `AND (
@@ -257,6 +276,11 @@ export function listActiveResponseInspectionPoliciesForGateway(input: {
     ...listResponseInspectionPolicyDefaultRules().filter((policy) => policyMatchesGatewayScope(policy, protocolCode, providerCode)),
     ...rows.map(policyFromRow)
   ]
+}
+
+function normalizeGatewayPolicyProtocolCode(value: unknown): string | undefined {
+  const text = requiredText(value, '协议编码', 80)
+  return supportedResponseInspectionProtocolCodes.has(text) ? text : undefined
 }
 
 export function createResponseInspectionPolicy(input: ResponseInspectionPolicyInput): ResponseInspectionPolicySummary {
@@ -397,8 +421,8 @@ function normalizePolicyInput(
   const providerCode = scopeType === 'provider'
     ? normalizeProviderCode(input.providerCode)
     : undefined
-  if (scopeType === 'provider' && (providerCode === undefined || !isOpenAIProtocolProviderCode(providerCode))) {
-    throw new Error('响应检查策略供应商必须使用 OpenAI v1 协议档案')
+  if (scopeType === 'provider' && (providerCode === undefined || !isProtocolProviderCode(providerCode, protocolCode))) {
+    throw new Error('响应检查策略供应商必须使用同协议启用档案')
   }
   if (scopeType === 'protocol' && input.providerCode) {
     throw new Error('协议层响应检查策略不能绑定供应商')
@@ -503,8 +527,8 @@ function normalizeScopeType(value: unknown): ResponseInspectionPolicyScopeType {
 
 function normalizeProtocolCode(value: unknown): string {
   const text = requiredText(value, '协议编码', 80)
-  if (text !== OPENAI_PROTOCOL_CODE) {
-    throw new Error('当前响应检查策略只支持 OpenAI v1 协议')
+  if (!supportedResponseInspectionProtocolCodes.has(text)) {
+    throw new Error('当前响应检查策略只支持 OpenAI v1 或 Anthropic v1 协议')
   }
   return text
 }

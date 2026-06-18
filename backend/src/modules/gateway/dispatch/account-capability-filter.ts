@@ -5,6 +5,13 @@ import {
   openAIEndpointModeForRequestShape
 } from '../../../domain/openai-endpoint-modes.js'
 import {
+  accountSupportsAnthropicEndpointMode,
+  anthropicEndpointModeForRequestShape
+} from '../../../domain/anthropic-endpoint-modes.js'
+import {
+  isAnthropicProtocolProfile
+} from '../../../domain/provider-protocol.js'
+import {
   buildUpstreamUrlsForAccount,
   type UpstreamAccount
 } from '../protocols/openai-v1/route-helpers.js'
@@ -27,12 +34,20 @@ export function filterGatewayAccountsByRequestCapability(
     if (buildUpstreamUrlsForAccount(account, req).length === 0) {
       return false
     }
-    const mode = openAIEndpointModeForRequestShape({
-      endpoint: req.path || req.originalUrl.split('?', 1)[0],
-      stream: isEffectiveOpenAIStreamRequest(req, account)
-    })
+    const mode = gatewayEndpointModeForRequestShape(req, account)
     if (!mode) {
       return true
+    }
+    if (isAnthropicProtocolProfile(account)) {
+      return accountSupportsAnthropicEndpointMode({
+        mode,
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        accountType: account.type,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion
+      })
     }
     return accountSupportsOpenAIEndpointMode({
       mode,
@@ -51,4 +66,17 @@ export function filterGatewayAccountsByRequestCapability(
       ? 'request_capability_mismatch'
       : undefined
   }
+}
+
+function gatewayEndpointModeForRequestShape(req: Request, account: UpstreamAccount) {
+  if (isAnthropicProtocolProfile(account)) {
+    return anthropicEndpointModeForRequestShape({
+      endpoint: req.path || req.originalUrl.split('?', 1)[0],
+      stream: isEffectiveOpenAIStreamRequest(req, account)
+    })
+  }
+  return openAIEndpointModeForRequestShape({
+    endpoint: req.path || req.originalUrl.split('?', 1)[0],
+    stream: isEffectiveOpenAIStreamRequest(req, account)
+  })
 }

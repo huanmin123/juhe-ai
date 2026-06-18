@@ -38,6 +38,14 @@
 
 owner 是写锁归属，不等于业务角色。`metrics-worker` 可以生产系统采样 command，但不能直接绕过 stats writer 写统计库；`probe-worker` 可以生产账号状态 command，但业务库写入仍由 DB service owner 提交。
 
+## 运行时强制边界
+
+- 正常 server、DB service 和 worker 运行时默认启用 SQLite writer boundary strict 模式；非 owner 进程打开业务库、数据集目录库、统计库或 usage shard 时必须进入 `PRAGMA query_only = ON`，只允许读取，任何写 SQL 都应被 SQLite 拒绝。
+- 生产环境不能关闭 strict 模式；开发环境只有显式设置 `JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT=false` 才允许临时关闭，且仅用于定位或离线验证。
+- `src/scripts/` 和 `dist/scripts/` 下的维护 / 回归 / 造数脚本默认按离线脚本处理，可以直接打开当前 schema 写库；这些脚本不能作为常驻运行路径，也不能和生产进程并发抢同一 SQLite 文件。
+- DB service 是业务库 owner，不是所有 SQLite 文件的 owner。DB service 内部 system API 可以读取数据集目录库和统计结果库，但任何写入数据集目录库或统计结果库的动作都必须转成 typed command，分别投递 ingest / dataset writer 或 stats writer。
+- 模型检测属于 DB service system API 触发但写入数据集目录库的流程；运行记录、检测项和完成状态必须通过 dataset writer 转发给 `ingest-worker`，不能在 DB service 内直接调用数据集写 repository。
+
 ## command 语义
 
 写队列只接受明确语义的 command，不接受任意 SQL 字符串或任意闭包。command 至少包含：
@@ -62,6 +70,10 @@ owner 是写锁归属，不等于业务角色。`metrics-worker` 可以生产系
 | `maintenance` | 保留期清理、历史窗口重建、非业务硬清理 | 低优先级、小批次、可 blocked 重试；不能长期占用写 owner。 |
 
 writer 不能让低优先级大任务饥饿高优先级写入。长窗口刷新、保留清理和物理删除必须拆成 staged command 或短批次 command。
+
+当前 ingest-worker 的 IPC 入队按语义分组限流：`usageRecords` 使用独立队列；运行日志、审计、操作日志、公开接口日志、dataset writer 同步请求等进入高优先级 regular 组；`recordMaintenance` 作为低优先级维护组独立计数并在出队时让位给高优先级 regular。这样仍保持数据集目录库 / usage shard 只有 ingest 一个写 owner，但不会让保留期清理压死日志索引或模型检测写入。
+
+DB service 的父进程 IPC 请求同样必须支持优先级：后台管理、网关请求链路、账号状态、API Key、授权、会话等用户可感知同步写入默认进入高优先级；过期会话清理、账号测试任务维护、授权过期扫描、分组统计 dirty 标记和全量刷新游标等定时维护写入进入低优先级。DB service 每处理一个父进程 IPC 写请求后都要让出事件循环，避免低优先级维护请求连续 drain 导致 DB service 内部 system API / 管理操作出现明显卡顿。HTTP 形式进入 DB service 的系统管理 API 不经过父进程 IPC 队列，但仍共享同一个业务库 owner，因此维护类 IPC 必须主动让位给管理面请求。
 
 ## 事务规则
 
@@ -100,9 +112,9 @@ SQLite locked 不是统一硬失败：
 
 1. 静态盘点所有 `getBusinessDatabase()`、`getDatasetDatabase()`、`getStatsDatabase()` 和 usage shard 写入路径，按目标库、角色、任务归属分类。
 2. 先收口业务库写入：除 DB service 和测试 / 脚本外，worker 不直接写业务库，改为 DB service typed operation。
-3. 收口统计库写入：引入 stats writer command 边界，`metrics-worker`、`stats-worker`、`snapshot-worker`、`maintenance-worker` 生产 command，单 owner 提交。
+3. 收口统计库写入：由 `stats-worker` 作为 stats writer owner 串行提交系统采样、增量聚合、窗口刷新、表监控、任务状态和统计清理；`metrics-worker`、`snapshot-worker`、`maintenance-worker` 不直接写统计库。
 4. 收口数据集目录库写入：确认 ingest / log writer 是唯一 owner；维护清理需要通过低优先级 command 或临时维护任务短批次提交。
-5. 强化 usage shard per-shard writer：同一 shard 串行，不同 shard 文件可并行。
+5. 强化 usage shard per-shard writer：同一 shard 只允许 ingest writer 写入；统计聚合只读取 shard，不能把估算字段回写到原始 shard；不同 shard 文件可在 owner 内分批处理。
 6. 增加直接写边界回归：禁止非 owner 运行时代码直接写目标库。
 7. 增加锁竞争回归：模拟统计库、数据集库、业务库写锁占用，验证 blocked / retry / 快速失败语义。
 
@@ -110,7 +122,7 @@ SQLite locked 不是统一硬失败：
 
 - **worker 绕过 owner 直接写业务库**：探测、冷却复测、时间计划同步、授权到期扫描等路径容易直接改 `accounts`、`api_keys` 或授权表。
 - **过渡期 worker -> server -> DB service 转发桥失控**：如果 worker 新增写回只转发 message、不校验 operation、或者 server 继续允许任意 DB service write op，会把写 owner 变成伪单写者。
-- **统计库多角色同时写**：`metrics-worker` 采样、`stats-worker` 聚合、`snapshot-worker` 窗口刷新、`maintenance-worker` 表监控 / 清理都可能抢同一个 stats 文件。
+- **统计库多角色同时写**：系统采样、统计聚合、窗口刷新、表监控 / 清理曾分散在多个 worker；当前统一收口到 `stats-worker` typed operation，新增 stats 写入不得落回 `metrics-worker`、`snapshot-worker` 或 `maintenance-worker`。
 - **数据集目录库 append-only 与清理抢锁**：ingest 高频写日志时，维护清理如果直接删除数据集表，会放大 locked。
 - **长事务窗口刷新**：范围窗口、TopN、概览或授权窗口如果单事务过大，会压住系统采样和增量统计。
 - **跨库事务链路**：dataset / stats / usage shard 混在一个流程里等待，会把一个库的 locked 扩散到其他库。

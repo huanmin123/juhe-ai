@@ -37,6 +37,7 @@
 - [AI 账户导入协议](AI账户导入协议.md)
 - [OpenAI 账号接入](OpenAI账号接入.md)
 - [Anthropic 账号接入](Anthropic账号接入.md)
+- [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
 - [DeepSeek 账号接入](DeepSeek账号接入.md)
 - [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)
@@ -70,7 +71,7 @@
 - 上游 API Key 类型 AI 账户安全识别方案当前已暂缓，不作为待实现功能入口；后续不要因为该历史文档存在而新增安全识别开关、识别模型、阻断处置或相关网关调用。若未来重新立项，再先重写 [上游 API Key 账户安全识别落地方案](上游APIKey账户安全识别落地方案.md)，并按影响同步 [请求处理分层设计](请求处理分层设计.md)、[原始审计日志设计](原始审计日志设计.md)、[安全与日志策略](安全与日志策略.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
 - 新增或调整上游异常重试、账户错误处理策略、本地账号屏蔽、屏蔽等待、切号救回、流式失败账号副作用、IP 级来源保护或多机制排障总链路时，优先更新 [网关错误处理完整链路](网关错误处理完整链路.md)、[网关异常重试与兜底策略](网关异常重试与兜底策略.md) 和 [OpenAI 账号接入](OpenAI账号接入.md)。
 - 新增或调整同一 API Key 账户内多个上游 Key 的轮询 / 权重、Key 级故障隔离、Key 冷却探测、Key 池派生可用性或 Key 状态展示时，优先更新 [OpenAI 账号接入](OpenAI账号接入.md) 和 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)；如果影响切号、屏蔽、后台恢复或错误兜底，再同步 [网关错误处理完整链路](网关错误处理完整链路.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。
-- 新增或调整 Anthropic 官方直连、Anthropic API Key / OAuth 账户类型、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
+- 新增或调整 Anthropic 官方直连、Anthropic API Key 账户类型、Anthropic OAuth / Claude Code token 真实验证结论、Claude Code 客户端画像、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整智谱 GLM 通用 API、GLM Coding Plan、GLM OpenAI 兼容档案、GLM 模型目录、GLM 价格口径或 GLM 账户测试时，优先更新 [智谱 GLM 账号接入](智谱GLM账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 DeepSeek OpenAI-compatible、DeepSeek Anthropic-compatible、DeepSeek 协议档案、DeepSeek 模型目录、DeepSeek 价格口径或 DeepSeek 账户测试时，优先更新 [DeepSeek 账号接入](DeepSeek账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整正常账户周期健康检测、长期空闲账户探活、健康检测字段、后台检测队列、健康检测前端展示或与真实成功流量的健康信号关系时，优先更新 [账号健康检测设计](账号健康检测设计.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[网关异常重试与兜底策略](网关异常重试与兜底策略.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。

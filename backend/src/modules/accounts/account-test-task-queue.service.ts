@@ -23,7 +23,7 @@ import {
 import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
-import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
 import { preferredSystemAccountTestModel, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
@@ -48,6 +48,7 @@ interface ManualAccountTestFailurePrecheckQueueItem {
   precheckStartedAt: string
 }
 
+const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI 或 Anthropic 协议账户'
 const defaultManualAccountTestConcurrency = 100
 const manualAccountTestRefillMinBatchSize = 100
 const manualAccountTestRefillMaxBatchSize = 1000
@@ -224,8 +225,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
     if (task.draftAccount) {
       const draft = task.draftAccount
       const draftAccount = accountSummaryFromDraftSnapshot(draft)
-      if (!isOpenAIProtocolProfile(draftAccount)) {
-          await failAccountTestTaskViaDbService(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(draftAccount, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+      if (!isGatewaySupportedProtocolProfile(draftAccount)) {
+          await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(draftAccount, task.message ?? unsupportedGatewayProtocolTestMessage, task.model))
         return true
       }
 
@@ -240,8 +241,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           await failAccountTestTaskViaDbService(task.id, '授权账户测试不支持使用未保存表单配置', failedAccountTestResult(account, task.message ?? '授权账户测试不支持使用未保存表单配置', task.model))
           return true
         }
-        if (!isOpenAIProtocolProfile(account)) {
-          await failAccountTestTaskViaDbService(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+        if (!isGatewaySupportedProtocolProfile(account)) {
+          await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(account, task.message ?? unsupportedGatewayProtocolTestMessage, task.model))
           return true
         }
         const unavailableMessage = accountTestUnavailableMessage(account)
@@ -285,8 +286,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       await failAccountTestTaskViaDbService(task.id, '账户不存在')
       return true
     }
-    if (!isOpenAIProtocolProfile(account)) {
-      await failAccountTestTaskViaDbService(task.id, '当前仅支持测试 OpenAI 协议账户', failedAccountTestResult(account, task.message ?? '当前仅支持测试 OpenAI 协议账户', task.model))
+    if (!isGatewaySupportedProtocolProfile(account)) {
+      await failAccountTestTaskViaDbService(task.id, unsupportedGatewayProtocolTestMessage, failedAccountTestResult(account, task.message ?? unsupportedGatewayProtocolTestMessage, task.model))
       return true
     }
     const unavailableMessage = accountTestUnavailableMessage(account)

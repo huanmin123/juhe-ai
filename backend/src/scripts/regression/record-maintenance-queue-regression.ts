@@ -219,9 +219,10 @@ try {
     ...buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_ipc_latest', 'acct_codex_snapshot_ipc', 52),
     source: 'regression_ipc_latest'
   })
-  assert(
-    (backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength ?? 0) >= ipcRecordMaintenanceBefore + 1,
-    'server 到 worker 的账号用量快照 IPC pending 队列应保留待投递任务'
+  assert.equal(
+    backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
+    ipcRecordMaintenanceBefore + 1,
+    'server 到 ingest-worker 的同账号同类型快照 IPC pending 队列应合并保留最新任务'
   )
   const ipcRejectedBefore = backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.rejectedCount ?? 0
   const ipcDroppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
@@ -236,7 +237,7 @@ try {
   assert.equal(oversizedCoalescedResult.droppedReason, 'worker_dispatch_failed', 'IPC 合并后超限应按投递失败返回')
   assert.equal(
     backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength,
-    ipcRecordMaintenanceBefore + 2,
+    ipcRecordMaintenanceBefore + 1,
     'IPC 合并后超限不应替换已有小快照，也不应继续增长队列长度'
   )
   assert.equal(

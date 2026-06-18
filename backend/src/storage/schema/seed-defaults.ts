@@ -14,6 +14,10 @@ import {
 } from '../external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from '../request-quota-limits.js'
 import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
+  ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
+  ANTHROPIC_PROTOCOL_SEED,
+  ANTHROPIC_PROVIDER_SEED,
   DEFAULT_BUILT_IN_GROUPS,
   DEFAULT_GLOBAL_SETTINGS,
   DEFAULT_SYSTEM_SETTINGS,
@@ -69,7 +73,7 @@ export function seedDefaults(database: DatabaseSync): void {
       id, code, name, description, parent_code, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED]) {
+  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED]) {
     providerStatement.run(
       provider.id,
       provider.code,
@@ -82,29 +86,30 @@ export function seedDefaults(database: DatabaseSync): void {
     )
   }
 
-  database
-    .prepare(`
+  const protocolStatement = database.prepare(`
       INSERT OR IGNORE INTO protocols (
         id, code, version, name, description, enabled, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      OPENAI_PROTOCOL_SEED.id,
-      OPENAI_PROTOCOL_SEED.code,
-      OPENAI_PROTOCOL_SEED.version,
-      OPENAI_PROTOCOL_SEED.name,
-      OPENAI_PROTOCOL_SEED.description,
-      OPENAI_PROTOCOL_SEED.enabled,
+  `)
+  for (const protocol of [OPENAI_PROTOCOL_SEED, ANTHROPIC_PROTOCOL_SEED]) {
+    protocolStatement.run(
+      protocol.id,
+      protocol.code,
+      protocol.version,
+      protocol.name,
+      protocol.description,
+      protocol.enabled,
       now,
       now
     )
+  }
 
   const endpointFamilyStatement = database.prepare(`
     INSERT OR IGNORE INTO protocol_endpoint_families (
       id, protocol_code, protocol_version, family_code, name, description, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const family of OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS) {
+  for (const family of [...OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS]) {
     endpointFamilyStatement.run(
       family.id,
       family.protocolCode,
@@ -124,7 +129,7 @@ export function seedDefaults(database: DatabaseSync): void {
       base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const profile of [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED, GPT_OPENAI_V1_PROFILE_SEED]) {
+  for (const profile of [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED, GPT_OPENAI_V1_PROFILE_SEED, ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED]) {
     profileStatement.run(
       profile.id,
       profile.providerCode,
@@ -147,7 +152,7 @@ export function seedDefaults(database: DatabaseSync): void {
       profile_id, family_code, enabled, capabilities_json, created_at, updated_at
     ) VALUES (?, ?, 1, '[]', ?, ?)
   `)
-  for (const profile of [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED, GPT_OPENAI_V1_PROFILE_SEED]) {
+  for (const profile of [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED, GPT_OPENAI_V1_PROFILE_SEED, ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED]) {
     for (const familyCode of profile.endpointFamilies) {
       profileFamilyStatement.run(profile.id, familyCode, now, now)
     }

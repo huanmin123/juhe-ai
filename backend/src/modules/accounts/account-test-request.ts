@@ -1,6 +1,10 @@
 import type { AccountClientCompatibility } from '../../domain/types.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
+  defaultAnthropicEndpointModes,
+  isAnthropicEndpointMode
+} from '../../domain/anthropic-endpoint-modes.js'
+import {
   defaultOpenAIEndpointModes,
   openAIEndpointModeForRequestShape
 } from '../../domain/openai-endpoint-modes.js'
@@ -10,6 +14,7 @@ export const accountTestDefaultPrompt = '只输出 OK'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
+const gatewayAnthropicMessagesPath = '/v1/messages'
 export const accountTestModelsPath = '/v1/models'
 
 export type AccountTestRequestInput = {
@@ -43,6 +48,33 @@ export function createOpenAITestRequest(input: AccountTestRequestInput): Account
     body: path === gatewayChatCompletionsPath
       ? createOpenAIChatCompletionsTestPayload(model, input.prompt, stream)
       : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, stream),
+    model
+  }
+}
+
+export function createAnthropicTestRequest(input: {
+  explicitModel?: string
+  fallbackModel: string
+  prompt: string
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
+}): AccountTestRequest {
+  const supportedModes = input.supportedEndpointModes?.filter(isAnthropicEndpointMode)
+  const modes = supportedModes?.length ? supportedModes : defaultAnthropicEndpointModes()
+  const stream = !modes.includes('messages_json') && modes.includes('messages_sse')
+  const model = stringValue(input.explicitModel) || input.fallbackModel
+  return {
+    path: gatewayAnthropicMessagesPath,
+    body: {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: input.prompt
+        }
+      ],
+      max_tokens: 1,
+      stream
+    },
     model
   }
 }

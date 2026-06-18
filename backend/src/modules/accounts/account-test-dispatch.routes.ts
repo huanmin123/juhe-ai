@@ -1,7 +1,7 @@
 import type { Router } from 'express'
 
 import { isAdminRole } from '../../domain/types.js'
-import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { accountTestUnavailableMessage, findAccountForTest } from '../../storage/repositories.js'
 import {
@@ -36,8 +36,8 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       res.status(404).json({ message: '账户不存在' })
       return
     }
-    if (!isOpenAIProtocolProfile(account)) {
-      res.status(400).json({ message: '当前仅支持测试 OpenAI 协议账户' })
+    if (!isGatewaySupportedProtocolProfile(account)) {
+      res.status(400).json({ message: '当前仅支持测试 OpenAI 或 Anthropic 协议账户' })
       return
     }
     const unavailableMessage = accountTestUnavailableMessage(account)

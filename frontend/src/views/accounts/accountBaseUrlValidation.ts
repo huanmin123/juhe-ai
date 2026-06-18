@@ -9,6 +9,8 @@ const defaultPolicy: AccountBaseUrlValidationPolicy = {
 const openAIEndpointPathPrefixes = [
   ['models'],
   ['responses'],
+  ['messages'],
+  ['messages', 'count_tokens'],
   ['chat', 'completions'],
   ['images', 'generations'],
   ['images', 'edits'],

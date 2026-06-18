@@ -11,7 +11,6 @@ import { subtractUsageLatencyEntry, upsertUsageLatencyEntry } from './usage-stat
 import { subtractUsageModelBuckets, upsertUsageModelBuckets } from './usage-stats-model-writer.js'
 import { usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
-import { updateUsageRecordCacheReadCost } from './usage-record-shards.js'
 import type { UsageStatsAccumulator, UsageStatsEntry, UsageStatsRecordRow } from './usage-stats-types.js'
 
 export interface UsageStatsAggregationContext extends UsageStatsAuthorizationLookup {
@@ -150,12 +149,6 @@ function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {
   if (cacheReadCostUsd <= 0) {
     return
   }
-  updateUsageRecordCacheReadCost({
-    id: row.id,
-    createdAt: row.created_at,
-    sourceShardKey: row.source_shard_key ?? undefined,
-    cacheReadCostUsd
-  })
   row.cache_read_cost_usd = cacheReadCostUsd
 }
 

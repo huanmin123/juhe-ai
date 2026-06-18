@@ -1,6 +1,7 @@
 import type { Server } from 'node:http'
 
 import { runtimeConfig } from './config/runtime.js'
+import { dbServiceOperationPriority, type DbServiceOperationPriority } from './modules/db-service/db-service-request-priority.js'
 import { handleDbServiceParentRuntimeMessage } from './modules/db-service/db-service-ipc.js'
 import { handleDbServiceOperation, setDbServiceHttpEndpoint } from './modules/db-service/db-service-handlers.js'
 import type { DbServiceParentMessage } from './modules/db-service/db-service-types.js'
@@ -27,6 +28,14 @@ interface DbServiceHttpEndpoint {
   host: string
   port: number
 }
+
+const queuedDbServiceRequests: Record<DbServiceOperationPriority, DbServiceRequestParentMessage[]> = {
+  high: [],
+  normal: [],
+  low: []
+}
+let dbServiceRequestQueueDraining = false
+let dbServiceRequestQueueDrainScheduled = false
 
 async function startDbService(): Promise<void> {
   installProcessLogHandlers()
@@ -69,6 +78,65 @@ async function handleParentMessage(message: unknown): Promise<void> {
     return
   }
 
+  enqueueDbServiceRequest(message)
+}
+
+function enqueueDbServiceRequest(message: DbServiceRequestParentMessage): void {
+  const priority = dbServiceOperationPriority(message.operation)
+  queuedDbServiceRequests[priority].push(message)
+  scheduleDbServiceRequestQueueDrain()
+}
+
+function scheduleDbServiceRequestQueueDrain(): void {
+  if (dbServiceRequestQueueDraining || dbServiceRequestQueueDrainScheduled) {
+    return
+  }
+  dbServiceRequestQueueDrainScheduled = true
+  setImmediate(() => {
+    void drainDbServiceRequestQueue()
+  })
+}
+
+async function drainDbServiceRequestQueue(): Promise<void> {
+  if (dbServiceRequestQueueDraining) {
+    return
+  }
+  dbServiceRequestQueueDrainScheduled = false
+  dbServiceRequestQueueDraining = true
+  try {
+    let message = shiftNextDbServiceRequest()
+    while (message) {
+      await respondToDbServiceRequest(message)
+      await yieldDbServiceRequestQueue()
+      message = shiftNextDbServiceRequest()
+    }
+  } finally {
+    dbServiceRequestQueueDraining = false
+    if (hasQueuedDbServiceRequests()) {
+      scheduleDbServiceRequestQueueDrain()
+    }
+  }
+}
+
+function shiftNextDbServiceRequest(): DbServiceRequestParentMessage | undefined {
+  return queuedDbServiceRequests.high.shift()
+    ?? queuedDbServiceRequests.normal.shift()
+    ?? queuedDbServiceRequests.low.shift()
+}
+
+function hasQueuedDbServiceRequests(): boolean {
+  return queuedDbServiceRequests.high.length > 0
+    || queuedDbServiceRequests.normal.length > 0
+    || queuedDbServiceRequests.low.length > 0
+}
+
+async function yieldDbServiceRequestQueue(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve)
+  })
+}
+
+async function respondToDbServiceRequest(message: DbServiceRequestParentMessage): Promise<void> {
   try {
     const result = await handleDbServiceOperation(message.operation)
     sendDbServiceMessage({

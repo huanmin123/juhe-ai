@@ -3,15 +3,21 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { getExternalPublicApiCatalog } from '../../modules/external-integrations/external-public-api-catalog.js'
 import {
   parseOpenAIUsageFromJsonBuffer
 } from '../../modules/gateway/protocols/openai-v1/usage.js'
 import {
+  parseAnthropicUsageFromJsonBuffer
+} from '../../modules/gateway/protocols/anthropic-v1/usage.js'
+import {
   inspectOpenAIStreamText,
   OpenAIStreamInspector
 } from '../../modules/gateway/protocols/openai-v1/stream-inspection.js'
+import {
+  inspectAnthropicStreamText
+} from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -70,6 +76,20 @@ const usageAfterLargePayload = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
 assert.deepEqual(defined(usageAfterLargePayload), {
   inputTokens: 321,
   outputTokens: 45
+})
+
+const anthropicUsage = parseAnthropicUsageFromJsonBuffer(jsonBuffer({
+  type: 'message',
+  usage: {
+    input_tokens: 900,
+    output_tokens: 120,
+    cache_read_input_tokens: 300
+  }
+}))
+assert.deepEqual(defined(anthropicUsage), {
+  inputTokens: 900,
+  outputTokens: 120,
+  cacheReadTokens: 300
 })
 
 const responsesStreamInspection = inspectOpenAIStreamText([
@@ -163,6 +183,29 @@ assert.deepEqual(defined(semanticTextDeltaInspection.usage), {
   outputTokens: 2
 })
 
+const anthropicStreamInspection = inspectAnthropicStreamText([
+  'event: message_start',
+  'data: {"type":"message_start","message":{"usage":{"input_tokens":900,"output_tokens":0,"cache_read_input_tokens":300}}}',
+  '',
+  'event: content_block_delta',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}',
+  '',
+  'event: message_delta',
+  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":120}}',
+  '',
+  'event: message_stop',
+  'data: {"type":"message_stop"}',
+  ''
+].join('\n'))
+assert.equal(anthropicStreamInspection.terminalReceived, true)
+assert.equal(anthropicStreamInspection.outputReceived, true)
+assert.equal(anthropicStreamInspection.estimatedOutputTokens, 1)
+assert.deepEqual(defined(anthropicStreamInspection.usage), {
+  inputTokens: 900,
+  outputTokens: 120,
+  cacheReadTokens: 300
+})
+
 const oversizedStreamInspection = inspectOpenAIStreamText(`data: ${'x'.repeat(300 * 1024)}`)
 assert.equal(oversizedStreamInspection.skipped, true)
 assert.equal(oversizedStreamInspection.failedReceived, false)
@@ -241,6 +284,29 @@ const genericOpenAIModelPricingList = listProviderModelPricing(OPENAI_COMPATIBLE
 assert.equal(genericOpenAIModelPricingList.length, openAIModelPricingList.length, 'openai 通用供应商应继承 OpenAI-compatible 内置模型目录')
 assert.equal(genericOpenAIModelPricingList[0]?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '通用供应商模型目录应保留 openai providerCode')
 assert.equal(openAIModelPricingList[0]?.providerCode, GPT_VENDOR_CODE, 'GPT 子供应商模型目录应保留 gpt providerCode')
+const anthropicModelPricingList = listProviderModelPricing(ANTHROPIC_PROVIDER_CODE)
+assert(anthropicModelPricingList.length > 0, 'Anthropic 供应商应暴露 Anthropic 内置模型价格目录')
+assert.equal(anthropicModelPricingList[0]?.providerCode, ANTHROPIC_PROVIDER_CODE, 'Anthropic 模型目录应保留 anthropic providerCode')
+const anthropicPricingById = new Map(anthropicModelPricingList.map((item) => [item.model, item]))
+assert.deepEqual(anthropicPricingById.get('claude-haiku-4-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
+assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.inputUsdPer1M, 1)
+assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.outputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.cachedInputUsdPer1M, 0.1)
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-haiku-4-5-2026-01-01')?.model, 'claude-haiku-4-5', 'Anthropic dated alias 应回落到基础模型价格')
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), 0.00173)
+assert.equal(buildProviderCostBreakdown({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+})?.cacheReadUsdPer1M, 0.1)
 const availableOpenAIModels = new Set(openAIModelPricingList.map((item) => item.model))
 const openAIModelPricingById = new Map(openAIModelPricingList.map((item) => [item.model, item]))
 for (const item of openAIModelPricingList) {

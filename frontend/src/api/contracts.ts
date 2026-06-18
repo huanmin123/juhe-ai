@@ -321,6 +321,7 @@ export interface ResponseInspectionPolicyPayload {
   enabled: boolean
   priority: number
   scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: string
   providerCode?: string
   match: ResponseInspectionPolicyMatch
   action: ResponseInspectionPolicyAction

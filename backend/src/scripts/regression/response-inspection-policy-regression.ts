@@ -19,8 +19,13 @@ import {
 import {
   extractOpenAIJsonSemanticFrames
 } from '../../modules/gateway/protocols/openai-v1/response-semantics.js'
+import {
+  extractAnthropicJsonSemanticFrames,
+  extractAnthropicSseSemanticFrames
+} from '../../modules/gateway/protocols/anthropic-v1/response-semantics.js'
+import { parseOpenAISseEventText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
-import { GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, ANTHROPIC_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
 import {
   createResponseInspectionPolicy,
@@ -106,6 +111,78 @@ function dataEvent(data: Record<string, unknown>): Buffer {
   assert.equal(result.decision?.endpointFamily, 'chat_completions', 'Chat JSON 必须保留端点家族')
   assert.equal(result.decision?.matchedField, 'outputTextIncludes', 'Chat JSON 应在 message.content 上命中文本规则')
   assert.equal(result.decision?.retryEnabled, true, '命中 retry 策略时必须允许服务端换号重试')
+}
+
+{
+  const frames = extractAnthropicJsonSemanticFrames({
+    id: 'msg_anthropic_semantics',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [
+      {
+        type: 'text',
+        text: '这里包含 Anthropic 污染文本'
+      }
+    ],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 9,
+      output_tokens: 3,
+      cache_read_input_tokens: 2
+    }
+  }, 'messages')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        protocolCode: ANTHROPIC_PROTOCOL_CODE,
+        providerCode: ANTHROPIC_PROVIDER_CODE,
+        match: {
+          outputTextIncludes: ['Anthropic 污染文本'],
+          finishReasons: ['end_turn'],
+          clientProfiles: ['generic_anthropic']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_anthropic'
+    }
+  })
+  assert.equal(result.decision?.endpointFamily, 'messages', 'Anthropic Messages JSON 必须保留端点家族')
+  assert.equal(result.decision?.policyProtocolCode, ANTHROPIC_PROTOCOL_CODE, 'Anthropic 响应策略必须保留协议维度')
+  assert.equal(result.decision?.matchedField, 'outputTextIncludes', 'Anthropic JSON content[].text 应映射为输出文本语义帧')
+}
+
+{
+  const frames = extractAnthropicSseSemanticFrames(parseOpenAISseEventText([
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Anthropic SSE 污染片段"}}',
+      ''
+    ].join('\n')), 'messages')
+  const result = inspectResponseSemanticFrames({
+    frames,
+    policies: [
+      responsePolicy({
+        protocolCode: ANTHROPIC_PROTOCOL_CODE,
+        providerCode: ANTHROPIC_PROVIDER_CODE,
+        match: {
+          outputTextIncludes: ['Anthropic SSE 污染片段'],
+          clientProfiles: ['claude_code']
+        }
+      })
+    ],
+    downstreamWritten: false,
+    transport: 'sse',
+    context: {
+      clientProfile: 'claude_code'
+    }
+  })
+  assert.equal(result.decision?.endpointFamily, 'messages', 'Anthropic Messages SSE 必须保留端点家族')
+  assert.equal(result.decision?.clientProfile, 'claude_code', 'Claude Code 画像应作为策略上下文记录')
+  assert.equal(result.decision?.matchedField, 'outputTextIncludes', 'Anthropic SSE text_delta 应映射为输出文本语义帧')
 }
 
 assert.equal(validateAccountResponseInspectionRules([
@@ -325,6 +402,7 @@ assert.equal(validateAccountResponseInspectionRules([
 {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   assert(defaultRules.some((rule) => rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 OpenAI JSON / SSE error 对象')
+  assert(defaultRules.some((rule) => rule.protocolCode === ANTHROPIC_PROTOCOL_CODE && rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 Anthropic JSON / SSE error 对象')
   assert(defaultRules.some((rule) => rule.match.clientProfiles?.includes('codex') && rule.match.finishReasons?.includes('incomplete')), '默认规则必须覆盖 Codex response.incomplete')
   assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 只能作为 GPT provider 规则存在')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
@@ -345,8 +423,19 @@ assert.equal(validateAccountResponseInspectionRules([
     } as never,
     managementPolicies: defaultRules
   })
+  const anthropicPolicies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_anthropic',
+      protocolCode: ANTHROPIC_PROTOCOL_CODE,
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      credentials: {}
+    } as never,
+    managementPolicies: defaultRules
+  })
   assert(gptPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), 'GPT 供应商应加载 cyber_policy 默认规则')
   assert.equal(genericPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, '通用 OpenAI-compatible 供应商不应继承 GPT cyber_policy 规则')
+  assert(anthropicPolicies.some((policy) => policy.protocolCode === ANTHROPIC_PROTOCOL_CODE && policy.match.jsonPathsExists?.includes('error')), 'Anthropic 供应商应加载 Anthropic 协议默认 error 对象规则')
+  assert.equal(anthropicPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, 'Anthropic 供应商不应继承 GPT cyber_policy 规则')
 }
 
 {
