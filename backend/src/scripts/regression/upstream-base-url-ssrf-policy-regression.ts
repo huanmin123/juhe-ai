@@ -32,7 +32,6 @@ const invalidShapeBaseUrls = [
   ['https:////api.openai.com/v1', /协议后只能保留两个斜杠/],
   ['https:\\\\api.openai.com\\v1', /反斜杠|完整绝对地址/],
   ['ftp://api.openai.com/v1', /只允许/],
-  ['http://api.openai.com/v1', /生产地址只允许 https/],
   ['https://user:pass@api.openai.com/v1', /用户名或密码/],
   ['https://api.openai.com//v1', /连续斜杠/],
   ['https://api.openai.com/v1?x=1', /查询参数/],
@@ -69,6 +68,10 @@ try {
     '官方 HTTPS 上游地址应允许保存'
   )
   assert.doesNotThrow(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://api.openai.com/v1' }),
+    '公网 HTTP 上游域名应允许保存'
+  )
+  assert.doesNotThrow(
     () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-url-shape-policy', base_url: 'https://api.openai.com' }),
     'OpenAI 兼容账号应允许保存服务根地址'
   )
@@ -83,6 +86,10 @@ try {
   assert.doesNotThrow(
     () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'https://[2606:4700:4700::1111]/v1' }),
     '公网 IPv6 上游地址应允许保存'
+  )
+  assert.doesNotThrow(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://103.236.84.213:48222/v1' }),
+    '公网 HTTP IP 上游地址应允许保存'
   )
 
   runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = ['127.0.0.1']

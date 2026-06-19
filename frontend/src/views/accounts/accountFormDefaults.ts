@@ -2,11 +2,21 @@ import type { AccountType, ProviderDefinition } from '@/types/domain'
 import { defaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import { defaultAccountEndpointModes } from './accountEndpointModes'
+import { defaultAccountClientCompatibilityForProvider } from './accountProviderCapabilities'
 import type { AccountFormModel } from './accountFormTypes'
-import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
+import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
 
-export function defaultAccountClientCompatibility(providerCode: string) {
-  return providerCode === GPT_VENDOR_CODE ? 'codex_responses' : 'openai_standard'
+export function defaultAccountClientCompatibility(
+  providerCode: string,
+  providers: ProviderDefinition[] = [],
+  providerProtocolProfileId = ''
+) {
+  const providerList = providers.length ? providers : FALLBACK_PROVIDERS
+  const provider = providerList.find((item) => item.code === providerCode)
+  const profile = provider?.protocolProfiles.find((item) => item.id === (providerProtocolProfileId || provider.defaultProtocolProfileId))
+    ?? provider?.protocolProfiles.find((item) => item.enabled)
+    ?? provider?.protocolProfiles[0]
+  return defaultAccountClientCompatibilityForProvider({ provider, profile })
 }
 
 export function defaultAccountForm(
@@ -23,7 +33,7 @@ export function defaultAccountForm(
     ?? provider?.protocolProfiles[0]
   const accountTypes = profile?.accountTypes ?? provider?.accountTypes ?? []
   const resolvedType = type || (accountTypes.includes('api_key') ? 'api_key' : accountTypes[0] ?? '')
-  const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode)
+  const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode, providerList, profile?.id)
   return {
     providerCode: resolvedProviderCode,
     providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
@@ -44,7 +54,7 @@ export function defaultAccountForm(
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     clientCompatibility,
-    supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, clientCompatibility),
+    supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, clientCompatibility, { provider, protocolProfile: profile }),
     supportedModels: [],
     modelMappings: [],
     tags: [],

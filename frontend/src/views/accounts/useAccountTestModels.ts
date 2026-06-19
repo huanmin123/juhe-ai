@@ -3,7 +3,6 @@ import { computed, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary, ProviderDefinition, ProviderModelPricing } from '@/types/domain'
-import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 import {
   buildTestModelOptions,
   defaultTestModelForAccountSelection,
@@ -50,7 +49,16 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
       return
     }
-    const providerCode = testTargetProviderCode.value || GPT_VENDOR_CODE
+    const providerCode = testTargetProviderCode.value
+    if (!providerCode) {
+      modelRequestId.value += 1
+      testModelsLoading.value = false
+      testModelsLoadingProviderCode.value = ''
+      providerModels.value = []
+      providerModelsProviderCode.value = ''
+      input.testForm.model = nextTestModel(input.testForm.model, testModelOptions.value, defaultTestModel.value)
+      return
+    }
     if (providerModelsProviderCode.value !== providerCode) {
       providerModels.value = []
       providerModelsProviderCode.value = providerCode
@@ -84,7 +92,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     return (
       modelRequestId.value === requestId &&
       providerModelsProviderCode.value === providerCode &&
-      (testTargetProviderCode.value || GPT_VENDOR_CODE) === providerCode
+      testTargetProviderCode.value === providerCode
     )
   }
 

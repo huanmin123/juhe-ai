@@ -14,7 +14,6 @@ import {
   failedAccountTestResult,
   stoppedAccountTestMessage
 } from './accountTestFlow'
-import { isGatewaySupportedProtocolProfile } from '@/shared/providerProtocol'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
@@ -36,6 +35,8 @@ import {
 } from './accountTestTaskHelpers'
 import { useAccountTestModels } from './useAccountTestModels'
 import { waitForAccountTestResult } from './accountTestTaskPolling'
+import { isGatewayTestableAccountProfile } from './accountProviderCapabilities'
+import { hasSingleProviderProfileForAccountSelection } from './accountDerivedState'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -88,7 +89,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function openTestModal(account: AccountSummary) {
     if (!canTestAccount(account)) {
-      if (!isGatewaySupportedProtocolProfile(account)) {
+      if (!isGatewayTestableAccountProfile(account)) {
         message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
       } else if (isAuthorizedAccount(account) && !account.boundGroupId) {
         message.warning('请先把授权账户绑定到你的分组')
@@ -114,7 +115,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (!isGatewaySupportedProtocolProfile(account)) {
+    if (!isGatewayTestableAccountProfile(account)) {
       message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
       return
     }
@@ -134,7 +135,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openSavedDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (!isGatewaySupportedProtocolProfile(account)) {
+    if (!isGatewayTestableAccountProfile(account)) {
       message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
       return
     }
@@ -168,6 +169,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
     if (testableAccounts.length !== accounts.length) {
       message.warning('已跳过不支持测试协议或当前不能测试的账户')
+    }
+    if (!hasSingleProviderProfileForAccountSelection(testableAccounts)) {
+      message.warning('批量测试一次只能选择同一供应商协议的账户，请按供应商或协议分批测试')
+      return
     }
     testMode.value = 'batch'
     testingAccount.value = undefined
@@ -210,6 +215,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       }
       const result = await waitForSubmittedAccountTestResult(task, account, controller.signal, (latestTask) => {
         activeSingleTestTask.value = latestTask
+        syncDraftActivationTestFromTask(latestTask, activationDraftPayload)
       })
       testResult.value = result
       if (result.success) {
@@ -508,6 +514,15 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   function activeActivationDraftTestPayload(account: AccountSummary): AccountDraftTestPayload['account'] | undefined {
     return draftTestMode.value === 'create' ? activeDraftTestPayload(account) : undefined
+  }
+
+  function syncDraftActivationTestFromTask(task: AccountTestTask, activationDraftPayload: AccountDraftTestPayload['account'] | undefined): void {
+    if (!activationDraftPayload) return
+    if (task.status === 'success' && task.result?.success === true) {
+      successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }
+    } else if (task.status === 'failed' || task.status === 'canceled') {
+      successfulDraftActivationTest.value = undefined
+    }
   }
 
   function accountTestTaskScopeParams(account: AccountSummary): ReturnType<typeof accountOperationScopeParams> {

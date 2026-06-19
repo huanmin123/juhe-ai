@@ -2,9 +2,11 @@ import type { AccountSummary, ResourcePermissions } from '@/types/domain'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
-import { isGatewaySupportedProtocolProfile } from '@/shared/providerProtocol'
 import type { AccountMenuItem } from './accountActionTypes'
-import { GPT_VENDOR_CODE } from './accountOptions'
+import {
+  canCreateOAuthAccount,
+  isGatewayTestableAccountProfile
+} from './accountProviderCapabilities'
 import {
   formatDateTime,
   hasAccountRuntimeRecoveryState,
@@ -206,7 +208,7 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 }
 
 export function canTestAccount(account: AccountSummary): boolean {
-  if (!isGatewaySupportedProtocolProfile(account)) return false
+  if (!isGatewayTestableAccountProfile(account)) return false
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (account.effectiveAvailability?.available === false) {
@@ -255,8 +257,8 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
   return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target) && !hasAccountRuntimeRecoveryState(target)
 }
 
-export function canManageGptOAuth(account: AccountSummary): boolean {
-  return canUseAccountActions(account) && account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth'
+export function canManageOAuthAccount(account: AccountSummary): boolean {
+  return canUseAccountActions(account) && account.type === 'oauth' && canCreateOAuthAccount({ profile: account })
 }
 
 export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
@@ -306,7 +308,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     return items.map(normalizeAccountMenuItem)
   }
   if (canUseAccountActions(account)) {
-    if (canManageGptOAuth(account)) {
+    if (canManageOAuthAccount(account)) {
       items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
       items.push({ key: 'reauthorize-oauth', label: '重新授权' })
     }

@@ -17,11 +17,11 @@ import { asString } from './accountBasicFormatters'
 import { isAuthorizedAccount, parseStrictDatePickerValue } from './accountFormatters'
 import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
-import { GPT_VENDOR_CODE } from './accountOptions'
 import {
   defaultAccountEndpointModes,
   normalizeAccountEndpointModes
 } from './accountEndpointModes'
+import { effectiveAccountTestClientCompatibility } from './accountProviderCapabilities'
 
 export class AccountEditFormLoadError extends Error {
   readonly cause: unknown
@@ -153,9 +153,8 @@ function accountAvailabilityScheduleForForm(account: AccountSummary) {
 }
 
 function accountClientCompatibilityForForm(account: AccountSummary): AccountFormModel['clientCompatibility'] {
-  return account.providerCode === GPT_VENDOR_CODE && account.type === 'oauth'
-    ? 'codex_responses'
-    : account.clientCompatibility ?? defaultAccountClientCompatibility(account.providerCode)
+  return effectiveAccountTestClientCompatibility(account, 'account_default')
+    ?? defaultAccountClientCompatibility(account.providerCode)
 }
 
 function accountEndpointModesForForm(
@@ -165,7 +164,9 @@ function accountEndpointModesForForm(
 ): AccountFormModel['supportedEndpointModes'] {
   return normalizeAccountEndpointModes(
     credentials.supported_endpoint_modes,
-    defaultAccountEndpointModes(account.providerCode, account.type, accountClientCompatibilityForForm(account) ?? defaults.clientCompatibility)
+    defaultAccountEndpointModes(account.providerCode, account.type, accountClientCompatibilityForForm(account) ?? defaults.clientCompatibility, {
+      protocolProfile: account
+    })
   )
 }
 

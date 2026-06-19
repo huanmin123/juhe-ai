@@ -46,7 +46,7 @@ export const defaultSystemSettings: SystemForm = {
   systemApiRateLimitIpWriteBurstPer10Seconds: 40,
   systemApiRateLimitUserReadPerMinute: 300,
   systemApiRateLimitUserWritePerMinute: 120,
-  defaultTemporaryUnschedulableMinutes: 5,
+  defaultTemporaryUnschedulableMinutes: 2,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
   streamCircuitBreakerEnabled: true,
@@ -60,7 +60,7 @@ export const defaultSystemSettings: SystemForm = {
   accountHealthCheckBatchSize: 20,
   accountHealthCheckFailureThreshold: 3,
   cooldownAccountRetestMaxBackoffHours: 12,
-  cooldownAccountRetestLongTermIntervalHours: 24
+  cooldownAccountRetestLongTermIntervalHours: 1
 }
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {

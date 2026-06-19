@@ -87,15 +87,28 @@ export function handleStreamFailure(
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   if (usageContext?.trafficSource === 'gateway') {
     if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {
+      const runtimeReason = `流式响应在可见输出前失败：${reason}`
+      const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
+      recordGatewayAccountFailureForPrecheck(account, settings, {
+        systemAccountId: usageContext.systemAccountId,
+        groupId: usageContext.groupId,
+        apiKeyId: usageContext.apiKeyId,
+        clientIp: usageContext.clientIp,
+        endpoint: usageContext.endpoint,
+        reason: runtimeReason,
+        forcePrecheck: localSuppression.action === 'precheck_required'
+      })
       getRequestLogger().info({
-        event: 'gateway_stream_failure_account_side_effect_skipped',
+        event: 'gateway_stream_failure_pre_output_runtime_avoidance',
         accountId: account.id,
         accountName: account.name,
         errorCode,
         reason,
         downstreamBytesWritten: context.downstreamBytesWritten,
-        outputReceived: context.outputReceived
-      }, '流式失败未产生可见模型输出，已跳过账号运行态副作用')
+        outputReceived: context.outputReceived,
+        delayMs: localSuppression.delayMs,
+        localFailureCount: localSuppression.localFailureCount
+      }, '流式失败未产生可见模型输出，已进入本地短期避让但不累计持久流失败')
       return
     }
     recordGatewayAccountApiKeyFailure(account, {

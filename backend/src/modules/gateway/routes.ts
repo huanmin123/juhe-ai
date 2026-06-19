@@ -79,7 +79,7 @@ import {
 } from './usage/traffic-source.js'
 import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
 import { forgetOpenAIAccountForSession } from './runtime/session-affinity.service.js'
-import { isAnthropicNativeRequest } from './protocols/anthropic-v1/route-helpers.js'
+import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -109,7 +109,7 @@ export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, 
   }), '网关 DB service 不可用')
 
   sendGatewayErrorResponse(res, 503, gatewayErrorPayload(message, 'service_unavailable'), {
-    protocol: isAnthropicNativeRequest(req) ? 'anthropic' : 'openai'
+    protocol: gatewayProtocolClientErrorProtocolForRequest(req)
   })
 }
 
@@ -197,12 +197,26 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
   let maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
+  let fallbackSwitchCount = 0
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
     reason: string,
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
+    const groupBindingCount = currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0
+    if (groupBindingCount > 0 && fallbackSwitchCount >= groupBindingCount) {
+      auditCapture.addGatewayMetadata({
+        label: 'api_key_group_route_fallback_skipped',
+        metadata: {
+          reason,
+          groupBindingCount,
+          fallbackSwitchCount,
+          skippedReason: 'fallback_hop_limit'
+        }
+      })
+      return 'none'
+    }
     const gatewayUsageContext = currentPreflight.usageContext
     const fallback = await prepareApiKeyGroupFallbackDispatchContext({
       req,
@@ -226,6 +240,7 @@ export async function handleOpenAIGatewayRequest(
       groupId: gatewayUsageContext.groupId,
       trafficSource: gatewayUsageContext.trafficSource,
       requestLane: currentPreflight.requestLane,
+      requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
       excludedAccountIds: exhaustedAccountIds,
       allowCandidateWrap: input.allowCandidateWrap
     })
@@ -235,6 +250,7 @@ export async function handleOpenAIGatewayRequest(
     if (!fallback.context) {
       return 'completed'
     }
+    fallbackSwitchCount += 1
     transferClientIpAccountPendingFailures(
       currentPreflight.clientIpAccountAvoidanceTracker,
       fallback.context.clientIpAccountAvoidanceTracker
@@ -336,7 +352,8 @@ export async function handleOpenAIGatewayRequest(
           clientIpAccountAvoidanceTracker,
           currentPreflight.requestLane,
           currentPreflight.groupSchedulingPolicy,
-          options.disableAccountStateMutation !== true
+          options.disableAccountStateMutation !== true,
+          currentPreflight.clientStrategy.requestClientCompatibility
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
@@ -807,7 +824,7 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): void {
-  const protocol = isAnthropicNativeRequest(input.req) ? 'anthropic' : 'openai'
+  const protocol = gatewayProtocolClientErrorProtocolForRequest(input.req)
   const failureEvent = writeGatewayStreamFailureEvent(input.res, input.message, input.errorCode, protocol)
   const responseBody = input.uncommittedResponseBody
     ? Buffer.concat([input.uncommittedResponseBody, failureEvent ?? Buffer.alloc(0)])

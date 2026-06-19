@@ -5,6 +5,12 @@ import {
   validateAccountErrorHandlingRules
 } from '../../modules/accounts/account-error-policy-validation.js'
 import { decideAccountErrorPolicy, type GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
+import {
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  OPENAI_PROTOCOL_CODE,
+  OPENAI_PROTOCOL_VERSION
+} from '../../domain/provider-protocol.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -46,6 +52,8 @@ assert.equal(textKeywordDecision?.ruleName, '文本 200', '关键词中的普通
 const successDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_validation',
   providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
   type: 'api_key',
   credentials: {
     error_handling_rules: [
@@ -56,6 +64,22 @@ const successDecision = decideAccountErrorPolicy({
 }, 200, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"failed"}}'), settings)
 
 assert.equal(successDecision, undefined, '运行时不应对 2xx 状态码命中账号错误策略')
+
+const anthropicErrorTypeAsCodeDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_anthropic_error_type',
+  providerCode: 'anthropic',
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  type: 'api_key',
+  credentials: {
+    error_handling_rules: [
+      tempRule({ name: 'Anthropic overloaded', status_codes: [503], error_codes: ['overloaded_error'] })
+    ]
+  },
+  status: 'active'
+}, 503, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"type":"error","error":{"type":"overloaded_error","message":"mock overloaded"}}'), settings)
+
+assert.equal(anthropicErrorTypeAsCodeDecision?.ruleName, 'Anthropic overloaded', 'Anthropic 协议应把官方 error.type 暴露给错误策略 code 匹配')
 
 console.log('account error policy validation regression passed')
 

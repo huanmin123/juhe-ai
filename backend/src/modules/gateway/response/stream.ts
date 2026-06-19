@@ -8,18 +8,6 @@ import {
   type ParsedUsage
 } from '../usage/types.js'
 import {
-  OpenAIStreamInspector,
-  type OpenAIStreamInspection
-} from '../protocols/openai-v1/stream-inspection.js'
-import {
-  AnthropicStreamInspector,
-  type AnthropicStreamInspection
-} from '../protocols/anthropic-v1/stream-inspection.js'
-import {
-  extractAnthropicSseSemanticFrames,
-  type AnthropicResponseEndpointFamily
-} from '../protocols/anthropic-v1/response-semantics.js'
-import {
   isUpstreamRequestAbortedError,
   readStreamChunkWithAbort,
   readStreamChunkWithTimeout
@@ -47,7 +35,15 @@ import {
   OpenAIResponseInspectionBuffer,
   type ResponseInspectionSseResult
 } from '../protocols/openai-v1/response-inspection-buffer.js'
-import type { OpenAIResponseEndpointFamily } from '../protocols/openai-v1/response-semantics.js'
+import type {
+  ResponseEndpointFamily,
+  ResponseProtocolCode
+} from '../protocols/openai-v1/response-semantics.js'
+import type {
+  GatewayStreamInspection,
+  GatewayStreamInspector
+} from '../protocols/_shared/types.js'
+import { gatewayProtocolDriverForResponseProtocolOrDefault } from '../protocols/registry.js'
 import {
   appendStreamPreCommitChunk,
   canKeepStreamPreCommitChunk,
@@ -81,8 +77,8 @@ export interface StreamPipeOptions {
   retryBeforeDownstreamWriteUntilOutput?: boolean
   responseInspectionPolicies?: RuntimeResponseInspectionPolicy[]
   responseInspectionContext?: ResponseInspectionRuntimeContext
-  responseProtocol?: 'openai_v1' | 'anthropic_v1'
-  endpointFamily?: OpenAIResponseEndpointFamily | AnthropicResponseEndpointFamily
+  responseProtocol?: ResponseProtocolCode
+  endpointFamily?: ResponseEndpointFamily
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
@@ -94,8 +90,6 @@ const streamTerminalKeepAliveDrainMs = 50
 const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
-type GatewayStreamInspection = OpenAIStreamInspection | AnthropicStreamInspection
-type GatewayStreamInspector = OpenAIStreamInspector | AnthropicStreamInspector
 
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
@@ -108,18 +102,19 @@ export async function pipeUpstreamStream(
 ): Promise<StreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const responseProtocol = options.responseProtocol ?? 'openai_v1'
-  const gatewayErrorProtocol = responseProtocol === 'anthropic_v1' ? 'anthropic' : 'openai'
-  const inspector = createGatewayStreamInspector(responseProtocol)
+  const protocolDriver = gatewayProtocolDriverForResponseProtocolOrDefault(responseProtocol)
+  const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
+  const inspector = protocolDriver.createStreamInspector()
   const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,
       policies: options.responseInspectionPolicies,
-      endpointFamily: responseProtocol === 'openai_v1' && isOpenAIEndpointFamily(options.endpointFamily) ? options.endpointFamily : 'unknown',
+      endpointFamily: protocolDriver.responseInspectionEndpointFamily(options.endpointFamily),
       context: options.responseInspectionContext,
-      ...(responseProtocol === 'anthropic_v1'
+      extractSemanticFrames: (event) => protocolDriver.extractSseSemanticFrames(event, options.endpointFamily),
+      ...(protocolDriver.sseResponseInspectionFailureEvent === 'none'
         ? {
-            extractSemanticFrames: (event) => extractAnthropicSseSemanticFrames(event, isAnthropicEndpointFamily(options.endpointFamily) ? options.endpointFamily : 'messages'),
             buildFailureEvent: () => undefined
           }
         : {})
@@ -579,7 +574,7 @@ export async function pipeUpstreamStream(
         await flushPreCommitChunks()
         terminalEventWritten = true
         return await finishTerminalSuccess(inspector.finish(), {
-          drainForKeepAlive: responseProtocol !== 'anthropic_v1',
+          drainForKeepAlive: protocolDriver.drainForKeepAliveAfterTerminal,
           eofPendingFlush: true
         })
       }
@@ -1082,20 +1077,6 @@ async function drainIteratorAfterTerminalForInspection(
     await closeAsyncIterator(iterator)
     return inspector.finish()
   }
-}
-
-function createGatewayStreamInspector(protocol: 'openai_v1' | 'anthropic_v1'): GatewayStreamInspector {
-  return protocol === 'anthropic_v1'
-    ? new AnthropicStreamInspector()
-    : new OpenAIStreamInspector()
-}
-
-function isOpenAIEndpointFamily(value: unknown): value is OpenAIResponseEndpointFamily {
-  return value === 'chat_completions' || value === 'responses' || value === 'unknown'
-}
-
-function isAnthropicEndpointFamily(value: unknown): value is AnthropicResponseEndpointFamily {
-  return value === 'messages' || value === 'models' || value === 'message_token_counting'
 }
 
 async function readIteratorNextWithTimeout(

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
-import { isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
+import type { ClientCompatibilityCapability } from '../../../domain/types.js'
+import { gatewayProtocolResponseProtocolForProfile } from '../protocols/registry.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { requestStream } from '../request/metadata.js'
 
@@ -32,6 +33,7 @@ export interface OpenAIGatewayCodexTurnContext {
 
 export interface OpenAIGatewayClientStrategyContext {
   clientProfile: OpenAIGatewayClientProfile
+  requestClientCompatibility: ClientCompatibilityCapability
   downstreamProtocol: OpenAIGatewayDownstreamProtocol
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
   codexTurn?: OpenAIGatewayCodexTurnContext
@@ -60,7 +62,7 @@ export function resolveOpenAIGatewayClientStrategy(
   req: Request,
   identity: OpenAIGatewayClientStrategyIdentity
 ): OpenAIGatewayClientStrategyContext {
-  if (isAnthropicProtocolProfile(identity)) {
+  if (gatewayProtocolResponseProtocolForProfile(identity) === 'anthropic_v1') {
     return resolveAnthropicGatewayClientStrategy(req)
   }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)
@@ -72,6 +74,7 @@ export function resolveOpenAIGatewayClientStrategy(
 
   return {
     clientProfile: codexTurn ? 'codex' : 'generic_openai',
+    requestClientCompatibility: codexTurn ? 'codex_responses' : 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'openai_mixed',
     codexTurn,
@@ -90,6 +93,7 @@ export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatew
   const claudeCode = explicitClaudeCode || signatureClaudeCode
   return {
     clientProfile: claudeCode ? 'claude_code' : 'generic_anthropic',
+    requestClientCompatibility: claudeCode ? 'claude_code' : 'anthropic_native',
     downstreamProtocol,
     upstreamAdapter: 'anthropic_api_key',
     clientProfileSource: explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
@@ -132,6 +136,7 @@ export function openAIGatewayClientStrategyAuditMetadata(
 ): Record<string, unknown> {
   return {
     clientProfile: strategy.clientProfile,
+    requestClientCompatibility: strategy.requestClientCompatibility,
     clientProfileSource: strategy.clientProfileSource,
     downstreamProtocol: strategy.downstreamProtocol,
     upstreamAdapter: strategy.upstreamAdapter,

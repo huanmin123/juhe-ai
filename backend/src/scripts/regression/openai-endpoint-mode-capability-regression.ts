@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { Request } from 'express'
 
 import {
@@ -8,6 +10,7 @@ import {
 import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import { mergeAccountCredentialsForUpdate } from '../../modules/accounts/account-credential-update.js'
 import { filterGatewayAccountsByRequestCapability } from '../../modules/gateway/dispatch/account-capability-filter.js'
+import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 
 assert.deepEqual(
@@ -18,7 +21,7 @@ assert.deepEqual(
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'openai', accountType: 'api_key', clientCompatibility: 'codex_responses' }),
   ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-  'Codex Responses 兼容模式默认必须包含 Responses SSE'
+  'Codex Responses 兼容能力默认必须包含 Responses SSE'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'gpt', accountType: 'api_key' }),
@@ -49,10 +52,41 @@ assert.deepEqual(
   ['chat_json'],
   '账户部分凭据更新必须保留已有接口能力限制'
 )
+assert.deepEqual(
+  normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-openai', base_url: 'https://example.com/v1' }, {
+    providerCode: 'openai',
+    accountType: 'api_key',
+    protocolCode: 'openai',
+    protocolVersion: 'v1'
+  }).supported_endpoint_modes,
+  ['chat_json', 'chat_sse'],
+  '通用 OpenAI-compatible 凭据归一化应通过 provider driver 使用 Chat 默认能力'
+)
+assert.deepEqual(
+  normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-gpt', base_url: 'https://api.openai.com/v1' }, {
+    providerCode: 'gpt',
+    accountType: 'api_key',
+    protocolCode: 'openai',
+    protocolVersion: 'v1'
+  }).supported_endpoint_modes,
+  ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+  'GPT API Key 凭据归一化应通过 provider driver 使用 OpenAI v1 四项默认能力'
+)
+assert.deepEqual(
+  normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ant', base_url: 'https://api.anthropic.com/v1' }, {
+    providerCode: 'anthropic',
+    accountType: 'api_key',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  }).supported_endpoint_modes,
+  ['messages_json', 'messages_sse', 'message_token_counting'],
+  'Anthropic API Key 凭据归一化应通过 provider driver 使用 Anthropic 默认能力'
+)
 
 const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])
 const responsesOnly = account('responses-only', ['responses_json', 'responses_sse'])
 const jsonOnly = account('json-only', ['chat_json', 'responses_json'])
+const codexCapableApiKey = gptApiKeyAccount('gpt-api-key-codex', ['responses_json', 'responses_sse'])
 
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true), [chatOnly, responsesOnly, jsonOnly]).accounts.map((item) => item.id),
@@ -79,6 +113,30 @@ assert.deepEqual(
   [],
   'OAuth Responses 普通请求按有效 SSE 能力筛选'
 )
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', false), [responsesOnly, codexCapableApiKey, oauthAccount('oauth-codex')], {
+    requestClientCompatibility: 'openai_standard'
+  }).accounts.map((item) => item.id),
+  ['responses-only', 'gpt-api-key-codex'],
+  '普通 OpenAI Responses 请求只能命中 OpenAI 标准兼容账号，GPT API Key 可同时承接'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, codexCapableApiKey, oauthAccount('oauth-codex')], {
+    requestClientCompatibility: 'codex_responses'
+  }).accounts.map((item) => item.id),
+  ['gpt-api-key-codex', 'oauth-codex'],
+  'Codex Responses 请求只能命中具备 Codex 兼容能力的账号'
+)
+
+const accountCredentialsNormalizationSource = readFileSync(resolve('src/storage/account-credentials-normalization.ts'), 'utf8')
+assert.match(accountCredentialsNormalizationSource, /providerAccountCredentialDriverForContext/)
+assert.doesNotMatch(accountCredentialsNormalizationSource, /normalizeOpenAIEndpointModesForWrite/)
+assert.doesNotMatch(accountCredentialsNormalizationSource, /normalizeAnthropicEndpointModesForWrite/)
+assert.doesNotMatch(accountCredentialsNormalizationSource, /isAnthropicProtocolProfile/)
+const accountCredentialDriverRegistrySource = readFileSync(resolve('src/modules/providers/drivers/account-credentials.registry.ts'), 'utf8')
+assert.match(accountCredentialDriverRegistrySource, /openAICompatibleAccountCredentialDriver/)
+assert.match(accountCredentialDriverRegistrySource, /gptAccountCredentialDriver/)
+assert.match(accountCredentialDriverRegistrySource, /anthropicAccountCredentialDriver/)
 
 console.log('OpenAI 接口能力矩阵回归通过：默认值、写入校验和候选账号过滤均符合预期')
 
@@ -103,6 +161,15 @@ function account(id: string, modes: AccountSupportedEndpointMode[]): UpstreamAcc
     supportedEndpointModes: modes,
     credentials: { supported_endpoint_modes: modes },
     clientCompatibility: 'openai_standard'
+  } as unknown as UpstreamAccount
+}
+
+function gptApiKeyAccount(id: string, modes: AccountSupportedEndpointMode[]): UpstreamAccount {
+  return {
+    ...account(id, modes),
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
+    clientCompatibility: 'codex_responses'
   } as unknown as UpstreamAccount
 }
 

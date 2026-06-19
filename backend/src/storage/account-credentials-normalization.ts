@@ -1,22 +1,11 @@
 import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-error-policy-validation.js'
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
-import {
-  normalizeOpenAIEndpointModesForWrite,
-  type OpenAIEndpointModeDefaultContext
-} from '../domain/openai-endpoint-modes.js'
-import {
-  normalizeAnthropicEndpointModesForWrite
-} from '../domain/anthropic-endpoint-modes.js'
-import {
-  isAnthropicProtocolProfile
-} from '../domain/provider-protocol.js'
+import { providerAccountCredentialDriverForContext } from '../modules/providers/drivers/account-credentials.registry.js'
+import type { ProviderAccountCredentialContext } from '../modules/providers/drivers/_shared/account-credentials.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
-type AccountEndpointModeDefaultContext = OpenAIEndpointModeDefaultContext & {
-  protocolCode?: string
-  protocolVersion?: string
-}
+type AccountEndpointModeDefaultContext = ProviderAccountCredentialContext
 
 const apiKeyAccountCredentialKeys = new Set([
   'api_key',
@@ -123,13 +112,7 @@ function normalizeApiKeyAccountCredentials(
 }
 
 function normalizeApiKeyEndpointModesForWrite(value: unknown, endpointModeDefaults: AccountEndpointModeDefaultContext): string[] {
-  if (isAnthropicProtocolProfile(endpointModeDefaults)) {
-    return normalizeAnthropicEndpointModesForWrite(value, {
-      ...endpointModeDefaults,
-      accountType: 'api_key'
-    })
-  }
-  return normalizeOpenAIEndpointModesForWrite(value, {
+  return normalizeEndpointModesForWrite(value, {
     ...endpointModeDefaults,
     accountType: 'api_key'
   })
@@ -175,7 +158,7 @@ function normalizeApiKeyWeight(value: unknown): number {
 
 function normalizeOAuthAccountCredentials(
   input: Record<string, unknown>,
-  endpointModeDefaults: OpenAIEndpointModeDefaultContext
+  endpointModeDefaults: AccountEndpointModeDefaultContext
 ): Record<string, unknown> {
   const accessToken = optionalCredentialText(input.access_token, 'Access Token', accountCredentialSecretMaxBytes)
   const refreshToken = optionalCredentialText(input.refresh_token, 'Refresh Token', accountCredentialSecretMaxBytes)
@@ -185,7 +168,7 @@ function normalizeOAuthAccountCredentials(
 
   const credentials: Record<string, unknown> = {
     base_url: requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes),
-    supported_endpoint_modes: normalizeOpenAIEndpointModesForWrite(input.supported_endpoint_modes, {
+    supported_endpoint_modes: normalizeEndpointModesForWrite(input.supported_endpoint_modes, {
       ...endpointModeDefaults,
       accountType: 'oauth',
       clientCompatibility: 'codex_responses'
@@ -205,6 +188,14 @@ function normalizeOAuthAccountCredentials(
   normalizeAccountCredentialPolicies(input, credentials)
   assertAccountCredentialsJsonSize(credentials)
   return credentials
+}
+
+function normalizeEndpointModesForWrite(value: unknown, context: AccountEndpointModeDefaultContext): string[] {
+  const driver = providerAccountCredentialDriverForContext(context)
+  if (!driver) {
+    throw new Error(`供应商协议档案未注册接口能力归一化：${context.providerCode ?? 'unknown'}`)
+  }
+  return driver.normalizeEndpointModesForWrite(value, context)
 }
 
 function normalizeAccountCredentialPolicies(input: Record<string, unknown>, credentials: Record<string, unknown>): void {

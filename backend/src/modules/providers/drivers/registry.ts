@@ -1,11 +1,17 @@
 import type { Request } from 'express'
 
+import type { ProviderCode } from '../../../domain/types.js'
 import { openAIEndpointModeForRequestShape } from '../../../domain/openai-endpoint-modes.js'
-import type { ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, normalizeProviderToken, type ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../storage/openai-account-selector.types.js'
 import { isEffectiveOpenAIStreamRequest } from '../../gateway/upstream/request.js'
 import { anthropicProviderDriver } from './anthropic/driver.js'
-import type { ProviderDriver, ProviderRequestCapabilityMismatchReason } from './_shared/types.js'
+import type {
+  ProviderDriver,
+  ProviderGatewayRequestContext,
+  ProviderRequestCapabilityMismatchReason,
+  ProviderUsageModelResolution
+} from './_shared/types.js'
 import { gptProviderDriver } from './gpt/driver.js'
 import { openAICompatibleProviderDriver } from './openai-compatible/driver.js'
 
@@ -27,13 +33,49 @@ export function providerDriverForAccount(account: ProviderProtocolProfileDefinit
   return providerDriverForProfile(account)
 }
 
-export function accountSupportsGatewayRequest(req: Request, account: DispatchAccountSecret): boolean {
+export function providerDriverForProviderCode(providerCode: string | undefined): ProviderDriver | undefined {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode) return undefined
+  return providerDrivers.find((driver) => driver.providerCode === normalizedProviderCode)
+}
+
+export function defaultGatewayUsageProviderCode(): ProviderCode {
+  return GPT_VENDOR_CODE
+}
+
+export function usageSemanticForProviderCode(providerCode: string | undefined): string {
+  return providerDriverForProviderCode(providerCode)?.usageSemantic ?? 'openai'
+}
+
+export function resolveGatewayUsageModel(
+  account: DispatchAccountSecret,
+  requestedModel?: string
+): ProviderUsageModelResolution {
+  return providerDriverForAccount(account)?.resolveUsageModel(account, requestedModel) ?? {
+    upstreamModel: requestedModel,
+    modelMappingApplied: false
+  }
+}
+
+export async function prepareGatewayUpstreamAccount(
+  account: DispatchAccountSecret,
+  signal?: AbortSignal
+): Promise<DispatchAccountSecret> {
+  const driver = providerDriverForAccount(account)
+  return await (driver?.prepareAccountBeforeDispatch?.(account, { signal }) ?? account)
+}
+
+export function accountSupportsGatewayRequest(
+  req: Request,
+  account: DispatchAccountSecret,
+  context?: ProviderGatewayRequestContext
+): boolean {
   const driver = providerDriverForAccount(account)
   if (!driver) {
     return false
   }
   if (buildGatewayUpstreamUrlsForAccount(account, req).length === 0) return false
-  return driver.accountSupportsRequest(req, account)
+  return driver.accountSupportsRequest(req, account, context)
 }
 
 export function buildGatewayUpstreamUrlsForAccount(account: DispatchAccountSecret, req: Request): string[] {
@@ -44,13 +86,14 @@ export async function buildGatewayUpstreamRequestParts(
   req: Request,
   account: DispatchAccountSecret,
   identity: { systemAccountId: string; apiKeyId?: string; groupId: string },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  context?: ProviderGatewayRequestContext
 ): Promise<{ headers: Headers; body?: Buffer | string }> {
   const driver = providerDriverForAccount(account)
   if (!driver) {
     throw new Error(`供应商协议档案未注册请求构造器：${account.providerProtocolProfileId}`)
   }
-  return await driver.buildUpstreamRequestParts(req, account, identity, signal)
+  return await driver.buildUpstreamRequestParts(req, account, identity, signal, context)
 }
 
 export function gatewayRequestCapabilityMismatchReason(

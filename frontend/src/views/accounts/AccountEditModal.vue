@@ -8,7 +8,7 @@
     force-render
     transition-name=""
     mask-transition-name=""
-    :ok-button-props="okButtonProps"
+    :ok-button-props="confirmButtonProps"
     @ok="$emit('ok')"
     @cancel="$emit('cancel')"
   >
@@ -108,6 +108,7 @@
               :model-options="modelOptions"
               :models-loading="modelsLoading"
               :proxy-options="proxyOptions"
+              :selected-protocol-profile="selectedProtocolProfile"
               :authorized-editing="authorizedEditing"
             />
 
@@ -140,7 +141,7 @@
         <a-button :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
-          <a-button v-bind="okButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
+          <a-button v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
         </a-space>
       </div>
     </template>
@@ -162,7 +163,6 @@ import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import { statusText } from './accountFormatters'
-import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import {
   accountEndpointModeText,
   defaultAccountEndpointModes,
@@ -253,14 +253,20 @@ const sourceAccountStatusText = computed(() => {
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
+const confirmButtonProps = computed(() => ({
+  ...props.okButtonProps,
+  disabled: Boolean(props.okButtonProps.disabled) || props.testLoading
+}))
 const shouldRenderAdvancedSections = computed(() => props.authorizedEditing || advancedActiveKeys.value.includes('advanced'))
 const advancedConfiguredCount = computed(() => {
   const form = props.form
   const checks = [
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
-    form.clientCompatibility !== defaultAccountClientCompatibility(form.providerCode),
-    !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, form.clientCompatibility)),
+    !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, form.clientCompatibility, {
+      provider: props.selectedProvider,
+      protocolProfile: props.selectedProtocolProfile
+    })),
     form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     form.priority !== 0,
     Boolean(form.proxyProfileId),

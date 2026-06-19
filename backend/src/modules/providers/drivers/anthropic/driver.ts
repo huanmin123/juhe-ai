@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsAnthropicEndpointMode,
   anthropicEndpointModeForRequestShape
@@ -36,10 +37,19 @@ export const anthropicProviderDriver: ProviderDriver = {
   providerCode: ANTHROPIC_PROVIDER_CODE,
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  usageSemantic: 'anthropic',
   profileIds: [ANTHROPIC_ANTHROPIC_V1_PROFILE_ID],
   supportsProfile(profile) {
     return profile?.providerCode === ANTHROPIC_PROVIDER_CODE
       && isAnthropicProtocolProfile(profile)
+  },
+  resolveUsageModel(account, requestedModel) {
+    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
+    return {
+      upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
+      modelMappingApplied: Boolean(modelMapping),
+      modelMappingSource: modelMapping ? 'account' : undefined
+    }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
     return buildAnthropicUpstreamUrlsForAccount(account, req)
@@ -70,7 +80,10 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
   },
   endpointModeForRequest: anthropicEndpointModeForGatewayRequest,
-  accountSupportsRequest(req, account) {
+  accountSupportsRequest(req, account, context) {
+    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
+      return false
+    }
     const mode = anthropicEndpointModeForGatewayRequest(req, account)
     if (!mode) return true
     return accountSupportsAnthropicEndpointMode({

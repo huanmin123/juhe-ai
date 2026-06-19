@@ -2,6 +2,8 @@ import type { Request } from 'express'
 
 import type {
   AccountClientCompatibility,
+  AccountModelMapping,
+  ClientCompatibilityCapability,
   AccountSupportedEndpointMode,
   AccountType,
   ProviderCode
@@ -21,6 +23,7 @@ export interface ProviderDriverAccount extends ProviderProtocolProfileDefinition
   supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
   credentials?: Record<string, unknown>
   baseUrl?: string
+  modelMappings?: AccountModelMapping[]
 }
 
 export interface ProviderUpstreamRequestIdentity {
@@ -29,9 +32,23 @@ export interface ProviderUpstreamRequestIdentity {
   groupId: string
 }
 
+export interface ProviderGatewayRequestContext {
+  requestClientCompatibility?: ClientCompatibilityCapability
+}
+
 export interface ProviderUpstreamRequestParts {
   headers: Headers
   body?: Buffer | string
+}
+
+export interface ProviderAccountPreparationContext {
+  signal?: AbortSignal
+}
+
+export interface ProviderUsageModelResolution {
+  upstreamModel?: string
+  modelMappingApplied: boolean
+  modelMappingSource?: string
 }
 
 export interface ProviderDriver {
@@ -39,15 +56,22 @@ export interface ProviderDriver {
   providerCode: ProviderCode
   protocolCode: string
   protocolVersion: string
+  usageSemantic: string
   profileIds: readonly string[]
   supportsProfile(profile: ProviderProtocolProfileDefinition | undefined): boolean
+  resolveUsageModel(account: ProviderDriverAccount, requestedModel?: string): ProviderUsageModelResolution
+  prepareAccountBeforeDispatch?(
+    account: DispatchAccountSecret,
+    context: ProviderAccountPreparationContext
+  ): Promise<DispatchAccountSecret>
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[]
   buildUpstreamRequestParts(
     req: Request,
     account: DispatchAccountSecret,
     identity: ProviderUpstreamRequestIdentity,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    context?: ProviderGatewayRequestContext
   ): Promise<ProviderUpstreamRequestParts>
   endpointModeForRequest(req: Request, account: ProviderDriverAccount): AccountSupportedEndpointMode | undefined
-  accountSupportsRequest(req: Request, account: ProviderDriverAccount): boolean
+  accountSupportsRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext): boolean
 }

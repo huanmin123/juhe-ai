@@ -117,8 +117,9 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 账户级错误处理策略保存在 `accounts.credentials.error_handling_rules`，用于描述该账户上游非 `2xx` 错误命中后的账号副作用。规则保存启用状态、名称、优先级、状态码 / 错误码 / 错误类型 / 关键字匹配条件、动作和限流恢复策略。请求头、请求体和上下文改写不进入该字段，仍由网关 adapter 内部处理。
 - `response_inspection_policies` 保存管理端响应检查策略。`scope_type = protocol` 时 `provider_code` 为空，表示当前 `protocol_code` 下的协议层规则；`scope_type = provider` 时必须写入同一协议下已启用的 `provider_code`，表示 GPT、DeepSeek、GLM、Kimi 或其他 OpenAI v1 兼容供应商的局部规则。`enabled`、`priority`、`scope_type`、`action` 和 `match_json` 都由数据库 CHECK 约束兜底，`match_json` 必须是合法 JSON 对象；写入路径不保留旧 action 或旧 matcher 默认值。运行时只在 API Key 校验和分组选定后按当前 `protocol_code + provider_code` 读取候选策略；fallback 切换到后备分组时必须重新读取目标分组协议和供应商对应的策略，不得沿用原分组策略。账户专属响应检查规则保存于账户凭据 `response_inspection_rules`，运行时优先于管理端策略执行；当前新版本不保留旧 `stream_intercept_policies` 表或账户凭据里的 `stream_intercept_rules`。
 - `accounts.system_account_id` 和 `groups.system_account_id` 表示当前资源行所属系统账户；授权实例账户的 `accounts.system_account_id` 是被授权用户，`authorization_instance_source_account_id` 记录来源账户，`authorization_instance_authorization_id` 指向用户级授权，`authorization_instance_owner_system_account_id` 记录原资源归属人。`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户；授权账户绑定到被授权用户分组时写入授权实例账户 ID 和稳定的 `account_authorization_id`。授权实例自己的 `accounts.status / schedulable / cooldown_until / last_error_* / stream_failure_*` 是被授权侧本地运行态；当前分组内排序、超级优先和降级备用以 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled` 为准；真实上游资源事实从来源账户补齐，包括凭据、`base_url`、账号类型、支持模型、代理、并发、可用时段和账户追加流式规则。归属人原账户停用、异常、限流 / 临时不可调用、冷却、关闭调度、套餐到期或测试失败不会覆盖或回写授权实例本地运行态，但会参与授权实例 `effectiveAvailability` 实际可用性计算并阻断调度、账户测试和迁移目标选择；来源账户资源配置变化会同步影响授权实例运行时。来源账户被逻辑删除时，来源账户及其授权实例都会立即隐藏且不可调度，对应授权关系转为已回收；授权实例账户不能通过账户删除接口删除，被授权人不想继续使用个人直授权时通过授权归还入口把个人授权标记为 `returned` 并隐藏该实例。
+- AI 账户名称最长 128 个字符，由后端写入入口强制校验，前端表单同步限制输入长度。`account_name_search_documents` 每个账户保存一条 NFKC + 小写后的规范化名称；`account_name_search_terms` 保存该规范化名称的去重 1/2/3 连续字符词项，字段包含 `account_id`、`system_account_id`、`term` 和 `created_at`。每个账户最多约 `128 + 127 + 126 = 381` 个词项，规模按账户数线性增长。账户创建、改名、授权实例物化、授权实例改名和账户逻辑删除会同步维护这两张表；AI 账户列表的名称包含匹配先通过 `term + system_account_id + account_id` 索引定位候选账号 ID，再通过 `account_name_search_documents.normalized_name LIKE` 做最终连续片段校验，避免把非连续词项误判为命中。历史库升级后如需补齐已有账户词项，使用 `pnpm --filter juhe-ai-backend maintenance:rebuild-account-name-search` 离线重建；列表请求路径不得为了补历史数据扫描 `accounts` 主表。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
-- `accounts.availability_schedule_json` 保存账户时间计划；为空表示不限制时段。启用计划后，创建或编辑计划时按当前时间初始化 `accounts.availability_schedule_active` 派生字段；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。该字段只作为网关账号候选过滤和列表展示事实，不驱动 `accounts.status` 自动改写。时段外账户不进入网关候选，系统时区由后端统一默认值决定，前端不暴露用户时区配置。
+- `accounts.availability_schedule_json` 保存账户时间计划；为空表示不限制时段。启用计划后，创建或编辑计划时按当前时间初始化 `accounts.availability_schedule_active` 派生字段；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。该字段只作为网关账号候选过滤和列表展示事实，不驱动 `accounts.status` 自动改写。时段外账户不进入网关候选；跨天窗口按窗口开始日期应用 `dateRange` 和例外日期，结束日期当天启动的窗口可延续到次日凌晨，重叠窗口结束时仍有其他允许窗口则不能关闭派生状态。系统时区由后端统一默认值决定，前端不暴露用户时区配置。
 - `accounts.last_error_code` 保存账户异常子类型；顶层状态仍统一使用 `status = error` 表示“异常”，可读细节继续放在 `accounts.last_error_message`。
 - `accounts.last_successful_test_model` 保存该账户最近一次手动账户测试通过时使用的模型；后台系统复测优先使用该模型，没有手动成功记录时使用供应商协议档案 `provider_protocol_profiles.default_test_model`。
 - `account_test_tasks` 保存手动 AI 账户测试任务的轻量状态，任务由管理 API 创建并投递给 background worker 执行；表内只保留任务发起人、管理筛选作用域、账户摘要、状态、取消标记和最终脱敏结果，创建 / 编辑弹窗发起的未保存账户测试会额外保存加密草稿快照 `draft_account_encrypted`，默认只保留已完成任务 24 小时。前端手动测试和批量测试只能查询该表的任务状态，不在管理 API 请求链路等待上游测试完成。任务运行超时只从 `started_at` 开始计算，`queued` 或等待 worker 接收阶段不参与 60 秒运行超时。
@@ -194,6 +195,9 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `client_ip_registry`：按 `ip_hash` 保存来源 IPv4 注册事实，包括 `aggregate_ip_key`、最近样本 IP、IP 版本、首次出现、最近出现和分桶号；当前 IP 管理只写入 IPv4，`aggregate_ip_key` 与规范化 IPv4 一致。该表只由后台 IP 统计 job 注册和更新，页面不从 `usage_records` 扫描 IP；管理页最后使用日期筛选和“最后使用”列以 `last_seen_at` 为准。
 - `client_ip_stats_daily`：按 `ip_hash + stat_date` 保存 IP 自然日请求数、成功数、失败数、Token、缓存成本、总成本、首 token / 总耗时样本和、总耗时最大值和最近使用 / 最近错误时间。
 - `client_ip_usage_range_windows`：按 `ip_hash + start_date + end_date` 保存最近 31 天内 IP 范围窗口，系统运维 / IP管理 列表和 `/__aipublic__/ip/usage` 外部来源接口只读该窗口，不在请求路径聚合明细、重建窗口或计算范围总统计。IP 速度展示只读取窗口内已落表的平均首 token、平均总耗时和最大总耗时字段，不新增实时明细扫描。
+- `client_ip_account_stats_daily`：按 `ip_hash + account_id + stat_date` 保存 IP 涉及 AI 账户的自然日统计，只从新使用记录开始写入，不在运行时代码补历史。
+- `client_ip_account_usage_range_windows`：按 `ip_hash + account_id + start_date + end_date` 保存 IP 详情账号使用窗口，系统运维 / IP管理 的“详情”操作只读该窗口并批量补齐当前页账号名称，不扫描 `usage_records`，也不在请求路径临时 `GROUP BY`。
+- `client_ip_account_range_window_dirty_ips`：记录待刷新 IP+账号范围窗口的 dirty IP，和 `client_ip_range_window_dirty_ips` 同步写入、同步清理，确保详情窗口与 IP 列表窗口一起进入 ready。
 - `client_ip_policies`：保存管理员显式创建的 IP 封禁策略，解封或替换策略只把旧策略改为 `disabled`，不删除历史。
 - `client_ip_policy_hits`：按 `ip_hash + stat_date + policy_id` 保存网关封禁命中次数和最近命中时间；网关先写进程内缓冲，再异步批量写库。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于自然日模型分布。
@@ -241,6 +245,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL`：普通索引，用于排查相同凭据，不承担唯一约束。
 - `accounts(system_account_id, lower(name))`：保证同一用户下 AI 账户名称唯一。
 - `accounts(name, id)`、`accounts(system_account_id, name, id)`：AI 账户列表、账户选项和 AI 性能账号选项按账号名称精确 / 前缀定位。
+- `account_name_search_terms(term, system_account_id, account_id)`、`account_name_search_terms(account_id)`、`account_name_search_documents(system_account_id, account_id)`：AI 账户列表名称包含匹配先按词项索引定位候选 ID，再由规范化名称文档做连续片段校验；删除或重建时按账号 ID 清理词项和文档。
 - `accounts(provider_code, id)`、`accounts(system_account_id, provider_code, id)`、`accounts(type, id)`、`accounts(system_account_id, type, id)`：保留给供应商、账户类型筛选或排序使用；AI 账户通用搜索不再匹配这些字段。
 - `accounts(account_expires_at, updated_at, id) WHERE account_expires_at IS NOT NULL`、`accounts(system_account_id, account_expires_at, updated_at, id) WHERE account_expires_at IS NOT NULL`：账户套餐到期清理只按到期时间读取固定批量 ID，再按主键更新，避免账户列表 / options / 详情请求触发全表扫描、临时排序或无界批量写。
 - `account_test_tasks(request_system_account_id, updated_at, id)`：账号测试任务按发起人和更新时间查询；读取时还要校验同一管理筛选作用域，避免跨用户作用域读取任务状态。
@@ -811,7 +816,7 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - 授权实例运行态以授权实例 `accounts` 行为准；冷却、最近错误和流式失败窗口不落在 `group_accounts` 本地绑定字段上。
 - 来源 AI 账户删除时，来源账户和对应授权实例账户都只做逻辑删除并立即隐藏；对应 `resource_authorization_grants` 和 `resource_authorizations` 必须标记为 `revoked`，历史统计和用量在逻辑删除阶段继续保留原授权 ID；默认授权列表不再把它作为生效授权展示。超过 1 个月后，物理清理任务再删除授权实例、授权记录、绑定关系、历史记录和统计窗口。
 - `api_keys` 不保存主号池字段；API Key 的分组路由事实只来自 `api_key_group_bindings`。
-- `api_keys.availability_schedule_json` 保存 API Key 时间计划；为空表示不设置计划，API Key 完全按 `api_keys.status` 手动启停。启用计划后，创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active` 派生字段；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。网关只读取落库后的人工状态和派生计划状态，不在请求链路解析计划 JSON。
+- `api_keys.availability_schedule_json` 保存 API Key 时间计划；为空表示不设置计划，API Key 完全按 `api_keys.status` 手动启停。启用计划后，创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active` 派生字段；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。跨天窗口的日期范围和例外日期都按窗口开始日期解释，结束日期当天启动的窗口可延续到次日凌晨；多个窗口重叠时按当前整体允许状态写派生字段，避免较短窗口结束时错误停用。网关只读取落库后的人工状态和派生计划状态，不在请求链路解析计划 JSON。
 - `accounts.availability_schedule_json` 与 API Key 计划使用同一结构；账户计划作用在具体账户行上，授权实例账户按自己的实例行计划参与调度，来源账户计划作为来源账户可用性的一部分参与授权实例实际可用性判断。`account_schedule_status_events` 记录账户时间计划边界事件，避免同步任务在非边界时覆盖人工提前启用 / 提前关闭。
 - `api_key_group_bindings.api_key_id / group_id / priority / status` 保存 API Key 到多个可用分组号池的路由绑定；新建和编辑时可以绑定 API Key 所属系统账户自己的分组，也可以绑定有效授权给该系统账户的分组。至少保留一个 `active` 绑定，同一个 Key 下 active 绑定优先级唯一。当前实现要求同一个 Key 下所有绑定分组属于同一供应商协议档案；模型路由方案落地后不再用写入时同档案限制承接跨供应商边界，而是运行时按请求 `model` 解析目标 `provider_protocol_profile_id` 后筛选绑定分组。
 - 授权实例账户通过 `group_accounts.account_authorization_id` 进入被授权用户自己的分组后参与调度；调度时必须重新校验最终用户授权、调用方系统账户、实例账户状态、实例绑定状态、额度缓存和来源账户可用性。上游凭据、`base_url`、模型、代理、并发、可用时段和账户追加流式规则从来源账户补齐，并随来源账户资源配置更新同步进入列表、账户测试和网关运行缓存；列表读取来源账户状态、调度开关、到期和错误摘要作为 `effectiveAvailability` 的来源侧阻断依据，但这些来源状态字段不能覆盖或回写授权实例自己的本地运行态。
@@ -910,7 +915,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `systemApiRateLimitIpReadPerMinute = 600`、`systemApiRateLimitIpReadBurstPer10Seconds = 120`：同一客户端 IP 后台读请求的分钟上限和 10 秒突发上限。
 - `systemApiRateLimitIpWritePerMinute = 180`、`systemApiRateLimitIpWriteBurstPer10Seconds = 40`：同一客户端 IP 后台写请求的分钟上限和 10 秒突发上限。
 - `systemApiRateLimitUserReadPerMinute = 300`、`systemApiRateLimitUserWritePerMinute = 120`：同一登录系统账户后台读 / 写请求每分钟上限。
-- `defaultTemporaryUnschedulableMinutes = 5`：临时不可调用恢复流程中的最大单次暂停时间；账号进入 `temporary_unavailable` 后先 3 秒快速恢复，连续失败后翻倍，慢速恢复单次等待不超过该上限。
+- `defaultTemporaryUnschedulableMinutes = 2`：临时不可调用恢复流程中的最大单次暂停时间；账号进入 `temporary_unavailable` 后先 3 秒快速恢复，连续失败后翻倍，慢速恢复单次等待不超过该上限。
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试之间的等待间隔；冷却恢复复测会显式覆盖为不做同账号重试。
 - `temporaryUnschedulableRetryAttempts = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试次数；冷却恢复复测会显式覆盖为不做同账号重试。
 - 本地短暂避让不落库、不使用 `defaultTemporaryUnschedulableMinutes`，固定按 `3s -> 5s -> 10s` 进程内阶梯执行；每阶到期后只允许一个真实请求半开探测，半开租约跟随请求并发生命周期释放，固定租约时间只用于无在途并发时回收孤儿租约；三阶半开仍失败后进入事前确认。真实网关流量中的代理 profile 已知不可用也只推进这套运行态阶梯，确认失败且账号并发归零前不写持久临时不可调用。
@@ -942,7 +947,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `accountTestTaskConcurrency = 100`：手动账号测试 worker 系统级并发上限，合法范围 `1..1000`；前端批量测试仍按每批最多 10 个账号提交。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
 - `cooldownAccountRetestMaxBackoffHours = 12`：冷却账号进入长期不可用低频复测的观察阈值，默认 12 小时；进入慢速恢复后仍继续自动退避复测，超过该窗口后不转异常，账户页派生展示“长期不可用”。
-- `cooldownAccountRetestLongTermIntervalHours = 24`：长期不可用后的低频自动复测间隔，默认 24 小时；后台冷却复测固定启用，只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
+- `cooldownAccountRetestLongTermIntervalHours = 1`：长期不可用后的低频自动复测间隔，默认 1 小时；后台冷却复测固定启用，只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
 - `cooldownAccountRetestIntervalSeconds = 3`：冷却账号后台复测默认扫描间隔，用于承接 3 秒起步的快速恢复通道。
 - `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
@@ -985,7 +990,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 本地网关 API Key 的完整明文在创建成功时返回，也可通过单条完整密钥读取接口按资源权限返回；列表和更新响应只返回空 `key` 以及 `key_prefix` / `key_suffix` 组成的安全标识，不能批量暴露完整密钥。授权账户和授权分组接口不能返回完整密钥，只能返回列表摘要和必要状态。数据库中必须通过 `key_secret_encrypted` 密文保存本地 API Key，`key_hash` 用于网关校验，`key_prefix` 和 `key_suffix` 用于摘要展示；API Key 列表通用搜索只按名称匹配。缺少 `key_secret_encrypted` 或密文不可解的数据不进入运行时，应停机离线修复或重建 API Key。
 
-API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 时间计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，保存计划时按当前时间初始化派生字段，background worker 周期检查开始 / 结束边界，命中边界后只写入派生字段 `availability_schedule_active`，不覆盖人工启停 `status`。人工可以提前把派生字段置为可用或停用；发生派生状态变化时清理 API Key 校验缓存和网关运行缓存。
+API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。API Key 时间计划也不属于敏感凭据，保存在 `api_keys.availability_schedule_json`；计划以分钟为粒度判断，保存计划时按当前时间初始化派生字段，background worker 周期检查开始 / 结束边界，命中边界后只写入派生字段 `availability_schedule_active`，不覆盖人工启停 `status`。人工可以提前把派生字段置为可用或停用；发生派生状态变化时清理 API Key 校验缓存和网关运行缓存。跨天、日期范围、例外日期和重叠窗口都必须按同一套计划解释函数处理，避免列表、后台同步和网关校验出现口径差异。
 
 外部来源授权 token 在创建响应中返回完整明文，也可通过单条 token 复制接口按管理员权限读取；业务库 `external_integration_source_tokens` 保存带用途前缀的 SHA-256 摘要 `token_hash`、完整 token 密文 `token_secret_encrypted`、安全展示用 `token_prefix` / `token_suffix`、状态、scope 和过期时间。每一个公开接口都是独立资源 scope，来源授权和 token 都必须包含目标接口 scope，才允许调用。默认种子会写入固定来源 `extsrc_builtin_test` 和固定 token `exttok_builtin_test` 作为内置测试 Token，完整明文只加密保存在业务库，可在公开接口授权列表按管理员权限复制；接入文档和 curl 示例只展示 `<source_token>` 占位符，不返回内置测试 Token 明文。内置测试来源固定授权当前所有公开接口 scope，固定限频 `60s/10次`，只返回公开接口 mock 数据；允许停用和重置，不允许编辑名称、scope、限频、到期时间、备注、新增 token 或删除。普通日志、运行日志、错误响应、操作记录和 demo 成功响应都不能输出真实明文 token 或 token hash。
 

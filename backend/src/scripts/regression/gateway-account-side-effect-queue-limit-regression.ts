@@ -1,16 +1,42 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+
+const currentDir = dirname(fileURLToPath(import.meta.url))
+const backendSrc = resolve(currentDir, '../..')
+const sideEffectServiceSource = readFileSync(resolve(backendSrc, 'modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
+const sideEffectPolicySource = readFileSync(resolve(backendSrc, 'modules/gateway/runtime/account-side-effect-policy.ts'), 'utf8')
 
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'server'
 logger.level = 'silent'
 
-const accountSideEffects = await import('../../modules/gateway/runtime/account-side-effects.service.js')
+const [
+  accountSideEffects,
+  sideEffectPolicy
+] = await Promise.all([
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/runtime/account-side-effect-policy.js')
+])
 
 try {
+  assert.match(sideEffectServiceSource, /from '\.\/account-side-effect-policy\.js'/, '账号副作用服务应通过 policy 文件判断合并、取消和健康成功跳过')
+  assert.doesNotMatch(sideEffectServiceSource, /function isHealthySuccessfulAccountSideEffect/, '健康成功跳过策略不应继续内联在账号副作用服务')
+  assert.match(sideEffectPolicySource, /shouldSkipHealthySuccessfulAccountSideEffect/, '账号副作用 policy 应暴露健康成功跳过策略')
+
+  const healthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_healthy_success', true)
+  const unhealthySuccess = buildAccountErrorHandlingOperation('acct_side_effect_unhealthy_success', true)
+  unhealthySuccess.account.lastErrorMessage = 'previous failure'
+  const failedOperation = buildAccountErrorHandlingOperation('acct_side_effect_failed', false, 503, 'failed')
+  assert.equal(sideEffectPolicy.shouldSkipHealthySuccessfulAccountSideEffect(healthySuccess), true, '健康 active 账号成功副作用应允许跳过持久写')
+  assert.equal(sideEffectPolicy.shouldSkipHealthySuccessfulAccountSideEffect(unhealthySuccess), false, '带历史错误的成功副作用不能跳过持久写')
+  assert.equal(sideEffectPolicy.shouldSkipHealthySuccessfulAccountSideEffect(failedOperation), false, '失败副作用不能被健康成功策略跳过')
+
   accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
   const before = accountSideEffects.getGatewayAccountSideEffectState()
 

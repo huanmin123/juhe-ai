@@ -23,6 +23,7 @@ const accountResponseInspectionRules = [{
 }]
 
 const maliciousPatch = {
+  supported_endpoint_modes: ['responses_json', 'responses_sse'],
   error_handling_rules: legacyErrorHandlingRules,
   response_inspection_rules: accountResponseInspectionRules,
   access_token: 'attacker-access',
@@ -46,6 +47,7 @@ assert.equal(tokenCredentials.refresh_token, 'server-refresh', 'credentialsPatch
 assert.equal(tokenCredentials.expires_at, '2026-01-01T00:00:00.000Z', 'credentialsPatch 不能覆盖服务端 token 过期时间')
 assert.equal(tokenCredentials.client_id, 'server-client', 'credentialsPatch 不能覆盖 OAuth client_id')
 assert.equal(tokenCredentials.base_url, 'https://api.openai.com/v1', 'credentialsPatch 不能覆盖 OpenAI base_url')
+assert.deepEqual(tokenCredentials.supported_endpoint_modes, ['responses_json', 'responses_sse'], 'credentialsPatch 应保留 OAuth 接口能力限制')
 assert.deepEqual(tokenCredentials.error_handling_rules, legacyErrorHandlingRules, 'credentialsPatch 应保留账户级错误处理规则')
 assert.deepEqual(tokenCredentials.response_inspection_rules, accountResponseInspectionRules, 'credentialsPatch 应保留账户级响应检查规则')
 
@@ -58,4 +60,4 @@ const fallbackCredentials = buildSafeOpenAIOAuthCredentials({
 
 assert.equal(fallbackCredentials.refresh_token, 'fallback-refresh', 'token 响应缺 refresh_token 时只能使用服务端传入的 fallback refresh token')
 
-console.log('OpenAI OAuth credentialsPatch 回归通过：客户端补丁不能覆盖服务端 token 凭据，且允许写入账户级错误处理规则和响应检查规则')
+console.log('OpenAI OAuth credentialsPatch 回归通过：客户端补丁不能覆盖服务端 token 凭据，且允许写入接口能力、账户级错误处理规则和响应检查规则')

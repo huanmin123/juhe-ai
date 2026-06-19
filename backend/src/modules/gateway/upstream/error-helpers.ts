@@ -1,8 +1,8 @@
 import type { UpstreamAttempt } from './attempt.js'
-import { parseErrorPayload } from '../policy/account-error-policy.service.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sanitizeDiagnosticPayload } from '../audit/payload-sanitizer.js'
 import { sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
+import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 
 type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
   upstream?: {
@@ -22,7 +22,7 @@ export function buildDiagnosticUpstreamError(
   const statusCode = isHttpStatusCode(lastAttempt.status) ? lastAttempt.status : 503
   const bodyText = lastAttempt.responseBodyText?.trim()
   const responseHeaders = headersFromObject(lastAttempt.responseHeaders)
-  const parsedError = bodyText ? parseErrorPayload(bodyText, responseHeaders) : {}
+  const parsedError = bodyText ? parseGatewayProtocolErrorPayload(undefined, bodyText, responseHeaders) : {}
   const errorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message) || lastAttempt.message || fallbackMessage)
   const errorType = stringValue(parsedError.type) || stringValue(parsedError.code) || 'upstream_error'
   const parsedPayload = bodyText ? parseJsonObject(bodyText) : undefined

@@ -4,8 +4,8 @@ import {
   formatUsd,
   serverDateTimeTimestamp
 } from '@/shared/formatters'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { AccountSummary, AccountUsageSummary } from '@/types/domain'
+import { canCreateOAuthAccount } from './accountProviderCapabilities'
 
 export interface OAuthUsageBar {
   key: string
@@ -30,7 +30,7 @@ export function formatCost(value?: number): string {
 }
 
 export function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
-  if (!isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') return []
+  if (account.type !== 'oauth' || !canCreateOAuthAccount({ profile: account })) return []
   const usage = account.oauthUsage
   if (!usage) return []
   return [

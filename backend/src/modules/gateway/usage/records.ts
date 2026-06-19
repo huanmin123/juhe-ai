@@ -5,7 +5,6 @@ import type {
   OpenAIAccountSecret
 } from '../../../storage/repositories.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
-import { parseErrorPayload } from '../policy/account-error-policy.service.js'
 import { enqueueUsageRecord } from './record-queue.service.js'
 import {
   estimateCatalogCacheReadCostUsd,
@@ -13,7 +12,6 @@ import {
   estimateCatalogCostUsd,
   resolveCatalogPricingModel
 } from '../../model-pricing/model-catalog.service.js'
-import { resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import {
   buildGatewayErrorResponseSnapshot,
   buildUsageRequestSnapshot,
@@ -31,8 +29,13 @@ import {
 import type { GatewayErrorPayload } from '../response/responses.js'
 import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './traffic-source.js'
-import { ANTHROPIC_PROVIDER_CODE, GPT_VENDOR_CODE, normalizeProviderToken } from '../../../domain/provider-protocol.js'
 import { recordGatewayAccountApiKeySuccess } from '../runtime/account-api-key-effects.service.js'
+import {
+  defaultGatewayUsageProviderCode,
+  resolveGatewayUsageModel,
+  usageSemanticForProviderCode
+} from '../../providers/drivers/registry.js'
+import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -109,16 +112,10 @@ export function recordFailedUpstreamAttempt(
   }
 ): void {
   const model = requestModel(req)
-  const modelMapping = resolveOpenAIAccountModelMapping(account, model)
-  const upstreamModel = modelMapping?.upstreamModel ?? model
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
-  const pricingModel = resolveCatalogPricingModel({
-    providerCode: account.providerCode,
-    systemAccountId: catalogSystemAccountId,
-    model: upstreamModel
-  })
+  const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId)
   const errorPayload = input.bodyText && input.headers instanceof Headers
-    ? parseErrorPayload(input.bodyText, input.headers)
+    ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
     : {}
   const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
   const errorMessage = input.errorMessage
@@ -150,12 +147,12 @@ export function recordFailedUpstreamAttempt(
     ...accountUsageMetadata(account),
     endpoint: usageContext.endpoint,
     providerCode: account.providerCode,
-    usageSemantic: usageSemanticForProvider(account.providerCode),
+    usageSemantic: usageSemanticForProviderCode(account.providerCode),
     model,
-    upstreamModel,
-    pricingModel,
-    modelMappingApplied: Boolean(modelMapping),
-    modelMappingSource: modelMapping ? 'account' : undefined,
+    upstreamModel: modelAccounting.upstreamModel,
+    pricingModel: modelAccounting.pricingModel,
+    modelMappingApplied: modelAccounting.modelMappingApplied,
+    modelMappingSource: modelAccounting.modelMappingSource,
     stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
@@ -200,14 +197,8 @@ export function recordCompletedUpstreamAttempt(
     recordGatewayAccountApiKeySuccess(input.account, 'upstream_attempt_completed')
   }
   const model = requestModel(req)
-  const modelMapping = resolveOpenAIAccountModelMapping(input.account, model)
-  const upstreamModel = modelMapping?.upstreamModel ?? model
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
-  const pricingModel = resolveCatalogPricingModel({
-    providerCode: input.account.providerCode,
-    systemAccountId: catalogSystemAccountId,
-    model: upstreamModel
-  })
+  const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId)
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
@@ -219,12 +210,12 @@ export function recordCompletedUpstreamAttempt(
     ...accountUsageMetadata(input.account),
     endpoint: input.endpoint,
     providerCode: input.account.providerCode,
-    usageSemantic: usageSemanticForProvider(input.account.providerCode),
+    usageSemantic: usageSemanticForProviderCode(input.account.providerCode),
     model,
-    upstreamModel,
-    pricingModel,
-    modelMappingApplied: Boolean(modelMapping),
-    modelMappingSource: modelMapping ? 'account' : undefined,
+    upstreamModel: modelAccounting.upstreamModel,
+    pricingModel: modelAccounting.pricingModel,
+    modelMappingApplied: modelAccounting.modelMappingApplied,
+    modelMappingSource: modelAccounting.modelMappingSource,
     stream: input.stream,
     statusCode: input.statusCode,
     success: input.success,
@@ -241,20 +232,20 @@ export function recordCompletedUpstreamAttempt(
     cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: upstreamModel,
+      model: modelAccounting.upstreamModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: upstreamModel,
+      model: modelAccounting.upstreamModel,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
     costUsd: estimateCatalogCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
-      model: upstreamModel,
+      model: modelAccounting.upstreamModel,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -328,6 +319,7 @@ export function recordGatewayFailure(
     groupId: usageContext.groupId,
     endpoint: usageContext.endpoint
   }, '网关请求失败')
+  const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
 
   enqueueUsageRecord({
     traceId: usageContext.traceId,
@@ -342,8 +334,8 @@ export function recordGatewayFailure(
     groupAuthorizationSourceType: usageContext.groupAuthorizationSourceType,
     groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
     endpoint: usageContext.endpoint,
-    providerCode: usageContext.providerCode ?? GPT_VENDOR_CODE,
-    usageSemantic: usageSemanticForProvider(usageContext.providerCode ?? GPT_VENDOR_CODE),
+    providerCode,
+    usageSemantic: usageSemanticForProviderCode(providerCode),
     model: requestModel(req),
     stream: requestStream(req),
     statusCode: input.statusCode,
@@ -370,8 +362,28 @@ function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | 
   return value
 }
 
-function usageSemanticForProvider(providerCode: string): 'anthropic' | 'openai' {
-  return normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE ? 'anthropic' : 'openai'
+function accountUsageModelAccounting(
+  account: UpstreamAccount,
+  requestedModel: string | undefined,
+  catalogSystemAccountId: string
+): {
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied: boolean
+  modelMappingSource?: string
+} {
+  const resolved = resolveGatewayUsageModel(account, requestedModel)
+  const upstreamModel = resolved.upstreamModel ?? requestedModel
+  return {
+    upstreamModel,
+    pricingModel: resolveCatalogPricingModel({
+      providerCode: account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: upstreamModel
+    }),
+    modelMappingApplied: resolved.modelMappingApplied,
+    modelMappingSource: resolved.modelMappingSource
+  }
 }
 
 function logGatewayAttemptFailure(

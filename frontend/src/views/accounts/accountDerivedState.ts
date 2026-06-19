@@ -2,8 +2,8 @@ import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProviderMo
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
-import { isGatewaySupportedProtocolProfile } from '@/shared/providerProtocol'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
+import { isGatewayTestableAccountProfile } from './accountProviderCapabilities'
 
 export type SelectOption = {
   label: string
@@ -12,7 +12,10 @@ export type SelectOption = {
 }
 
 export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary | AccountSummary[], providerDefaultModel = ''): SelectOption[] {
-  const accountModels = normalizeAccountSupportedModels(account)
+  const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  if (restrictedModels) {
+    return selectOptions(prioritizeDefaultModel(restrictedModels, providerDefaultModel))
+  }
   const useProviderModels = isGatewaySupportedTestSelection(account)
   const providerModelValues = useProviderModels
     ? providerModels.map((item) => item.model)
@@ -20,14 +23,17 @@ export function buildTestModelOptions(providerModels: ProviderModelPricing[], ac
   const defaultModel = providerDefaultModel.trim()
   const models = [
     ...(defaultModel ? [defaultModel] : []),
-    ...accountModels,
     ...providerModelValues
   ]
-  return [...new Set(models.map((model) => model.trim()).filter(Boolean))].map((model) => ({ label: model, value: model }))
+  return selectOptions(models)
 }
 
 export function defaultTestModelForAccountSelection(account: AccountSummary | AccountSummary[] | undefined, providerDefaultModel = ''): string {
-  return providerDefaultModel.trim() || normalizeAccountSupportedModels(account)[0] || ''
+  const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  if (restrictedModels) {
+    return prioritizeDefaultModel(restrictedModels, providerDefaultModel)[0] ?? ''
+  }
+  return providerDefaultModel.trim() || ''
 }
 
 export function providerDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
@@ -43,18 +49,54 @@ export function providerCodeForAccountSelection(account: AccountSummary | Accoun
 
 export function isGatewaySupportedTestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
   const accounts = normalizeAccounts(account)
-  return accounts.length > 0 && accounts.every((item) => isGatewaySupportedProtocolProfile(item))
+  return accounts.length > 0
+    && accounts.every((item) => isGatewayTestableAccountProfile(item))
+    && hasSingleProviderProfileForAccountSelection(accounts)
+}
+
+export function hasSingleProviderProfileForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
+  const profileKeys = [...new Set(normalizeAccounts(account).map(accountProviderProfileKey))]
+  return profileKeys.length === 1
 }
 
 function normalizeAccountSupportedModels(account: AccountSummary | AccountSummary[] | undefined): string[] {
-  return normalizeAccounts(account)
-    .flatMap((item) => item.supportedModels ?? [])
-    .map((model) => model.trim())
-    .filter(Boolean)
+  return uniqueTextList(normalizeAccounts(account).flatMap((item) => item.supportedModels ?? []))
+}
+
+function restrictedTestModelsForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string[] | undefined {
+  const restrictedModelLists = normalizeAccounts(account)
+    .map((item) => normalizeAccountSupportedModels(item))
+    .filter((models) => models.length > 0)
+  if (!restrictedModelLists.length) return undefined
+  const [firstModels, ...otherModelLists] = restrictedModelLists
+  return firstModels.filter((model) => otherModelLists.every((models) => models.includes(model)))
+}
+
+function prioritizeDefaultModel(models: string[], providerDefaultModel: string): string[] {
+  const defaultModel = providerDefaultModel.trim()
+  if (!defaultModel || !models.includes(defaultModel)) return models
+  return [defaultModel, ...models.filter((model) => model !== defaultModel)]
+}
+
+function selectOptions(models: string[]): SelectOption[] {
+  return uniqueTextList(models).map((model) => ({ label: model, value: model }))
+}
+
+function uniqueTextList(values: string[]): string[] {
+  return [...new Set(values.map((model) => model.trim()).filter(Boolean))]
 }
 
 function normalizeAccounts(account: AccountSummary | AccountSummary[] | undefined): AccountSummary[] {
   return Array.isArray(account) ? account : account ? [account] : []
+}
+
+function accountProviderProfileKey(account: AccountSummary): string {
+  return [
+    account.providerCode,
+    account.providerProtocolProfileId ?? '',
+    account.protocolCode,
+    account.protocolVersion
+  ].join('\u0001')
 }
 
 export function targetSystemAccountLabel(systemAccounts: SystemAccountPrincipalSummary[], systemAccountId?: string, selected?: PrincipalSelection): string {

@@ -10,7 +10,6 @@ import {
 import {
   accountErrorPolicyReason,
   decideAccountErrorPolicy,
-  parseErrorPayload,
   type AccountErrorPolicyDecision,
   type GatewaySettings
 } from '../policy/account-error-policy.service.js'
@@ -56,7 +55,10 @@ import {
   recordGatewayCompatibilityRecoveryDecision,
   type GatewayCompatibilityRecoveryState
 } from '../client-profiles/compatibility-policy.js'
-import { isGatewayProtocolEndpointCapabilityFailure } from '../protocols/registry.js'
+import {
+  isGatewayProtocolEndpointCapabilityFailure,
+  parseGatewayProtocolErrorPayload
+} from '../protocols/registry.js'
 
 export type AccountFailureInput = {
   success: false
@@ -207,7 +209,7 @@ export async function handleFailedUpstreamResponse(
   }
   let parsedError: Record<string, unknown> = {}
   if (!responseBodyRead.truncated) {
-    parsedError = parseErrorPayload(responseBodyText, response.headers)
+    parsedError = parseGatewayProtocolErrorPayload(account, responseBodyText, response.headers)
   }
   if (!responseBodyRead.truncated && input.compatibilityRecoveryState) {
     const compatibilityRecovery = await decideGatewayCompatibilityRecovery({
@@ -476,7 +478,7 @@ export async function handleUpstreamRequestError(
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = `上游账号请求异常：${message}`
     const localSuppression = suppressGatewayAccountLocally(account, settings, reason)
-    if (usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
+    if (usageContext.trafficSource === 'gateway' && shouldRecordPrecheckForRequestFailure(upstreamUrl)) {
       recordGatewayAccountFailureForPrecheck(account, settings, {
         systemAccountId: usageContext.systemAccountId,
         groupId: usageContext.groupId,
@@ -495,7 +497,9 @@ export async function handleUpstreamRequestError(
       })
     }
   }
-  rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
+  if (isRealUpstreamUrl(upstreamUrl)) {
+    rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
+  }
   return { action: 'skip_account', lastAttempt }
 }
 
@@ -553,4 +557,8 @@ function sanitizeOptionalDiagnosticPayload(value: string | undefined): string | 
 
 function isRealUpstreamUrl(value: string): boolean {
   return /^https?:\/\//i.test(value)
+}
+
+function shouldRecordPrecheckForRequestFailure(upstreamUrl: string): boolean {
+  return isRealUpstreamUrl(upstreamUrl) || upstreamUrl === 'account:preparation'
 }

@@ -9,7 +9,10 @@ import { listCachedProviderModelCatalogAsync } from '../runtime/runtime-cache.se
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { enqueueUsageRecord } from '../usage/record-queue.service.js'
-import { GPT_VENDOR_CODE } from '../../../domain/provider-protocol.js'
+import {
+  defaultGatewayUsageProviderCode,
+  usageSemanticForProviderCode
+} from '../../providers/drivers/registry.js'
 
 interface OpenAIModelsResponseUsageContext {
   traceId: string
@@ -71,7 +74,7 @@ export async function sendAnthropicModelsGatewayResponse(input: SendOpenAIModels
 
 async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic'): Promise<void> {
   const { req, res, auditCapture, usageContext, startedAt } = input
-  const providerCode = usageContext.providerCode ?? GPT_VENDOR_CODE
+  const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
   const catalog = await listCachedProviderModelCatalogAsync({
     providerCode,
     systemAccountId: usageContext.systemAccountId
@@ -83,6 +86,7 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
   enqueueUsageRecord({
     ...usageContext,
     providerCode,
+    usageSemantic: usageSemanticForProviderCode(providerCode),
     stream: false,
     statusCode: 200,
     success: true,

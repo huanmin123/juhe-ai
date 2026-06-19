@@ -175,7 +175,8 @@ async function main(): Promise<void> {
     const noFirstChunkFailureState = databaseModule.getBusinessDatabase()
       .prepare('SELECT stream_failure_count FROM accounts WHERE id = ?')
       .get(noFirstChunkCredential.account.id) as { stream_failure_count?: number } | undefined
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '首段前失败未产生可见输出，不应本地屏蔽账号')
+    const noFirstChunkRuntime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[noFirstChunkCredential.account.id]
+    assert.equal(noFirstChunkRuntime?.status, 'local_suppressed', '首段前失败未产生可见输出时应短期本地避让账号，避免后续请求反复命中')
     assert.equal(Number(noFirstChunkFailureState?.stream_failure_count ?? 0), 0, '首段前失败未产生可见输出，不应累计账号流失败计数')
 
     settingsRepository.updateSettings({
@@ -276,11 +277,13 @@ async function main(): Promise<void> {
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
     assert(missingTerminalResult.streamText.includes('response.created'), `客户端未收到缺少终止事件场景的首段上游事件：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('response.failed'), `缺少终止事件场景未收到网关失败事件：${missingTerminalResult.streamText}`)
-    assert(missingTerminalResult.streamText.includes('OpenAI 终止事件前结束'), `缺少终止事件场景失败原因不正确：${missingTerminalResult.streamText}`)
+    assert(missingTerminalResult.streamText.includes('协议终止事件前结束'), `缺少终止事件场景失败原因不正确：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('"code":"upstream_retryable_error"'), `缺少终止事件应改写为可重试错误码：${missingTerminalResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const missingTerminalAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === missingTerminalCredential.account.id)
+    const missingTerminalRuntime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[missingTerminalCredential.account.id]
+    assert.equal(missingTerminalRuntime?.status, 'local_suppressed', '缺少终止事件但未产生可见输出时应短期本地避让账号')
     assert.equal(missingTerminalAccount?.status, 'active', '缺少终止事件但仅有 response.created 时不应把账号置为临时不可调用')
     assert.equal(missingTerminalAccount?.streamFailureCount, 0, '缺少终止事件但未产生可见输出时不应累计账号流失败计数')
 
@@ -300,8 +303,7 @@ async function main(): Promise<void> {
     assert(heartbeatThenCompletedResult.durationMs < 5000, `持续心跳后完成没有及时结束，耗时 ${heartbeatThenCompletedResult.durationMs}ms`)
 
     await requestAndCloseAfterTerminal(baseUrl, clientCloseAfterTerminalCredential.apiKey.key)
-    usageRecordQueue.flushAllUsageRecordQueue()
-    assertSuccessfulUsageRecord(clientCloseAfterTerminalCredential.account.id)
+    await waitForSuccessfulUsageRecord(clientCloseAfterTerminalCredential.account.id)
     auditLogQueue.flushAllAuditLogQueue()
     assertNoClientAbortedAuditLogForAccount(clientCloseAfterTerminalCredential.account.id)
 
@@ -410,7 +412,6 @@ async function main(): Promise<void> {
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const overloadedAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === overloadedAfterOutputCredential.account.id)
     assert.equal(overloadedAfterOutputAccount?.streamFailureCount, 0, '真实网关流量输出后容量错误不应直接写入账号流失败计数')
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '流失败未达到阈值前不应本地屏蔽账号')
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().precheckPendingAccountCount, 0, '单次输出后容量错误不应触发账号事前确认')
 
     const outputItemThenFailureResult = await requestStreamScenario(baseUrl, outputItemThenFailureCredential.apiKey.key, 'output-item-then-failure')
@@ -844,7 +845,12 @@ async function assertPreCommitFuzzServerRetryScenarios(
     assert(!result.streamText.includes('upstream_retryable_error'), `预提交 fuzz 服务端切号成功时不应消耗 Codex 客户端重试：${item.scenario} ${result.streamText}`)
   }
   usageRecordQueue.flushAllUsageRecordQueue()
-  assertUsageRecordCountAtLeast(credential.primaryAccount.id, false, preCommitFuzzServerRetryScenarios.length)
+  const primaryFailedCount = usageRecordCount(credential.primaryAccount.id, false)
+  assert(primaryFailedCount >= 1, '预提交 fuzz 主账号至少应记录一次失败尝试')
+  assert(
+    primaryFailedCount < preCommitFuzzServerRetryScenarios.length,
+    `预提交 fuzz 主账号失败后应短期避让，避免每个场景都重复命中；实际失败次数 ${primaryFailedCount}`
+  )
   assertUsageRecordCountAtLeast(credential.backupAccount.id, true, preCommitFuzzServerRetryScenarios.length)
 }
 
@@ -1247,14 +1253,22 @@ function assertFailedUsageRecordExists(accountId: string): void {
 }
 
 function assertUsageRecordCountAtLeast(accountId: string, success: boolean, expectedCount: number): void {
-  const records = repositories
-    .listUsageRecords(undefined, { page: 1, pageSize: 500 })
-    .items
-    .filter((item) => item.accountId === accountId && item.success === success)
+  const records = usageRecordsForAccount(accountId, success)
   assert(
     records.length >= expectedCount,
     `账号 ${accountId} ${success ? '成功' : '失败'}使用记录数量不足：期望至少 ${expectedCount}，实际 ${records.length}`
   )
+}
+
+function usageRecordCount(accountId: string, success: boolean): number {
+  return usageRecordsForAccount(accountId, success).length
+}
+
+function usageRecordsForAccount(accountId: string, success: boolean) {
+  return repositories
+    .listUsageRecords(undefined, { page: 1, pageSize: 500 })
+    .items
+    .filter((item) => item.accountId === accountId && item.success === success)
 }
 
 function assertSuccessfulUsageRecord(
@@ -1281,6 +1295,21 @@ function assertSuccessfulUsageRecord(
   if (expectedUsage?.outputTokens !== undefined) {
     assert.equal(record.outputTokens, expectedUsage.outputTokens, `成功使用记录 output token 不正确：${record.outputTokens}`)
   }
+}
+
+async function waitForSuccessfulUsageRecord(accountId: string): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    usageRecordQueue.flushAllUsageRecordQueue()
+    try {
+      assertSuccessfulUsageRecord(accountId)
+      return
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+  }
+  throw lastError
 }
 
 function assertNoClientAbortedAuditLogForAccount(accountId: string): void {

@@ -45,6 +45,12 @@ import {
   type AccountSideEffectOperation,
   type StreamFailureOperation
 } from './account-side-effect-queue.js'
+import {
+  accountErrorHandlingOperationRuntimeKey,
+  shouldCancelQueuedAccountErrorHandlingSideEffectAfterSuccess,
+  shouldCoalesceQueuedAccountErrorHandlingSideEffect,
+  shouldSkipHealthySuccessfulAccountSideEffect
+} from './account-side-effect-policy.js'
 
 export type { GatewayAccountRuntimeClearTarget, SuppressibleGatewayAccount } from './account-runtime-keys.js'
 export type {
@@ -161,7 +167,7 @@ let expiredCount = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
   if (operation.input.success) {
-    const runtimeKey = gatewayAccountRuntimeKey(operation.account)
+    const runtimeKey = accountErrorHandlingOperationRuntimeKey(operation)
     recordGatewayAccountSuccessObservation(runtimeKey)
     const canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey)
     if (canceledCount > 0) {
@@ -171,7 +177,7 @@ export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountE
   } else if (coalesceQueuedAccountErrorHandlingSideEffect(operation)) {
     return
   }
-  if (isHealthySuccessfulAccountSideEffect(operation)) {
+  if (shouldSkipHealthySuccessfulAccountSideEffect(operation)) {
     clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     skippedHealthySuccessCount += 1
     return
@@ -521,11 +527,7 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
 }
 
 function coalesceQueuedAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): boolean {
-  const runtimeKey = gatewayAccountRuntimeKey(operation.account)
-  const index = sideEffectQueue.findIndex((item) => (
-    item.operation.type === 'apply_account_error_handling'
-    && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
-  ))
+  const index = sideEffectQueue.findIndex((item) => shouldCoalesceQueuedAccountErrorHandlingSideEffect(item, operation))
   if (index < 0) {
     return false
   }
@@ -543,10 +545,7 @@ function coalesceQueuedAccountErrorHandlingSideEffect(operation: AccountErrorHan
 }
 
 function cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey: string): number {
-  return sideEffectQueue.removeWhere((item) => (
-    item.operation.type === 'apply_account_error_handling'
-    && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
-  ))
+  return sideEffectQueue.removeWhere((item) => shouldCancelQueuedAccountErrorHandlingSideEffectAfterSuccess(item, runtimeKey))
 }
 
 function logDroppedAccountSideEffect(operation: AccountSideEffectOperation): void {
@@ -560,18 +559,6 @@ function logDroppedAccountSideEffect(operation: AccountSideEffectOperation): voi
     queueLength: sideEffectQueue.length,
     droppedCount
   }, '网关账号副作用队列已满，已丢弃本次副作用')
-}
-
-function isHealthySuccessfulAccountSideEffect(operation: AccountErrorHandlingOperation): boolean {
-  if (!operation.input.success) {
-    return false
-  }
-  const account = operation.account
-  return account.status === 'active'
-    && !account.cooldownUntil
-    && !account.lastErrorMessage
-    && Math.max(0, account.streamFailureCount ?? 0) === 0
-    && !account.streamFailureWindowStartedAt
 }
 
 function scheduleSideEffectDrain(delayMs: number): void {

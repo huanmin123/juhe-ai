@@ -45,7 +45,7 @@
               @update:value="$emit('update:model', String($event))"
             />
           </a-form-item>
-          <a-form-item v-if="showClientCompatibilityControl" class="test-config-field" label="客户端兼容">
+          <a-form-item v-if="showClientCompatibilityControl" class="test-config-field" label="测试请求形态">
             <a-select
               :value="clientCompatibility"
               :disabled="running"
@@ -147,7 +147,11 @@ import {
   accountStatusColor,
   accountStatusText
 } from './accountFormatters'
-import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import {
+  canSelectClientCompatibility,
+  fixedCompatibilityLabel as providerFixedCompatibilityLabel,
+  fixedCompatibilityText as providerFixedCompatibilityText
+} from './accountProviderCapabilities'
 
 const props = defineProps<{
   account?: AccountSummary
@@ -186,15 +190,9 @@ const batchFailedCount = computed(() => batchCounts.value.failed)
 const batchStoppedCount = computed(() => batchCounts.value.stopped)
 const batchCompletedCount = computed(() => batchCounts.value.completed)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
-const hasAnthropicTestTarget = computed(() => testTargetAccounts.value.some((account) => isAnthropicProtocolProfile(account)))
-const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key' && isOpenAIProtocolProfile(account)))
-const fixedCompatibilityLabel = computed(() => hasAnthropicTestTarget.value && !showClientCompatibilityControl.value ? '测试协议' : '客户端兼容')
-const fixedOAuthCompatibilityText = computed(() => {
-  if (hasAnthropicTestTarget.value) {
-    return 'Anthropic 原生'
-  }
-  return 'Codex Responses（OAuth 固定）'
-})
+const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some(canSelectClientCompatibility))
+const fixedCompatibilityLabel = computed(() => showClientCompatibilityControl.value ? '测试请求形态' : providerFixedCompatibilityLabel(testTargetAccounts.value))
+const fixedOAuthCompatibilityText = computed(() => providerFixedCompatibilityText(testTargetAccounts.value))
 const batchSelectedCompatibilityText = computed(() => accountTestBatchSelectedCompatibilityText({
   clientCompatibility: props.clientCompatibility,
   fixedOAuthCompatibilityText: fixedOAuthCompatibilityText.value,
@@ -219,9 +217,9 @@ const runButtonText = computed(() => {
 })
 const currentProviderName = computed(() => props.account ? providerLabel(props.account) : '')
 const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClientCompatibility }> = [
-  { label: '跟随账户配置', value: 'account_default' },
-  { label: 'OpenAI 标准', value: 'openai_standard' },
-  { label: 'Codex Responses', value: 'codex_responses' }
+  { label: '跟随账号能力', value: 'account_default' },
+  { label: 'OpenAI 标准请求', value: 'openai_standard' },
+  { label: 'Codex Responses 请求', value: 'codex_responses' }
 ]
 const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
 const proxyTagColor = computed(() => {

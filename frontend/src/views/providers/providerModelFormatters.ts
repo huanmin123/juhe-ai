@@ -1,13 +1,18 @@
 import type {
+  ProviderDefinition,
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
   ProviderModelStatus
 } from '@/types/domain'
+import {
+  categoryFromModeOrModel,
+  getModelCategoryFromPricing,
+  modelCategoryLabels,
+  modelCategoryOrder,
+  type ModelCategoryKey
+} from './providerModelCategoryRules'
 
-export const modelCategoryOrder = ['text', 'image', 'audio'] as const
-
-export type ModelCategoryKey = typeof modelCategoryOrder[number]
 export type DirectPriceFieldKey =
   | 'inputUsdPer1M'
   | 'outputUsdPer1M'
@@ -19,11 +24,13 @@ export type DirectPriceFieldKey =
   | 'audioOutputUsdPer1M'
   | 'outputUsdPerImage'
 
-export const modelCategoryLabels: Record<ModelCategoryKey, string> = {
-  text: '对话 / 编码',
-  image: '图像',
-  audio: '音频'
-}
+export {
+  categoryFromModeOrModel,
+  isModelCategoryKey,
+  modelCategoryLabels,
+  modelCategoryOrder,
+  type ModelCategoryKey
+} from './providerModelCategoryRules'
 
 export const apiProtocolLabels: Record<string, string> = {
   chat_completions: 'Chat Completions',
@@ -105,6 +112,14 @@ export function defaultProtocolsForModelCategory(category: ModelCategoryKey): Pr
   return ['responses', 'chat_completions']
 }
 
+export function defaultProtocolsForProviderModelCategory(
+  provider: ProviderDefinition | undefined,
+  category: ModelCategoryKey
+): ProviderModelApiProtocol[] {
+  const protocols = providerProfileApiProtocolsForModelCategory(provider, category)
+  return protocols.length ? protocols : defaultProtocolsForModelCategory(category)
+}
+
 export function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {
   for (const key of modelCategoryOrder) {
     if (models.some((item) => getModelCategory(item) === key)) {
@@ -115,49 +130,7 @@ export function findFirstModelCategory(models: ProviderModelPricing[]): ModelCat
 }
 
 export function getModelCategory(item: ProviderModelPricing): ModelCategoryKey {
-  return categoryFromModeOrModel(item.mode, item.model)
-}
-
-export function categoryFromModeOrModel(modeValue: string | undefined, modelValue: string): ModelCategoryKey {
-  const model = modelValue.toLowerCase()
-  const mode = (modeValue ?? '').trim().toLowerCase()
-
-  if (isModelCategoryKey(mode)) {
-    return mode
-  }
-
-  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
-    return 'image'
-  }
-
-  if (
-    mode === 'audio_speech'
-    || mode === 'audio_transcription'
-    || model.includes('audio')
-    || model.includes('realtime')
-    || model.includes('transcribe')
-    || model.includes('tts')
-    || model.includes('whisper')
-  ) {
-    return 'audio'
-  }
-
-  if (
-    mode === 'chat'
-    || mode === 'responses'
-    || mode === 'completion'
-    || model.includes('codex')
-    || model.startsWith('gpt-')
-    || model.startsWith('o')
-  ) {
-    return 'text'
-  }
-
-  return 'text'
-}
-
-export function isModelCategoryKey(value: string): value is ModelCategoryKey {
-  return (modelCategoryOrder as readonly string[]).includes(value)
+  return getModelCategoryFromPricing(item)
 }
 
 export function formatModelCategory(item: ProviderModelPricing): string {
@@ -245,6 +218,47 @@ export function formatProviderCapability(capability: string): string {
 export function formatCapabilitiesSummary(capabilities: string[]): string {
   const visibleCapabilities = visibleProviderCapabilities(capabilities)
   return visibleCapabilities.length ? visibleCapabilities.map(formatProviderCapability).join(' / ') : '-'
+}
+
+function providerProfileApiProtocolsForModelCategory(
+  provider: ProviderDefinition | undefined,
+  category: ModelCategoryKey
+): ProviderModelApiProtocol[] {
+  if (!provider) return []
+  const protocols = new Set<ProviderModelApiProtocol>()
+  for (const profile of preferredProviderProfiles(provider)) {
+    for (const family of profile.endpointFamilies ?? []) {
+      const protocol = apiProtocolForEndpointFamily(family.code)
+      if (protocol && apiProtocolMatchesModelCategory(protocol, category)) {
+        protocols.add(protocol)
+      }
+    }
+  }
+  return [...protocols]
+}
+
+function preferredProviderProfiles(provider: ProviderDefinition): ProviderDefinition['protocolProfiles'] {
+  const defaultProfile = provider.protocolProfiles.find((profile) => profile.id === provider.defaultProtocolProfileId)
+  const remainingProfiles = provider.protocolProfiles.filter((profile) => profile !== defaultProfile)
+  return defaultProfile ? [defaultProfile, ...remainingProfiles] : remainingProfiles
+}
+
+function apiProtocolForEndpointFamily(code: string): ProviderModelApiProtocol | undefined {
+  return isProviderModelApiProtocol(code) ? code : undefined
+}
+
+function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, category: ModelCategoryKey): boolean {
+  if (category === 'image') return protocol === 'images'
+  if (category === 'audio') return protocol === 'audio'
+  return protocol === 'responses'
+    || protocol === 'chat_completions'
+    || protocol === 'messages'
+    || protocol === 'message_token_counting'
+    || protocol === 'completions'
+}
+
+function isProviderModelApiProtocol(value: string): value is ProviderModelApiProtocol {
+  return Object.prototype.hasOwnProperty.call(apiProtocolLabels, value)
 }
 
 export function formatPrice(value?: number): string {

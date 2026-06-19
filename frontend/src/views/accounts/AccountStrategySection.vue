@@ -53,18 +53,16 @@
         新增映射
       </a-button>
     </a-form-item>
-    <a-form-item v-if="isOAuthForm" label="客户端兼容">
-      <a-input value="Codex Responses（OAuth 固定）" disabled />
-    </a-form-item>
-    <a-form-item v-else-if="isAnthropicForm" label="协议形态">
-      <a-input value="Anthropic 原生" disabled />
-    </a-form-item>
-    <a-form-item v-else label="客户端兼容">
-      <a-select
-        v-model:value="form.clientCompatibility"
-        :disabled="authorizedEditing"
-        :options="clientCompatibilityOptions"
-      />
+    <a-form-item label="客户端兼容">
+      <div class="compatibility-capability-list">
+        <a-tag
+          v-for="capability in clientCompatibilityCapabilities"
+          :key="capability"
+          color="blue"
+        >
+          {{ clientCompatibilityCapabilityLabel(capability) }}
+        </a-tag>
+      </div>
     </a-form-item>
     <a-form-item label="接口能力限制">
       <a-checkbox-group
@@ -72,7 +70,7 @@
         :disabled="authorizedEditing || isOAuthForm"
       >
         <div class="endpoint-mode-grid">
-            <a-checkbox
+          <a-checkbox
             v-for="option in endpointModeOptions"
             :key="option.value"
             :value="option.value"
@@ -103,18 +101,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
+import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
-import { accountEndpointModeOptions, anthropicAccountEndpointModes, defaultAccountEndpointModes, endpointModesEqual } from './accountEndpointModes'
-import { ANTHROPIC_PROVIDER_CODE, normalizeProviderToken } from '@/shared/providerProtocol'
-
-const clientCompatibilityOptions = [
-  { label: 'OpenAI 标准', value: 'openai_standard' },
-  { label: 'Codex Responses', value: 'codex_responses' }
-]
+import { accountEndpointModeOptions } from './accountEndpointModes'
+import {
+  accountClientCompatibilityCapabilities,
+  clientCompatibilityCapabilityLabel,
+  endpointModesForProfile
+} from './accountProviderCapabilities'
 
 const props = defineProps<{
   authorizedEditing: boolean
@@ -125,14 +123,20 @@ const props = defineProps<{
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
   proxyOptions: SelectOption[]
+  selectedProtocolProfile?: ProviderProtocolProfileDefinition
 }>()
 
-const isAnthropicForm = computed(() => normalizeProviderToken(props.form.providerCode) === ANTHROPIC_PROVIDER_CODE)
+const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
+const clientCompatibilityCapabilities = computed(() => accountClientCompatibilityCapabilities({
+  ...activeProfile.value,
+  providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
+  type: props.form.type,
+  clientCompatibility: props.form.clientCompatibility
+}))
 
 const endpointModeOptions = computed(() => {
-  return accountEndpointModeOptions.filter((option) => isAnthropicForm.value
-    ? anthropicAccountEndpointModes.includes(option.value)
-    : !anthropicAccountEndpointModes.includes(option.value))
+  const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
+  return accountEndpointModeOptions.filter((option) => allowedModes.has(option.value))
 })
 
 function addModelMapping(): void {
@@ -146,16 +150,6 @@ function addModelMapping(): void {
 function removeModelMapping(index: number): void {
   props.form.modelMappings.splice(index, 1)
 }
-
-watch(
-  () => props.form.clientCompatibility,
-  (nextValue, previousValue) => {
-    if (props.authorizedEditing || props.isOAuthForm || !previousValue || nextValue === previousValue) return
-    const previousDefault = defaultAccountEndpointModes(props.form.providerCode, props.form.type, previousValue)
-    if (!endpointModesEqual(props.form.supportedEndpointModes, previousDefault)) return
-    props.form.supportedEndpointModes = defaultAccountEndpointModes(props.form.providerCode, props.form.type, nextValue)
-  }
-)
 </script>
 
 <style scoped>
@@ -204,6 +198,14 @@ watch(
   display: grid;
   grid-template-columns: repeat(4, max-content);
   gap: 8px 24px;
+  align-items: center;
+}
+
+.compatibility-capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 32px;
   align-items: center;
 }
 

@@ -1,6 +1,6 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
-import type { AccountSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
@@ -13,11 +13,13 @@ interface AccountDraftTestPayloadInput {
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   form: AccountFormModel
+  providers?: ProviderDefinition[]
 }
 
 interface AccountDraftTestSummaryInput {
   accountDetail?: AccountSummary
   draftPayload: AccountDraftTestAccountPayload
+  clientCompatibility: AccountFormModel['clientCompatibility']
   protocolProfile?: ProviderProtocolProfileDefinition
   scopeSystemAccountId?: string
 }
@@ -46,7 +48,6 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
     credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
-    clientCompatibility: payload.clientCompatibility,
     supportedModels: payload.supportedModels,
     modelMappings: payload.modelMappings,
     proxyProfileId: payload.proxyProfileId,
@@ -78,7 +79,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     priority: input.draftPayload.priority,
     superPriorityEnabled: input.accountDetail?.superPriorityEnabled ?? false,
     fallbackEnabled: input.accountDetail?.fallbackEnabled ?? false,
-    clientCompatibility: input.draftPayload.clientCompatibility,
+    clientCompatibility: input.accountDetail?.clientCompatibility ?? input.clientCompatibility,
     supportedModels: input.draftPayload.supportedModels,
     modelMappings: input.draftPayload.modelMappings,
     proxyProfileId: input.draftPayload.proxyProfileId ?? undefined,

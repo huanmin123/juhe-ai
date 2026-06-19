@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import http from 'node:http'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -15,9 +16,15 @@ import { recordCompletedUpstreamAttempt } from '../../modules/gateway/usage/reco
 import { requestModel } from '../../modules/gateway/request/metadata.js'
 import { OpenAIOAuthCodexAdapterError } from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
 import { flushAllUsageRecordQueue } from '../../modules/gateway/usage/record-queue.service.js'
+import { createAuditCapture } from '../../modules/gateway/audit/capture.service.js'
+import { flushAllAuditLogQueue } from '../../modules/audit-logs/audit-log-queue.service.js'
 import { previewAccountImport } from '../../modules/accounts/account-import.service.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
+import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
+import { withRequestAuthContext } from '../../modules/auth/request-context.js'
+import { handleOpenAIGatewayRequest } from '../../modules/gateway/routes.js'
+import { MemoryGatewayRequest, MemoryGatewayResponse } from '../../modules/gateway/testing/memory-gateway-http.js'
 import { createGatewayRequestBodyState, type GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-model-mapping-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -29,6 +36,7 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -124,7 +132,9 @@ try {
   assert.equal(requestModel(originalRequest), sourceModel, 'requestModel 仍应保持下游请求模型')
 
   await assertInvalidMappingBodyRejected()
+  await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
   await assertUsageRecordFields(runtimeAccount, group.id)
+  await assertAuditLogFields(runtimeAccount, group.id)
 
   const updated = repositories.updateAccount(account.id, {
     modelMappings: [
@@ -164,6 +174,7 @@ try {
 } finally {
   try {
     flushAllUsageRecordQueue()
+    flushAllAuditLogQueue()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -209,11 +220,16 @@ function loadStoredMappings(accountId: string): AccountModelMapping[] {
 
 function jsonRequest(body: Record<string, unknown>): Request {
   const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
   return {
     method: 'POST',
     path: '/v1/responses',
     originalUrl: '/v1/responses',
-    headers: { 'content-type': 'application/json' },
+    headers,
+    header(name: string) {
+      const value = headers[name.toLowerCase()]
+      return Array.isArray(value) ? value.join(', ') : value
+    },
     body,
     rawBody,
     gatewayRequestBody: createGatewayRequestBodyState({
@@ -245,9 +261,127 @@ async function assertInvalidMappingBodyRejected(): Promise<void> {
     () => buildOpenAIModelMappedJsonBody(req, upstreamModel),
     (error: unknown) => error instanceof OpenAIOAuthCodexAdapterError
       && error.statusCode === 400
-      && error.code === 'account_model_mapping_request_invalid',
-    '非法 JSON 命中映射时应返回本地请求错误'
+      && error.code === 'account_model_mapping_request_invalid'
+      && error.accountScoped === false,
+    '非法 JSON 命中账号模型映射时应保持请求级错误，不能触发切号'
   )
+}
+
+async function assertInvalidMappingBodyDoesNotSwitchAccount(groupId: string): Promise<void> {
+  let upstreamHitCount = 0
+  const server = http.createServer((req, res) => {
+    upstreamHitCount += 1
+    req.resume()
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      id: 'chatcmpl_account_model_mapping_invalid_body',
+      object: 'chat.completion',
+      choices: [
+        { index: 0, message: { role: 'assistant', content: 'SHOULD_NOT_HIT' }, finish_reason: 'stop' }
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+    }))
+  })
+  server.listen(0, '127.0.0.1')
+  await onceListening(server)
+  const address = server.address()
+  assert(address && typeof address !== 'string', '模型映射非法请求体 mock 上游地址应可用')
+  try {
+    const fallback = repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: '账号模型映射非法请求不应切到的后备账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-mapping-invalid-body-fallback',
+        base_url: `http://127.0.0.1:${address.port}/v1`
+      },
+      status: 'active',
+      supportedModels: [sourceModel],
+      groupId
+    }, ownerAccess)
+    assert(repositories.setAccountGroup(fallback.id, groupId, ownerAccess), '后备账户应能绑定到模型映射回归分组')
+    const runtimeAccounts = repositories.listOpenAIAccountsForGroup(groupId, ownerAccess.systemAccountId)
+      .filter((item) => item.id === fallback.id || item.modelMappings?.some((mapping) => mapping.sourceModel === sourceModel))
+    const mappedAccount = runtimeAccounts.find((item) => item.modelMappings?.some((mapping) => mapping.sourceModel === sourceModel))
+    const fallbackAccount = runtimeAccounts.find((item) => item.id === fallback.id)
+    assert(mappedAccount, '运行时账号快照应包含带模型映射的账户')
+    assert(fallbackAccount, '运行时账号快照应包含后备账户')
+
+    const traceId = createTraceId()
+    const startedAt = Date.now()
+    const request = invalidJsonGatewayRequest(sourceModel)
+    const response = new MemoryGatewayResponse(startedAt)
+    const context: RequestContext = {
+      traceId,
+      startedAt,
+      method: request.method,
+      path: request.path,
+      originalUrl: request.originalUrl,
+      clientIp: request.ip,
+      systemAccountId: ownerAccess.systemAccountId,
+      groupId,
+      logger
+    }
+    await withRequestContext(context, () => withRequestAuthContext(undefined, () => handleOpenAIGatewayRequest(
+      request,
+      response.asResponse(),
+      {
+        identity: {
+          systemAccountId: ownerAccess.systemAccountId,
+          groupId
+        },
+        candidateAccounts: [mappedAccount, fallbackAccount],
+        disableSessionAffinity: true,
+        disableAccountStateMutation: true,
+        exposeUpstreamDiagnostics: true
+      }
+    )))
+    assert.equal(response.statusCode, 400, '非法 JSON 命中模型映射时应直接返回请求级 400')
+    assert.match(response.bodyText(), /invalid_request_error|合法 JSON|有效的 JSON 对象/, '响应体应保留请求级非法 JSON 错误语义')
+    assert.equal(upstreamHitCount, 0, '非法 JSON 不应切到后备账户或发起任何上游请求')
+  } finally {
+    await closeServer(server)
+  }
+}
+
+function invalidJsonGatewayRequest(model: string): Request {
+  const rawBody = Buffer.from('{ invalid json', 'utf8')
+  const request = new MemoryGatewayRequest({
+    method: 'POST',
+    originalUrl: '/v1/chat/completions',
+    path: '/v1/chat/completions',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'content-length': String(rawBody.length)
+    },
+    rawBody,
+    ip: '127.0.0.1'
+  } as ConstructorParameters<typeof MemoryGatewayRequest>[0]).asRequest() as Request & GatewayRawBodyRequest
+  request.gatewayRequestBody = createGatewayRequestBodyState({
+    rawBody,
+    contentType: 'application/json',
+    jsonParseStatus: 'invalid_json',
+    model,
+    stream: false
+  })
+  return request
+}
+
+async function onceListening(server: http.Server): Promise<void> {
+  if (server.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
+}
+
+async function closeServer(server: http.Server): Promise<void> {
+  if (!server.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.close((error) => error ? rejectPromise(error) : resolvePromise())
+    server.closeIdleConnections?.()
+  })
 }
 
 async function assertUsageRecordFields(
@@ -282,4 +416,67 @@ async function assertUsageRecordFields(
   assert.equal(record.modelMappingApplied, true, '使用记录应标记命中模型映射')
   assert.equal(record.modelMappingSource, 'account', '使用记录映射来源应固定为 account')
   assert.equal(record.costUsd, 12, '授权调用应按资源账号所有者个人映射目标模型计价')
+}
+
+async function assertAuditLogFields(
+  account: NonNullable<ReturnType<typeof repositories.listOpenAIAccountsForGroup>[number]>,
+  groupId: string
+): Promise<void> {
+  const traceId = 'trace-account-model-mapping-audit-regression'
+  const req = jsonRequest({ model: sourceModel, input: 'audit', stream: false })
+  const startedAtMs = Date.now()
+  const auditCapture = createAuditCapture({
+    req,
+    traceId,
+    startedAtMs,
+    clientIp: '127.0.0.1',
+    trafficSource: 'gateway'
+  })
+  auditCapture.bindContext({
+    systemAccountId: 'sys_mapping_grantee',
+    groupId,
+    accountId: account.id,
+    providerCode: account.providerCode,
+    trafficSource: 'gateway'
+  })
+  const headers = new Headers({ 'content-type': 'application/json' })
+  const upstreamBody = await buildOpenAIModelMappedJsonBody(req, upstreamModel)
+  const attemptId = auditCapture.startAttempt({
+    account,
+    attemptIndex: 1,
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    method: 'POST',
+    headers,
+    body: upstreamBody
+  })
+  auditCapture.completeAttempt(attemptId, {
+    statusCode: 200,
+    responseHeaders: new Headers({ 'content-type': 'application/json' }),
+    responseBody: JSON.stringify({ id: 'resp-audit-model-mapping-regression' }),
+    success: true
+  })
+  auditCapture.finalize({
+    outcome: 'success',
+    success: true,
+    statusCode: 200,
+    responseHeaders: { 'content-type': 'application/json' },
+    responseBody: JSON.stringify({ ok: true }),
+    accountId: account.id
+  })
+  flushAllAuditLogQueue()
+
+  const record = repositories.listAuditLogs({ model: sourceModel, page: 1, pageSize: 20 })
+    .items
+    .find((item) => item.traceId === traceId)
+  assert(record, '模型映射调用应写入审计日志')
+  assert.equal(record.model, sourceModel, '审计日志 model 应保留下游模型')
+  assert.equal(record.upstreamModel, upstreamModel, '审计日志 upstreamModel 应记录实际上游模型')
+  assert.equal(record.pricingModel, upstreamModel, '审计日志 pricingModel 应记录实际计价模型')
+  assert.equal(record.modelMappingApplied, true, '审计日志应标记命中模型映射')
+  assert.equal(record.modelMappingSource, 'account', '审计日志映射来源应固定为 account')
+
+  const detail = repositories.getAuditLogDetail(record.id)
+  assert.equal(detail?.upstreamModel, upstreamModel, '审计详情应返回实际上游模型')
+  const upstreamRequestPayload = detail?.payloads.find((payload) => payload.partType === 'upstream_request')
+  assert(upstreamRequestPayload, '审计详情应保留上游请求 payload 摘要')
 }

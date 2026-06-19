@@ -5,6 +5,7 @@ import type { ParsedUsage } from '../usage/types.js'
 import { anthropicV1ProtocolDriver } from './anthropic-v1/driver.js'
 import { openAIV1ProtocolDriver } from './openai-v1/driver.js'
 import type {
+  GatewayProtocolErrorPayload,
   GatewayProtocolClientErrorProtocol,
   GatewayProtocolDefaultClientProfile,
   GatewayProtocolDriver,
@@ -34,6 +35,12 @@ export function gatewayProtocolDriverForProfileOrDefault(profile: ProviderProtoc
   return gatewayProtocolDriverForProfile(profile) ?? openAIV1ProtocolDriver
 }
 
+export function gatewayProtocolDriverForResponseProtocolOrDefault(
+  responseProtocol: ResponseProtocolCode | undefined
+): GatewayProtocolDriver {
+  return gatewayProtocolDrivers.find((driver) => driver.responseProtocol === responseProtocol) ?? openAIV1ProtocolDriver
+}
+
 export function isGatewayProtocolModelsRequest(req: Request, profile: ProviderProtocolProfileDefinition | undefined): boolean {
   return gatewayProtocolDriverForProfile(profile)?.isModelsRequest?.(req) === true
 }
@@ -58,6 +65,13 @@ export function gatewayProtocolClientErrorProtocolForProfile(
 
 export function gatewayProtocolClientErrorProtocolForRequest(req: Request): GatewayProtocolClientErrorProtocol {
   return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)?.clientErrorProtocol ?? 'openai'
+}
+
+export function isGatewayProtocolNativeRequest(req: Request, protocolCode: string): boolean {
+  return gatewayProtocolDrivers.some((driver) =>
+    driver.protocolCode === protocolCode
+    && driver.isNativeRequest?.(req) === true
+  )
 }
 
 export function gatewayProtocolDefaultClientProfileForProfile(
@@ -93,6 +107,14 @@ export function parseGatewayProtocolUsageFromJsonTextFragment(
   text?: string
 ): ParsedUsage {
   return gatewayProtocolDriverForProfileOrDefault(profile).parseUsageFromJsonTextFragment(text)
+}
+
+export function parseGatewayProtocolErrorPayload(
+  profile: ProviderProtocolProfileDefinition | undefined,
+  text: string,
+  headers: Headers
+): GatewayProtocolErrorPayload {
+  return gatewayProtocolDriverForProfileOrDefault(profile).parseErrorPayload(text, headers)
 }
 
 export function applyGatewayProtocolStreamUsageFallback(

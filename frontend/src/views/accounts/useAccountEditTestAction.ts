@@ -4,7 +4,7 @@ import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
-import type { AccountSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
@@ -28,6 +28,7 @@ interface UseAccountEditTestActionOptions {
   openDraftTestModal: (account: AccountSummary, draftPayload: AccountDraftTestAccountPayload) => void | Promise<void>
   openSavedDraftTestModal: (account: AccountSummary, draftPayload: AccountDraftTestAccountPayload) => void | Promise<void>
   openTestModal: (account: AccountSummary) => void | Promise<void>
+  providers: MaybeRefOrGetter<ProviderDefinition[]>
   responseInspectionRules: MaybeRefOrGetter<AccountResponseInspectionRuleForm[]>
   selectedProtocolProfile: MaybeRefOrGetter<ProviderProtocolProfileDefinition | undefined>
 }
@@ -54,7 +55,8 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
       form: options.form,
       hasAuthSession: Boolean(toValue(options.authSessionId)),
       errorPolicyRules: toValue(options.errorPolicyRules),
-      responseInspectionRules: toValue(options.responseInspectionRules)
+      responseInspectionRules: toValue(options.responseInspectionRules),
+      providers: toValue(options.providers)
     })
     if (validationMessage) {
       message.warning(validationMessage)
@@ -68,7 +70,8 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
         editingId: toValue(options.editingId),
         form: options.form,
         errorPolicyRules: toValue(options.errorPolicyRules),
-        responseInspectionRules: toValue(options.responseInspectionRules)
+        responseInspectionRules: toValue(options.responseInspectionRules),
+        providers: toValue(options.providers)
       })
       if (!draftPayload.groupId) {
         message.warning('请选择加入分组')
@@ -80,6 +83,7 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
       const draftAccount = buildAccountDraftTestSummary({
         accountDetail,
         draftPayload,
+        clientCompatibility: options.form.clientCompatibility,
         protocolProfile: toValue(options.selectedProtocolProfile),
         scopeSystemAccountId: draftTestScopeSystemAccountId(accountDetail)
       })

@@ -5,7 +5,7 @@ import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
 import { gatewayErrorPayload, gatewayErrorPayloadForProtocol, sendGatewayErrorResponse } from '../response/responses.js'
 import { isUpstreamRequestAbortedError } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
-import { isAnthropicNativeRequest } from '../protocols/anthropic-v1/route-helpers.js'
+import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
 
 interface HandleGatewayRequestKnownErrorResponseInput {
   req: Request
@@ -36,7 +36,7 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
   if (error instanceof OpenAIOAuthCodexAdapterError) {
     const statusCode = error.statusCode
     const responsePayload = gatewayErrorPayload(error.message, error.type)
-    const protocol = isAnthropicNativeRequest(req) ? 'anthropic' : 'openai'
+    const protocol = gatewayProtocolClientErrorProtocolForRequest(req)
     const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
     sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })
     auditCapture.finalize({

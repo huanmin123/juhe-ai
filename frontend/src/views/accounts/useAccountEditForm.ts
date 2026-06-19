@@ -34,8 +34,8 @@ import { defaultAccountClientCompatibility, defaultAccountForm } from './account
 import { defaultAccountEndpointModes } from './accountEndpointModes'
 import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
-import { FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
-import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { FALLBACK_PROVIDERS } from './accountOptions'
+import { canCreateOAuthAccount } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
 import { loadAccountDetailCached } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
@@ -135,7 +135,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
-  const isOpenAIOAuthForm = computed(() => form.providerCode === GPT_VENDOR_CODE && form.type === 'oauth' && isOpenAIProtocolProfile(selectedProtocolProfile.value))
+  const isOpenAIOAuthForm = computed(() => form.type === 'oauth' && canCreateOAuthAccount({
+    provider: selectedProvider.value,
+    profile: selectedProtocolProfile.value
+  }))
   const editingAuthorizedAccount = computed(() => Boolean(editingId.value && editingAccountDetail.value && isAuthorizedAccount(editingAccountDetail.value)))
   const {
     authLoading,
@@ -158,7 +161,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     form,
     isManagementView: options.isManagementView,
     loadData: options.loadData,
-    modalOpen
+    modalOpen,
+    providers: availableProviders
   })
   const editingSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return ''
@@ -281,7 +285,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = undefined
     const providerCode = form.providerCode
     const providerProtocolProfileId = form.providerProtocolProfileId
-    const clientCompatibility = defaultAccountClientCompatibility(providerCode)
+    const clientCompatibility = defaultAccountClientCompatibility(providerCode, availableProviders.value, providerProtocolProfileId)
     Object.assign(form, {
       ...defaultForm(providerCode, type, providerProtocolProfileId),
       groupId: form.groupId,
@@ -289,7 +293,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
       clientCompatibility,
-      supportedEndpointModes: defaultAccountEndpointModes(providerCode, type, clientCompatibility),
+      supportedEndpointModes: defaultAccountEndpointModes(providerCode, type, clientCompatibility, {
+        provider: selectedProvider.value,
+        protocolProfile: selectedProtocolProfile.value
+      }),
       supportedModels: form.supportedModels,
       modelMappings: form.modelMappings,
       tags: form.tags,

@@ -1,7 +1,7 @@
 import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
-import type { AccountSummary, OpenAIAuthURLResult } from '@/types/domain'
+import type { AccountSummary, OpenAIAuthURLResult, ProviderDefinition } from '@/types/domain'
 import { ref, type ComputedRef, type Ref } from 'vue'
 
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -50,6 +50,7 @@ interface UseAccountEditSaveFlowOptions {
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   modalOpen: Ref<boolean>
+  providers: ReadonlyValue<ProviderDefinition[]>
 }
 
 export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
@@ -69,7 +70,8 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       form: options.form,
       hasAuthSession: Boolean(authResult.value?.sessionId),
       errorPolicyRules: options.accountErrorPolicyRules.value,
-      responseInspectionRules: options.accountResponseInspectionRules.value
+      responseInspectionRules: options.accountResponseInspectionRules.value,
+      providers: options.providers.value
     })
     if (validationMessage) {
       message.warning(validationMessage)
@@ -96,8 +98,8 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
         message.success('账户已更新')
       } else if (options.form.type === 'oauth') {
-        await createOAuthAccountFromUnifiedForm()
-        message.success('OAuth 账户已创建，需测试通过后参与调度')
+        const created = await createOAuthAccountFromUnifiedForm(options.accountCreatePayloadWithActivationTest(payload))
+        message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，需测试通过后参与调度')
       } else {
         const created = await createApiKeyAccount(options.accountCreatePayloadWithActivationTest(payload))
         message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
@@ -176,7 +178,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
   }
 
-  async function createOAuthAccountFromUnifiedForm() {
+  async function createOAuthAccountFromUnifiedForm(activationPayload: AccountSavePayload & { status?: 'active'; activationTestTaskId?: string }): Promise<AccountSummary> {
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
       editingId: options.editingId.value,
@@ -184,6 +186,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       errorPolicyRules: options.accountErrorPolicyRules.value,
       responseInspectionRules: options.accountResponseInspectionRules.value
     })
+    if (options.form.oauthMode === 'refresh_token' && activationPayload.activationTestTaskId) {
+      commonPayload.status = 'active'
+      commonPayload.activationTestTaskId = activationPayload.activationTestTaskId
+    }
 
     const payload = buildOAuthCreatePayload({
       commonPayload,
@@ -193,17 +199,16 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
 
     if (options.form.oauthMode === 'manual') {
       if (options.isManagementView.value) {
-        await api.openaiOAuth.createFromCode(payload, options.createScopeParams.value)
+        return await api.openaiOAuth.createFromCode(payload, options.createScopeParams.value)
       } else {
-        await api.myOpenaiOAuth.createFromCode(payload)
+        return await api.myOpenaiOAuth.createFromCode(payload)
       }
-      return
     }
 
     if (options.isManagementView.value) {
-      await api.openaiOAuth.createFromRefreshToken(payload, options.createScopeParams.value)
+      return await api.openaiOAuth.createFromRefreshToken(payload, options.createScopeParams.value)
     } else {
-      await api.myOpenaiOAuth.createFromRefreshToken(payload)
+      return await api.myOpenaiOAuth.createFromRefreshToken(payload)
     }
   }
 

@@ -19,7 +19,6 @@ import {
   type ModelCheckItemCreateInput,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { currentSystemAccountId } from '../../storage/access-scope.js'
 import type { OpenAIGatewayRequestIdentity } from '../gateway/routes.js'
@@ -77,6 +76,10 @@ import {
   runGatewayProbe,
   type ModelCheckGatewayProbeTarget
 } from './model-checks-gateway-probe.js'
+import {
+  isModelCheckSupportedProtocolProfile,
+  modelCheckSupportedProtocolLabel
+} from './model-checks.provider-capabilities.js'
 import { requestDatasetWriter } from '../background/background-dataset-writer.js'
 
 export class ModelCheckRequestError extends Error {
@@ -160,7 +163,7 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
   const trustedComparison = {
     enabledByDefault: false,
     available: true,
-    message: '可信对比默认关闭；选择一个你信任的可用 GPT 账户后，会额外消耗该账户额度'
+    message: `可信对比默认关闭；选择一个你信任的可用 ${modelCheckSupportedProtocolLabel} 协议账户后，会额外消耗该账户额度`
   }
   return {
     supportedModels: supportedModels.map((model) => ({ value: model, label: model })),
@@ -375,8 +378,8 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
   if (!account) {
     throw new ModelCheckRequestError(404, '账户不存在或无权检测')
   }
-  if (!isOpenAIProtocolProfile(account)) {
-    throw new ModelCheckRequestError(400, '当前仅支持检测 OpenAI v1 协议账户')
+  if (!isModelCheckSupportedProtocolProfile(account)) {
+    throw new ModelCheckRequestError(400, modelCheckUnsupportedProtocolMessage())
   }
   if (account.status === 'disabled') {
     throw new ModelCheckRequestError(400, '账户已停用，无法执行模型检测')
@@ -440,11 +443,15 @@ function resolveTrustedComparisonTarget(accountId: string, access?: AccessScope)
     if (error instanceof ModelCheckRequestError) {
       const message = error.message
         .replace(/^账户/, '可信对比账户')
-        .replace(/^当前仅支持检测 OpenAI v1 协议账户$/, '可信对比账户必须是 OpenAI v1 协议账户')
+        .replace(modelCheckUnsupportedProtocolMessage(), `可信对比账户必须是 ${modelCheckSupportedProtocolLabel} 协议账户`)
       throw new ModelCheckRequestError(error.statusCode, message)
     }
     throw error
   }
+}
+
+function modelCheckUnsupportedProtocolMessage(): string {
+  return `当前仅支持检测 ${modelCheckSupportedProtocolLabel} 协议账户`
 }
 
 async function executeProbeSuite(target: ProbeTarget, model: SupportedModel, prefix: ModelCheckProbePrefix, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {

@@ -19,6 +19,7 @@ import {
 } from '../../../storage/repositories.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { sanitizeDiagnosticPayload } from '../audit/payload-sanitizer.js'
+import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -37,6 +38,8 @@ export interface GatewaySettings {
 export interface AccountErrorPolicyAccount {
   id: string
   providerCode: string
+  protocolCode?: string
+  protocolVersion?: string
   type?: string
   credentials: Record<string, unknown>
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
@@ -121,7 +124,7 @@ export function applyAccountErrorHandling(
   const statusCode = input.statusCode
   const bodyText = input.bodyText ?? input.errorMessage ?? ''
   const headers = normalizeHeadersInput(input.headers)
-  const upstreamSummary = accountErrorPolicyUpstreamSummary(bodyText, headers)
+  const upstreamSummary = accountErrorPolicyUpstreamSummary(account, bodyText, headers)
 
   if (statusCode !== undefined) {
     const decision = decideAccountErrorPolicy(account, statusCode, headers, Buffer.from(bodyText), settings)
@@ -166,7 +169,7 @@ export function decideAccountErrorPolicy(
     return undefined
   }
   const bodyText = body.toString('utf8')
-  const errorPayload = parseErrorPayload(bodyText, headers)
+  const errorPayload = parseErrorPayload(bodyText, headers, account)
 
   const rules = accountErrorRules(account.credentials)
 
@@ -232,20 +235,12 @@ function authorizedAccountBindingRuntimeTarget(account: AccountErrorPolicyAccoun
   }
 }
 
-export function parseErrorPayload(text: string, headers: Headers): Record<string, unknown> {
-  const trimmed = text.trim()
-  if (!headers.get('content-type')?.includes('json') && !trimmed.startsWith('{')) return {}
-  try {
-    const payload = JSON.parse(trimmed) as Record<string, unknown>
-    const error = typeof payload.error === 'object' && payload.error !== null ? payload.error as Record<string, unknown> : payload
-    return {
-      code: error.code ?? payload.code,
-      type: error.type ?? payload.type,
-      message: error.message ?? payload.message
-    }
-  } catch {
-    return {}
-  }
+export function parseErrorPayload(
+  text: string,
+  headers: Headers,
+  profile?: { protocolCode?: string; protocolVersion?: string }
+): Record<string, unknown> {
+  return parseGatewayProtocolErrorPayload(profile, text, headers)
 }
 
 export function accountErrorPolicyReason(statusCode: number, decision: AccountErrorPolicyDecision, upstreamSummary?: string): string {
@@ -255,8 +250,12 @@ export function accountErrorPolicyReason(statusCode: number, decision: AccountEr
   return upstreamSummary ? `${base}；${upstreamSummary}`.slice(0, 1000) : base
 }
 
-function accountErrorPolicyUpstreamSummary(bodyText: string, headers: Headers): string | undefined {
-  const errorPayload = parseErrorPayload(bodyText, headers)
+function accountErrorPolicyUpstreamSummary(
+  profile: { protocolCode?: string; protocolVersion?: string } | undefined,
+  bodyText: string,
+  headers: Headers
+): string | undefined {
+  const errorPayload = parseErrorPayload(bodyText, headers, profile)
   const parts: string[] = []
   const code = stringValue(errorPayload.code)
   const message = stringValue(errorPayload.message)

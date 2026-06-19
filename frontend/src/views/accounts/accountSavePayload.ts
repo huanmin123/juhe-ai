@@ -1,4 +1,4 @@
-import type { AccountSummary } from '@/types/domain'
+import type { AccountSummary, ProviderDefinition } from '@/types/domain'
 import { formatServerDateTimeInput } from './accountFormatters'
 import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -12,8 +12,9 @@ import {
   type AccountAvailabilitySchedulePayload
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
-import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 import { validateAccountEndpointModes } from './accountEndpointModes'
+import { canCreateOAuthAccount } from './accountProviderCapabilities'
+import { FALLBACK_PROVIDERS } from './accountOptions'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -25,7 +26,6 @@ export type AccountSavePayload = {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
-  clientCompatibility: AccountFormModel['clientCompatibility']
   supportedModels: string[]
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
@@ -50,7 +50,13 @@ export type AccountOAuthCreateCommonPayload = {
   proxyProfileId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
-  credentialsPatch?: { error_handling_rules?: unknown; response_inspection_rules?: unknown }
+  credentialsPatch?: {
+    supported_endpoint_modes?: AccountFormModel['supportedEndpointModes']
+    error_handling_rules?: unknown
+    response_inspection_rules?: unknown
+  }
+  status?: 'active'
+  activationTestTaskId?: string
   notes?: string
 }
 
@@ -60,6 +66,7 @@ export function validateAccountSaveForm(input: {
   hasAuthSession: boolean
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
+  providers?: ProviderDefinition[]
 }): string | undefined {
   const { editingId, form } = input
   if (!form.providerCode) return '请先选择供应商'
@@ -75,7 +82,7 @@ export function validateAccountSaveForm(input: {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
     if (baseUrlValidation) return baseUrlValidation
   }
-  if (!editingId && form.type === 'oauth' && form.providerCode !== GPT_VENDOR_CODE) return '当前只支持创建 GPT OAuth 账户'
+  if (!editingId && form.type === 'oauth' && !canCreateOAuthAccount(resolveFormProviderProfile(form, input.providers))) return '当前供应商协议不支持创建 OAuth 账户'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
@@ -96,6 +103,18 @@ export function validateAccountSaveForm(input: {
   return validateAccountModelMappings(form.modelMappings)
 }
 
+function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
+  provider?: ProviderDefinition
+  profile?: ProviderDefinition['protocolProfiles'][number]
+} {
+  const provider = providers.find((item) => item.code === form.providerCode)
+  const profile = provider?.protocolProfiles.find((item) => item.id === form.providerProtocolProfileId)
+    ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+    ?? provider?.protocolProfiles.find((item) => item.enabled)
+    ?? provider?.protocolProfiles[0]
+  return { provider, profile }
+}
+
 export function buildAccountSavePayload(input: {
   accounts: AccountSummary[]
   accountDetail?: AccountSummary
@@ -112,7 +131,6 @@ export function buildAccountSavePayload(input: {
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
-    clientCompatibility: input.form.clientCompatibility,
     supportedModels: [...(input.form.supportedModels ?? [])],
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
@@ -130,7 +148,6 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
-    clientCompatibility: payload.clientCompatibility,
     supportedModels: payload.supportedModels,
     modelMappings: payload.modelMappings,
     tags: payload.tags,
@@ -164,11 +181,18 @@ export function buildOAuthCreateCommonPayload(input: {
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     notes: input.form.notes || undefined
   }
+  const credentialsPatch: NonNullable<AccountOAuthCreateCommonPayload['credentialsPatch']> = {}
+  if (Array.isArray(credentials.supported_endpoint_modes)) {
+    credentialsPatch.supported_endpoint_modes = [...credentials.supported_endpoint_modes] as AccountFormModel['supportedEndpointModes']
+  }
   if (Object.prototype.hasOwnProperty.call(credentials, 'error_handling_rules')) {
-    payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), error_handling_rules: credentials.error_handling_rules }
+    credentialsPatch.error_handling_rules = credentials.error_handling_rules
   }
   if (Object.prototype.hasOwnProperty.call(credentials, 'response_inspection_rules')) {
-    payload.credentialsPatch = { ...(payload.credentialsPatch ?? {}), response_inspection_rules: credentials.response_inspection_rules }
+    credentialsPatch.response_inspection_rules = credentials.response_inspection_rules
+  }
+  if (Object.keys(credentialsPatch).length) {
+    payload.credentialsPatch = credentialsPatch
   }
   return payload
 }

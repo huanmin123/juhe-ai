@@ -179,7 +179,7 @@
           </div>
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="临时不可调用最大暂停时间（分钟）" extra="账号进入临时不可调用后先走快速恢复通道：3 秒起步，失败后翻倍；单次等待不会超过这个最大暂停时间。">
+              <a-form-item label="临时不可调用最大暂停时间（分钟）" extra="默认 2 分钟；账号进入临时不可调用后先走快速恢复通道：3 秒起步，失败后翻倍；单次等待不会超过这个最大暂停时间。">
                 <a-input-number v-model:value="systemForm.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>
@@ -215,7 +215,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="长期不可用复测间隔（小时）" extra="默认 24 小时；账号进入长期不可用后按该间隔继续自动复测，复测成功会恢复正常。">
+              <a-form-item label="长期不可用复测间隔（小时）" extra="默认 1 小时；账号进入长期不可用后按该间隔继续自动复测，复测成功会恢复正常。">
                 <a-input-number v-model:value="systemForm.cooldownAccountRetestLongTermIntervalHours" :min="1" :max="720" style="width: 100%" />
               </a-form-item>
             </div>

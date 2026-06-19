@@ -1,6 +1,8 @@
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult } from '@/types/domain'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import {
+  effectiveAccountTestClientCompatibility as resolveEffectiveAccountTestClientCompatibility
+} from './accountProviderCapabilities'
 
 export type AccountTestClientCompatibility = 'account_default' | AccountClientCompatibility
 export type AccountTestMode = 'single' | 'batch'
@@ -71,10 +73,7 @@ export function failedAccountTestResult(input: {
 }
 
 function effectiveAccountTestClientCompatibility(account: AccountSummary, clientCompatibility: AccountTestClientCompatibility): AccountClientCompatibility {
-  if (isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.type === 'oauth') {
-    return 'codex_responses'
-  }
-  return clientCompatibility === 'account_default' ? account.clientCompatibility : clientCompatibility
+  return resolveEffectiveAccountTestClientCompatibility(account, clientCompatibility)
 }
 
 export function nextTestModel(currentModel: string, modelOptions: Array<{ value: string }>, defaultModel: string): string {

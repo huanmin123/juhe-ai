@@ -25,7 +25,7 @@ export class UpstreamBaseUrlValidator {
 }
 
 export const openAICompatibleBaseUrlPolicy: UpstreamBaseUrlValidationPolicy = {
-  allowedProtocols: ['https:'],
+  allowedProtocols: ['http:', 'https:'],
   allowHttpForPrivateHosts: true,
   rejectQuery: true,
   rejectHash: true,
@@ -36,7 +36,7 @@ export const openAICompatibleBaseUrlPolicy: UpstreamBaseUrlValidationPolicy = {
 }
 
 export const upstreamRequestUrlPolicy: UpstreamBaseUrlValidationPolicy = {
-  allowedProtocols: ['https:'],
+  allowedProtocols: ['http:', 'https:'],
   allowHttpForPrivateHosts: true,
   rejectQuery: false,
   rejectHash: true,
@@ -205,9 +205,7 @@ function assertParsedUrl(
 
 function protocolErrorMessage(policy: UpstreamBaseUrlValidationPolicy): string {
   if (policy.allowedProtocols.length === 1 && policy.allowedProtocols[0] === 'https:') {
-    return policy.allowHttpForPrivateHosts
-      ? '上游 Base URL 生产地址只允许 https 协议，http 仅用于本地 mock 或回归测试放行地址'
-      : '上游 Base URL 只允许 https 协议'
+    return '上游 Base URL 只允许 https 协议'
   }
   return '上游 Base URL 只允许 http 或 https 协议'
 }

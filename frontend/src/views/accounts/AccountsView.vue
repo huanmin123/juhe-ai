@@ -578,6 +578,7 @@ const {
   openDraftTestModal,
   openSavedDraftTestModal,
   openTestModal,
+  providers: availableProviders,
   responseInspectionRules: accountResponseInspectionRules,
   selectedProtocolProfile
 })

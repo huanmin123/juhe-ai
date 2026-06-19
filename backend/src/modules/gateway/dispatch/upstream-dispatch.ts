@@ -2,7 +2,7 @@ import type { Request } from 'express'
 
 import { getAccountCurrentConcurrency, tryAcquireAccountConcurrency, type AccountConcurrencySlot } from '../../../shared/account-concurrency.js'
 import { effectiveImageLaneConcurrencyLimit } from '../../../domain/group-scheduling.js'
-import type { GroupSchedulingPolicy } from '../../../domain/types.js'
+import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import {
   exponentialRetryPolicy,
@@ -84,7 +84,8 @@ export async function fetchFirstAvailableUpstream(
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker,
   requestLane: OpenAIGatewayRequestLane = 'text',
   groupSchedulingPolicy?: GroupSchedulingPolicy,
-  accountStateMutationEnabled = true
+  accountStateMutationEnabled = true,
+  requestClientCompatibility?: ClientCompatibilityCapability
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -200,11 +201,13 @@ export async function fetchFirstAvailableUpstream(
           if (upstreamUrls.length === 0) {
             continue
           }
-          const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal)
+          const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal, {
+            requestClientCompatibility
+          })
           headers = requestParts.headers
           body = requestParts.body
         } catch (error) {
-          if (signal?.aborted || error instanceof OpenAIOAuthCodexAdapterError) {
+          if (signal?.aborted || (error instanceof OpenAIOAuthCodexAdapterError && !error.accountScoped)) {
             throw error
           }
           const requestErrorResult = await handleUpstreamRequestError({

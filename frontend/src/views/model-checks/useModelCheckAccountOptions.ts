@@ -10,9 +10,9 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, ModelCheckRunPayload } from '@/types/domain'
+import { canSelectModelCheckAccount } from './modelCheckProviderCapabilities'
 
 type AccountSelectOption = { label: string; value: string }
 type SelectValue = string | string[] | undefined
@@ -72,8 +72,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         limit: 50
       })
       const nextOptions = accounts
-        .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account))
-        .filter((account) => Boolean(account.name.trim()))
+        .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
       targetOptionsCache.set(requestKey, nextOptions)
       if (requestId === targetOptionsRequestId) {
@@ -110,8 +109,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         limit: 50
       })
       const nextOptions = accounts
-        .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account) && account.id !== input.form.targetId)
-        .filter((account) => Boolean(account.name.trim()))
+        .filter((account) => canSelectModelCheckAccount(account, { excludedAccountId: input.form.targetId }))
         .map(accountTargetOption)
       comparisonOptionsCache.set(requestKey, nextOptions)
       if (requestId === comparisonOptionsRequestId) {
@@ -146,8 +144,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         limit: 50
       })
       const nextOptions = accounts
-        .filter((account) => isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account))
-        .filter((account) => Boolean(account.name.trim()))
+        .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
       historyTargetOptionsCache.set(requestKey, nextOptions)
       if (requestId === historyTargetOptionsRequestId) {

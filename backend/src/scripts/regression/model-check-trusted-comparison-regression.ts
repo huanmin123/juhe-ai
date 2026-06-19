@@ -17,16 +17,24 @@ mkdirSync(tempRoot, { recursive: true })
 
 const [
   { getDatasetDatabase },
-  { getModelCheckOptions, ModelCheckRequestError, runModelCheck }
+  { getModelCheckOptions, ModelCheckRequestError, runModelCheck },
+  { isModelCheckSupportedProtocolProfile, modelCheckSupportedProtocolLabel }
 ] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../modules/model-checks/model-checks.service.js')
+  import('../../modules/model-checks/model-checks.service.js'),
+  import('../../modules/model-checks/model-checks.provider-capabilities.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const options = getModelCheckOptions(access)
 assert.equal(options.trustedComparison.enabledByDefault, false, '可信对比必须默认关闭')
 assert.equal(options.trustedComparison.available, true, '可信对比能力不应依赖自动扫描账户')
+assert.equal(modelCheckSupportedProtocolLabel, 'OpenAI v1', '模型检测当前能力边界应由协议标签表达')
+assert.equal(isModelCheckSupportedProtocolProfile({ protocolCode: 'openai', protocolVersion: 'v1' }), true, 'OpenAI v1 协议账户应支持模型检测')
+assert.equal(isModelCheckSupportedProtocolProfile({ protocolCode: 'anthropic', protocolVersion: 'v1' }), false, 'Anthropic v1 协议账户不应进入当前 OpenAI 模型检测')
+const trustedComparisonMessage = options.trustedComparison.message ?? ''
+assert.match(trustedComparisonMessage, /OpenAI v1/, '可信对比文案应描述协议能力边界')
+assert.doesNotMatch(trustedComparisonMessage, /GPT/, '可信对比文案不应绑定 GPT 供应商名')
 
 await assert.rejects(
   () => runModelCheck({

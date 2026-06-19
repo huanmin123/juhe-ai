@@ -17,10 +17,11 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
-import { ANTHROPIC_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
+import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -546,7 +547,7 @@ function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number
 }
 
 function usesIncludedCacheReadUsage(providerCode: string): boolean {
-  return normalizeProviderToken(providerCode) !== ANTHROPIC_PROVIDER_CODE
+  return modelPricingProviderDriverForProvider(providerCode)?.usesIncludedCacheReadUsage ?? true
 }
 
 function perToken(value: number | undefined): number | undefined {

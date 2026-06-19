@@ -1,10 +1,12 @@
+import type { AccountClientCompatibility, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
-  ANTHROPIC_PROVIDER_CODE,
-  GPT_VENDOR_CODE,
-  OPENAI_COMPATIBLE_PROVIDER_CODE,
-  normalizeProviderToken
-} from '@/shared/providerProtocol'
-import type { AccountClientCompatibility, AccountSupportedEndpointMode, AccountType } from '@/types/domain'
+  type AccountProviderProfileLike,
+  allAccountEndpointModes,
+  anthropicAccountEndpointModes,
+  defaultEndpointModesForAccount,
+  responsesEndpointModes
+} from './accountProviderCapabilities'
+import { FALLBACK_PROVIDERS } from './accountOptions'
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
   { label: 'Chat JSON', value: 'chat_json' },
@@ -16,23 +18,26 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'Count Tokens', value: 'message_token_counting' }
 ]
 
-const chatEndpointModes: AccountSupportedEndpointMode[] = ['chat_json', 'chat_sse']
-const responsesEndpointModes: AccountSupportedEndpointMode[] = ['responses_json', 'responses_sse']
-const openAIEndpointModes: AccountSupportedEndpointMode[] = [...chatEndpointModes, ...responsesEndpointModes]
-export const anthropicAccountEndpointModes: AccountSupportedEndpointMode[] = ['messages_json', 'messages_sse', 'message_token_counting']
-const allEndpointModes = accountEndpointModeOptions.map((item) => item.value)
-
 export function defaultAccountEndpointModes(
   providerCode: string,
   type: AccountType,
-  clientCompatibility?: AccountClientCompatibility
+  clientCompatibility?: AccountClientCompatibility,
+  context: {
+    provider?: ProviderDefinition
+    protocolProfile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
+  } = {}
 ): AccountSupportedEndpointMode[] {
-  if (type === 'oauth') return [...responsesEndpointModes]
-  const provider = normalizeProviderToken(providerCode)
-  if (provider === ANTHROPIC_PROVIDER_CODE) return [...anthropicAccountEndpointModes]
-  if (provider === GPT_VENDOR_CODE || clientCompatibility === 'codex_responses') return [...openAIEndpointModes]
-  if (provider === OPENAI_COMPATIBLE_PROVIDER_CODE) return [...chatEndpointModes]
-  return [...allEndpointModes]
+  const provider = context.provider ?? FALLBACK_PROVIDERS.find((item) => item.code === providerCode)
+  const protocolProfile = context.protocolProfile
+    ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+    ?? provider?.protocolProfiles.find((item) => item.enabled)
+    ?? provider?.protocolProfiles[0]
+  return defaultEndpointModesForAccount({
+    provider,
+    profile: protocolProfile ?? provider,
+    type,
+    clientCompatibility
+  })
 }
 
 export function normalizeAccountEndpointModes(
@@ -40,7 +45,7 @@ export function normalizeAccountEndpointModes(
   fallback: AccountSupportedEndpointMode[]
 ): AccountSupportedEndpointMode[] {
   if (!Array.isArray(value)) return [...fallback]
-  const allowed = new Set<AccountSupportedEndpointMode>(allEndpointModes)
+  const allowed = new Set<AccountSupportedEndpointMode>(allAccountEndpointModes)
   const output: AccountSupportedEndpointMode[] = []
   const seen = new Set<AccountSupportedEndpointMode>()
   for (const item of value) {
@@ -74,7 +79,7 @@ export function validateAccountEndpointModes(input: {
     }
   }
   if (input.clientCompatibility === 'codex_responses' && hasOpenAIMode && !input.modes.includes('responses_sse')) {
-    return 'Codex Responses 兼容模式必须启用 Responses SSE'
+    return 'Codex Responses 兼容能力必须启用 Responses SSE'
   }
   return undefined
 }

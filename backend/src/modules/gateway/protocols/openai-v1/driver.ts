@@ -8,13 +8,20 @@ import type { GatewayProtocolDriver } from '../_shared/types.js'
 import { isOpenAIModelsRequest } from './route-helpers.js'
 import {
   extractOpenAIJsonSemanticFrames,
+  extractOpenAISseSemanticFrames,
+  type OpenAIResponseEndpointFamily,
+  type ResponseEndpointFamily,
   openAIResponseEndpointFamilyFromRequest
 } from './response-semantics.js'
-import { applyOpenAIStreamUsageFallback } from './stream-inspection.js'
+import {
+  OpenAIStreamInspector,
+  applyOpenAIStreamUsageFallback
+} from './stream-inspection.js'
 import {
   parseOpenAIUsageFromJsonBuffer,
   parseOpenAIUsageFromJsonTextFragment
 } from './usage.js'
+import { parseOpenAIErrorPayload } from './error-payload.js'
 
 export const openAIV1ProtocolDriver: GatewayProtocolDriver = {
   id: 'openai-v1',
@@ -29,7 +36,20 @@ export const openAIV1ProtocolDriver: GatewayProtocolDriver = {
   responseEndpointFamilyForRequest: openAIResponseEndpointFamilyFromRequest,
   extractJsonSemanticFrames: (value, req) =>
     extractOpenAIJsonSemanticFrames(value, openAIResponseEndpointFamilyFromRequest(req)),
+  createStreamInspector: () => new OpenAIStreamInspector(),
+  responseInspectionEndpointFamily: openAIEndpointFamilyOrUnknown,
+  extractSseSemanticFrames: (event, endpointFamily) =>
+    extractOpenAISseSemanticFrames(event, openAIEndpointFamilyOrUnknown(endpointFamily)),
+  sseResponseInspectionFailureEvent: 'default',
+  drainForKeepAliveAfterTerminal: true,
   parseUsageFromJsonBuffer: parseOpenAIUsageFromJsonBuffer,
   parseUsageFromJsonTextFragment: parseOpenAIUsageFromJsonTextFragment,
+  parseErrorPayload: parseOpenAIErrorPayload,
   applyStreamUsageFallback: applyOpenAIStreamUsageFallback
+}
+
+function openAIEndpointFamilyOrUnknown(endpointFamily?: ResponseEndpointFamily): OpenAIResponseEndpointFamily {
+  return endpointFamily === 'chat_completions' || endpointFamily === 'responses'
+    ? endpointFamily
+    : 'unknown'
 }

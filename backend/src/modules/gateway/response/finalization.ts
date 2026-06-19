@@ -2,7 +2,7 @@ import type { Request, Response } from 'express'
 
 import { logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
-import { parseErrorPayload, type GatewaySettings } from '../policy/account-error-policy.service.js'
+import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import {
   applyAccountErrorHandlingWithCacheInvalidation,
@@ -75,7 +75,8 @@ import {
   gatewayProtocolResponseEndpointFamilyForRequest,
   gatewayProtocolResponseProtocolForProfile,
   parseGatewayProtocolUsageFromJsonBuffer,
-  parseGatewayProtocolUsageFromJsonTextFragment
+  parseGatewayProtocolUsageFromJsonTextFragment,
+  parseGatewayProtocolErrorPayload
 } from '../protocols/registry.js'
 import {
   requestModel
@@ -811,7 +812,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     usage = parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText)
   }
   if (!upstreamResponse.ok) {
-    errorPayload = parseErrorPayload(responseBodyText ?? '', upstreamResponse.headers)
+    errorPayload = parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
   }
   auditCapture.completeAttempt(auditAttemptId, {
     statusCode: upstreamResponse.status,

@@ -1,12 +1,12 @@
-import { anthropicModelPricingData } from './anthropic-model-pricing.data.js'
-import { openAIModelPricingData } from './openai-model-pricing.data.js'
-import {
-  ANTHROPIC_PROVIDER_CODE,
-  isOpenAICompatibleProviderCode,
-  normalizeProviderToken
-} from '../../domain/provider-protocol.js'
+import { normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
+import type {
+  ModelPricingProviderDriverHelpers,
+  ProviderModelApiProtocol,
+  RawModelPricing
+} from './provider-driver.types.js'
 
-export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'completions' | 'images' | 'audio' | 'realtime'
+export type { ProviderModelApiProtocol } from './provider-driver.types.js'
 
 export interface ProviderModelPricing {
   providerCode: string
@@ -32,30 +32,6 @@ export interface ProviderModelPricing {
   supportsServiceTier: boolean
   catalogVisible?: boolean
   source: string
-}
-
-interface RawModelPricing {
-  model: string
-  mode?: string
-  release_date?: string
-  input_cost_per_token?: number
-  output_cost_per_token?: number
-  cache_creation_input_token_cost?: number
-  cache_creation_input_token_cost_above_1hr?: number
-  cache_read_input_token_cost?: number
-  input_cost_per_image_token?: number
-  output_cost_per_image?: number
-  output_cost_per_image_token?: number
-  input_cost_per_audio_token?: number
-  output_cost_per_audio_token?: number
-  max_input_tokens?: number
-  max_output_tokens?: number
-  max_tokens?: number
-  shutdown_date?: string
-  supported_api_protocols?: ProviderModelApiProtocol[]
-  supports_prompt_caching?: boolean
-  supports_service_tier?: boolean
-  catalog_visible?: boolean
 }
 
 export interface CostInput {
@@ -104,8 +80,10 @@ export interface ProviderCostBreakdown {
   multiplier: 1
 }
 
-const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
-const anthropicModels = anthropicModelPricingData as readonly RawModelPricing[]
+const modelPricingDriverHelpers: ModelPricingProviderDriverHelpers = {
+  normalizeModel,
+  extractModelReleaseDate
+}
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
@@ -280,16 +258,18 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
 function findProviderModelPricing(providerCode: string, model: string): RawModelPricing | undefined {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return undefined
-  const models = rawModelsForProvider(normalizedProviderCode)
+  const driver = modelPricingProviderDriverForProvider(normalizedProviderCode)
+  if (!driver) return undefined
+  const models = driver.rawModels
   if (!models.length) return undefined
   const normalized = normalizeModel(model)
   if (!normalized) return undefined
-  if (isOpenAIProvider(normalizedProviderCode) && isUnavailableOpenAIModel(normalized)) return undefined
+  if (driver.isUnavailableModel?.(normalized)) return undefined
 
   const byExactName = models.find((item) => normalizeModel(item.model) === normalized)
   if (byExactName && !hasModelShutdown(byExactName)) return byExactName
 
-  for (const candidate of buildModelCandidates(normalized, normalizedProviderCode)) {
+  for (const candidate of driver.buildModelCandidates(normalized)) {
     const matched = models.find((item) => normalizeModel(item.model) === candidate)
     if (matched && !hasModelShutdown(matched)) return matched
   }
@@ -298,9 +278,7 @@ function findProviderModelPricing(providerCode: string, model: string): RawModel
 }
 
 function rawModelsForProvider(providerCode: string): readonly RawModelPricing[] {
-  if (isOpenAIProvider(providerCode)) return openAIModels
-  if (normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE) return anthropicModels
-  return []
+  return modelPricingProviderDriverForProvider(providerCode)?.rawModels ?? []
 }
 
 function defaultImageOutputTokens(input: CostInput, pricing: RawModelPricing): number {
@@ -337,83 +315,29 @@ function hasAnyPrice(...prices: Array<number | undefined>): boolean {
   return prices.some((price) => price !== undefined)
 }
 
-function isUnavailableOpenAIModel(model: string): boolean {
-  return unavailableOpenAIModels.has(model)
-    || model.startsWith('gpt-4.5-preview')
-    || model.startsWith('gpt-4-turbo-preview')
-    || model.startsWith('gpt-4o-realtime-preview')
-    || model.startsWith('gpt-4o-mini-realtime-preview')
-    || model.startsWith('gpt-4o-audio-preview')
-    || model.startsWith('gpt-4o-mini-audio-preview')
-    || model.startsWith('gpt-4o-search-preview')
-    || model.startsWith('gpt-4o-mini-search-preview')
-    || model.startsWith('o1-preview')
-}
-
-const unavailableOpenAIModels = new Set([
-  'chatgpt-4o-latest',
-  'codex-mini-latest',
-  'gpt-5.3-codex-spark',
-  'o1-2024-12-17',
-  'o1-pro-2025-03-19',
-  'o1-mini',
-  'o3-mini-2025-01-31',
-  'o4-mini-2025-04-16',
-  'gpt-4-0125-preview',
-  'gpt-4-1106-vision-preview',
-  'gpt-4-0314',
-  'gpt-4-32k',
-  'gpt-4-32k-0314',
-  'gpt-4-32k-0613'
-])
-
-function buildModelCandidates(model: string, providerCode: string): string[] {
-  const candidates = new Set<string>()
-  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
-  if (withoutDate !== model) candidates.add(withoutDate)
-
-  if (isOpenAIProvider(providerCode)) {
-    if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
-    if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
-    if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
-    if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
-    if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
-    if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
-    if (model.startsWith('gpt-realtime-mini-')) candidates.add('gpt-realtime-mini')
-    if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
-    if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
-    if (model.startsWith('gpt-4.1-')) candidates.add('gpt-4.1')
-    if (model.startsWith('gpt-4o-mini-transcribe-')) candidates.add('gpt-4o-mini-transcribe')
-    if (model.startsWith('gpt-4o-mini-tts-')) candidates.add('gpt-4o-mini-tts')
-  }
-
-  if (normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE) {
-    for (const base of anthropicModelCandidateBasesBySpecificity) {
-      if (model === base || model.startsWith(`${base}-`)) candidates.add(base)
-    }
-  }
-
-  return Array.from(candidates)
-}
-
 function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number): number {
   const cacheWrite1hTokens = Math.max(input.cacheWrite1hTokens ?? 0, 0)
   return cacheWriteTokens > 0 ? Math.min(cacheWrite1hTokens, cacheWriteTokens) : cacheWrite1hTokens
 }
 
 function usesIncludedCacheReadUsage(providerCode: string): boolean {
-  return normalizeProviderToken(providerCode) !== ANTHROPIC_PROVIDER_CODE
+  return modelPricingProviderDriverForProvider(providerCode)?.usesIncludedCacheReadUsage ?? true
 }
 
 function toProviderModelPricing(item: RawModelPricing, providerCode: string): ProviderModelPricing {
-  const source = providerPricingSource(providerCode)
+  const driver = modelPricingProviderDriverForProvider(providerCode)
+  const source = driver?.pricingSource ?? 'unknown-pricing-snapshot'
   return {
     providerCode,
     model: item.model,
     mode: item.mode,
-    releaseDate: getProviderModelReleaseDate(item, providerCode),
+    releaseDate: driver?.getModelReleaseDate(item, modelPricingDriverHelpers)
+      ?? item.release_date
+      ?? extractModelReleaseDate(item.model),
     shutdownDate: item.shutdown_date,
-    supportedApiProtocols: inferProviderModelApiProtocols(item, providerCode),
+    supportedApiProtocols: driver?.inferModelApiProtocols(item, modelPricingDriverHelpers)
+      ?? item.supported_api_protocols
+      ?? [],
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
@@ -434,190 +358,8 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
   }
 }
 
-function getProviderModelReleaseDate(item: RawModelPricing, providerCode: string): string | undefined {
-  if (isOpenAIProvider(providerCode)) {
-    return item.release_date
-      ?? extractModelReleaseDate(item.model)
-      ?? inferOpenAIModelReleaseDate(item.model)
-  }
-  return item.release_date ?? extractModelReleaseDate(item.model)
-}
-
-const openAIModelReleaseDates = new Map<string, string>([
-  ['gpt-5.5', '2026-04-23'],
-  ['gpt-5.5-pro', '2026-04-23'],
-  ['gpt-image-2', '2026-04-21'],
-  ['gpt-5.4-mini', '2026-03-17'],
-  ['gpt-5.4-nano', '2026-03-17'],
-  ['gpt-5.4', '2026-03-05'],
-  ['gpt-5.4-pro', '2026-03-05'],
-  ['gpt-5.3-chat-latest', '2026-02-01'],
-  ['gpt-5.3-codex', '2026-02-01'],
-  ['gpt-audio-1.5', '2026-02-01'],
-  ['gpt-image-1.5', '2026-02-01'],
-  ['gpt-realtime-1.5', '2026-02-01'],
-  ['gpt-5.2-codex', '2026-01-01'],
-  ['gpt-5.2', '2025-12-11'],
-  ['gpt-5.2-chat-latest', '2025-12-11'],
-  ['gpt-5.2-pro', '2025-12-11'],
-  ['gpt-5.1', '2025-11-13'],
-  ['gpt-5.1-chat-latest', '2025-11-13'],
-  ['gpt-5.1-codex', '2025-11-13'],
-  ['gpt-5.1-codex-max', '2025-11-13'],
-  ['gpt-5.1-codex-mini', '2025-11-13'],
-  ['gpt-5-pro', '2025-10-06'],
-  ['gpt-audio-mini', '2025-10-06'],
-  ['gpt-image-1-mini', '2025-10-06'],
-  ['gpt-realtime-mini', '2025-10-06'],
-  ['gpt-5-codex', '2025-09-01'],
-  ['gpt-audio', '2025-09-01'],
-  ['gpt-realtime', '2025-09-01'],
-  ['gpt-5', '2025-08-07'],
-  ['gpt-5-chat-latest', '2025-08-07'],
-  ['gpt-5-mini', '2025-08-07'],
-  ['gpt-5-nano', '2025-08-07'],
-  ['o3-pro', '2025-06-01'],
-  ['gpt-image-1', '2025-04-23'],
-  ['o3', '2025-04-16'],
-  ['o4-mini', '2025-04-16'],
-  ['gpt-4.1', '2025-04-14'],
-  ['gpt-4.1-mini', '2025-04-14'],
-  ['gpt-4.1-nano', '2025-04-14'],
-  ['gpt-4o-mini-tts', '2025-03-20'],
-  ['gpt-4o-mini-transcribe', '2025-03-20'],
-  ['gpt-4o-transcribe', '2025-03-01'],
-  ['gpt-4o-transcribe-diarize', '2025-03-01'],
-  ['o1-pro', '2025-03-19'],
-  ['o3-mini', '2025-01-31'],
-  ['o1', '2024-12-17'],
-  ['gpt-4o-mini', '2024-07-18'],
-  ['gpt-4o', '2024-05-13'],
-  ['gpt-4-turbo', '2024-04-09'],
-  ['gpt-3.5-turbo', '2024-01-25'],
-  ['gpt-3.5-turbo-0125', '2024-01-25'],
-  ['babbage-002', '2024-01-04'],
-  ['davinci-002', '2024-01-04'],
-  ['gpt-4-1106-preview', '2023-11-06'],
-  ['gpt-3.5-turbo-1106', '2023-11-06'],
-  ['gpt-3.5-turbo-instruct', '2023-07-06'],
-  ['gpt-4', '2023-06-13'],
-  ['gpt-4-0613', '2023-06-13']
-])
-
-function inferOpenAIModelReleaseDate(model: string): string | undefined {
-  const normalized = normalizeModel(model)
-  const exactDate = openAIModelReleaseDates.get(normalized)
-  if (exactDate) return exactDate
-
-  return undefined
-}
-
-function inferProviderModelApiProtocols(item: RawModelPricing, providerCode: string): ProviderModelApiProtocol[] {
-  if (item.supported_api_protocols?.length) {
-    return item.supported_api_protocols
-  }
-  if (!isOpenAIProvider(providerCode)) return []
-
-  const model = normalizeModel(item.model)
-  const mode = (item.mode ?? '').trim()
-
-  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
-    return ['images']
-  }
-
-  if (model.includes('realtime')) {
-    return ['realtime']
-  }
-
-  if (
-    mode === 'audio_speech'
-    || mode === 'audio_transcription'
-    || model.includes('transcribe')
-    || model.includes('tts')
-    || model.includes('whisper')
-  ) {
-    return ['audio']
-  }
-
-  if (model.includes('audio')) {
-    return ['chat_completions']
-  }
-
-  if (mode === 'completion') {
-    return ['completions']
-  }
-
-  if (model.includes('codex') || model.includes('-pro')) {
-    return ['responses']
-  }
-
-  if (mode === 'responses') {
-    return ['responses']
-  }
-
-  if (mode === 'chat' || model.startsWith('gpt-') || model.startsWith('o')) {
-    return ['chat_completions', 'responses']
-  }
-
-  return []
-}
-
 function hasModelShutdown(item: RawModelPricing): boolean {
   return typeof item.shutdown_date === 'string' && item.shutdown_date <= currentUtcDate()
-}
-
-function isOpenAIProvider(providerCode: string): boolean {
-  return isOpenAICompatibleProviderCode(providerCode)
-}
-
-const anthropicModelCandidateBases = [
-  'best',
-  'fable',
-  'opus',
-  'opus[1m]',
-  'opusplan',
-  'sonnet',
-  'sonnet[1m]',
-  'haiku',
-  'claude-fable-5',
-  'claude-mythos-5',
-  'claude-mythos-preview',
-  'claude-fake-5',
-  'claude-opus-4-8',
-  'claude-opus-4-7',
-  'claude-opus-4-6',
-  'claude-opus-4-6-thinking',
-  'antigravity-claude-opus-4-6-thinking',
-  'antigravity/claude-opus-4-6-thinking',
-  'google/antigravity-claude-opus-4-6-thinking',
-  'google-antigravity/claude-opus-4-6-thinking',
-  'google-antigravity:claude-opus-4-6-thinking',
-  'claude-opus-4-6-antigravity',
-  'claude-opus-4-5',
-  'claude-opus-4-1',
-  'claude-sonnet-4-6',
-  'claude-sonnet-4-6-antigravity',
-  'antigravity-claude-sonnet-4-6',
-  'antigravity/claude-sonnet-4-6',
-  'google/antigravity-claude-sonnet-4-6',
-  'google-antigravity/claude-sonnet-4-6',
-  'google-antigravity:claude-sonnet-4-6',
-  'claude-sonnet-4-6-thinking',
-  'antigravity-claude-sonnet-4-6-thinking',
-  'antigravity/claude-sonnet-4-6-thinking',
-  'google/antigravity-claude-sonnet-4-6-thinking',
-  'google-antigravity/claude-sonnet-4-6-thinking',
-  'google-antigravity:claude-sonnet-4-6-thinking',
-  'claude-sonnet-4-5',
-  'claude-haiku-4-5'
-]
-const anthropicModelCandidateBasesBySpecificity = [...anthropicModelCandidateBases]
-  .sort((left, right) => right.length - left.length)
-
-function providerPricingSource(providerCode: string): string {
-  return normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE
-    ? 'anthropic-pricing-snapshot'
-    : 'openai-pricing-snapshot'
 }
 
 function normalizeModel(value: string): string {

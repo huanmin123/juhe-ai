@@ -34,7 +34,10 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { resolveGatewayRuntimeAsync } from './pre-auth.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
-import { isGatewayProtocolModelsRequest } from '../protocols/registry.js'
+import {
+  gatewayProtocolResponseProtocolForProfile,
+  isGatewayProtocolModelsRequest
+} from '../protocols/registry.js'
 import {
   resolveOpenAIGatewaySessionAffinityKey
 } from '../runtime/session-affinity.service.js'
@@ -44,9 +47,9 @@ import {
   type GatewayFailureUsageContext
 } from '../usage/records.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
-import type { GroupSchedulingPolicy } from '../../../domain/types.js'
+import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
-import { OPENAI_PROTOCOL_CODE, isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
+import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
 import {
   canAttemptApiKeyGroupFallback,
   resolveNextApiKeyGroupFallbackCandidate
@@ -366,7 +369,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp,
       endpoint
     })
-    const sender = isAnthropicProtocolProfile(groupAccess)
+    const sender = gatewayProtocolResponseProtocolForProfile(groupAccess) === 'anthropic_v1'
       ? sendAnthropicModelsGatewayResponse
       : sendOpenAIModelsGatewayResponse
     await sender({
@@ -402,6 +405,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     usageContext,
     startedAt,
     rawCandidateAccounts,
+    clientStrategy,
     systemAccountId,
     apiKeyId,
     groupId,
@@ -424,7 +428,8 @@ export async function prepareOpenAIGatewayDispatchContext(
       apiKeyId,
       groupId,
       trafficSource,
-      requestLane
+      requestLane,
+      requestClientCompatibility: clientStrategy.requestClientCompatibility
     })
   })
   if (candidateFilter.outcome === 'fallback') {
@@ -467,7 +472,8 @@ export async function prepareOpenAIGatewayDispatchContext(
       apiKeyId,
       groupId,
       trafficSource,
-      requestLane
+      requestLane,
+      requestClientCompatibility: clientStrategy.requestClientCompatibility
     })
   })
   if (dispatchPreparation.outcome === 'fallback') {
@@ -516,6 +522,7 @@ interface ApiKeyGroupFallbackDispatchInput {
   groupId: string
   trafficSource: OpenAIGatewayTrafficSource
   requestLane: OpenAIGatewayRequestLane
+  requestClientCompatibility?: ClientCompatibilityCapability
   excludedAccountIds?: Iterable<string>
   allowCandidateWrap?: boolean
 }

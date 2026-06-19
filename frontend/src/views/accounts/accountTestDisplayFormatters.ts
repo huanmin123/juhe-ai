@@ -1,7 +1,7 @@
-import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
-import { isAnthropicProtocolProfile } from '@/shared/providerProtocol'
+import type { AccountClientCompatibility, AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
 
 import type { AccountBatchTestItem, AccountTestClientCompatibility } from './accountTestFlow'
+import { accountProviderProtocolKind } from './accountProviderCapabilities'
 import {
   accountClientCompatibilityText,
   accountTypeText
@@ -75,8 +75,8 @@ export function accountTestBatchSelectedCompatibilityText(input: {
 }): string {
   if (!input.showClientCompatibilityControl) return input.fixedOAuthCompatibilityText
   return input.clientCompatibility === 'account_default'
-    ? '跟随账户配置'
-    : accountClientCompatibilityText(input.clientCompatibility)
+    ? '跟随账号能力'
+    : accountClientCompatibilityRequestText(input.clientCompatibility)
 }
 
 export function accountTestBatchStatusColor(counts: AccountTestBatchCounts, running: boolean): string {
@@ -100,16 +100,16 @@ export function accountTestSelectedCompatibilityText(input: {
   clientCompatibility: AccountTestClientCompatibility
   fixedOAuthCompatibilityText: string
 }): string {
-  if (isAnthropicProtocolProfile(input.account)) {
+  if (accountProviderProtocolKind(input.account) === 'anthropic_v1') {
     return 'Anthropic 原生'
   }
   if (input.account.type === 'oauth') {
     return input.fixedOAuthCompatibilityText
   }
   if (input.clientCompatibility === 'account_default') {
-    return `跟随账户配置（${accountClientCompatibilityText(input.account.clientCompatibility)}）`
+    return `跟随账号能力（${accountClientCompatibilityText(input.account.clientCompatibility)}）`
   }
-  return accountClientCompatibilityText(input.clientCompatibility)
+  return accountClientCompatibilityRequestText(input.clientCompatibility)
 }
 
 export function accountTestSingleOutputLines(options: SingleAccountTestOutputOptions): AccountTestOutputLine[] {
@@ -125,7 +125,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     { text: `供应商：${options.providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
     {
-      text: `${isAnthropicProtocolProfile(account) ? '测试协议' : '测试兼容'}：${selectedCompatibilityText}`,
+      text: `测试请求形态：${selectedCompatibilityText}`,
       tone: 'muted'
     }
   ]
@@ -222,7 +222,7 @@ export function accountTestBatchOutputLines(options: BatchAccountTestOutputOptio
     { text: `批量测试账号：${options.counts.total} 个`, tone: 'info' },
     { text: '提交策略：每批最多 10 个账户，本批全部结束后再提交下一批', tone: 'muted' },
     { text: `优先测试模型：${options.model}`, tone: 'muted' },
-    { text: `测试兼容：${options.selectedCompatibilityText}`, tone: 'muted' },
+    { text: `测试请求形态：${options.selectedCompatibilityText}`, tone: 'muted' },
     { text: `单个任务运行上限：${formatAccountTestDuration(diagnosticMaxWaitMs)}，后台未接收前不计时`, tone: 'muted' }
   ]
   if (options.running || options.counts.queued || options.counts.running) {
@@ -318,19 +318,23 @@ export function accountTestBatchItemMessage(item: AccountBatchTestItem): string 
   if (item.message) return item.message
   if (item.result?.message) return item.result.message
   if (item.status === 'queued') return '等待后台 worker 接收'
-  if (item.status === 'running') return isAnthropicProtocolProfile(item.account) ? '正在连接 Anthropic API' : '正在连接 OpenAI API'
+  if (item.status === 'running') return accountProviderProtocolKind(item.account) === 'anthropic_v1' ? '正在连接 Anthropic API' : '正在连接 OpenAI API'
   if (item.status === 'stopped') return '已停止测试'
   return '等待开始测试'
 }
 
 function accountTestActualProtocolLine(account: AccountSummary, result: AccountTestResult): AccountTestOutputLine {
-  if (isAnthropicProtocolProfile(account)) {
-    return { text: '实际协议：Anthropic 原生', tone: 'muted' }
+  if (accountProviderProtocolKind(account) === 'anthropic_v1') {
+    return { text: '实际请求形态：Anthropic 原生请求', tone: 'muted' }
   }
   return {
-    text: `实际兼容：${accountClientCompatibilityText(result.testClientCompatibility ?? result.clientCompatibility ?? account.clientCompatibility)}`,
+    text: `实际请求形态：${accountClientCompatibilityRequestText(result.testClientCompatibility ?? result.clientCompatibility ?? account.clientCompatibility)}`,
     tone: 'muted'
   }
+}
+
+function accountClientCompatibilityRequestText(value: AccountClientCompatibility): string {
+  return value === 'codex_responses' ? 'Codex Responses 请求' : 'OpenAI 标准请求'
 }
 
 export function accountTestBatchItemJson(item: AccountBatchTestItem): string {

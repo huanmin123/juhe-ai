@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import {
   filterGatewayAccountsByRequestCapability
 } from './account-capability-filter.js'
@@ -33,6 +34,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   usageContext: GatewayFailureUsageContext
   startedAt: number
   rawCandidateAccounts: UpstreamAccount[]
+  clientStrategy: OpenAIGatewayClientStrategyContext
   systemAccountId: string
   apiKeyId?: string
   groupId: string
@@ -40,14 +42,24 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   endpoint: string
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
 }): Promise<RequestCandidateFilterResult> {
-  const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, input.rawCandidateAccounts)
+  if (input.rawCandidateAccounts.length === 0) {
+    const fallback = await input.attemptFallback('no_candidate_accounts')
+    if (fallback.attempted) {
+      return { outcome: 'fallback', context: fallback.context }
+    }
+  }
+
+  const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, input.rawCandidateAccounts, {
+    requestClientCompatibility: input.clientStrategy.requestClientCompatibility
+  })
   if (capabilityFilter.skippedCount > 0) {
     input.auditCapture.addGatewayMetadata({
       label: 'account_request_capability_filter',
       metadata: {
         skippedCount: capabilityFilter.skippedCount,
         remainingCount: capabilityFilter.accounts.length,
-        reason: capabilityFilter.reason
+        reason: capabilityFilter.reason,
+        requestClientCompatibility: input.clientStrategy.requestClientCompatibility
       }
     })
   }

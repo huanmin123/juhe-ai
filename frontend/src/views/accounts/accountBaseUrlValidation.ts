@@ -1,9 +1,9 @@
 interface AccountBaseUrlValidationPolicy {
-  allowHttpForPrivateHosts: boolean
+  allowedProtocols: readonly ('http:' | 'https:')[]
 }
 
 const defaultPolicy: AccountBaseUrlValidationPolicy = {
-  allowHttpForPrivateHosts: true
+  allowedProtocols: ['http:', 'https:']
 }
 
 const openAIEndpointPathPrefixes = [
@@ -49,9 +49,8 @@ export function validateOpenAICompatibleBaseUrl(value: string, policy: AccountBa
     return 'Base URL 格式无效'
   }
 
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && policy.allowHttpForPrivateHosts && isLocalDevelopmentHost(hostname))) {
-    return '生产上游地址只允许 https 协议，http 仅用于本地 mock 或回归测试'
+  if (!policy.allowedProtocols.includes(url.protocol as 'http:' | 'https:')) {
+    return 'Base URL 只允许 http 或 https 协议'
   }
   if (!url.hostname) return 'Base URL 必须包含主机名'
   if (url.username || url.password) return 'Base URL 不能包含用户名或密码'
@@ -151,14 +150,4 @@ function matchesOpenAIEndpointPath(segments: string[]): boolean {
     if (segments.length < prefix.length) return false
     return prefix.every((part, index) => segments[index] === part)
   })
-}
-
-function isLocalDevelopmentHost(hostname: string): boolean {
-  return hostname === 'localhost'
-    || hostname.endsWith('.localhost')
-    || hostname === '127.0.0.1'
-    || hostname === '::1'
-    || hostname.startsWith('10.')
-    || hostname.startsWith('192.168.')
-    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
 }

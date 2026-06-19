@@ -7,6 +7,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import {
   clearAccountFailureState,
+  clearAccountFailureStateResult,
   findAccountForTest,
   getSettings,
   listOpenAIOAuthAccountsDueForAccessTokenRefresh,
@@ -16,7 +17,7 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import type { DbServiceOpenAIOAuthRefreshAccount, DbServiceOperation } from '../db-service/db-service-types.js'
+import type { DbServiceOpenAIOAuthRefreshAccount, DbServiceOperation, DbServiceOperationResult } from '../db-service/db-service-types.js'
 import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import {
@@ -498,18 +499,55 @@ function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode:
 }
 
 function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
-  return options.persistMode ?? (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'worker' ? 'db-service' : 'sync')
+  return options.persistMode ?? (runtimeConfig.processRole === 'server' || isForkedBackgroundWorkerProcess() ? 'db-service' : 'sync')
 }
 
 async function requestOpenAIOAuthDbService<T extends DbServiceOperation>(operation: T): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T>> {
-  if (runtimeConfig.processRole === 'worker') {
+  if (isForkedBackgroundWorkerProcess()) {
     const result = await requestBackgroundWorkerDbService(operation)
     if (result === undefined) {
       throw new Error(`后台 worker DB service 请求失败：${operation.type}`)
     }
     return result
   }
+  if (isSingleProcessWorkerRole()) {
+    return runLocalOpenAIOAuthDbServiceOperation(operation)
+  }
   return await requestDbService(operation)
+}
+
+function isForkedBackgroundWorkerProcess(): boolean {
+  return runtimeConfig.processRole === 'worker' && typeof process.send === 'function'
+}
+
+function isSingleProcessWorkerRole(): boolean {
+  return runtimeConfig.processRole === 'worker' && typeof process.send !== 'function'
+}
+
+function runLocalOpenAIOAuthDbServiceOperation<T extends DbServiceOperation>(operation: T): DbServiceOperationResult<T> {
+  if (operation.type === 'clear_account_failure_state') {
+    if (operation.authorizedBinding) {
+      throw new Error('单进程 worker 回归不支持授权账号失败状态清理')
+    }
+    const result = clearAccountFailureStateResult(operation.accountId, internalOpenAIOAuthRefreshAccess, {
+      allowPendingTestRestore: operation.allowPendingTestRestore,
+      allowErrorRestore: operation.allowErrorRestore
+    })
+    if (result.changed) {
+      clearGatewayRuntimeCache()
+    }
+    return { changed: result.changed, accountStatus: result.account?.status } as DbServiceOperationResult<T>
+  }
+  if (operation.type === 'mark_account_exception') {
+    const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
+      preserveDisabled: operation.preserveDisabled
+    })
+    if (updated) {
+      clearGatewayRuntimeCache()
+    }
+    return { updated: Boolean(updated), accountStatus: updated?.status } as DbServiceOperationResult<T>
+  }
+  throw new Error(`单进程 worker 回归不支持 DB service 操作：${operation.type}`)
 }
 
 function isRecoverableOpenAIOAuthRefreshRaceError(error: unknown): boolean {

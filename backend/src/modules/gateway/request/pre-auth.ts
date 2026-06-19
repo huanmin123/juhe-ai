@@ -31,7 +31,7 @@ import {
   type GatewayCircuitDecision,
   type GatewayPreAuthFailureReason
 } from '../runtime/client-ip-error-circuit.service.js'
-import { isAnthropicNativeRequest } from '../protocols/anthropic-v1/route-helpers.js'
+import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -327,5 +327,5 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
 }
 
 function gatewayErrorProtocolForRequest(req: Request): 'openai' | 'anthropic' {
-  return isAnthropicNativeRequest(req) ? 'anthropic' : 'openai'
+  return gatewayProtocolClientErrorProtocolForRequest(req)
 }
