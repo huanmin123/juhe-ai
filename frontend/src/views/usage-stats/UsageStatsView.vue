@@ -610,6 +610,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
 
   .usage-stats-filters {
     width: 100%;
+    flex: none;
     flex-direction: column;
   }
 
@@ -617,6 +618,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   .usage-stats-range-picker,
   .usage-stats-metric-segmented,
   .usage-stats-account-select {
+    flex: none;
     width: 100%;
     min-width: 0;
     max-width: none;

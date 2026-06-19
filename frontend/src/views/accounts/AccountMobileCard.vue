@@ -20,6 +20,14 @@
             <a-tag :color="accountScheduleTagColor(account.availabilitySchedule)">{{ accountScheduleSummary(account.availabilitySchedule) }}</a-tag>
           </a-tooltip>
           <AccountStatusTag :account="account" />
+          <a-tag
+            v-for="tag in account.tags ?? []"
+            :key="tag.id || tag.name"
+            class="account-mobile-tag-chip"
+            color="blue"
+          >
+            {{ tag.name }}
+          </a-tag>
         </div>
       </div>
     </div>
@@ -50,28 +58,13 @@
         <span>优先级</span>
         <strong>{{ priorityText }}</strong>
       </div>
-      <div class="account-mobile-meta-item account-mobile-meta-wide">
+      <div class="account-mobile-meta-item">
         <span>用量(日)</span>
         <AccountUsageCell :account="account" />
-      </div>
-      <div class="account-mobile-meta-item account-mobile-meta-wide">
-        <span>标签</span>
-        <div v-if="account.tags?.length" class="account-mobile-account-tags">
-          <a-tag v-for="tag in account.tags" :key="tag.id || tag.name" color="blue">{{ tag.name }}</a-tag>
-        </div>
-        <strong v-else>-</strong>
-      </div>
-      <div class="account-mobile-meta-item">
-        <span>最近使用</span>
-        <strong>{{ formatDateTime(accountLastUsedAt(account)) }}</strong>
       </div>
       <div v-if="accountDisplayExpiresAt(account)" class="account-mobile-meta-item account-mobile-meta-wide">
         <span>到期时间</span>
         <strong :class="isAccountDisplayExpired(account) ? 'expired-cell' : ''">{{ formatDateTime(accountDisplayExpiresAt(account)) }}</strong>
-      </div>
-      <div class="account-mobile-meta-item account-mobile-meta-wide">
-        <span>说明</span>
-        <strong>{{ account.notes || '-' }}</strong>
       </div>
     </div>
 
@@ -98,7 +91,6 @@ import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   accountDisplayName,
-  accountLastUsedAt,
   accountDisplayExpiresAt,
   accountTypeText,
   isAccountDisplayExpired
@@ -300,14 +292,7 @@ function handleActionClick(key: string) {
   margin-inline-end: 0;
 }
 
-.account-mobile-account-tags {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.account-mobile-account-tags :deep(.ant-tag) {
+.account-mobile-tag-chip {
   max-width: 100%;
   margin-inline-end: 0;
   overflow: hidden;

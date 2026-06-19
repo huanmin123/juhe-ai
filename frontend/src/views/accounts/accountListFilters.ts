@@ -11,7 +11,7 @@ export function filterAccounts(input: {
   const keyword = normalizeKeyword(input.filters.keyword)
   return input.accounts.filter((account) => {
     const normalizedName = normalizeKeyword(account.name)
-    const keywordMatched = !keyword || normalizedName === keyword || normalizedName.startsWith(keyword)
+    const keywordMatched = !keyword || normalizedName.includes(keyword)
     const providerMatched = !input.filters.providerCode || input.filters.providerCode === 'all' || account.providerCode === input.filters.providerCode
     const typeMatched = !input.filters.type || input.filters.type === 'all' || account.type === input.filters.type
     const statusMatched = input.filters.status.length === 0 || input.filters.status.some((status) => accountMatchesStatusFilter(account, status))

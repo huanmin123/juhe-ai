@@ -156,58 +156,22 @@ try {
     '账户导出应保留接口能力限制'
   )
   assert.equal(
-    exported.document.accounts[0]?.clientCompatibility,
-    'codex_responses',
-    '账户导出应保留客户端兼容模式'
+    Object.prototype.hasOwnProperty.call(exported.document.accounts[0] ?? {}, 'clientCompatibility'),
+    false,
+    '账户导出不应暴露客户端兼容字段'
   )
-
-  const openAIGroup = repositories.createGroup({
-    name: 'OpenAI 兼容导入导出回归分组',
-    providerCode: 'openai'
-  }, access)
-  const openAICodexAccount = repositories.createAccount({
-    providerCode: 'openai',
-    name: 'OpenAI 兼容 Codex 导出账户',
-    type: 'api_key',
-    clientCompatibility: 'codex_responses',
-    credentials: {
-      api_key: 'sk-openai-compatible-codex-export',
-      base_url: 'https://example.com/v1',
-      supported_endpoint_modes: ['responses_sse']
-    },
-    groupId: openAIGroup.id
-  }, access)
-  const openAICodexExported = accountExport.exportAccountsAsImportDocument({ accountIds: [openAICodexAccount.id] }, access)
-  assert.equal(
-    openAICodexExported.document.accounts[0]?.clientCompatibility,
-    'codex_responses',
-    'OpenAI-compatible Codex Responses 账号导出应保留 clientCompatibility'
-  )
-  assert.equal(
-    accountImport.previewAccountImport({
-      ...openAICodexExported.document,
-      accounts: openAICodexExported.document.accounts.map((item) => ({
-        ...item,
-        name: 'OpenAI 兼容 Codex 导入账户'
-      }))
-    }, {}, access).canImport,
-    true,
-    'OpenAI-compatible Codex Responses 账号导入预览应接受导出的 clientCompatibility'
-  )
-  const openAICodexImportResult = accountImport.executeAccountImport({
-    ...openAICodexExported.document,
-    accounts: openAICodexExported.document.accounts.map((item) => ({
+  const legacyCompatibilityPreview = accountImport.previewAccountImport({
+    ...exported.document,
+    accounts: exported.document.accounts.map((item) => ({
       ...item,
-      name: 'OpenAI 兼容 Codex 导入账户'
+      name: '旧兼容字段导入账户',
+      clientCompatibility: 'codex_responses'
     }))
   }, {}, access)
-  assert.equal(openAICodexImportResult.imported, true, 'OpenAI-compatible Codex Responses 账号应可重新导入')
-  const importedOpenAICodexAccount = repositories.listAccounts(access, { keyword: 'OpenAI 兼容 Codex 导入账户', providerCode: 'openai' })
-    .find((item) => item.name === 'OpenAI 兼容 Codex 导入账户')
   assert.equal(
-    importedOpenAICodexAccount?.clientCompatibility,
-    'codex_responses',
-    'OpenAI-compatible Codex Responses 账号导入后应保留 clientCompatibility'
+    legacyCompatibilityPreview.canImport,
+    false,
+    '带 clientCompatibility 的旧导入文档应被未知字段校验拦截'
   )
 
   repositories.createGroup({
@@ -240,6 +204,7 @@ try {
     .find((item) => item.name === '标签导入账户')
   assert(imported, '导入账户应创建成功')
   assert.deepEqual(sortedTagNames(imported.tags), sortedText(['API', '导入']), '导入账户应保存标签绑定')
+  assert.equal(imported.clientCompatibility, 'codex_responses', 'GPT API Key 导入后应由账户类型派生 Codex Responses 能力')
 
   const invalidEndpointModePreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -262,7 +227,7 @@ try {
   assert.equal(invalidEndpointModePreview.canImport, false, '接口能力组合非法时导入预览应阻止导入')
   assert.match(
     invalidEndpointModePreview.accounts[0]?.messages.join('\n') ?? '',
-    /Codex Responses 兼容模式必须启用 Responses SSE/,
+    /Codex Responses 兼容能力必须启用 Responses SSE/,
     '导入预览应返回接口能力组合错误'
   )
 

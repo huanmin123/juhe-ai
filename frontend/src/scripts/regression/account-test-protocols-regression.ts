@@ -6,6 +6,7 @@ import {
 } from '@/shared/providerProtocol'
 import {
   buildTestModelOptions,
+  hasSingleProviderProfileForAccountSelection,
   isGatewaySupportedTestSelection
 } from '../../views/accounts/accountDerivedState'
 import { canTestAccount } from '../../views/accounts/accountRules'
@@ -44,7 +45,8 @@ assertTrue(canTestAccount(anthropicAccount), 'Anthropic API Key 正常账户应�
 assertFalse(canTestAccount(unsupportedAccount), '未支持协议账户应不可测试')
 
 assertTrue(isGatewaySupportedTestSelection(anthropicAccount), 'Anthropic 单账户选择应允许加载供应商模型目录')
-assertTrue(isGatewaySupportedTestSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择仍属于可测试协议集合')
+assertFalse(hasSingleProviderProfileForAccountSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择不应被视为同一供应商协议')
+assertFalse(isGatewaySupportedTestSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择不应加载单一供应商模型目录')
 assertFalse(isGatewaySupportedTestSelection([anthropicAccount, unsupportedAccount]), '混入未支持协议时不应加载供应商模型目录')
 
 assertDeepEqual(

@@ -6,7 +6,7 @@ import type { AccountSummary, OpenAIAuthURLResult } from '@/types/domain'
 import type { AccountOAuthAuthorizeForm } from './accountFormTypes'
 import { authUrl, buildReauthorizePayload, validateReauthorizeForm } from './accountOAuthPayload'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { canManageGptOAuth } from './accountRules'
+import { canManageOAuthAccount } from './accountRules'
 
 interface UseAccountReauthorizeOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -28,8 +28,8 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
   })
 
   function openReauthorizeModal(account: AccountSummary) {
-    if (!canManageGptOAuth(account)) {
-      message.warning('只有自有 GPT OAuth 账户可以重新授权')
+    if (!canManageOAuthAccount(account)) {
+      message.warning('只有支持 OAuth 管理的自有账户可以重新授权')
       return
     }
     reauthorizingAccount.value = account

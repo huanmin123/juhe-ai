@@ -298,7 +298,7 @@ CREATE INDEX idx_api_key_group_bindings_owner_group_key
 
 `api_keys` 不再保存单独的主号池字段。API Key 到分组的唯一事实来源是 `api_key_group_bindings`；列表、详情、筛选和网关运行态都从绑定表读取。网关运行态里的 `apiKey.selected_group_id` 表示本次已经选中的实际分组，避免把运行态选路结果伪装成 `api_keys` 表字段。
 
-API Key 时间计划是入口凭据级运行状态：人工启停只写 `api_keys.status`；创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active`；后台 `api-key-availability-schedule-status-sync` 只在开始 / 结束边界按分钟事件切换该派生字段。人工可以在计划外提前把派生字段置为可用，也可以在计划内提前把派生字段置为停用；后续仍由下一次计划边界继续接管。网关热链路不解析 `availability_schedule_json`，只读取人工状态、派生计划状态、过期时间和系统账户状态；计划切换允许一个后台同步周期的延迟，同步任务变更派生状态后必须清理 API Key 校验缓存和 runtime cache。
+API Key 时间计划是入口凭据级派生运行状态：人工启停只写 `api_keys.status`；创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active`；后台 `api-key-availability-schedule-status-sync` 只在开始 / 结束边界按分钟事件切换该派生字段。人工可以在计划外提前把派生字段置为可用，也可以在计划内提前把派生字段置为停用；后续仍由下一次计划边界继续接管。重叠窗口结束时如果仍命中其他允许窗口，派生字段必须保持可用；`dateRange` 约束窗口开始日期，结束日期启动的跨天窗口允许延续到次日凌晨，开始日期前一晚的尾段不能在范围开始日凌晨误放行。网关热链路不解析 `availability_schedule_json`，只读取人工状态、派生计划状态、过期时间和系统账户状态；计划切换允许一个后台同步周期的延迟，同步任务变更派生状态后必须清理 API Key 校验缓存和 runtime cache。
 
 分组删除规则：
 

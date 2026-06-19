@@ -20,6 +20,10 @@ export interface AuditLogSummary {
   path: string
   queryString?: string
   model?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
   stream: boolean
   clientIp?: string
   userAgent?: string

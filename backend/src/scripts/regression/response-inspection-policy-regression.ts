@@ -209,7 +209,7 @@ assert.equal(validateAccountResponseInspectionRules([
     },
     action: 'retry_next_account'
   }
-]).valid, false, '账户级响应检查规则必须拒绝未知客户端画像')
+]).valid, false, '账户级响应检查规则必须拒绝未知请求客户端')
 assert.equal(validateAccountResponseInspectionRules([
   {
     enabled: true,
@@ -395,8 +395,8 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   })
   assert.equal(codexResult.decision?.matchedField, 'errorCodes', '客户端维度匹配后仍必须由语义字段触发命中')
-  assert.equal(codexResult.decision?.clientProfile, 'codex', '响应检查决策应记录命中时的客户端画像')
-  assert.equal(codexResult.decision?.accountClientCompatibility, 'codex_responses', '响应检查决策应记录命中时的账号兼容模式')
+  assert.equal(codexResult.decision?.clientProfile, 'codex', '响应检查决策应记录命中时的请求客户端')
+  assert.equal(codexResult.decision?.accountClientCompatibility, 'codex_responses', '响应检查决策应记录命中时的账号兼容能力')
 }
 
 {

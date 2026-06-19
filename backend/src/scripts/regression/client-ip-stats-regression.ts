@@ -46,6 +46,7 @@ try {
       traceId: 'trace-client-ip-stats-ipv4-success',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_primary',
       clientIp: '203.0.113.10',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -66,6 +67,7 @@ try {
       traceId: 'trace-client-ip-stats-ipv4-error',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_primary',
       clientIp: '203.0.113.10',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -85,6 +87,7 @@ try {
       traceId: 'trace-client-ip-stats-ipv4-secondary-a',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_secondary',
       clientIp: '198.51.100.25',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -101,6 +104,7 @@ try {
       traceId: 'trace-client-ip-stats-ipv4-secondary-b',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_secondary',
       clientIp: '198.51.100.25',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -117,6 +121,7 @@ try {
       traceId: 'trace-client-ip-stats-non-ipv4-ignored',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_ignored',
       clientIp: 'localhost',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -133,6 +138,7 @@ try {
       traceId: 'trace-client-ip-stats-v6-loopback-ignored',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_ignored',
       clientIp: '::1',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -149,6 +155,7 @@ try {
       traceId: 'trace-client-ip-stats-cooldown-ignored',
       trafficSource: 'cooldown_retest',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_ignored',
       clientIp: '203.0.113.99',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -165,6 +172,7 @@ try {
       traceId: 'trace-client-ip-stats-missing-ip-cursor',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_no_ip',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
       model: 'gpt-5.1',
@@ -191,6 +199,10 @@ try {
   const listBeforeWindow = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(listBeforeWindow.rangeReady, false, '列表不应在请求内同步重建范围窗口')
   assert.equal(listBeforeWindow.pageUpperBound, 0, '范围窗口未生成时列表应返回空结果等待后台刷新')
+  const detailBeforeWindow = clientIpStats.getClientIpStatsDetail({ ipHash: ipv4Identity.ipHash, startDate: today, endDate: today, pageSize: 10 })
+  assert(detailBeforeWindow, 'IP 详情应能返回注册表信息')
+  assert.equal(detailBeforeWindow.rangeReady, false, 'IP 详情不应在请求内同步重建账号范围窗口')
+  assert.equal(detailBeforeWindow.items.length, 0, '账号窗口未生成时详情应返回空结果等待后台刷新')
 
   clientIpStats.refreshClientIpUsageRangeWindows({ dirtyLimit: 1 })
   assert.equal(clientIpStats.pendingClientIpRangeWindowDirtyCountForTest(), 1, '部分增量窗口刷新后应保留未处理 dirty IP')
@@ -299,6 +311,7 @@ try {
       traceId: 'trace-client-ip-stats-ipv4-late-success',
       trafficSource: 'gateway',
       systemAccountId: 'sys_admin',
+      accountId: 'acct_client_ip_fallback',
       clientIp: '203.0.113.10',
       endpoint: '/v1/responses',
       providerCode: 'gpt',
@@ -323,6 +336,24 @@ try {
   assert(refreshedIpv4Row, '窗口重新刷新后 IPv4 行应恢复可见')
   assert.equal(refreshedIpv4Row.rangeUsage.requestCount, 3, '窗口重新刷新后应包含新增 IP 用量')
   assert.equal(refreshedIpv4Row.rangeUsage.maxDurationMs, 400, '窗口重新刷新后最大总耗时应更新')
+  const refreshedDetail = clientIpStats.getClientIpStatsDetail({
+    ipHash: ipv4Identity.ipHash,
+    startDate: today,
+    endDate: today,
+    pageSize: 10,
+    sortField: 'requestCount',
+    sortOrder: 'desc'
+  })
+  assert(refreshedDetail, 'IP 详情应能按 ipHash 返回')
+  assert.equal(refreshedDetail.rangeReady, true, '账号详情窗口刷新后应标记可用')
+  assert.equal(refreshedDetail.pageUpperBound, 2, 'IP 详情分页上界应按账号窗口页计算')
+  assert.deepEqual(refreshedDetail.items.map((item) => item.accountId), ['acct_client_ip_primary', 'acct_client_ip_fallback'], 'IP 详情应按请求数展示涉及账号')
+  assert.equal(refreshedDetail.items[0]?.rangeUsage.requestCount, 2, '主账号在该 IP 下的请求数应来自 IP+账号窗口')
+  assert.equal(refreshedDetail.items[0]?.rangeUsage.errorCount, 1, '主账号在该 IP 下的失败数应来自 IP+账号窗口')
+  assert.equal(refreshedDetail.items[0]?.rangeUsage.inputTokens, 140, '主账号在该 IP 下的输入 token 应来自 IP+账号窗口')
+  assert.equal(refreshedDetail.items[1]?.rangeUsage.requestCount, 1, '新增账号在该 IP 下应独立成行')
+  assert.equal(refreshedDetail.items[1]?.rangeUsage.maxDurationMs, 400, '新增账号在该 IP 下应保留最大耗时')
+  assertClientIpDetailQueryPlan(today, ipv4Identity.ipHash)
 
   statsDatabase.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, last_success_at, updated_at)
@@ -430,6 +461,36 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
   assert(!details.includes('USE TEMP B-TREE FOR GROUP BY'), `IP 列表不应为封禁策略做临时 GROUP BY，实际计划：${details}`)
 }
 
+function assertClientIpDetailQueryPlan(today: string, ipHash: string): void {
+  const sortIndexes = new Map([
+    ['requestCount', 'idx_client_ip_account_range_requests'],
+    ['successCount', 'idx_client_ip_account_range_success'],
+    ['errorCount', 'idx_client_ip_account_range_errors'],
+    ['errorRate', 'idx_client_ip_account_range_error_rate'],
+    ['totalTokens', 'idx_client_ip_account_range_tokens'],
+    ['totalCost', 'idx_client_ip_account_range_cost'],
+    ['activeDays', 'idx_client_ip_account_range_active_days'],
+    ['lastUsedAt', 'idx_client_ip_account_range_last_used']
+  ])
+  for (const [sortField, indexName] of sortIndexes) {
+    for (const direction of ['DESC', 'ASC'] as const) {
+      const orderBy = clientIpDetailOrderByForPlan(sortField, direction)
+      const details = explainStatsQuery(`
+        SELECT account_id
+        FROM client_ip_account_usage_range_windows
+        WHERE ip_hash = ?
+          AND start_date = ?
+          AND end_date = ?
+        ORDER BY ${orderBy}
+        LIMIT ? OFFSET ?
+      `, [ipHash, today, today, 11, 0])
+      assert(details.includes(indexName), `IP 详情 ${sortField} ${direction} 应通过 ${indexName} 读取当前页，实际计划：${details}`)
+      assert(!/usage_records/i.test(details), `IP 详情 ${sortField} ${direction} 不应访问 usage_records 明细表，实际计划：${details}`)
+      assert(!/USE TEMP B-TREE/i.test(details), `IP 详情 ${sortField} ${direction} 不应创建临时排序树，实际计划：${details}`)
+    }
+  }
+}
+
 function assertClientIpListSortQueryPlans(today: string): void {
   const sortIndexes = new Map([
     ['requestCount', 'idx_client_ip_range_requests'],
@@ -505,8 +566,34 @@ function clientIpListOrderByForPlan(sortField: string): string {
   }
 }
 
+function clientIpDetailOrderByForPlan(sortField: string, direction: 'DESC' | 'ASC'): string {
+  const tieDirection = direction === 'ASC' ? 'DESC' : 'ASC'
+  switch (sortField) {
+    case 'successCount':
+      return `success_count ${direction}, account_id ${tieDirection}`
+    case 'errorCount':
+      return `error_count ${direction}, account_id ${tieDirection}`
+    case 'errorRate':
+      return `CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END ${direction}, account_id ${tieDirection}`
+    case 'totalTokens':
+      return `(input_tokens + output_tokens) ${direction}, account_id ${tieDirection}`
+    case 'totalCost':
+      return `total_cost_usd ${direction}, account_id ${tieDirection}`
+    case 'activeDays':
+      return `active_days ${direction}, account_id ${tieDirection}`
+    case 'lastUsedAt':
+      return `last_used_at ${direction}, account_id ${tieDirection}`
+    case 'requestCount':
+    default:
+      return `request_count ${direction}, account_id ${tieDirection}`
+  }
+}
+
 function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   const source = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
+  const listSource = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'IpStatsList.vue'), 'utf8')
+  const displaySource = readFileSync(resolve('..', 'frontend', 'src', 'views', 'ip-stats', 'ipStatsDisplay.ts'), 'utf8')
+  const apiSource = readFileSync(resolve('..', 'frontend', 'src', 'api', 'domains', 'ipStats.ts'), 'utf8')
   const buildListParamsSource = sourceFunctionBlock(source, 'function buildListParams')
   assert(source.includes("type UsageWindow = 'today' | 'recent7d' | 'recent31d'"), 'IP 管理页面应显式提供今天、近 7 天和近 31 天统计范围')
   assert(source.includes("const usageWindow = ref<UsageWindow>('recent7d')"), 'IP 管理页面默认统计范围应为近 7 天')
@@ -520,6 +607,15 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   assert(!buildListParamsSource.includes('lastUsedEndDate'), 'IP 管理页面不应提交最后使用结束日期')
   assert(!buildListParamsSource.includes('startDate: formatDateKey(lastUsedDateRange.value[0])'), 'IP 管理 startDate 不能直接绑定最后使用日期')
   assert(!buildListParamsSource.includes('endDate: formatDateKey(lastUsedDateRange.value[1])'), 'IP 管理 endDate 不能直接绑定最后使用日期')
+  assert(source.includes('function openDetailDrawer'), 'IP 管理页面应提供 IP 详情抽屉入口')
+  assert(source.includes('api.ipStats.detail'), 'IP 管理详情抽屉应通过详情接口加载账号用量')
+  assert(source.includes('detailRows.value = result.items'), 'IP 管理详情抽屉应展示后端账号窗口结果')
+  assert(!source.includes('record.accountName ? record.accountId'), 'IP 管理详情账号列不应展示账户号')
+  assert(!source.includes('record.systemAccountName'), 'IP 管理详情账号列不应展示系统账户角色')
+  assert(listSource.includes("detail: [record: ClientIpStatsRow]"), 'IP 管理列表应向页面抛出详情事件')
+  assert(displaySource.includes("export type IpStatsRowAction = 'detail' | IpStatsPolicyAction"), 'IP 管理行操作应包含详情动作')
+  assert(displaySource.includes("const detailAction: RowActionItem = { key: 'detail'"), 'IP 管理行操作应始终提供详情按钮')
+  assert(apiSource.includes('detail: (ipHash: string'), 'IP 管理 API 应提供详情请求方法')
 }
 
 function delay(ms: number): Promise<void> {

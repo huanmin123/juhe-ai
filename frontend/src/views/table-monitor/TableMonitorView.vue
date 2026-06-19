@@ -15,7 +15,7 @@
           <a-range-picker
             v-model:value="historyRange"
             allow-clear
-            class="table-history-range"
+            class="table-history-range responsive-list-inline-filter"
             :disabled="loading"
             :placeholder="['开始日期', '结束日期']"
             @change="loadData"

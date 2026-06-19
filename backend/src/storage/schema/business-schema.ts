@@ -282,6 +282,25 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
     );
 
+    CREATE TABLE IF NOT EXISTS account_name_search_terms (
+      account_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      term TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, term),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS account_name_search_documents (
+      account_id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -654,6 +673,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique_lower ON accounts(system_account_id, lower(name)) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_term_owner
+      ON account_name_search_terms(term, system_account_id, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_account
+      ON account_name_search_terms(account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_name_search_documents_owner
+      ON account_name_search_documents(system_account_id, account_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_lookup ON accounts(provider_protocol_profile_id COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code COLLATE NOCASE, id);

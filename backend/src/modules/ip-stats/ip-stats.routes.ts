@@ -5,6 +5,7 @@ import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
   createClientIpPolicy,
   disableClientIpPolicies,
+  getClientIpStatsDetail,
   listClientIpStats,
   type ClientIpStatsSortField
 } from '../../storage/client-ip-stats.repository.js'
@@ -24,6 +25,15 @@ const listQuerySchema = z.object({
   endDate: z.string().trim().optional(),
   lastUsedStartDate: z.string().trim().optional(),
   lastUsedEndDate: z.string().trim().optional(),
+  sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional()
+})
+
+const detailQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  startDate: z.string().trim().optional(),
+  endDate: z.string().trim().optional(),
   sortField: z.enum(['requestCount', 'successCount', 'errorCount', 'errorRate', 'totalTokens', 'totalCost', 'activeDays', 'lastUsedAt']).optional(),
   sortOrder: z.enum(['asc', 'desc']).optional()
 })
@@ -49,6 +59,29 @@ ipStatsRouter.get('/', (req, res) => {
     lastUsedSortScope: 'global',
     sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
   })))
+})
+
+ipStatsRouter.get('/:ipHash/detail', (req, res) => {
+  const params = ipHashParamSchema.safeParse(req.params)
+  if (!params.success) {
+    res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
+    return
+  }
+  const parsed = detailQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 详情参数无效')))
+    return
+  }
+  const detail = getClientIpStatsDetail({
+    ipHash: params.data.ipHash,
+    ...parsed.data,
+    sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
+  })
+  if (!detail) {
+    res.status(404).json({ message: 'IP 不存在' })
+    return
+  }
+  res.json(ok(detail))
 })
 
 ipStatsRouter.post('/:ipHash/blacklist', mutationGuard({

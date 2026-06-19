@@ -5,10 +5,10 @@
 
 ## 当前状态
 
-- 已实现：`client_ip_registry`、`client_ip_stats_daily`、`client_ip_usage_range_windows`、`client_ip_policies`、`client_ip_policy_hits`。
+- 已实现：`client_ip_registry`、`client_ip_stats_daily`、`client_ip_usage_range_windows`、`client_ip_account_stats_daily`、`client_ip_account_usage_range_windows`、`client_ip_policies`、`client_ip_policy_hits`。
 - 已实现：后台 `client-ip-stats-aggregation` job 按 usage shard 独立游标增量聚合 IP 统计，不在页面或网关请求路径扫描 `usage_records`。
-- 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、封禁和解封接口。
-- 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用和策略操作。
+- 已实现：管理员 `GET /__aisys__/api/ip-stats` 列表、`GET /__aisys__/api/ip-stats/:ipHash/detail` 账号详情、封禁和解封接口。
+- 已实现：系统运维菜单新增 `IP管理` 页面，展示请求、Token、成本、失败率、活跃天数、速度、最近使用、账号详情和策略操作。
 - 已实现：网关请求入口只读 server 进程内 active IP 封禁快照和来源级短 TTL 决策缓存，命中 active 封禁策略时本地返回 `403 client_ip_blacklisted`；请求路径不按单个 IP 查询 DB service。封禁命中异步批量写入 `client_ip_policy_hits`，命中缓冲最多保留 `5000` 个 distinct `ip_hash + policy_id`，单次 flush 最多投递 `1000` 条，超出窗口的新 distinct 命中丢弃并计数，避免多来源封禁流量在主进程形成无界 Map 或大 IPC；管理端封禁 / 解封会触发 server 重载 active 策略快照，stats-worker 也会周期推送快照。
 - 已实现：受保护外部来源 IP 聚合接口和 IP 消耗排行便利视图，只暴露 IP 聚合事实，不暴露封禁策略、内部账号、API Key、模型或公益站业务关系。
 
@@ -26,6 +26,7 @@
 
 - IP 注册表：记录规范化 IP、聚合 key、hash、首次出现、最近出现和注册时间。
 - IP 统计聚合：按 IP 聚合请求次数、成功 / 失败、Token、成本、活跃天数、首 token / 总耗时样本和、最大总耗时和最近使用时间。
+- IP 账号详情：按 `ip_hash + account_id` 预聚合常用日期范围，管理员可以从某个 IP 查看涉及过的 AI 账户列表和每个账户在该 IP 下的使用情况。
 - IP 运维页面：管理员在“系统运维 / IP管理”查看列表、筛选、排序和策略状态。
 - IP 策略：支持封禁、临时封禁、解封和封禁命中记录。
 - 后台 job：负责注册 IP、写入 IP 聚合、刷新范围窗口，并周期推送 active IP 封禁策略快照到 server；管理端封禁 / 解封会触发 server 重载快照。
@@ -58,8 +59,9 @@
   -> 查询本进程懒加载 bucket Set 判断是否已注册
   -> 未命中则 INSERT OR IGNORE 到 client_ip_registry
   -> 写入 client_ip_stats_daily
-  -> 按 dirty IP 增量刷新 client_ip_usage_range_windows
-  -> 管理页面和外部来源接口只读 IP 维度窗口表
+  -> 有 account_id 时同步写入 client_ip_account_stats_daily
+  -> 按 dirty IP 增量刷新 client_ip_usage_range_windows 和 client_ip_account_usage_range_windows
+  -> 管理页面和外部来源接口只读 IP 维度窗口表；IP 详情只读 IP+账号窗口表
 ```
 
 封禁流程：
@@ -193,6 +195,68 @@ idx_client_ip_range_last_used ON client_ip_usage_range_windows(start_date, end_d
 idx_client_ip_range_end ON client_ip_usage_range_windows(end_date)
 ```
 
+### client_ip_account_stats_daily
+
+保存 IP + AI 账户每日统计。该表只从新用量记录开始写入，不在运行时代码中补历史，也不为旧数据做双读兼容。
+
+```text
+client_ip_account_stats_daily
+- ip_hash TEXT NOT NULL
+- account_id TEXT NOT NULL
+- stat_date TEXT NOT NULL
+- request_count INTEGER NOT NULL DEFAULT 0
+- success_count INTEGER NOT NULL DEFAULT 0
+- error_count INTEGER NOT NULL DEFAULT 0
+- input_tokens INTEGER NOT NULL DEFAULT 0
+- output_tokens INTEGER NOT NULL DEFAULT 0
+- cache_read_tokens INTEGER NOT NULL DEFAULT 0
+- cache_read_cost_usd REAL NOT NULL DEFAULT 0
+- total_cost_usd REAL NOT NULL DEFAULT 0
+- duration_ms_sum INTEGER NOT NULL DEFAULT 0
+- duration_ms_count INTEGER NOT NULL DEFAULT 0
+- duration_ms_max INTEGER NOT NULL DEFAULT 0
+- first_token_ms_sum INTEGER NOT NULL DEFAULT 0
+- first_token_ms_count INTEGER NOT NULL DEFAULT 0
+- last_used_at TEXT
+- last_error_at TEXT
+- updated_at TEXT NOT NULL
+- PRIMARY KEY (ip_hash, account_id, stat_date)
+```
+
+### client_ip_account_usage_range_windows
+
+保存 IP 详情页读取的账号范围窗口。详情接口只能按 `ip_hash + start_date + end_date` 直读该表并批量补齐当前页账号名称，不能回扫 `usage_records` 或把 `client_ip_account_stats_daily` 在请求路径临时 `GROUP BY`。
+
+```text
+client_ip_account_usage_range_windows
+- ip_hash TEXT NOT NULL
+- account_id TEXT NOT NULL
+- start_date TEXT NOT NULL
+- end_date TEXT NOT NULL
+- request_count INTEGER NOT NULL DEFAULT 0
+- success_count INTEGER NOT NULL DEFAULT 0
+- error_count INTEGER NOT NULL DEFAULT 0
+- input_tokens INTEGER NOT NULL DEFAULT 0
+- output_tokens INTEGER NOT NULL DEFAULT 0
+- cache_read_tokens INTEGER NOT NULL DEFAULT 0
+- cache_read_cost_usd REAL NOT NULL DEFAULT 0
+- total_cost_usd REAL NOT NULL DEFAULT 0
+- duration_ms_sum INTEGER NOT NULL DEFAULT 0
+- duration_ms_count INTEGER NOT NULL DEFAULT 0
+- duration_ms_max INTEGER NOT NULL DEFAULT 0
+- average_duration_ms REAL
+- first_token_ms_sum INTEGER NOT NULL DEFAULT 0
+- first_token_ms_count INTEGER NOT NULL DEFAULT 0
+- average_first_token_ms REAL
+- active_days INTEGER NOT NULL DEFAULT 0
+- last_used_at TEXT
+- last_error_at TEXT
+- updated_at TEXT NOT NULL
+- PRIMARY KEY (ip_hash, account_id, start_date, end_date)
+```
+
+排序索引按详情页热点建立，前缀固定为 `ip_hash, start_date, end_date`，再接请求数、成功数、失败数、失败率、Token、成本、活跃天数或最后使用时间。
+
 ### 不设置范围总聚合表
 
 IP 管理当前只需要 IP 维度行，不需要范围整体总统计。后端不创建、不维护、也不读取范围总聚合表；页面顶部不展示任何范围整体统计卡片。`duration_ms_sum/count` 和 `first_token_ms_sum/count` 只作为后台刷新单个 IP 窗口行平均值的输入；接口读取当前页 IP 行上的 `average_duration_ms`、`average_first_token_ms` 和 `duration_ms_max`，不在请求路径对窗口表重新 `SUM/COUNT/MAX`。
@@ -278,6 +342,7 @@ else:
 - 跳过 `traffic_source = cooldown_retest` 等不进入业务用量统计的记录。
 - 注册 IP 到 `client_ip_registry`。
 - 写入 `client_ip_stats_daily`。
+- 有 `account_id` 的记录同步写入 `client_ip_account_stats_daily`，用于 IP 详情账号列表。
 - 推进 `stats_job_state` 或 IP 专用 job state。
 
 禁止：
@@ -296,6 +361,7 @@ else:
 - 如果 dirty IP 超过单轮上限，窗口保持 stale；只有 dirty 表和内存 dirty Set 都清空后，才把当前固定窗口标记为 ready。
 - 全量窗口重建只作为维护 / 离线重建动作使用，不能挂在系统 API 请求路径。
 - 写入 `client_ip_usage_range_windows`。
+- 同步写入 `client_ip_account_usage_range_windows`；刷新使用同一组 dirty IP，详情窗口和列表窗口必须一起进入 ready。
 - 不维护范围整体汇总；平均值和最大耗时只落在每个 IP 的窗口行上。
 - 窗口 ready/stale 状态记录在 `stats_job_state(scope_type = client_ip_range_window)`，只保存刷新完成标记，不保存数量、成本或范围总量；有新 IP daily 写入时先把当前固定窗口标记为 stale，避免旧窗口行被继续当作新数据展示。
 
@@ -348,7 +414,7 @@ else:
 | 首次出现 | 注册表 `first_seen_at` |
 | 最近使用 | 注册表全局 `last_seen_at`；范围窗口内最近使用仍保留在 `rangeUsage.lastUsedAt` |
 | 最近错误 | `last_error_at` |
-| 操作 | 封禁、临时封禁、解封 |
+| 操作 | 查看账号详情、封禁、临时封禁、解封 |
 
 ### 筛选与排序
 
@@ -377,6 +443,7 @@ else:
 
 ```http
 GET /__aisys__/api/ip-stats
+GET /__aisys__/api/ip-stats/:ipHash/detail
 POST /__aisys__/api/ip-stats/:ipHash/blacklist
 POST /__aisys__/api/ip-stats/:ipHash/unblock
 ```
@@ -438,6 +505,44 @@ interface ClientIpUsageSummary {
 }
 ```
 
+详情查询参数：
+
+```text
+startDate=YYYY-MM-DD
+endDate=YYYY-MM-DD
+page=1
+pageSize=20
+sortField=requestCount | totalTokens | totalCost | errorRate | lastUsedAt
+sortOrder=desc | asc
+```
+
+详情响应：
+
+```ts
+interface ClientIpStatsDetailResponse {
+  ipHash: string
+  aggregateIpKey: string
+  lastSeenAt?: string
+  range: {
+    startDate: string
+    endDate: string
+    maxDays: number
+  }
+  items: Array<{
+    accountId: string
+    accountName?: string
+    systemAccountId?: string
+    systemAccountName?: string
+    rangeUsage: ClientIpUsageSummary
+  }>
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
+  rangeReady: boolean
+}
+```
+
 封禁请求：
 
 ```ts
@@ -489,6 +594,7 @@ GET /__aipublic__/access/info
 ### 写入影响
 
 - 每条有 IP 的业务使用记录会额外写入 IP 注册表和 IP daily；范围窗口由后台 job 按 dirty IP 增量刷新。
+- 每条同时具备 IP 和 `account_id` 的业务使用记录会额外写入 IP+账号 daily；详情范围窗口由同一个 dirty IP 刷新流程增量生成。
 - 使用 `daily + range window` 控制写放大，首期不写全套六层通用统计桶，也不维护 IP 累计总表。
 - 批处理必须复用 prepared statement，避免每行反复 prepare。
 - IP 注册表写入使用 Set 命中减少重复 `INSERT OR IGNORE`。
@@ -496,6 +602,7 @@ GET /__aipublic__/access/info
 ### 查询影响
 
 - IP 列表按范围窗口表查询，配合排序索引；管理页按最后使用排序时走 `client_ip_registry(last_seen_at DESC, ip_hash)`，公开 IP 用量接口保持范围窗口 `last_used_at` 排序。
+- IP 详情按 `client_ip_account_usage_range_windows(ip_hash, start_date, end_date, 排序字段, account_id)` 读取当前页账号用量，再按当前页账号 ID 批量查业务库名称；详情请求不能读取 `usage_records`、不能实时聚合 daily，也不能为了精确总数执行大范围 `COUNT(*)`。
 - IP 管理不展示范围总统计卡片，也不在后端维护范围总聚合。
 - IP 速度指标只读窗口表中已经落表的 `average_first_token_ms`、`average_duration_ms` 和 `duration_ms_max`；`sum/count` 只作为后台刷新单个 IP 窗口行派生字段的输入，不回扫 `usage_records`。
 - 列表请求不触发窗口重建；未命中窗口或窗口已被新 daily 标记为 stale 时返回空列表和 `rangeReady=false`，等待后台 worker 生成。
@@ -573,3 +680,4 @@ GET /__aipublic__/access/info
 - 普通用户无法访问 IP 统计接口和页面。
 - 外部来源接口不返回封禁策略和内部业务关系。
 - IP 管理列表不返回范围总统计或统计滞后卡片，只验证 IP 行维度数据和分页状态。
+- IP 管理详情只读 IP+账号窗口表，窗口未 ready 时返回空列表和 `rangeReady=false`。

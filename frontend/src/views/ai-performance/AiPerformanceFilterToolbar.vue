@@ -254,14 +254,18 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   white-space: nowrap;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .ai-performance-filters {
-    flex: 1 1 auto;
+    width: 100%;
+    flex: none;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .ai-performance-system-account-select,
   .ai-performance-range-picker,
   .ai-performance-account-select {
+    flex: none;
     width: 100%;
     min-width: 0;
     max-width: none;

@@ -55,6 +55,7 @@
       :rows="rows"
       :table-pagination="tablePagination"
       @change="handleTableChange"
+      @detail="openDetailDrawer"
       @policy-action="openPolicyModal"
     />
 
@@ -103,6 +104,77 @@
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <a-drawer
+      v-model:open="detailDrawerOpen"
+      class="ip-detail-drawer"
+      :title="detailDrawerTitle"
+      :width="920"
+      destroy-on-close
+    >
+      <a-descriptions v-if="detailTarget" class="ip-detail-summary" size="small" bordered :column="{ xs: 1, sm: 2 }">
+        <a-descriptions-item label="IP">
+          <span class="mono-cell">{{ detailTarget.aggregateIpKey }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item label="状态">
+          <a-tag :color="detailTarget.status === 'blacklisted' ? 'red' : 'green'">{{ detailTarget.status === 'blacklisted' ? '已封禁' : '正常' }}</a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="统计范围">{{ currentUsageWindowLabel }}</a-descriptions-item>
+        <a-descriptions-item label="最近使用">{{ formatDateTime(detailTarget.lastSeenAt || detailTarget.rangeUsage.lastUsedAt) }}</a-descriptions-item>
+      </a-descriptions>
+
+      <a-alert
+        v-if="!detailRangeReady"
+        class="ip-detail-alert"
+        type="info"
+        show-icon
+        :message="`${currentUsageWindowLabel}用量窗口尚未完成预聚合，请稍后刷新。`"
+      />
+
+      <a-table
+        class="ip-detail-account-table"
+        :columns="detailColumns"
+        :data-source="detailRows"
+        row-key="accountId"
+        size="small"
+        :loading="detailLoading"
+        :pagination="detailTablePagination"
+        :locale="{ emptyText: detailEmptyDescription }"
+        :scroll="{ x: 980 }"
+        @change="handleDetailTableChange"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'account'">
+            <div class="ip-detail-account">
+              <span :class="record.accountName ? 'name-cell' : 'muted-cell'">{{ record.accountName || '未匹配到账户名称' }}</span>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'requestCount'">
+            <span class="number-cell">{{ formatInteger(record.rangeUsage.requestCount) }}</span>
+          </template>
+          <template v-else-if="column.key === 'totalTokens'">
+            <span class="number-cell">{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
+          </template>
+          <template v-else-if="column.key === 'cost'">
+            <span class="number-cell">{{ formatCost(record.rangeUsage.totalCost) }}</span>
+          </template>
+          <template v-else-if="column.key === 'errorRate'">
+            <a-tag :color="record.rangeUsage.errorRate > 0.05 ? 'red' : 'green'">
+              {{ formatPercent(record.rangeUsage.errorRate * 100) }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.key === 'averageFirstTokenMs'">
+            <span class="number-cell">{{ formatDuration(record.rangeUsage.averageFirstTokenMs) }}</span>
+          </template>
+          <template v-else-if="column.key === 'averageDurationMs'">
+            <span class="number-cell">{{ formatDuration(record.rangeUsage.averageDurationMs) }}</span>
+          </template>
+          <template v-else-if="column.key === 'lastUsedAt'">
+            <span :class="record.rangeUsage.lastUsedAt ? 'name-cell' : 'muted-cell'">{{ formatDateTime(record.rangeUsage.lastUsedAt) }}</span>
+          </template>
+        </template>
+      </a-table>
+    </a-drawer>
   </a-card>
 </template>
 
@@ -111,11 +183,13 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 
-import { api, type ClientIpStatsListParams, type SortDirection } from '@/api/client'
+import { api, type ClientIpStatsDetailParams, type ClientIpStatsListParams, type SortDirection } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { ClientIpStatsRow, ClientIpStatsSortField, ClientIpStatus } from '@/types/domain'
+import { formatDateTime } from '@/shared/formatters'
+import type { ClientIpAccountUsageRow, ClientIpStatsRow, ClientIpStatsSortField, ClientIpStatus } from '@/types/domain'
+import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
 
 import IpStatsList from './IpStatsList.vue'
 import type { IpStatsPolicyAction } from './ipStatsDisplay'
@@ -143,6 +217,17 @@ const policyDurationOptions = [
   { label: '天', value: 'days' }
 ]
 
+const detailColumns = [
+  { title: 'AI 账户', key: 'account', width: 240, fixed: 'left', align: 'left' },
+  { title: '请求', key: 'requestCount', width: 100, align: 'left', sorter: true },
+  { title: 'Token', key: 'totalTokens', width: 120, align: 'left', sorter: true },
+  { title: '成本', key: 'cost', width: 120, align: 'left', sorter: true },
+  { title: '失败率', key: 'errorRate', width: 110, align: 'left', sorter: true },
+  { title: '平均首 Token', key: 'averageFirstTokenMs', width: 130, align: 'left' },
+  { title: '平均总耗时', key: 'averageDurationMs', width: 130, align: 'left' },
+  { title: '最后使用', key: 'lastUsedAt', width: 180, align: 'left', sorter: true }
+]
+
 const loading = ref(false)
 const keyword = ref('')
 const statusFilter = ref<ClientIpStatus>('all')
@@ -159,6 +244,14 @@ const policyAction = ref<PolicyAction>('blacklist')
 const policyForm = reactive<{ reason?: string; durationMode: PolicyDurationMode; durationValue?: number | null }>({
   durationMode: 'permanent'
 })
+const detailDrawerOpen = ref(false)
+const detailLoading = ref(false)
+const detailTarget = ref<ClientIpStatsRow>()
+const detailRows = ref<ClientIpAccountUsageRow[]>([])
+const detailRangeReady = ref(true)
+const detailPaginationUpperBound = ref(0)
+const detailPagination = reactive({ current: 1, pageSize: 20 })
+const detailSortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ field: 'requestCount', order: 'descend' })
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -175,8 +268,17 @@ const tablePagination = computed(() => ({
   showSizeChanger: true
 }))
 
+const detailTablePagination = computed(() => ({
+  current: detailPagination.current,
+  pageSize: detailPagination.pageSize,
+  total: detailPaginationUpperBound.value,
+  showSizeChanger: true
+}))
+
 const currentUsageWindowLabel = computed(() => usageWindowOptions.find((option) => option.value === usageWindow.value)?.label ?? '当前范围')
 const emptyDescription = computed(() => rangeReady.value ? '当前筛选下没有 IP 统计数据。' : `${currentUsageWindowLabel.value}用量窗口尚未完成预聚合，请稍后刷新。`)
+const detailDrawerTitle = computed(() => detailTarget.value ? `IP 详情：${detailTarget.value.aggregateIpKey}` : 'IP 详情')
+const detailEmptyDescription = computed(() => detailRangeReady.value ? '当前统计范围内没有关联账号。' : `${currentUsageWindowLabel.value}用量窗口尚未完成预聚合，请稍后刷新。`)
 
 const policyModalTitle = computed(() => {
   if (policyAction.value === 'blacklist') return '封禁 IP'
@@ -235,6 +337,57 @@ async function handleTableChange(paginationInfo: unknown, _filters: unknown, sor
   updatePaginationFromTable(paginationInfo)
   sortState.value = normalizeTableSorter(sorter) ?? { field: 'requestCount', order: 'descend' }
   await loadData()
+}
+
+function openDetailDrawer(record: ClientIpStatsRow): void {
+  detailTarget.value = record
+  detailRows.value = []
+  detailRangeReady.value = true
+  detailPaginationUpperBound.value = 0
+  detailPagination.current = 1
+  detailSortState.value = { field: 'requestCount', order: 'descend' }
+  detailDrawerOpen.value = true
+  void loadDetailData()
+}
+
+async function loadDetailData(): Promise<void> {
+  const target = detailTarget.value
+  if (!target) return
+  const targetIpHash = target.ipHash
+  detailLoading.value = true
+  try {
+    const result = await api.ipStats.detail(targetIpHash, buildDetailParams())
+    if (detailTarget.value?.ipHash !== targetIpHash) return
+    detailRows.value = result.items
+    detailPagination.current = result.page
+    detailPagination.pageSize = result.pageSize
+    detailPaginationUpperBound.value = result.pageUpperBound
+    detailRangeReady.value = result.rangeReady
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载 IP 详情失败'))
+  } finally {
+    if (detailTarget.value?.ipHash === targetIpHash) {
+      detailLoading.value = false
+    }
+  }
+}
+
+function buildDetailParams(): ClientIpStatsDetailParams {
+  const usageRange = usageWindowDateRange(usageWindow.value)
+  return {
+    page: detailPagination.current,
+    pageSize: detailPagination.pageSize,
+    startDate: formatDateKey(usageRange[0]),
+    endDate: formatDateKey(usageRange[1]),
+    sortField: detailSortState.value.field,
+    sortOrder: tableSortOrderToApi(detailSortState.value.order)
+  }
+}
+
+async function handleDetailTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
+  updateDetailPaginationFromTable(paginationInfo)
+  detailSortState.value = normalizeTableSorter(sorter) ?? { field: 'requestCount', order: 'descend' }
+  await loadDetailData()
 }
 
 function openPolicyModal(record: ClientIpStatsRow, action: PolicyAction): void {
@@ -311,6 +464,15 @@ function updatePaginationFromTable(paginationInfo: unknown): void {
   pagination.pageSize = Number.isFinite(pageSize) && pageSize > 0 ? pageSize : pagination.pageSize
 }
 
+function updateDetailPaginationFromTable(paginationInfo: unknown): void {
+  if (!paginationInfo || typeof paginationInfo !== 'object') return
+  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
+  const current = Number(next.current)
+  const pageSize = Number(next.pageSize)
+  detailPagination.current = Number.isFinite(current) && current > 0 ? current : 1
+  detailPagination.pageSize = Number.isFinite(pageSize) && pageSize > 0 ? pageSize : detailPagination.pageSize
+}
+
 function normalizeTableSorter(sorter: unknown): { field: ClientIpStatsSortField; order: TableSortOrder } | undefined {
   const item = Array.isArray(sorter) ? sorter[0] : sorter
   if (!item || typeof item !== 'object') return undefined
@@ -356,6 +518,44 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 
 .policy-duration-input {
   width: 100%;
+}
+
+.mono-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  word-break: break-all;
+}
+
+.muted-cell {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.name-cell {
+  color: #1f2937;
+}
+
+.number-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.ip-detail-summary {
+  margin-bottom: 16px;
+}
+
+.ip-detail-alert {
+  margin-bottom: 16px;
+}
+
+.ip-detail-account-table {
+  margin-top: 4px;
+}
+
+.ip-detail-account {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-all;
 }
 
 @media (max-width: 768px) {

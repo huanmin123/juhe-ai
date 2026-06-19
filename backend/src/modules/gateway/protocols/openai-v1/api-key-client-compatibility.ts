@@ -1,7 +1,10 @@
 import type { Request } from 'express'
 
-import { normalizeAccountClientCompatibility } from '../../../../domain/account-client-compatibility.js'
-import type { AccountClientCompatibility } from '../../../../domain/types.js'
+import {
+  accountSupportsClientCompatibility,
+  type AccountClientCompatibilityProfile
+} from '../../../../domain/account-client-compatibility.js'
+import type { ClientCompatibilityCapability } from '../../../../domain/types.js'
 import {
   getGatewayRequestBodyState,
   gatewayJsonBodyInlineParseMaxBytes,
@@ -21,16 +24,25 @@ import {
 import { normalizeOpenAICodexBuiltinTools } from '../../adapters/gpt-codex/builtin-tools.js'
 
 export interface OpenAIClientCompatibilityAccount {
-  clientCompatibility?: AccountClientCompatibility
+  providerCode?: AccountClientCompatibilityProfile['providerCode']
+  type?: AccountClientCompatibilityProfile['accountType']
+  clientCompatibility?: AccountClientCompatibilityProfile['clientCompatibility']
+  protocolCode?: AccountClientCompatibilityProfile['protocolCode']
+  protocolVersion?: AccountClientCompatibilityProfile['protocolVersion']
+}
+
+export interface OpenAIClientCompatibilityOptions {
+  modelOverride?: string
+  requestClientCompatibility?: ClientCompatibilityCapability
 }
 
 export async function buildOpenAIClientCompatibilityBody(
   req: Request,
   account: OpenAIClientCompatibilityAccount,
   signal?: AbortSignal,
-  options: { modelOverride?: string } = {}
+  options: OpenAIClientCompatibilityOptions = {}
 ): Promise<Buffer | undefined> {
-  if (normalizeAccountClientCompatibility(account.clientCompatibility) !== 'codex_responses') {
+  if (!shouldApplyCodexResponsesCompatibility(account, options.requestClientCompatibility)) {
     return undefined
   }
   if (!isOpenAIResponsesPostRequest(req)) {
@@ -47,9 +59,10 @@ export async function buildOpenAIClientCompatibilityBody(
 export function applyOpenAIClientCompatibilityHeaders(
   req: Request,
   account: OpenAIClientCompatibilityAccount,
-  headers: Headers
+  headers: Headers,
+  options: Pick<OpenAIClientCompatibilityOptions, 'requestClientCompatibility'> = {}
 ): void {
-  if (normalizeAccountClientCompatibility(account.clientCompatibility) !== 'codex_responses') {
+  if (!shouldApplyCodexResponsesCompatibility(account, options.requestClientCompatibility)) {
     return
   }
   if (!isOpenAIResponsesPostRequest(req)) {
@@ -63,6 +76,20 @@ export function applyOpenAIClientCompatibilityHeaders(
   if (!headers.get('openai-beta')?.toLowerCase().includes('responses')) {
     headers.set('openai-beta', openAICodexResponsesBetaHeader)
   }
+}
+
+function shouldApplyCodexResponsesCompatibility(
+  account: OpenAIClientCompatibilityAccount,
+  requestClientCompatibility?: ClientCompatibilityCapability
+): boolean {
+  return requestClientCompatibility === 'codex_responses'
+    && accountSupportsClientCompatibility({
+      providerCode: account.providerCode,
+      accountType: account.type,
+      clientCompatibility: account.clientCompatibility,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion
+    }, 'codex_responses')
 }
 
 function isOpenAIResponsesPostRequest(req: Request): boolean {
@@ -84,7 +111,7 @@ async function parseOpenAIClientCompatibilityJsonBody(req: Request, signal?: Abo
 
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw new Error('Codex Responses 兼容模式要求请求体是有效的 JSON 对象')
+    throw new Error('Codex Responses 请求形态要求请求体是有效的 JSON 对象')
   }
 
   const rawBody = requestWithBody.rawBody
@@ -101,10 +128,10 @@ async function parseOpenAIClientCompatibilityJsonBody(req: Request, signal?: Abo
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new Error('网关请求解析繁忙，请稍后重试')
     }
-    throw new Error('Codex Responses 兼容模式要求请求体是有效的 JSON 对象')
+    throw new Error('Codex Responses 请求形态要求请求体是有效的 JSON 对象')
   }
   if (!isPlainObject(parsed)) {
-    throw new Error('Codex Responses 兼容模式要求请求体是 JSON 对象')
+    throw new Error('Codex Responses 请求形态要求请求体是 JSON 对象')
   }
   return { ...parsed }
 }

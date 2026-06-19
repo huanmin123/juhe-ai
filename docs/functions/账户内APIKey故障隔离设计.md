@@ -188,7 +188,7 @@ account-api-key-cooldown-retest
 
 - 扫描 `temporary_unavailable`、`rate_limited` 和可自动恢复的 `error` Key。
 - 到达 `next_probe_at` 后，固定命中该账户的该 Key 发起真实探测。
-- 探测走账户自己的 Base URL、代理、客户端兼容模式、支持模型和当前网关请求链路。
+- 探测走账户自己的 Base URL、代理、账号兼容能力、支持模型和当前网关请求链路。
 - 探测只看成功或失败，不按状态码、错误码、错误文案分类。
 - 探测成功后把 Key 恢复为 `active`，清理退避和最近错误。
 - 探测失败后按账户冷却复测的快速 / 慢速退避继续延长 `next_probe_at`。

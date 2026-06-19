@@ -77,13 +77,13 @@ type ClientProfile =
   | 'claude_code'
 ```
 
-账号级 `clientCompatibility` 仍只表示 OpenAI 账号兼容模式：
+账号侧兼容能力由供应商、账户类型和协议档案派生。OpenAI 存储字段仍只作为 OpenAI 账号能力输入：
 
 ```ts
 type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
 ```
 
-Anthropic 账户不展示 Codex Responses 兼容选项。Claude Code 不写入 `accounts.client_compatibility`，也不影响 Anthropic API Key 账号的创建、导入、测试和调度边界。
+Anthropic 账户不展示 Codex Responses 兼容选项。Claude Code 不写入 `accounts.client_compatibility`，也不影响 Anthropic API Key 账号的创建、导入、测试和调度边界；运行时请求侧 `requestClientCompatibility = claude_code` 只用于账号能力筛选和 Anthropic native 请求策略。
 
 ### 识别条件
 

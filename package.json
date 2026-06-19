@@ -40,6 +40,7 @@
     "test:account-health-check": "pnpm --filter juhe-ai-backend test:account-health-check",
     "test:account-list-stable-sort": "pnpm --filter juhe-ai-backend test:account-list-stable-sort",
     "test:account-tags": "pnpm --filter juhe-ai-backend test:account-tags",
+    "test:time-schedule": "pnpm --filter juhe-ai-frontend test:time-schedule",
     "test:account-response-credentials-redaction": "pnpm --filter juhe-ai-backend test:account-response-credentials-redaction",
     "test:account-list-visible": "pnpm --filter juhe-ai-backend test:account-list-visible",
     "test:account-options-lightweight": "pnpm --filter juhe-ai-backend test:account-options-lightweight",

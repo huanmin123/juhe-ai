@@ -1,22 +1,22 @@
 <template>
   <div class="response-match-fields">
-    <a-form-item label="客户端画像">
+    <a-form-item label="请求客户端">
       <a-select
         v-model:value="form.clientProfiles"
         :disabled="disabled"
         :options="responseInspectionClientProfileOptions"
         mode="multiple"
-        placeholder="不限客户端"
+        placeholder="不限请求客户端"
         allow-clear
       />
     </a-form-item>
-    <a-form-item label="账号兼容模式">
+    <a-form-item label="账号兼容能力">
       <a-select
         v-model:value="form.accountClientCompatibilities"
         :disabled="disabled"
         :options="responseInspectionAccountCompatibilityOptions"
         mode="multiple"
-        placeholder="不限兼容模式"
+        placeholder="不限兼容能力"
         allow-clear
       />
     </a-form-item>

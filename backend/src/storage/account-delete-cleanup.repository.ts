@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, currentSystemAccountId, type AccessScope } from './access-scope.js'
+import { deleteAccountNameSearchTermsForAccounts } from './account-name-search.repository.js'
 import { hasDeletedAccountRelatedRecordData, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { deleteAccountTagBindingsForAccounts } from './account-tags.repository.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
@@ -195,6 +196,7 @@ function logicallyDeleteAccounts(database: DatabaseSync, accountIds: string[], a
     }
   }
   deleteAccountTagBindingsForAccounts(deletedIds, database)
+  deleteAccountNameSearchTermsForAccounts(deletedIds, database)
   return deletedIds
 }
 

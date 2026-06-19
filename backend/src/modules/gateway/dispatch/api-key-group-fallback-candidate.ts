@@ -17,6 +17,7 @@ import {
   filterGatewayAccountsByRequestedModel
 } from './model-filter.js'
 import { requestModel } from '../request/metadata.js'
+import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { areGatewayAccountsCapacityBusyForLane } from './capacity.js'
@@ -29,6 +30,7 @@ export interface ApiKeyGroupFallbackCandidateInput {
   systemAccountId: string
   groupId: string
   requestLane: OpenAIGatewayRequestLane
+  requestClientCompatibility?: ClientCompatibilityCapability
   excludedAccountIds?: Iterable<string>
   allowCandidateWrap?: boolean
 }
@@ -79,7 +81,9 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     if (!accounts.length) {
       continue
     }
-    const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, accounts)
+    const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, accounts, {
+      requestClientCompatibility: input.requestClientCompatibility
+    })
     if (!capabilityFilter.accounts.length) {
       continue
     }

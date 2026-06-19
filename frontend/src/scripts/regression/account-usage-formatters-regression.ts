@@ -44,7 +44,7 @@ try {
       }
     }
   }))
-  assertEqual(bars.length, 2, 'GPT OAuth 账户应展示 5h/7d 两条用量条')
+  assertEqual(bars.length, 2, '支持 OAuth 管理的 OpenAI v1 账户应展示 5h/7d 两条用量条')
   assertEqual(bars[0]?.key, '5h', '第一条应为 5h 窗口')
   assertEqual(bars[0]?.percent, 82, '5h 百分比应四舍五入')
   assertEqual(bars[0]?.displayPercent, '82%', '5h 百分比文案应保持原格式')
@@ -55,7 +55,7 @@ try {
   assertEqual(bars[1]?.tone, 'danger', '7d 超过 100% 应显示危险状态')
   assertEqual(bars[1]?.resetText, '2d 1h', '7d 重置文案应展示天数')
 
-  assertEqual(oauthUsageBars(accountFixture({ providerCode: 'openai', type: 'oauth' })).length, 0, '非 GPT 供应商不应展示 OAuth 用量条')
+  assertEqual(oauthUsageBars(accountFixture({ providerCode: 'openai', type: 'oauth' })).length, 0, '没有 OAuth 用量快照时不应展示 OAuth 用量条')
   assertEqual(oauthUsageBars(accountFixture({ type: 'api_key' })).length, 0, 'API Key 账户不应展示 OAuth 用量条')
   assertEqual(oauthUsageBars(accountFixture({ type: 'oauth', protocolVersion: 'v2' })).length, 0, '非 OpenAI v1 协议不应展示 OAuth 用量条')
 } finally {

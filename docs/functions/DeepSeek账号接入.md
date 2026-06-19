@@ -50,7 +50,7 @@ OpenAI-compatible 档案当前只声明 Chat Completions 语义，不把 Respons
 - 新建 DeepSeek 账户默认写入 `pending_test`，测试通过后才允许正常调度
 - `base_url` 默认填充 `https://api.deepseek.com`，允许用户修改为同协议的代理地址或专属部署地址，但必须继续通过 SSRF 防护和 OpenAI-compatible base URL 校验
 - `credentials.supported_endpoint_modes` 省略时默认启用 `chat_json`、`chat_sse`
-- DeepSeek 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token、Codex Responses 兼容模式
+- DeepSeek 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token、Codex Responses 账号兼容切换
 - DeepSeek 账户默认走普通 OpenAI-compatible 透传思路，不引入 GPT 专属的客户端兼容策略
 
 ## 网关请求边界

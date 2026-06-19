@@ -45,6 +45,15 @@ const windowSchedule = {
     { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '22:00', end: '23:55' }
   ]
 }
+const rangedCrossDaySchedule = {
+  enabled: true,
+  timezone: 'UTC',
+  mode: 'allow_windows',
+  dateRange: { startDate: '2026-06-01', endDate: '2026-06-01' },
+  windows: [
+    { daysOfWeek: [1], start: '22:00', end: '02:00' }
+  ]
+}
 
 try {
   const group = repositories.createGroup({
@@ -84,6 +93,28 @@ try {
   assert.equal(cleared?.availabilitySchedule, undefined, '提交 null 应清空账户时间计划')
   const runtimeAfterClear = repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId)
   assert.equal(runtimeAfterClear.some((account) => account.id === denied.id), true, '清空计划后账户应重新进入网关候选')
+
+  const rangedCrossDayAccount = withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => repositories.createAccount({
+    providerCode: 'gpt',
+    name: '账户跨天日期范围回归',
+    type: 'api_key',
+    status: 'active',
+    credentials: { api_key: 'sk-account-schedule-cross-day-range', base_url: 'https://api.openai.com/v1' },
+    availabilitySchedule: rangedCrossDaySchedule,
+    groupId: group.id
+  }, access))
+  assert.equal(rangedCrossDayAccount.availabilityScheduleActive, false, '跨天日期范围窗口开始前应初始化为派生停用')
+  assert.equal(repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId).some((account) => account.id === rangedCrossDayAccount.id), false, '跨天日期范围开始前账户不应进入候选')
+
+  const rangedCrossDayStartResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-06-01T22:00:00.000Z'))
+  assert(rangedCrossDayStartResult.changedIds.includes(rangedCrossDayAccount.id), '跨天日期范围开始边界应更新账户派生状态')
+  assert.equal(repositories.findAccountSummary(rangedCrossDayAccount.id, access)?.availabilityScheduleActive, true, '跨天日期范围开始边界后账户应派生可用')
+  assert.equal(repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId).some((account) => account.id === rangedCrossDayAccount.id), true, '跨天日期范围开始边界后账户应进入候选')
+
+  const rangedCrossDayEndResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-06-02T02:00:00.000Z'))
+  assert(rangedCrossDayEndResult.changedIds.includes(rangedCrossDayAccount.id), '跨天日期范围次日结束边界应更新账户派生状态')
+  assert.equal(repositories.findAccountSummary(rangedCrossDayAccount.id, access)?.availabilityScheduleActive, false, '跨天日期范围次日结束边界后账户应派生停用')
+  assert.equal(repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId).some((account) => account.id === rangedCrossDayAccount.id), false, '跨天日期范围次日结束边界后账户不应进入候选')
 
   const boundaryAccount = withMockedNow(Date.parse('2026-05-31T21:59:00.000Z'), () => repositories.createAccount({
     providerCode: 'gpt',

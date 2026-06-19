@@ -3,8 +3,18 @@ import {
   type ClientIpStatsListOptions,
   type ClientIpStatsListResult
 } from './client-ip-stats-list.repository.js'
+import {
+  getClientIpStatsDetail as getClientIpStatsDetailFromWindow,
+  type ClientIpStatsDetailOptions,
+  type ClientIpStatsDetailResult
+} from './client-ip-stats-detail.repository.js'
 
 export { normalizeClientIpForStats, type NormalizedClientIp } from './client-ip-normalization.js'
+export type {
+  ClientIpAccountUsageRow,
+  ClientIpStatsDetailOptions,
+  ClientIpStatsDetailResult
+} from './client-ip-stats-detail.repository.js'
 export type {
   ClientIpLastUsedSortScope,
   ClientIpPolicyFilter,
@@ -37,4 +47,8 @@ export { aggregateClientIpStatsBatch, latestClientIpStatsLagSeconds } from './cl
 
 export function listClientIpStats(options: ClientIpStatsListOptions = {}): ClientIpStatsListResult {
   return listClientIpStatsFromWindow(options)
+}
+
+export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): ClientIpStatsDetailResult | undefined {
+  return getClientIpStatsDetailFromWindow(options)
 }

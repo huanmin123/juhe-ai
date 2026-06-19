@@ -36,7 +36,10 @@
         <span class="endpoint-cell">{{ record.method }} {{ record.path }}</span>
       </template>
       <template v-else-if="column.key === 'model'">
-        <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+        <span v-if="record.model" class="model-cell">
+          <a-tag color="blue">{{ record.model }}</a-tag>
+          <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
+        </span>
         <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'stream'">
@@ -72,6 +75,8 @@
             <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
             <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
             <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
+            <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+            <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
             <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
           </div>
         </div>
@@ -178,6 +183,14 @@ function handleActionClick(key: string, record: AuditLogSummary) {
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.model-cell {
+  display: inline-flex;
+  max-width: 260px;
+  flex-wrap: wrap;
+  gap: 4px;
   vertical-align: bottom;
 }
 </style>

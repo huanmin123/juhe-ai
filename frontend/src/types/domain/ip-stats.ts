@@ -41,6 +41,25 @@ export interface ClientIpStatsListResult {
   rangeReady: boolean
 }
 
+export interface ClientIpAccountUsageRow {
+  accountId: string
+  accountName?: string
+  rangeUsage: ClientIpUsageSummary
+}
+
+export interface ClientIpStatsDetailResult {
+  ipHash: string
+  aggregateIpKey: string
+  lastSeenAt?: string
+  items: ClientIpAccountUsageRow[]
+  pageUpperBound: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+  range: AccountUsageStatsRange
+  rangeReady: boolean
+}
+
 export interface ClientIpPolicySummary {
   id: string
   ipHash: string

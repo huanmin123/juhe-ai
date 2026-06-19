@@ -241,22 +241,25 @@ body {
 }
 
 .mobile-list-card-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  display: block;
+  min-width: 0;
 }
 
 .mobile-list-card-actions.two-actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: block;
 }
 
 .mobile-list-card-actions.single-action {
-  grid-template-columns: 1fr;
+  display: block;
 }
 
 .mobile-list-card-actions .ant-btn,
 .mobile-list-card-actions .ant-dropdown-trigger,
 .mobile-list-card-actions .ant-popconfirm-open {
+  width: 100%;
+}
+
+.mobile-list-card-actions .row-actions-button {
   width: 100%;
 }
 
@@ -314,6 +317,11 @@ body {
     width: 100%;
   }
 
+  .page-toolbar .ant-btn {
+    min-height: 38px;
+    white-space: normal;
+  }
+
   .page-card .ant-table-wrapper {
     margin: 0 -6px;
   }
@@ -355,5 +363,29 @@ body {
   .ant-modal-body {
     max-height: calc(100vh - 220px);
     overflow-y: auto;
+  }
+
+  .page-card .ant-btn {
+    min-height: 36px;
+    white-space: normal;
+  }
+
+  .mobile-list-card-actions .ant-btn,
+  .mobile-list-card-actions .ant-dropdown-trigger,
+  .mobile-list-card-actions .ant-popconfirm-open,
+  .ip-mobile-actions .ant-btn,
+  .model-check-mobile-actions .ant-btn {
+    height: auto;
+    min-height: 36px;
+    padding-block: 6px;
+    line-height: 18px;
+    white-space: normal;
+  }
+
+  .mobile-list-card-actions .ant-btn > span,
+  .ip-mobile-actions .ant-btn > span,
+  .model-check-mobile-actions .ant-btn > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 }

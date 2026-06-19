@@ -36,7 +36,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 | 账户类型 | GPT API Key、GPT OAuth；通用 OpenAI 只 API Key | Anthropic 只 API Key | OAuth / Setup Token / Claude Code token 属于明确不做，不是当前缺口 |
 | Base URL | API Key 可填 OpenAI-compatible 根地址 | API Key 可填 Anthropic-compatible 根地址 | 已对齐 |
 | 多 API Key | 单账户多 key、轮询 / 加权、Key 级故障隔离 | 多 key 可保存并参与轮询 / 加权，已启用 Key 级运行态隔离 | 已对齐 |
-| 客户端兼容模式 | API Key 可选 `openai_standard` / `codex_responses`，OAuth 固定 Codex | 固定 Anthropic 原生，不暴露 OpenAI 兼容模式 | 正确，不应照搬 |
+| 客户端兼容能力 | GPT API Key 同时具备 OpenAI 标准 / Codex Responses，OAuth 固定 Codex；请求侧兼容能力决定是否改写 | Anthropic API Key 具备 Anthropic 原生 / Claude Code 请求能力，不暴露 OpenAI 账号兼容切换 | 正确，不应照搬 |
 | OpenAI-compatible 客户端 | 支持 `/v1/chat/completions`、`/v1/responses` 等 OpenAI v1 入口 | 不支持把 OpenAI Chat / Responses 自动转 Anthropic Messages | 如产品要“非 Claude 客户端也能调用 Claude”，需新建 OpenAI -> Anthropic adapter |
 | Anthropic native 客户端 | GPT 不适用 | 支持 `Authorization` 和 `x-api-key` 作为本地认证，支持 `/v1/messages` / `/v1/models` | 已落地 |
 | Claude Code 画像 | Codex 有 turn metadata、Responses SSE、专用失败兜底和 turn 级避让 | Claude Code 通过显式 header 或官方 CLI 多信号识别，只影响画像与审计 | 可选增强，不应复制 Codex 语义 |
@@ -59,8 +59,8 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 | usage 解析 | input / output / cache read / 图片 / 音频等通用字段 | input / output / cache read / cache write / 1h cache / thinking token 已进入使用记录明细 | 明细已补齐；统计聚合扩维另立范围 |
 | 成本估算 | OpenAI/GPT 多模型价格、缓存读、图片音频等 | Anthropic input/output/cache read/cache write/1h cache 已进入成本估算；thinking token 作为 output 分解字段展示，不单独重复计费 | 主成本已对齐 |
 | 原始审计 | 请求 / 响应 / header / body 截断、响应检查元数据 | Anthropic 复用审计，记录画像、上游响应和语义检查 | 基础对齐 |
-| 前端账户表单 | API Key / OAuth 分支、客户端兼容、接口能力、模型限制、模型映射、代理、时间计划、策略 | API Key 分支、Anthropic 原生协议、接口能力、模型限制、模型映射入口可用 | 已对齐 |
-| 前端测试弹窗 | 展示测试兼容、模型、后台任务、完整 JSON | Anthropic 已展示“测试协议 / 实际协议：Anthropic 原生” | 已修正 |
+| 前端账户表单 | API Key / OAuth 分支、客户端兼容能力只读展示、接口能力、模型限制、模型映射、代理、时间计划、策略 | API Key 分支、Anthropic 原生 / Claude Code 能力展示、接口能力、模型限制、模型映射入口可用 | 已对齐 |
+| 前端测试弹窗 | 展示测试请求形态、模型、后台任务、完整 JSON | Anthropic 展示“测试请求形态 / 实际请求形态：Anthropic 原生请求” | 已修正 |
 
 ## 建议优先级
 
@@ -106,8 +106,8 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 
 ## 当前小修记录
 
-- 账户测试弹窗已经将 Anthropic 文案从“测试兼容 / 实际兼容”改为“测试协议 / 实际协议”。
-- 账户策略区域已经将 Anthropic 的“客户端兼容”展示改为“协议形态：Anthropic 原生”。
+- 账户测试弹窗已经统一为“测试请求形态 / 实际请求形态”。
+- 账户策略区域已经将“客户端兼容”改为账号可承接能力展示，Anthropic 显示 Anthropic 原生和 Claude Code。
 - Anthropic native 本地错误响应已经按 Anthropic error shape 渲染。
 - Anthropic native 模型映射已经支持只改写顶层 `model`。
 - Anthropic 多 API Key 已启用 Key 级故障隔离，单个 Key 失败不会直接冷却整个账户。

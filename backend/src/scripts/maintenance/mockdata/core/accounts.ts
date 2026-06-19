@@ -209,7 +209,7 @@ export function createAccounts(
     tags: ['标准兼容', '模型映射', 'Mockdata'],
     concurrencyLimit: 30,
     priority: 35,
-    notes: 'Mockdata OpenAI 标准兼容账号，用于客户端兼容模式、模型映射和标签展示'
+    notes: 'Mockdata OpenAI 标准兼容账号，用于客户端兼容、模型映射和标签展示'
   }, adminAccess)
 
   const multiKeyPool = repositories.createAccount({

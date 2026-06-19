@@ -77,6 +77,65 @@ assert.equal(
   '跨天时段结束后应进入时段外'
 )
 
+const rangedCrossDaySchedule = normalizeApiKeyAvailabilitySchedule({
+  enabled: true,
+  timezone: 'UTC',
+  mode: 'allow_windows',
+  dateRange: { startDate: '2026-06-01', endDate: '2026-06-01' },
+  windows: [
+    { daysOfWeek: [1], start: '22:00', end: '02:00' }
+  ]
+})
+
+assert.equal(
+  evaluateApiKeyAvailabilitySchedule(rangedCrossDaySchedule, new Date('2026-06-01T21:30:00.000Z')).allowed,
+  false,
+  '跨天日期范围开始窗口前不应允许调用'
+)
+assert.equal(
+  evaluateApiKeyAvailabilitySchedule(rangedCrossDaySchedule, new Date('2026-06-01T22:30:00.000Z')).allowed,
+  true,
+  '跨天日期范围内的开始日期夜间应允许调用'
+)
+assert.equal(
+  evaluateApiKeyAvailabilitySchedule(rangedCrossDaySchedule, new Date('2026-06-02T01:30:00.000Z')).allowed,
+  true,
+  '跨天日期范围应允许最后一个开始日期延续到次日凌晨'
+)
+assert.equal(
+  dueApiKeyAvailabilityScheduleEvent(rangedCrossDaySchedule, new Date('2026-06-02T02:00:00.000Z'))?.status,
+  'disabled',
+  '跨天日期范围最后一段次日结束边界应触发停用事件'
+)
+assert.equal(
+  evaluateApiKeyAvailabilitySchedule(normalizeApiKeyAvailabilitySchedule({
+    enabled: true,
+    timezone: 'UTC',
+    mode: 'allow_windows',
+    dateRange: { startDate: '2026-06-02', endDate: '2026-06-02' },
+    windows: [
+      { daysOfWeek: [1], start: '22:00', end: '02:00' }
+    ]
+  }), new Date('2026-06-02T01:30:00.000Z')).allowed,
+  false,
+  '跨天日期范围开始日前一晚的尾段不应在开始日凌晨误放行'
+)
+
+const overlappingSchedule = normalizeApiKeyAvailabilitySchedule({
+  enabled: true,
+  timezone: 'UTC',
+  mode: 'allow_windows',
+  windows: [
+    { daysOfWeek: [1], start: '09:00', end: '12:00' },
+    { daysOfWeek: [1], start: '10:00', end: '14:00' }
+  ]
+})
+assert.equal(
+  dueApiKeyAvailabilityScheduleEvent(overlappingSchedule, new Date('2026-06-01T12:00:00.000Z'))?.status,
+  'active',
+  '重叠时段中较短窗口结束时仍处于另一个允许窗口内，派生状态不应被错误关闭'
+)
+
 assert.throws(
   () => normalizeApiKeyAvailabilitySchedule({
     enabled: true,
@@ -199,6 +258,26 @@ assert.equal(
   '合法允许例外应按例外时段放行'
 )
 
+const crossDayExceptionSchedule = normalizeApiKeyAvailabilitySchedule({
+  enabled: true,
+  timezone: 'UTC',
+  mode: 'allow_windows',
+  windows: [
+    { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '10:00', end: '11:00' }
+  ],
+  exceptions: [{ date: '2026-06-01', action: 'allow', windows: [{ start: '22:00', end: '02:00' }] }]
+})
+assert.equal(
+  evaluateApiKeyAvailabilitySchedule(crossDayExceptionSchedule, new Date('2026-06-02T01:30:00.000Z')).allowed,
+  true,
+  '允许例外的跨天时段应延续到次日凌晨'
+)
+assert.equal(
+  dueApiKeyAvailabilityScheduleEvent(crossDayExceptionSchedule, new Date('2026-06-02T02:00:00.000Z'))?.status,
+  'disabled',
+  '允许例外的跨天时段应在次日结束边界停用'
+)
+
 await assertApiKeyScheduleStatusSyncAndGatewayGuard()
 
 console.log('API Key 时间计划回归通过：日常时段、跨天时段、模式、空值、例外、非法参数、边界同步、人工提前启用/关闭和热链路不解析计划符合预期')
@@ -234,6 +313,45 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
       providerCode: 'gpt',
       enabled: true
     }, access)
+    const rangedCrossDayKey = await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => repositories.createApiKeyRecord({
+      name: 'API Key 跨天日期范围回归 Key',
+      status: 'active',
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      availabilitySchedule: {
+        enabled: true,
+        timezone: 'UTC',
+        mode: 'allow_windows',
+        dateRange: { startDate: '2026-06-01', endDate: '2026-06-01' },
+        windows: [
+          { daysOfWeek: [1], start: '22:00', end: '02:00' }
+        ]
+      }
+    }, access))
+    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.availabilityScheduleActive, false, '跨天日期范围开始前 API Key 应初始化为派生停用')
+    assert.equal(
+      await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => gatewayApiKeyRepository.validateGatewayApiKey(rangedCrossDayKey.key)),
+      undefined,
+      '跨天日期范围开始前 API Key 应被网关拒绝'
+    )
+    const rangedCrossDayStartResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date('2026-06-01T22:00:00.000Z'))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert(rangedCrossDayStartResult.changedIds.includes(rangedCrossDayKey.id), '跨天日期范围开始边界应更新 API Key 派生状态')
+    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.availabilityScheduleActive, true, '跨天日期范围开始边界后 API Key 应派生可用')
+    assert.equal(
+      await withMockedNow(Date.parse('2026-06-02T01:30:00.000Z'), () => gatewayApiKeyRepository.validateGatewayApiKey(rangedCrossDayKey.key)?.id),
+      rangedCrossDayKey.id,
+      '跨天日期范围延续到次日凌晨时 API Key 应通过网关校验'
+    )
+    const rangedCrossDayEndResult = repositories.syncApiKeyAvailabilityScheduleStatuses(new Date('2026-06-02T02:00:00.000Z'))
+    gatewayApiKeyRepository.clearGatewayApiKeyValidationCache()
+    assert(rangedCrossDayEndResult.changedIds.includes(rangedCrossDayKey.id), '跨天日期范围次日结束边界应更新 API Key 派生状态')
+    assert.equal(repositories.findApiKeySummary(rangedCrossDayKey.id, access)?.availabilityScheduleActive, false, '跨天日期范围次日结束边界后 API Key 应派生停用')
+    assert.equal(
+      await withMockedNow(Date.parse('2026-06-02T02:01:00.000Z'), () => gatewayApiKeyRepository.validateGatewayApiKey(rangedCrossDayKey.key)),
+      undefined,
+      '跨天日期范围次日结束边界后 API Key 应被网关拒绝'
+    )
+
     const beforeStartAt = Date.parse('2026-05-31T13:59:00.000Z')
     const startBoundaryAt = Date.parse('2026-05-31T14:00:00.000Z')
     const allowedAt = Date.parse('2026-05-31T14:30:00.000Z')

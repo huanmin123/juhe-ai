@@ -232,7 +232,6 @@ function draftAccountFixture(): AccountDraftTestPayload['account'] {
     credentials: { api_key: 'sk-test' },
     concurrencyLimit: 1,
     priority: 0,
-    clientCompatibility: 'openai_standard',
     supportedModels: [],
     modelMappings: [],
     groupId: 'group_1'

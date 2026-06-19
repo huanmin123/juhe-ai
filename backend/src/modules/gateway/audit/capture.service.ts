@@ -24,6 +24,8 @@ import {
   type OpenAIGatewayTrafficSource
 } from '../usage/traffic-source.js'
 import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
+import { resolveCatalogPricingModel } from '../../model-pricing/model-catalog.service.js'
+import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -42,6 +44,10 @@ interface AuditGatewayContext {
   groupId?: string
   accountId?: string
   providerCode?: string
+  upstreamModel?: string
+  pricingModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
   trafficSource?: OpenAIGatewayTrafficSource
 }
 
@@ -235,6 +241,7 @@ export class AuditCaptureContext {
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
     this.bindContext({ providerCode: input.account.providerCode })
+    this.bindContext(auditModelAccounting(input.account, requestModel(this.req), this.gatewayContext.systemAccountId))
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {
@@ -358,6 +365,10 @@ export class AuditCaptureContext {
       path: sanitizedOriginalUrl.split('?')[0] || this.req.path,
       queryString: sanitizedOriginalUrl.includes('?') ? sanitizedOriginalUrl.split('?').slice(1).join('?') : undefined,
       model: requestModel(this.req),
+      upstreamModel: this.gatewayContext.upstreamModel,
+      pricingModel: this.gatewayContext.pricingModel,
+      modelMappingApplied: this.gatewayContext.modelMappingApplied,
+      modelMappingSource: this.gatewayContext.modelMappingSource,
       stream: requestStream(this.req),
       clientIp: this.clientIp,
       userAgent: this.req.header('user-agent'),
@@ -446,6 +457,28 @@ export class AuditCaptureContext {
 
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
   return value
+}
+
+function auditModelAccounting(
+  account: OpenAIAccountSecret,
+  requestedModel: string | undefined,
+  fallbackSystemAccountId: string | undefined
+): Pick<AuditGatewayContext, 'upstreamModel' | 'pricingModel' | 'modelMappingApplied' | 'modelMappingSource'> {
+  const resolved = resolveGatewayUsageModel(account, requestedModel)
+  const upstreamModel = resolved.upstreamModel ?? requestedModel
+  const catalogSystemAccountId = account.accountOwnerSystemAccountId || fallbackSystemAccountId
+  return {
+    upstreamModel,
+    pricingModel: upstreamModel
+      ? resolveCatalogPricingModel({
+        providerCode: account.providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: upstreamModel
+      })
+      : undefined,
+    modelMappingApplied: resolved.modelMappingApplied,
+    modelMappingSource: resolved.modelMappingSource
+  }
 }
 
 function shouldOmitExistingPayloadBody(partType: AuditPayloadPartType): boolean {

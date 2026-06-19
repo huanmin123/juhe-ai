@@ -213,7 +213,7 @@ import {
 import {
   apiProtocolOptions,
   categoryFromModeOrModel,
-  defaultProtocolsForModelCategory,
+  defaultProtocolsForProviderModelCategory,
   findFirstModelCategory,
   formatCapabilitiesSummary,
   formatProviderCapability,
@@ -351,7 +351,7 @@ function openCreateCustomModel() {
   resetCustomModelForm()
   customModelForm.scope = canCreateGlobalModel.value ? 'global' : 'personal'
   customModelForm.mode = selectedModelCategory.value
-  customModelForm.supportedApiProtocols = defaultProtocolsForModelCategory(selectedModelCategory.value)
+  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value, selectedModelCategory.value)
   customModelModalOpen.value = true
 }
 
@@ -444,7 +444,7 @@ function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefine
 
 function handleCustomModelModeChange() {
   const category = customModelPricingCategory.value
-  customModelForm.supportedApiProtocols = defaultProtocolsForModelCategory(category)
+  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, category)
   customModelForm.pricingTemplateModel = undefined
   clearCustomModelPricesOutsideCategory(customModelForm, category)
 }

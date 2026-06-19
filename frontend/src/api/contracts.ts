@@ -154,7 +154,6 @@ export interface AccountDraftTestAccountPayload {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
-  clientCompatibility: AccountClientCompatibility
   supportedModels: string[]
   modelMappings: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
   proxyProfileId?: string | null
@@ -297,6 +296,15 @@ export interface ClientIpStatsListParams {
   pageSize?: number
   keyword?: string
   status?: ClientIpStatus
+  startDate?: string
+  endDate?: string
+  sortField?: ClientIpStatsSortField
+  sortOrder?: SortDirection
+}
+
+export interface ClientIpStatsDetailParams {
+  page?: number
+  pageSize?: number
   startDate?: string
   endDate?: string
   sortField?: ClientIpStatsSortField

@@ -280,6 +280,7 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
   grid-template-columns: repeat(var(--row-action-columns), minmax(0, 1fr));
   gap: 8px;
   width: 100%;
+  min-width: 0;
 }
 
 .row-action-button {
@@ -297,7 +298,23 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 .row-actions-button .row-action-button,
 .row-actions-button :deep(.ant-dropdown-trigger),
 .row-actions-button :deep(.ant-popconfirm-open) {
+  min-width: 0;
   width: 100%;
+}
+
+.row-actions-button .row-action-button,
+.row-actions-button .row-action-more-button {
+  height: auto;
+  min-height: 36px;
+  padding: 6px 10px;
+  line-height: 18px;
+  white-space: normal;
+}
+
+.row-actions-button .row-action-button :deep(span),
+.row-actions-button .row-action-more-button :deep(span) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 :global(.row-action-popconfirm .ant-popover-inner) {
@@ -329,6 +346,12 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 
 .row-action-tone-primary {
   color: #1677ff;
+}
+
+.row-actions-button .row-action-tone-primary.ant-btn-primary,
+.row-actions-button .row-action-tone-primary.ant-btn-primary:hover,
+.row-actions-button .row-action-tone-primary.ant-btn-primary:focus-visible {
+  color: #fff;
 }
 
 .row-action-tone-success {

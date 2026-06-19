@@ -22,6 +22,8 @@ type DatabaseStatement = ReturnType<DatabaseSync['prepare']>
 
 interface ClientIpAggregate {
   normalized: NormalizedClientIp
+  statDate: string
+  accountId?: string
   requestCount: number
   successCount: number
   errorCount: number
@@ -44,28 +46,65 @@ interface ClientIpAggregateStatements {
   registerInsert: DatabaseStatement
   registerUpdate: DatabaseStatement
   dailyUpsert: DatabaseStatement
+  accountDailyUpsert: DatabaseStatement
+}
+
+interface ClientIpAggregateBuildResult {
+  ipAggregates: ClientIpAggregate[]
+  accountAggregates: ClientIpAggregate[]
 }
 
 export function writeClientIpStatsAggregatesFromUsageRows(database: DatabaseSync, rows: UsageStatsRecordRow[], updatedAt: string): void {
   const aggregates = buildClientIpAggregates(rows)
-  writeClientIpAggregates(database, aggregates, updatedAt)
+  writeClientIpAggregates(database, aggregates.ipAggregates, aggregates.accountAggregates, updatedAt)
 }
 
-function buildClientIpAggregates(rows: UsageStatsRecordRow[]): ClientIpAggregate[] {
-  const aggregates = new Map<string, ClientIpAggregate>()
+function buildClientIpAggregates(rows: UsageStatsRecordRow[]): ClientIpAggregateBuildResult {
+  const ipAggregates = new Map<string, ClientIpAggregate>()
+  const accountAggregates = new Map<string, ClientIpAggregate>()
   for (const row of rows) {
     const normalized = normalizeClientIpForStats(row.client_ip)
     if (!normalized) continue
     const statDate = dateKey(new Date(row.created_at), usageStatsTimezone())
     const key = `${normalized.ipHash}:${statDate}`
     const accumulator = usageStatsAccumulatorFromRecord(row)
-    const current = aggregates.get(key)
+    const current = ipAggregates.get(key)
     if (current) {
       addAccumulatorToClientIpAggregate(current, accumulator, row.created_at)
+    } else {
+      ipAggregates.set(key, {
+        normalized,
+        statDate,
+        requestCount: accumulator.requestCount,
+        successCount: accumulator.successCount,
+        errorCount: accumulator.errorCount,
+        inputTokens: accumulator.inputTokens,
+        outputTokens: accumulator.outputTokens,
+        cacheReadTokens: accumulator.cacheReadTokens,
+        cacheReadCostUsd: accumulator.cacheReadCostUsd,
+        totalCostUsd: accumulator.totalCostUsd,
+        durationMsSum: accumulator.durationMsSum,
+        durationMsCount: accumulator.durationMsCount,
+        durationMsMax: accumulator.durationMsMax,
+        firstTokenMsSum: accumulator.firstTokenMsSum,
+        firstTokenMsCount: accumulator.firstTokenMsCount,
+        firstSeenAt: row.created_at,
+        lastUsedAt: row.created_at,
+        lastErrorAt: accumulator.lastErrorAt
+      })
+    }
+    const accountId = row.account_id?.trim()
+    if (!accountId) continue
+    const accountKey = `${normalized.ipHash}:${accountId}:${statDate}`
+    const accountCurrent = accountAggregates.get(accountKey)
+    if (accountCurrent) {
+      addAccumulatorToClientIpAggregate(accountCurrent, accumulator, row.created_at)
       continue
     }
-    aggregates.set(key, {
+    accountAggregates.set(accountKey, {
       normalized,
+      statDate,
+      accountId,
       requestCount: accumulator.requestCount,
       successCount: accumulator.successCount,
       errorCount: accumulator.errorCount,
@@ -84,17 +123,24 @@ function buildClientIpAggregates(rows: UsageStatsRecordRow[]): ClientIpAggregate
       lastErrorAt: accumulator.lastErrorAt
     })
   }
-  return [...aggregates.values()]
+  return {
+    ipAggregates: [...ipAggregates.values()],
+    accountAggregates: [...accountAggregates.values()]
+  }
 }
 
-function writeClientIpAggregates(database: DatabaseSync, aggregates: ClientIpAggregate[], updatedAt: string): void {
-  if (!aggregates.length) return
+function writeClientIpAggregates(database: DatabaseSync, aggregates: ClientIpAggregate[], accountAggregates: ClientIpAggregate[], updatedAt: string): void {
+  if (!aggregates.length && !accountAggregates.length) return
   const dirtyIpHashes = new Set<string>()
   const statements = prepareClientIpAggregateStatements(database)
   for (const aggregate of aggregates) {
     dirtyIpHashes.add(aggregate.normalized.ipHash)
     registerClientIp(statements, aggregate.normalized, aggregate.firstSeenAt, aggregate.lastUsedAt, updatedAt)
     upsertClientIpDaily(statements, aggregate, updatedAt)
+  }
+  for (const aggregate of accountAggregates) {
+    dirtyIpHashes.add(aggregate.normalized.ipHash)
+    upsertClientIpAccountDaily(statements, aggregate, updatedAt)
   }
   markCurrentClientIpUsageRangeWindowsStale(database)
   markClientIpRangeWindowsDirty(database, dirtyIpHashes, updatedAt)
@@ -140,6 +186,31 @@ function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAgg
         last_used_at = CASE WHEN client_ip_stats_daily.last_used_at IS NULL OR excluded.last_used_at > client_ip_stats_daily.last_used_at THEN excluded.last_used_at ELSE client_ip_stats_daily.last_used_at END,
         last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN client_ip_stats_daily.last_error_at WHEN client_ip_stats_daily.last_error_at IS NULL OR excluded.last_error_at > client_ip_stats_daily.last_error_at THEN excluded.last_error_at ELSE client_ip_stats_daily.last_error_at END,
         updated_at = excluded.updated_at
+    `),
+    accountDailyUpsert: database.prepare(`
+      INSERT INTO client_ip_account_stats_daily (
+        ip_hash, account_id, stat_date, request_count, success_count, error_count,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count,
+        last_used_at, last_error_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(ip_hash, account_id, stat_date) DO UPDATE SET
+        request_count = request_count + excluded.request_count,
+        success_count = success_count + excluded.success_count,
+        error_count = error_count + excluded.error_count,
+        input_tokens = input_tokens + excluded.input_tokens,
+        output_tokens = output_tokens + excluded.output_tokens,
+        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+        cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+        total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+        duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
+        duration_ms_count = duration_ms_count + excluded.duration_ms_count,
+        duration_ms_max = MAX(duration_ms_max, excluded.duration_ms_max),
+        first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
+        first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
+        last_used_at = CASE WHEN client_ip_account_stats_daily.last_used_at IS NULL OR excluded.last_used_at > client_ip_account_stats_daily.last_used_at THEN excluded.last_used_at ELSE client_ip_account_stats_daily.last_used_at END,
+        last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN client_ip_account_stats_daily.last_error_at WHEN client_ip_account_stats_daily.last_error_at IS NULL OR excluded.last_error_at > client_ip_account_stats_daily.last_error_at THEN excluded.last_error_at ELSE client_ip_account_stats_daily.last_error_at END,
+        updated_at = excluded.updated_at
     `)
   }
 }
@@ -180,7 +251,32 @@ function registerClientIp(
 function upsertClientIpDaily(statements: ClientIpAggregateStatements, aggregate: ClientIpAggregate, updatedAt: string): void {
   statements.dailyUpsert.run(
     aggregate.normalized.ipHash,
-    dateKey(new Date(aggregate.firstSeenAt), usageStatsTimezone()),
+    aggregate.statDate,
+    aggregate.requestCount,
+    aggregate.successCount,
+    aggregate.errorCount,
+    aggregate.inputTokens,
+    aggregate.outputTokens,
+    aggregate.cacheReadTokens,
+    aggregate.cacheReadCostUsd,
+    aggregate.totalCostUsd,
+    aggregate.durationMsSum,
+    aggregate.durationMsCount,
+    aggregate.durationMsMax,
+    aggregate.firstTokenMsSum,
+    aggregate.firstTokenMsCount,
+    aggregate.lastUsedAt,
+    aggregate.lastErrorAt ?? null,
+    updatedAt
+  )
+}
+
+function upsertClientIpAccountDaily(statements: ClientIpAggregateStatements, aggregate: ClientIpAggregate, updatedAt: string): void {
+  if (!aggregate.accountId) return
+  statements.accountDailyUpsert.run(
+    aggregate.normalized.ipHash,
+    aggregate.accountId,
+    aggregate.statDate,
     aggregate.requestCount,
     aggregate.successCount,
     aggregate.errorCount,

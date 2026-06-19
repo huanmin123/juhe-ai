@@ -59,8 +59,8 @@ type ProviderCode = 'glm'
 - 新建 GLM 账户默认写入 `pending_test`，测试通过后才允许正常调度。
 - `base_url` 默认按所选接入类型填充，允许用户修改为同协议的代理地址或专属部署地址，但必须继续通过 SSRF 防护和 OpenAI-compatible base URL 校验。
 - `credentials.supported_endpoint_modes` 省略时，GLM 两种接入类型都默认 `['chat_json', 'chat_sse']`。
-- GLM 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token、ChatGPT Account ID 或 Codex Responses 兼容模式。
-- GLM 账户默认 `client_compatibility = openai_standard`。不要套用 GPT API Key 默认的 `codex_responses`。
+- GLM 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token、ChatGPT Account ID 或 Codex Responses 兼容能力。
+- GLM 账户默认只具备 OpenAI 标准请求能力。不要套用 GPT API Key 的 Codex Responses 能力。
 - Coding Plan Key 与平台其他 API Key 不通用；如果用户把通用 API Key 填到 Coding Plan 档案，可能无法使用 Coding 套餐额度，应通过表单提示和测试结果提示区分。
 
 ## 网关请求边界

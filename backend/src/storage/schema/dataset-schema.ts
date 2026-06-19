@@ -71,6 +71,10 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           path TEXT NOT NULL,
           query_string TEXT,
           model TEXT,
+          upstream_model TEXT,
+          pricing_model TEXT,
+          model_mapping_applied INTEGER NOT NULL DEFAULT 0,
+          model_mapping_source TEXT,
           stream INTEGER NOT NULL DEFAULT 0,
           client_ip TEXT,
           user_agent TEXT,
@@ -444,6 +448,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_path_created ON audit_logs(path, created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_model_created ON audit_logs(model, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_upstream_model_created ON audit_logs(upstream_model, created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_client_ip_created ON audit_logs(client_ip, created_at, id);
 

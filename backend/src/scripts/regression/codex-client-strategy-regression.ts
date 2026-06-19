@@ -79,6 +79,7 @@ function testCodexTurnProfileRequiresPreciseTurnId(): void {
   }), identity)
 
   assert.equal(strategy.clientProfile, 'codex')
+  assert.equal(strategy.requestClientCompatibility, 'codex_responses')
   assert.equal(strategy.downstreamProtocol, 'responses_sse')
   assert.equal(strategy.codexTurn?.turnId, 'turn_a')
   assert.equal(strategy.codexTurn?.sessionId, 'session_a')
@@ -102,6 +103,7 @@ function testSessionOnlyDoesNotBecomeCodex(): void {
   }), identity)
 
   assert.equal(strategy.clientProfile, 'generic_openai')
+  assert.equal(strategy.requestClientCompatibility, 'openai_standard')
   assert.equal(strategy.codexTurn, undefined)
   assert.equal(strategy.allowCodexStreamClientRetry, false)
 }
@@ -117,6 +119,7 @@ function testInvalidTurnMetadataDoesNotBecomeCodex(): void {
   }), identity)
 
   assert.equal(strategy.clientProfile, 'generic_openai')
+  assert.equal(strategy.requestClientCompatibility, 'openai_standard')
   assert.equal(strategy.codexTurn, undefined)
   assert.equal(strategy.allowCodexTurnAccountAvoidance, false)
 }
@@ -139,6 +142,7 @@ function testNonCodexMetadataShapesDoNotFallback(): void {
     }), identity)
 
     assert.equal(strategy.clientProfile, 'generic_openai', label)
+    assert.equal(strategy.requestClientCompatibility, 'openai_standard', label)
     assert.equal(strategy.codexTurn, undefined, label)
     assert.equal(strategy.allowCodexStreamClientRetry, false, label)
     assert.equal(strategy.allowCodexTurnAccountAvoidance, false, label)
@@ -326,6 +330,7 @@ function testNonResponsesStreamDoesNotUseCodexProfile(): void {
 
   assert.equal(strategy.downstreamProtocol, 'chat_completions_sse')
   assert.equal(strategy.clientProfile, 'generic_openai')
+  assert.equal(strategy.requestClientCompatibility, 'openai_standard')
   assert.equal(strategy.codexTurn, undefined)
 }
 

@@ -3,7 +3,6 @@ import { accountImportProtocolMarkdown, aiConversionPrompt, importTemplate } fro
 
 interface ImportTemplateAccount {
   providerCode?: string
-  clientCompatibility?: string
   type?: string
   credentials?: Record<string, unknown>
   groupName?: string
@@ -30,9 +29,9 @@ assertDefined(apiKeyAccount, '导入模板应包含 API Key 账号示例')
 assertDefined(oauthAccount, '导入模板应包含 OAuth 账号示例')
 assertDefined(anthropicAccount, '导入模板应包含 Anthropic API Key 账号示例')
 assertEqual(apiKeyAccount.providerCode, GPT_VENDOR_CODE, 'API Key 示例应继续使用 GPT 供应商')
-assertEqual(apiKeyAccount.clientCompatibility, 'codex_responses', 'API Key 示例应声明 Codex Responses 兼容模式')
+assertFalse(Object.prototype.hasOwnProperty.call(apiKeyAccount, 'clientCompatibility'), 'API Key 示例不应暴露账号兼容字段')
 assertEqual(oauthAccount.providerCode, GPT_VENDOR_CODE, 'OAuth 示例应继续使用 GPT 供应商')
-assertEqual(oauthAccount.clientCompatibility, 'codex_responses', 'OAuth 示例应声明 Codex Responses 兼容模式')
+assertFalse(Object.prototype.hasOwnProperty.call(oauthAccount, 'clientCompatibility'), 'OAuth 示例不应暴露账号兼容字段')
 assertEqual(typeof apiKeyAccount.credentials?.api_key, 'string', 'API Key 示例必须保留 credentials.api_key')
 assertTrue(Array.isArray(apiKeyAccount.credentials?.supported_endpoint_modes), 'API Key 示例应包含 supported_endpoint_modes')
 assertEqual(typeof oauthAccount.credentials?.refresh_token, 'string', 'OAuth 示例必须保留 refresh_token')
@@ -51,7 +50,8 @@ assertMatch(accountImportProtocolMarkdown, /# juhe-ai AI 账户导入协议 v1/,
 assertMatch(accountImportProtocolMarkdown, /```json[\s\S]+juhe-ai-account-import[\s\S]+```/, '协议 Markdown 应继续包含 JSON 示例代码块')
 assertTrue(accountImportProtocolMarkdown.includes(importTemplate), '协议 Markdown 的完整示例应继续嵌入导入模板')
 assertMatch(accountImportProtocolMarkdown, /当前默认使用 `providerCode: "gpt"`/, '协议 Markdown 应继续说明默认 GPT providerCode')
-assertMatch(accountImportProtocolMarkdown, /clientCompatibility/, '协议 Markdown 应说明客户端兼容模式字段')
+assertMatch(accountImportProtocolMarkdown, /客户端兼容能力由供应商和账户类型派生/, '协议 Markdown 应说明客户端兼容能力派生规则')
+assertFalse(accountImportProtocolMarkdown.includes('| `clientCompatibility` |'), '协议 Markdown 不应把 clientCompatibility 暴露为导入字段')
 assertMatch(accountImportProtocolMarkdown, /supported_endpoint_modes/, '协议 Markdown 应说明接口能力限制字段')
 assertMatch(accountImportProtocolMarkdown, /不接受 `credentials\.anthropic_version` 或 `credentials\.anthropic_beta`/, '协议 Markdown 应明确 Anthropic header 不属于账号凭据')
 assertMatch(accountImportProtocolMarkdown, /`proxyRef` 和 `proxyProfileId` 不能同时填写/, '协议 Markdown 应继续说明代理字段互斥')

@@ -1,12 +1,25 @@
-import { ACCOUNT_CLIENT_COMPATIBILITIES, type AccountClientCompatibility } from './types.js'
-import { isGptVendorCode, isOpenAIProtocolProfile } from './provider-protocol.js'
+import {
+  ACCOUNT_CLIENT_COMPATIBILITIES,
+  type AccountClientCompatibility,
+  type ClientCompatibilityCapability
+} from './types.js'
+import { isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from './provider-protocol.js'
+
+export interface AccountClientCompatibilityProfile {
+  providerCode?: string
+  accountType?: unknown
+  type?: unknown
+  clientCompatibility?: unknown
+  protocolCode?: string
+  protocolVersion?: string
+}
 
 export function normalizeAccountClientCompatibility(value: unknown, fallback: AccountClientCompatibility = 'openai_standard'): AccountClientCompatibility {
   if (value === undefined || value === null || value === '') return fallback
   if (typeof value === 'string' && ACCOUNT_CLIENT_COMPATIBILITIES.includes(value as AccountClientCompatibility)) {
     return value as AccountClientCompatibility
   }
-  throw new Error('客户端兼容模式无效')
+  throw new Error('客户端兼容配置无效')
 }
 
 export function normalizeOpenAIAccountClientCompatibility(
@@ -23,4 +36,39 @@ export function normalizeOpenAIAccountClientCompatibility(
     return normalizeAccountClientCompatibility(value, 'codex_responses')
   }
   return normalizeAccountClientCompatibility(value, fallback)
+}
+
+export function deriveAccountSupportedClientCompatibilities(
+  profile: AccountClientCompatibilityProfile
+): ClientCompatibilityCapability[] {
+  const accountType = profile.accountType ?? profile.type
+  if (isAnthropicProtocolProfile(profile)) {
+    return accountType === 'api_key'
+      ? ['anthropic_native', 'claude_code']
+      : ['anthropic_native']
+  }
+  if (!isOpenAIProtocolProfile(profile)) {
+    return ['openai_standard']
+  }
+  if (accountType === 'oauth') {
+    return ['codex_responses']
+  }
+  const compatibility = normalizeOpenAIAccountClientCompatibility(
+    profile.providerCode,
+    accountType,
+    profile.clientCompatibility,
+    'openai_standard',
+    profile
+  )
+  return compatibility === 'codex_responses'
+    ? ['openai_standard', 'codex_responses']
+    : ['openai_standard']
+}
+
+export function accountSupportsClientCompatibility(
+  profile: AccountClientCompatibilityProfile,
+  requestClientCompatibility?: ClientCompatibilityCapability
+): boolean {
+  if (!requestClientCompatibility) return true
+  return deriveAccountSupportedClientCompatibilities(profile).includes(requestClientCompatibility)
 }

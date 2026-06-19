@@ -19,6 +19,11 @@ import {
   accountTypeText as facadeAccountTypeText,
   isAuthorizedAccount
 } from '../../views/accounts/accountFormatters'
+import {
+  accountMenuItems,
+  canManageOAuthAccount
+} from '../../views/accounts/accountRules'
+import { canCreateOAuthAccount } from '../../views/accounts/accountProviderCapabilities'
 
 const standardAccount = accountFixture({
   name: '标准账户',
@@ -36,9 +41,9 @@ const authorizedAccount = accountFixture({
 assertEqual(accountTypeText('oauth'), 'OAuth', 'OAuth 类型文案应保持不变')
 assertEqual(accountTypeText('api_key'), 'API Key', 'API Key 类型文案应保持不变')
 assertEqual(accountTypeText('custom' as AccountSummary['type']), 'custom', '未知类型应透传展示')
-assertEqual(accountClientCompatibilityText('codex_responses'), 'Codex Responses', 'Codex 兼容模式文案应保持不变')
-assertEqual(accountClientCompatibilityText('openai_standard'), 'OpenAI 标准', 'OpenAI 标准兼容模式文案应保持不变')
-assertEqual(accountClientCompatibilityText(), 'OpenAI 标准', '空兼容模式应按 OpenAI 标准展示')
+assertEqual(accountClientCompatibilityText('codex_responses'), 'Codex Responses', 'Codex 兼容文案应保持不变')
+assertEqual(accountClientCompatibilityText('openai_standard'), 'OpenAI 标准', 'OpenAI 标准兼容文案应保持不变')
+assertEqual(accountClientCompatibilityText(), 'OpenAI 标准', '空客户端兼容应按 OpenAI 标准展示')
 assertEqual(accountTypeTitle('OpenAI', 'oauth'), 'OpenAI OAuth', 'OAuth 标题应包含供应商名')
 assertEqual(accountTypeTitle('OpenAI', 'api_key'), 'OpenAI API Key', 'API Key 标题应包含供应商名')
 assertTrue(accountTypeDescription('gpt', 'oauth').includes('Responses / compact'), 'GPT OAuth 描述应说明网关路径限制')
@@ -83,7 +88,28 @@ assertEqual(facadeAccountTypeText('oauth'), accountTypeText('oauth'), 'accountFo
 assertEqual(isAuthorizedAccount(authorizedAccount), true, '授权账户谓词应继续由 accountFormatters 导出')
 assertEqual(isAuthorizedAccount(standardAccount), false, '普通账户谓词应继续由 accountFormatters 导出')
 
-console.log('账户基础 formatter 回归通过：基础文案、授权展示、到期优先级、排序和门面导出均符合预期')
+const oauthAccount = accountFixture({ type: 'oauth', clientCompatibility: 'codex_responses' })
+assertEqual(canManageOAuthAccount(oauthAccount), true, 'OpenAI v1 OAuth 自有账户应允许 OAuth 管理动作')
+assertTrue(accountMenuItems(oauthAccount).some((item) => item.key === 'refresh-oauth-token'), 'OAuth 管理账户菜单应包含刷新令牌')
+assertTrue(accountMenuItems(oauthAccount).some((item) => item.key === 'reauthorize-oauth'), 'OAuth 管理账户菜单应包含重新授权')
+assertEqual(canManageOAuthAccount(accountFixture({ type: 'oauth', protocolVersion: 'v2' })), false, '非 OpenAI v1 OAuth 账户不应允许 OAuth 管理动作')
+assertEqual(canManageOAuthAccount(accountFixture({ type: 'api_key' })), false, 'API Key 账户不应允许 OAuth 管理动作')
+assertEqual(canCreateOAuthAccount({
+  provider: providerFixture({
+    code: 'openai',
+    accountTypes: ['oauth', 'api_key'],
+    protocolCode: 'openai',
+    protocolVersion: 'v1'
+  }),
+  profile: providerProfileFixture({
+    providerCode: 'openai',
+    accountTypes: ['oauth', 'api_key'],
+    protocolCode: 'openai',
+    protocolVersion: 'v1'
+  })
+}), false, 'OpenAI-compatible 即使声明 OAuth 类型，也不应误走 GPT OAuth 创建流程')
+
+console.log('账户基础 formatter 回归通过：基础文案、授权展示、OAuth 菜单能力、到期优先级、排序和门面导出均符合预期')
 
 function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary {
   return {
@@ -129,5 +155,48 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 function assertTrue(value: boolean, message: string): void {
   if (!value) {
     throw new Error(message)
+  }
+}
+
+function providerFixture(overrides: {
+  code: string
+  accountTypes: string[]
+  protocolCode: string
+  protocolVersion: string
+}) {
+  return {
+    id: overrides.code,
+    code: overrides.code,
+    name: overrides.code,
+    enabled: true,
+    defaultProtocolProfileId: `profile_${overrides.code}`,
+    protocolCode: overrides.protocolCode,
+    protocolVersion: overrides.protocolVersion,
+    baseUrl: 'https://example.com/v1',
+    defaultTestModel: '',
+    accountTypes: overrides.accountTypes,
+    capabilities: [],
+    protocolProfiles: []
+  }
+}
+
+function providerProfileFixture(overrides: {
+  providerCode: string
+  accountTypes: string[]
+  protocolCode: string
+  protocolVersion: string
+}) {
+  return {
+    id: `profile_${overrides.providerCode}`,
+    providerCode: overrides.providerCode,
+    name: overrides.providerCode,
+    enabled: true,
+    protocolCode: overrides.protocolCode,
+    protocolVersion: overrides.protocolVersion,
+    baseUrl: 'https://example.com/v1',
+    defaultTestModel: '',
+    accountTypes: overrides.accountTypes,
+    capabilities: [],
+    endpointFamilies: []
   }
 }

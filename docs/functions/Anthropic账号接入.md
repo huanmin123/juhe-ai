@@ -118,7 +118,7 @@ type AnthropicAccountType = 'api_key'
 - `Anthropic-Version` 不是账号字段；客户端请求带 `anthropic-version` 时透传客户端值，否则由上游 adapter 固定补齐当前协议默认 `2023-06-01`。
 - `credentials.supported_endpoint_modes` 省略时默认 `['messages_json', 'messages_sse', 'message_token_counting']`。
 - 新建账户默认写入 `pending_test` 且不可调度，测试通过后才恢复正常。
-- Anthropic API Key 账户不显示 OAuth、Refresh Token、Access Token、OpenAI Organization、OpenAI Project、Codex Responses、GPT 客户端兼容模式等字段。
+- Anthropic API Key 账户不显示 OAuth、Refresh Token、Access Token、OpenAI Organization、OpenAI Project、Codex Responses、GPT 客户端兼容能力等字段。
 - 当前不支持 Anthropic Workload Identity Federation Bearer Token；该能力涉及短期 token、身份联邦和组织级配置，不纳入当前目标。
 - 当前不支持 OAuth / Setup Token / Claude Code token 账号。参考项目中 OAuth token、Claude Code 伪装 header、客户端版本检测、请求体守卫和 OpenAI <-> Claude 深度互转不进入当前目标；Claude Code 作为下游客户端工具的画像兼容见 [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)。
 

@@ -246,6 +246,10 @@ function selectStringValue(value: SelectValue): string | undefined {
     align-items: stretch;
   }
 
+  .model-checks-fields {
+    flex: none;
+  }
+
   .model-checks-system-account-field,
   .model-checks-account-field,
   .model-checks-model-field,

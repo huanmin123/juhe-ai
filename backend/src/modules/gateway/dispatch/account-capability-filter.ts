@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { DispatchAccountSecret } from '../../../storage/repositories.js'
 import {
   accountSupportsGatewayRequest,
@@ -17,9 +18,12 @@ export type GatewayAccountCapabilityFilterReason = ProviderRequestCapabilityMism
 
 export function filterGatewayAccountsByRequestCapability(
   req: Request,
-  accounts: DispatchAccountSecret[]
+  accounts: DispatchAccountSecret[],
+  options: { requestClientCompatibility?: ClientCompatibilityCapability } = {}
 ): GatewayAccountCapabilityFilterResult {
-  const filtered = accounts.filter((account) => accountSupportsGatewayRequest(req, account))
+  const filtered = accounts.filter((account) => accountSupportsGatewayRequest(req, account, {
+    requestClientCompatibility: options.requestClientCompatibility
+  }))
   const skippedCount = accounts.length - filtered.length
   return {
     accounts: filtered,

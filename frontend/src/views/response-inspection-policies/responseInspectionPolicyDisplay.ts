@@ -44,8 +44,8 @@ export function responseInspectionPolicyAccountCompatibilityText(values?: Respon
 export function responseInspectionPolicyMatchSummary(policy: ResponseInspectionPolicySummary): string {
   const match = policy.match
   const parts = [
-    responseInspectionScopedListSummary('客户端画像', match.clientProfiles?.map(responseInspectionPolicyClientProfileLabel)),
-    responseInspectionScopedListSummary('账号兼容', match.accountClientCompatibilities?.map(responseInspectionPolicyAccountCompatibilityLabel)),
+    responseInspectionScopedListSummary('请求客户端', match.clientProfiles?.map(responseInspectionPolicyClientProfileLabel)),
+    responseInspectionScopedListSummary('账号兼容能力', match.accountClientCompatibilities?.map(responseInspectionPolicyAccountCompatibilityLabel)),
     responseInspectionScopedListSummary('输出包含', match.outputTextIncludes),
     responseInspectionScopedListSummary('输出排除', match.outputTextExcludes),
     responseInspectionScopedListSummary('code', match.errorCodes),

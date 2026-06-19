@@ -66,6 +66,7 @@ const apiKeyAccount: OpenAIAccountSecret = {
 async function main(): Promise<void> {
   testRawBodyPassthrough()
   await testOpenAIStandardRequestPartsPassthrough()
+  await testCodexCompatibleAccountKeepsStandardResponsesPassthrough()
   await testCodexResponsesCompatibilityRequestParts()
   await testCodexResponsesCompatibilityKeepsExplicitToolSettings()
   await testCodexResponsesCompatibilityDoesNotRewriteChatCompletions()
@@ -108,6 +109,23 @@ async function testOpenAIStandardRequestPartsPassthrough(): Promise<void> {
   assert.equal(parts.headers.get('authorization'), 'Bearer sk-upstream')
 }
 
+async function testCodexCompatibleAccountKeepsStandardResponsesPassthrough(): Promise<void> {
+  const rawBody = Buffer.from('{"model":"gpt-5.5","input":"hello","stream":false}')
+  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const parts = await buildGatewayUpstreamRequestParts(req, {
+    ...apiKeyAccount,
+    clientCompatibility: 'codex_responses'
+  }, testIdentity, undefined, {
+    requestClientCompatibility: 'openai_standard'
+  })
+
+  assert.ok(Buffer.isBuffer(parts.body))
+  assert.equal(Buffer.compare(parts.body, rawBody), 0)
+  assert.equal(parts.headers.get('accept'), null)
+  assert.equal(parts.headers.get('originator'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
+}
+
 async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   const rawBody = Buffer.from(JSON.stringify({
     model: 'gpt-5.5',
@@ -135,7 +153,9 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'codex_responses'
-  }, testIdentity)
+  }, testIdentity, undefined, {
+    requestClientCompatibility: 'codex_responses'
+  })
   const body = parseJsonBuffer(parts.body)
 
   assert.equal(body.model, 'gpt-5.5')
@@ -210,7 +230,9 @@ async function testCodexResponsesCompatibilityKeepsExplicitToolSettings(): Promi
   const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'codex_responses'
-  }, testIdentity)
+  }, testIdentity, undefined, {
+    requestClientCompatibility: 'codex_responses'
+  })
   const body = parseJsonBuffer(parts.body)
 
   assert.equal(body.input[0]?.role, 'developer')
@@ -236,7 +258,9 @@ async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): P
   const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'codex_responses'
-  }, testIdentity)
+  }, testIdentity, undefined, {
+    requestClientCompatibility: 'codex_responses'
+  })
 
   assert.ok(Buffer.isBuffer(parts.body))
   assert.equal(Buffer.compare(parts.body, rawBody), 0)

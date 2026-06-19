@@ -33,7 +33,6 @@ export interface AccountDraftTestAccountRequest {
   priority?: number
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
-  clientCompatibility?: AccountSummary['clientCompatibility']
   proxyProfileId?: string | null
   groupId: string
   accountExpiresAt?: string | null
@@ -110,7 +109,7 @@ export function prepareAccountDraftTestSnapshot(input: {
     : normalizeOpenAIAccountClientCompatibility(
         accountInput.providerCode,
         accountInput.type,
-        accountInput.clientCompatibility,
+        undefined,
         'openai_standard',
         providerProfile
       )
@@ -270,7 +269,7 @@ function accountCreateActivationFingerprintSnapshot(input: {
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
     account.providerCode,
     account.type,
-    account.clientCompatibility,
+    undefined,
     'openai_standard',
     { protocolCode: input.protocolCode, protocolVersion: input.protocolVersion }
   )
@@ -368,7 +367,6 @@ function accountDraftRequestFromCreate(account: AccountCreateDraftActivationRequ
     priority: account.priority,
     superPriorityEnabled: account.superPriorityEnabled,
     fallbackEnabled: account.fallbackEnabled,
-    clientCompatibility: account.clientCompatibility,
     proxyProfileId: account.proxyProfileId,
     groupId: typeof account.groupId === 'string' ? account.groupId : '',
     accountExpiresAt: account.accountExpiresAt,

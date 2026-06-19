@@ -105,10 +105,6 @@ export function planImportAccount(
   source.name = optionalTextField(value, 'name', '账户名称', item.messages) ?? ''
   source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? ''
   source.providerProtocolProfileId = optionalTextField(value, 'providerProtocolProfileId', '账户 providerProtocolProfileId', item.messages)
-  const clientCompatibilityInput = optionalTextField(value, 'clientCompatibility', '账户 clientCompatibility', item.messages)
-  if (clientCompatibilityInput !== undefined) {
-    source.clientCompatibility = normalizeImportAccountClientCompatibility(clientCompatibilityInput, item.messages)
-  }
   if (!source.providerCode) {
     item.messages.push('账户 providerCode 不能为空')
   }
@@ -148,16 +144,14 @@ export function planImportAccount(
   source.notes = optionalTextField(value, 'notes', '账户 notes', item.messages)
   applyImportAccountProtocolProfileDefaults(source, context)
   try {
-    const clientCompatibility = source.clientCompatibility
-      ? normalizeOpenAIAccountClientCompatibility(
-        source.providerCode,
-        source.type,
-        source.clientCompatibility,
-        'openai_standard',
-        { protocolCode: source.protocolCode, protocolVersion: source.protocolVersion }
-      )
-      : undefined
-    if (clientCompatibility) source.clientCompatibility = clientCompatibility
+    const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
+      source.providerCode,
+      source.type,
+      undefined,
+      'openai_standard',
+      { protocolCode: source.protocolCode, protocolVersion: source.protocolVersion }
+    )
+    source.clientCompatibility = clientCompatibility
     source.credentials = normalizeAccountCredentialsForWrite(source.type, value.credentials, {
       providerCode: source.providerCode,
       accountType: source.type,
@@ -270,11 +264,3 @@ function assertImportEndpointModesCompatible(
   }
 }
 
-function normalizeImportAccountClientCompatibility(
-  value: string,
-  messages: string[]
-): AccountClientCompatibility | undefined {
-  if (value === 'openai_standard' || value === 'codex_responses') return value
-  messages.push(`账户 clientCompatibility 不支持：${value}`)
-  return undefined
-}

@@ -49,6 +49,7 @@ function testExplicitClaudeCodeHeaderUsesAnthropicProfile(): void {
   }), anthropicIdentity)
 
   assert.equal(strategy.clientProfile, 'claude_code')
+  assert.equal(strategy.requestClientCompatibility, 'claude_code')
   assert.equal(strategy.clientProfileSource, 'explicit_header')
   assert.equal(strategy.downstreamProtocol, 'messages_sse')
   assert.equal(strategy.upstreamAdapter, 'anthropic_api_key')
@@ -67,6 +68,7 @@ function testRealClaudeCodeSignatureUsesAnthropicProfile(): void {
   }), anthropicIdentity)
 
   assert.equal(strategy.clientProfile, 'claude_code')
+  assert.equal(strategy.requestClientCompatibility, 'claude_code')
   assert.equal(strategy.clientProfileSource, 'claude_code_request_signature')
   assert.equal(strategy.downstreamProtocol, 'messages_sse')
   assert.equal(strategy.upstreamAdapter, 'anthropic_api_key')
@@ -81,6 +83,7 @@ function testSingleClaudeCodeSignalDoesNotUpgrade(): void {
   }), anthropicIdentity)
 
   assert.equal(strategy.clientProfile, 'generic_anthropic')
+  assert.equal(strategy.requestClientCompatibility, 'anthropic_native')
   assert.equal(strategy.clientProfileSource, 'default')
   assert.equal(strategy.downstreamProtocol, 'messages_sse')
 }
@@ -92,6 +95,7 @@ function testGenericAnthropicWithoutExplicitHeader(): void {
   }), anthropicIdentity)
 
   assert.equal(strategy.clientProfile, 'generic_anthropic')
+  assert.equal(strategy.requestClientCompatibility, 'anthropic_native')
   assert.equal(strategy.clientProfileSource, 'default')
   assert.equal(strategy.downstreamProtocol, 'json')
   assert.equal(strategy.upstreamAdapter, 'anthropic_api_key')
@@ -107,6 +111,7 @@ function testClaudeCodeHeaderDoesNotAffectOpenAIProtocol(): void {
   }), openAIIdentity)
 
   assert.equal(strategy.clientProfile, 'generic_openai')
+  assert.equal(strategy.requestClientCompatibility, 'openai_standard')
   assert.equal(strategy.downstreamProtocol, 'responses_sse')
   assert.equal(strategy.upstreamAdapter, 'openai_mixed')
 }
@@ -120,6 +125,7 @@ function testClaudeCodeProfileRequiresSupportedAnthropicProtocolShape(): void {
   }), anthropicIdentity)
 
   assert.equal(strategy.clientProfile, 'generic_anthropic')
+  assert.equal(strategy.requestClientCompatibility, 'anthropic_native')
   assert.equal(strategy.downstreamProtocol, 'unknown_stream')
   assert.equal(strategy.clientProfileSource, 'default')
 }

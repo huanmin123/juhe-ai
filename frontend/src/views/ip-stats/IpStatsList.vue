@@ -134,6 +134,7 @@
           </div>
         </div>
         <div class="ip-mobile-actions">
+          <a-button size="small" @click="emitDetail(record)">详情</a-button>
           <a-button v-if="record.status === 'blacklisted'" size="small" @click="emitPolicyAction(record, 'unblock')">解封</a-button>
           <a-button v-else size="small" danger @click="emitPolicyAction(record, 'blacklist')">封禁</a-button>
         </div>
@@ -157,7 +158,8 @@ import {
   ipStatsColumns,
   statusColor,
   statusText,
-  type IpStatsPolicyAction
+  type IpStatsPolicyAction,
+  type IpStatsRowAction
 } from './ipStatsDisplay'
 
 defineProps<{
@@ -169,6 +171,7 @@ defineProps<{
 
 const emit = defineEmits<{
   change: [paginationInfo: unknown, filters: unknown, sorter: unknown]
+  detail: [record: ClientIpStatsRow]
   'policy-action': [record: ClientIpStatsRow, action: IpStatsPolicyAction]
 }>()
 
@@ -176,10 +179,18 @@ function emitTableChange(...args: unknown[]): void {
   emit('change', args[0], args[1], args[2])
 }
 
-function handleRowAction(key: string, record: ClientIpStatsRow): void {
+function handleRowAction(key: IpStatsRowAction | string, record: ClientIpStatsRow): void {
+  if (key === 'detail') {
+    emitDetail(record)
+    return
+  }
   if (key === 'blacklist' || key === 'unblock') {
     emitPolicyAction(record, key)
   }
+}
+
+function emitDetail(record: ClientIpStatsRow): void {
+  emit('detail', record)
 }
 
 function emitPolicyAction(record: ClientIpStatsRow, action: IpStatsPolicyAction): void {
@@ -220,8 +231,14 @@ function emitPolicyAction(record: ClientIpStatsRow, action: IpStatsPolicyAction)
 }
 
 .ip-mobile-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.ip-mobile-actions :deep(.ant-btn) {
+  width: 100%;
+  min-height: 36px;
+  white-space: normal;
 }
 </style>

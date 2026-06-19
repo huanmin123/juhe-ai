@@ -21,6 +21,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
 - 当前 `providerCode` 可填 `openai`、`gpt`、`anthropic` 或 `glm`；系统会按供应商自动匹配内部协议配置。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`；`anthropic` 表示官方 Anthropic Claude 供应商，当前只支持 API Key；`glm` 表示智谱 GLM 供应商，支持通用 GLM API Key 和 GLM Coding Plan Key，底层都保存为 `api_key`。
 - `connectionType` 是可选的接入类型标识；`anthropic` 可填 `api_key` 或省略；`glm` 场景建议显式填写 `general_api_key` 或 `coding_api_key`，用于区分通用 GLM API 与 GLM Coding Plan。
+- 客户端兼容能力由供应商、账户类型和协议档案派生，不在导入协议中填写；GPT API Key 同时支持 OpenAI 标准和 Codex Responses，GPT OAuth 固定 Codex Responses，Anthropic API Key 支持 Anthropic 原生和 Claude Code。
 - 不确定是否可立即调度时，`status` 填 `pending_test` 或 `disabled`，不要默认填 `active`；即使导入文件写 `active`，导入落库也会转为 `pending_test`，必须在本系统测试通过后才参与调度。
 - 不要编造缺失的 token、API Key、邮箱、账号 ID、代理密码或模型列表；不确定的信息写入 `notes`。
 - 外部来源字段如果没有本协议对应字段，不要塞进 `credentials`，可以整理到 `notes`。
@@ -75,7 +76,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "openai-key-001",
       "name": "OpenAI 兼容 API Key 账号 1",
       "providerCode": "openai",
-      "clientCompatibility": "openai_standard",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 OpenAI 兼容分组",
@@ -94,7 +94,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "ref": "gpt-oauth-001",
       "name": "GPT OAuth 账号 1",
       "providerCode": "gpt",
-      "clientCompatibility": "codex_responses",
       "type": "oauth",
       "status": "active",
       "groupName": "默认 GPT 分组",
@@ -117,7 +116,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "name": "Anthropic Claude API Key 账号 1",
       "providerCode": "anthropic",
       "connectionType": "api_key",
-      "clientCompatibility": "openai_standard",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 Anthropic 分组",
@@ -136,7 +134,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "name": "智谱 GLM Coding 账号 1",
       "providerCode": "glm",
       "connectionType": "coding_api_key",
-      "clientCompatibility": "openai_standard",
       "type": "api_key",
       "status": "active",
       "groupName": "默认 GLM Coding 分组",
@@ -170,7 +167,6 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `name` | 是 | 账户名称，同一系统账户下不能重复。 |
 | `providerCode` | 是 | 当前支持 `openai`、`gpt`、`anthropic` 和 `glm`。`openai` 表示通用 OpenAI-compatible 供应商，`gpt` 表示 GPT 专属供应商，`anthropic` 表示官方 Anthropic Claude 供应商，`glm` 表示智谱 GLM 供应商。 |
 | `connectionType` | 否 | 同供应商多接入类型标识；`anthropic` 可填 `api_key` 或省略，`glm` 可填 `general_api_key` 或 `coding_api_key`。 |
-| `clientCompatibility` | 否 | 客户端兼容模式，支持 `openai_standard` 和 `codex_responses`；省略时按供应商和账户类型默认。`anthropic` 和 `glm` 默认使用 `openai_standard`。 |
 | `type` | 是 | `api_key` 或 `oauth`。 |
 | `status` | 是 | `active`、`pending_test` 或 `disabled`；导入创建时 `active` 会转为 `pending_test`。 |
 | `groupId` | 二选一 | 绑定已有分组 ID；优先级高于 `groupName`。 |
@@ -195,7 +191,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `proxyRef` 和 `proxyProfileId` 不能同时填写。
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
-- 通用 OpenAI-compatible 上游如果要支持 Codex Responses，请把 `clientCompatibility` 填为 `codex_responses`，并在 `credentials.supported_endpoint_modes` 中包含 `responses_sse`。
+- 通用 OpenAI-compatible 上游如需承接 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
 - `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内大小写重复标签会去重。
 - `modelMappings` 的 sourceModel 是下游请求模型，upstreamModel 是该账户实际转发模型。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
@@ -249,7 +245,7 @@ OAuth 账户：
 - `providerCode = glm` 的通用 GLM API 和 GLM Coding Plan 都要求 `credentials.base_url` 显式填写到对应协议档案可接受的根地址，不能依赖后端猜测。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
 - `credentials.supported_endpoint_modes` 可限制协议端点能力。OpenAI v1 枚举值为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；Anthropic 枚举值为 `messages_json`、`messages_sse`、`message_token_counting`。省略时通用 `openai` API Key 默认 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE，Anthropic 默认 Messages JSON/SSE/Count Tokens，GLM 默认 Chat JSON/SSE。
-- `clientCompatibility = codex_responses` 时必须启用 `credentials.supported_endpoint_modes` 中的 `responses_sse`。
+- Codex Responses 请求只会命中同时具备 Codex Responses 兼容能力和 `responses_sse` 接口能力的账号。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
 

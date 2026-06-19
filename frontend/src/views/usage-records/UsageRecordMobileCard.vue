@@ -4,6 +4,7 @@
       <div class="mobile-list-card-title">{{ accountDisplayText(record) }}</div>
       <div class="mobile-list-card-tags">
         <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+        <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
         <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
         <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>

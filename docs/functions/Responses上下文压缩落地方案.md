@@ -80,9 +80,9 @@
 - Codex Remote Compaction V2 会在普通 `/responses` 的 `input` 末尾追加 `{"type":"compaction_trigger"}`，并期望流式响应里恰好出现一个 `compaction` output item；该能力只能按 Codex client profile 和账号能力显式承接。
 - 审计和使用记录需要保留请求里是否带有 `context_management`、`truncation`、是否访问 `/responses/compact` 的轻量 metadata，但不得记录完整大上下文副本。
 
-### Codex Responses 兼容模式
+### Codex Responses 请求形态
 
-当前 `codex_responses` 兼容模式会整理请求体、补齐 Codex 需要的字段，并删除部分字段。参考实现里 `CLIProxyAPI` 的 Codex translator 明确删除 `context_management` 和 `truncation`，并标注 Codex `/responses` 会返回 `Unsupported parameter: context_management`。Codex SDK 本身也没有在普通 `ResponsesApiRequest` 中发送 `context_management`。因此当前不把 `context_management` 当作 Codex `/responses` 可透传字段。
+当前 `requestClientCompatibility = codex_responses` 的请求形态会整理请求体、补齐 Codex 需要的字段，并删除部分字段。参考实现里 `CLIProxyAPI` 的 Codex translator 明确删除 `context_management` 和 `truncation`，并标注 Codex `/responses` 会返回 `Unsupported parameter: context_management`。Codex SDK 本身也没有在普通 `ResponsesApiRequest` 中发送 `context_management`。因此当前不把 `context_management` 当作 Codex `/responses` 可透传字段。
 
 - 继续删除 `context_management` 和 `truncation`，避免 Codex backend 直接拒绝请求。
 - 不由兼容层自动生成 compact 配置，除非后续新增明确账户策略。
@@ -125,7 +125,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 - endpoint family 和 `/responses/compact` 能力判断在候选账号筛选层；不支持该端点的账户不进入候选。
 - API Key 原生 Responses 透传时，`context_management` / `truncation` 保留在上游请求准备层。
-- `codex_responses` 兼容模式的字段保留或删除，也在上游请求准备层。
+- `codex_responses` 请求形态的字段保留或删除，也在上游请求准备层。
 - Codex V2 `compaction_trigger` 在原生 Responses / Codex adapter 路径中必须作为 Responses input item 透传，不转换为 `context_management`，也不在网关生成该 item。
 
 返回侧落点：
@@ -196,9 +196,9 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 - API Key 原生 Responses 透传：客户端传入 `context_management` 时，上游请求保留该字段。
 - API Key 原生 Responses 透传：客户端传入 `truncation` 时，上游请求保留该字段。
-- `codex_responses` 兼容模式：继续删除 `context_management` 和 `truncation`。
-- `codex_responses` 兼容模式：`/responses/compact` 只在账号能力允许时承接。
-- `codex_responses` 兼容模式：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
+- `codex_responses` 请求形态：继续删除 `context_management` 和 `truncation`。
+- `codex_responses` 请求形态：`/responses/compact` 只在账号能力允许时承接。
+- `codex_responses` 请求形态：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
 - 流式拦截：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。

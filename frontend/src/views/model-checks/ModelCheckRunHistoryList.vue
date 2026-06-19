@@ -420,8 +420,14 @@ function modelText(value: string) {
 }
 
 .model-check-mobile-actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.model-check-mobile-actions :deep(.ant-btn) {
+  width: 100%;
+  min-height: 36px;
+  white-space: normal;
 }
 
 @media (max-width: 900px) {

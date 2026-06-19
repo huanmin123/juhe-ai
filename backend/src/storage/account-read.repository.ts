@@ -2,6 +2,7 @@ import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/type
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
+import { accountNameContainsAccountIdSubquery } from './account-name-search.repository.js'
 import { loadModelMappingsByAccountIds } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
@@ -18,6 +19,7 @@ export interface AccountRowsPage {
 
 type AccountFilterValue = string | number
 type AccountRowQueryOptions = NormalizedAccountListOptions & { accountId?: string }
+type AccountNameContainsSubquery = { sql: string; params: AccountFilterValue[] }
 type AccountRowQuerySettings = {
   includeCredentials?: boolean
   includeTotal?: boolean
@@ -289,7 +291,8 @@ function queryAccountRowsForAccess(
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const orderClause = buildAccountListOrderClause(options)
-  const filters = buildAccountListFilters(options)
+  const containsSubquery = accountNameContainsAccountIdSubquery(options.keyword, access)
+  const filters = buildAccountListFilters(options, containsSubquery)
   const pageClause = pagination ? 'LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   const queryRows = (baseSql: string, params: AccountFilterValue[] = []): AccountRowsPage => {
@@ -779,7 +782,7 @@ function escapeLikePrefix(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
-function buildAccountListFilters(options: AccountRowQueryOptions): { clause: string; params: AccountFilterValue[] } {
+function buildAccountListFilters(options: AccountRowQueryOptions, containsSubquery?: AccountNameContainsSubquery): { clause: string; params: AccountFilterValue[] } {
   const clauses: string[] = []
   const params: AccountFilterValue[] = []
   if (options.accountId) {
@@ -793,14 +796,22 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
   const keyword = options.keyword?.trim()
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
-    clauses.push(`(
-      account_rows.name COLLATE NOCASE = ?
-      OR account_rows.name LIKE ? ESCAPE '\\'
-    )`)
-    params.push(
+    const keywordClauses = [
+      'account_rows.name COLLATE NOCASE = ?',
+      "account_rows.name LIKE ? ESCAPE '\\'"
+    ]
+    const keywordParams: AccountFilterValue[] = [
       keyword,
       keywordPrefix
-    )
+    ]
+    if (containsSubquery) {
+      keywordClauses.push(`account_rows.id IN (${containsSubquery.sql})`)
+      keywordParams.push(...containsSubquery.params)
+    }
+    clauses.push(`(
+      ${keywordClauses.join('\n      OR ')}
+    )`)
+    params.push(...keywordParams)
   }
   if (options.providerCode && options.providerCode !== 'all') {
     clauses.push('account_rows.provider_code = ?')

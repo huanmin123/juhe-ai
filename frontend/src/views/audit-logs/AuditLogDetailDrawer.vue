@@ -13,6 +13,13 @@
           <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
           <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
           <a-descriptions-item label="接口">{{ detail.method }} {{ detail.path }}</a-descriptions-item>
+          <a-descriptions-item label="模型">
+            <span v-if="detail.model" class="model-cell">
+              <a-tag color="blue">{{ detail.model }}</a-tag>
+              <a-tag v-if="detail.modelMappingApplied && detail.upstreamModel" color="orange">上游 {{ detail.upstreamModel }}</a-tag>
+            </span>
+            <span v-else>-</span>
+          </a-descriptions-item>
           <a-descriptions-item label="状态码">{{ detail.finalStatusCode ?? '-' }}</a-descriptions-item>
           <a-descriptions-item label="AI账户">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
@@ -327,6 +334,12 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
 .detail-time-cell {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
+}
+
+.model-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 :deep(.audit-detail-table .ant-table-cell) {

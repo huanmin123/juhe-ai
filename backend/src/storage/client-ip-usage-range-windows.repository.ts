@@ -11,6 +11,7 @@ export const clientIpRangeWindowScopeType = 'client_ip_range_window'
 const clientIpRangeWindowDirtyLimit = 1000
 const clientIpRangeWindowChunkSize = 200
 const clientIpRangeWindowDirtyIpHashes = new Set<string>()
+const clientIpAccountRangeWindowDirtyIpHashes = new Set<string>()
 
 export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirtyLimit?: number } = {}): void {
   const database = getStatsDatabase()
@@ -19,6 +20,7 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
   const updatedAt = nowIso()
   if (options.full) {
     for (const window of windows) {
+      refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
       refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
     }
     clearAllClientIpRangeWindowDirtyIpHashes(database)
@@ -28,6 +30,7 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
   if (!dirtyIpHashes.length) {
     if (hasStaleClientIpUsageRangeWindows(database, windows)) {
       for (const window of windows) {
+        refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
         refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
       }
       clearAllClientIpRangeWindowDirtyIpHashes(database)
@@ -38,6 +41,7 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
   try {
     for (const window of windows) {
       refreshClientIpUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
+      refreshClientIpAccountUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
     }
     clearClientIpRangeWindowDirtyIpHashes(database, dirtyIpHashes)
     if (!hasPendingClientIpRangeWindowDirtyIpHashes(database)) {
@@ -64,6 +68,7 @@ export function pendingClientIpRangeWindowDirtyCountForTest(): number {
 
 export function clearClientIpRangeWindowDirtyMemoryForTest(): void {
   clientIpRangeWindowDirtyIpHashes.clear()
+  clientIpAccountRangeWindowDirtyIpHashes.clear()
 }
 
 export function clientIpUsageRangeWindowReady(database: DatabaseSync, startDate: string, endDate: string): boolean {
@@ -75,8 +80,8 @@ export function clientIpUsageRangeWindowReady(database: DatabaseSync, startDate:
       AND job_name = ?
     LIMIT 1
   `).get(clientIpRangeWindowScopeType, clientIpRangeWindowScopeId(startDate, endDate), clientIpRangeWindowJobName) as unknown as { last_success_at?: string | null } | undefined
-  if (windowState) return Boolean(windowState.last_success_at)
   if (hasPendingClientIpRangeWindowDirtyIpHashes(database)) return false
+  if (windowState) return Boolean(windowState.last_success_at)
   const row = database.prepare('SELECT 1 FROM client_ip_usage_range_windows WHERE start_date = ? AND end_date = ? LIMIT 1')
     .get(startDate, endDate) as unknown as { 1?: number } | undefined
   return Boolean(row)
@@ -105,9 +110,17 @@ export function markClientIpRangeWindowsDirty(database: DatabaseSync, ipHashes: 
     ON CONFLICT(ip_hash) DO UPDATE SET
       updated_at = excluded.updated_at
   `)
+  const accountDirtyStatement = database.prepare(`
+    INSERT INTO client_ip_account_range_window_dirty_ips (ip_hash, updated_at)
+    VALUES (?, ?)
+    ON CONFLICT(ip_hash) DO UPDATE SET
+      updated_at = excluded.updated_at
+  `)
   for (const ipHash of ipHashes) {
     clientIpRangeWindowDirtyIpHashes.add(ipHash)
+    clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
     dirtyStatement.run(ipHash, updatedAt)
+    accountDirtyStatement.run(ipHash, updatedAt)
   }
 }
 
@@ -253,6 +266,124 @@ function refreshClientIpUsageRangeWindowForIps(database: DatabaseSync, startDate
   }
 }
 
+function refreshClientIpAccountUsageRangeWindow(database: DatabaseSync, startDate: string, endDate: string, updatedAt: string): void {
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database.prepare('DELETE FROM client_ip_account_usage_range_windows WHERE start_date = ? AND end_date = ?').run(startDate, endDate)
+    database.prepare(`
+      INSERT INTO client_ip_account_usage_range_windows (
+        ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
+        input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+        duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
+        first_token_ms_sum, first_token_ms_count, average_first_token_ms,
+        active_days, last_used_at, last_error_at, updated_at
+      )
+      SELECT
+        ip_hash,
+        account_id,
+        ?,
+        ?,
+        COALESCE(SUM(request_count), 0),
+        COALESCE(SUM(success_count), 0),
+        COALESCE(SUM(error_count), 0),
+        COALESCE(SUM(input_tokens), 0),
+        COALESCE(SUM(output_tokens), 0),
+        COALESCE(SUM(cache_read_tokens), 0),
+        COALESCE(SUM(cache_read_cost_usd), 0),
+        COALESCE(SUM(total_cost_usd), 0),
+        COALESCE(SUM(duration_ms_sum), 0),
+        COALESCE(SUM(duration_ms_count), 0),
+        COALESCE(MAX(duration_ms_max), 0),
+        CASE WHEN COALESCE(SUM(duration_ms_count), 0) > 0 THEN CAST(COALESCE(SUM(duration_ms_sum), 0) AS REAL) / COALESCE(SUM(duration_ms_count), 0) ELSE NULL END,
+        COALESCE(SUM(first_token_ms_sum), 0),
+        COALESCE(SUM(first_token_ms_count), 0),
+        CASE WHEN COALESCE(SUM(first_token_ms_count), 0) > 0 THEN CAST(COALESCE(SUM(first_token_ms_sum), 0) AS REAL) / COALESCE(SUM(first_token_ms_count), 0) ELSE NULL END,
+        COALESCE(SUM(CASE WHEN request_count > 0 THEN 1 ELSE 0 END), 0),
+        MAX(last_used_at),
+        MAX(last_error_at),
+        ?
+      FROM client_ip_account_stats_daily
+      WHERE stat_date >= ?
+        AND stat_date <= ?
+      GROUP BY ip_hash, account_id
+      HAVING COALESCE(SUM(request_count), 0) > 0
+        OR COALESCE(SUM(input_tokens), 0) > 0
+        OR COALESCE(SUM(output_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_tokens), 0) > 0
+        OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+        OR COALESCE(SUM(total_cost_usd), 0) > 0
+    `).run(startDate, endDate, updatedAt, startDate, endDate)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function refreshClientIpAccountUsageRangeWindowForIps(database: DatabaseSync, startDate: string, endDate: string, ipHashes: string[], updatedAt: string): void {
+  if (!ipHashes.length) return
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const chunk of chunkValues(ipHashes, clientIpRangeWindowChunkSize)) {
+      const placeholders = sqlPlaceholders(chunk.length)
+      database.prepare(`
+        DELETE FROM client_ip_account_usage_range_windows
+        WHERE start_date = ?
+          AND end_date = ?
+          AND ip_hash IN (${placeholders})
+      `).run(startDate, endDate, ...chunk)
+      database.prepare(`
+        INSERT INTO client_ip_account_usage_range_windows (
+          ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
+          input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
+          duration_ms_sum, duration_ms_count, duration_ms_max, average_duration_ms,
+          first_token_ms_sum, first_token_ms_count, average_first_token_ms,
+          active_days, last_used_at, last_error_at, updated_at
+        )
+        SELECT
+          ip_hash,
+          account_id,
+          ?,
+          ?,
+          COALESCE(SUM(request_count), 0),
+          COALESCE(SUM(success_count), 0),
+          COALESCE(SUM(error_count), 0),
+          COALESCE(SUM(input_tokens), 0),
+          COALESCE(SUM(output_tokens), 0),
+          COALESCE(SUM(cache_read_tokens), 0),
+          COALESCE(SUM(cache_read_cost_usd), 0),
+          COALESCE(SUM(total_cost_usd), 0),
+          COALESCE(SUM(duration_ms_sum), 0),
+          COALESCE(SUM(duration_ms_count), 0),
+          COALESCE(MAX(duration_ms_max), 0),
+          CASE WHEN COALESCE(SUM(duration_ms_count), 0) > 0 THEN CAST(COALESCE(SUM(duration_ms_sum), 0) AS REAL) / COALESCE(SUM(duration_ms_count), 0) ELSE NULL END,
+          COALESCE(SUM(first_token_ms_sum), 0),
+          COALESCE(SUM(first_token_ms_count), 0),
+          CASE WHEN COALESCE(SUM(first_token_ms_count), 0) > 0 THEN CAST(COALESCE(SUM(first_token_ms_sum), 0) AS REAL) / COALESCE(SUM(first_token_ms_count), 0) ELSE NULL END,
+          COALESCE(SUM(CASE WHEN request_count > 0 THEN 1 ELSE 0 END), 0),
+          MAX(last_used_at),
+          MAX(last_error_at),
+          ?
+        FROM client_ip_account_stats_daily
+        WHERE stat_date >= ?
+          AND stat_date <= ?
+          AND ip_hash IN (${placeholders})
+        GROUP BY ip_hash, account_id
+        HAVING COALESCE(SUM(request_count), 0) > 0
+          OR COALESCE(SUM(input_tokens), 0) > 0
+          OR COALESCE(SUM(output_tokens), 0) > 0
+          OR COALESCE(SUM(cache_read_tokens), 0) > 0
+          OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+          OR COALESCE(SUM(total_cost_usd), 0) > 0
+      `).run(startDate, endDate, updatedAt, startDate, endDate, ...chunk)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
 function markClientIpUsageRangeWindowReady(database: DatabaseSync, startDate: string, endDate: string, updatedAt: string): void {
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, last_success_at, updated_at)
@@ -291,9 +422,18 @@ function hasStaleClientIpUsageRangeWindows(database: DatabaseSync, windows: Arra
 function takeClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, limit: number): string[] {
   const max = Math.max(1, Math.trunc(limit))
   const result: string[] = []
+  const seen = new Set<string>()
   for (const ipHash of clientIpRangeWindowDirtyIpHashes) {
+    if (seen.has(ipHash)) continue
+    seen.add(ipHash)
     result.push(ipHash)
     if (result.length >= max) break
+  }
+  for (const ipHash of clientIpAccountRangeWindowDirtyIpHashes) {
+    if (result.length >= max) break
+    if (seen.has(ipHash)) continue
+    seen.add(ipHash)
+    result.push(ipHash)
   }
   if (result.length < max) {
     const rows = database.prepare(`
@@ -304,9 +444,26 @@ function takeClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, limit: num
     `).all(max) as Array<{ ip_hash?: string }>
     for (const row of rows) {
       const ipHash = row.ip_hash
-      if (!ipHash || result.includes(ipHash)) continue
+      if (!ipHash || seen.has(ipHash)) continue
+      seen.add(ipHash)
       result.push(ipHash)
       clientIpRangeWindowDirtyIpHashes.add(ipHash)
+      if (result.length >= max) break
+    }
+  }
+  if (result.length < max) {
+    const rows = database.prepare(`
+      SELECT ip_hash
+      FROM client_ip_account_range_window_dirty_ips
+      ORDER BY updated_at ASC, ip_hash ASC
+      LIMIT ?
+    `).all(max) as Array<{ ip_hash?: string }>
+    for (const row of rows) {
+      const ipHash = row.ip_hash
+      if (!ipHash || seen.has(ipHash)) continue
+      seen.add(ipHash)
+      result.push(ipHash)
+      clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
       if (result.length >= max) break
     }
   }
@@ -318,19 +475,26 @@ function clearClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, ipHashes:
   for (const chunk of chunkValues(ipHashes, clientIpRangeWindowChunkSize)) {
     const placeholders = sqlPlaceholders(chunk.length)
     database.prepare(`DELETE FROM client_ip_range_window_dirty_ips WHERE ip_hash IN (${placeholders})`).run(...chunk)
+    database.prepare(`DELETE FROM client_ip_account_range_window_dirty_ips WHERE ip_hash IN (${placeholders})`).run(...chunk)
     for (const ipHash of chunk) {
       clientIpRangeWindowDirtyIpHashes.delete(ipHash)
+      clientIpAccountRangeWindowDirtyIpHashes.delete(ipHash)
     }
   }
 }
 
 function clearAllClientIpRangeWindowDirtyIpHashes(database: DatabaseSync): void {
   clientIpRangeWindowDirtyIpHashes.clear()
+  clientIpAccountRangeWindowDirtyIpHashes.clear()
   database.prepare('DELETE FROM client_ip_range_window_dirty_ips').run()
+  database.prepare('DELETE FROM client_ip_account_range_window_dirty_ips').run()
 }
 
 function hasPendingClientIpRangeWindowDirtyIpHashes(database: DatabaseSync): boolean {
   if (clientIpRangeWindowDirtyIpHashes.size > 0) return true
+  if (clientIpAccountRangeWindowDirtyIpHashes.size > 0) return true
   const row = database.prepare('SELECT 1 FROM client_ip_range_window_dirty_ips LIMIT 1').get() as { 1?: number } | undefined
-  return Boolean(row)
+  if (row) return true
+  const accountRow = database.prepare('SELECT 1 FROM client_ip_account_range_window_dirty_ips LIMIT 1').get() as { 1?: number } | undefined
+  return Boolean(accountRow)
 }

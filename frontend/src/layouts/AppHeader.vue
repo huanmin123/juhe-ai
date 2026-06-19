@@ -95,8 +95,8 @@ defineEmits<{
 
 .announcement-trigger {
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -149,8 +149,8 @@ defineEmits<{
 
 .announcement-dot {
   position: absolute;
-  top: 7px;
-  right: 7px;
+  top: 8px;
+  right: 8px;
   width: 8px;
   height: 8px;
   background: #f5222d;

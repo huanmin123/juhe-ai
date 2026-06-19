@@ -42,6 +42,17 @@ interface ApiKeyAvailabilityScheduleStartEventCandidate {
   key: string
 }
 
+interface ScheduleWindowOccurrence {
+  startDateKey: string
+  minuteOfDay: number
+  key: string
+}
+
+interface ScheduleWindowEvent {
+  action: 'start' | 'end'
+  key: string
+}
+
 export function normalizeApiKeyAvailabilitySchedule(input: unknown): ApiKeyAvailabilitySchedule | undefined {
   if (input === undefined || input === null) {
     return undefined
@@ -96,25 +107,9 @@ export function evaluateApiKeyAvailabilitySchedule(
     return { enabled: false, allowed: true }
   }
   const current = zonedDateTimeParts(now, schedule.timezone)
-  if (!isDateInScheduleRange(current.dateKey, schedule)) {
-    return { enabled: true, allowed: false }
-  }
-
-  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
-  if (exception) {
-    if (exception.action === 'deny') {
-      return { enabled: true, allowed: false }
-    }
-    const exceptionWindows = exception.windows ?? []
-    return {
-      enabled: true,
-      allowed: exceptionWindows.some((window) => isMinuteInWindow(current, { ...window, daysOfWeek: [current.dayOfWeek] }))
-    }
-  }
-
   return {
     enabled: true,
-    allowed: schedule.windows.some((window) => isMinuteInWindow(current, window))
+    allowed: isCurrentTimeAllowedBySchedule(schedule, current)
   }
 }
 
@@ -132,23 +127,15 @@ export function dueApiKeyAvailabilityScheduleEvent(
 ): ApiKeyAvailabilityScheduleDueEvent | undefined {
   if (!schedule?.enabled) return undefined
   const current = zonedDateTimeParts(now, schedule.timezone)
-  if (!isDateInScheduleRange(current.dateKey, schedule)) return undefined
-  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
-  if (exception?.action === 'deny') return undefined
-  const windows = exception?.action === 'allow'
-    ? exception.windows.map((window, index) => ({
-      token: `exception:${current.dateKey}:${index}`,
-      window: { ...window, daysOfWeek: [current.dayOfWeek] }
-    }))
-    : schedule.windows.map((window, index) => ({ token: `window:${index}`, window }))
-  const events = windows.flatMap((item) => dueWindowEvents(current, item.window, item.token))
+  const events = dueScheduleWindowEvents(schedule, current)
   if (!events.length) return undefined
   const starts = events.filter((event) => event.action === 'start')
   const selected = starts[0] ?? events[0]
   const action = selected.action
+  const status = isCurrentTimeAllowedBySchedule(schedule, current) ? 'active' : 'disabled'
   return {
     action,
-    status: action === 'start' ? 'active' : 'disabled',
+    status,
     eventKey: `${current.dateKey}:${current.minuteOfDay}:${action}:${events.map((event) => event.key).sort().join('|')}`
   }
 }
@@ -335,76 +322,15 @@ function isDateInScheduleRange(dateKey: string, schedule: ApiKeyAvailabilitySche
   return true
 }
 
-function isMinuteInWindow(current: ZonedDateTimeParts, window: ApiKeyAvailabilityScheduleWindow): boolean {
-  const start = minuteOfDay(window.start)
-  const end = minuteOfDay(window.end)
-  const days = new Set(window.daysOfWeek)
-  if (start < end) {
-    return days.has(current.dayOfWeek) && current.minuteOfDay >= start && current.minuteOfDay < end
-  }
-  return (days.has(current.dayOfWeek) && current.minuteOfDay >= start)
-    || (days.has(previousDayOfWeek(current.dayOfWeek)) && current.minuteOfDay < end)
-}
-
-function dueWindowEvents(
-  current: ZonedDateTimeParts,
-  window: ApiKeyAvailabilityScheduleWindow,
-  token: string
-): Array<{ action: 'start' | 'end'; key: string }> {
-  const start = minuteOfDay(window.start)
-  const end = minuteOfDay(window.end)
-  const days = new Set(window.daysOfWeek)
-  const events: Array<{ action: 'start' | 'end'; key: string }> = []
-  if (current.minuteOfDay === start && days.has(current.dayOfWeek)) {
-    events.push({ action: 'start', key: `${token}:start:${window.start}` })
-  }
-  const endDay = start < end ? current.dayOfWeek : previousDayOfWeek(current.dayOfWeek)
-  if (current.minuteOfDay === end && days.has(endDay)) {
-    events.push({ action: 'end', key: `${token}:end:${window.end}` })
-  }
-  return events
-}
-
 function startEventCandidatesForCurrentAllowedTime(
   schedule: ApiKeyAvailabilitySchedule,
   current: ZonedDateTimeParts
 ): ApiKeyAvailabilityScheduleStartEventCandidate[] {
-  const exception = schedule.exceptions?.find((item) => item.date === current.dateKey)
-  if (exception?.action === 'allow') {
-    return exception.windows.flatMap((window, index) => startEventCandidateForCurrentAllowedWindow(
-      current,
-      { ...window, daysOfWeek: [current.dayOfWeek] },
-      `exception:${current.dateKey}:${index}`,
-      false
-    ))
-  }
-  if (exception?.action === 'deny') return []
-  return schedule.windows.flatMap((window, index) => startEventCandidateForCurrentAllowedWindow(current, window, `window:${index}`, true))
-}
-
-function startEventCandidateForCurrentAllowedWindow(
-  current: ZonedDateTimeParts,
-  window: ApiKeyAvailabilityScheduleWindow,
-  token: string,
-  allowPreviousDate: boolean
-): ApiKeyAvailabilityScheduleStartEventCandidate[] {
-  const start = minuteOfDay(window.start)
-  const end = minuteOfDay(window.end)
-  const days = new Set(window.daysOfWeek)
-  if (start < end) {
-    if (days.has(current.dayOfWeek) && current.minuteOfDay >= start && current.minuteOfDay < end) {
-      return [{ dateKey: current.dateKey, minuteOfDay: start, key: `${token}:start:${window.start}` }]
-    }
-    return []
-  }
-  if (days.has(current.dayOfWeek) && current.minuteOfDay >= start) {
-    return [{ dateKey: current.dateKey, minuteOfDay: start, key: `${token}:start:${window.start}` }]
-  }
-  const previousDay = previousDayOfWeek(current.dayOfWeek)
-  if (allowPreviousDate && days.has(previousDay) && current.minuteOfDay < end) {
-    return [{ dateKey: previousDateKey(current.dateKey), minuteOfDay: start, key: `${token}:start:${window.start}` }]
-  }
-  return []
+  return allowedScheduleWindowOccurrences(schedule, current).map((occurrence) => ({
+    dateKey: occurrence.startDateKey,
+    minuteOfDay: occurrence.minuteOfDay,
+    key: occurrence.key
+  }))
 }
 
 function minuteOfDay(value: string): number {
@@ -413,13 +339,144 @@ function minuteOfDay(value: string): number {
   return Number(match[1]) * 60 + Number(match[2])
 }
 
-function previousDayOfWeek(dayOfWeek: number): number {
-  return dayOfWeek === 1 ? 7 : dayOfWeek - 1
+function isCurrentTimeAllowedBySchedule(schedule: ApiKeyAvailabilitySchedule, current: ZonedDateTimeParts): boolean {
+  return allowedScheduleWindowOccurrences(schedule, current).length > 0
+}
+
+function allowedScheduleWindowOccurrences(schedule: ApiKeyAvailabilitySchedule, current: ZonedDateTimeParts): ScheduleWindowOccurrence[] {
+  const occurrences: ScheduleWindowOccurrence[] = []
+  const startDateKeys = [current.dateKey, previousDateKey(current.dateKey)]
+  for (const startDateKey of startDateKeys) {
+    if (!isDateInScheduleRange(startDateKey, schedule)) continue
+    const exception = schedule.exceptions?.find((item) => item.date === startDateKey)
+    if (exception?.action === 'deny') continue
+    if (exception?.action === 'allow') {
+      occurrences.push(...exception.windows
+        .map((window, index) => exceptionWindowOccurrence(current, startDateKey, window, `exception:${startDateKey}:${index}`))
+        .filter((item): item is ScheduleWindowOccurrence => Boolean(item)))
+      continue
+    }
+    occurrences.push(...schedule.windows
+      .map((window, index) => scheduleWindowOccurrence(current, startDateKey, window, `window:${index}`))
+      .filter((item): item is ScheduleWindowOccurrence => Boolean(item)))
+  }
+  return occurrences
+}
+
+function dueScheduleWindowEvents(schedule: ApiKeyAvailabilitySchedule, current: ZonedDateTimeParts): ScheduleWindowEvent[] {
+  const events: ScheduleWindowEvent[] = []
+  const startDateKeys = [current.dateKey, previousDateKey(current.dateKey)]
+  for (const startDateKey of startDateKeys) {
+    if (!isDateInScheduleRange(startDateKey, schedule)) continue
+    const exception = schedule.exceptions?.find((item) => item.date === startDateKey)
+    if (exception?.action === 'deny') continue
+    if (exception?.action === 'allow') {
+      events.push(...exception.windows.flatMap((window, index) => exceptionWindowEvents(current, startDateKey, window, `exception:${startDateKey}:${index}`)))
+      continue
+    }
+    events.push(...schedule.windows.flatMap((window, index) => scheduleWindowEvents(current, startDateKey, window, `window:${index}`)))
+  }
+  return events
+}
+
+function scheduleWindowOccurrence(
+  current: ZonedDateTimeParts,
+  startDateKey: string,
+  window: ApiKeyAvailabilityScheduleWindow,
+  token: string
+): ScheduleWindowOccurrence | undefined {
+  const startDayOfWeek = dayOfWeekForDateKey(startDateKey)
+  if (!new Set(window.daysOfWeek).has(startDayOfWeek)) return undefined
+  return windowOccurrence(current, startDateKey, window.start, window.end, token)
+}
+
+function exceptionWindowOccurrence(
+  current: ZonedDateTimeParts,
+  startDateKey: string,
+  window: Pick<ApiKeyAvailabilityScheduleWindow, 'start' | 'end'>,
+  token: string
+): ScheduleWindowOccurrence | undefined {
+  return windowOccurrence(current, startDateKey, window.start, window.end, token)
+}
+
+function windowOccurrence(
+  current: ZonedDateTimeParts,
+  startDateKey: string,
+  startText: string,
+  endText: string,
+  token: string
+): ScheduleWindowOccurrence | undefined {
+  const start = minuteOfDay(startText)
+  const end = minuteOfDay(endText)
+  if (start < end) {
+    if (current.dateKey === startDateKey && current.minuteOfDay >= start && current.minuteOfDay < end) {
+      return { startDateKey, minuteOfDay: start, key: `${token}:start:${startText}` }
+    }
+    return undefined
+  }
+  if (current.dateKey === startDateKey && current.minuteOfDay >= start) {
+    return { startDateKey, minuteOfDay: start, key: `${token}:start:${startText}` }
+  }
+  if (current.dateKey === nextDateKey(startDateKey) && current.minuteOfDay < end) {
+    return { startDateKey, minuteOfDay: start, key: `${token}:start:${startText}` }
+  }
+  return undefined
+}
+
+function scheduleWindowEvents(
+  current: ZonedDateTimeParts,
+  startDateKey: string,
+  window: ApiKeyAvailabilityScheduleWindow,
+  token: string
+): ScheduleWindowEvent[] {
+  const startDayOfWeek = dayOfWeekForDateKey(startDateKey)
+  if (!new Set(window.daysOfWeek).has(startDayOfWeek)) return []
+  return windowEvents(current, startDateKey, window.start, window.end, token)
+}
+
+function exceptionWindowEvents(
+  current: ZonedDateTimeParts,
+  startDateKey: string,
+  window: Pick<ApiKeyAvailabilityScheduleWindow, 'start' | 'end'>,
+  token: string
+): ScheduleWindowEvent[] {
+  return windowEvents(current, startDateKey, window.start, window.end, token)
+}
+
+function windowEvents(
+  current: ZonedDateTimeParts,
+  startDateKey: string,
+  startText: string,
+  endText: string,
+  token: string
+): ScheduleWindowEvent[] {
+  const start = minuteOfDay(startText)
+  const end = minuteOfDay(endText)
+  const endDateKey = start < end ? startDateKey : nextDateKey(startDateKey)
+  const events: ScheduleWindowEvent[] = []
+  if (current.dateKey === startDateKey && current.minuteOfDay === start) {
+    events.push({ action: 'start', key: `${token}:start:${startText}` })
+  }
+  if (current.dateKey === endDateKey && current.minuteOfDay === end) {
+    events.push({ action: 'end', key: `${token}:end:${endText}` })
+  }
+  return events
+}
+
+function dayOfWeekForDateKey(dateKey: string): number {
+  const utcDay = new Date(`${dateKey}T00:00:00.000Z`).getUTCDay()
+  return utcDay === 0 ? 7 : utcDay
 }
 
 function previousDateKey(dateKey: string): string {
   const date = new Date(`${dateKey}T00:00:00.000Z`)
   date.setUTCDate(date.getUTCDate() - 1)
+  return date.toISOString().slice(0, 10)
+}
+
+function nextDateKey(dateKey: string): string {
+  const date = new Date(`${dateKey}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + 1)
   return date.toISOString().slice(0, 10)
 }
 

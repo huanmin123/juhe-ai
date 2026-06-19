@@ -9,6 +9,7 @@
           data-1p-ignore="true"
           data-form-type="other"
           :disabled="authorizedEditing"
+          :maxlength="maxAccountNameLength"
           :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'"
         />
       </a-form-item>
@@ -49,6 +50,8 @@ import GroupSelect from '@/components/GroupSelect.vue'
 import type { AccountTagSummary } from '@/types/domain'
 import AccountTagSelect from './AccountTagSelect.vue'
 import type { AccountFormModel } from './accountFormTypes'
+
+const maxAccountNameLength = 128
 
 const props = defineProps<{
   authorizedEditing: boolean

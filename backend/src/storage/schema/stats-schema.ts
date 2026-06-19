@@ -744,6 +744,61 @@ export function applyStatsSchema(database: DatabaseSync): void {
           updated_at TEXT NOT NULL
         );
 
+    CREATE TABLE IF NOT EXISTS client_ip_account_stats_daily (
+          ip_hash TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          stat_date TEXT NOT NULL,
+          request_count INTEGER NOT NULL DEFAULT 0,
+          success_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+          total_cost_usd REAL NOT NULL DEFAULT 0,
+          duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+          duration_ms_count INTEGER NOT NULL DEFAULT 0,
+          duration_ms_max INTEGER NOT NULL DEFAULT 0,
+          first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+          first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+          last_used_at TEXT,
+          last_error_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (ip_hash, account_id, stat_date)
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_account_usage_range_windows (
+          ip_hash TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          request_count INTEGER NOT NULL DEFAULT 0,
+          success_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+          total_cost_usd REAL NOT NULL DEFAULT 0,
+          duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+          duration_ms_count INTEGER NOT NULL DEFAULT 0,
+          duration_ms_max INTEGER NOT NULL DEFAULT 0,
+          average_duration_ms REAL,
+          first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+          first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+          average_first_token_ms REAL,
+          active_days INTEGER NOT NULL DEFAULT 0,
+          last_used_at TEXT,
+          last_error_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (ip_hash, account_id, start_date, end_date)
+        );
+
+    CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips (
+          ip_hash TEXT PRIMARY KEY,
+          updated_at TEXT NOT NULL
+        );
+
     CREATE TABLE IF NOT EXISTS client_ip_policies (
           id TEXT PRIMARY KEY,
           ip_hash TEXT NOT NULL,
@@ -1202,6 +1257,28 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_end ON client_ip_usage_range_windows(end_date);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_dirty_updated ON client_ip_range_window_dirty_ips(updated_at ASC, ip_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_date ON client_ip_account_stats_daily(stat_date, ip_hash, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_ip_date ON client_ip_account_stats_daily(ip_hash, stat_date, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_requests ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, request_count DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_success ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, success_count DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_errors ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, error_count DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_error_rate ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, (CASE WHEN request_count > 0 THEN CAST(error_count AS REAL) / request_count ELSE 0 END) DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_tokens ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, (input_tokens + output_tokens) DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_cost ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, total_cost_usd DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_active_days ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, active_days DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_last_used ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, last_used_at DESC, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_dirty_updated ON client_ip_account_range_window_dirty_ips(updated_at ASC, ip_hash);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_policies_active ON client_ip_policies(status, ip_hash, expires_at);
 

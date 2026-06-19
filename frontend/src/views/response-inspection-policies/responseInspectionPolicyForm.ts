@@ -122,11 +122,11 @@ export function validateResponseInspectionMatchFields(
 ): string | undefined {
   const clientProfiles = normalizeResponseInspectionClientProfiles(form.clientProfiles)
   if (clientProfiles.length !== form.clientProfiles.length) {
-    return `${options.messagePrefix ?? ''}客户端画像包含无效选项`
+    return `${options.messagePrefix ?? ''}请求客户端包含无效选项`
   }
   const accountCompatibilities = normalizeResponseInspectionAccountCompatibilities(form.accountClientCompatibilities)
   if (accountCompatibilities.length !== form.accountClientCompatibilities.length) {
-    return `${options.messagePrefix ?? ''}账号兼容模式包含无效选项`
+    return `${options.messagePrefix ?? ''}账号兼容能力包含无效选项`
   }
   for (const field of responseInspectionMatchFieldEntries(form)) {
     const label = `${options.messagePrefix ?? ''}${field.label}`

@@ -31,7 +31,7 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
     ['api_key', 'oauth']
   )
   assertPresent(
-    'AI 账户客户端兼容模式覆盖不完整',
+    'AI 账户客户端兼容覆盖不完整',
     textValuesForIds(database, 'accounts', 'id', 'client_compatibility', accountIds),
     ['openai_standard', 'codex_responses']
   )

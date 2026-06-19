@@ -2,6 +2,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import type { ClientIpStatsRow, ClientIpStatus, ClientIpUsageSummary } from '@/types/domain'
 
 export type IpStatsPolicyAction = 'blacklist' | 'unblock'
+export type IpStatsRowAction = 'detail' | IpStatsPolicyAction
 
 export const ipStatsColumns = [
   { title: 'IP', key: 'ip', width: 180, fixed: 'left', align: 'left' },
@@ -24,10 +25,11 @@ export const ipStatsColumns = [
 ]
 
 export function ipRowActions(record: ClientIpStatsRow): RowActionItem[] {
+  const detailAction: RowActionItem = { key: 'detail', label: '详情', icon: 'detail' }
   if (record.status === 'blacklisted') {
-    return [{ key: 'unblock', label: '解封', icon: 'restore', tone: 'success' }]
+    return [detailAction, { key: 'unblock', label: '解封', icon: 'restore', tone: 'success' }]
   }
-  return [{ key: 'blacklist', label: '封禁', icon: 'disable', tone: 'danger' }]
+  return [detailAction, { key: 'blacklist', label: '封禁', icon: 'disable', tone: 'danger' }]
 }
 
 export function cacheReadRate(usage?: ClientIpUsageSummary): number {

@@ -9,7 +9,7 @@ import { accountOperationScopeParams } from './accountOperationScope'
 import {
   authorizedAccountUnavailableText,
   canEditAccount,
-  canManageGptOAuth,
+  canManageOAuthAccount,
   canRestoreException,
   hasAuthorizedInstanceFailureState,
   canUseAccountActions,
@@ -30,8 +30,8 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   const tokenRefreshLoading = ref(false)
 
   async function refreshOAuthToken(account: AccountSummary) {
-    if (!canManageGptOAuth(account)) {
-      message.warning('只有自有 GPT OAuth 账户可以刷新令牌')
+    if (!canManageOAuthAccount(account)) {
+      message.warning('只有支持 OAuth 管理的自有账户可以刷新令牌')
       return
     }
     tokenRefreshLoading.value = true

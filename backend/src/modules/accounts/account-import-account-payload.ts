@@ -1,10 +1,9 @@
-import { type AccountAvailabilitySchedule, type AccountClientCompatibility, type AccountModelMapping, type AccountType } from '../../domain/types.js'
+import { type AccountAvailabilitySchedule, type AccountModelMapping, type AccountType } from '../../domain/types.js'
 import { type AccountImportStatus } from './account-import-field-parser.js'
 
 export interface AccountImportCreatePayloadAccount {
   providerCode: string
   providerProtocolProfileId?: string
-  clientCompatibility?: AccountClientCompatibility
   name: string
   type: AccountType
   status: AccountImportStatus
@@ -33,7 +32,6 @@ export function buildAccountImportCreatePayload(
   const payload: Record<string, unknown> = {
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
-    clientCompatibility: account.clientCompatibility,
     name: account.name,
     type: account.type,
     status: accountImportCreateStatus(account.status),

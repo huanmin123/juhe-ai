@@ -85,11 +85,11 @@
             <strong>{{ providerText(record.providerCode) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>客户端画像</span>
+            <span>请求客户端</span>
             <strong>{{ clientProfileText(record.match.clientProfiles) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>账号兼容</span>
+            <span>账号兼容能力</span>
             <strong>{{ accountCompatibilityText(record.match.accountClientCompatibilities) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
@@ -215,8 +215,8 @@ const columns = [
   { title: '层级', key: 'scope', width: 110 },
   { title: '协议', key: 'protocol', width: 120 },
   { title: '供应商', key: 'provider', width: 150 },
-  { title: '客户端画像', key: 'clientProfiles', width: 150 },
-  { title: '账号兼容', key: 'accountClientCompatibilities', width: 170 },
+  { title: '请求客户端', key: 'clientProfiles', width: 150 },
+  { title: '账号兼容能力', key: 'accountClientCompatibilities', width: 170 },
   { title: '优先级', key: 'priority', width: 90 },
   { title: '状态', key: 'status', width: 90 },
   ...matchColumns,

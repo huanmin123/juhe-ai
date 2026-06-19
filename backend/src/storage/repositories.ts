@@ -10,6 +10,7 @@ import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, in
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
+import { maxAccountNameLength, replaceAccountNameSearchTerms } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
 import { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
 export { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
@@ -170,7 +171,6 @@ import {
   normalizeNullableIdInput,
   normalizeNullableTextInput,
   normalizeOptionalBooleanInput,
-  normalizeOptionalRequiredTextInput,
   requiredTextInput
 } from './repository-input-normalization.js'
 import {
@@ -182,6 +182,23 @@ const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const internalAccountReadAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const deletedAccountPhysicalCleanupRetentionMonths = 1
 const deletedAccountPhysicalCleanupBatchSize = 20
+
+function normalizeAccountNameInput(value: unknown): string {
+  const name = requiredTextInput(value, '账户名称')
+  assertAccountNameWithinLimit(name)
+  return name
+}
+
+function normalizeOptionalAccountNameInput(input: Record<string, unknown>, fallback: string): string {
+  if (!hasOwnInput(input, 'name')) return fallback
+  return normalizeAccountNameInput(input.name)
+}
+
+function assertAccountNameWithinLimit(name: string): void {
+  if ([...name].length > maxAccountNameLength) {
+    throw new Error(`账户名称不能超过 ${maxAccountNameLength} 个字符`)
+  }
+}
 
 function assertAccountEndpointModesCompatible(
   protocolProfile: { protocolCode?: string; protocolVersion?: string },
@@ -949,7 +966,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion,
-    name: requiredTextInput(input.name, '账户名称'),
+    name: normalizeAccountNameInput(input.name),
     notes: normalizeNullableTextInput(input.notes, '账户备注'),
     type: accountType,
     credentials,
@@ -1057,6 +1074,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
       )
     replaceAccountSupportedModels(account.id, providerCode, supportedModels)
     replaceAccountModelMappings(account.id, providerCode, modelMappings)
+    replaceAccountNameSearchTerms(database, account.id, systemAccountId, account.name, now)
     savedTags = replaceAccountTags(account.id, systemAccountId, tagNames, now, database)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -1234,7 +1252,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const updateNowMs = Date.now()
   const next: AccountSummary = accountSummaryWithEffectiveAvailability({
     ...current,
-    name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '账户名称'),
+    name: normalizeOptionalAccountNameInput(input, current.name),
     notes: hasNotesInput ? normalizeNullableTextInput(input.notes, '账户备注') : current.notes,
     credentials,
     status: nextStatus,
@@ -1325,6 +1343,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         systemAccountId
     )
     if (Number(result.changes ?? 0) > 0 && next.name !== current.name) {
+      replaceAccountNameSearchTerms(database, id, systemAccountId, next.name, updatedAt)
       renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, updatedAt)
     }
     if (Number(result.changes ?? 0) > 0 && hasSupportedModelsInput) {

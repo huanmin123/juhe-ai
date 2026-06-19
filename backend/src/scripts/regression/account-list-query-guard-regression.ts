@@ -47,8 +47,16 @@ try {
   const middleGroupOnly = createGuardAccount('绑定分组中间账户', 'sk-account-list-query-guard-group-middle', '普通备注绑定分组中间', middleGroup.id)
   const wildcardLiteral = createGuardAccount('percent%literal 账户', 'sk-account-list-query-guard-percent-literal', '通配符字面量', matchedGroup.id)
   const wildcardNeighbor = createGuardAccount('percentXliteral 账户', 'sk-account-list-query-guard-percent-neighbor', '通配符邻近值', matchedGroup.id)
+  const maxLengthTailName = `${'长'.repeat(124)}末尾片段`
+  const maxLengthTailAccount = createGuardAccount(maxLengthTailName, 'sk-account-list-query-guard-max-tail', '最大长度末尾片段', matchedGroup.id)
   const disabledStatusAccount = createGuardAccount('多状态筛选停用账户', 'sk-account-list-query-guard-disabled-status', '停用状态筛选', matchedGroup.id, 'disabled')
   const errorStatusAccount = createGuardAccount('多状态筛选异常账户', 'sk-account-list-query-guard-error-status', '异常状态筛选', matchedGroup.id, 'error')
+  assert.equal([...maxLengthTailName].length, 128, '回归账户名称应覆盖账户名称最大长度边界')
+  assert.throws(
+    () => createGuardAccount(`${'超'.repeat(129)}`, 'sk-account-list-query-guard-name-too-long', '超长名称', matchedGroup.id),
+    /账户名称不能超过 128 个字符/,
+    'AI 账户名称应限制最大长度，保证名称搜索词项规模可控'
+  )
   const grantee = repositories.createSystemAccount({
     username: 'account_list_query_guard_grantee',
     displayName: '账户列表防护被授权人',
@@ -94,7 +102,16 @@ try {
     const nameIds = nameResult.items.map((item) => item.id)
     assert(nameIds.includes(matchedByName.id), 'AI 账户搜索应命中名称精确值')
     assert(nameIds.includes(matchedByNamePrefix.id), 'AI 账户搜索应命中名称前缀值')
-    assert(!nameIds.includes(middleNameOnly.id), 'AI 账户搜索不应命中名称中间包含值')
+    assert(nameIds.includes(middleNameOnly.id), 'AI 账户搜索应命中名称中间包含值')
+
+    const singleChineseResult = repositories.listAccountsPage(access, { keyword: '索', page: 1, pageSize: 20 })
+    assert(singleChineseResult.items.some((item) => item.id === middleNameOnly.id), 'AI 账户搜索应支持中文单字包含值')
+
+    const doubleChineseResult = repositories.listAccountsPage(access, { keyword: '检索', page: 1, pageSize: 20 })
+    assert(doubleChineseResult.items.some((item) => item.id === middleNameOnly.id), 'AI 账户搜索应支持中文双字包含值')
+
+    const maxLengthTailResult = repositories.listAccountsPage(access, { keyword: '末尾片段', page: 1, pageSize: 20 })
+    assert(maxLengthTailResult.items.some((item) => item.id === maxLengthTailAccount.id), 'AI 账户搜索应命中最大长度账户名末尾片段')
 
     const notesResult = repositories.listAccountsPage(access, { keyword: '备注前缀', page: 1, pageSize: 20 })
     const notesIds = notesResult.items.map((item) => item.id)
@@ -157,6 +174,10 @@ try {
   }
 
   assert(capturedCalls.length >= 5, '回归应捕获 AI 账户列表 SQL')
+  assert(
+    capturedCalls.some((call) => call.params.some((param) => typeof param === 'string' && param.startsWith('%') && param.endsWith('%'))),
+    'AI 账户列表名称搜索应传入包含匹配参数'
+  )
   for (const call of capturedCalls) {
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
     assert(!/\baccount_rows\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表搜索不应把备注字段放进通用关键词 WHERE')
@@ -168,16 +189,30 @@ try {
     if (/\bLIKE\s+\?/i.test(call.sql)) {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
     }
-    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'AI 账户列表搜索不应传入前导通配符参数')
+    if (call.params.some((param) => typeof param === 'string' && param.startsWith('%'))) {
+      assert(
+        /\bdocuments\.normalized_name\s+LIKE\s+\?\s+ESCAPE\s+'\\'/i.test(call.sql),
+        'AI 账户列表包含匹配只能落到账户名称规范化搜索文档'
+      )
+      assert(
+        /\baccount_rows\.id\s+IN\s*\(/i.test(call.sql),
+        'AI 账户列表包含匹配必须先由账户名称词项索引收敛候选 ID'
+      )
+    }
   }
   for (const indexName of [
     'idx_accounts_name_lookup',
     'idx_accounts_system_account_name_lookup',
+    'idx_account_name_search_terms_term_owner',
+    'idx_account_name_search_terms_account',
+    'idx_account_name_search_documents_owner',
     'idx_groups_name_lookup',
     'idx_groups_system_account_name_lookup'
   ]) {
     assertBusinessIndexExists(indexName)
   }
+  assertAccountNameSearchTermRows(middleNameOnly.id)
+  assertAccountNameSearchCandidateQueryPlan(middleNameOnly.id)
   for (const indexName of [
     'idx_accounts_notes_lookup',
     'idx_accounts_system_account_notes_lookup'
@@ -188,7 +223,7 @@ try {
   assertNoAuthorizationInstanceBackfillScan(granteeAccess, authorizedInstance.id)
   assertExpiredAccountCleanupIsBoundedAndIndexed(access)
 
-  console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀匹配，分组使用独立筛选，请求路径不再按被授权人全量回扫授权实例或无界清理过期账号')
+  console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀/索引候选包含匹配，分组使用独立筛选，请求路径不再按被授权人全量回扫授权实例或无界清理过期账号')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -259,9 +294,9 @@ function assertAccountListRouteBoundary(): void {
     '账户列表和 options 状态归类不应通过仓储层无界翻页后过滤实现'
   )
   assert(
-    accountReadRepositorySource.includes('account_schedule_allowed')
+    accountReadRepositorySource.includes('availability_schedule_active')
       && accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
-      && accountOptionsRepositorySource.includes('account_schedule_allowed')
+      && accountOptionsRepositorySource.includes('availability_schedule_active')
       && accountOptionsRepositorySource.includes('accountApiKeyPoolAllUnavailableSql'),
     '账户列表和 options 派生状态应下推时间计划与 Key 池 SQL 判断'
   )
@@ -279,6 +314,33 @@ function assertBusinessIndexMissing(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, undefined, `业务库不应创建长文本搜索索引 ${indexName}`)
+}
+
+function assertAccountNameSearchTermRows(accountId: string): void {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT COUNT(*) AS count FROM account_name_search_terms WHERE account_id = ?')
+    .get(accountId) as unknown as { count?: number } | undefined
+  assert(Number(row?.count ?? 0) > 0, 'AI 账户名称搜索词项应随账户创建写入')
+}
+
+function assertAccountNameSearchCandidateQueryPlan(accountId: string): void {
+  const termRow = databaseModule.getBusinessDatabase()
+    .prepare('SELECT term FROM account_name_search_terms WHERE account_id = ? AND length(term) = 3 ORDER BY term ASC LIMIT 1')
+    .get(accountId) as unknown as { term?: string } | undefined
+  assert(termRow?.term, 'AI 账户名称包含匹配回归需要三元搜索词项')
+  const details = explainBusinessQuery(`
+    SELECT search.account_id
+    FROM account_name_search_terms search INDEXED BY idx_account_name_search_terms_term_owner
+    INNER JOIN account_name_search_documents documents ON documents.account_id = search.account_id
+    INNER JOIN accounts ON accounts.id = search.account_id
+    WHERE search.term IN (?)
+      AND documents.normalized_name LIKE ? ESCAPE '\\'
+      AND accounts.deleted_at IS NULL
+    GROUP BY search.account_id
+    HAVING COUNT(DISTINCT search.term) = ?
+  `, [termRow.term, `%${termRow.term}%`, 1])
+  assert(details.includes('idx_account_name_search_terms_term_owner'), `AI 账户名称包含候选查询必须走词项索引，实际计划：${details}`)
+  assert(!details.includes('SCAN accounts'), `AI 账户名称包含候选查询不能扫描 accounts 主表，实际计划：${details}`)
 }
 
 function assertNoAuthorizationInstanceBackfillScan(access: { systemAccountId: string; role: 'user' }, accountId: string): void {

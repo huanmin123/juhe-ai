@@ -296,7 +296,8 @@ onBeforeUnmount(() => {
   }
 
   .responsive-list-toolbar-main.without-search {
-    grid-template-columns: 1fr;
+    flex: none;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .responsive-list-search {
@@ -306,14 +307,25 @@ onBeforeUnmount(() => {
   .responsive-list-reset,
   .responsive-list-refresh,
   .responsive-list-filter-button {
+    min-height: 38px;
     width: 100%;
+    white-space: normal;
   }
 
   .responsive-list-filter-badge {
     display: block;
   }
 
-  .responsive-list-filter-badge :deep(.ant-badge) {
+  .responsive-list-toolbar-main.without-search .responsive-list-filter-badge {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .responsive-list-toolbar-main.without-search .responsive-list-filter-button {
+    justify-content: center;
+  }
+
+  .responsive-list-filter-badge :deep(.ant-btn) {
     width: 100%;
   }
 
@@ -327,7 +339,9 @@ onBeforeUnmount(() => {
   }
 
   .responsive-list-filter-actions :deep(.ant-btn) {
+    min-height: 38px;
     width: 100%;
+    white-space: normal;
   }
 
   .responsive-list-toolbar-main :deep(.toolbar-select),
@@ -354,7 +368,9 @@ onBeforeUnmount(() => {
   .responsive-list-actions-button,
   .responsive-list-actions-drawer-body :deep(.ant-btn),
   .responsive-list-actions-drawer-body :deep(.ant-dropdown-trigger) {
+    min-height: 38px;
     width: 100%;
+    white-space: normal;
   }
 }
 </style>

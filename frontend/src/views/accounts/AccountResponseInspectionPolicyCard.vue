@@ -176,8 +176,8 @@ function collapseAll(): void {
 
 function conditionSummary(rule: AccountResponseInspectionRuleForm): string {
   const parts = [
-    responseInspectionFieldSummary('客户端', rule.clientProfiles.map(clientProfileLabel)),
-    responseInspectionFieldSummary('兼容', rule.accountClientCompatibilities.map(accountCompatibilityLabel)),
+    responseInspectionFieldSummary('请求客户端', rule.clientProfiles.map(clientProfileLabel)),
+    responseInspectionFieldSummary('账号兼容能力', rule.accountClientCompatibilities.map(accountCompatibilityLabel)),
     responseInspectionFieldSummary('输出', rule.outputTextIncludes),
     responseInspectionFieldSummary('排除', rule.outputTextExcludes),
     responseInspectionFieldSummary('code', rule.errorCodes),

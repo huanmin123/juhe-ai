@@ -52,7 +52,7 @@ const successResult = resultFixture(apiKeyAccount, {
 const successLines = accountTestSingleOutputLines({
   account: apiKeyAccount,
   clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+  fixedOAuthCompatibilityText: 'Codex Responses 请求',
   model: 'gpt-5.1',
   providerLabel: () => 'OpenAI',
   result: successResult,
@@ -60,9 +60,9 @@ const successLines = accountTestSingleOutputLines({
 })
 assertLineIncludes(successLines, '开始测试账号：API Key 测试账户', '单账号输出应展示账户名')
 assertLineIncludes(successLines, '供应商：OpenAI', '单账号输出应展示供应商')
-assertLineIncludes(successLines, '测试兼容：跟随账户配置（OpenAI 标准）', 'API Key 默认兼容应展示账户配置')
+assertLineIncludes(successLines, '测试请求形态：跟随账号能力（OpenAI 标准）', 'API Key 默认请求形态应展示跟随账号能力')
 assertLineIncludes(successLines, 'traceId：trace_test_display', '成功输出应展示 traceId')
-assertLineIncludes(successLines, '实际兼容：OpenAI 标准', '成功输出应展示实际兼容')
+assertLineIncludes(successLines, '实际请求形态：OpenAI 标准请求', '成功输出应展示实际请求形态')
 assertLineIncludes(successLines, 'pong', '成功输出应展示返回内容')
 assertLineIncludes(successLines, '✓ 测试完成！  总耗时：1.2s，首 token：0.32s', '成功输出应展示总耗时和首 token')
 
@@ -75,12 +75,12 @@ const runningLines = accountTestSingleOutputLines({
   account: oauthAccount,
   activeTask: runningTask,
   clientCompatibility: 'codex_responses',
-  fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+  fixedOAuthCompatibilityText: 'Codex Responses 请求',
   model: 'gpt-5.1',
   providerLabel: () => 'OpenAI',
   running: true
 })
-assertLineIncludes(runningLines, '测试兼容：Codex Responses（OAuth 固定）', 'OAuth 账户应展示固定兼容模式')
+assertLineIncludes(runningLines, '测试请求形态：Codex Responses 请求', 'OAuth 账户应展示固定请求形态')
 assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth（测试中）', '运行输出应展示后台任务状态')
 assertLineIncludes(runningLines, '当前窗口估计：第 1/3 次', '运行输出应展示当前等待窗口')
 assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
@@ -88,18 +88,18 @@ assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗�
 const anthropicRunningLines = accountTestSingleOutputLines({
   account: anthropicAccount,
   clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Anthropic 原生',
+  fixedOAuthCompatibilityText: 'Anthropic 原生请求',
   model: 'claude-opus-4-8',
   providerLabel: () => 'Anthropic',
   running: true
 })
-assertLineIncludes(anthropicRunningLines, '测试协议：Anthropic 原生', 'Anthropic 运行输出不应展示 OpenAI 客户端兼容模式')
-assertLineExcludes(anthropicRunningLines, '测试兼容：跟随账户配置（OpenAI 标准）', 'Anthropic 运行输出不得回落到 OpenAI 标准文案')
+assertLineIncludes(anthropicRunningLines, '测试请求形态：Anthropic 原生', 'Anthropic 运行输出不应展示 OpenAI 客户端兼容能力')
+assertLineExcludes(anthropicRunningLines, '测试请求形态：跟随账号能力（OpenAI 标准）', 'Anthropic 运行输出不得回落到 OpenAI 标准文案')
 
 const anthropicSuccessLines = accountTestSingleOutputLines({
   account: anthropicAccount,
   clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Anthropic 原生',
+  fixedOAuthCompatibilityText: 'Anthropic 原生请求',
   model: 'claude-opus-4-8',
   providerLabel: () => 'Anthropic',
   result: resultFixture(anthropicAccount, {
@@ -112,8 +112,8 @@ const anthropicSuccessLines = accountTestSingleOutputLines({
   }),
   running: false
 })
-assertLineIncludes(anthropicSuccessLines, '实际协议：Anthropic 原生', 'Anthropic 成功输出应展示实际协议')
-assertLineExcludes(anthropicSuccessLines, '实际兼容：OpenAI 标准', 'Anthropic 成功输出不得展示 OpenAI 实际兼容')
+assertLineIncludes(anthropicSuccessLines, '实际请求形态：Anthropic 原生请求', 'Anthropic 成功输出应展示实际请求形态')
+assertLineExcludes(anthropicSuccessLines, '实际请求形态：OpenAI 标准请求', 'Anthropic 成功输出不得展示 OpenAI 实际请求形态')
 
 const failedAccount = accountFixture({
   id: 'account_test_display_failed',
@@ -160,20 +160,20 @@ assertEqual(accountTestBatchStatusText(batchCounts, false), '成功 1，失败 1
 assertEqual(
   accountTestBatchSelectedCompatibilityText({
     clientCompatibility: 'account_default',
-    fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+    fixedOAuthCompatibilityText: 'Codex Responses 请求',
     showClientCompatibilityControl: true
   }),
-  '跟随账户配置',
-  '可选兼容时 account_default 应展示跟随账户配置'
+  '跟随账号能力',
+  '可选请求形态时 account_default 应展示跟随账号能力'
 )
 assertEqual(
   accountTestBatchSelectedCompatibilityText({
     clientCompatibility: 'openai_standard',
-    fixedOAuthCompatibilityText: 'Codex Responses（OAuth 固定）',
+    fixedOAuthCompatibilityText: 'Codex Responses 请求',
     showClientCompatibilityControl: false
   }),
-  'Codex Responses（OAuth 固定）',
-  '全部 OAuth 时应展示固定兼容模式'
+  'Codex Responses 请求',
+  '全部 OAuth 时应展示固定请求形态'
 )
 
 const batchLines = accountTestBatchOutputLines({
@@ -181,7 +181,7 @@ const batchLines = accountTestBatchOutputLines({
   counts: batchCounts,
   model: 'gpt-5.1',
   running: false,
-  selectedCompatibilityText: '跟随账户配置'
+  selectedCompatibilityText: '跟随账号能力'
 })
 assertLineIncludes(batchLines, '批量测试账号：3 个', '批量输出应展示账户数量')
 assertLineIncludes(batchLines, '测试完成：成功 1 个，失败 1 个，已停止 1 个', '批量输出应展示完成摘要')

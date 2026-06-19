@@ -104,7 +104,6 @@ function accountDraftPayloadFromSavePayload(
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
-    clientCompatibility: payload.clientCompatibility,
     supportedModels: payload.supportedModels,
     modelMappings: payload.modelMappings,
     proxyProfileId: payload.proxyProfileId,

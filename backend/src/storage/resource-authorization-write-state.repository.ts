@@ -8,6 +8,7 @@ import type {
 } from '../domain/types.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
+import { replaceAccountNameSearchTerms } from './account-name-search.repository.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { encryptJson } from './crypto.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
@@ -246,6 +247,7 @@ export function syncAccountAuthorizationInstanceNamesForSourceAccount(database: 
     )
     if (row.name === nextName) continue
     updateName.run(nextName, now, row.id)
+    replaceAccountNameSearchTerms(database, row.id, row.system_account_id, nextName, now)
     changedIds.push(row.id)
   }
   return changedIds
@@ -306,6 +308,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
         now,
         deletedExisting.id
       )
+    replaceAccountNameSearchTerms(database, deletedExisting.id, authorization.grantee_system_account_id, restoredName, now)
     return database.prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1').get(deletedExisting.id) as unknown as AccountRow | undefined
   }
   const id = newId('acc')
@@ -343,6 +346,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
       now,
       now
     )
+  replaceAccountNameSearchTerms(database, id, authorization.grantee_system_account_id, name, now)
   return database.prepare('SELECT * FROM accounts WHERE id = ? LIMIT 1').get(id) as unknown as AccountRow | undefined
 }
 

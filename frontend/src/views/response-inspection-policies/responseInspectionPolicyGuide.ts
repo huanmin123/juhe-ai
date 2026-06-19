@@ -22,7 +22,7 @@ export const responseInspectionPolicyGuideSources = [
 export const responseInspectionPolicyGuideFields = [
   {
     key: 'clientProfiles',
-    field: '客户端画像',
+    field: '请求客户端',
     source: '检查当前下游请求被网关识别成 Codex、通用 OpenAI、Claude Code 或通用 Anthropic 客户端',
     example: 'Codex, Claude Code',
     required: '否，适用范围',
@@ -30,11 +30,11 @@ export const responseInspectionPolicyGuideFields = [
   },
   {
     key: 'accountClientCompatibilities',
-    field: '账号兼容模式',
-    source: '检查当前命中账号的客户端兼容模式',
+    field: '账号兼容能力',
+    source: '检查当前命中账号的兼容能力',
     example: 'Codex Responses',
     required: '否，适用范围',
-    note: '适合把规则限制在 Codex Responses 账号；它是账号维度，不等同于下游客户端画像。'
+    note: '适合把规则限制在 Codex Responses 账号；它是账号维度，不等同于请求客户端。'
   },
   {
     key: 'outputTextIncludes',

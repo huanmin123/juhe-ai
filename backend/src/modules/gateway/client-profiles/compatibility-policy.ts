@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
@@ -56,6 +57,10 @@ export async function decideGatewayCompatibilityRecovery(input: {
   recoveryState: GatewayCompatibilityRecoveryState
   signal?: AbortSignal
 }): Promise<GatewayCompatibilityRecoveryDecision> {
+  if (!isOpenAIProtocolProfile(input.account)) {
+    return { action: 'continue_default' }
+  }
+
   const signal = classifyGatewayCompatibilityError({
     parsedError: input.parsedError,
     responseBodyText: input.responseBodyText
