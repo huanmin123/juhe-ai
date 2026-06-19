@@ -49,6 +49,7 @@ import type { PublicApiLogDetail, PublicApiLogResultFilter, PublicApiLogSummary 
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import PublicApiLogDetailDrawer from './PublicApiLogDetailDrawer.vue'
 import PublicApiLogFilterToolbar from './PublicApiLogFilterToolbar.vue'
 import PublicApiLogList from './PublicApiLogList.vue'
@@ -184,7 +185,11 @@ async function openDetail(record: PublicApiLogSummary): Promise<void> {
   detailLoading.value = true
   detail.value = undefined
   try {
-    const nextDetail = await api.publicApiLogs.detail(record.id)
+    const nextDetail = await loadEntityDetailCached({
+      id: record.id,
+      load: () => api.publicApiLogs.detail(record.id),
+      namespace: 'public-api-log-detail'
+    })
     if (requestId === detailRequestId) {
       detail.value = nextDetail
     }

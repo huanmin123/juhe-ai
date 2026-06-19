@@ -6,7 +6,11 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-scheduling-policy-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -240,6 +244,16 @@ try {
     .prepare('SELECT group_id, account_id FROM group_accounts WHERE group_id = ? AND account_id = ?')
     .get(highConcurrencyGroup.id, account.id) as unknown as { group_id?: string; account_id?: string } | undefined
   assert.equal(binding?.group_id, highConcurrencyGroup.id, '账户绑定不应依赖绑定级调度参数')
+  const mismatchedProfileGroup = createSyntheticGptProfileMismatchGroup(access)
+  assert.equal(
+    repositories.setAccountGroup(account.id, mismatchedProfileGroup.id, access),
+    undefined,
+    '账户绑定分组必须同时校验 providerProtocolProfileId，不能只按 providerCode 放行'
+  )
+  const mismatchedBinding = database
+    .prepare('SELECT group_id FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
+    .get(account.id, access.systemAccountId) as unknown as { group_id?: string } | undefined
+  assert.equal(mismatchedBinding?.group_id, highConcurrencyGroup.id, 'profile 不匹配的绑定尝试不应删除原分组绑定')
 
   const personalGroup = repositories.updateGroup(highConcurrencyGroup.id, { groupType: 'personal' }, access)
   assert.equal(personalGroup?.groupType, 'personal')
@@ -272,6 +286,37 @@ function assertCurrentColumns(tableName: string, expectedColumns: string[]): voi
   for (const column of expectedColumns) {
     assert(columns.includes(column), `${tableName} 应包含当前字段 ${column}`)
   }
+}
+
+function createSyntheticGptProfileMismatchGroup(access: { systemAccountId: string; role: 'admin' }) {
+  const now = new Date().toISOString()
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      INSERT INTO provider_protocol_profiles (
+        id, provider_code, name, description, enabled, protocol_code, protocol_version,
+        base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      'profile_gpt_profile_mismatch_regression',
+      'gpt',
+      '回归专用 GPT 非默认协议档案',
+      '仅用于验证账号绑定必须按 providerProtocolProfileId 隔离',
+      ANTHROPIC_PROTOCOL_CODE,
+      ANTHROPIC_PROTOCOL_VERSION,
+      'https://example.invalid/v1',
+      'gpt-5.5',
+      JSON.stringify(['api_key']),
+      JSON.stringify([]),
+      now,
+      now
+    )
+  return repositories.createGroup({
+    name: 'profile 不匹配回归分组',
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_profile_mismatch_regression',
+    enabled: true
+  }, access)
 }
 
 function sessionCookie(systemAccountId: string): string {

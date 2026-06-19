@@ -10,16 +10,11 @@ import { responseInspectionAuditMetadata } from '../audit/metadata.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
-  extractOpenAIJsonSemanticFrames,
-  openAIResponseEndpointFamilyFromRequest
-} from '../protocols/openai-v1/response-semantics.js'
-import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
-import {
-  anthropicResponseEndpointFamilyFromPath,
-  extractAnthropicJsonSemanticFrames
-} from '../protocols/anthropic-v1/response-semantics.js'
-import { parseAnthropicUsageFromJsonBuffer } from '../protocols/anthropic-v1/usage.js'
-import { isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
+  extractGatewayProtocolJsonSemanticFrames,
+  gatewayProtocolClientErrorProtocolForProfile,
+  gatewayProtocolDefaultClientProfileForProfile,
+  parseGatewayProtocolUsageFromJsonBuffer
+} from '../protocols/registry.js'
 import {
   forgetOpenAIAccountForSession
 } from '../runtime/session-affinity.service.js'
@@ -43,13 +38,14 @@ import {
 import type { UpstreamResponseHandlingResult } from './response-handling-result.js'
 import {
   gatewayErrorPayload,
+  gatewayErrorPayloadForProtocol,
   sendGatewayErrorResponse
 } from './responses.js'
 import {
   shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRetryResponseInspectionDecisionOnServer
 } from './stream-finalization-retry-decision.js'
-export async function inspectBufferedOpenAIJsonResponse(input: {
+export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
   res: Response
   account: UpstreamAccount
@@ -76,17 +72,10 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
   } catch {
     return undefined
   }
-  const anthropicProtocol = isAnthropicProtocolProfile(input.account)
-  const frames = anthropicProtocol
-    ? extractAnthropicJsonSemanticFrames(
-        parsedJson,
-        anthropicResponseEndpointFamilyFromPath(input.req.originalUrl || input.req.path)
-      )
-    : extractOpenAIJsonSemanticFrames(
-        parsedJson,
-        openAIResponseEndpointFamilyFromRequest(input.req)
-      )
+  const frames = extractGatewayProtocolJsonSemanticFrames(parsedJson, input.req, input.account)
   if (frames.length === 0) return undefined
+  const defaultClientProfile = gatewayProtocolDefaultClientProfileForProfile(input.account)
+  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForProfile(input.account)
 
   const policies = resolveRuntimeResponseInspectionPolicies({
     account: input.account,
@@ -98,7 +87,7 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
     downstreamWritten: false,
     transport: 'json',
     context: {
-      clientProfile: input.clientStrategy?.clientProfile ?? (anthropicProtocol ? 'generic_anthropic' : 'generic_openai'),
+      clientProfile: input.clientStrategy?.clientProfile ?? defaultClientProfile,
       accountClientCompatibility: input.account.clientCompatibility
     }
   })
@@ -118,9 +107,7 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
     label: 'response_inspection',
     metadata: responseInspectionAuditMetadata(decision)
   })
-  const usage = anthropicProtocol
-    ? parseAnthropicUsageFromJsonBuffer(input.responseBody)
-    : parseOpenAIUsageFromJsonBuffer(input.responseBody)
+  const usage = parseGatewayProtocolUsageFromJsonBuffer(input.account, input.responseBody)
   const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
   const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
   forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
@@ -171,13 +158,14 @@ export async function inspectBufferedOpenAIJsonResponse(input: {
   }
 
   const responsePayload = gatewayErrorPayload(message, 'response_inspection_failed', errorCode)
-  sendGatewayErrorResponse(input.res, 503, responsePayload)
+  const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
+  sendGatewayErrorResponse(input.res, 503, responsePayload, { protocol: clientErrorProtocol })
   input.auditCapture.finalize({
     outcome: 'upstream_failed',
     success: false,
     statusCode: 503,
     responseHeaders: responseHeadersToObject(input.res),
-    responseBody: JSON.stringify(responsePayload),
+    responseBody: JSON.stringify(clientPayload),
     responsePartType: 'gateway_error',
     errorPhase: 'response_inspection',
     errorCode,

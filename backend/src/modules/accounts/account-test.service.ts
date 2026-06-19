@@ -27,6 +27,11 @@ import {
   parseOpenAIStreamFailureMessage,
   parseOpenAIUpstreamMessage
 } from '../gateway/protocols/openai-v1/response-parsing.js'
+import {
+  parseAnthropicUpstreamMessage,
+  parseAnthropicStreamFailureMessage,
+  extractAnthropicResponseOutputText
+} from '../gateway/protocols/anthropic-v1/response-parsing.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import {
   type AccountDiagnosticAttemptProgressHandler,
@@ -119,26 +124,27 @@ export async function testOpenAIAccount(
   const prompt = stringValue(input.prompt) || accountTestDefaultPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
-  const accountClientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    account.providerCode,
-    account.type,
-    account.clientCompatibility,
-    account.clientCompatibility,
-    account
-  )
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    account.providerCode,
-    account.type,
-    input.clientCompatibility ?? accountClientCompatibility,
-    accountClientCompatibility,
-    account
-  )
-  const supportedEndpointModes = normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-    providerCode: account.providerCode,
-    accountType: account.type,
-    clientCompatibility
-  })
   const anthropicProtocol = isAnthropicProtocolProfile(account)
+  // Anthropic 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
+  const accountClientCompatibility = anthropicProtocol
+    ? 'openai_standard' as const
+    : normalizeOpenAIAccountClientCompatibility(
+        account.providerCode,
+        account.type,
+        account.clientCompatibility,
+        account.clientCompatibility,
+        account
+      )
+  const clientCompatibility = anthropicProtocol
+    ? 'openai_standard' as const
+    : normalizeOpenAIAccountClientCompatibility(
+        account.providerCode,
+        account.type,
+        input.clientCompatibility ?? accountClientCompatibility,
+        accountClientCompatibility,
+        account
+      )
+  // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
   const gatewaySupportedEndpointModes = anthropicProtocol
     ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
       providerCode: account.providerCode,
@@ -146,7 +152,11 @@ export async function testOpenAIAccount(
       protocolCode: account.protocolCode,
       protocolVersion: account.protocolVersion
     })
-    : supportedEndpointModes
+    : normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      accountType: account.type,
+      clientCompatibility
+    })
   const testRequest = anthropicProtocol
     ? createAnthropicTestRequest({
       explicitModel,
@@ -472,94 +482,6 @@ function accountTestSuccessMessage(anthropicProtocol: boolean, responseTruncated
 
 function accountTestFailureMessage(anthropicProtocol: boolean): string {
   return anthropicProtocol ? 'Anthropic Messages 测试失败' : 'OpenAI Responses 测试失败'
-}
-
-function parseAnthropicUpstreamMessage(bodyText: string): string | undefined {
-  if (!bodyText) return undefined
-  const jsonMessage = parseAnthropicJsonMessage(bodyText)
-  if (jsonMessage) return jsonMessage
-  for (const event of anthropicSseEvents(bodyText)) {
-    if (event.event === 'error') {
-      const message = parseAnthropicJsonMessage(event.data)
-      if (message) return message
-    }
-  }
-  return undefined
-}
-
-function parseAnthropicStreamFailureMessage(bodyText: string): string | undefined {
-  for (const event of anthropicSseEvents(bodyText)) {
-    if (event.event === 'error') {
-      return parseAnthropicJsonMessage(event.data) ?? 'Anthropic 流式响应失败'
-    }
-  }
-  return undefined
-}
-
-function extractAnthropicResponseOutputText(bodyText: string): string | undefined {
-  if (!bodyText) return undefined
-  const jsonText = extractAnthropicJsonOutputText(bodyText)
-  if (jsonText) return jsonText
-  const chunks: string[] = []
-  for (const event of anthropicSseEvents(bodyText)) {
-    try {
-      const payload = JSON.parse(event.data) as Record<string, unknown>
-      const delta = typeof payload.delta === 'object' && payload.delta !== null
-        ? payload.delta as Record<string, unknown>
-        : undefined
-      const text = stringValue(delta?.text)
-      if (text) chunks.push(text)
-    } catch {
-      // Ignore partial or non-JSON SSE lines in diagnostics.
-    }
-  }
-  return chunks.length ? chunks.join('') : undefined
-}
-
-function extractAnthropicJsonOutputText(bodyText: string): string | undefined {
-  try {
-    const payload = JSON.parse(bodyText) as Record<string, unknown>
-    const content = Array.isArray(payload.content) ? payload.content : []
-    const parts = content
-      .map((item) => typeof item === 'object' && item !== null ? stringValue((item as Record<string, unknown>).text) : '')
-      .filter(Boolean)
-    return parts.length ? parts.join('') : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function parseAnthropicJsonMessage(text: string): string | undefined {
-  try {
-    const payload = JSON.parse(text) as Record<string, unknown>
-    const error = typeof payload.error === 'object' && payload.error !== null
-      ? payload.error as Record<string, unknown>
-      : undefined
-    return stringValue(error?.message) || stringValue(payload.message)
-  } catch {
-    return undefined
-  }
-}
-
-function anthropicSseEvents(text: string): Array<{ event: string; data: string }> {
-  const events: Array<{ event: string; data: string }> = []
-  const blocks = text.split(/\r?\n\r?\n/)
-  for (const block of blocks) {
-    const lines = block.split(/\r?\n/)
-    let event = ''
-    const data: string[] = []
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        event = line.slice(6).trim()
-      } else if (line.startsWith('data:')) {
-        data.push(line.slice(5).trimStart())
-      }
-    }
-    if (data.length) {
-      events.push({ event, data: data.join('\n') })
-    }
-  }
-  return events
 }
 
 function stringValue(value: unknown): string {

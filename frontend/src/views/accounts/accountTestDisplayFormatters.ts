@@ -1,4 +1,5 @@
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import { isAnthropicProtocolProfile } from '@/shared/providerProtocol'
 
 import type { AccountBatchTestItem, AccountTestClientCompatibility } from './accountTestFlow'
 import {
@@ -99,6 +100,9 @@ export function accountTestSelectedCompatibilityText(input: {
   clientCompatibility: AccountTestClientCompatibility
   fixedOAuthCompatibilityText: string
 }): string {
+  if (isAnthropicProtocolProfile(input.account)) {
+    return 'Anthropic 原生'
+  }
   if (input.account.type === 'oauth') {
     return input.fixedOAuthCompatibilityText
   }
@@ -111,16 +115,17 @@ export function accountTestSelectedCompatibilityText(input: {
 export function accountTestSingleOutputLines(options: SingleAccountTestOutputOptions): AccountTestOutputLine[] {
   const account = options.account
   if (!account || (!options.running && !options.result)) return []
+  const selectedCompatibilityText = accountTestSelectedCompatibilityText({
+    account,
+    clientCompatibility: options.clientCompatibility,
+    fixedOAuthCompatibilityText: options.fixedOAuthCompatibilityText
+  })
   const lines: AccountTestOutputLine[] = [
     { text: `开始测试账号：${account.name}`, tone: 'info' },
     { text: `供应商：${options.providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
     {
-      text: `测试兼容：${accountTestSelectedCompatibilityText({
-        account,
-        clientCompatibility: options.clientCompatibility,
-        fixedOAuthCompatibilityText: options.fixedOAuthCompatibilityText
-      })}`,
+      text: `${isAnthropicProtocolProfile(account) ? '测试协议' : '测试兼容'}：${selectedCompatibilityText}`,
       tone: 'muted'
     }
   ]
@@ -152,10 +157,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
   if (diagnosticParts.requestId) {
     lines.push({ text: `request id：${diagnosticParts.requestId}`, tone: 'muted' })
   }
-  lines.push({
-    text: `实际兼容：${accountClientCompatibilityText(options.result.testClientCompatibility ?? options.result.clientCompatibility ?? account.clientCompatibility)}`,
-    tone: 'muted'
-  })
+  lines.push(accountTestActualProtocolLine(account, options.result))
   lines.push({ text: '响应：', tone: 'label' })
   const outputText = formatTestTerminalResult(options.result)
   if (outputText) {
@@ -316,9 +318,19 @@ export function accountTestBatchItemMessage(item: AccountBatchTestItem): string 
   if (item.message) return item.message
   if (item.result?.message) return item.result.message
   if (item.status === 'queued') return '等待后台 worker 接收'
-  if (item.status === 'running') return '正在连接 OpenAI API'
+  if (item.status === 'running') return isAnthropicProtocolProfile(item.account) ? '正在连接 Anthropic API' : '正在连接 OpenAI API'
   if (item.status === 'stopped') return '已停止测试'
   return '等待开始测试'
+}
+
+function accountTestActualProtocolLine(account: AccountSummary, result: AccountTestResult): AccountTestOutputLine {
+  if (isAnthropicProtocolProfile(account)) {
+    return { text: '实际协议：Anthropic 原生', tone: 'muted' }
+  }
+  return {
+    text: `实际兼容：${accountClientCompatibilityText(result.testClientCompatibility ?? result.clientCompatibility ?? account.clientCompatibility)}`,
+    tone: 'muted'
+  }
 }
 
 export function accountTestBatchItemJson(item: AccountBatchTestItem): string {

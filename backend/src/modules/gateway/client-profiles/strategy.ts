@@ -35,7 +35,7 @@ export interface OpenAIGatewayClientStrategyContext {
   downstreamProtocol: OpenAIGatewayDownstreamProtocol
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
   codexTurn?: OpenAIGatewayCodexTurnContext
-  clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata'
+  clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature'
   allowCodexStreamClientRetry: boolean
   allowCodexTurnAccountAvoidance: boolean
 }
@@ -84,12 +84,15 @@ export function resolveOpenAIGatewayClientStrategy(
 export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
   const downstreamProtocol = resolveAnthropicGatewayDownstreamProtocol(req)
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
-  const claudeCode = explicitProfile === 'claude_code' && downstreamProtocol !== 'unknown_stream'
+  const supportedAnthropicShape = downstreamProtocol !== 'unknown_stream'
+  const explicitClaudeCode = explicitProfile === 'claude_code' && supportedAnthropicShape
+  const signatureClaudeCode = !explicitClaudeCode && supportedAnthropicShape && isClaudeCodeAnthropicRequestSignature(req)
+  const claudeCode = explicitClaudeCode || signatureClaudeCode
   return {
     clientProfile: claudeCode ? 'claude_code' : 'generic_anthropic',
     downstreamProtocol,
     upstreamAdapter: 'anthropic_api_key',
-    clientProfileSource: claudeCode ? 'explicit_header' : 'default',
+    clientProfileSource: explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
     allowCodexStreamClientRetry: false,
     allowCodexTurnAccountAvoidance: false
   }
@@ -145,6 +148,51 @@ export function openAIGatewayClientStrategyAuditMetadata(
 function parseGatewayClientProfileHeader(value: string | undefined): OpenAIGatewayClientProfile | undefined {
   const normalized = stringValue(value)?.toLowerCase().replace(/[-\s]+/g, '_')
   return normalized === 'claude_code' ? 'claude_code' : undefined
+}
+
+function isClaudeCodeAnthropicRequestSignature(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST' || normalizedAnthropicRequestPath(req) !== '/messages') {
+    return false
+  }
+  const signals = [
+    hasClaudeCodeUserAgent(req),
+    hasClaudeCodeBetaHeader(req),
+    hasClaudeCodeSessionHeader(req),
+    hasAnthropicBetaQuery(req)
+  ].filter(Boolean).length
+  return signals >= 2
+}
+
+function hasClaudeCodeUserAgent(req: Request): boolean {
+  const userAgent = stringValue(req.header('user-agent'))?.toLowerCase()
+  return Boolean(userAgent && (userAgent.startsWith('claude-cli/') || userAgent.includes(' claude-cli/')))
+}
+
+function hasClaudeCodeBetaHeader(req: Request): boolean {
+  const betaHeader = stringValue(req.header('anthropic-beta'))?.toLowerCase()
+  if (!betaHeader) {
+    return false
+  }
+  return betaHeader
+    .split(',')
+    .map((item) => item.trim())
+    .some((item) => item.startsWith('claude-code-'))
+}
+
+function hasClaudeCodeSessionHeader(req: Request): boolean {
+  return Boolean(
+    stringValue(req.header('x-claude-code-session-id'))
+      || stringValue(req.header('x-claude-code-agent-id'))
+  )
+}
+
+function hasAnthropicBetaQuery(req: Request): boolean {
+  const originalUrl = req.originalUrl || req.path || ''
+  const queryIndex = originalUrl.indexOf('?')
+  if (queryIndex < 0) {
+    return false
+  }
+  return new URLSearchParams(originalUrl.slice(queryIndex + 1)).get('beta') === 'true'
 }
 
 function buildCodexTurnContext(

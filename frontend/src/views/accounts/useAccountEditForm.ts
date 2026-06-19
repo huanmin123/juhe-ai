@@ -1,7 +1,6 @@
 import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import { api } from '@/api/client'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
@@ -38,6 +37,7 @@ import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS, GPT_VENDOR_CODE } from './accountOptions'
 import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import { authUrl } from './accountOAuthPayload'
+import { loadAccountDetailCached } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import type { AccountSavePayload } from './accountSavePayload'
 import {
@@ -52,6 +52,7 @@ import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
+import type { AccountGroupOptionsLoadOptions, AccountGroupOptionsScope } from './useAccountGroupOptions'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -65,7 +66,7 @@ interface UseAccountEditFormOptions {
   groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
   loadAccountOptions: (systemAccountId?: string, force?: boolean) => Promise<void>
-  loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: { providerCode?: string; systemAccountId?: string; selectedIds?: Array<string | undefined> }) => Promise<void>
+  loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: Partial<AccountGroupOptionsScope>, loadOptions?: AccountGroupOptionsLoadOptions) => Promise<void>
   loadData: () => Promise<void>
   focusCreatedAccount?: (account: AccountSummary) => void
   providers: ReadonlyValue<ProviderDefinition[]>
@@ -243,11 +244,13 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     creatingAccountScopeParams.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
-    void options.loadGroupOptions('', true, {
+    void options.loadGroupOptions('', false, {
       providerCode: form.providerCode,
       systemAccountId: options.accountScopeParams.value?.systemAccountId
+    }, {
+      useLocalWindow: false
     })
-    void loadAccountTagOptions(options.accountScopeParams.value, true)
+    void loadAccountTagOptions(options.accountScopeParams.value)
     void loadProviderModelOptions(form.providerCode)
     modalOpen.value = true
   }
@@ -336,12 +339,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
     modalOpen.value = true
-    void options.loadGroupOptions('', true, {
+    void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
       systemAccountId: editScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
+    }, {
+      useLocalWindow: false
     })
-    void loadAccountTagOptions(editScopeParams, true)
+    void loadAccountTagOptions(editScopeParams)
     void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
@@ -384,27 +389,37 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
     modalOpen.value = true
-    void options.loadGroupOptions('', true, {
+    void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
       systemAccountId: cloneScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
+    }, {
+      useLocalWindow: false
     })
-    void loadAccountTagOptions(cloneScopeParams, true)
+    void loadAccountTagOptions(cloneScopeParams)
     void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
   async function loadProviderGroupOptions(providerCode: string): Promise<void> {
     await nextTick()
-    await options.loadGroupOptions('', true)
+    await options.loadGroupOptions('', false, {
+      providerCode,
+      systemAccountId: createScopeParams.value?.systemAccountId,
+      selectedIds: [form.groupId]
+    }, {
+      useLocalWindow: false
+    })
     syncFormGroupFromOptions()
     ensureDefaultGroupSelected(providerCode)
   }
 
   async function loadAccountDetailForForm(accountId: string, scopeParams: AccountScopeParams | undefined, fallbackMessage: string): Promise<AccountSummary | undefined> {
     try {
-      return options.isManagementView.value
-        ? await api.accounts.detail(accountId, scopeParams)
-        : await api.myAccounts.detail(accountId)
+      return await loadAccountDetailCached({
+        accountId,
+        isManagementView: options.isManagementView.value,
+        scopeParams
+      })
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, fallbackMessage))

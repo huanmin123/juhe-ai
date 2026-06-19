@@ -33,8 +33,8 @@ import { finalizeGatewayAuthFailureAudit, sendAnthropicModelsGatewayResponse, se
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { resolveGatewayRuntimeAsync } from './pre-auth.js'
-import { isOpenAIModelsRequest, type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
-import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
+import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import { isGatewayProtocolModelsRequest } from '../protocols/registry.js'
 import {
   resolveOpenAIGatewaySessionAffinityKey
 } from '../runtime/session-affinity.service.js'
@@ -495,9 +495,7 @@ export async function prepareOpenAIGatewayDispatchContext(
 }
 
 function isGatewayModelsRequest(req: Request, groupAccess: GroupUsageAccessMetadata): boolean {
-  return isAnthropicProtocolProfile(groupAccess)
-    ? isAnthropicModelsRequest(req)
-    : isOpenAIModelsRequest(req)
+  return isGatewayProtocolModelsRequest(req, groupAccess)
 }
 
 interface ApiKeyGroupFallbackDispatchInput {

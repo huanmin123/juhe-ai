@@ -41,6 +41,8 @@ import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 
 export type {
+  DispatchAccountSecret,
+  DispatchAccountsForGroupResult,
   GroupUsageAccessMetadata,
   OpenAIAccountSecret,
   OpenAIAccountsForGroupDiagnostics,
@@ -194,8 +196,6 @@ export function listOpenAIAccountsForGroup(
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
-  copyRuntimeCredentialText(credentials, output, 'anthropic_version')
-  copyRuntimeCredentialText(credentials, output, 'anthropic_beta')
   copyRuntimeCredentialText(credentials, output, 'api_key_strategy')
   copyRuntimeCredentialValue(credentials, output, 'supported_endpoint_modes')
   copyRuntimeCredentialValue(credentials, output, 'api_key_weights')
@@ -350,6 +350,8 @@ function openAIAccountSecretFromRow(
   const resourceAccountId = openAIAccountResourceAccountId(row)
   const apiKeyPoolEnabled = isAccountApiKeyPoolIsolationEnabled({
     providerCode: openAIAccountResourceProviderCode(row),
+    protocolCode: openAIAccountResourceProtocolCode(row),
+    protocolVersion: openAIAccountResourceProtocolVersion(row),
     type: resourceType,
     credentials
   })

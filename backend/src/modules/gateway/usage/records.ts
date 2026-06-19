@@ -9,6 +9,7 @@ import { parseErrorPayload } from '../policy/account-error-policy.service.js'
 import { enqueueUsageRecord } from './record-queue.service.js'
 import {
   estimateCatalogCacheReadCostUsd,
+  estimateCatalogCacheWriteCostUsd,
   estimateCatalogCostUsd,
   resolveCatalogPricingModel
 } from '../../model-pricing/model-catalog.service.js'
@@ -30,7 +31,7 @@ import {
 import type { GatewayErrorPayload } from '../response/responses.js'
 import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './traffic-source.js'
-import { GPT_VENDOR_CODE } from '../../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, GPT_VENDOR_CODE, normalizeProviderToken } from '../../../domain/provider-protocol.js'
 import { recordGatewayAccountApiKeySuccess } from '../runtime/account-api-key-effects.service.js'
 
 type UpstreamAccount = OpenAIAccountSecret
@@ -149,6 +150,7 @@ export function recordFailedUpstreamAttempt(
     ...accountUsageMetadata(account),
     endpoint: usageContext.endpoint,
     providerCode: account.providerCode,
+    usageSemantic: usageSemanticForProvider(account.providerCode),
     model,
     upstreamModel,
     pricingModel,
@@ -217,6 +219,7 @@ export function recordCompletedUpstreamAttempt(
     ...accountUsageMetadata(input.account),
     endpoint: input.endpoint,
     providerCode: input.account.providerCode,
+    usageSemantic: usageSemanticForProvider(input.account.providerCode),
     model,
     upstreamModel,
     pricingModel,
@@ -230,6 +233,9 @@ export function recordCompletedUpstreamAttempt(
     inputTokens: input.usage.inputTokens,
     outputTokens: input.usage.outputTokens,
     cacheReadTokens: input.usage.cacheReadTokens,
+    cacheWriteTokens: input.usage.cacheWriteTokens,
+    cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
+    thinkingTokens: input.usage.thinkingTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
     cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
@@ -238,6 +244,13 @@ export function recordCompletedUpstreamAttempt(
       model: upstreamModel,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
+    cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
+      providerCode: input.account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: upstreamModel,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      cacheWrite1hTokens: input.usage.cacheWrite1hTokens
+    }),
     costUsd: estimateCatalogCostUsd({
       providerCode: input.account.providerCode,
       systemAccountId: catalogSystemAccountId,
@@ -245,6 +258,9 @@ export function recordCompletedUpstreamAttempt(
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
+      thinkingTokens: input.usage.thinkingTokens,
       inputImageTokens: input.usage.inputImageTokens,
       outputImageTokens: input.usage.outputImageTokens,
       inputAudioTokens: input.usage.inputAudioTokens,
@@ -327,6 +343,7 @@ export function recordGatewayFailure(
     groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
     endpoint: usageContext.endpoint,
     providerCode: usageContext.providerCode ?? GPT_VENDOR_CODE,
+    usageSemantic: usageSemanticForProvider(usageContext.providerCode ?? GPT_VENDOR_CODE),
     model: requestModel(req),
     stream: requestStream(req),
     statusCode: input.statusCode,
@@ -351,6 +368,10 @@ function usageRecordSnapshot(
 
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
   return value
+}
+
+function usageSemanticForProvider(providerCode: string): 'anthropic' | 'openai' {
+  return normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE ? 'anthropic' : 'openai'
 }
 
 function logGatewayAttemptFailure(

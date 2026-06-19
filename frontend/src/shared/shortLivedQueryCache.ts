@@ -33,6 +33,10 @@ export function createShortLivedQueryCache<T>(options: ShortLivedQueryCacheOptio
     entries.clear()
   }
 
+  function remove(key: string): void {
+    entries.delete(key)
+  }
+
   function trim(): void {
     while (entries.size > maxEntries) {
       const oldest = entries.keys().next()
@@ -44,6 +48,7 @@ export function createShortLivedQueryCache<T>(options: ShortLivedQueryCacheOptio
   return {
     clear,
     get,
+    remove,
     set
   }
 }

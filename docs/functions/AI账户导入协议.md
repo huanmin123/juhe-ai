@@ -127,8 +127,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
       "credentials": {
         "api_key": "sk-ant-api03-xxx",
         "base_url": "https://api.anthropic.com/v1",
-        "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"],
-        "anthropic_version": "2023-06-01"
+        "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"]
       },
       "notes": "Anthropic 官方 Messages API Key 账号"
     },
@@ -220,9 +219,7 @@ Anthropic API Key 账户：
 {
   "api_key": "sk-ant-api03-xxx",
   "base_url": "https://api.anthropic.com/v1",
-  "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"],
-  "anthropic_version": "2023-06-01",
-  "anthropic_beta": ""
+  "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"]
 }
 ```
 
@@ -246,6 +243,7 @@ OAuth 账户：
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
 - `providerCode = anthropic` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。当前导入协议不接受 Anthropic OAuth、Setup Token、Claude Code token、`refresh_token` 或 `access_token`。
+- `providerCode = anthropic` 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`。`anthropic-version` 是客户端请求头，缺省时由网关按协议默认 `2023-06-01` 补齐；`anthropic-beta` 只透传客户端显式 header。
 - `providerCode = glm` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = glm` 且填写 `connectionType` 时，`general_api_key` 对应通用 GLM API，`coding_api_key` 对应 GLM Coding Plan。
 - `providerCode = glm` 的通用 GLM API 和 GLM Coding Plan 都要求 `credentials.base_url` 显式填写到对应协议档案可接受的根地址，不能依赖后端猜测。

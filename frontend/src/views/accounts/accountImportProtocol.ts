@@ -67,8 +67,6 @@ export const importTemplate = JSON.stringify({
       credentials: {
         api_key: 'sk-ant-xxx',
         base_url: 'https://api.anthropic.com/v1',
-        anthropic_version: '2023-06-01',
-        anthropic_beta: '',
         supported_endpoint_modes: ['messages_json', 'messages_sse', 'message_token_counting']
       },
       notes: 'Anthropic API Key 账号'
@@ -180,8 +178,6 @@ export const accountImportProtocolMarkdown = [
   '{',
   '  "api_key": "sk-ant-xxx",',
   '  "base_url": "https://api.anthropic.com/v1",',
-  '  "anthropic_version": "2023-06-01",',
-  '  "anthropic_beta": "",',
   '  "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"]',
   '}',
   '```',
@@ -205,7 +201,7 @@ export const accountImportProtocolMarkdown = [
   '- `api_key` 账户必须有 `credentials.api_key`。',
   '- `oauth` 账户必须有 `credentials.refresh_token` 或 `credentials.access_token`。',
   '- `credentials.base_url` 必须显式填写服务根地址或 `/v1` 版本根地址，OpenAI / GPT 通常为 `https://api.openai.com/v1`，Anthropic 通常为 `https://api.anthropic.com/v1`；不要填写 `/responses` 或 `/messages` 等具体接口路径。',
-  '- Anthropic API Key 可填写 `credentials.anthropic_version` 和 `credentials.anthropic_beta`；未填写版本时系统按当前默认 `2023-06-01` 处理，beta 为空时不注入。Claude Code 是客户端画像，不是账户类型，不要导入 Claude Code OAuth / Setup Token。',
+  '- Anthropic API Key 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`；`anthropic-version` 是客户端请求头，缺省时由网关按当前协议默认 `2023-06-01` 补齐，`anthropic-beta` 只透传客户端显式 header。Claude Code 是客户端画像，不是账户类型，不要导入 Claude Code OAuth / Setup Token。',
   '- `credentials.supported_endpoint_modes` 可限制接口能力，OpenAI / GPT 枚举为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，Anthropic 枚举为 `messages_json`、`messages_sse`、`message_token_counting`；省略时通用 `openai` API Key 默认 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE，Anthropic API Key 默认 Messages JSON/SSE/Count Tokens。',
   '- 字段名保持 snake_case，不要改成 camelCase。',
   '- 不要编造缺失 token，不确定的信息写入 `notes`。',

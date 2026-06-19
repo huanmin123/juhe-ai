@@ -24,8 +24,6 @@ const apiKeyAccountCredentialKeys = new Set([
   'api_key_strategy',
   'api_key_weights',
   'base_url',
-  'anthropic_version',
-  'anthropic_beta',
   'supported_endpoint_modes',
   'error_handling_rules',
   'response_inspection_rules'
@@ -111,10 +109,6 @@ function normalizeApiKeyAccountCredentials(
     api_key: apiKeys[0],
     base_url: baseUrl,
     supported_endpoint_modes: normalizeApiKeyEndpointModesForWrite(input.supported_endpoint_modes, endpointModeDefaults)
-  }
-  if (isAnthropicProtocolProfile(endpointModeDefaults)) {
-    copyOptionalCredentialText(input, credentials, 'anthropic_version', 'Anthropic-Version', accountCredentialMetadataMaxBytes)
-    copyOptionalCredentialText(input, credentials, 'anthropic_beta', 'Anthropic-Beta', accountCredentialMetadataMaxBytes)
   }
   if (apiKeys.length > 1) {
     credentials.api_keys = apiKeys

@@ -108,6 +108,7 @@ import {
   rememberAccountLabel
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatNumber } from '@/shared/formatters'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
@@ -200,20 +201,12 @@ const {
     ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 条检测记录，还有更多`
     : `共 ${formatNumber(total)} 条检测记录`,
   fetchPage: (_options, pageState) => {
-    return modelChecksApi.list({
-      ...modelCheckScopeParams.value,
-      page: pageState.current,
-      pageSize: pageState.pageSize,
-      targetType: 'account',
-      targetId: filters.targetId?.trim() || undefined,
-      model: filters.model,
-      level: filters.level,
-      status: filters.status
-    }).then((page) => {
+    return modelChecksApi.list(modelCheckRunListParams(pageState)).then((page) => {
       rememberRunAccountLabels(page.items)
       return page
     })
   },
+  requestSignature: (_options, pageState) => modelCheckRunListParams(pageState),
   onError: (error) => {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载模型检测历史失败'))
@@ -228,6 +221,19 @@ const modelCheckScopeParams = computed(() => {
   const systemAccountId = selectedManagementSystemAccountId.value
   return isManagementView.value && systemAccountId ? { systemAccountId } : undefined
 })
+
+function modelCheckRunListParams(pageState: { current: number; pageSize: number }) {
+  return {
+    ...modelCheckScopeParams.value,
+    page: pageState.current,
+    pageSize: pageState.pageSize,
+    targetType: 'account' as const,
+    targetId: filters.targetId?.trim() || undefined,
+    model: filters.model,
+    level: filters.level,
+    status: filters.status
+  }
+}
 const accountSelectDisabled = computed(() => submitting.value)
 const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
 const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
@@ -351,7 +357,12 @@ async function loadRunDetail(id: string) {
   detailOpen.value = true
   detailLoading.value = true
   try {
-    currentRun.value = await modelChecksApi.detail(id, modelCheckScopeParams.value)
+    currentRun.value = await loadEntityDetailCached({
+      id,
+      load: () => modelChecksApi.detail(id, modelCheckScopeParams.value),
+      namespace: 'model-check-run-detail',
+      scope: JSON.stringify(modelCheckScopeParams.value ?? {})
+    })
     rememberRunAccountLabels([currentRun.value])
   } catch (error) {
     console.error(error)

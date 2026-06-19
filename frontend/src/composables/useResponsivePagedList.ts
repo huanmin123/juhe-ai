@@ -32,6 +32,7 @@ type UseResponsivePagedListOptions<T, ExtraOptions extends Record<string, unknow
   mergeItems?: (currentItems: T[], nextItems: T[], options: ResponsivePagedListLoadOptions & ExtraOptions) => T[]
   onLoaded?: (result: ResponsivePagedListResult<T>, options: ResponsivePagedListLoadOptions & ExtraOptions) => void
   onError?: (error: unknown) => void
+  requestSignature?: (options: ResponsivePagedListLoadOptions & ExtraOptions, pagination: PaginationState) => unknown
 }
 
 export function useResponsivePagedList<T, ExtraOptions extends Record<string, unknown> = Record<never, never>>(
@@ -45,6 +46,8 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   let loadRequestId = 0
   let loadingRequestId = 0
   let mobileLoadingRequestId = 0
+  let inflightLoadKey = ''
+  let inflightLoadPromise: Promise<boolean> | undefined
   const pagination = reactive({
     current: options.initialPagination?.current ?? 1,
     pageSize: options.initialPagination?.pageSize ?? options.pageSize,
@@ -77,12 +80,32 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   }
 
   async function loadData(loadOptions = {} as ResponsivePagedListLoadOptions & ExtraOptions): Promise<boolean> {
+    const loadKey = requestKey(loadOptions)
+    if (loadKey && inflightLoadPromise && inflightLoadKey === loadKey) {
+      return inflightLoadPromise
+    }
     const requestId = loadRequestId + 1
     loadRequestId = requestId
     if (!loadOptions.quiet) {
       loading.value = true
       loadingRequestId = requestId
     }
+    const promise = executeLoadData(requestId, loadOptions)
+    if (loadKey) {
+      inflightLoadKey = loadKey
+      inflightLoadPromise = promise
+    }
+    try {
+      return await promise
+    } finally {
+      if (loadKey && inflightLoadPromise === promise) {
+        inflightLoadPromise = undefined
+        inflightLoadKey = ''
+      }
+    }
+  }
+
+  async function executeLoadData(requestId: number, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): Promise<boolean> {
     try {
       const result = await options.fetchPage(loadOptions, pagination)
       if (requestId !== loadRequestId) return false
@@ -182,6 +205,16 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     await loadData(loadOptions as ResponsivePagedListLoadOptions & ExtraOptions)
   }
 
+  function requestKey(loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): string | undefined {
+    if (!options.requestSignature) return undefined
+    return stableKey({
+      options: loadOptions,
+      page: pagination.current,
+      pageSize: pagination.pageSize,
+      signature: options.requestSignature(loadOptions, pagination)
+    })
+  }
+
   return {
     hasMore,
     items,
@@ -198,4 +231,11 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     resetPagination,
     updateItems
   }
+}
+
+function stableKey(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? String(value)
+  if (Array.isArray(value)) return `[${value.map((item) => stableKey(item)).join(',')}]`
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableKey(record[key])}`).join(',')}}`
 }

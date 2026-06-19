@@ -6,11 +6,11 @@ import {
   buildOpenAIModelsResponse,
   buildOpenAICodexUpstreamUrls,
   buildUpstreamUrl,
-  buildUpstreamUrlsForAccount,
   isCodexModelsRequest,
   isOpenAIModelsRequest
 } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
-import { buildUpstreamHeaders, buildUpstreamRequestBody, buildUpstreamRequestParts, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/upstream/request.js'
+import { buildGatewayUpstreamRequestParts, buildGatewayUpstreamUrlsForAccount } from '../../modules/providers/drivers/registry.js'
+import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/upstream/request.js'
 import {
   createGatewayRequestBodyState,
   clearGatewayRequestBodyInFlightForTest,
@@ -98,7 +98,7 @@ function testRawBodyPassthrough(): void {
 async function testOpenAIStandardRequestPartsPassthrough(): Promise<void> {
   const rawBody = Buffer.from('{"model":"gpt-5.4","input":"hello","stream":false}')
   const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
-  const parts = await buildUpstreamRequestParts(req, {
+  const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'openai_standard'
   }, testIdentity)
@@ -132,7 +132,7 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
     user: 'local-user'
   }))
   const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
-  const parts = await buildUpstreamRequestParts(req, {
+  const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'codex_responses'
   }, testIdentity)
@@ -207,7 +207,7 @@ async function testCodexResponsesCompatibilityKeepsExplicitToolSettings(): Promi
     'user-agent': 'codex_vscode/1.2.3',
     'version': '1.2.3'
   }, rawBody, '/responses')
-  const parts = await buildUpstreamRequestParts(req, {
+  const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'codex_responses'
   }, testIdentity)
@@ -233,7 +233,7 @@ async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): P
     stream: false
   }))
   const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/chat/completions')
-  const parts = await buildUpstreamRequestParts(req, {
+  const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     clientCompatibility: 'codex_responses'
   }, testIdentity)
@@ -404,7 +404,7 @@ function testResponsesCompactRouteCapability(): void {
   }
 
   assert.deepEqual(
-    buildUpstreamUrlsForAccount(passthroughAccount, createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact')),
+    buildGatewayUpstreamUrlsForAccount(passthroughAccount, createRequest({ model: 'gpt-5.4', input: [] }, {}, undefined, '/v1/responses/compact')),
     ['https://api.openai.com/v1/responses/compact']
   )
 }

@@ -23,6 +23,7 @@ logger.level = 'silent'
 
 const databaseModule = await import('../../storage/database.js')
 const usageRecordShards = await import('../../storage/usage-record-shards.js')
+const repositories = await import('../../storage/repositories.js')
 
 try {
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('business'), 'db-service')
@@ -48,6 +49,7 @@ try {
   databaseModule.getDatasetDatabase()
   const shardLocation = usageRecordShards.usageRecordShardLocationForRecord('usage_20260618_s00_boundary', '2026-06-18T00:00:00.000Z')
   usageRecordShards.getUsageRecordShardDatabase(shardLocation)
+  assertIngestWorkerUsageRecordWriteDoesNotTouchReadonlyBusinessDatabase()
   databaseModule.closeStorageDatabases()
 
   runtimeConfig.processRole = 'worker'
@@ -72,10 +74,43 @@ try {
   assertRuntimeWriteQueueSourceGuards()
   await assertDatasetWriterBridge()
 
-  console.log('SQLite writer boundary 回归通过：主库 / usage shard owner 划分、默认严格模式、非 owner 写入只读保护和 dataset writer 转发边界已就绪')
+  console.log('SQLite writer boundary 回归通过：主库 / usage shard owner 划分、默认严格模式、usage 写入副作用边界、非 owner 写入只读保护和 dataset writer 转发边界已就绪')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertIngestWorkerUsageRecordWriteDoesNotTouchReadonlyBusinessDatabase(): void {
+  const createdAt = '2026-06-18T00:00:01.000Z'
+  const id = usageRecordShards.generateUsageRecordId(createdAt, 'sqlite-writer-boundary-usage')
+  repositories.createUsageRecordsBatch([{
+    id,
+    systemAccountId: 'sys_admin',
+    traceId: 'trace-sqlite-writer-boundary-usage',
+    trafficSource: 'gateway',
+    accountId: 'missing-account-for-readonly-side-effect',
+    endpoint: 'POST /v1/messages',
+    providerCode: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    stream: false,
+    statusCode: 200,
+    success: true,
+    inputTokens: 1,
+    outputTokens: 1,
+    costUsd: 0.00001,
+    createdAt
+  }])
+
+  const location = usageRecordShards.usageRecordShardLocationForRecord(id, createdAt)
+  const shardRow = usageRecordShards.getUsageRecordShardDatabase(location)
+    .prepare('SELECT id FROM usage_records WHERE id = ?')
+    .get(id) as { id?: string } | undefined
+  assert.equal(shardRow?.id, id, 'ingest-worker 应能写入 usage shard，不应被业务库只读副作用阻塞')
+
+  const entryRow = databaseModule.getDatasetDatabase()
+    .prepare('SELECT usage_id FROM usage_record_shard_entries WHERE usage_id = ?')
+    .get(id) as { usage_id?: string } | undefined
+  assert.equal(entryRow?.usage_id, id, 'ingest-worker 应能写入使用记录索引，不应被业务库只读副作用阻塞')
 }
 
 function assertNonOwnerWriteBlocked(database: import('node:sqlite').DatabaseSync, label: string): void {

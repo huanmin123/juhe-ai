@@ -52,12 +52,12 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     })
   }
   if (input.rawCandidateAccounts.length > 0 && capabilityFilter.accounts.length === 0) {
-    const fallback = await input.attemptFallback('request_capability_mismatch')
+    const reason = capabilityFilter.reason ?? 'request_capability_mismatch'
+    const fallback = await input.attemptFallback(reason)
     if (fallback.attempted) {
       return { outcome: 'fallback', context: fallback.context }
     }
     const statusCode = 400
-    const reason = capabilityFilter.reason ?? 'request_capability_mismatch'
     const message = requestCapabilityMismatchMessage(reason)
     const responsePayload = gatewayErrorPayload(message, 'invalid_request_error', reason)
     recordClientIpRequestErrorSample({
@@ -145,5 +145,8 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
 }
 
 function requestCapabilityMismatchMessage(reason: string): string {
+  if (reason === 'anthropic_native_group_openai_compatible_request') {
+    return '当前 API Key 绑定的是 Anthropic 原生分组，不兼容 Codex / OpenAI 请求路径；请改用 Anthropic /v1/messages 客户端，或绑定支持 OpenAI Responses / Chat Completions 的分组'
+  }
   return '当前分组无账户支持请求路径或客户端协议'
 }

@@ -1,12 +1,14 @@
-import type { Response } from 'express'
+import type { Request, Response } from 'express'
 
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
-import { gatewayErrorPayload, sendGatewayErrorResponse } from '../response/responses.js'
+import { gatewayErrorPayload, gatewayErrorPayloadForProtocol, sendGatewayErrorResponse } from '../response/responses.js'
 import { isUpstreamRequestAbortedError } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
+import { isAnthropicNativeRequest } from '../protocols/anthropic-v1/route-helpers.js'
 
 interface HandleGatewayRequestKnownErrorResponseInput {
+  req: Request
   res: Response
   auditCapture: AuditCaptureContext
   error: unknown
@@ -14,7 +16,7 @@ interface HandleGatewayRequestKnownErrorResponseInput {
 }
 
 export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayRequestKnownErrorResponseInput): boolean {
-  const { res, auditCapture, error, signal } = input
+  const { req, res, auditCapture, error, signal } = input
 
   if (isUpstreamRequestAbortedError(error) || signal.aborted) {
     auditCapture.finalize({
@@ -34,13 +36,15 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
   if (error instanceof OpenAIOAuthCodexAdapterError) {
     const statusCode = error.statusCode
     const responsePayload = gatewayErrorPayload(error.message, error.type)
-    sendGatewayErrorResponse(res, statusCode, responsePayload)
+    const protocol = isAnthropicNativeRequest(req) ? 'anthropic' : 'openai'
+    const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+    sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })
     auditCapture.finalize({
       outcome: 'gateway_failed',
       success: false,
       statusCode,
       responseHeaders: responseHeadersToObject(res),
-      responseBody: JSON.stringify(responsePayload),
+      responseBody: JSON.stringify(clientPayload),
       responsePartType: 'gateway_error',
       errorPhase: 'request_validation',
       errorCode: error.code,

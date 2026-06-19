@@ -68,29 +68,6 @@
         :placeholder="baseUrlPlaceholder"
       />
     </a-form-item>
-    <a-alert
-      v-if="showAnthropicBaseUrlNotice"
-      class="anthropic-base-url-notice"
-      type="warning"
-      show-icon
-      message="当前 Base URL 不是 Anthropic 官方 API 地址。兼容入口可用于本地测试或后续独立供应商接入，但不要把它标记为官方 Claude 直连账号。"
-    />
-    <template v-if="isAnthropicForm">
-      <a-form-item label="Anthropic-Version" extra="客户端未传 anthropic-version 时使用该值；通常保持 2023-06-01。">
-        <a-input
-          v-model:value="form.anthropicVersion"
-          autocomplete="off"
-          placeholder="2023-06-01"
-        />
-      </a-form-item>
-      <a-form-item label="Anthropic-Beta" extra="可填写账号级 beta，多项用英文逗号分隔；系统不会默认注入 Claude Code 专属 beta。">
-        <a-input
-          v-model:value="form.anthropicBeta"
-          autocomplete="off"
-          placeholder="例如 fine-grained-tool-streaming-2025-05-14"
-        />
-      </a-form-item>
-    </template>
   </section>
 </template>
 
@@ -100,7 +77,6 @@ import { computed, watch } from 'vue'
 
 import type { AccountFormModel } from './accountFormTypes'
 import { normalizedAccountApiKeys } from './accountCredentials'
-import { ANTHROPIC_PROVIDER_CODE, normalizeProviderToken } from '@/shared/providerProtocol'
 
 const props = defineProps<{
   baseUrlPlaceholder: string
@@ -113,8 +89,6 @@ const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).le
 const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
 const showBatchDeleteApiKeys = computed(() => props.form.apiKeys.some((value) => value.trim()))
-const isAnthropicForm = computed(() => normalizeProviderToken(props.form.providerCode) === ANTHROPIC_PROVIDER_CODE)
-const showAnthropicBaseUrlNotice = computed(() => isAnthropicForm.value && isNonOfficialAnthropicBaseUrl(props.form.baseUrl))
 
 watch(
   [() => props.form.apiKeys.length, () => props.form.apiKeyStrategy],
@@ -198,16 +172,6 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   return output
 }
 
-function isNonOfficialAnthropicBaseUrl(value: string): boolean {
-  const text = value.trim()
-  if (!text) return false
-  try {
-    const url = new URL(text)
-    return url.hostname.toLowerCase() !== 'api.anthropic.com'
-  } catch {
-    return false
-  }
-}
 </script>
 
 <style scoped>
@@ -255,10 +219,6 @@ function isNonOfficialAnthropicBaseUrl(value: string): boolean {
 
 .api-key-batch-delete-button {
   padding-inline: 0;
-}
-
-.anthropic-base-url-notice {
-  margin: -8px 0 16px;
 }
 
 :deep(.ant-form-item-label > label:has(.api-key-label)) {

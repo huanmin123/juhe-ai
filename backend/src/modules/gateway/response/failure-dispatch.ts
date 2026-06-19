@@ -56,6 +56,7 @@ import {
   recordGatewayCompatibilityRecoveryDecision,
   type GatewayCompatibilityRecoveryState
 } from '../client-profiles/compatibility-policy.js'
+import { isGatewayProtocolEndpointCapabilityFailure } from '../protocols/registry.js'
 
 export type AccountFailureInput = {
   success: false
@@ -233,6 +234,7 @@ export async function handleFailedUpstreamResponse(
     : decideAccountErrorPolicy(account, response.status, response.headers, Buffer.from(responseBodyText), settings)
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
+  const endpointCapabilityFailure = isEndpointCapabilityFailure(req, account, response.status)
   if (input.retrySameAccount) {
     auditCapture.addGatewayMetadata({
       label: 'same_account_retry_response_failed',
@@ -247,8 +249,22 @@ export async function handleFailedUpstreamResponse(
     return { action: 'retry', lastAttempt }
   }
 
-  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
+  if (!endpointCapabilityFailure) {
+    forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+  }
+  if (endpointCapabilityFailure) {
+    auditCapture.addGatewayMetadata({
+      label: 'endpoint_capability_response_failed',
+      metadata: {
+        accountId: account.id,
+        upstreamUrl: safeUpstreamUrl,
+        statusCode: response.status,
+        endpoint: requestEndpoint(req)
+      }
+    })
+  }
+
+  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false && !endpointCapabilityFailure
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && isRealUpstreamUrl(upstreamUrl)) {
     recordGatewayAccountApiKeyFailure(account, {
@@ -292,14 +308,16 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
-    statusCode: response.status,
-    errorCode: stringValue(parsedError.code) || undefined,
-    errorType: stringValue(parsedError.type) || undefined,
-    errorPhase: 'upstream_response',
-    errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
-    endpoint: requestEndpoint(req)
-  })
+  if (!endpointCapabilityFailure) {
+    rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
+      statusCode: response.status,
+      errorCode: stringValue(parsedError.code) || undefined,
+      errorType: stringValue(parsedError.type) || undefined,
+      errorPhase: 'upstream_response',
+      errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
+      endpoint: requestEndpoint(req)
+    })
+  }
 
   return { action: 'skip_account', lastAttempt }
 }
@@ -325,6 +343,14 @@ function accountApiKeyFailureStatusFromPolicyDecision(
     return 'rate_limited'
   }
   return 'temporary_unavailable'
+}
+
+function isEndpointCapabilityFailure(
+  req: Request,
+  account: UpstreamAccount,
+  statusCode: number
+): boolean {
+  return isGatewayProtocolEndpointCapabilityFailure(req, account, statusCode)
 }
 
 export async function handleUpstreamRequestError(

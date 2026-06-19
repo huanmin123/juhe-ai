@@ -1,5 +1,5 @@
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
@@ -23,6 +23,7 @@ import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from './provider.repository.js'
 import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -43,6 +44,7 @@ export interface UsageRecordSummary {
   accountName?: string
   endpoint?: string
   providerCode?: string
+  usageSemantic?: string
   model?: string
   upstreamModel?: string
   pricingModel?: string
@@ -57,6 +59,10 @@ export interface UsageRecordSummary {
   outputTokens?: number
   cacheReadTokens?: number
   cacheReadCostUsd?: number
+  cacheWriteTokens?: number
+  cacheWrite1hTokens?: number
+  cacheWriteCostUsd?: number
+  thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
   costUsd?: number
@@ -124,6 +130,7 @@ export interface UsageRecordInput {
   groupAuthorizationSourceTeamId?: string
   endpoint?: string
   providerCode?: string
+  usageSemantic?: string
   model?: string
   upstreamModel?: string
   pricingModel?: string
@@ -138,6 +145,10 @@ export interface UsageRecordInput {
   outputTokens?: number
   cacheReadTokens?: number
   cacheReadCostUsd?: number
+  cacheWriteTokens?: number
+  cacheWrite1hTokens?: number
+  cacheWriteCostUsd?: number
+  thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
   costUsd?: number
@@ -309,14 +320,14 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const businessDatabase = getBusinessDatabase()
   const insertSql = `
     INSERT INTO usage_records (
-      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
-      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
+      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
+      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
       account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
       account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
       group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `
   const accountLastUsedAt = new Map<string, string>()
@@ -348,6 +359,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
           input.accountId ?? null,
           input.endpoint ?? null,
           input.providerCode ?? null,
+          input.usageSemantic ?? null,
           input.model ?? null,
           input.upstreamModel ?? null,
           input.pricingModel ?? null,
@@ -362,6 +374,10 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
           input.outputTokens ?? null,
           input.cacheReadTokens ?? null,
           input.cacheReadCostUsd ?? null,
+          input.cacheWriteTokens ?? null,
+          input.cacheWrite1hTokens ?? null,
+          input.cacheWriteCostUsd ?? null,
+          input.thinkingTokens ?? null,
           input.inputImageTokens ?? null,
           input.outputImageTokens ?? null,
           input.costUsd ?? null,
@@ -444,17 +460,12 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
       }
     }
 
-    updateAccountLastUsedAt(accountLastUsedAt, businessDatabase)
-    recordAccountHealthSuccessSignals(accountHealthSuccessAt)
     recordUsageRecordShardEntries(shardEntries)
+    flushUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, businessDatabase)
     accountLastUsedFlushed = true
   } catch (error) {
     if (!accountLastUsedFlushed && accountLastUsedAt.size > 0) {
-      try {
-        updateAccountLastUsedAt(accountLastUsedAt, businessDatabase)
-        recordAccountHealthSuccessSignals(accountHealthSuccessAt)
-      } catch {
-      }
+      flushUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, businessDatabase)
     }
     throw error
   }
@@ -500,6 +511,7 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
     const location = findRegisteredUsageRecordShardLocation(shardKey)
     if (!location) continue
     const shardDatabase = getUsageRecordShardDatabase(location)
+    const optionalColumns = usageRecordOptionalColumnSelects(shardDatabase)
     for (const chunk of chunkValues(shardEntries.map((entry) => entry.usage_id), 900)) {
       const rows = shardDatabase
         .prepare(`
@@ -514,6 +526,7 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.account_id,
             ur.endpoint,
             ur.provider_code,
+            ${optionalColumns.usageSemantic},
             ur.model,
             ur.upstream_model,
             ur.pricing_model,
@@ -528,6 +541,10 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.output_tokens,
             ur.cache_read_tokens,
             ur.cache_read_cost_usd,
+            ${optionalColumns.cacheWriteTokens},
+            ${optionalColumns.cacheWrite1hTokens},
+            ${optionalColumns.cacheWriteCostUsd},
+            ${optionalColumns.thinkingTokens},
             ur.input_image_tokens,
             ur.output_image_tokens,
             ur.cost_usd,
@@ -556,7 +573,9 @@ function listUsageRecordRowsFromShards(
   const locations = listUsageRecordShardLocations(window)
   const rows: UsageRecordRow[] = []
   for (const location of locations) {
-    rows.push(...getUsageRecordShardDatabase(location)
+    const shardDatabase = getUsageRecordShardDatabase(location)
+    const optionalColumns = usageRecordOptionalColumnSelects(shardDatabase)
+    rows.push(...shardDatabase
       .prepare(`
         SELECT
           ur.id,
@@ -569,6 +588,7 @@ function listUsageRecordRowsFromShards(
           ur.account_id,
           ur.endpoint,
           ur.provider_code,
+          ${optionalColumns.usageSemantic},
           ur.model,
           ur.upstream_model,
           ur.pricing_model,
@@ -583,6 +603,10 @@ function listUsageRecordRowsFromShards(
           ur.output_tokens,
           ur.cache_read_tokens,
           ur.cache_read_cost_usd,
+          ${optionalColumns.cacheWriteTokens},
+          ${optionalColumns.cacheWrite1hTokens},
+          ${optionalColumns.cacheWriteCostUsd},
+          ${optionalColumns.thinkingTokens},
           ur.input_image_tokens,
           ur.output_image_tokens,
           ur.cost_usd,
@@ -597,6 +621,36 @@ function listUsageRecordRowsFromShards(
       .all(...filters.params, perShardLimit) as UsageRecordRow[])
   }
   return rows.sort((left, right) => compareUsageRecordRows(left, right, listOptions)).slice(0, perShardLimit)
+}
+
+function usageRecordOptionalColumnSelects(database: ReturnType<typeof getUsageRecordShardDatabase>): {
+  usageSemantic: string
+  cacheWriteTokens: string
+  cacheWrite1hTokens: string
+  cacheWriteCostUsd: string
+  thinkingTokens: string
+} {
+  const columns = usageRecordColumnSet(database)
+  return {
+    usageSemantic: columns.has('usage_semantic') ? 'ur.usage_semantic' : 'NULL AS usage_semantic',
+    cacheWriteTokens: columns.has('cache_write_tokens') ? 'ur.cache_write_tokens' : 'NULL AS cache_write_tokens',
+    cacheWrite1hTokens: columns.has('cache_write_1h_tokens') ? 'ur.cache_write_1h_tokens' : 'NULL AS cache_write_1h_tokens',
+    cacheWriteCostUsd: columns.has('cache_write_cost_usd') ? 'ur.cache_write_cost_usd' : 'NULL AS cache_write_cost_usd',
+    thinkingTokens: columns.has('thinking_tokens') ? 'ur.thinking_tokens' : 'NULL AS thinking_tokens'
+  }
+}
+
+const usageRecordColumnCache = new WeakMap<ReturnType<typeof getUsageRecordShardDatabase>, Set<string>>()
+
+function usageRecordColumnSet(database: ReturnType<typeof getUsageRecordShardDatabase>): Set<string> {
+  const cached = usageRecordColumnCache.get(database)
+  if (cached) return cached
+  const rows = database
+    .prepare('PRAGMA table_info(usage_records)')
+    .all() as Array<{ name?: string }>
+  const columns = new Set(rows.map((row) => String(row.name ?? '')))
+  usageRecordColumnCache.set(database, columns)
+  return columns
 }
 
 function usageRecordShardQueryWindowFromOptions(options?: UsageRecordListOptions): UsageRecordShardQueryWindow {
@@ -652,6 +706,25 @@ function mergeAccountLastUsedAt(target: Map<string, string>, source: Map<string,
     if (!previous || lastUsedAt > previous) {
       target.set(accountId, lastUsedAt)
     }
+  }
+}
+
+function flushUsageRecordBusinessSideEffects(
+  accountLastUsedAt: Map<string, string>,
+  accountHealthSuccessAt: Map<string, string>,
+  database: ReturnType<typeof getBusinessDatabase>
+): void {
+  if (accountLastUsedAt.size === 0 && accountHealthSuccessAt.size === 0) return
+  if (mainDatabaseRuntimeInfo('business').queryOnly) return
+  try {
+    updateAccountLastUsedAt(accountLastUsedAt, database)
+    recordAccountHealthSuccessSignals(accountHealthSuccessAt)
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'usage_record_business_side_effect_flush_failed',
+      accountLastUsedCount: accountLastUsedAt.size,
+      accountHealthSuccessCount: accountHealthSuccessAt.size
+    }), '使用记录业务副作用写入失败，已保留使用记录落库结果')
   }
 }
 

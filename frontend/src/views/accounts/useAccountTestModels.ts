@@ -7,7 +7,7 @@ import { GPT_VENDOR_CODE } from '@/shared/providerProtocol'
 import {
   buildTestModelOptions,
   defaultTestModelForAccountSelection,
-  isOpenAICompatibleTestSelection,
+  isGatewaySupportedTestSelection,
   providerCodeForAccountSelection,
   providerDefaultTestModelForAccountSelection
 } from './accountDerivedState'
@@ -38,10 +38,10 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const defaultTestModel = computed(() => (
     defaultTestModelForAccountSelection(input.testTargetAccountSelection.value, providerDefaultTestModel.value)
   ))
-  const isOpenAICompatibleTestTarget = computed(() => isOpenAICompatibleTestSelection(input.testTargetAccountSelection.value))
+  const isGatewaySupportedTestTarget = computed(() => isGatewaySupportedTestSelection(input.testTargetAccountSelection.value))
 
   async function loadTestModels(): Promise<void> {
-    if (!isOpenAICompatibleTestTarget.value) {
+    if (!isGatewaySupportedTestTarget.value) {
       modelRequestId.value += 1
       testModelsLoading.value = false
       testModelsLoadingProviderCode.value = ''

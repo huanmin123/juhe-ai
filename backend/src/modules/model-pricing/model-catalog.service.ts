@@ -17,7 +17,7 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
@@ -130,7 +130,9 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
 function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
-  const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode).map(toBuiltInCatalogItem))
+  const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
+    .filter((item) => item.catalogVisible)
+    .map(toBuiltInCatalogItem))
   const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
     providerCode,
     systemAccountId: options.systemAccountId,
@@ -201,6 +203,21 @@ export function estimateCatalogCacheReadCostUsd(input: CostInput & { systemAccou
   return roundCost(Math.max(input.cacheReadTokens, 0) * cachedInputPrice)
 }
 
+export function estimateCatalogCacheWriteCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
+  const pricing = resolveCatalogPricing(input)
+  if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
+  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
+  if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
+  const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
+  const cacheWrite1hTokens = normalizedCacheWrite1hTokens(input, cacheWriteTokens)
+  const cacheWriteStandardTokens = Math.max(cacheWriteTokens - cacheWrite1hTokens, 0)
+  return roundCost(
+    cacheWriteStandardTokens * (cacheWritePrice ?? 0)
+    + cacheWrite1hTokens * (cacheWrite1hPrice ?? 0)
+  )
+}
+
 export function resolveCatalogPricingModel(input: { providerCode: string; model?: string; systemAccountId?: string }): string | undefined {
   return resolveCatalogPricing(input)?.model
 }
@@ -212,24 +229,32 @@ export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?:
   const inputPrice = perToken(pricing.inputUsdPer1M)
   const outputPrice = perToken(pricing.outputUsdPer1M)
   const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? inputPrice
+  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
   const inputImagePrice = perToken(pricing.imageInputUsdPer1M)
   const outputImagePrice = perToken(pricing.imageOutputUsdPer1M)
   const inputAudioPrice = perToken(pricing.audioInputUsdPer1M)
   const outputAudioPrice = perToken(pricing.audioOutputUsdPer1M)
   const outputImageUnitPrice = pricing.outputUsdPerImage
-  if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
+  if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, cacheWritePrice, cacheWrite1hPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
+  const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
+  const cacheWrite1hTokens = normalizedCacheWrite1hTokens(input, cacheWriteTokens)
+  const cacheWriteStandardTokens = Math.max(cacheWriteTokens - cacheWrite1hTokens, 0)
   const inputImageTokens = inputImagePrice === undefined ? 0 : Math.max(input.inputImageTokens ?? 0, 0)
   const outputImageTokens = outputImagePrice === undefined ? 0 : Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
   const inputAudioTokens = inputAudioPrice === undefined ? 0 : Math.max(input.inputAudioTokens ?? defaultInputAudioTokens(input, inputPrice, cacheReadTokens, inputImageTokens), 0)
   const outputAudioTokens = outputAudioPrice === undefined ? 0 : Math.max(input.outputAudioTokens ?? defaultOutputAudioTokens(input, outputPrice, outputImageTokens), 0)
   const outputImageCount = outputImageUnitPrice === undefined ? 0 : Math.max(input.outputImageCount ?? 0, 0)
-  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens - inputAudioTokens, 0)
+  const cacheReadTokensIncludedInInput = usesIncludedCacheReadUsage(input.providerCode) ? cacheReadTokens : 0
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokensIncludedInInput - inputImageTokens - inputAudioTokens, 0)
   const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
   const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
   const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
   const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
+  const cacheWriteCostUsd = cacheWriteStandardTokens > 0 && cacheWritePrice !== undefined ? roundCost(cacheWriteStandardTokens * cacheWritePrice) : undefined
+  const cacheWrite1hCostUsd = cacheWrite1hTokens > 0 && cacheWrite1hPrice !== undefined ? roundCost(cacheWrite1hTokens * cacheWrite1hPrice) : undefined
   const inputImageCostUsd = inputImageTokens > 0 && inputImagePrice !== undefined ? roundCost(inputImageTokens * inputImagePrice) : undefined
   const outputImageCostUsd = outputImageTokens > 0 && outputImagePrice !== undefined ? roundCost(outputImageTokens * outputImagePrice) : undefined
   const inputAudioCostUsd = inputAudioTokens > 0 && inputAudioPrice !== undefined ? roundCost(inputAudioTokens * inputAudioPrice) : undefined
@@ -243,6 +268,11 @@ export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?:
     outputUsdPer1M: pricing.outputUsdPer1M,
     cacheReadCostUsd,
     cacheReadUsdPer1M: pricing.cachedInputUsdPer1M ?? pricing.inputUsdPer1M,
+    cacheWriteCostUsd,
+    cacheWriteUsdPer1M: pricing.cacheWriteUsdPer1M,
+    cacheWrite1hCostUsd,
+    cacheWrite1hUsdPer1M: pricing.cacheWrite1hUsdPer1M ?? pricing.cacheWriteUsdPer1M,
+    thinkingTokens: input.thinkingTokens,
     inputImageCostUsd,
     outputImageCostUsd,
     inputImageUsdPer1M: pricing.imageInputUsdPer1M,
@@ -253,7 +283,7 @@ export function buildCatalogCostBreakdown(input: CostInput & { systemAccountId?:
     outputAudioUsdPer1M: pricing.audioOutputUsdPer1M,
     outputImageUnitCostUsd,
     outputUsdPerImage: pricing.outputUsdPerImage,
-    accountChargeUsd: input.costUsd ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
+    accountChargeUsd: input.costUsd ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, cacheWrite1hCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
     multiplier: 1
   }
 }
@@ -311,6 +341,7 @@ function hasDirectPrice(item: ProviderModelPricing): boolean {
     || item.outputUsdPer1M !== undefined
     || item.cachedInputUsdPer1M !== undefined
     || item.cacheWriteUsdPer1M !== undefined
+    || item.cacheWrite1hUsdPer1M !== undefined
     || item.imageInputUsdPer1M !== undefined
     || item.imageOutputUsdPer1M !== undefined
     || item.audioInputUsdPer1M !== undefined
@@ -352,6 +383,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     maxOutputTokens: item.maxOutputTokens,
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportsServiceTier: false,
+    catalogVisible: true,
     source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
     status: item.status,
@@ -495,6 +527,8 @@ function hasAnyCostDimension(input: CostInput): boolean {
   return input.inputTokens !== undefined
     || input.outputTokens !== undefined
     || input.cacheReadTokens !== undefined
+    || input.cacheWriteTokens !== undefined
+    || input.cacheWrite1hTokens !== undefined
     || input.inputImageTokens !== undefined
     || input.outputImageTokens !== undefined
     || input.inputAudioTokens !== undefined
@@ -504,6 +538,15 @@ function hasAnyCostDimension(input: CostInput): boolean {
 
 function hasAnyPrice(...prices: Array<number | undefined>): boolean {
   return prices.some((price) => price !== undefined)
+}
+
+function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number): number {
+  const cacheWrite1hTokens = Math.max(input.cacheWrite1hTokens ?? 0, 0)
+  return cacheWriteTokens > 0 ? Math.min(cacheWrite1hTokens, cacheWriteTokens) : cacheWrite1hTokens
+}
+
+function usesIncludedCacheReadUsage(providerCode: string): boolean {
+  return normalizeProviderToken(providerCode) !== ANTHROPIC_PROVIDER_CODE
 }
 
 function perToken(value: number | undefined): number | undefined {

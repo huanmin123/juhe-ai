@@ -101,6 +101,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         hasMore: accountList.hasMore
       }
     },
+    requestSignature: (_loadOptions, pageState) => {
+      const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+      return [
+        options.isManagementView.value ? 'management' : 'self',
+        accountListParams(systemAccountId, pageState)
+      ]
+    },
     onLoaded: () => {
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)

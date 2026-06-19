@@ -28,6 +28,10 @@ export function usageRecordSummaryFromRow(
   const outputTokens = numberValue(row.output_tokens)
   const cacheReadTokens = numberValue(row.cache_read_tokens)
   const cacheReadCostUsd = numberValue(row.cache_read_cost_usd)
+  const cacheWriteTokens = numberValue(row.cache_write_tokens)
+  const cacheWrite1hTokens = numberValue(row.cache_write_1h_tokens)
+  const cacheWriteCostUsd = numberValue(row.cache_write_cost_usd)
+  const thinkingTokens = numberValue(row.thinking_tokens)
   const inputImageTokens = numberValue(row.input_image_tokens)
   const outputImageTokens = numberValue(row.output_image_tokens)
   const model = optionalString(row.model)
@@ -49,6 +53,7 @@ export function usageRecordSummaryFromRow(
     accountName: optionalString(row.account_name),
     endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot),
     providerCode: optionalString(row.provider_code),
+    usageSemantic: optionalString(row.usage_semantic),
     model,
     upstreamModel: optionalString(row.upstream_model),
     pricingModel: optionalString(row.pricing_model),
@@ -63,6 +68,10 @@ export function usageRecordSummaryFromRow(
     outputTokens,
     cacheReadTokens,
     cacheReadCostUsd,
+    cacheWriteTokens,
+    cacheWrite1hTokens,
+    cacheWriteCostUsd,
+    thinkingTokens,
     inputImageTokens,
     outputImageTokens,
     costUsd: numberValue(row.cost_usd),

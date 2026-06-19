@@ -104,6 +104,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { invalidateEntityDetailCache, loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatDateTime } from '@/shared/formatters'
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '@/types/domain'
 import {
@@ -234,7 +235,11 @@ async function openEdit(record: AnnouncementSummary) {
   detailLoading.value = true
   editingId.value = record.id
   try {
-    const detail = await api.announcements.detail(record.id)
+    const detail = await loadEntityDetailCached({
+      id: record.id,
+      load: () => api.announcements.detail(record.id),
+      namespace: 'announcement-detail'
+    })
     Object.assign(form, {
       title: detail.title,
       content: detail.content,
@@ -262,6 +267,7 @@ const saveAnnouncement = submitAction('announcements.save', async () => {
     const payload = { title, content, level: form.level, status: form.status }
     if (editingId.value) {
       await api.announcements.update(editingId.value, payload)
+      invalidateEntityDetailCache('announcement-detail', editingId.value)
       message.success('公告已更新')
     } else {
       await api.announcements.create(payload)

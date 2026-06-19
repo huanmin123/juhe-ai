@@ -150,6 +150,78 @@ try {
   })
   assert(managementCatalog.some((item) => item.model === 'gpt-regression-draft'), '管理模型目录应能看到草稿模型')
 
+  const anthropicCatalog = catalogService.listProviderModelCatalog({
+    providerCode: 'anthropic',
+    systemAccountId: 'sys_admin'
+  })
+  const anthropicModels = new Set(anthropicCatalog.map((item) => item.model))
+  for (const id of [
+    'best',
+    'fable',
+    'opus',
+    'opus[1m]',
+    'opusplan',
+    'sonnet',
+    'sonnet[1m]',
+    'haiku'
+  ]) {
+    assert(anthropicModels.has(id), `Anthropic 模型目录应包含 Claude Code 模型别名 ${id}`)
+  }
+  for (const id of [
+    'claude-fable-5',
+    'claude-mythos-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-opus-4-6-thinking',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-6-thinking',
+    'claude-haiku-4-5',
+    'claude-opus-4-5'
+  ]) {
+    assert(anthropicModels.has(id), `Anthropic 模型目录应包含当前有效 Claude / Claude Code 兼容模型 ${id}`)
+  }
+  assert(anthropicModels.has('claude-haiku-4-5-20251001'), 'Anthropic 模型目录应包含 Haiku 4.5 官方 dated ID')
+  assert(anthropicModels.has('claude-sonnet-4-5-20250929'), 'Anthropic 模型目录应包含 Sonnet 4.5 官方 dated ID')
+  assert(anthropicModels.has('claude-opus-4-5-20251101'), 'Anthropic 模型目录应包含 Opus 4.5 官方 dated ID')
+  if (new Date().toISOString().slice(0, 10) < '2026-06-30') {
+    assert(anthropicModels.has('claude-mythos-preview'), 'Anthropic 模型目录在 Mythos preview 退休前应包含该模型')
+  } else {
+    assert.equal(anthropicModels.has('claude-mythos-preview'), false, 'Mythos preview 已退休，不应进入 Anthropic 模型目录')
+  }
+  if (new Date().toISOString().slice(0, 10) < '2026-08-05') {
+    assert(anthropicModels.has('claude-opus-4-1'), 'Anthropic 模型目录在 Opus 4.1 shutdown date 前应包含稳定别名')
+    assert(anthropicModels.has('claude-opus-4-1-20250805'), 'Anthropic 模型目录在 Opus 4.1 shutdown date 前应包含 dated ID')
+  }
+  for (const id of [
+    'default',
+    'claude-opus-4-20250514',
+    'claude-sonnet-4-20250514',
+    'claude-3-7-sonnet-20250219',
+    'claude-3-5-haiku-20241022',
+    'google/antigravity-claude-opus-4-5-thinking',
+    'claude-fake-5',
+    'claude-opus-4-6-antigravity',
+    'antigravity-claude-opus-4-6-thinking',
+    'antigravity/claude-opus-4-6-thinking',
+    'google/antigravity-claude-opus-4-6-thinking',
+    'google-antigravity/claude-opus-4-6-thinking',
+    'google-antigravity:claude-opus-4-6-thinking',
+    'claude-sonnet-4-6-antigravity',
+    'antigravity-claude-sonnet-4-6',
+    'antigravity/claude-sonnet-4-6',
+    'google/antigravity-claude-sonnet-4-6',
+    'google-antigravity/claude-sonnet-4-6',
+    'google-antigravity:claude-sonnet-4-6',
+    'antigravity-claude-sonnet-4-6-thinking',
+    'antigravity/claude-sonnet-4-6-thinking',
+    'google/antigravity-claude-sonnet-4-6-thinking',
+    'google-antigravity/claude-sonnet-4-6-thinking',
+    'google-antigravity:claude-sonnet-4-6-thinking'
+  ]) {
+    assert.equal(anthropicModels.has(id), false, `${id} 不应进入 Anthropic 模型目录`)
+  }
+
   const response = catalogService.buildOpenAIModelsResponseFromCatalog(publicCatalog)
   assert.equal(response.object, 'list', '/v1/models 顶层 object 必须是 list')
   assert(Array.isArray(response.data), '/v1/models data 必须是数组')

@@ -482,6 +482,8 @@ function ownerOptionApiKeyPoolAllUnavailableExpression(): string {
   return accountApiKeyPoolAllUnavailableSql({
     accountIdSql: 'accounts.id',
     providerCodeSql: 'accounts.provider_code',
+    protocolCodeSql: 'accounts.protocol_code',
+    protocolVersionSql: 'accounts.protocol_version',
     typeSql: 'accounts.type'
   })
 }
@@ -490,6 +492,8 @@ function authorizedOptionApiKeyPoolAllUnavailableExpression(): string {
   return accountApiKeyPoolAllUnavailableSql({
     accountIdSql: 'COALESCE(source_accounts.id, accounts.id)',
     providerCodeSql: 'COALESCE(source_accounts.provider_code, accounts.provider_code)',
+    protocolCodeSql: 'COALESCE(source_accounts.protocol_code, accounts.protocol_code)',
+    protocolVersionSql: 'COALESCE(source_accounts.protocol_version, accounts.protocol_version)',
     typeSql: 'COALESCE(source_accounts.type, accounts.type)'
   })
 }

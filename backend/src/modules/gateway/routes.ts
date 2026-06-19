@@ -79,6 +79,7 @@ import {
 } from './usage/traffic-source.js'
 import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
 import { forgetOpenAIAccountForSession } from './runtime/session-affinity.service.js'
+import { isAnthropicNativeRequest } from './protocols/anthropic-v1/route-helpers.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -107,7 +108,9 @@ export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, 
     endpoint: `${req.method.toUpperCase()} ${requestEndpoint(req)}`
   }), '网关 DB service 不可用')
 
-  sendGatewayErrorResponse(res, 503, gatewayErrorPayload(message, 'service_unavailable'))
+  sendGatewayErrorResponse(res, 503, gatewayErrorPayload(message, 'service_unavailable'), {
+    protocol: isAnthropicNativeRequest(req) ? 'anthropic' : 'openai'
+  })
 }
 
 function dbServiceUnavailableMessage(error: unknown): string | undefined {
@@ -541,6 +544,7 @@ export async function handleOpenAIGatewayRequest(
     const gatewayUsageContext = currentPreflight.usageContext
     recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({
+      req,
       res,
       auditCapture,
       error,
@@ -803,7 +807,8 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
   accountId?: string
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): void {
-  const failureEvent = writeGatewayStreamFailureEvent(input.res, input.message, input.errorCode)
+  const protocol = isAnthropicNativeRequest(input.req) ? 'anthropic' : 'openai'
+  const failureEvent = writeGatewayStreamFailureEvent(input.res, input.message, input.errorCode, protocol)
   const responseBody = input.uncommittedResponseBody
     ? Buffer.concat([input.uncommittedResponseBody, failureEvent ?? Buffer.alloc(0)])
     : failureEvent
@@ -812,7 +817,9 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
     metadata: {
       retryReason: input.retryReason,
       errorCode: input.errorCode,
-      responseMode: input.errorCode === gatewayStreamClientRetryErrorCode ? 'codex_retryable_sse' : 'openai_stream_failure_sse'
+      responseMode: protocol === 'anthropic'
+        ? 'anthropic_stream_failure_sse'
+        : input.errorCode === gatewayStreamClientRetryErrorCode ? 'codex_retryable_sse' : 'openai_stream_failure_sse'
     }
   })
   rememberCodexTurnFailureWhenClientRetryIsVisible(input)

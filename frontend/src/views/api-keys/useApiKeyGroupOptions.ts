@@ -20,6 +20,10 @@ export interface ApiKeyGroupOptionsScope {
   selectedIds?: string[]
 }
 
+export interface ApiKeyGroupOptionsLoadOptions {
+  useLocalWindow?: boolean
+}
+
 interface ApiKeyGroupOptionsApi {
   options(params: {
     systemAccountId?: string
@@ -56,7 +60,8 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
   async function loadGroupOptions(
     keyword = groupOptionsKeyword,
     force = false,
-    scopeOverride?: ApiKeyGroupOptionsScope
+    scopeOverride?: ApiKeyGroupOptionsScope,
+    loadOptions: ApiKeyGroupOptionsLoadOptions = {}
   ): Promise<void> {
     groupOptionsKeyword = keyword
     const scope = normalizedGroupOptionsScope(scopeOverride)
@@ -72,7 +77,8 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
 
     const requestId = ++groupOptionsRequestId
     const optionWindowKey = groupOptionWindowKey(scope.systemAccountId, requestKeyword)
-    const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
+    const useLocalWindow = loadOptions.useLocalWindow !== false
+    const localWindowGroups = !force && useLocalWindow ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
     if (localWindowGroups?.length) {
       groupOptionsLoading.value = false
       rememberGroupLabels(localWindowGroups)
@@ -87,7 +93,9 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
         groupOptionsLoading.value = false
         rememberGroupLabels(cachedGroups)
         syncSelectedGroupSelections(cachedGroups)
-        writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
+        if (useLocalWindow) {
+          writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
+        }
         groups.value = cachedGroups
         return
       }
@@ -107,7 +115,9 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
         rememberGroupLabels(nextGroups)
         syncSelectedGroupSelections(nextGroups)
         groupOptionsCache.set(requestKey, nextGroups)
-        writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
+        if (useLocalWindow) {
+          writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
+        }
         if (requestId !== groupOptionsRequestId) return
         groups.value = nextGroups
       } catch (error) {
@@ -257,9 +267,9 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
 
     const clearedBindingIds: string[] = []
     for (const binding of input.formGroupBindings()) {
-      if (!missingIds.includes(binding.groupId)) continue
-      if (binding.group?.id === binding.groupId) continue
-      const bindingId = binding.groupId
+      const bindingId = binding.groupId.trim()
+      if (!missingIds.includes(bindingId)) continue
+      if (binding.group?.id === bindingId) continue
       binding.groupId = ''
       binding.group = undefined
       binding.providerCode = undefined

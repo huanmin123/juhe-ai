@@ -59,6 +59,8 @@ function authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota = 
         ELSE account_rows.id
       END`,
       providerCodeSql: 'COALESCE(account_rows.source_provider_code, account_rows.provider_code)',
+      protocolCodeSql: 'COALESCE(account_rows.source_protocol_code, account_rows.protocol_code)',
+      protocolVersionSql: 'COALESCE(account_rows.source_protocol_version, account_rows.protocol_version)',
       typeSql: 'COALESCE(account_rows.source_type, account_rows.type)'
     })} THEN 'temporary_unavailable'
     ELSE account_rows.status
@@ -90,6 +92,8 @@ function ownerAccountEffectiveStatusExpression(): string {
     WHEN ${accountApiKeyPoolAllUnavailableSql({
       accountIdSql: 'account_rows.id',
       providerCodeSql: 'account_rows.provider_code',
+      protocolCodeSql: 'account_rows.protocol_code',
+      protocolVersionSql: 'account_rows.protocol_version',
       typeSql: 'account_rows.type'
     })} THEN 'temporary_unavailable'
     ELSE account_rows.status

@@ -5,6 +5,12 @@ import { api } from '@/api/client'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountScopeParams } from './accountOperationScope'
+import {
+  loadAccountTagOptionsCached,
+  readAccountTagOptionsCache,
+  resolveAccountTagOptionsScopeKey,
+  writeAccountTagOptionsCache
+} from './accountTagOptionsCache'
 
 interface UseAccountTagOptionsOptions {
   accountTagOperationScopeParams: () => AccountScopeParams
@@ -17,19 +23,43 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
   const accountTagOptions = ref<AccountTagSummary[]>([])
   const accountTagOptionsLoading = ref(false)
   const deletingAccountTagId = ref<string>()
+  const loadedScopeKey = ref('')
+  let requestToken = 0
 
   async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
-    if (accountTagOptionsLoading.value && !force) return
+    const scopeKey = resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams)
+    if (!scopeKey) {
+      resetAccountTagOptions()
+      return
+    }
+    if (!force && loadedScopeKey.value === scopeKey) return
+    const cachedOptions = !force ? readAccountTagOptionsCache(scopeKey) : undefined
+    if (cachedOptions) {
+      accountTagOptions.value = cachedOptions
+      loadedScopeKey.value = scopeKey
+      accountTagOptionsLoading.value = false
+      return
+    }
+
+    const currentRequestToken = ++requestToken
     accountTagOptionsLoading.value = true
     try {
-      accountTagOptions.value = options.isManagementView.value
-        ? await api.accounts.tags(scopeParams)
-        : await api.myAccounts.tags()
+      const nextOptions = await loadAccountTagOptionsCached({
+        force,
+        isManagementView: options.isManagementView.value,
+        scopeParams
+      })
+      if (currentRequestToken !== requestToken) return
+      accountTagOptions.value = nextOptions
+      loadedScopeKey.value = scopeKey
     } catch (error) {
+      if (currentRequestToken !== requestToken) return
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '加载账户标签失败'))
     } finally {
-      accountTagOptionsLoading.value = false
+      if (currentRequestToken === requestToken) {
+        accountTagOptionsLoading.value = false
+      }
     }
   }
 
@@ -50,6 +80,9 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       }
       options.form.tags = options.form.tags.filter((name) => name.trim().toLocaleLowerCase() !== tag.name.toLocaleLowerCase())
       accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
+      if (loadedScopeKey.value) {
+        writeAccountTagOptionsCache(loadedScopeKey.value, accountTagOptions.value)
+      }
       message.success('标签已删除')
     } catch (error) {
       console.error(error)
@@ -58,6 +91,13 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     } finally {
       deletingAccountTagId.value = undefined
     }
+  }
+
+  function resetAccountTagOptions(): void {
+    requestToken += 1
+    accountTagOptions.value = []
+    loadedScopeKey.value = ''
+    accountTagOptionsLoading.value = false
   }
 
   return {

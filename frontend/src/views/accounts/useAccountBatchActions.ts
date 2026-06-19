@@ -3,6 +3,7 @@ import type { ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
+import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
@@ -43,6 +44,15 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
           : api.myAccounts.update(account.id, payload)
       })
       const failedCount = results.filter((result) => result.status === 'rejected').length
+      for (const [index, result] of results.entries()) {
+        if (result.status !== 'fulfilled') continue
+        const account = selected[index]
+        invalidateAccountDetailForAccount({
+          accountId: account.id,
+          isManagementView: options.isManagementView.value,
+          scopeParams: accountOperationScopeParams(account, options.accountScopeParams.value)
+        })
+      }
       if (failedCount === 0) {
         message.success(successLabel)
         options.clearSelection()
@@ -65,7 +75,7 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
       return
     }
     if (selected.length !== options.selectedAccounts.value.length) {
-      message.warning('已跳过非 GPT 供应商或当前不能测试的账户')
+      message.warning('已跳过不支持测试协议或当前不能测试的账户')
     }
     await options.openBatchTestModal(selected)
   }

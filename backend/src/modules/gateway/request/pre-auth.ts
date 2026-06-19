@@ -31,6 +31,7 @@ import {
   type GatewayCircuitDecision,
   type GatewayPreAuthFailureReason
 } from '../runtime/client-ip-error-circuit.service.js'
+import { isAnthropicNativeRequest } from '../protocols/anthropic-v1/route-helpers.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -93,7 +94,7 @@ export async function resolveGatewayRuntimeAsync(
       endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
     }, '网关认证前来源保护已短路请求')
     prepareEarlyAuthFailureResponse(res, options)
-    sendPreAuthCircuitResponse(res, preAuthDecision)
+    sendPreAuthCircuitResponse(req, res, preAuthDecision)
     return undefined
   }
   const gatewayApiKey = extractGatewayApiKey(req, authorization)
@@ -108,7 +109,9 @@ export async function resolveGatewayRuntimeAsync(
       endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
     }, '网关认证失败')
     prepareEarlyAuthFailureResponse(res, options)
-    sendGatewayJsonError(res, 401, gatewayErrorPayload('缺少访问令牌', 'invalid_request_error'))
+    sendGatewayJsonError(res, 401, gatewayErrorPayload('缺少访问令牌', 'invalid_request_error'), {
+      protocol: gatewayErrorProtocolForRequest(req)
+    })
     return undefined
   }
 
@@ -124,7 +127,9 @@ export async function resolveGatewayRuntimeAsync(
       endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
     }, '网关认证失败')
     prepareEarlyAuthFailureResponse(res, options)
-    sendGatewayJsonError(res, 401, gatewayErrorPayload('API Key 无效', 'invalid_request_error'))
+    sendGatewayJsonError(res, 401, gatewayErrorPayload('API Key 无效', 'invalid_request_error'), {
+      protocol: gatewayErrorProtocolForRequest(req)
+    })
     return undefined
   }
   if (options.inspectClientIpPolicyAfterRuntime !== false && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: false })) {
@@ -163,7 +168,7 @@ async function rejectCachedClientIpBlacklist(
   }, '网关来源 IP 命中管理员封禁')
   recordClientIpPolicyHitAsync(ipPolicyDecision.blacklistPolicy)
   prepareEarlyAuthFailureResponse(res, options)
-  sendClientIpBlacklistResponse(res, {
+  sendClientIpBlacklistResponse(req, res, {
     reason: ipPolicyDecision.blacklistPolicy.reason,
     clientIp: ipPolicyDecision.normalizedIp?.clientIp ?? ipPolicyDecision.blacklistPolicy.clientIp,
     aggregateIpKey: ipPolicyDecision.normalizedIp?.aggregateIpKey ?? ipPolicyDecision.blacklistPolicy.aggregateIpKey
@@ -193,7 +198,7 @@ function recordPreAuthFailure(
     endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
   }, '网关认证前来源保护已进入短期熔断')
   prepareEarlyAuthFailureResponse(res, options)
-  sendPreAuthCircuitResponse(res, decision)
+  sendPreAuthCircuitResponse(req, res, decision)
   return decision
 }
 
@@ -214,7 +219,7 @@ function headerToken(req: Request, name: string): string | undefined {
   return text || undefined
 }
 
-function sendPreAuthCircuitResponse(res: Response, decision: GatewayCircuitDecision): void {
+function sendPreAuthCircuitResponse(req: Request, res: Response, decision: GatewayCircuitDecision): void {
   const message = '当前来源短时间认证失败过多，请稍后重试'
   if (decision.retryAfterSeconds && !res.headersSent) {
     res.setHeader('Retry-After', String(decision.retryAfterSeconds))
@@ -223,10 +228,12 @@ function sendPreAuthCircuitResponse(res: Response, decision: GatewayCircuitDecis
     errorMessage: message,
     errorCode: 'client_ip_pre_auth_circuit_open'
   })
-  sendGatewayJsonError(res, 429, gatewayErrorPayload(message, 'rate_limit_exceeded', 'client_ip_pre_auth_circuit_open'))
+  sendGatewayJsonError(res, 429, gatewayErrorPayload(message, 'rate_limit_exceeded', 'client_ip_pre_auth_circuit_open'), {
+    protocol: gatewayErrorProtocolForRequest(req)
+  })
 }
 
-function sendClientIpBlacklistResponse(res: Response, input: { reason?: string; clientIp?: string; aggregateIpKey?: string }): void {
+function sendClientIpBlacklistResponse(req: Request, res: Response, input: { reason?: string; clientIp?: string; aggregateIpKey?: string }): void {
   const ipText = blacklistIpMessage(input.clientIp, input.aggregateIpKey)
   const message = input.reason
     ? `当前来源${ipText}已被管理员封禁：${input.reason}`
@@ -242,7 +249,9 @@ function sendClientIpBlacklistResponse(res: Response, input: { reason?: string; 
   if (input.aggregateIpKey && input.aggregateIpKey !== input.clientIp) {
     payload.error.aggregate_ip_key = input.aggregateIpKey
   }
-  sendGatewayJsonError(res, 403, payload)
+  sendGatewayJsonError(res, 403, payload, {
+    protocol: gatewayErrorProtocolForRequest(req)
+  })
 }
 
 function blacklistIpMessage(clientIp?: string, aggregateIpKey?: string): string {
@@ -294,7 +303,8 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
     sendGatewayJsonError(
       res,
       403,
-      gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode)
+      gatewayErrorPayload(imageGenerationDisabledMessage, 'forbidden', imageGenerationDisabledCode),
+      { protocol: gatewayErrorProtocolForRequest(req) }
     )
   }
   const context = getRequestContext()
@@ -314,4 +324,8 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
     clientIp: context?.clientIp ?? extractClientIp(req),
     userAgent: req.header('user-agent')
   })
+}
+
+function gatewayErrorProtocolForRequest(req: Request): 'openai' | 'anthropic' {
+  return isAnthropicNativeRequest(req) ? 'anthropic' : 'openai'
 }

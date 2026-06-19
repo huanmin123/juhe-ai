@@ -448,20 +448,19 @@ function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): Open
       credentials,
       runtimeStates
     })
-    if (!selected && isAccountApiKeyPoolIsolationEnabled({
+    const apiKeyPoolIsolationEnabled = isAccountApiKeyPoolIsolationEnabled({
       providerCode: cloned.providerCode,
+      protocolCode: cloned.protocolCode,
+      protocolVersion: cloned.protocolVersion,
       type: cloned.type,
       credentials
-    })) {
+    })
+    if (!selected && apiKeyPoolIsolationEnabled) {
       return undefined
     }
     if (selected) {
       cloned.apiKey = selected.key
-      if (isAccountApiKeyPoolIsolationEnabled({
-        providerCode: cloned.providerCode,
-        type: cloned.type,
-        credentials
-      })) {
+      if (apiKeyPoolIsolationEnabled) {
         cloned.selectedApiKeyFingerprint = selected.fingerprint
         cloned.selectedApiKeyIndex = selected.index
       }

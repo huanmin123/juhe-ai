@@ -33,10 +33,8 @@ import {
   handleFailedUpstreamResponse,
   handleUpstreamRequestError
 } from '../response/failure-dispatch.js'
-import {
-  buildUpstreamUrlsForAccount,
-  type UpstreamAccount
-} from '../protocols/openai-v1/route-helpers.js'
+import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import { buildGatewayUpstreamUrlsForAccount } from '../../providers/drivers/registry.js'
 import { rememberOpenAIAccountForSession } from '../runtime/session-affinity.service.js'
 import { performUpstreamRequestAttempt } from './upstream-attempts.js'
 import { type UpstreamAttempt } from '../upstream/attempt.js'
@@ -198,7 +196,7 @@ export async function fetchFirstAvailableUpstream(
         const preparationStartedAt = Date.now()
         try {
           account = await prepareUpstreamAccount(originalAccount, signal)
-          upstreamUrls = buildUpstreamUrlsForAccount(account, req)
+          upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, req)
           if (upstreamUrls.length === 0) {
             continue
           }

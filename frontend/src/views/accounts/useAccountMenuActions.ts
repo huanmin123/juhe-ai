@@ -3,6 +3,7 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
+import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
@@ -36,11 +37,13 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     tokenRefreshLoading.value = true
     const hide = message.loading(`${account.name}: 正在刷新令牌...`, 0)
     try {
+      const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
       if (options.isManagementView.value) {
-        await api.openaiOAuth.refreshToken(account.id, accountOperationScopeParams(account, options.accountScopeParams.value))
+        await api.openaiOAuth.refreshToken(account.id, scopeParams)
       } else {
         await api.myOpenaiOAuth.refreshToken(account.id)
       }
+      invalidateAccountDetail(account, scopeParams)
       message.success(`${account.name}: 令牌刷新成功`)
       await options.loadData()
     } catch (error) {
@@ -53,13 +56,15 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   }
 
   async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string, updateOptions: { allowExceptionRecovery?: boolean } = {}) {
+    const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (isAuthorizedAccount(account)) {
       try {
         if (options.isManagementView.value) {
-          await api.accounts.updateAuthorizedDispatch(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
+          await api.accounts.updateAuthorizedDispatch(account.id, payload, scopeParams)
         } else {
           await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
         }
+        invalidateAccountDetail(account, scopeParams)
         message.success(successText)
         await options.loadData()
       } catch (error) {
@@ -74,10 +79,11 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     try {
       if (options.isManagementView.value) {
-        await api.accounts.update(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
+        await api.accounts.update(account.id, payload, scopeParams)
       } else {
         await api.myAccounts.update(account.id, payload)
       }
+      invalidateAccountDetail(account, scopeParams)
       message.success(successText)
       await options.loadData()
     } catch (error) {
@@ -230,6 +236,14 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
 
   function handleAccountMenuClick(event: { key: string | number }, account: AccountSummary) {
     void handleAccountMenu(String(event.key), account)
+  }
+
+  function invalidateAccountDetail(account: AccountSummary, scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)): void {
+    invalidateAccountDetailForAccount({
+      accountId: account.id,
+      isManagementView: options.isManagementView.value,
+      scopeParams
+    })
   }
 
   return {

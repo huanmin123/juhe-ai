@@ -1,7 +1,12 @@
 import { createHmac } from 'node:crypto'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { isOpenAICompatibleProviderCode } from '../domain/provider-protocol.js'
+import {
+  ANTHROPIC_PROVIDER_CODE,
+  isAnthropicProtocolProfile,
+  isOpenAICompatibleProviderCode,
+  normalizeProviderToken
+} from '../domain/provider-protocol.js'
 
 export type AccountApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
 export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
@@ -83,6 +88,8 @@ export function accountApiKeyEntries(credentials: Record<string, unknown>): Acco
 
 export function isAccountApiKeyPoolIsolationEnabled(input: {
   providerCode?: unknown
+  protocolCode?: unknown
+  protocolVersion?: unknown
   type?: unknown
   credentials?: Record<string, unknown>
   apiKeys?: string[]
@@ -91,8 +98,21 @@ export function isAccountApiKeyPoolIsolationEnabled(input: {
     ? accountApiKeyEntries(input.credentials).length
     : Array.isArray(input.apiKeys) ? new Set(input.apiKeys.map((key) => key.trim()).filter(Boolean)).size : 0
   return input.type === 'api_key'
-    && isOpenAICompatibleProviderCode(input.providerCode)
+    && isAccountApiKeyPoolProviderSupported(input)
     && keyCount > 1
+}
+
+function isAccountApiKeyPoolProviderSupported(input: {
+  providerCode?: unknown
+  protocolCode?: unknown
+  protocolVersion?: unknown
+}): boolean {
+  return isOpenAICompatibleProviderCode(input.providerCode)
+    || isAnthropicProtocolProfile({
+      protocolCode: normalizeProviderToken(input.protocolCode),
+      protocolVersion: normalizeProviderToken(input.protocolVersion)
+    })
+    || normalizeProviderToken(input.providerCode) === ANTHROPIC_PROVIDER_CODE
 }
 
 export function fingerprintAccountApiKey(key: string): string {

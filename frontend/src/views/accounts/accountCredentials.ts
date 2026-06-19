@@ -9,7 +9,6 @@ import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
-import { ANTHROPIC_PROVIDER_CODE, normalizeProviderToken } from '@/shared/providerProtocol'
 
 const oauthCredentialMetadataKeys = [
   'expires_at',
@@ -48,12 +47,6 @@ function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown>
     api_key: apiKey,
     api_keys: apiKeys.length ? apiKeys : undefined,
     base_url: form.baseUrl,
-    ...(normalizeProviderToken(form.providerCode) === ANTHROPIC_PROVIDER_CODE
-      ? {
-          anthropic_version: form.anthropicVersion,
-          anthropic_beta: form.anthropicBeta
-        }
-      : {}),
     supported_endpoint_modes: [...form.supportedEndpointModes]
   })
   if (apiKeys.length > 1) {

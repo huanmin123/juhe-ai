@@ -37,10 +37,14 @@ export function accountResourceCredentialsSql(accountIdSql: string): string {
 export function accountApiKeyPoolAllUnavailableSql(input: {
   accountIdSql: string
   providerCodeSql: string
+  protocolCodeSql: string
+  protocolVersionSql: string
   typeSql: string
 }): string {
   return `account_api_key_pool_all_unavailable(
     ${input.providerCodeSql},
+    ${input.protocolCodeSql},
+    ${input.protocolVersionSql},
     ${input.typeSql},
     ${accountResourceCredentialsSql(input.accountIdSql)},
     ${accountApiKeyRuntimeStateRowsSql(input.accountIdSql)}
@@ -53,6 +57,8 @@ function accountScheduleAllowedForSql(value: unknown): number {
 
 function accountApiKeyPoolAllUnavailableForSql(
   providerCode: unknown,
+  protocolCode: unknown,
+  protocolVersion: unknown,
   type: unknown,
   credentialsEncrypted: unknown,
   stateRows: unknown
@@ -66,6 +72,8 @@ function accountApiKeyPoolAllUnavailableForSql(
   }
   if (!isAccountApiKeyPoolIsolationEnabled({
     providerCode,
+    protocolCode,
+    protocolVersion,
     type,
     credentials
   })) {

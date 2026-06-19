@@ -118,7 +118,6 @@ try {
     credentials: {
       api_key: realApiKey,
       base_url: realBaseUrl,
-      anthropic_version: '2023-06-01',
       supported_endpoint_modes: realSupportedEndpointModes()
     },
     groupId: group.id,

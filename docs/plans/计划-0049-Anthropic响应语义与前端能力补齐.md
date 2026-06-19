@@ -23,8 +23,8 @@
 - Anthropic 流式检查器接入通用流式管道，识别 `event: error`、`message_stop`、文本 delta 和 usage。
 - 非流式 JSON 检查按账号协议选择 OpenAI 或 Anthropic 适配器。
 - 响应检查策略支持 `protocolCode = anthropic`，前端可按协议选择供应商。
-- Anthropic API Key 账户前端可配置 `Anthropic-Version`、`Anthropic-Beta`，导出和导入协议同步。
-- `anthropic-beta` 按客户端 header 和账号配置合并去重，不注入 Claude Code 专属 beta。
+- Anthropic API Key 账户前端不配置 `Anthropic-Version`、`Anthropic-Beta`；导出和导入协议不接受对应账号凭据字段。
+- `anthropic-beta` 只透传客户端显式 header，不注入 Claude Code 专属 beta，也不从账号配置追加。
 - Anthropic 模型价格目录进入 `providerCode = anthropic`，成本估算覆盖 input / output / cache read。
 - mock 回归覆盖真实网关路径、Claude Code header 过滤、响应策略换号、JSON error 和 SSE `event:error`。
 
@@ -34,7 +34,7 @@
 - OpenAI Chat / Responses 到 Anthropic Messages 的自动互转。
 - Bedrock、Vertex、Foundry 等云平台 Claude 账号。
 - DeepSeek / GLM / Kimi 等 Anthropic-compatible 供应商落地。
-- cache write、1h cache、thinking token 的使用记录 schema 扩展；当前只在文档和价格数据中保留目标口径，不在主统计中臆造字段。
+- cache write、1h cache、thinking token 的使用记录明细 schema 已扩展；统计预聚合、授权消耗和大盘卡片仍按现有通用维度，后续扩维需单独处理。
 
 ## 关联文档
 
@@ -53,7 +53,7 @@
 - [x] 非流式 JSON 响应检查按账号协议选择适配器。
 - [x] 响应检查策略支持 OpenAI / Anthropic 协议维度。
 - [x] 前端响应检查策略增加协议选择和同协议供应商过滤。
-- [x] 前端 Anthropic API Key 增加版本头、beta 头和非官方 Base URL 提醒。
+- [x] 前端 Anthropic API Key 支持 Base URL 和 Messages 端点能力选择，不对非官方 Base URL 额外警告。
 - [x] 账户凭据导入、导出和编辑回填支持 Anthropic 头字段。
 - [x] Anthropic 模型价格目录接入模型目录和成本估算。
 - [x] mock 回归覆盖 Anthropic 响应策略换号、JSON error、SSE error 和 beta 合并。
@@ -66,11 +66,11 @@
 | 类型检查 | 后端 TypeScript | `pnpm --filter juhe-ai-backend typecheck` | 无类型错误 | 已通过 | 已通过 |
 | 类型检查 | 前端 Vue / TypeScript | `pnpm --filter juhe-ai-frontend typecheck` | 无类型错误 | 已通过 | 已通过 |
 | 单元回归 | 响应检查策略 | `pnpm --filter juhe-ai-backend test:response-inspection-policy` | OpenAI 与 Anthropic 语义帧、默认规则和策略匹配通过 | 已通过 | 已通过 |
-| 单元回归 | usage / pricing | `pnpm --filter juhe-ai-backend test:usage-pricing` | Anthropic input / output / cache read 成本可估算，OpenAI 回归不退化 | 已通过 | 已通过 |
-| 客户端画像 | Claude Code | `pnpm --filter juhe-ai-backend test:claude-code-client-strategy` | 显式 header 命中，普通 Anthropic 和 OpenAI 隔离 | 已通过 | 已通过 |
+| 单元回归 | usage / pricing | `pnpm --filter juhe-ai-backend test:usage-pricing` | Anthropic input / output / cache read / cache write / 1h cache 成本可估算，thinking token 作为输出分解字段保留，OpenAI 回归不退化 | 已通过 | 已通过 |
+| 客户端画像 | Claude Code | `pnpm --filter juhe-ai-backend test:claude-code-client-strategy` | 显式 header 命中、官方 CLI 多信号命中，普通 Anthropic 和 OpenAI 隔离 | 已通过 | 已通过 |
 | 真实 mock | Anthropic 网关链路 | `pnpm --filter juhe-ai-backend test:anthropic-gateway-mock-ai` | 临时 SQLite、mock 上游和本地网关全链路通过 | 已通过 | 已通过 |
-| 真实联网 | Anthropic-compatible 上游 E2E | `pnpm --filter juhe-ai-backend test:anthropic-real-gateway-e2e` | `/v1/models`、本地网关选号、Messages JSON / SSE、Count Tokens、工具调用和并发请求按真实模型通过 | 已部分执行 / 上游阻断 | `https://vsllm.com` `/v1/models` 返回 69 个模型；临时账号写入、runtime 选号和本地 `/v1/models` 已通过；`claude-sonnet-4-6` 与 `auto-free` 曾返回真实内容，后续因上游额度不足返回 HTTP 403，完整覆盖被上游账户状态阻断 |
-| 可选抓包 | 官方 Claude Code CLI mock 捕获 | `JUHE_RUN_CLAUDE_CODE_CLI_MOCK=1 pnpm --filter juhe-ai-backend test:anthropic-gateway-mock-ai` | CLI 通过本地网关命中 `/v1/messages`，请求头和认证形态可被捕获 | 环境阻断 | 本机可通过 `npx @anthropic-ai/claude-code@latest --version` 输出 2.1.181，但 `--print` 在当前 Windows 非交互环境未发出本地请求并超时；确定性画像回归仍已通过 |
+| 真实联网 | Anthropic-compatible 上游 E2E | `pnpm --filter juhe-ai-backend test:anthropic-real-gateway-e2e` | 按上游能力开关覆盖 `/v1/models`、本地网关选号、Messages JSON / SSE、Claude Code 画像和工具调用 | 轻量真实模型已通过 | `https://vsllm.com` `/v1/models` 返回 69 个模型；`claude-fake-5` 完成临时账号写入、runtime 选号、本地 `/v1/models`、Messages JSON / SSE、Claude Code 画像和工具调用；该兼容网关当前 `/v1/messages/count_tokens` 返回 404，Count Tokens 只能在 mock / 官方 Anthropic 账号继续覆盖 |
+| 可选抓包 | 官方 Claude Code CLI mock 捕获 | `JUHE_RUN_CLAUDE_CODE_CLI_MOCK=1 pnpm --filter juhe-ai-backend test:anthropic-gateway-mock-ai` | CLI 通过本地网关命中 `/v1/messages`，请求头和认证形态可被捕获 | 已通过 | 本机旧版 `claude` 为 2.1.62，不支持 `--bare`；使用 `npx @anthropic-ai/claude-code@latest` 2.1.181 并追加 `--setting-sources local` 后命中本地网关，捕获到 `x-api-key`、`anthropic-version`、`anthropic-beta: claude-code-*`、`x-claude-code-session-id`、`thinking: adaptive`、`context_management` 和 `output_config` |
 
 ## 进度记录
 
@@ -84,15 +84,16 @@
 - 完成真实 mock 回归：Messages JSON / SSE、Count Tokens、本地 Models、Claude Code header 过滤、beta 合并、污染文本换号、JSON error 换号、SSE event:error 换号和 OpenAI 分组隔离。
 - 补齐 `message_token_counting` 端点能力枚举，避免 Count Tokens 在账号能力过滤层被遗漏。
 - 真实 Anthropic SSE 联调发现 Anthropic `message_stop` 后第三方兼容网关可能保持连接，流式管道已在协议终止事件写出后主动结束下游响应，避免客户端等待上游 EOF。
-- 使用用户提供的 Anthropic-compatible 上游完成真实联网尝试：`/v1/models`、临时账号落库、runtime 选号和本地模型目录已通过；真实 Messages 覆盖最终被上游余额不足 / HTTP 403 阻断，不能作为本地网关失败归因。
-- 增加官方 Claude Code CLI 可选 mock 捕获脚本；当前本机 CLI 能输出版本但非交互 `--print` 未命中本地网关，记录为环境阻断，不把 CLI OAuth / token 账号链路并入本目标。
+- 使用用户提供的 Anthropic-compatible 上游完成真实模型轻量验证：`claude-fake-5` 覆盖 `/v1/models`、临时账号落库、runtime 选号、隐藏计价、Messages JSON / SSE、Claude Code 画像和工具调用；未做并发压测。
+- 增加官方 Claude Code CLI 可选 mock 捕获脚本；本机旧版 `claude` 受用户级 settings 覆盖，改用 `npx @anthropic-ai/claude-code@latest --bare --setting-sources local` 后可稳定抓取请求形态。不把 CLI OAuth / token 账号链路并入本目标。
+- Claude Code 画像从只依赖本地显式 header 扩展为“显式 header 或官方 CLI 多信号”，单个 User-Agent 或单个 beta 不升级，避免误判普通 Anthropic SDK。
 
 ## 验收标准
 
 - Anthropic API Key 账户仍只走 `anthropic/v1` 原生 Messages 协议，不复用 OpenAI 字段路径。
 - Anthropic JSON / SSE 响应可进入统一响应语义检查，策略按 `protocolCode + providerCode` 隔离。
 - 错误类型和 HTTP 状态码只作为语义帧、审计和策略输入，不在协议适配器中直接写账号死亡状态。
-- Claude Code 只通过显式本地 header 识别为客户端画像，header 不透传上游。
+- Claude Code 通过显式本地 header 或官方 CLI 多信号识别为客户端画像，本地画像 header 不透传上游。
 - Anthropic 模型目录和成本估算不污染 OpenAI 聚合目录。
 - 前端账户创建、编辑、导入和响应检查策略入口都有对应 Anthropic 能力。
 - 必要类型检查和 mock 回归全部通过。
@@ -116,17 +117,17 @@ pnpm --filter juhe-ai-backend test:anthropic-gateway-mock-ai
 pnpm --filter juhe-ai-backend test:anthropic-real-gateway-e2e
 ```
 
-验证记录：使用用户提供的 `https://vsllm.com` 与本机临时网关，`/v1/models` 成功返回 69 个模型；临时 Anthropic 账号、分组、本地 API Key、runtime 选号、本地 `/v1/models` 均通过。`claude-sonnet-4-6` 和 `auto-free` 曾返回真实模型内容；后续完整 E2E 在 Messages 请求处收到上游 `HTTP 403` 额度不足错误，真实模型全覆盖被上游账户状态阻断。该错误只作为真实联调诊断和账户错误策略输入，不能在协议适配器里硬编码为账号死亡状态。
+验证记录：使用用户提供的 `https://vsllm.com` 与本机临时网关，`/v1/models` 成功返回 69 个模型；`claude-opus-4-8` 直连 JSON 可返回 thinking 与文本；`claude-fake-5` 完成轻量 E2E，覆盖临时 Anthropic 账号、分组、本地 API Key、runtime 选号、本地 `/v1/models`、Messages JSON / SSE、Claude Code 画像和工具调用。该兼容网关当前 `/v1/messages/count_tokens` 返回 404，因此真实联网脚本按账号能力关闭 Count Tokens 后验证。余额、限流、模型认证不可用和第三方兼容差异只作为真实联调诊断和账户错误策略输入，不能在协议适配器里硬编码为账号死亡状态。
 
-已执行官方 Claude Code CLI 捕获尝试：本机 `npx @anthropic-ai/claude-code@latest --version` 可输出 `2.1.181`，但 `--print` 在当前 Windows 非交互环境未向临时本地网关发出请求并超时。默认 mock 回归和 `test:claude-code-client-strategy` 已覆盖本项目可控的 Claude Code 画像、协议隔离和 header 过滤。
+已执行官方 Claude Code CLI 捕获：本机全局 `claude` 版本 `2.1.62` 不支持 `--bare`，且用户级 Claude settings 会覆盖临时环境变量；使用 `npx @anthropic-ai/claude-code@latest` 版本 `2.1.181` 并追加 `--bare --setting-sources local --no-session-persistence` 后，CLI 成功命中本地 `/v1/messages`。捕获结果显示真实 CLI 使用 `x-api-key` 本地认证、`anthropic-version: 2023-06-01`、`user-agent: claude-cli/2.1.181`、`anthropic-beta` 中的 `claude-code-*`、`x-claude-code-session-id`、`thinking.type = adaptive`、`context_management`、`output_config` 和大系统提示。本项目 mock 回归已验证这些 header / body 能原生透传，上游认证会替换为账号 `x-api-key`，本地画像 header 不泄漏。
 
 ## 风险与注意事项
 
-- `cache_creation_input_tokens`、1h cache 和 `thinking_tokens` 需要 usage schema 和统计 worker 扩展后才能进入主统计；当前不在请求链路临时补字段。
+- `cache_creation_input_tokens`、1h cache 和 `thinking_tokens` 已进入使用记录明细与成本拆分；统计 worker / 窗口表扩维仍需单独排期，不能在请求链路临时聚合。
 - Anthropic 模型价格是静态快照，后续应按官方模型和价格变更更新，不把第三方 Anthropic-compatible 价格套到官方 Anthropic。
 - 响应检查策略仍提供短期避让动作供明确配置使用；默认新建动作已改为不避让账号的重试。用户配置避让动作时应把匹配条件写得足够精确。
 - 非官方 Anthropic-compatible Base URL 允许用于测试或后续独立供应商接入，但不能宣传为官方 Claude 直连；真实联调出现的余额、额度和模型不可用错误必须按上游账户状态解释，不能倒推为本地协议适配失败。
 
 ## 完成总结
 
-本次 Anthropic API Key 直连能力已补齐到 mock 可完整覆盖、真实联网可启动验证的闭环：原生请求、返回语义、策略换号、前端配置、模型价格、Count Tokens、Claude Code 客户端画像和文档计划均已落地。OAuth / Claude Code token 账号链路继续保持不支持，避免在未真实验证前把订阅账号形态并入中转主链路。
+本次 Anthropic API Key 直连能力已补齐到 mock 可完整覆盖、真实联网轻量验证成功的闭环：原生请求、返回语义、策略换号、前端配置、模型价格、Count Tokens mock 覆盖、Claude Code 客户端画像、官方 CLI 抓包和文档计划均已落地。OAuth / Claude Code token 账号链路继续保持不支持，避免在未真实验证前把订阅账号形态并入中转主链路。

@@ -21,6 +21,14 @@ import {
   normalizeFormTagNames,
   sameTagNames
 } from './accountEditFormPayload'
+import {
+  invalidateAccountTagOptionsCache,
+  resolveAccountTagOptionsScopeKey
+} from './accountTagOptionsCache'
+import {
+  invalidateAccountDetailCache,
+  resolveAccountDetailCacheKey
+} from './accountDetailCache'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -85,6 +93,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         } else {
           await api.myAccounts.update(options.editingId.value, updatePayload)
         }
+        invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
         message.success('账户已更新')
       } else if (options.form.type === 'oauth') {
         await createOAuthAccountFromUnifiedForm()
@@ -93,6 +102,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         const created = await createApiKeyAccount(options.accountCreatePayloadWithActivationTest(payload))
         message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，需测试通过后参与调度')
       }
+      invalidateAccountTagOptions(options.editingId.value ? options.editingAccountScopeParams() : options.createScopeParams.value)
       options.clearSuccessfulDraftActivationTest()
       options.modalOpen.value = false
       await options.loadData()
@@ -154,7 +164,9 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         } else {
           await api.myAccounts.updateTags(account.id, payload)
         }
+        invalidateAccountTagOptions(scopeParams)
       }
+      invalidateAccountDetailOptions(account.id, scopeParams)
       message.success('授权账户已更新')
       options.modalOpen.value = false
       await options.loadData()
@@ -199,6 +211,15 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     return options.isManagementView.value
       ? api.accounts.create(payload, options.createScopeParams.value)
       : api.myAccounts.create(payload)
+  }
+
+  function invalidateAccountTagOptions(scopeParams: AccountScopeParams | undefined): void {
+    invalidateAccountTagOptionsCache(resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams))
+  }
+
+  function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {
+    if (!accountId) return
+    invalidateAccountDetailCache(resolveAccountDetailCacheKey(options.isManagementView.value, accountId, scopeParams))
   }
 
   return {

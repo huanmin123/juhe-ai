@@ -41,20 +41,10 @@ export function useRuntimeLogIndexSearchState(options: UseRuntimeLogIndexSearchS
       ? `已加载到第 ${range?.[1] ?? total - 1} 条运行日志，还有更多`
       : `共 ${total} 条运行日志`,
     fetchPage: async (loadOptions, pageState) => {
-      const traceId = options.traceIdFilter.value.trim()
-      const range = normalizeOptionalTimeRange(options.indexTimeRange.value)
       void options.loadRuntimeLogFacets(loadOptions.refreshFacets === true)
-      return await api.runtimeLogs.list({
-        page: pageState.current,
-        pageSize: pageState.pageSize,
-        traceId: traceId || undefined,
-        level: options.levelFilter.value,
-        event: options.eventFilter.value || undefined,
-        keyword: options.keywordFilter.value || undefined,
-        startAt: range?.[0].toISOString(),
-        endAt: range?.[1].toISOString()
-      })
+      return await api.runtimeLogs.list(runtimeLogRequestParams(pageState))
     },
+    requestSignature: (_loadOptions, pageState) => runtimeLogRequestParams(pageState),
     onError: (error) => {
       console.error(error)
       message.error('加载运行日志失败')
@@ -73,5 +63,20 @@ export function useRuntimeLogIndexSearchState(options: UseRuntimeLogIndexSearchS
     loadMoreMobileRecords,
     refreshMobileRecords,
     resetPagination
+  }
+
+  function runtimeLogRequestParams(pageState: { current: number; pageSize: number }) {
+    const traceId = options.traceIdFilter.value.trim()
+    const range = normalizeOptionalTimeRange(options.indexTimeRange.value)
+    return {
+      page: pageState.current,
+      pageSize: pageState.pageSize,
+      traceId: traceId || undefined,
+      level: options.levelFilter.value,
+      event: options.eventFilter.value || undefined,
+      keyword: options.keywordFilter.value || undefined,
+      startAt: range?.[0].toISOString(),
+      endAt: range?.[1].toISOString()
+    }
   }
 }

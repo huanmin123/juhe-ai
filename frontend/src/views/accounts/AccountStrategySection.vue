@@ -56,7 +56,7 @@
     <a-form-item v-if="isOAuthForm" label="客户端兼容">
       <a-input value="Codex Responses（OAuth 固定）" disabled />
     </a-form-item>
-    <a-form-item v-else-if="isAnthropicForm" label="客户端兼容">
+    <a-form-item v-else-if="isAnthropicForm" label="协议形态">
       <a-input value="Anthropic 原生" disabled />
     </a-form-item>
     <a-form-item v-else label="客户端兼容">

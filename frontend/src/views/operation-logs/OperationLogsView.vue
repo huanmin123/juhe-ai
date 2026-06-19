@@ -84,6 +84,7 @@ import { useScopedOperationLogsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
+import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import type { OperationLogDetail, OperationLogSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import OperationLogDetailDrawer from './OperationLogDetailDrawer.vue'
@@ -188,6 +189,10 @@ const {
     }
     return fetchRecords(pageState)
   },
+  requestSignature: (_options, pageState) => [
+    isManagementView.value ? 'management' : 'self',
+    operationLogRequestParams(pageState)
+  ],
   onError: (error) => {
     console.error(error)
     message.error('加载操作日志失败')
@@ -271,7 +276,11 @@ function updateOperationScopeSystemAccountFilter(value: string): void {
 }
 
 async function fetchRecords(pageState: { current: number; pageSize: number }) {
-  return operationLogsApi.list(operationLogListParams(currentFilterValues.value, pageState, isManagementView.value))
+  return operationLogsApi.list(operationLogRequestParams(pageState))
+}
+
+function operationLogRequestParams(pageState: { current: number; pageSize: number }) {
+  return operationLogListParams(currentFilterValues.value, pageState, isManagementView.value)
 }
 
 async function openDetail(record: OperationLogSummary): Promise<void> {
@@ -280,7 +289,12 @@ async function openDetail(record: OperationLogSummary): Promise<void> {
   detailOpen.value = true
   detailLoading.value = true
   try {
-    const nextDetail = await operationLogsApi.detail(record.id)
+    const nextDetail = await loadEntityDetailCached({
+      id: record.id,
+      load: () => operationLogsApi.detail(record.id),
+      namespace: 'operation-log-detail',
+      scope: isManagementView.value ? 'management' : 'self'
+    })
     if (requestId === detailRequestId) {
       detail.value = nextDetail
     }

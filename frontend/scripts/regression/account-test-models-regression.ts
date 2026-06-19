@@ -26,7 +26,7 @@ assertNotIncludes(accountTestModalSource, 'ProviderModelPricing', '账户测试�
 assertNotIncludes(accountTestModalSource, 'providerModelsProviderCode', '账户测试弹窗不应持有供应商模型缓存归属状态')
 assertNotIncludes(accountTestModalSource, 'buildTestModelOptions', '账户测试弹窗不应直接构建测试模型选项')
 assertNotIncludes(accountTestModalSource, 'providerDefaultTestModelForAccountSelection', '账户测试弹窗不应直接推导供应商默认测试模型')
-assertNotIncludes(accountTestModalSource, 'isOpenAICompatibleTestSelection', '账户测试弹窗不应直接判断测试目标协议兼容')
+assertNotIncludes(accountTestModalSource, 'isGatewaySupportedTestSelection', '账户测试弹窗不应直接判断测试目标协议兼容')
 assertNotIncludes(accountTestModalSource, 'nextTestModel', '账户测试弹窗不应直接处理测试模型回落')
 assertNotIncludes(accountTestModalSource, 'GPT_VENDOR_CODE', '账户测试弹窗不应直接持有 OpenAI 默认供应商回落')
 

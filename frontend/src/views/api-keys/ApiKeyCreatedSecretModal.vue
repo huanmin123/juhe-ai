@@ -42,14 +42,14 @@
         <span class="created-key-step-index">3</span>
         <div class="created-key-step-body">
           <div class="created-key-step-header">
-            <strong>填入客户端并验证</strong>
-            <span>保存配置后，先拉取模型列表或发送一次最小请求确认连接可用。</span>
+            <strong>发送最小 HTTP 请求</strong>
+            <span>已按 {{ minimalHttpRequestPlatformLabel }} 生成；用完整密钥请求模型列表，确认本地网关可用。</span>
           </div>
-          <pre class="created-key-code">{{ clientConfigExample }}</pre>
+          <pre class="created-key-code">{{ minimalHttpRequestExample }}</pre>
           <div class="created-key-actions">
-            <a-button @click="$emit('copy-client-config')">
+            <a-button @click="$emit('copy-minimal-http-request')">
               <template #icon><copy-outlined /></template>
-              复制配置示例
+              复制请求示例
             </a-button>
           </div>
         </div>
@@ -70,16 +70,17 @@ import { CopyOutlined } from '@ant-design/icons-vue'
 
 defineProps<{
   apiKey: string
-  clientConfigExample: string
   gatewayBaseUrl: string
   message: string
+  minimalHttpRequestExample: string
+  minimalHttpRequestPlatformLabel: string
   title: string
 }>()
 
 defineEmits<{
   'copy-api-key': []
-  'copy-client-config': []
   'copy-gateway-base-url': []
+  'copy-minimal-http-request': []
 }>()
 
 const open = defineModel<boolean>('open', { required: true })

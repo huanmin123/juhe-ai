@@ -27,6 +27,16 @@ const oauthAccount = accountFixture({
   type: 'oauth',
   clientCompatibility: 'codex_responses'
 })
+const anthropicAccount = accountFixture({
+  id: 'account_test_display_anthropic',
+  providerCode: 'anthropic',
+  providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+  protocolCode: 'anthropic',
+  protocolVersion: 'v1',
+  name: 'Anthropic 测试账户',
+  type: 'api_key',
+  clientCompatibility: 'openai_standard'
+})
 
 const successResult = resultFixture(apiKeyAccount, {
   success: true,
@@ -74,6 +84,36 @@ assertLineIncludes(runningLines, '测试兼容：Codex Responses（OAuth 固定�
 assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth（测试中）', '运行输出应展示后台任务状态')
 assertLineIncludes(runningLines, '当前窗口估计：第 1/3 次', '运行输出应展示当前等待窗口')
 assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
+
+const anthropicRunningLines = accountTestSingleOutputLines({
+  account: anthropicAccount,
+  clientCompatibility: 'account_default',
+  fixedOAuthCompatibilityText: 'Anthropic 原生',
+  model: 'claude-opus-4-8',
+  providerLabel: () => 'Anthropic',
+  running: true
+})
+assertLineIncludes(anthropicRunningLines, '测试协议：Anthropic 原生', 'Anthropic 运行输出不应展示 OpenAI 客户端兼容模式')
+assertLineExcludes(anthropicRunningLines, '测试兼容：跟随账户配置（OpenAI 标准）', 'Anthropic 运行输出不得回落到 OpenAI 标准文案')
+
+const anthropicSuccessLines = accountTestSingleOutputLines({
+  account: anthropicAccount,
+  clientCompatibility: 'account_default',
+  fixedOAuthCompatibilityText: 'Anthropic 原生',
+  model: 'claude-opus-4-8',
+  providerLabel: () => 'Anthropic',
+  result: resultFixture(anthropicAccount, {
+    success: true,
+    statusCode: 200,
+    message: '测试成功',
+    model: 'claude-opus-4-8',
+    outputText: 'pong',
+    testClientCompatibility: 'openai_standard'
+  }),
+  running: false
+})
+assertLineIncludes(anthropicSuccessLines, '实际协议：Anthropic 原生', 'Anthropic 成功输出应展示实际协议')
+assertLineExcludes(anthropicSuccessLines, '实际兼容：OpenAI 标准', 'Anthropic 成功输出不得展示 OpenAI 实际兼容')
 
 const failedAccount = accountFixture({
   id: 'account_test_display_failed',
@@ -234,6 +274,12 @@ function emptyUsage() {
 function assertLineIncludes(lines: Array<{ text: string }>, expected: string, message: string): void {
   if (!lines.some((line) => line.text.includes(expected))) {
     throw new Error(`${message}，未找到 ${expected}；实际输出：${lines.map((line) => line.text).join(' | ')}`)
+  }
+}
+
+function assertLineExcludes(lines: Array<{ text: string }>, unexpected: string, message: string): void {
+  if (lines.some((line) => line.text.includes(unexpected))) {
+    throw new Error(`${message}，不应出现 ${unexpected}；实际输出：${lines.map((line) => line.text).join(' | ')}`)
   }
 }
 

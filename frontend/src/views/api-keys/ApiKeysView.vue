@@ -128,13 +128,14 @@
     <ApiKeyCreatedSecretModal
       v-model:open="createdKeyOpen"
       :api-key="createdKey"
-      :client-config-example="createdKeyClientConfigExample"
       :gateway-base-url="gatewayBaseUrl"
       :message="createdKeyModalMessage"
+      :minimal-http-request-example="createdKeyMinimalHttpRequestExample"
+      :minimal-http-request-platform-label="createdKeyMinimalHttpRequestPlatformLabel"
       :title="createdKeyModalTitle"
       @copy-api-key="copyCreatedKey"
-      @copy-client-config="copyCreatedClientConfig"
       @copy-gateway-base-url="copyGatewayBaseUrl"
+      @copy-minimal-http-request="copyCreatedMinimalHttpRequest"
     />
   </a-card>
 </template>
@@ -278,6 +279,13 @@ const {
     ])
     return keyList
   },
+  requestSignature: (_options, pageState) => {
+    const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
+    return [
+      isManagementView.value ? 'management' : 'self',
+      apiKeyListParams(systemAccountId, pageState)
+    ]
+  },
   onError: (error) => {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载 API Key 失败'))
@@ -323,11 +331,13 @@ const activeFilterCount = computed(() => [
 const advancedFilterCount = computed(() => 0)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填复制到的完整密钥'].join('\n'))
-const createdKeyClientConfigExample = computed(() => [
-  `Base URL：${gatewayBaseUrl.value}`,
-  'API Key：填入上方复制的完整密钥',
-  '常用验证：拉取模型列表或发送一次最小对话请求'
-].join('\n'))
+const clientHttpRequestPlatform = computed(inferClientHttpRequestPlatform)
+const createdKeyMinimalHttpRequestPlatformLabel = computed(() => clientHttpRequestPlatformLabel(clientHttpRequestPlatform.value))
+const createdKeyMinimalHttpRequestExample = computed(() => buildMinimalHttpRequestExample({
+  apiKey: createdKey.value,
+  platform: clientHttpRequestPlatform.value,
+  url: gatewayV1EndpointUrl('/models')
+}))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = apiKeyScopeParams.value?.systemAccountId
@@ -462,8 +472,8 @@ async function copyCreatedKey() {
   await copyText(createdKey.value)
 }
 
-async function copyCreatedClientConfig() {
-  await copyText(createdKeyClientConfigExample.value)
+async function copyCreatedMinimalHttpRequest() {
+  await copyText(createdKeyMinimalHttpRequestExample.value)
 }
 
 function inferGatewayBaseUrl() {
@@ -477,6 +487,63 @@ function inferGatewayBaseUrl() {
 function normalizeGatewayBaseUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, '')
   return trimmed || inferGatewayBaseUrl()
+}
+
+function gatewayV1EndpointUrl(endpointPath: string) {
+  const normalizedEndpointPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`
+  const normalizedBaseUrl = gatewayBaseUrl.value.replace(/\/+$/, '')
+  const basePath = gatewayBasePathname(normalizedBaseUrl)
+  const versionPrefix = basePath.endsWith('/v1') ? '' : '/v1'
+  return `${normalizedBaseUrl}${versionPrefix}${normalizedEndpointPath}`
+}
+
+function gatewayBasePathname(value: string) {
+  try {
+    return new URL(value).pathname.replace(/\/+$/, '')
+  } catch {
+    return value.replace(/\/+$/, '')
+  }
+}
+
+type ClientHttpRequestPlatform = 'windows' | 'macos' | 'linux' | 'curl'
+
+interface NavigatorWithUserAgentData extends Navigator {
+  userAgentData?: {
+    platform?: string
+  }
+}
+
+function inferClientHttpRequestPlatform(): ClientHttpRequestPlatform {
+  if (typeof navigator === 'undefined') return 'curl'
+  const clientNavigator = navigator as NavigatorWithUserAgentData
+  const platformText = [
+    clientNavigator.userAgentData?.platform,
+    clientNavigator.platform,
+    clientNavigator.userAgent
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  if (platformText.includes('win')) return 'windows'
+  if (platformText.includes('mac')) return 'macos'
+  if (platformText.includes('linux') || platformText.includes('x11')) return 'linux'
+  return 'curl'
+}
+
+function clientHttpRequestPlatformLabel(platform: ClientHttpRequestPlatform) {
+  if (platform === 'windows') return 'Windows PowerShell'
+  if (platform === 'macos') return 'macOS 终端'
+  if (platform === 'linux') return 'Linux 终端'
+  return '通用 curl'
+}
+
+function buildMinimalHttpRequestExample(input: {
+  apiKey: string
+  platform: ClientHttpRequestPlatform
+  url: string
+}) {
+  if (input.platform === 'windows') {
+    return `Invoke-RestMethod -Uri "${input.url}" -Headers @{ Authorization = "Bearer ${input.apiKey}" }`
+  }
+  return `curl -sS "${input.url}" -H "Authorization: Bearer ${input.apiKey}"`
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })

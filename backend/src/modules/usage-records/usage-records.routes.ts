@@ -41,6 +41,9 @@ function withCostBreakdown(record: UsageRecordSummary) {
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
       cacheReadTokens: record.cacheReadTokens,
+      cacheWriteTokens: record.cacheWriteTokens,
+      cacheWrite1hTokens: record.cacheWrite1hTokens,
+      thinkingTokens: record.thinkingTokens,
       inputImageTokens: record.inputImageTokens,
       outputImageTokens: record.outputImageTokens,
       costUsd: record.costUsd

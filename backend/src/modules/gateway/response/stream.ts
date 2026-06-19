@@ -108,6 +108,7 @@ export async function pipeUpstreamStream(
 ): Promise<StreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const responseProtocol = options.responseProtocol ?? 'openai_v1'
+  const gatewayErrorProtocol = responseProtocol === 'anthropic_v1' ? 'anthropic' : 'openai'
   const inspector = createGatewayStreamInspector(responseProtocol)
   const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0
   const interceptor = responseInspectionEnabled
@@ -865,7 +866,7 @@ export async function pipeUpstreamStream(
         message
       }, '网关准备补发 response.failed')
       prepareDownstreamForWrite()
-      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
+      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode, gatewayErrorProtocol)
       if (failureEvent) {
         if (!bodyCaptureOmitted) {
           responseCapture.push(failureEvent)
@@ -961,7 +962,7 @@ export async function pipeUpstreamStream(
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
     prepareDownstreamForWrite()
-    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
+    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode, gatewayErrorProtocol)
     if (failureEvent) {
       if (!bodyCaptureOmitted) {
         responseCapture.push(failureEvent)
@@ -1174,8 +1175,13 @@ function interruptResponse(res: Response): void {
   res.destroy()
 }
 
-async function writeGatewayStreamFailureEventWithBackpressure(res: Response, message: string, code?: string): Promise<Buffer | undefined> {
-  const buffer = writeGatewayStreamFailureEvent(res, message, code)
+async function writeGatewayStreamFailureEventWithBackpressure(
+  res: Response,
+  message: string,
+  code?: string,
+  protocol: 'openai' | 'anthropic' = 'openai'
+): Promise<Buffer | undefined> {
+  const buffer = writeGatewayStreamFailureEvent(res, message, code, protocol)
   if (!buffer) {
     return undefined
   }

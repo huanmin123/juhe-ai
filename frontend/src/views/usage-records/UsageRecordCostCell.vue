@@ -17,6 +17,18 @@
             <span>缓存读取成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheReadCostUsd) }}</span>
           </div>
+          <div v-if="showCacheWriteCost" class="cost-detail-row">
+            <span>缓存写入成本</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheWriteCostUsd) }}</span>
+          </div>
+          <div v-if="showCacheWrite1hCost" class="cost-detail-row">
+            <span>1h 缓存写入成本</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheWrite1hCostUsd) }}</span>
+          </div>
+          <div v-if="showThinkingTokens" class="cost-detail-row">
+            <span>思考 Tokens</span>
+            <span class="cost-detail-value">{{ formatTokens(costBreakdown.thinkingTokens) }}</span>
+          </div>
           <div class="cost-detail-row">
             <span>缓存率</span>
             <span class="cost-detail-value">{{ formatCacheRate(record) }}</span>
@@ -62,6 +74,14 @@
             <span>缓存读取单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheReadUsdPer1M) }}</span>
           </div>
+          <div v-if="showCacheWritePrice" class="cost-detail-row">
+            <span>缓存写入单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheWriteUsdPer1M) }}</span>
+          </div>
+          <div v-if="showCacheWrite1hPrice" class="cost-detail-row">
+            <span>1h 缓存写入单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheWrite1hUsdPer1M) }}</span>
+          </div>
           <div v-if="showInputImagePrice" class="cost-detail-row">
             <span>图片输入单价</span>
             <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputImageUsdPer1M) }}</span>
@@ -94,7 +114,7 @@ import { computed } from 'vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import type { UsageRecordSummary } from '@/types/domain'
-import { formatCacheRate, formatCost, formatUnitPrice } from './usageRecordFormatters'
+import { formatCacheRate, formatCost, formatTokens, formatUnitPrice } from './usageRecordFormatters'
 
 const props = defineProps<{
   record: UsageRecordSummary
@@ -111,11 +131,16 @@ const showOutputImageCost = computed(() => hasOutputImagePrice.value && costBrea
 const showInputAudioCost = computed(() => hasInputAudioPrice.value && costBreakdown.value?.inputAudioCostUsd !== undefined)
 const showOutputAudioCost = computed(() => hasOutputAudioPrice.value && costBreakdown.value?.outputAudioCostUsd !== undefined)
 const showOutputImageUnitCost = computed(() => hasOutputImageUnitPrice.value && costBreakdown.value?.outputImageUnitCostUsd !== undefined)
+const showCacheWriteCost = computed(() => costBreakdown.value?.cacheWriteCostUsd !== undefined)
+const showCacheWrite1hCost = computed(() => costBreakdown.value?.cacheWrite1hCostUsd !== undefined)
+const showThinkingTokens = computed(() => costBreakdown.value?.thinkingTokens !== undefined && costBreakdown.value.thinkingTokens > 0)
 const showInputImagePrice = computed(() => hasInputImagePrice.value)
 const showOutputImagePrice = computed(() => hasOutputImagePrice.value)
 const showInputAudioPrice = computed(() => hasInputAudioPrice.value)
 const showOutputAudioPrice = computed(() => hasOutputAudioPrice.value)
 const showOutputImageUnitPrice = computed(() => hasOutputImageUnitPrice.value)
+const showCacheWritePrice = computed(() => costBreakdown.value?.cacheWriteUsdPer1M !== undefined)
+const showCacheWrite1hPrice = computed(() => costBreakdown.value?.cacheWrite1hUsdPer1M !== undefined && costBreakdown.value.cacheWrite1hUsdPer1M !== costBreakdown.value.cacheWriteUsdPer1M)
 </script>
 
 <style scoped>

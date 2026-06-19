@@ -278,6 +278,7 @@ const {
     void refreshAuditRuntimeQuietly()
     return listResult
   },
+  requestSignature: (_options, pageState) => auditLogRequestParams(pageState),
   onError: (error) => {
     console.error(error)
     message.error('加载审计日志失败')
@@ -401,7 +402,11 @@ function resetFilters(): void {
 }
 
 function fetchRecords(pageState: { current: number; pageSize: number }) {
-  return api.auditLogs.list(auditLogListParams(currentFilterValues.value, pageState))
+  return api.auditLogs.list(auditLogRequestParams(pageState))
+}
+
+function auditLogRequestParams(pageState: { current: number; pageSize: number }) {
+  return auditLogListParams(currentFilterValues.value, pageState)
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {

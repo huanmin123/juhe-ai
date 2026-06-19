@@ -231,6 +231,13 @@ const {
       hasMore: usageOverview.hasMore
     }
   },
+  requestSignature: (_options, pageState) => {
+    const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
+    return [
+      isManagementView.value ? 'management' : 'self',
+      accountUsageParams(isManagementView.value ? systemAccountId : undefined, pageState)
+    ]
+  },
   mergeItems: (currentRows, nextRows) => dedupeRowsById([...currentRows, ...nextRows]),
   onLoaded: () => renderChart(),
   onError: (error) => {

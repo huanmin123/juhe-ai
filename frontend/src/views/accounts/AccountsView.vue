@@ -227,6 +227,7 @@ import { groupLabelForId } from '@/shared/groupLabelCache'
 import type { AccountTagSummary } from '@/types/domain'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
+import AccountEditModal from './AccountEditModal.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
 import AccountList from './AccountList.vue'
 import {
@@ -270,7 +271,6 @@ import { useAccountSelectionActions } from './useAccountSelectionActions'
 import { useAccountTestModal, type SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 
-const AccountEditModal = defineAsyncComponent(() => import('./AccountEditModal.vue'))
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
 const AccountReauthorizeModal = defineAsyncComponent(() => import('./AccountReauthorizeModal.vue'))
 const AccountTestModal = defineAsyncComponent(() => import('./AccountTestModal.vue'))
@@ -326,10 +326,12 @@ const {
   isManagementView: () => isManagementView.value,
   limit: 50,
   onMissingSelectedIds: (ids) => {
-    if (!filters.groupId || !ids.includes(filters.groupId)) return
+    const groupId = filters.groupId.trim()
+    if (!groupId || !ids.includes(groupId)) return false
     filters.groupId = ''
     filters.group = undefined
     applyFilters()
+    return true
   },
   scope: () => ({
     providerCode: filters.providerCode !== 'all' ? filters.providerCode : undefined,

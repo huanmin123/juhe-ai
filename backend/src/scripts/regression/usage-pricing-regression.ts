@@ -83,13 +83,24 @@ const anthropicUsage = parseAnthropicUsageFromJsonBuffer(jsonBuffer({
   usage: {
     input_tokens: 900,
     output_tokens: 120,
-    cache_read_input_tokens: 300
+    cache_read_input_tokens: 300,
+    cache_creation_input_tokens: 40,
+    cache_creation: {
+      ephemeral_5m_input_tokens: 30,
+      ephemeral_1h_input_tokens: 10
+    },
+    output_tokens_details: {
+      thinking_tokens: 12
+    }
   }
 }))
 assert.deepEqual(defined(anthropicUsage), {
   inputTokens: 900,
   outputTokens: 120,
-  cacheReadTokens: 300
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10,
+  thinkingTokens: 12
 })
 
 const responsesStreamInspection = inspectOpenAIStreamText([
@@ -185,7 +196,7 @@ assert.deepEqual(defined(semanticTextDeltaInspection.usage), {
 
 const anthropicStreamInspection = inspectAnthropicStreamText([
   'event: message_start',
-  'data: {"type":"message_start","message":{"usage":{"input_tokens":900,"output_tokens":0,"cache_read_input_tokens":300}}}',
+  'data: {"type":"message_start","message":{"usage":{"input_tokens":900,"output_tokens":0,"cache_read_input_tokens":300,"cache_creation_input_tokens":40,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":10},"output_tokens_details":{"thinking_tokens":12}}}}',
   '',
   'event: content_block_delta',
   'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}',
@@ -203,7 +214,10 @@ assert.equal(anthropicStreamInspection.estimatedOutputTokens, 1)
 assert.deepEqual(defined(anthropicStreamInspection.usage), {
   inputTokens: 900,
   outputTokens: 120,
-  cacheReadTokens: 300
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10,
+  thinkingTokens: 12
 })
 
 const oversizedStreamInspection = inspectOpenAIStreamText(`data: ${'x'.repeat(300 * 1024)}`)
@@ -288,25 +302,236 @@ const anthropicModelPricingList = listProviderModelPricing(ANTHROPIC_PROVIDER_CO
 assert(anthropicModelPricingList.length > 0, 'Anthropic 供应商应暴露 Anthropic 内置模型价格目录')
 assert.equal(anthropicModelPricingList[0]?.providerCode, ANTHROPIC_PROVIDER_CODE, 'Anthropic 模型目录应保留 anthropic providerCode')
 const anthropicPricingById = new Map(anthropicModelPricingList.map((item) => [item.model, item]))
+for (const id of [
+  'best',
+  'fable',
+  'opus',
+  'opus[1m]',
+  'opusplan',
+  'sonnet',
+  'sonnet[1m]',
+  'haiku'
+]) {
+  assert(anthropicPricingById.has(id), `Anthropic 模型目录应包含 Claude Code 模型别名 ${id}`)
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, id)?.model, id, `Claude Code 模型别名 ${id} 应直接命中价格目录`)
+}
+for (const id of [
+  'claude-fable-5',
+  'claude-mythos-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-opus-4-6-thinking',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6-thinking',
+  'claude-sonnet-4-5-20250929',
+  'claude-haiku-4-5-20251001',
+  'claude-opus-4-5-20251101'
+]) {
+  assert(anthropicPricingById.has(id), `Anthropic 模型价格目录应包含 Claude 可见模型 ${id}`)
+  assert.equal(anthropicPricingById.get(id)?.catalogVisible, true, `${id} 应进入模型发现目录`)
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, id)?.model, id, `${id} 应直接命中价格目录`)
+}
+if (new Date().toISOString().slice(0, 10) < '2026-06-30') {
+  assert(anthropicPricingById.has('claude-mythos-preview'), 'Anthropic 模型价格目录在 Mythos preview 退休前应包含该模型')
+  assert.equal(anthropicPricingById.get('claude-mythos-preview')?.catalogVisible, true, 'Mythos preview 退休前应进入模型发现目录')
+  assert.equal(anthropicPricingById.get('claude-mythos-preview')?.shutdownDate, '2026-06-30')
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-mythos-preview')?.model, 'claude-mythos-preview', 'Mythos preview 退休前应直接命中价格目录')
+} else {
+  assert.equal(anthropicPricingById.has('claude-mythos-preview'), false, 'Mythos preview 已退休，不应进入 Anthropic 目录')
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-mythos-preview'), undefined, 'Mythos preview 已退休，不应命中计价')
+}
+for (const id of [
+  'antigravity-claude-opus-4-6-thinking',
+  'antigravity/claude-opus-4-6-thinking',
+  'google/antigravity-claude-opus-4-6-thinking',
+  'google-antigravity/claude-opus-4-6-thinking',
+  'google-antigravity:claude-opus-4-6-thinking',
+  'claude-opus-4-6-antigravity',
+  'claude-sonnet-4-6-antigravity',
+  'antigravity-claude-sonnet-4-6',
+  'antigravity/claude-sonnet-4-6',
+  'google/antigravity-claude-sonnet-4-6',
+  'google-antigravity/claude-sonnet-4-6',
+  'google-antigravity:claude-sonnet-4-6',
+  'antigravity-claude-sonnet-4-6-thinking',
+  'antigravity/claude-sonnet-4-6-thinking',
+  'google/antigravity-claude-sonnet-4-6-thinking',
+  'google-antigravity/claude-sonnet-4-6-thinking',
+  'google-antigravity:claude-sonnet-4-6-thinking',
+  'claude-fake-5'
+]) {
+  assert(anthropicPricingById.has(id), `Anthropic 模型价格目录应包含兼容代理隐藏计价模型 ${id}`)
+  assert.equal(anthropicPricingById.get(id)?.catalogVisible, false, `${id} 不应进入模型发现目录`)
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, id)?.model, id, `${id} 应直接命中价格目录`)
+}
 assert.deepEqual(anthropicPricingById.get('claude-haiku-4-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.inputUsdPer1M, 1)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.outputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.cachedInputUsdPer1M, 0.1)
+assert.equal(anthropicPricingById.get('best')?.inputUsdPer1M, 10)
+assert.equal(anthropicPricingById.get('best')?.outputUsdPer1M, 50)
+assert.equal(anthropicPricingById.get('fable')?.inputUsdPer1M, 10)
+assert.equal(anthropicPricingById.get('fable')?.outputUsdPer1M, 50)
+assert.equal(anthropicPricingById.get('opus')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('opus')?.outputUsdPer1M, 25)
+assert.equal(anthropicPricingById.get('opus[1m]')?.maxInputTokens, 1_000_000)
+assert.equal(anthropicPricingById.get('sonnet')?.inputUsdPer1M, 3)
+assert.equal(anthropicPricingById.get('sonnet')?.outputUsdPer1M, 15)
+assert.equal(anthropicPricingById.get('sonnet[1m]')?.maxInputTokens, 1_000_000)
+assert.equal(anthropicPricingById.get('haiku')?.inputUsdPer1M, 1)
+assert.equal(anthropicPricingById.get('haiku')?.outputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-fable-5')?.inputUsdPer1M, 10)
+assert.equal(anthropicPricingById.get('claude-fable-5')?.outputUsdPer1M, 50)
+assert.equal(anthropicPricingById.get('claude-mythos-5')?.inputUsdPer1M, 10)
+assert.equal(anthropicPricingById.get('claude-mythos-5')?.outputUsdPer1M, 50)
+if (new Date().toISOString().slice(0, 10) < '2026-06-30') {
+  assert.equal(anthropicPricingById.get('claude-mythos-preview')?.inputUsdPer1M, 10)
+  assert.equal(anthropicPricingById.get('claude-mythos-preview')?.outputUsdPer1M, 50)
+}
+assert.equal(anthropicPricingById.get('claude-opus-4-8')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-opus-4-8')?.outputUsdPer1M, 25)
+assert.equal(anthropicPricingById.get('claude-opus-4-7')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-opus-4-7')?.outputUsdPer1M, 25)
+assert.equal(anthropicPricingById.get('claude-opus-4-6')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-opus-4-6')?.outputUsdPer1M, 25)
+assert.equal(anthropicPricingById.get('claude-opus-4-6-antigravity')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-opus-4-6-antigravity')?.outputUsdPer1M, 25)
+assert.equal(anthropicPricingById.get('google/antigravity-claude-opus-4-6-thinking')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('google-antigravity/claude-opus-4-6-thinking')?.maxInputTokens, 1_000_000)
+assert.equal(anthropicPricingById.get('google/antigravity-claude-sonnet-4-6')?.inputUsdPer1M, 3)
+assert.equal(anthropicPricingById.get('google-antigravity/claude-sonnet-4-6-thinking')?.maxInputTokens, 1_000_000)
+assert.deepEqual(anthropicPricingById.get('claude-haiku-4-5-20251001')?.supportedApiProtocols, ['messages', 'message_token_counting'])
+assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.inputUsdPer1M, 1)
+assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.outputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.releaseDate, '2025-10-01')
+assert.equal(anthropicPricingById.get('claude-sonnet-4-5-20250929')?.inputUsdPer1M, 3)
+assert.equal(anthropicPricingById.get('claude-sonnet-4-5-20250929')?.outputUsdPer1M, 15)
+assert.equal(anthropicPricingById.get('claude-sonnet-4-5-20250929')?.releaseDate, '2025-09-29')
+assert.equal(anthropicPricingById.get('claude-opus-4-5-20251101')?.inputUsdPer1M, 5)
+assert.equal(anthropicPricingById.get('claude-opus-4-5-20251101')?.outputUsdPer1M, 25)
+assert.equal(anthropicPricingById.get('claude-opus-4-5-20251101')?.releaseDate, '2025-11-01')
+assert.deepEqual(anthropicPricingById.get('claude-fake-5')?.supportedApiProtocols, ['messages', 'message_token_counting'])
+assert.equal(anthropicPricingById.get('claude-fake-5')?.inputUsdPer1M, 1)
+assert.equal(anthropicPricingById.get('claude-fake-5')?.outputUsdPer1M, 5)
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-haiku-4-5-20251001')?.model, 'claude-haiku-4-5-20251001', 'Anthropic 官方 dated ID 应直接进入模型目录')
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-opus-4-5-20251101')?.model, 'claude-opus-4-5-20251101', 'Anthropic Opus dated ID 应直接进入模型目录')
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-fake-5')?.model, 'claude-fake-5', 'Anthropic-compatible 联调模型应保留隐藏计价能力')
 assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-haiku-4-5-2026-01-01')?.model, 'claude-haiku-4-5', 'Anthropic dated alias 应回落到基础模型价格')
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'antigravity-claude-opus-4-6-thinking-low')?.model, 'antigravity-claude-opus-4-6-thinking', 'Antigravity effort 后缀应回落到基础 Opus thinking 模型')
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'google/antigravity-claude-opus-4-6-thinking-high')?.model, 'google/antigravity-claude-opus-4-6-thinking', 'google/antigravity effort 后缀应回落到基础 Opus thinking 模型')
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'google-antigravity/claude-sonnet-4-6-thinking-max')?.model, 'google-antigravity/claude-sonnet-4-6-thinking', 'google-antigravity effort 后缀应回落到基础 Sonnet thinking 模型')
+assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'google-antigravity:claude-sonnet-4-6-thinking-medium')?.model, 'google-antigravity:claude-sonnet-4-6-thinking', 'google-antigravity 冒号写法 effort 后缀应回落到基础 Sonnet thinking 模型')
+if (new Date().toISOString().slice(0, 10) < '2026-08-05') {
+  assert.equal(anthropicPricingById.get('claude-opus-4-1')?.inputUsdPer1M, 15)
+  assert.equal(anthropicPricingById.get('claude-opus-4-1')?.outputUsdPer1M, 75)
+  assert.equal(anthropicPricingById.get('claude-opus-4-1')?.shutdownDate, '2026-08-05')
+  assert.equal(anthropicPricingById.get('claude-opus-4-1-20250805')?.releaseDate, '2025-08-05')
+  assert.equal(anthropicPricingById.get('claude-opus-4-1-20250805')?.shutdownDate, '2026-08-05')
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-opus-4-1')?.model, 'claude-opus-4-1', 'Anthropic Opus 4.1 shutdown date 未到期前应保留')
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-opus-4-1-20250805')?.model, 'claude-opus-4-1-20250805', 'Anthropic Opus 4.1 dated ID shutdown date 未到期前应保留')
+}
+for (const retiredAnthropicModel of [
+  'claude-opus-4-20250514',
+  'claude-sonnet-4-20250514',
+  'claude-3-7-sonnet-20250219',
+  'claude-3-5-haiku-20241022',
+  'google/antigravity-claude-opus-4-5-thinking'
+]) {
+  assert.equal(anthropicPricingById.has(retiredAnthropicModel), false, `${retiredAnthropicModel} 已退休，不应进入 Anthropic 目录`)
+  assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, retiredAnthropicModel), undefined, `${retiredAnthropicModel} 已退休，不应命中计价`)
+}
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'best',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), 0.0203)
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'opus',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), 0.01015)
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'sonnet',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), 0.00609)
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-opus-4-6-antigravity',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), 0.01015)
 assert.equal(estimateProviderCostUsd({
   providerCode: ANTHROPIC_PROVIDER_CODE,
   model: 'claude-haiku-4-5',
   inputTokens: 1000,
   outputTokens: 200,
   cacheReadTokens: 300
-}), 0.00173)
+}), 0.00203)
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-fake-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300
+}), 0.00203)
+assert.equal(estimateProviderCostUsd({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10
+}), 0.0020875)
 assert.equal(buildProviderCostBreakdown({
   providerCode: ANTHROPIC_PROVIDER_CODE,
   model: 'claude-haiku-4-5',
   inputTokens: 1000,
   outputTokens: 200,
-  cacheReadTokens: 300
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10,
+  thinkingTokens: 12
 })?.cacheReadUsdPer1M, 0.1)
+assert.equal(buildProviderCostBreakdown({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10,
+  thinkingTokens: 12
+})?.cacheWriteUsdPer1M, 1.25)
+assert.equal(buildProviderCostBreakdown({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10,
+  thinkingTokens: 12
+})?.cacheWrite1hUsdPer1M, 2)
+assert.equal(buildProviderCostBreakdown({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  cacheReadTokens: 300,
+  cacheWriteTokens: 40,
+  cacheWrite1hTokens: 10,
+  thinkingTokens: 12
+})?.thinkingTokens, 12)
 const availableOpenAIModels = new Set(openAIModelPricingList.map((item) => item.model))
 const openAIModelPricingById = new Map(openAIModelPricingList.map((item) => [item.model, item]))
 for (const item of openAIModelPricingList) {
@@ -503,9 +728,16 @@ assert.match(gatewayUsageRecordsSource, /function recordCompletedUpstreamAttempt
 assert.match(gatewayUsageRecordsSource, /recordClientAbortedUpstreamAttempt/)
 
 const gatewayResponseFinalizationSource = readSource('modules/gateway/response/finalization.ts')
-assert.match(gatewayResponseFinalizationSource, /applyOpenAIStreamUsageFallback/)
+assert.match(gatewayResponseFinalizationSource, /applyGatewayProtocolStreamUsageFallback/)
+assert.doesNotMatch(gatewayResponseFinalizationSource, /applyOpenAIStreamUsageFallback/)
+assert.doesNotMatch(gatewayResponseFinalizationSource, /applyAnthropicStreamUsageFallback/)
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
 assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应体为空'/)
+
+const openAIProtocolDriverSource = readSource('modules/gateway/protocols/openai-v1/driver.ts')
+assert.match(openAIProtocolDriverSource, /applyStreamUsageFallback:\s*applyOpenAIStreamUsageFallback/)
+const anthropicProtocolDriverSource = readSource('modules/gateway/protocols/anthropic-v1/driver.ts')
+assert.match(anthropicProtocolDriverSource, /applyStreamUsageFallback:\s*applyAnthropicStreamUsageFallback/)
 
 const gatewayFailureDispatchSource = readSource('modules/gateway/response/failure-dispatch.ts')
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)

@@ -14,6 +14,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { logger } from '../../shared/logger.js'
 
 interface AnthropicUpstreamHit {
+  rawUrl: string
   path: string
   method: string
   authorization: string
@@ -120,14 +121,20 @@ try {
 
     await assertAnthropicMessagesJson(baseUrl, apiKey.key)
     await assertAnthropicMessagesSse(baseUrl, apiKey.key)
+    await assertAnthropicSseRetryExhaustedErrorShape(baseUrl, upstreamBaseUrl)
     await assertClaudeCodeClientProfileHeader(baseUrl, apiKey.key)
-    await assertAnthropicBetaHeaderMerges(baseUrl, upstreamBaseUrl)
+    await assertAnthropicBetaHeaderForwardsClientValue(baseUrl, upstreamBaseUrl)
+    await assertAnthropicLocalErrorShape(baseUrl)
     await assertAnthropicCountTokens(baseUrl, apiKey.key)
+    await assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicModels(baseUrl, apiKey.key)
+    await assertAnthropicModelMapping(baseUrl, upstreamBaseUrl)
+    await assertAnthropicApiKeyPoolIsolation(baseUrl, upstreamBaseUrl)
     await assertAnthropicResponseInspectionSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertAnthropicJsonErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertAnthropicSseErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl, upstreamBaseUrl)
+    await assertAnthropicGroupRejectsOpenAIResponses(baseUrl, apiKey.key)
     if (truthyEnv('JUHE_RUN_CLAUDE_CODE_CLI_MOCK')) {
       await assertOfficialClaudeCodeCliMockCapture(baseUrl, apiKey.key)
     }
@@ -167,6 +174,7 @@ async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiK
   assert(incomingMessages.some((hit) => hit.authorizationPresent || hit.xApiKeyPresent), 'Claude Code CLI 请求应携带本地网关 API Key')
   const upstreamMessages = upstreamHits.filter((hit) => hit.path === '/v1/messages')
   assert(upstreamMessages.length > 0, 'Claude Code CLI 应通过网关命中 Anthropic mock /v1/messages')
+  assert(upstreamMessages.some((hit) => hit.rawUrl === '/v1/messages?beta=true'), '网关转发 Claude Code CLI 请求时应保留 ?beta=true 查询参数')
   assert(upstreamMessages.every((hit) => hit.xApiKey === 'sk-ant-upstream'), '网关转发 Claude Code CLI 请求时应使用上游 Anthropic API Key')
   assert(upstreamMessages.every((hit) => hit.authorization === ''), '网关转发 Anthropic 请求时不应透传客户端 Authorization')
   console.log(JSON.stringify({
@@ -183,6 +191,7 @@ async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiK
         bodySummary: hit.bodySummary
       })),
       upstreamRequests: upstreamHits.map((hit) => ({
+        rawUrl: hit.rawUrl,
         path: hit.path,
         method: hit.method,
         xApiKey: hit.xApiKey,
@@ -210,6 +219,7 @@ function summarizeIncomingHitForError(hit: GatewayIncomingHit): Record<string, u
 
 function summarizeUpstreamHitForError(hit: AnthropicUpstreamHit): Record<string, unknown> {
   return {
+    rawUrl: hit.rawUrl,
     path: hit.path,
     method: hit.method,
     xApiKey: hit.xApiKey,
@@ -278,6 +288,60 @@ async function assertAnthropicMessagesSse(baseUrl: string, localApiKey: string):
   })
 }
 
+async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const group = repositories.createGroup({
+    name: 'Anthropic SSE 重试耗尽错误形态分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic SSE 提前结束账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-empty-sse',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_sse']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: 'Anthropic SSE 重试耗尽错误形态 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic SSE 重试耗尽错误形态 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey.key,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'trigger empty anthropic sse' }],
+      max_tokens: 8,
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Anthropic SSE 重试耗尽应以 SSE 错误事件返回，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'Anthropic SSE 重试耗尽应保持 text/event-stream')
+  assert.match(text, /^event: error$/m, `Anthropic SSE 失败尾包应使用 event: error：${text}`)
+  assert.equal(text.includes('event: response.failed'), false, 'Anthropic SSE 失败尾包不应使用 OpenAI response.failed 事件')
+  const errorData = text.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
+  assert(errorData, `Anthropic SSE 失败尾包应包含 data：${text}`)
+  const payload = JSON.parse(errorData) as { type?: string; error?: { type?: string; message?: string; code?: string } }
+  assert.equal(payload.type, 'error', 'Anthropic SSE 失败尾包顶层 type 应为 error')
+  assert.equal(payload.error?.type, 'api_error', 'Anthropic SSE 失败尾包 error.type 应为 api_error')
+  assert(payload.error?.message, 'Anthropic SSE 失败尾包应包含错误消息')
+  assert(upstreamHits.some((hit) => hit.xApiKey === 'sk-ant-empty-sse'), 'Anthropic SSE 重试耗尽应命中提前结束 mock 上游')
+}
+
 async function assertClaudeCodeClientProfileHeader(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/messages`, {
@@ -304,20 +368,19 @@ async function assertClaudeCodeClientProfileHeader(baseUrl: string, localApiKey:
   })
 }
 
-async function assertAnthropicBetaHeaderMerges(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicBetaHeaderForwardsClientValue(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
-    name: 'Anthropic Beta 合并回归分组',
+    name: 'Anthropic Beta 客户端透传回归分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
   repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
-    name: 'Anthropic Beta 合并回归账户',
+    name: 'Anthropic Beta 客户端透传回归账户',
     type: 'api_key',
     credentials: {
       api_key: 'sk-ant-beta',
       base_url: upstreamBaseUrl,
-      anthropic_beta: 'account-beta-2026-01-01, shared-beta',
       supported_endpoint_modes: ['messages_json']
     },
     groupId: group.id,
@@ -325,11 +388,11 @@ async function assertAnthropicBetaHeaderMerges(baseUrl: string, upstreamBaseUrl:
     schedulable: true
   }, access)
   const apiKey = repositories.createApiKeyRecord({
-    name: 'Anthropic Beta 合并回归 Key',
+    name: 'Anthropic Beta 客户端透传回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
-  assert(apiKey.key, 'Anthropic Beta 合并回归 API Key 未返回明文密钥')
+  assert(apiKey.key, 'Anthropic Beta 客户端透传回归 API Key 未返回明文密钥')
 
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/messages`, {
@@ -347,15 +410,35 @@ async function assertAnthropicBetaHeaderMerges(baseUrl: string, upstreamBaseUrl:
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `Anthropic Beta 合并请求应成功，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 1, 'Anthropic Beta 合并请求应命中一次 mock 上游')
+  assert.equal(response.status, 200, `Anthropic Beta 客户端透传请求应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, 1, 'Anthropic Beta 客户端透传请求应命中一次 mock 上游')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
     bodyIncludes: 'hello anthropic beta merge',
     xApiKey: 'sk-ant-beta',
-    anthropicBeta: 'client-beta-2026-01-01,shared-beta,account-beta-2026-01-01'
+    anthropicBeta: 'client-beta-2026-01-01,shared-beta'
   })
+}
+
+async function assertAnthropicLocalErrorShape(baseUrl: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'missing local key' }],
+      max_tokens: 8
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 401, `Anthropic 本地认证错误应返回 401，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { type?: string; error?: { type?: string; message?: string } }
+  assert.equal(body.type, 'error', 'Anthropic 本地错误响应顶层 type 应为 error')
+  assert.equal(body.error?.type, 'invalid_request_error', 'Anthropic 本地错误应使用 Anthropic error.type')
+  assert.match(body.error?.message ?? '', /访问令牌|API Key/, 'Anthropic 本地错误应保留中文错误消息')
 }
 
 async function assertAnthropicCountTokens(baseUrl: string, localApiKey: string): Promise<void> {
@@ -383,6 +466,60 @@ async function assertAnthropicCountTokens(baseUrl: string, localApiKey: string):
   })
 }
 
+async function assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const group = repositories.createGroup({
+    name: 'Anthropic Count Tokens 不支持降级回归分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic Count Tokens 不支持降级账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-count-unsupported',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json', 'message_token_counting']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: 'Anthropic Count Tokens 不支持降级 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic Count Tokens 不支持降级 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const countResponse = await fetch(`${baseUrl}/v1/messages/count_tokens`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey.key,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'unsupported count tokens' }]
+    })
+  })
+  const countText = await countResponse.text()
+  assert.notEqual(countResponse.status, 200, `mock count_tokens 不支持时不应返回成功：${countText}`)
+  assert(upstreamHits.some((hit) => hit.path === '/v1/messages/count_tokens' && hit.xApiKey === 'sk-ant-count-unsupported'), 'Count Tokens 不支持场景应先命中 mock 上游 404')
+
+  upstreamHits.length = 0
+  const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, 'messages should still work after unsupported count_tokens')
+  assert.equal(messageResult.status, 200, `count_tokens 不支持不应污染账号健康，普通 messages 应继续成功，实际 HTTP ${messageResult.status}: ${messageResult.text}`)
+  assert.equal(upstreamHits.length, 1, 'count_tokens 不支持后普通 messages 应继续调度同一账户')
+  assertAnthropicUpstreamHit(upstreamHits[0], {
+    path: '/v1/messages',
+    method: 'POST',
+    bodyIncludes: 'messages should still work after unsupported count_tokens',
+    xApiKey: 'sk-ant-count-unsupported'
+  })
+}
+
 async function assertAnthropicModels(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/models`, {
@@ -398,6 +535,109 @@ async function assertAnthropicModels(baseUrl: string, localApiKey: string): Prom
   assert(Object.prototype.hasOwnProperty.call(body, 'first_id'), 'Anthropic Models 响应应包含 first_id')
   assert(Object.prototype.hasOwnProperty.call(body, 'last_id'), 'Anthropic Models 响应应包含 last_id')
   assert.equal(upstreamHits.length, 0, 'Anthropic /v1/models 应由本地模型目录响应，不应打到上游 mock')
+}
+
+async function assertAnthropicModelMapping(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const sourceModel = 'claude-haiku-4-5'
+  const upstreamModel = 'claude-haiku-4-5-20251001'
+  const group = repositories.createGroup({
+    name: 'Anthropic 模型映射回归分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic 模型映射回归账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-model-mapping',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json']
+    },
+    supportedModels: [upstreamModel],
+    modelMappings: [
+      { sourceModel, upstreamModel, enabled: true }
+    ],
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: 'Anthropic 模型映射回归 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic 模型映射回归 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const result = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic model mapping', sourceModel)
+  assert.equal(result.status, 200, `Anthropic 模型映射请求应成功，实际 HTTP ${result.status}: ${result.text}`)
+  assert.equal(upstreamHits.length, 1, 'Anthropic 模型映射请求应命中一次 mock 上游')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { model?: string; messages?: unknown[] }
+  assert.equal(upstreamBody.model, upstreamModel, 'Anthropic 上游请求体顶层 model 应被改写为映射后的上游模型')
+  assert(Array.isArray(upstreamBody.messages), 'Anthropic 模型映射不应丢失 messages 字段')
+}
+
+async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const group = repositories.createGroup({
+    name: 'Anthropic 多 Key 隔离回归分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic 多 Key 隔离来源账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-keypool-bad',
+      api_keys: ['sk-ant-keypool-bad', 'sk-ant-keypool-good'],
+      api_key_strategy: 'round_robin',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic 多 Key 隔离救援账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-keypool-rescue',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 100
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: 'Anthropic 多 Key 隔离回归 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic 多 Key 隔离回归 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const first = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool failover')
+  assert.equal(first.status, 200, `Anthropic 坏 Key 失败后应切到救援账户成功，实际 HTTP ${first.status}: ${first.text}`)
+  assert.deepEqual(
+    upstreamHits.map((hit) => hit.xApiKey),
+    ['sk-ant-keypool-bad', 'sk-ant-keypool-rescue'],
+    'Anthropic 多 Key 账户当前 Key 失败后，本次请求应切到同分组救援账户'
+  )
+
+  upstreamHits.length = 0
+  const second = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool local isolation')
+  assert.equal(second.status, 200, `Anthropic 坏 Key 本地短避让后应命中同账户好 Key，实际 HTTP ${second.status}: ${second.text}`)
+  assert.deepEqual(
+    upstreamHits.map((hit) => hit.xApiKey),
+    ['sk-ant-keypool-good'],
+    'Anthropic 多 Key 账户坏 Key 被短避让后，后续请求应继续使用同账户剩余好 Key'
+  )
 }
 
 async function assertAnthropicResponseInspectionSwitchesAccount(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -684,6 +924,55 @@ async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, 
   assert.equal(upstreamHits.length, 0, 'OpenAI 分组被拒绝后不应命中 Anthropic mock 上游')
 }
 
+async function assertAnthropicGroupRejectsOpenAIResponses(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({ turn_id: 'anthropic-incompatible-turn' })
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      input: 'must not dispatch openai responses to anthropic group',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Anthropic 分组不应承接 OpenAI Responses，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /Anthropic 原生分组/, '错误消息应明确说明当前 API Key 绑定的是 Anthropic 原生分组')
+  assert.match(text, /不兼容 Codex \/ OpenAI 请求路径/, '错误消息应明确说明 Codex/OpenAI 路径不兼容')
+  assert.match(text, /anthropic_native_group_openai_compatible_request/, '错误 code 应标识 Anthropic 原生分组收到 OpenAI-compatible 请求')
+  assert.equal(upstreamHits.length, 0, 'Anthropic 分组拒绝 OpenAI Responses 后不应命中 mock 上游')
+}
+
+async function postAnthropicMessage(
+  baseUrl: string,
+  localApiKey: string,
+  prompt: string,
+  model = 'claude-haiku-4-5'
+): Promise<{ status: number; text: string }> {
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 8,
+      stream: false
+    })
+  })
+  return {
+    status: response.status,
+    text: await response.text()
+  }
+}
+
 function captureIncomingGatewayRequest(req: Request, _res: Response, next: NextFunction): void {
   const rawBody = Buffer.isBuffer((req as { rawBody?: unknown }).rawBody)
     ? (req as unknown as { rawBody: Buffer }).rawBody
@@ -857,7 +1146,7 @@ function assertAnthropicUpstreamHit(hit: AnthropicUpstreamHit | undefined, input
   assert.equal(hit.authorization, '', 'Anthropic 上游不应收到本地 Authorization/Bearer')
   assert.equal(hit.clientProfileHeader, '', 'Anthropic 上游不应收到本地客户端画像 header')
   assert.equal(hit.anthropicVersion, '2023-06-01', '缺省 Anthropic-Version 应按官方默认版本补齐')
-  assert.equal(hit.anthropicBeta, input.anthropicBeta ?? '', 'Anthropic beta 头应按客户端和账号配置合并去重')
+  assert.equal(hit.anthropicBeta, input.anthropicBeta ?? '', 'Anthropic beta 头只应透传客户端显式 header')
   assert.match(hit.bodyText, new RegExp(input.bodyIncludes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 }
 
@@ -886,6 +1175,7 @@ function createAnthropicMockUpstream(): http.Server {
       const bodyText = Buffer.concat(chunks).toString('utf8')
       const path = req.url?.split('?', 1)[0] ?? ''
       upstreamHits.push({
+        rawUrl: req.url ?? '',
         path,
         method: req.method ?? '',
         authorization: String(req.headers.authorization ?? ''),
@@ -896,6 +1186,11 @@ function createAnthropicMockUpstream(): http.Server {
         bodyText
       })
       if (path === '/v1/messages/count_tokens') {
+        if (req.headers['x-api-key'] === 'sk-ant-count-unsupported') {
+          res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: 'count tokens unsupported' } }))
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ input_tokens: 11 }))
         return
@@ -903,7 +1198,9 @@ function createAnthropicMockUpstream(): http.Server {
       if (path === '/v1/messages') {
         const stream = bodyText.includes('"stream":true')
         if (stream) {
-          if (req.headers['x-api-key'] === 'sk-ant-error-sse') {
+          if (req.headers['x-api-key'] === 'sk-ant-empty-sse') {
+            sendAnthropicSseEmpty(res)
+          } else if (req.headers['x-api-key'] === 'sk-ant-error-sse') {
             sendAnthropicSseError(res)
           } else {
             sendAnthropicSse(res)
@@ -920,6 +1217,17 @@ function createAnthropicMockUpstream(): http.Server {
 }
 
 function sendAnthropicJson(res: http.ServerResponse, xApiKey: string): void {
+  if (xApiKey === 'sk-ant-keypool-bad') {
+    res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'overloaded_error',
+        message: 'mock key pool bad key'
+      }
+    }))
+    return
+  }
   if (xApiKey === 'sk-ant-error-json') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
@@ -997,6 +1305,11 @@ function sendAnthropicSseError(res: http.ServerResponse): void {
       message: 'mock overloaded'
     }
   })
+  res.end()
+}
+
+function sendAnthropicSseEmpty(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.end()
 }
 

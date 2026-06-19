@@ -240,6 +240,10 @@ const {
       ? await api.authorizations.listPage(params)
       : await api.myAuthorizations.listPage(params)
   },
+  requestSignature: (_options, pageState) => [
+    isManagementView.value ? 'management' : 'self',
+    createAuthorizationListParams(pageState)
+  ],
   onError: (error) => {
     console.error(error)
     message.error('加载授权列表失败')

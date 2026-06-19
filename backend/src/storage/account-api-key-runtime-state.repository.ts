@@ -106,7 +106,8 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
-        accounts.name AS account_name, accounts.provider_code, accounts.type, accounts.credentials_encrypted
+        accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
+        accounts.type, accounts.credentials_encrypted
       FROM account_api_key_runtime_states states
       JOIN accounts ON accounts.id = states.account_id
       WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
@@ -127,6 +128,8 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
       next_probe_at: string | null
       account_name: string
       provider_code: string
+      protocol_code: string
+      protocol_version: string
       type: string
       credentials_encrypted: string
     }>
@@ -140,6 +143,8 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
     }
     if (!isAccountApiKeyPoolIsolationEnabled({
       providerCode: row.provider_code,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
       type: row.type,
       credentials
     })) {
@@ -180,6 +185,8 @@ export function loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds: string
     }
     if (!isAccountApiKeyPoolIsolationEnabled({
       providerCode: row.providerCode,
+      protocolCode: row.protocolCode,
+      protocolVersion: row.protocolVersion,
       type: row.type,
       credentials
     })) {
@@ -375,6 +382,8 @@ function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKey
   const apiKeys = account.apiKeys ?? []
   if (!isAccountApiKeyPoolIsolationEnabled({
     providerCode: account.providerCode,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
     type: account.type,
     apiKeys,
     credentials: {
@@ -400,6 +409,8 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
   viewAccountId: string
   sourceAccountId: string
   providerCode: string
+  protocolCode: string
+  protocolVersion: string
   type: string
   credentialsEncrypted: string
 }> {
@@ -407,6 +418,8 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
     view_account_id: string
     source_account_id: string
     provider_code: string
+    protocol_code: string
+    protocol_version: string
     type: string
     credentials_encrypted: string
   }> = []
@@ -417,6 +430,8 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
         SELECT accounts.id AS view_account_id,
           COALESCE(source_accounts.id, accounts.id) AS source_account_id,
           COALESCE(source_accounts.provider_code, accounts.provider_code) AS provider_code,
+          COALESCE(source_accounts.protocol_code, accounts.protocol_code) AS protocol_code,
+          COALESCE(source_accounts.protocol_version, accounts.protocol_version) AS protocol_version,
           COALESCE(source_accounts.type, accounts.type) AS type,
           COALESCE(source_accounts.credentials_encrypted, accounts.credentials_encrypted) AS credentials_encrypted
         FROM accounts
@@ -429,6 +444,8 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
         view_account_id: string
         source_account_id: string
         provider_code: string
+        protocol_code: string
+        protocol_version: string
         type: string
         credentials_encrypted: string
       }>)
@@ -439,6 +456,8 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
       viewAccountId: row.view_account_id,
       sourceAccountId: row.source_account_id,
       providerCode: row.provider_code,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
       type: row.type,
       credentialsEncrypted: row.credentials_encrypted
     }))

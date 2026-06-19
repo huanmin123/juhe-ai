@@ -151,7 +151,9 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     systemAccountId: string | undefined,
     optionWindowKey: string
   ): Promise<GroupOptionSummary[]> {
-    const selectedIds = [input.selectedGroupId()].filter((id): id is string => Boolean(id))
+    const selectedIds = [input.selectedGroupId()]
+      .map((id) => id?.trim())
+      .filter((id): id is string => Boolean(id))
     const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
     if (!missingIds.length) return nextGroups
     const selectedGroups = await Promise.all(missingIds.map(async (id) => {
@@ -171,12 +173,12 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     if (!missingIds.length) return
     removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
     removeLocalSelectPreferenceValues('groups', missingIds)
-    const selectedGroupId = input.selectedGroupId()
+    const selectedGroupId = input.selectedGroupId()?.trim()
     if (selectedGroupId && missingIds.includes(selectedGroupId)) {
       input.groupFilterSelection.value = undefined
       input.onSelectedGroupMissing()
+      message.warning('已移除不存在或无权访问的分组，请重新选择')
     }
-    message.warning('已移除不存在或无权访问的分组，请重新选择')
   }
 
   return {

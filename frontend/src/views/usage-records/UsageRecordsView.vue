@@ -209,6 +209,10 @@ const {
     ])
     return result
   },
+  requestSignature: (_options, pageState) => [
+    isManagementView.value ? 'management' : 'self',
+    usageRecordRequestParams(pageState)
+  ],
   onError: (error) => {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载使用记录失败'))
@@ -379,9 +383,12 @@ function handleSystemAccountFilterChange(): void {
 }
 
 async function fetchRecords(pageState: { current: number; pageSize: number }) {
+  return usageRecordsApi.list(usageRecordRequestParams(pageState))
+}
+
+function usageRecordRequestParams(pageState: { current: number; pageSize: number }) {
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
-  const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
-  const params = usageRecordListParams({
+  return usageRecordListParams({
     page: pageState.current,
     pageSize: pageState.pageSize,
     accountName: accountNameFilter.value,
@@ -395,9 +402,8 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     traceId: traceIdFilter.value,
     trafficSource: trafficSourceFilter.value,
     sortBy: sortState.value.field,
-    sortOrder
+    sortOrder: sortState.value.order === 'ascend' ? 'asc' : 'desc'
   })
-  return usageRecordsApi.list(params)
 }
 
 async function copyTraceId(traceId?: string): Promise<void> {

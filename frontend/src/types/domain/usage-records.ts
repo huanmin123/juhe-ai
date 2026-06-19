@@ -9,6 +9,11 @@ export interface UsageRecordCostBreakdown {
   outputUsdPer1M?: number
   cacheReadCostUsd?: number
   cacheReadUsdPer1M?: number
+  cacheWriteCostUsd?: number
+  cacheWriteUsdPer1M?: number
+  cacheWrite1hCostUsd?: number
+  cacheWrite1hUsdPer1M?: number
+  thinkingTokens?: number
   inputImageCostUsd?: number
   outputImageCostUsd?: number
   inputImageUsdPer1M?: number
@@ -40,6 +45,7 @@ export interface UsageRecordSummary {
   accountName?: string
   endpoint?: string
   providerCode?: string
+  usageSemantic?: string
   model?: string
   upstreamModel?: string
   pricingModel?: string
@@ -54,6 +60,10 @@ export interface UsageRecordSummary {
   outputTokens?: number
   cacheReadTokens?: number
   cacheReadCostUsd?: number
+  cacheWriteTokens?: number
+  cacheWrite1hTokens?: number
+  cacheWriteCostUsd?: number
+  thinkingTokens?: number
   inputImageTokens?: number
   outputImageTokens?: number
   costUsd?: number

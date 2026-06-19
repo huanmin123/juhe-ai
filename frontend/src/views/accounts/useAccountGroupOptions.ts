@@ -20,6 +20,10 @@ export interface AccountGroupOptionsScope {
   selectedIds?: Array<string | undefined>
 }
 
+export interface AccountGroupOptionsLoadOptions {
+  useLocalWindow?: boolean
+}
+
 interface UseAccountGroupOptionsConfig {
   allowAllProviders?: boolean
   allowGlobalManagement?: boolean
@@ -28,7 +32,7 @@ interface UseAccountGroupOptionsConfig {
   limit?: number
   cacheTtlMs?: number
   localCacheKeyParts?: (scope: Required<AccountGroupOptionsScope>) => LocalSelectStorageKeyPart[]
-  onMissingSelectedIds?: (ids: string[]) => void
+  onMissingSelectedIds?: (ids: string[]) => boolean | void
   preferenceKeys?: () => string[]
   scope: () => AccountGroupOptionsScope
   searchDelayMs?: number
@@ -47,7 +51,12 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   let searchTimer: ReturnType<typeof window.setTimeout> | undefined
   let lastMissingNoticeKey = ''
 
-  async function load(nextKeyword = keyword.value, force = false, scopeOverride?: Partial<AccountGroupOptionsScope>): Promise<void> {
+  async function load(
+    nextKeyword = keyword.value,
+    force = false,
+    scopeOverride?: Partial<AccountGroupOptionsScope>,
+    loadOptions: AccountGroupOptionsLoadOptions = {}
+  ): Promise<void> {
     keyword.value = nextKeyword
     const scope = normalizedScope(scopeOverride)
     if ((config.isManagementView() && !scope.systemAccountId && !config.allowGlobalManagement) || (!config.allowAllProviders && !scope.providerCode && !scope.selectedIds.length)) {
@@ -71,7 +80,8 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
     const currentRequestId = ++requestId
     const optionWindowKey = localOptionWindowKey(scope, requestKeyword)
-    const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
+    const useLocalWindow = loadOptions.useLocalWindow !== false
+    const localWindowGroups = !force && useLocalWindow ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
     if (localWindowGroups?.length) {
       rememberGroupLabels(localWindowGroups)
       groups.value = localWindowGroups
@@ -84,7 +94,9 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
         loadingPromise = undefined
         loading.value = false
         rememberGroupLabels(cachedGroups)
-        writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
+        if (useLocalWindow) {
+          writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
+        }
         groups.value = cachedGroups
         return
       }
@@ -100,7 +112,9 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
         nextGroups = await ensureSelectedGroupOptions(nextGroups, scope, optionWindowKey)
         rememberGroupLabels(nextGroups)
         optionCache.set(requestKey, nextGroups)
-        writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
+        if (useLocalWindow) {
+          writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
+        }
         if (currentRequestId !== requestId) return
         groups.value = nextGroups
       } catch (error) {
@@ -170,7 +184,8 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     for (const preferenceKey of config.preferenceKeys?.() ?? ['groups']) {
       removeLocalSelectPreferenceValues(preferenceKey, missingIds)
     }
-    config.onMissingSelectedIds?.(missingIds)
+    const removedCurrentSelection = config.onMissingSelectedIds?.(missingIds) === true
+    if (!removedCurrentSelection) return
     const noticeKey = missingIds.join('|')
     if (noticeKey !== lastMissingNoticeKey) {
       lastMissingNoticeKey = noticeKey
@@ -189,7 +204,8 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
       providerCode: scope.providerCode?.trim() ?? '',
       systemAccountId: scope.systemAccountId?.trim() ?? '',
       selectedIds: [...new Set((scope.selectedIds ?? [])
-        .filter((id): id is string => Boolean(id?.trim()))
+        .map((id) => id?.trim())
+        .filter((id): id is string => Boolean(id))
         .sort())]
     }
   }

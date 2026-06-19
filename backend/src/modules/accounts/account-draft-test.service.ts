@@ -105,13 +105,15 @@ export function prepareAccountDraftTestSnapshot(input: {
   if (!ownerSystemAccountId) {
     throw new Error('账户分组缺少归属用户，无法测试')
   }
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    accountInput.providerCode,
-    accountInput.type,
-    accountInput.clientCompatibility,
-    'openai_standard',
-    providerProfile
-  )
+  const clientCompatibility = isAnthropicProtocolProfile(providerProfile)
+    ? 'openai_standard' as const
+    : normalizeOpenAIAccountClientCompatibility(
+        accountInput.providerCode,
+        accountInput.type,
+        accountInput.clientCompatibility,
+        'openai_standard',
+        providerProfile
+      )
   const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {
     providerCode: accountInput.providerCode,
     accountType: accountInput.type,

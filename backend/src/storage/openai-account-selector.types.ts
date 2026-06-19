@@ -74,6 +74,8 @@ export interface OpenAIAccountSecret {
   credentials: Record<string, unknown>
 }
 
+export type DispatchAccountSecret = OpenAIAccountSecret
+
 export interface GroupUsageAccessMetadata {
   groupOwnerSystemAccountId: string
   providerCode: ProviderCode
@@ -94,6 +96,8 @@ export interface OpenAIAccountsForGroupResult {
   accounts: OpenAIAccountSecret[]
   diagnostics?: OpenAIAccountsForGroupDiagnostics
 }
+
+export type DispatchAccountsForGroupResult = OpenAIAccountsForGroupResult
 
 export interface OpenAIAccountsForGroupDiagnostics {
   scanLimit: number

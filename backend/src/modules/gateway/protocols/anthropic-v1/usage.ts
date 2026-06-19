@@ -22,10 +22,19 @@ export function parseAnthropicUsageFromJsonTextFragment(text?: string): ParsedUs
 export function extractAnthropicUsage(value: unknown): ParsedUsage {
   if (typeof value !== 'object' || value === null) return emptyUsage()
   const usage = value as Record<string, unknown>
+  const cacheCreation = objectValue(usage.cache_creation)
+  const cacheWrite5mTokens = numberValue(cacheCreation?.ephemeral_5m_input_tokens)
+  const cacheWrite1hTokens = numberValue(cacheCreation?.ephemeral_1h_input_tokens)
+  const cacheWriteDetailTokens = sumDefined(cacheWrite5mTokens, cacheWrite1hTokens)
+  const cacheWriteTokens = numberValue(usage.cache_creation_input_tokens) ?? cacheWriteDetailTokens
+  const outputTokenDetails = objectValue(usage.output_tokens_details)
   return {
     inputTokens: numberValue(usage.input_tokens),
     outputTokens: numberValue(usage.output_tokens),
-    cacheReadTokens: numberValue(usage.cache_read_input_tokens)
+    cacheReadTokens: numberValue(usage.cache_read_input_tokens),
+    cacheWriteTokens,
+    cacheWrite1hTokens,
+    thinkingTokens: numberValue(outputTokenDetails?.thinking_tokens)
   }
 }
 
@@ -99,4 +108,16 @@ function skipJsonWhitespace(text: string, startIndex: number): number {
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : undefined
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function sumDefined(...values: Array<number | undefined>): number | undefined {
+  const defined = values.filter((value): value is number => value !== undefined)
+  if (!defined.length) return undefined
+  return defined.reduce((sum, value) => sum + value, 0)
 }

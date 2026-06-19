@@ -9,6 +9,7 @@ import {
   bindGroupTip as buildBindGroupTip,
   defaultGroupForProvider
 } from './accountDerivedState'
+import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { accountOperationScopeParams } from './accountOperationScope'
 
 type ReadonlyValue<T> = {
@@ -51,7 +52,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     bindGroupModalOpen.value = true
     await nextTick()
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-    await options.loadGroupOptions('', true, {
+    await options.loadGroupOptions('', false, {
       providerCode: account.providerCode,
       systemAccountId: scopeParams?.systemAccountId,
       selectedIds: [bindGroupForm.groupId]
@@ -68,14 +69,21 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     }
     bindGroupSaving.value = true
     try {
+      const account = bindingAccount.value
+      const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
       const payload = {
         groupId: bindGroupForm.groupId
       }
       if (options.isManagementView.value) {
-        await api.accounts.bindGroup(bindingAccount.value.id, payload, accountOperationScopeParams(bindingAccount.value, options.accountScopeParams.value))
+        await api.accounts.bindGroup(account.id, payload, scopeParams)
       } else {
-        await api.myAccounts.bindGroup(bindingAccount.value.id, payload)
+        await api.myAccounts.bindGroup(account.id, payload)
       }
+      invalidateAccountDetailForAccount({
+        accountId: account.id,
+        isManagementView: options.isManagementView.value,
+        scopeParams
+      })
       message.success('授权账户已绑定分组')
       bindGroupModalOpen.value = false
       bindingAccount.value = undefined

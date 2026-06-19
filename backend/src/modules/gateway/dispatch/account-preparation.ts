@@ -19,9 +19,7 @@ import {
   throwIfRequestAborted
 } from './helpers.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
-import {
-  buildUpstreamRequestParts
-} from '../upstream/request.js'
+import { buildGatewayUpstreamRequestParts } from '../../providers/drivers/registry.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
 import {
@@ -213,7 +211,7 @@ export async function buildPreparedUpstreamRequestParts(
   signal?: AbortSignal
 ): Promise<PreparedUpstreamRequestParts> {
   try {
-    return await buildUpstreamRequestParts(req, account, {
+    return await buildGatewayUpstreamRequestParts(req, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
       groupId: usageContext.groupId

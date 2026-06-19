@@ -2,7 +2,7 @@ import type { AccountSummary, ResourcePermissions } from '@/types/domain'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
-import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { isGatewaySupportedProtocolProfile } from '@/shared/providerProtocol'
 import type { AccountMenuItem } from './accountActionTypes'
 import { GPT_VENDOR_CODE } from './accountOptions'
 import {
@@ -206,7 +206,7 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 }
 
 export function canTestAccount(account: AccountSummary): boolean {
-  if (!isOpenAIProtocolProfile(account)) return false
+  if (!isGatewaySupportedProtocolProfile(account)) return false
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
     if (account.effectiveAvailability?.available === false) {

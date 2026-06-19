@@ -14,7 +14,7 @@ import {
   failedAccountTestResult,
   stoppedAccountTestMessage
 } from './accountTestFlow'
-import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { isGatewaySupportedProtocolProfile } from '@/shared/providerProtocol'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
@@ -88,8 +88,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function openTestModal(account: AccountSummary) {
     if (!canTestAccount(account)) {
-      if (!isOpenAIProtocolProfile(account)) {
-        message.warning('当前仅支持测试 OpenAI v1 协议账户')
+      if (!isGatewaySupportedProtocolProfile(account)) {
+        message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
       } else if (isAuthorizedAccount(account) && !account.boundGroupId) {
         message.warning('请先把授权账户绑定到你的分组')
       } else if (isAuthorizedAccount(account)) {
@@ -114,8 +114,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (!isOpenAIProtocolProfile(account)) {
-      message.warning('当前仅支持测试 OpenAI v1 协议账户')
+    if (!isGatewaySupportedProtocolProfile(account)) {
+      message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
       return
     }
     testMode.value = 'single'
@@ -134,8 +134,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   async function openSavedDraftTestModal(account: AccountSummary, draftPayload: AccountDraftTestPayload['account']) {
-    if (!isOpenAIProtocolProfile(account)) {
-      message.warning('当前仅支持测试 OpenAI v1 协议账户')
+    if (!isGatewaySupportedProtocolProfile(account)) {
+      message.warning('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
       return
     }
     testMode.value = 'single'
@@ -167,7 +167,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       return
     }
     if (testableAccounts.length !== accounts.length) {
-      message.warning('已跳过非 GPT 供应商或当前不能测试的账户')
+      message.warning('已跳过不支持测试协议或当前不能测试的账户')
     }
     testMode.value = 'batch'
     testingAccount.value = undefined

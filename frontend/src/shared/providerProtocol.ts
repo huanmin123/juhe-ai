@@ -35,6 +35,10 @@ export function isAnthropicProtocolProfile(profile?: { protocolCode?: string; pr
     && normalizeProviderToken(profile?.protocolVersion) === ANTHROPIC_PROTOCOL_VERSION
 }
 
+export function isGatewaySupportedProtocolProfile(profile?: { protocolCode?: string; protocolVersion?: string }): boolean {
+  return isOpenAIProtocolProfile(profile) || isAnthropicProtocolProfile(profile)
+}
+
 export function isGptVendorCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GPT_VENDOR_CODE
 }

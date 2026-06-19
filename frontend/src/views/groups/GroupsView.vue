@@ -187,6 +187,13 @@ const {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
     return groupsApi.listPage(groupsListParams(systemAccountId, pageState))
   },
+  requestSignature: (_options, pageState) => {
+    const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
+    return [
+      isManagementView.value ? 'management' : 'self',
+      groupsListParams(systemAccountId, pageState)
+    ]
+  },
   onError: (error) => {
     console.error(error)
     message.error('加载分组失败')

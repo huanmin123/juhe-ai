@@ -2,7 +2,7 @@ import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProviderMo
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
-import { isOpenAICompatibleProviderCode } from '@/shared/providerProtocol'
+import { isGatewaySupportedProtocolProfile } from '@/shared/providerProtocol'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
 
 export type SelectOption = {
@@ -13,7 +13,7 @@ export type SelectOption = {
 
 export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary | AccountSummary[], providerDefaultModel = ''): SelectOption[] {
   const accountModels = normalizeAccountSupportedModels(account)
-  const useProviderModels = isOpenAICompatibleTestSelection(account)
+  const useProviderModels = isGatewaySupportedTestSelection(account)
   const providerModelValues = useProviderModels
     ? providerModels.map((item) => item.model)
     : []
@@ -41,9 +41,9 @@ export function providerCodeForAccountSelection(account: AccountSummary | Accoun
   return codes.length === 1 ? codes[0] : ''
 }
 
-export function isOpenAICompatibleTestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
+export function isGatewaySupportedTestSelection(account: AccountSummary | AccountSummary[] | undefined): boolean {
   const accounts = normalizeAccounts(account)
-  return accounts.length > 0 && accounts.every((item) => isOpenAICompatibleProviderCode(item.providerCode))
+  return accounts.length > 0 && accounts.every((item) => isGatewaySupportedProtocolProfile(item))
 }
 
 function normalizeAccountSupportedModels(account: AccountSummary | AccountSummary[] | undefined): string[] {

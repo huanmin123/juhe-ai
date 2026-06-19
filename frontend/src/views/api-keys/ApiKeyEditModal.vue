@@ -224,9 +224,11 @@ async function openCreate() {
   editingId.value = undefined
   editingSystemAccountId.value = undefined
   resetGroupOptionsSearch()
-  await loadGroupOptions('', true, {
+  await loadGroupOptions('', false, {
     systemAccountId: props.scopeParams?.systemAccountId,
     selectedIds: []
+  }, {
+    useLocalWindow: false
   })
   const defaultGroup = groups.value.find((group) => group.enabled && group.isDefault)
   if (!defaultGroup) {
@@ -282,9 +284,11 @@ async function openEdit(apiKey: ApiKeySummary) {
     availabilitySchedule
   })
   resetGroupOptionsSearch()
-  await loadGroupOptions('', true, {
+  await loadGroupOptions('', false, {
     systemAccountId: editScopeParams?.systemAccountId,
     selectedIds: formGroupBindingIds.value
+  }, {
+    useLocalWindow: false
   })
   modalOpen.value = true
 }

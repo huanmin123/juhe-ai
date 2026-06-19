@@ -124,7 +124,7 @@ export function setAccountGroup(
   if (!canUseAccount(accountId, group.systemAccountId)) {
     return undefined
   }
-  if (group.providerCode !== current.providerCode) {
+  if (group.providerCode !== current.providerCode || group.providerProtocolProfileId !== current.providerProtocolProfileId) {
     return undefined
   }
   const accountAuthorizationId = accountBindingAuthorizationId(accountId, group.systemAccountId, current)

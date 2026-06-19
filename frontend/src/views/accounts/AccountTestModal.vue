@@ -53,7 +53,7 @@
               @update:value="handleCompatibilityUpdate"
             />
           </a-form-item>
-          <a-form-item v-else class="test-config-field" label="客户端兼容">
+          <a-form-item v-else class="test-config-field" :label="fixedCompatibilityLabel">
             <a-input :value="fixedOAuthCompatibilityText" disabled />
           </a-form-item>
         </div>
@@ -186,9 +186,11 @@ const batchFailedCount = computed(() => batchCounts.value.failed)
 const batchStoppedCount = computed(() => batchCounts.value.stopped)
 const batchCompletedCount = computed(() => batchCounts.value.completed)
 const testTargetAccounts = computed(() => isBatchMode.value ? props.accounts : props.account ? [props.account] : [])
+const hasAnthropicTestTarget = computed(() => testTargetAccounts.value.some((account) => isAnthropicProtocolProfile(account)))
 const showClientCompatibilityControl = computed(() => testTargetAccounts.value.some((account) => account.type === 'api_key' && isOpenAIProtocolProfile(account)))
+const fixedCompatibilityLabel = computed(() => hasAnthropicTestTarget.value && !showClientCompatibilityControl.value ? '测试协议' : '客户端兼容')
 const fixedOAuthCompatibilityText = computed(() => {
-  if (testTargetAccounts.value.some((account) => isAnthropicProtocolProfile(account))) {
+  if (hasAnthropicTestTarget.value) {
     return 'Anthropic 原生'
   }
   return 'Codex Responses（OAuth 固定）'

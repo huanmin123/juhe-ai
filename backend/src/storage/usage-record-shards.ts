@@ -65,7 +65,7 @@ interface UsageRecordShardEntryScope {
   accountId?: string | null
 }
 
-const usageRecordShardSchemaVersion = 1
+const usageRecordShardSchemaVersion = 2
 const usageRecordShardWindowMaxDays = 31
 const shardDatabases = new Map<string, DatabaseSync>()
 
@@ -798,6 +798,7 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
       account_id TEXT,
       endpoint TEXT,
       provider_code TEXT,
+      usage_semantic TEXT,
       model TEXT,
       upstream_model TEXT,
       pricing_model TEXT,
@@ -812,6 +813,10 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
       output_tokens INTEGER,
       cache_read_tokens INTEGER,
       cache_read_cost_usd REAL,
+      cache_write_tokens INTEGER,
+      cache_write_1h_tokens INTEGER,
+      cache_write_cost_usd REAL,
+      thinking_tokens INTEGER,
       input_image_tokens INTEGER,
       output_image_tokens INTEGER,
       cost_usd REAL,
@@ -860,5 +865,25 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_client_ip_created_sort ON usage_records(system_account_id, client_ip, created_at, id);
   `)
 
+  ensureUsageRecordShardColumns(database)
+
   void usageRecordShardSchemaVersion
+}
+
+function ensureUsageRecordShardColumns(database: DatabaseSync): void {
+  const rows = database
+    .prepare('PRAGMA table_info(usage_records)')
+    .all() as Array<{ name?: string }>
+  const existing = new Set(rows.map((row) => String(row.name ?? '')))
+  const columns: Array<{ name: string; definition: string }> = [
+    { name: 'usage_semantic', definition: 'TEXT' },
+    { name: 'cache_write_tokens', definition: 'INTEGER' },
+    { name: 'cache_write_1h_tokens', definition: 'INTEGER' },
+    { name: 'cache_write_cost_usd', definition: 'REAL' },
+    { name: 'thinking_tokens', definition: 'INTEGER' }
+  ]
+  for (const column of columns) {
+    if (existing.has(column.name)) continue
+    database.exec(`ALTER TABLE usage_records ADD COLUMN ${column.name} ${column.definition}`)
+  }
 }

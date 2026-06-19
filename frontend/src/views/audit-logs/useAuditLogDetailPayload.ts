@@ -2,6 +2,7 @@ import { ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
+import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import type {
   AuditLogDetail,
   AuditLogPayloadDetail,
@@ -30,7 +31,11 @@ export function useAuditLogDetailPayload() {
     detailLoading.value = true
     selectedPayload.value = undefined
     try {
-      const nextDetail = await api.auditLogs.detail(record.id)
+      const nextDetail = await loadEntityDetailCached({
+        id: record.id,
+        load: () => api.auditLogs.detail(record.id),
+        namespace: 'audit-log-detail'
+      })
       if (requestId === detailRequestId) {
         detail.value = nextDetail
       }

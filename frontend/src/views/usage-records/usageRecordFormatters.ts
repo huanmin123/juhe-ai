@@ -26,9 +26,25 @@ export function formatTokens(value?: number): string {
 }
 
 export function formatRecordTokens(record: UsageRecordSummary): string {
-  const base = `${formatTokens(record.inputTokens)} / ${formatTokens(record.outputTokens)} / ${formatTokens(record.cacheReadTokens)}`
+  const parts = [
+    `输入 ${formatTokens(record.inputTokens)}`,
+    `输出 ${formatTokens(record.outputTokens)}`,
+    `缓存读 ${formatTokens(record.cacheReadTokens)}`
+  ]
+  if ((record.cacheWriteTokens ?? 0) > 0) {
+    parts.push(`缓存写 ${formatTokens(record.cacheWriteTokens)}`)
+  }
+  if ((record.cacheWrite1hTokens ?? 0) > 0) {
+    parts.push(`1h ${formatTokens(record.cacheWrite1hTokens)}`)
+  }
+  if ((record.thinkingTokens ?? 0) > 0) {
+    parts.push(`思考 ${formatTokens(record.thinkingTokens)}`)
+  }
   const imageTokens = (record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)
-  return imageTokens > 0 ? `${base} / 图片 ${formatTokens(imageTokens)}` : base
+  if (imageTokens > 0) {
+    parts.push(`图片 ${formatTokens(imageTokens)}`)
+  }
+  return parts.join(' / ')
 }
 
 export function formatEndpoint(value?: string): string {
@@ -46,8 +62,14 @@ export function formatUnitPrice(value?: number): string {
 
 export function formatCacheRate(record: UsageRecordSummary): string {
   const inputTokens = record.inputTokens ?? 0
-  if (inputTokens <= 0) return '0.0%'
-  return `${(((record.cacheReadTokens ?? 0) / inputTokens) * 100).toFixed(1)}%`
+  const cacheReadTokens = record.cacheReadTokens ?? 0
+  const cacheWriteTokens = record.cacheWriteTokens ?? 0
+  const anthropicUsage = record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
+  const denominator = anthropicUsage || cacheReadTokens > inputTokens
+    ? inputTokens + cacheReadTokens + cacheWriteTokens
+    : inputTokens
+  if (denominator <= 0) return '0.0%'
+  return `${((cacheReadTokens / denominator) * 100).toFixed(1)}%`
 }
 
 export function formatDuration(value?: number): string {

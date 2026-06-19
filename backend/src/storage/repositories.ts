@@ -532,6 +532,8 @@ export {
   resolveGroupUsageAccessMetadata,
   runtimeOpenAIAccountCredentials,
   selectOpenAIAccountForGroup,
+  type DispatchAccountSecret,
+  type DispatchAccountsForGroupResult,
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret,
   type OpenAIAccountsForGroupDiagnostics,

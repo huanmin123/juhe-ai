@@ -39,6 +39,7 @@ import {
 } from '../runtime/session-affinity.service.js'
 import {
   gatewayErrorPayload,
+  gatewayErrorPayloadForProtocol,
   isOpenAIJsonResponseContentType,
   sendGatewayErrorResponse,
   writeGatewayStreamFailureEvent
@@ -54,9 +55,6 @@ import {
   type ResponseInspectionDecision
 } from './inspection.js'
 import {
-  openAIResponseEndpointFamilyFromRequest
-} from '../protocols/openai-v1/response-semantics.js'
-import {
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
   upstreamRequestTimeoutMs,
@@ -68,24 +66,20 @@ import {
   type UsageRequestSnapshot
 } from '../usage/snapshots.js'
 import {
-  emptyUsage,
-  type ParsedUsage
+  emptyUsage
 } from '../usage/types.js'
 import {
-  parseOpenAIUsageFromJsonBuffer,
-  parseOpenAIUsageFromJsonTextFragment
-} from '../protocols/openai-v1/usage.js'
-import {
-  parseAnthropicUsageFromJsonBuffer,
-  parseAnthropicUsageFromJsonTextFragment
-} from '../protocols/anthropic-v1/usage.js'
-import { isAnthropicProtocolProfile } from '../../../domain/provider-protocol.js'
+  applyGatewayProtocolStreamUsageFallback,
+  gatewayProtocolClientErrorProtocolForProfile,
+  gatewayProtocolDefaultClientProfileForProfile,
+  gatewayProtocolResponseEndpointFamilyForRequest,
+  gatewayProtocolResponseProtocolForProfile,
+  parseGatewayProtocolUsageFromJsonBuffer,
+  parseGatewayProtocolUsageFromJsonTextFragment
+} from '../protocols/registry.js'
 import {
   requestModel
 } from '../request/metadata.js'
-import { applyOpenAIStreamUsageFallback } from '../protocols/openai-v1/stream-inspection.js'
-import { applyAnthropicStreamUsageFallback } from '../protocols/anthropic-v1/stream-inspection.js'
-import { anthropicResponseEndpointFamilyFromPath } from '../protocols/anthropic-v1/response-semantics.js'
 import {
   recordGatewayUpstreamBucketSuccess,
   suppressGatewayUpstreamBucketLocallyForSeconds
@@ -110,7 +104,7 @@ import {
   applyResponseInspectionPolicyRuntimeSideEffects
 } from './inspection-runtime-effects.js'
 import type { UpstreamResponseHandlingResult } from './response-handling-result.js'
-import { inspectBufferedOpenAIJsonResponse } from './non-stream-json-inspection.js'
+import { inspectBufferedGatewayJsonResponse } from './non-stream-json-inspection.js'
 import { prepareUpstreamResponseForDownstream } from './downstream-headers.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
@@ -163,10 +157,14 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     accountStateMutationEnabled
   } = input
 
-  const anthropicProtocol = isAnthropicProtocolProfile(account)
+  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForProfile(account)
+  const responseProtocol = gatewayProtocolResponseProtocolForProfile(account)
+  const responseEndpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(req, account)
+  const defaultClientProfile = gatewayProtocolDefaultClientProfileForProfile(account)
   if (!upstreamResponse.body) {
     const responsePayload = gatewayErrorPayload('上游响应体为空', 'upstream_response_error')
-    sendGatewayErrorResponse(res, upstreamResponse.status, responsePayload)
+    const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
+    sendGatewayErrorResponse(res, upstreamResponse.status, responsePayload, { protocol: clientErrorProtocol })
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
     auditCapture.completeAttempt(auditAttemptId, {
       statusCode: upstreamResponse.status,
@@ -197,7 +195,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       success: false,
       statusCode: upstreamResponse.status,
       responseHeaders: responseHeadersToObject(res),
-      responseBody: JSON.stringify(responsePayload),
+      responseBody: JSON.stringify(clientPayload),
       responsePartType: 'gateway_response',
       errorPhase: 'upstream_response',
       errorMessage: '上游响应体为空',
@@ -225,13 +223,11 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           managementPolicies: input.responseInspectionPolicies
         }),
         responseInspectionContext: {
-          clientProfile: clientStrategy?.clientProfile ?? 'generic_openai',
+          clientProfile: clientStrategy?.clientProfile ?? defaultClientProfile,
           accountClientCompatibility: account.clientCompatibility
         },
-        responseProtocol: anthropicProtocol ? 'anthropic_v1' : 'openai_v1',
-        endpointFamily: anthropicProtocol
-          ? anthropicResponseEndpointFamilyFromPath(req.originalUrl || req.path)
-          : openAIResponseEndpointFamilyFromRequest(req),
+        responseProtocol,
+        endpointFamily: responseEndpointFamily,
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
       }
     )
@@ -263,7 +259,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     throw error
   }
 
-  const streamUsageFallback = (anthropicProtocol ? applyAnthropicStreamUsageFallback : applyOpenAIStreamUsageFallback)(req, streamResult.usage, {
+  const streamUsageFallback = applyGatewayProtocolStreamUsageFallback(req, account, streamResult.usage, {
     outputReceived: streamResult.outputReceived,
     estimatedOutputTokens: streamResult.estimatedOutputTokens
   })
@@ -411,7 +407,12 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         })
       }
     }
-    const clientFailureResponseBody = writePreCommitStreamFailureToClient(res, upstreamResponse, streamResult)
+    const clientFailureResponseBody = writePreCommitStreamFailureToClient(
+      res,
+      upstreamResponse,
+      streamResult,
+      clientErrorProtocol
+    )
     const clientIpAvoidanceResult = confirmClientIpAccountAvoidanceAfterFinalFailure(
       clientIpAccountAvoidanceTracker,
       settings
@@ -463,7 +464,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
 function writePreCommitStreamFailureToClient(
   res: Response,
   upstreamResponse: GatewayUpstreamResponse,
-  streamResult: GatewayStreamPipeResult
+  streamResult: GatewayStreamPipeResult,
+  protocol: 'openai' | 'anthropic'
 ): Buffer | undefined {
   if (
     streamResult.downstreamBytesWritten !== 0
@@ -476,7 +478,7 @@ function writePreCommitStreamFailureToClient(
   if (!res.headersSent) {
     prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
   }
-  const failureEvent = writeGatewayStreamFailureEvent(res, streamResult.message, streamResult.errorCode)
+  const failureEvent = writeGatewayStreamFailureEvent(res, streamResult.message, streamResult.errorCode, protocol)
   const chunks = [
     streamResult.uncommittedResponseBody,
     failureEvent
@@ -580,7 +582,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         if (pipeResult.fullyBuffered) {
           const completeBody = pipeResult.completeBody ?? Buffer.alloc(0)
           const completeBodyText = pipeResult.completeBodyText ?? completeBody.toString('utf8')
-          const jsonInspectionResult = await inspectBufferedOpenAIJsonResponse({
+          const jsonInspectionResult = await inspectBufferedGatewayJsonResponse({
             req,
             res,
             account,
@@ -804,9 +806,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     throw error
   }
   if (responseBody) {
-    usage = parseGatewayUsageFromJsonBuffer(account, responseBody)
+    usage = parseGatewayProtocolUsageFromJsonBuffer(account, responseBody)
   } else if (upstreamResponse.ok) {
-    usage = parseGatewayUsageFromJsonTextFragment(account, responseUsageText)
+    usage = parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText)
   }
   if (!upstreamResponse.ok) {
     errorPayload = parseErrorPayload(responseBodyText ?? '', upstreamResponse.headers)
@@ -828,18 +830,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     errorPayload
   }
-}
-
-function parseGatewayUsageFromJsonBuffer(account: UpstreamAccount, responseBody: Buffer): ParsedUsage {
-  return isAnthropicProtocolProfile(account)
-    ? parseAnthropicUsageFromJsonBuffer(responseBody)
-    : parseOpenAIUsageFromJsonBuffer(responseBody)
-}
-
-function parseGatewayUsageFromJsonTextFragment(account: UpstreamAccount, text?: string): ParsedUsage {
-  return isAnthropicProtocolProfile(account)
-    ? parseAnthropicUsageFromJsonTextFragment(text)
-    : parseOpenAIUsageFromJsonTextFragment(text)
 }
 
 export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): void {

@@ -1,10 +1,14 @@
 import { computed, ref, type ComputedRef } from 'vue'
 
-import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
+import {
+  loadAccountTagOptionsCached,
+  readAccountTagOptionsCache,
+  resolveAccountTagOptionsScopeKey
+} from './accountTagOptionsCache'
 
 interface UseAccountFilterTagOptionsConfig {
   accountScopeParams: ComputedRef<AccountScopeParams>
@@ -26,14 +30,23 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
       return
     }
     if (!force && scopeKey.value === nextScopeKey) return
+    const cachedOptions = !force ? readAccountTagOptionsCache(nextScopeKey) : undefined
+    if (cachedOptions) {
+      options.value = cachedOptions
+      scopeKey.value = nextScopeKey
+      loading.value = false
+      return
+    }
 
     const currentRequestToken = ++requestToken
     const scopeParams = config.accountScopeParams.value
     loading.value = true
     try {
-      const nextOptions = config.isManagementView.value
-        ? await api.accounts.tags(scopeParams)
-        : await api.myAccounts.tags()
+      const nextOptions = await loadAccountTagOptionsCached({
+        force,
+        isManagementView: config.isManagementView.value,
+        scopeParams
+      })
       if (currentRequestToken !== requestToken || currentScopeKey() !== nextScopeKey) return
       options.value = nextOptions
       scopeKey.value = nextScopeKey
@@ -59,9 +72,7 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
   }
 
   function currentScopeKey(): string | undefined {
-    if (!config.isManagementView.value) return 'self'
-    const systemAccountId = config.accountScopeParams.value?.systemAccountId
-    return systemAccountId ? `management:${systemAccountId}` : undefined
+    return resolveAccountTagOptionsScopeKey(config.isManagementView.value, config.accountScopeParams.value)
   }
 
   return {
