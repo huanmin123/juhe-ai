@@ -2,7 +2,7 @@
   <a-modal
     v-model:open="modalOpen"
     :title="editingId ? '编辑 API Key' : '新建 API Key'"
-    width="640px"
+    width="860px"
     :confirm-loading="apiKeySaving"
     :ok-button-props="{ type: 'primary', disabled: apiKeySaving }"
     @ok="saveApiKey"
@@ -11,6 +11,9 @@
     <a-form layout="vertical" class="modal-form">
       <a-form-item label="名称" required>
         <a-input v-model:value="form.name" />
+      </a-form-item>
+      <a-form-item label="入口路由模式">
+        <a-segmented v-model:value="form.routeMode" :options="routeModeOptions" block />
       </a-form-item>
       <a-form-item label="分组路由策略">
         <a-segmented v-model:value="form.groupRouteStrategy" :options="groupRouteStrategyOptions" block />
@@ -70,6 +73,68 @@
           </a-button>
         </div>
       </a-form-item>
+      <template v-if="form.routeMode === 'hybrid'">
+        <a-form-item label="评分分组" required>
+          <a-select
+            v-model:value="form.hybridRoutingConfig.scoringGroupId"
+            :options="hybridScoringGroupOptions"
+            :disabled="!hybridScoringGroupOptions.length"
+            placeholder="选择一个已启用的绑定分组"
+          />
+        </a-form-item>
+        <div class="hybrid-config-grid">
+          <a-form-item label="评分模型" required>
+            <a-input v-model:value="form.hybridRoutingConfig.scoringModel" placeholder="gpt-5.4-mini" />
+          </a-form-item>
+          <a-form-item label="质量偏好">
+            <a-select v-model:value="form.hybridRoutingConfig.qualityPreference" :options="hybridQualityPreferenceOptions" />
+          </a-form-item>
+          <a-form-item label="评分超时">
+            <a-input-number v-model:value="form.hybridRoutingConfig.scoringTimeoutMs" :min="1000" :max="60000" :step="1000" addon-after="ms" />
+          </a-form-item>
+          <a-form-item label="失败默认等级">
+            <a-input-number v-model:value="form.hybridRoutingConfig.failureDefaultLevel" :min="1" :max="10" />
+          </a-form-item>
+          <a-form-item label="评分缓存 TTL">
+            <a-input-number v-model:value="form.hybridRoutingConfig.scoringCacheTtlSeconds" :min="0" :max="3600" addon-after="秒" />
+          </a-form-item>
+          <a-form-item label="缓存亲和 TTL">
+            <a-input-number v-model:value="form.hybridRoutingConfig.affinityTtlSeconds" :min="0" :max="86400" addon-after="秒" />
+          </a-form-item>
+          <a-form-item label="切换最小等级差">
+            <a-input-number v-model:value="form.hybridRoutingConfig.switchMinLevelDelta" :min="0" :max="9" />
+          </a-form-item>
+          <a-form-item label="低分降级确认次数">
+            <a-input-number v-model:value="form.hybridRoutingConfig.downgradeConsecutiveLowCount" :min="1" :max="20" />
+          </a-form-item>
+        </div>
+        <a-form-item>
+          <a-checkbox v-model:checked="form.hybridRoutingConfig.scoringCacheEnabled">启用评分缓存</a-checkbox>
+          <a-checkbox v-model:checked="form.hybridRoutingConfig.cacheAffinityEnabled">启用缓存亲和</a-checkbox>
+        </a-form-item>
+        <a-form-item label="等级模型区间" required>
+          <div class="hybrid-level-routes-field">
+            <div v-for="(route, index) in form.hybridRoutingConfig.levelRoutes" :key="index" class="hybrid-level-route-row">
+              <a-switch v-model:checked="route.enabled" size="small" />
+              <a-input-number v-model:value="route.minLevel" :min="1" :max="10" />
+              <span class="hybrid-level-separator">至</span>
+              <a-input-number v-model:value="route.maxLevel" :min="1" :max="10" />
+              <a-input v-model:value="route.targetModel" class="hybrid-target-model-input" placeholder="目标模型" />
+              <a-popconfirm title="确认移除这个等级区间？" ok-text="移除" cancel-text="取消" :disabled="form.hybridRoutingConfig.levelRoutes.length <= 1" @confirm="removeHybridLevelRoute(index)">
+                <a-tooltip title="移除">
+                  <a-button type="text" size="small" danger :disabled="form.hybridRoutingConfig.levelRoutes.length <= 1">
+                    <template #icon><delete-outlined /></template>
+                  </a-button>
+                </a-tooltip>
+              </a-popconfirm>
+            </div>
+            <a-button type="dashed" block @click="addHybridLevelRoute">
+              <template #icon><plus-outlined /></template>
+              添加等级区间
+            </a-button>
+          </div>
+        </a-form-item>
+      </template>
       <a-form-item label="状态">
         <a-select v-model:value="form.status" :options="statusOptions" />
       </a-form-item>
@@ -107,7 +172,7 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
-import type { ApiKeyAvailabilitySchedule, ApiKeyGroupRouteStrategy, ApiKeyQuotaLimits, ApiKeySummary } from '@/types/domain'
+import type { ApiKeyAvailabilitySchedule, ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyQuotaLimits, ApiKeyRouteMode, ApiKeySummary } from '@/types/domain'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 import {
@@ -123,6 +188,7 @@ import {
 import {
   apiKeyBindingStatusOptions as bindingStatusOptions,
   apiKeyGroupRouteStrategyOptions as groupRouteStrategyOptions,
+  apiKeyRouteModeOptions as routeModeOptions,
   apiKeyStatusOptions as statusOptions
 } from './apiKeyTableConfig'
 import { useApiKeyGroupBindings } from './useApiKeyGroupBindings'
@@ -156,10 +222,23 @@ const editingId = ref<string>()
 const editingSystemAccountId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
+const defaultHybridLevelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
+  { minLevel: 1, maxLevel: 3, targetModel: 'gpt-5.4-mini', enabled: true },
+  { minLevel: 4, maxLevel: 6, targetModel: 'glm-5.2', enabled: true },
+  { minLevel: 7, maxLevel: 8, targetModel: 'gpt-5.5', enabled: true },
+  { minLevel: 9, maxLevel: 10, targetModel: 'claude-opus-4-8', enabled: true }
+]
+const hybridQualityPreferenceOptions = [
+  { label: '省钱优先', value: 'cost_first' },
+  { label: '均衡', value: 'balanced' },
+  { label: '质量优先', value: 'quality_first' }
+] satisfies Array<{ label: string; value: ApiKeyHybridRoutingConfig['qualityPreference'] }>
 const form = reactive({
   name: '',
+  routeMode: 'normal' as ApiKeyRouteMode,
   groupRouteStrategy: 'priority_failover' as ApiKeyGroupRouteStrategy,
   groupBindings: [] as ApiKeyGroupBindingFormRow[],
+  hybridRoutingConfig: createHybridRoutingConfigForm(),
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
@@ -191,9 +270,28 @@ const {
   groupFilterSelection,
   formGroupBindings: () => form.groupBindings,
   formGroupBindingIds: groupBindingIdsForOptions,
+  allowMixedProviderProtocolProfiles: () => form.routeMode === 'hybrid',
   onGroupFilterCleared: () => {
     groupFilterSelection.value = undefined
   }
+})
+const hybridScoringGroupOptions = computed(() => {
+  const seen = new Set<string>()
+  return form.groupBindings
+    .filter((binding) => binding.status === 'active' && binding.groupId.trim())
+    .map((binding) => {
+      const groupId = binding.groupId.trim()
+      if (seen.has(groupId)) return undefined
+      seen.add(groupId)
+      const group = groups.value.find((item) => item.id === groupId)
+      const groupName = group?.name ?? binding.group?.name ?? groupId
+      const providerLabel = group?.providerCode ?? binding.providerCode
+      return {
+        label: providerLabel ? `${groupName}（${providerLabel}）` : groupName,
+        value: groupId
+      }
+    })
+    .filter((item): item is { label: string; value: string } => Boolean(item))
 })
 const {
   addGroupBinding,
@@ -237,8 +335,10 @@ async function openCreate() {
   }
   Object.assign(form, {
     name: '',
+    routeMode: 'normal',
     groupRouteStrategy: 'priority_failover',
     groupBindings: [createGroupBindingRow(defaultGroup)],
+    hybridRoutingConfig: createHybridRoutingConfigForm({ scoringGroupId: defaultGroup.id }),
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -275,8 +375,10 @@ async function openEdit(apiKey: ApiKeySummary) {
   editingSystemAccountId.value = editScopeParams?.systemAccountId
   Object.assign(form, {
     name: apiKey.name,
+    routeMode: apiKey.routeMode,
     groupRouteStrategy: apiKey.groupRouteStrategy,
     groupBindings: bindings,
+    hybridRoutingConfig: createHybridRoutingConfigForm(apiKey.hybridRoutingConfig),
     status: apiKey.status,
     expiresAt,
     description: apiKey.description ?? '',
@@ -308,6 +410,8 @@ const saveApiKey = submitAction('api_keys.save', async () => {
   try {
     const groupBindings = validateGroupBindingsPayload()
     if (!groupBindings) return
+    const hybridRoutingConfig = hybridRoutingConfigPayload(groupBindings)
+    if (hybridRoutingConfig === false) return
     const availabilitySchedule = availabilitySchedulePayload()
     if (availabilitySchedule === false) {
       return
@@ -316,7 +420,9 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     const expiresAt = formatServerDateTimeInput(form.expiresAt)
     const payload = {
       name: form.name,
+      routeMode: form.routeMode,
       groupRouteStrategy: form.groupRouteStrategy,
+      hybridRoutingConfig,
       groupBindings,
       status: form.status,
       expiresAt: targetId ? expiresAt : expiresAt ?? undefined,
@@ -350,6 +456,146 @@ function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)
 }
 
+function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig> = {}): ApiKeyHybridRoutingConfig {
+  return {
+    scoringGroupId: input.scoringGroupId ?? '',
+    scoringModel: input.scoringModel ?? 'gpt-5.4-mini',
+    scoringContextMode: 'full_request',
+    qualityPreference: input.qualityPreference ?? 'balanced',
+    scoringTimeoutMs: input.scoringTimeoutMs ?? 15000,
+    failureDefaultLevel: input.failureDefaultLevel ?? 7,
+    scoringCacheEnabled: input.scoringCacheEnabled ?? true,
+    scoringCacheTtlSeconds: input.scoringCacheTtlSeconds ?? 60,
+    cacheAffinityEnabled: input.cacheAffinityEnabled ?? true,
+    affinityTtlSeconds: input.affinityTtlSeconds ?? 900,
+    switchMinLevelDelta: input.switchMinLevelDelta ?? 2,
+    downgradeConsecutiveLowCount: input.downgradeConsecutiveLowCount ?? 2,
+    levelRoutes: (input.levelRoutes?.length ? input.levelRoutes : defaultHybridLevelRoutes).map((route) => ({
+      minLevel: route.minLevel,
+      maxLevel: route.maxLevel,
+      targetModel: route.targetModel,
+      enabled: route.enabled
+    }))
+  }
+}
+
+function hybridRoutingConfigPayload(groupBindings: Array<{ groupId: string, status: 'active' | 'disabled' }>): ApiKeyHybridRoutingConfig | undefined | false {
+  if (form.routeMode !== 'hybrid') return undefined
+  const scoringGroupId = form.hybridRoutingConfig.scoringGroupId.trim()
+  if (!scoringGroupId) {
+    message.warning('请选择评分分组')
+    return false
+  }
+  if (!groupBindings.some((binding) => binding.status === 'active' && binding.groupId === scoringGroupId)) {
+    message.warning('评分分组必须是当前 API Key 已启用的绑定分组')
+    return false
+  }
+  const scoringModel = form.hybridRoutingConfig.scoringModel.trim()
+  if (!scoringModel) {
+    message.warning('请填写评分模型')
+    return false
+  }
+  const scoringTimeoutMs = normalizeIntegerField(form.hybridRoutingConfig.scoringTimeoutMs, 1000, 60000, '评分超时')
+  const failureDefaultLevel = normalizeIntegerField(form.hybridRoutingConfig.failureDefaultLevel, 1, 10, '失败默认等级')
+  const scoringCacheTtlSeconds = normalizeIntegerField(form.hybridRoutingConfig.scoringCacheTtlSeconds, 0, 3600, '评分缓存 TTL')
+  const affinityTtlSeconds = normalizeIntegerField(form.hybridRoutingConfig.affinityTtlSeconds, 0, 86400, '缓存亲和 TTL')
+  const switchMinLevelDelta = normalizeIntegerField(form.hybridRoutingConfig.switchMinLevelDelta, 0, 9, '切换最小等级差')
+  const downgradeConsecutiveLowCount = normalizeIntegerField(form.hybridRoutingConfig.downgradeConsecutiveLowCount, 1, 20, '低分降级确认次数')
+  if (
+    scoringTimeoutMs === false
+    || failureDefaultLevel === false
+    || scoringCacheTtlSeconds === false
+    || affinityTtlSeconds === false
+    || switchMinLevelDelta === false
+    || downgradeConsecutiveLowCount === false
+  ) {
+    return false
+  }
+  const levelRoutes = normalizedHybridLevelRoutes()
+  if (levelRoutes === false) return false
+  return {
+    scoringGroupId,
+    scoringModel,
+    scoringContextMode: 'full_request',
+    qualityPreference: form.hybridRoutingConfig.qualityPreference,
+    scoringTimeoutMs,
+    failureDefaultLevel,
+    scoringCacheEnabled: Boolean(form.hybridRoutingConfig.scoringCacheEnabled),
+    scoringCacheTtlSeconds,
+    cacheAffinityEnabled: Boolean(form.hybridRoutingConfig.cacheAffinityEnabled),
+    affinityTtlSeconds,
+    switchMinLevelDelta,
+    downgradeConsecutiveLowCount,
+    levelRoutes
+  }
+}
+
+function normalizedHybridLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes'] | false {
+  const normalized = form.hybridRoutingConfig.levelRoutes.map((route, index) => {
+    const minLevel = normalizeIntegerField(route.minLevel, 1, 10, `第 ${index + 1} 个区间起始等级`)
+    const maxLevel = normalizeIntegerField(route.maxLevel, 1, 10, `第 ${index + 1} 个区间结束等级`)
+    if (minLevel === false || maxLevel === false) return false
+    if (minLevel > maxLevel) {
+      message.warning(`第 ${index + 1} 个等级区间起始等级不能大于结束等级`)
+      return false
+    }
+    const targetModel = route.targetModel.trim()
+    if (route.enabled && !targetModel) {
+      message.warning(`第 ${index + 1} 个启用区间必须填写目标模型`)
+      return false
+    }
+    return {
+      minLevel,
+      maxLevel,
+      targetModel,
+      enabled: Boolean(route.enabled)
+    }
+  })
+  if (normalized.some((route) => route === false)) return false
+  const routes = normalized as ApiKeyHybridRoutingConfig['levelRoutes']
+  const coverage = new Map<number, number>()
+  routes.forEach((route) => {
+    if (!route.enabled) return
+    for (let level = route.minLevel; level <= route.maxLevel; level += 1) {
+      coverage.set(level, (coverage.get(level) ?? 0) + 1)
+    }
+  })
+  for (let level = 1; level <= 10; level += 1) {
+    const count = coverage.get(level) ?? 0
+    if (count === 0) {
+      message.warning(`等级 ${level} 没有启用的模型区间`)
+      return false
+    }
+    if (count > 1) {
+      message.warning(`等级 ${level} 被多个模型区间重复覆盖`)
+      return false
+    }
+  }
+  return routes.sort((left, right) => left.minLevel - right.minLevel || left.maxLevel - right.maxLevel)
+}
+
+function normalizeIntegerField(value: unknown, min: number, max: number, label: string): number | false {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    message.warning(`${label}必须是 ${min}-${max} 之间的整数`)
+    return false
+  }
+  return value
+}
+
+function addHybridLevelRoute() {
+  form.hybridRoutingConfig.levelRoutes.push({
+    minLevel: 1,
+    maxLevel: 1,
+    targetModel: '',
+    enabled: true
+  })
+}
+
+function removeHybridLevelRoute(index: number) {
+  if (form.hybridRoutingConfig.levelRoutes.length <= 1) return
+  form.hybridRoutingConfig.levelRoutes.splice(index, 1)
+}
+
 function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | false {
   const scheduleValidation = validateTimeScheduleForm(form.availabilitySchedule)
   if (scheduleValidation) {
@@ -363,6 +609,20 @@ watch(modalOpen, (open) => {
   if (open) return
   editingId.value = undefined
   editingSystemAccountId.value = undefined
+})
+
+watch(hybridScoringGroupOptions, (options) => {
+  if (form.routeMode !== 'hybrid') return
+  const current = form.hybridRoutingConfig.scoringGroupId.trim()
+  if (current && options.some((item) => item.value === current)) return
+  form.hybridRoutingConfig.scoringGroupId = options[0]?.value ?? ''
+})
+
+watch(() => form.routeMode, (routeMode) => {
+  if (routeMode !== 'hybrid') return
+  const current = form.hybridRoutingConfig.scoringGroupId.trim()
+  if (current) return
+  form.hybridRoutingConfig.scoringGroupId = hybridScoringGroupOptions.value[0]?.value ?? ''
 })
 
 onBeforeUnmount(clearGroupOptionsSearchTimer)
@@ -433,6 +693,41 @@ defineExpose({
   gap: 10px;
 }
 
+.hybrid-config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.hybrid-config-grid :deep(.ant-input-number-group-wrapper),
+.hybrid-config-grid :deep(.ant-input-number),
+.hybrid-config-grid :deep(.ant-input) {
+  width: 100%;
+}
+
+.hybrid-level-routes-field {
+  display: grid;
+  gap: 8px;
+}
+
+.hybrid-level-route-row {
+  display: grid;
+  grid-template-columns: 48px 72px 24px 72px minmax(160px, 1fr) 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.hybrid-level-route-row :deep(.ant-input-number),
+.hybrid-target-model-input {
+  width: 100%;
+}
+
+.hybrid-level-separator {
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+
 @media (max-width: 640px) {
   .api-key-group-binding-row {
     grid-template-columns: 64px minmax(0, 1fr);
@@ -446,6 +741,15 @@ defineExpose({
 
   .binding-row-actions {
     justify-content: flex-start;
+  }
+
+  .hybrid-config-grid,
+  .hybrid-level-route-row {
+    grid-template-columns: 1fr;
+  }
+
+  .hybrid-level-separator {
+    text-align: left;
   }
 }
 </style>

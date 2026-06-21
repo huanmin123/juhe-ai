@@ -171,9 +171,17 @@ export async function handleFailedUpstreamResponse(
     ...(input.lastAttempt ?? {
       accountId: account.id,
       accountName: account.name,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
       upstreamUrl,
       status: response.status
     }),
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
     responseHeaders: headersToObject(response.headers),
     responseBodyText: diagnosticResponseBodyText
   }
@@ -392,6 +400,10 @@ export async function handleUpstreamRequestError(
       lastAttempt = {
         accountId: account.id,
         accountName: account.name,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion,
         upstreamUrl,
         status: statusCode,
         message: downstreamConnectionClosedMessage
@@ -423,6 +435,10 @@ export async function handleUpstreamRequestError(
   const lastAttempt: UpstreamAttempt = {
     accountId: account.id,
     accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
     upstreamUrl,
     message
   }

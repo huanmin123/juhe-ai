@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { type AccountStatus, type AccountSummary } from '../../domain/types.js'
+import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
@@ -104,6 +105,7 @@ accountsRouter.post('/', mutationGuard({
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     providerCode: normalizedText(bodyField(req, 'providerCode')),
+    connectionType: normalizedText(bodyField(req, 'connectionType')),
     type: normalizedText(bodyField(req, 'type')),
     name: normalizedText(bodyField(req, 'name')),
     credential: accountCredentialFingerprint(bodyField(req, 'credentials')),
@@ -152,7 +154,17 @@ accountsRouter.post('/', mutationGuard({
       return
     }
   }
-  const providerProtocolProfileId = parsed.data.providerProtocolProfileId ?? group?.providerProtocolProfileId ?? provider.defaultProtocolProfileId
+  let providerProtocolProfileId: string | undefined
+  try {
+    providerProtocolProfileId = resolveProviderProtocolProfileIdFromConnectionType({
+      providerCode,
+      providerProtocolProfileId: parsed.data.providerProtocolProfileId,
+      connectionType: parsed.data.connectionType
+    }) ?? group?.providerProtocolProfileId ?? provider.defaultProtocolProfileId
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '账户接入类型无效'))
+    return
+  }
   const providerProfile = provider.protocolProfiles.find((item) => item.id === providerProtocolProfileId)
   if (!providerProfile || !providerProfile.accountTypes.includes(parsed.data.type)) {
     res.status(400).json(badRequest(`供应商协议档案不支持账户类型：${parsed.data.type}`))
@@ -181,7 +193,7 @@ accountsRouter.post('/', mutationGuard({
 
   try {
     const account = runLoggedOperation(() => {
-      const { activationTestTaskId: _activationTestTaskId, ...accountCreateInput } = parsed.data
+      const { activationTestTaskId: _activationTestTaskId, connectionType: _connectionType, ...accountCreateInput } = parsed.data
       const account = createAccount({
         ...accountCreateInput,
         providerCode,

@@ -34,6 +34,9 @@ export function accountPartialUpdateInputForPush(input: PublicAccountUpdateInput
   if (hasPublicInput(input, 'supportedModels')) {
     payload.supportedModels = normalizedStringList(input.supportedModels) ?? []
   }
+  if (hasPublicInput(input, 'clientCompatibility')) {
+    payload.clientCompatibility = input.clientCompatibility
+  }
   if (hasPublicInput(input, 'status')) {
     payload.status = input.status === 'disabled' ? 'disabled' : 'active'
     payload.schedulable = input.status !== 'disabled'
@@ -115,6 +118,9 @@ function accountWriteInputForPush(input: PublicAccountPushInput): Record<string,
   }
   if (hasPublicInput(input, 'supportedModels')) {
     payload.supportedModels = normalizedStringList(input.supportedModels) ?? []
+  }
+  if (hasPublicInput(input, 'clientCompatibility')) {
+    payload.clientCompatibility = input.clientCompatibility
   }
   if (hasPublicInput(input, 'status')) {
     payload.status = input.status === 'disabled' ? 'disabled' : 'active'

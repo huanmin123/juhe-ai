@@ -13,7 +13,7 @@ import {
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { validateAccountEndpointModes } from './accountEndpointModes'
-import { canCreateOAuthAccount } from './accountProviderCapabilities'
+import { canCreateOAuthAccount, endpointModesForProfile } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
@@ -23,6 +23,7 @@ export type AccountSavePayload = {
   providerProtocolProfileId: AccountFormModel['providerProtocolProfileId']
   name?: string
   type: AccountFormModel['type']
+  clientCompatibility: AccountFormModel['clientCompatibility']
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
@@ -82,7 +83,8 @@ export function validateAccountSaveForm(input: {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
     if (baseUrlValidation) return baseUrlValidation
   }
-  if (!editingId && form.type === 'oauth' && !canCreateOAuthAccount(resolveFormProviderProfile(form, input.providers))) return '当前供应商协议不支持创建 OAuth 账户'
+  const formProviderProfile = resolveFormProviderProfile(form, input.providers)
+  if (!editingId && form.type === 'oauth' && !canCreateOAuthAccount(formProviderProfile)) return '当前供应商协议不支持创建 OAuth 账户'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
@@ -93,7 +95,9 @@ export function validateAccountSaveForm(input: {
   const endpointModeValidation = validateAccountEndpointModes({
     modes: form.supportedEndpointModes,
     type: form.type,
-    clientCompatibility: form.clientCompatibility
+    clientCompatibility: form.clientCompatibility,
+    profile: formProviderProfile.profile ?? formProviderProfile.provider,
+    allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider)
   })
   if (endpointModeValidation) return endpointModeValidation
   const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
@@ -128,6 +132,7 @@ export function buildAccountSavePayload(input: {
     providerProtocolProfileId: input.form.providerProtocolProfileId,
     name: input.form.name.trim() || undefined,
     type: input.form.type,
+    clientCompatibility: input.form.clientCompatibility,
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
@@ -145,6 +150,7 @@ export function buildAccountSavePayload(input: {
 export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountUpdatePayload {
   return {
     name: payload.name,
+    clientCompatibility: payload.clientCompatibility,
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,

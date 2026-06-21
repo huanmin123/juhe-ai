@@ -52,7 +52,16 @@ export function skipAccountForFailedProxyDispatch(
     proxyProfileId: account.proxyProfileId,
     proxyConfigured: Boolean(account.proxyProfileId || account.proxyUrl)
   }, '跳过已失败代理绑定账号')
-  return { accountId: account.id, accountName: account.name, upstreamUrl: 'proxy:skipped', message }
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl: 'proxy:skipped',
+    message
+  }
 }
 
 export function handleUnavailableProxyProfile(
@@ -70,7 +79,16 @@ export function handleUnavailableProxyProfile(
 
   const attemptStartedAt = Date.now()
   const message = account.proxyProfileErrorMessage ?? '账户绑定的代理不可用'
-  const lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl: 'proxy:configured', message }
+  const lastAttempt = {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl: 'proxy:configured',
+    message
+  }
   recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl: 'proxy:configured',
       startedAt: attemptStartedAt,

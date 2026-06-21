@@ -54,7 +54,22 @@
       </a-button>
     </a-form-item>
     <a-form-item label="客户端兼容">
-      <div class="compatibility-capability-list">
+      <a-radio-group
+        v-if="showClientCompatibilityControl"
+        v-model:value="form.clientCompatibility"
+        :disabled="authorizedEditing"
+        button-style="solid"
+        @change="syncEndpointModesForClientCompatibility"
+      >
+        <a-radio-button
+          v-for="option in clientCompatibilitySelectOptions"
+          :key="option.value"
+          :value="option.value"
+        >
+          {{ option.label }}
+        </a-radio-button>
+      </a-radio-group>
+      <div v-else class="compatibility-capability-list">
         <a-tag
           v-for="capability in clientCompatibilityCapabilities"
           :key="capability"
@@ -111,6 +126,8 @@ import { accountEndpointModeOptions } from './accountEndpointModes'
 import {
   accountClientCompatibilityCapabilities,
   clientCompatibilityCapabilityLabel,
+  canSelectClientCompatibility,
+  defaultEndpointModesForAccount,
   endpointModesForProfile
 } from './accountProviderCapabilities'
 
@@ -130,9 +147,23 @@ const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form
 const clientCompatibilityCapabilities = computed(() => accountClientCompatibilityCapabilities({
   ...activeProfile.value,
   providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
+  providerProtocolProfileId: activeProfileId(),
   type: props.form.type,
   clientCompatibility: props.form.clientCompatibility
 }))
+const showClientCompatibilityControl = computed(() => canSelectClientCompatibility({
+  ...activeProfile.value,
+  providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
+  providerProtocolProfileId: activeProfileId(),
+  type: props.form.type,
+  clientCompatibility: props.form.clientCompatibility
+}))
+const clientCompatibilitySelectOptions = computed(() => clientCompatibilityCapabilities.value
+  .filter((value): value is AccountFormModel['clientCompatibility'] => value === 'openai_standard' || value === 'codex_responses')
+  .map((value) => ({
+    label: clientCompatibilityCapabilityLabel(value),
+    value
+  })))
 
 const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
@@ -149,6 +180,29 @@ function addModelMapping(): void {
 
 function removeModelMapping(index: number): void {
   props.form.modelMappings.splice(index, 1)
+}
+
+function syncEndpointModesForClientCompatibility(): void {
+  props.form.supportedEndpointModes = defaultEndpointModesForAccount({
+    profile: {
+      ...activeProfile.value,
+      providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
+      providerProtocolProfileId: activeProfileId()
+    },
+    type: props.form.type,
+    clientCompatibility: props.form.clientCompatibility
+  })
+}
+
+function activeProfileId(): string | undefined {
+  const profile = activeProfile.value
+  if (profile && 'providerProtocolProfileId' in profile && typeof profile.providerProtocolProfileId === 'string') {
+    return profile.providerProtocolProfileId
+  }
+  if (profile && 'id' in profile && typeof profile.id === 'string') {
+    return profile.id
+  }
+  return props.form.providerProtocolProfileId
 }
 </script>
 

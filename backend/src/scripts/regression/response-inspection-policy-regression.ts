@@ -20,11 +20,19 @@ import {
   extractOpenAIJsonSemanticFrames
 } from '../../modules/gateway/protocols/openai-v1/response-semantics.js'
 import {
+  codexCompactionContractMismatchFrame,
+  codexCompactionExpectedForRequest,
+  countCodexCompactionOutputItemsFromJson
+} from '../../modules/gateway/response/codex-compaction-contract.js'
+import {
   extractAnthropicJsonSemanticFrames,
   extractAnthropicSseSemanticFrames
 } from '../../modules/gateway/protocols/anthropic-v1/response-semantics.js'
 import { parseOpenAISseEventText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
+import {
+  shouldRetryResponseInspectionDecisionOnServer
+} from '../../modules/gateway/response/stream-finalization-retry-decision.js'
 import { ANTHROPIC_PROVIDER_CODE, ANTHROPIC_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
 import {
@@ -72,6 +80,56 @@ function sseEvent(type: string, data: Record<string, unknown>, eventName = type)
 
 function dataEvent(data: Record<string, unknown>): Buffer {
   return Buffer.from(`data: ${JSON.stringify(data)}\n\n`, 'utf8')
+}
+
+async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
+  name: string,
+  chunks: Buffer[]
+): Promise<void> {
+  let failureCalled = false
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write() {
+      throw new Error(`${name} 写下游前应交给调度层重试`)
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    for (const chunk of chunks) {
+      yield chunk
+    }
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    settings,
+    Date.now(),
+    () => { failureCalled = true },
+    undefined,
+    {
+      clientRetryEnabled: true,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      endpointFamily: 'responses'
+    }
+  )
+  assert.equal(result.completed, false, `${name} 应在缺少可解析终止事件时返回失败结果`)
+  assert.equal(result.errorCode, 'upstream_retryable_error', `${name} 应按 Codex 可重试流错误收口`)
+  assert.equal(failureCalled, true, `${name} 应触发流失败回调供调度层处理`)
+  assert.equal(response.headersSent, false, `${name} 不应提前发送响应头`)
+  assert.equal(response.writableEnded, false, `${name} 不应结束客户端响应`)
+  assert.equal(result.downstreamBytesWritten, 0, `${name} 不应写出畸形 SSE 到客户端`)
 }
 
 {
@@ -404,6 +462,7 @@ assert.equal(validateAccountResponseInspectionRules([
   assert(defaultRules.some((rule) => rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 OpenAI JSON / SSE error 对象')
   assert(defaultRules.some((rule) => rule.protocolCode === ANTHROPIC_PROTOCOL_CODE && rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 Anthropic JSON / SSE error 对象')
   assert(defaultRules.some((rule) => rule.match.clientProfiles?.includes('codex') && rule.match.finishReasons?.includes('incomplete')), '默认规则必须覆盖 Codex response.incomplete')
+  assert(defaultRules.some((rule) => rule.id === 'default_codex_compaction_contract' && rule.match.errorCodes?.includes('codex_compaction_contract_mismatch')), '默认规则必须覆盖 Codex compact 输出契约错误')
   assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 只能作为 GPT provider 规则存在')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
@@ -436,6 +495,326 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(genericPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, '通用 OpenAI-compatible 供应商不应继承 GPT cyber_policy 规则')
   assert(anthropicPolicies.some((policy) => policy.protocolCode === ANTHROPIC_PROTOCOL_CODE && policy.match.jsonPathsExists?.includes('error')), 'Anthropic 供应商应加载 Anthropic 协议默认 error 对象规则')
   assert.equal(anthropicPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, 'Anthropic 供应商不应继承 GPT cyber_policy 规则')
+}
+
+{
+  const compactBody = {
+    model: 'gpt-5.5',
+    input: [
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'compact' }]
+      },
+      { type: 'compaction_trigger' }
+    ],
+    stream: true
+  }
+  const request = {
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    body: compactBody,
+    rawBody: Buffer.from(JSON.stringify(compactBody), 'utf8')
+  }
+  assert.equal(codexCompactionExpectedForRequest(request as never), true, '包含 compaction_trigger 的 Responses 请求必须进入 Codex compact 契约检查')
+  assert.equal(codexCompactionExpectedForRequest({ ...request, originalUrl: '/v1/responses/compact', body: {} } as never), true, '/responses/compact 必须进入 Codex compact 契约检查')
+  assert.equal(codexCompactionExpectedForRequest({ ...request, body: { model: 'gpt-5.5', input: 'hello', stream: true }, rawBody: Buffer.from('{"input":"hello"}') } as never), false, '普通 Responses 请求不能误启 compact 契约检查')
+  const malformedCounts = countCodexCompactionOutputItemsFromJson({
+    output: [
+      { type: 'compaction', encrypted_content: null }
+    ]
+  })
+  assert.equal(malformedCounts?.compactionItemCount, 0, '缺少字符串 encrypted_content 的 compaction item 不能算作 Codex 可接受 compact 输出')
+  const aliasCounts = countCodexCompactionOutputItemsFromJson({
+    output: [
+      { type: 'compaction_summary', encrypted_content: 'mock-encrypted-context' }
+    ]
+  })
+  assert.equal(aliasCounts?.compactionItemCount, 1, 'Codex 接受的 compaction_summary 别名必须计入合法 compact 输出')
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_contract',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const first = buffer.pushChunk(sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_msg',
+      type: 'message',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'bad visible text before compact done' }]
+    }
+  }))
+  assert.equal(first.chunks.length, 0, 'Codex compact 契约确认前不应释放非 compact output item')
+  const second = buffer.pushChunk(sseEvent('response.output_item.done', {
+    output_index: 1,
+    item: {
+      id: 'item_call',
+      type: 'function_call',
+      status: 'completed',
+      name: 'mock_tool'
+    }
+  }))
+  assert.equal(second.chunks.length, 0, 'Codex compact 第二个非 compact output item 仍不得提前释放')
+  const completed = buffer.pushChunk(sseEvent('response.completed', {
+    response: {
+      id: 'resp_bad_compaction',
+      status: 'completed'
+    }
+  }))
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.intercepted?.policyId, 'default_codex_compaction_contract', 'Codex compact 完成时缺少 compaction item 必须命中默认契约规则')
+  assert.equal(completed.intercepted?.codexCompactionExpected, true, '响应检查决策应记录 Codex compact 期望上下文')
+  assert(responseBody.includes('upstream_retryable_error'), `Codex compact 契约错误应改写为客户端可重试失败：${responseBody}`)
+  assert(!responseBody.includes('bad visible text before compact done'), `坏 compact output 不应在失败前泄露给客户端：${responseBody}`)
+  assert.equal(shouldRetryResponseInspectionDecisionOnServer(completed.intercepted, {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false
+  } as never), true, 'Codex compact 默认契约规则必须允许服务端换号重试')
+}
+
+{
+  const event = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_generic_message',
+      type: 'message',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'generic compact passthrough' }]
+    }
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies: [],
+    context: {
+      clientProfile: 'generic_openai',
+      accountClientCompatibility: 'openai_standard',
+      codexCompactionExpected: true
+    }
+  })
+  const result = buffer.pushChunk(event)
+  assert.equal(Buffer.concat(result.chunks).toString('utf8'), event.toString('utf8'), '非 Codex 兼容上下文不得启用 Codex compact 暂存检查')
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_valid',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const outputItem = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_compaction',
+      type: 'compaction',
+      status: 'completed',
+      encrypted_content: 'mock-encrypted-context'
+    }
+  })
+  const first = buffer.pushChunk(outputItem)
+  assert.equal(first.chunks.length, 0, '合法 compact output 也必须等 response.completed 后一起释放')
+  const completedEvent = sseEvent('response.completed', {
+    response: {
+      id: 'resp_valid_compaction',
+      status: 'completed'
+    }
+  })
+  const completed = buffer.pushChunk(completedEvent)
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.intercepted, undefined, '恰好 1 个 compaction output item 不应命中契约错误')
+  assert(responseBody.includes('mock-encrypted-context'), `合法 compact output 应在 completed 后释放：${responseBody}`)
+  assert(responseBody.includes('response.completed'), `合法 compact completed 应随暂存事件一起释放：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_malformed_shape',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const outputItem = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_compaction_without_encrypted_content',
+      type: 'compaction',
+      status: 'completed'
+    }
+  })
+  const first = buffer.pushChunk(outputItem)
+  assert.equal(first.chunks.length, 0, '形状不合法的 compact output 在 completed 前也不能释放')
+  const completed = buffer.pushChunk(sseEvent('response.completed', {
+    response: {
+      id: 'resp_malformed_compaction_shape',
+      status: 'completed'
+    }
+  }))
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.intercepted?.policyId, 'default_codex_compaction_contract', '看似 compaction 但缺少 encrypted_content 时必须按 Codex compact 契约错误拦截')
+  assert(responseBody.includes('upstream_retryable_error'), `形状不合法 compact 输出应改写为客户端可重试失败：${responseBody}`)
+  assert(!responseBody.includes('item_compaction_without_encrypted_content'), `形状不合法 compact output 不应泄露给客户端：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_completed_missing_id',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const outputItem = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_compaction_before_bad_completed',
+      type: 'compaction',
+      status: 'completed',
+      encrypted_content: 'mock-encrypted-context'
+    }
+  })
+  const first = buffer.pushChunk(outputItem)
+  assert.equal(first.chunks.length, 0, 'compact completed 结构确认前不能释放合法 output item')
+  const completed = buffer.pushChunk(sseEvent('response.completed', {
+    response: {
+      status: 'completed'
+    }
+  }))
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.intercepted?.policyId, 'default_codex_compaction_contract', 'compact response.completed 缺少 response.id 时必须按契约错误拦截')
+  assert(responseBody.includes('upstream_retryable_error'), `缺少 response.id 的 compact completed 应改写为客户端可重试失败：${responseBody}`)
+  assert(!responseBody.includes('item_compaction_before_bad_completed'), `completed 缺少 response.id 时不得释放暂存 compact output：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_oversized',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const buffer = new OpenAIResponseInspectionBuffer({
+    clientRetryEnabled: true,
+    endpointFamily: 'responses',
+    policies,
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  const oversizedEvent = sseEvent('response.output_item.done', {
+    output_index: 0,
+    item: {
+      id: 'item_compaction_oversized',
+      type: 'compaction',
+      status: 'completed',
+      encrypted_content: 'x'.repeat(300 * 1024)
+    }
+  })
+  const result = buffer.pushChunk(oversizedEvent)
+  const responseBody = Buffer.concat(result.chunks).toString('utf8')
+  assert.equal(result.intercepted?.policyId, 'default_codex_compaction_contract', 'Codex compact 超大单事件必须失败关闭，不能绕过契约检查 parser skip')
+  assert.equal(result.parserSkipped, false, 'Codex compact 契约检查命中时不应进入 parser skip 透传')
+  assert(responseBody.includes('upstream_retryable_error'), `Codex compact 超大事件应改写为可重试失败：${responseBody}`)
+  assert(!responseBody.includes('item_compaction_oversized'), `Codex compact 超大事件不应原样透传：${responseBody}`)
+}
+
+{
+  const policies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_codex_compaction_json',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      clientCompatibility: 'codex_responses',
+      credentials: {}
+    } as never,
+    managementPolicies: listResponseInspectionPolicyDefaultRules()
+  })
+  const frame = codexCompactionContractMismatchFrame({
+    outputItemCount: 2,
+    compactionItemCount: 0,
+    transport: 'json'
+  })
+  assert(frame, 'JSON compact 契约计数不满足时必须生成语义错误帧')
+  const result = inspectResponseSemanticFrames({
+    frames: [frame],
+    policies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  assert.equal(result.decision?.policyId, 'default_codex_compaction_contract', 'JSON compact 契约错误也必须命中默认规则')
 }
 
 {
@@ -797,6 +1176,18 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(failureCalled, true, '终止事件后一批失败应触发失败回调')
   assert.equal(response.writableEnded, true, '终止事件后一批失败应结束客户端响应')
 }
+
+await assertMalformedResponsesSseFailsBeforeDownstreamCommit('response.failed 非 JSON data', [
+  Buffer.from('event: response.failed\ndata: upstream gateway html error\n\n', 'utf8')
+])
+
+await assertMalformedResponsesSseFailsBeforeDownstreamCommit('response.completed 非 JSON data', [
+  Buffer.from('event: response.completed\ndata: not-json\n\n', 'utf8')
+])
+
+await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直到 EOF', [
+  Buffer.from('data: {"type":"response.output_text.delta","delta":"partial"', 'utf8')
+])
 
 {
   const repositorySource = readFileSync(new URL('../../storage/response-inspection-policy.repository.ts', import.meta.url), 'utf8')

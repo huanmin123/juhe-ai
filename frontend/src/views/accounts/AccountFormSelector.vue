@@ -3,7 +3,7 @@
     <div class="account-entry-head">
       <span class="entry-label">账户类型</span>
       <a-segmented
-        :value="accountType"
+        :value="selectedAccountTypeChoiceValue"
         :disabled="editing"
         :options="segmentedTypeOptions"
         @change="handleTypeChange"
@@ -29,13 +29,7 @@
 import { computed } from 'vue'
 import type { MenuProps } from 'ant-design-vue'
 import type { AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
-
-interface AccountTypeChoice {
-  value: AccountType
-  label: string
-  description: string
-  tag: string
-}
+import type { AccountTypeChoice } from './accountEditFormDisplay'
 
 const props = defineProps<{
   accountType: AccountType
@@ -49,7 +43,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'select-provider', providerCode: string): void
-  (event: 'select-type', type: AccountType): void
+  (event: 'select-type-choice', value: string): void
 }>()
 
 const enabledProviders = computed(() => props.providers.filter((provider) => provider.enabled))
@@ -59,8 +53,15 @@ const segmentedTypeOptions = computed(() => props.accountTypeChoices.map((item) 
   value: item.value
 })))
 
+const selectedAccountTypeChoiceValue = computed(() => {
+  const selectedProfileId = props.selectedProtocolProfile?.id ?? ''
+  return props.accountTypeChoices.find((item) => item.type === props.accountType && item.providerProtocolProfileId === selectedProfileId)?.value
+    ?? props.accountTypeChoices.find((item) => item.type === props.accountType)?.value
+    ?? ''
+})
+
 function handleTypeChange(value: string | number): void {
-  emit('select-type', value as AccountType)
+  emit('select-type-choice', String(value))
 }
 
 const handleProviderMenuClick: MenuProps['onClick'] = ({ key }) => {
@@ -69,7 +70,7 @@ const handleProviderMenuClick: MenuProps['onClick'] = ({ key }) => {
 
 function providerAccountTypeCount(provider: ProviderDefinition): number {
   const accountTypes = provider.protocolProfiles.length
-    ? provider.protocolProfiles.flatMap((profile) => profile.accountTypes)
+    ? provider.protocolProfiles.flatMap((profile) => profile.accountTypes.map((type) => `${profile.id}:${type}`))
     : provider.accountTypes
   return new Set(accountTypes).size
 }

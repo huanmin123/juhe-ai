@@ -1,8 +1,8 @@
-export type OpenAIGatewayTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
+export type OpenAIGatewayTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring'
 
 export function normalizeOpenAIGatewayTrafficSource(value: unknown): OpenAIGatewayTrafficSource {
   if (value === undefined) return 'gateway'
-  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest' || value === 'hybrid_scoring') {
     return value
   }
   throw new Error(`非法网关流量来源：${String(value)}`)

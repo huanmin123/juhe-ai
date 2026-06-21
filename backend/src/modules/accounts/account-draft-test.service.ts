@@ -1,8 +1,9 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
+import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson
@@ -24,9 +25,11 @@ import { hashStableValue } from '../deduplication/deduplication.service.js'
 export interface AccountDraftTestAccountRequest {
   providerCode: string
   providerProtocolProfileId?: string
+  connectionType?: string
   name: string
   type: string
   credentials?: Record<string, unknown>
+  clientCompatibility?: AccountClientCompatibility
   supportedModels?: string[]
   modelMappings?: unknown
   concurrencyLimit?: number
@@ -85,8 +88,22 @@ export function prepareAccountDraftTestSnapshot(input: {
   if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
     throw new Error('账户分组无效')
   }
+  const groupProviderProtocolProfileId = group.providerProtocolProfileId?.trim()
+  if (!groupProviderProtocolProfileId) {
+    throw new Error('账户分组协议档案无效')
+  }
   const provider = listProviders().find((item) => item.code === accountInput.providerCode)
-  const providerProfile = provider?.protocolProfiles.find((item) => item.id === (accountInput.providerProtocolProfileId ?? group.providerProtocolProfileId))
+  let providerProtocolProfileId: string
+  try {
+    providerProtocolProfileId = resolveProviderProtocolProfileIdFromConnectionType({
+      providerCode: accountInput.providerCode,
+      providerProtocolProfileId: accountInput.providerProtocolProfileId,
+      connectionType: accountInput.connectionType
+    }) ?? groupProviderProtocolProfileId
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : '账户接入类型无效')
+  }
+  const providerProfile = provider?.protocolProfiles.find((item) => item.id === providerProtocolProfileId)
     ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
   if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type as AccountSummary['type'])) {
     throw new Error(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`)
@@ -109,7 +126,7 @@ export function prepareAccountDraftTestSnapshot(input: {
     : normalizeOpenAIAccountClientCompatibility(
         accountInput.providerCode,
         accountInput.type,
-        undefined,
+        accountInput.clientCompatibility,
         'openai_standard',
         providerProfile
       )
@@ -117,6 +134,7 @@ export function prepareAccountDraftTestSnapshot(input: {
     providerCode: accountInput.providerCode,
     accountType: accountInput.type,
     clientCompatibility,
+    providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion
   })
@@ -269,14 +287,20 @@ function accountCreateActivationFingerprintSnapshot(input: {
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
     account.providerCode,
     account.type,
-    undefined,
+    account.clientCompatibility,
     'openai_standard',
-    { protocolCode: input.protocolCode, protocolVersion: input.protocolVersion }
+    {
+      providerCode: account.providerCode,
+      providerProtocolProfileId: input.providerProtocolProfileId,
+      protocolCode: input.protocolCode,
+      protocolVersion: input.protocolVersion
+    }
   )
   const credentials = normalizeAccountCredentialsForWrite(account.type, draftAccountCredentials(account, input.providerBaseUrl), {
     providerCode: account.providerCode,
     accountType: account.type,
     clientCompatibility,
+    providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion
   })
@@ -306,7 +330,13 @@ function accountCreateActivationFingerprintSnapshot(input: {
 }
 
 function assertDraftEndpointModesCompatible(
-  providerProfile: { protocolCode?: string; protocolVersion?: string },
+  providerProfile: {
+    id?: string
+    providerCode?: string
+    providerProtocolProfileId?: string
+    protocolCode?: string
+    protocolVersion?: string
+  },
   input: {
     modes: readonly AccountSupportedEndpointMode[]
     accountType?: string
@@ -323,6 +353,8 @@ function assertDraftEndpointModesCompatible(
   if (isOpenAIProtocolProfile(providerProfile)) {
     assertOpenAIEndpointModesCompatible({
       modes: input.modes,
+      providerCode: providerProfile.providerCode,
+      providerProtocolProfileId: providerProfile.providerProtocolProfileId ?? providerProfile.id,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
     })
@@ -358,6 +390,8 @@ function accountDraftRequestFromCreate(account: AccountCreateDraftActivationRequ
   return {
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
+    connectionType: account.connectionType,
+    clientCompatibility: account.clientCompatibility,
     name: account.name,
     type: account.type,
     credentials: account.credentials,

@@ -4,7 +4,11 @@ import {
   normalizeApiKeyGroupBindingWeight,
   normalizeApiKeyGroupRouteStrategy
 } from '../domain/api-key-routing.js'
-import type { ApiKeyGroupRouteStrategy } from '../domain/types.js'
+import {
+  normalizeApiKeyRouteMode,
+  parseHybridRoutingConfigJson
+} from '../domain/api-key-hybrid-routing.js'
+import type { ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyRouteMode } from '../domain/types.js'
 import { hashSecret } from './crypto.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 
@@ -16,7 +20,10 @@ export interface GatewayApiKeyRow {
   availability_schedule_active: number
   expires_at: string | null
   quota_limits_json: string | null
+  route_mode: ApiKeyRouteMode
   group_route_strategy: ApiKeyGroupRouteStrategy
+  hybrid_routing_config_json: string | null
+  hybrid_routing_config?: ApiKeyHybridRoutingConfig
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
@@ -30,6 +37,9 @@ export interface GatewayApiKeyGroupBindingRow {
   weight: number
   status: 'active' | 'disabled'
   provider_code: string
+  provider_protocol_profile_id: string
+  protocol_code: string
+  protocol_version: string
   group_enabled: number
 }
 
@@ -78,7 +88,9 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.route_mode,
       api_keys.group_route_strategy,
+      api_keys.hybrid_routing_config_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -97,7 +109,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
+  normalizeGatewayApiKeyRouteFields(row)
   row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
   if (!row.group_bindings.length) {
     gatewayApiKeyCache.delete(keyHash)
@@ -123,7 +135,9 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.route_mode,
       api_keys.group_route_strategy,
+      api_keys.hybrid_routing_config_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -140,13 +154,21 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
   if (row.status !== 'active' || row.availability_schedule_active !== 1) {
     return undefined
   }
-  row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
+  normalizeGatewayApiKeyRouteFields(row)
   row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
   if (!row.group_bindings.length) {
     return undefined
   }
   row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
   return row
+}
+
+function normalizeGatewayApiKeyRouteFields(row: GatewayApiKeyRow): void {
+  row.route_mode = normalizeApiKeyRouteMode(row.route_mode)
+  row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
+  row.hybrid_routing_config = row.route_mode === 'hybrid'
+    ? parseHybridRoutingConfigJson(row.hybrid_routing_config_json)
+    : undefined
 }
 
 export function clearGatewayApiKeyValidationCache(): void {
@@ -215,6 +237,9 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
       api_key_group_bindings.weight,
       api_key_group_bindings.status,
       groups.provider_code,
+      groups.provider_protocol_profile_id,
+      groups.protocol_code,
+      groups.protocol_version,
       groups.enabled AS group_enabled
     FROM api_key_group_bindings
     INNER JOIN groups

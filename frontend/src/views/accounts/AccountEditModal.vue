@@ -22,7 +22,7 @@
         :selected-protocol-profile="selectedProtocolProfile"
         :selected-provider="selectedProvider"
         @select-provider="$emit('select-provider', $event)"
-        @select-type="$emit('select-type', $event)"
+        @select-type-choice="$emit('select-type-choice', $event)"
       />
 
       <AccountBasicInfoSection
@@ -152,7 +152,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountSummary, AccountTagSummary, AccountType, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -169,16 +169,11 @@ import {
   endpointModesEqual
 } from './accountEndpointModes'
 import type { AccountFormModel } from './accountFormTypes'
+import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
-
-interface AccountTypeChoice {
-  value: AccountType
-  label: string
-  description: string
-  tag: string
-}
+import type { AccountTypeChoice } from './accountEditFormDisplay'
 
 interface SelectOption<T = string> {
   label: string
@@ -263,6 +258,7 @@ const advancedConfiguredCount = computed(() => {
   const checks = [
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
+    form.clientCompatibility !== defaultAccountClientCompatibility(form.providerCode, props.providers, form.providerProtocolProfileId),
     !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, form.clientCompatibility, {
       provider: props.selectedProvider,
       protocolProfile: props.selectedProtocolProfile
@@ -302,8 +298,8 @@ defineEmits<{
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void
+  (event: 'select-type-choice', value: string): void
   (event: 'test'): void
-  (event: 'select-type', type: AccountType): void
 }>()
 </script>
 

@@ -26,7 +26,7 @@ export interface RawModelPricing {
   max_output_tokens?: number
   max_tokens?: number
   shutdown_date?: string
-  supported_api_protocols?: ProviderModelApiProtocol[]
+  supported_api_protocols?: readonly ProviderModelApiProtocol[]
   supports_prompt_caching?: boolean
   supports_service_tier?: boolean
   catalog_visible?: boolean

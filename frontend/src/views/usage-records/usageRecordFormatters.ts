@@ -94,11 +94,13 @@ export function trafficSourceText(record: UsageRecordSummary): string {
   return {
     gateway: '网关请求',
     manual_account_test: '账号测试',
-    cooldown_retest: '恢复探活'
+    cooldown_retest: '恢复探活',
+    hybrid_scoring: '混合评分'
   }[record.trafficSource] ?? '网关请求'
 }
 
 export function trafficSourceColor(record: UsageRecordSummary): string {
+  if (record.trafficSource === 'hybrid_scoring') return 'blue'
   if (record.trafficSource === 'cooldown_retest') return 'gold'
   if (record.trafficSource === 'manual_account_test') return 'cyan'
   return 'default'

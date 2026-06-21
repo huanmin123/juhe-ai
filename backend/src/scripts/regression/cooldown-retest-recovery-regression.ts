@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-cooldown-retest-recovery-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -19,6 +20,8 @@ runtimeConfig.processRole = 'worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService] = await Promise.all([
   import('../../storage/database.js'),
@@ -397,6 +400,7 @@ try {
   console.log('cooldown retest recovery regression passed')
 } finally {
   await closeServer(mockOpenAIServer)
+  restoreWorkerParentIpc()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }

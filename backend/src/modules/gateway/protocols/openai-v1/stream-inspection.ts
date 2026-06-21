@@ -66,7 +66,7 @@ export function applyOpenAIStreamUsageFallback(
     estimatedOutputTokens?: number
   }
 ): OpenAIStreamUsageFallbackResult {
-  if (!input.outputReceived || (usage.inputTokens !== undefined && usage.outputTokens !== undefined)) {
+  if (!input.outputReceived || (positiveTokenCount(usage.inputTokens) && positiveTokenCount(usage.outputTokens))) {
     return { usage, estimated: false }
   }
 
@@ -75,7 +75,7 @@ export function applyOpenAIStreamUsageFallback(
   let estimatedInputTokens: number | undefined
   let estimatedOutputTokens: number | undefined
 
-  if (nextUsage.inputTokens === undefined) {
+  if (!positiveTokenCount(nextUsage.inputTokens)) {
     const inputTokens = estimateOpenAIRequestInputTokens(req)
     if (inputTokens !== undefined) {
       nextUsage.inputTokens = inputTokens
@@ -84,7 +84,7 @@ export function applyOpenAIStreamUsageFallback(
     }
   }
 
-  if (nextUsage.outputTokens === undefined) {
+  if (!positiveTokenCount(nextUsage.outputTokens)) {
     const outputTokens = Math.max(1, input.estimatedOutputTokens ?? 0)
     nextUsage.outputTokens = outputTokens
     estimatedOutputTokens = outputTokens
@@ -97,6 +97,10 @@ export function applyOpenAIStreamUsageFallback(
     estimatedInputTokens,
     estimatedOutputTokens
   }
+}
+
+function positiveTokenCount(value: number | undefined): boolean {
+  return typeof value === 'number' && value > 0
 }
 
 export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {

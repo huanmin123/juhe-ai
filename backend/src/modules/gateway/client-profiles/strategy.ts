@@ -5,6 +5,7 @@ import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import { gatewayProtocolResponseProtocolForProfile } from '../protocols/registry.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { requestStream } from '../request/metadata.js'
+import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
 
 export const gatewayClientProfileHeader = 'x-juhe-client-profile'
 
@@ -36,6 +37,7 @@ export interface OpenAIGatewayClientStrategyContext {
   requestClientCompatibility: ClientCompatibilityCapability
   downstreamProtocol: OpenAIGatewayDownstreamProtocol
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
+  codexCompactionExpected: boolean
   codexTurn?: OpenAIGatewayCodexTurnContext
   clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature'
   allowCodexStreamClientRetry: boolean
@@ -66,8 +68,10 @@ export function resolveOpenAIGatewayClientStrategy(
     return resolveAnthropicGatewayClientStrategy(req)
   }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)
+  const codexCompactionExpected = codexCompactionExpectedForRequest(req)
   const codexMetadata = parseCodexTurnMetadata(req.header('x-codex-turn-metadata'))
-  const canUseCodexProfile = downstreamProtocol === 'responses_sse' && Boolean(codexMetadata?.turnId)
+  const canUseCodexProfile = Boolean(codexMetadata?.turnId)
+    && (downstreamProtocol === 'responses_sse' || isOpenAICodexCompactPostRequest(req))
   const codexTurn = canUseCodexProfile && codexMetadata?.turnId
     ? buildCodexTurnContext(req, identity, codexMetadata)
     : undefined
@@ -77,6 +81,7 @@ export function resolveOpenAIGatewayClientStrategy(
     requestClientCompatibility: codexTurn ? 'codex_responses' : 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'openai_mixed',
+    codexCompactionExpected: Boolean(codexTurn) && codexCompactionExpected,
     codexTurn,
     clientProfileSource: codexTurn ? 'codex_turn_metadata' : 'default',
     allowCodexStreamClientRetry: Boolean(codexTurn),
@@ -96,6 +101,7 @@ export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatew
     requestClientCompatibility: claudeCode ? 'claude_code' : 'anthropic_native',
     downstreamProtocol,
     upstreamAdapter: 'anthropic_api_key',
+    codexCompactionExpected: false,
     clientProfileSource: explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
     allowCodexStreamClientRetry: false,
     allowCodexTurnAccountAvoidance: false
@@ -140,6 +146,7 @@ export function openAIGatewayClientStrategyAuditMetadata(
     clientProfileSource: strategy.clientProfileSource,
     downstreamProtocol: strategy.downstreamProtocol,
     upstreamAdapter: strategy.upstreamAdapter,
+    codexCompactionExpected: strategy.codexCompactionExpected,
     codexTurnIdPresent: Boolean(strategy.codexTurn?.turnId),
     codexSessionIdPresent: Boolean(strategy.codexTurn?.sessionId),
     codexThreadIdPresent: Boolean(strategy.codexTurn?.threadId),
@@ -388,6 +395,11 @@ function normalizedOpenAIRequestPath(req: Request): string {
   const rawPath = (req.originalUrl || req.path || '').split('?', 1)[0] || '/'
   const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
   return path.replace(/^\/v1(?=\/|$)/, '') || '/'
+}
+
+function isOpenAICodexCompactPostRequest(req: Request): boolean {
+  return req.method.toUpperCase() === 'POST'
+    && normalizedOpenAIRequestPath(req) === '/responses/compact'
 }
 
 function normalizedAnthropicRequestPath(req: Request): string {

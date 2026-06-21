@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountSummary, ApiKeySummary } from '../../domain/types.js'
+import type { AccountClientCompatibility, AccountStatus, AccountSummary, ApiKeySummary } from '../../domain/types.js'
 
 export interface PublicAccountPushInput {
   targetUsername: string
@@ -6,6 +6,8 @@ export interface PublicAccountPushInput {
   targetGroupName: string
   providerCode: string
   providerProtocolProfileId?: string
+  connectionType?: string
+  clientCompatibility?: AccountClientCompatibility
   name: string
   type: 'api_key'
   baseUrl: string
@@ -25,6 +27,8 @@ export interface PublicAccountUpdateInput {
   targetGroupName?: string
   providerCode?: string
   providerProtocolProfileId?: string
+  connectionType?: string
+  clientCompatibility?: AccountClientCompatibility
   name?: string
   type?: 'api_key'
   baseUrl?: string
@@ -55,9 +59,11 @@ export interface PublicAccountPushResponse {
     name: string
     providerCode: string
     providerProtocolProfileId?: string
+    connectionType?: string
     protocolCode?: string
     protocolVersion?: string
     type: string
+    clientCompatibility: AccountClientCompatibility
     status: AccountStatus
     supportedModels?: string[]
     boundGroupId?: string
@@ -73,6 +79,7 @@ export interface PublicAccountDeleteInput {
   targetGroupName?: string
   providerCode?: string
   providerProtocolProfileId?: string
+  connectionType?: string
 }
 
 export interface PublicAccountDeleteResponse {
@@ -88,6 +95,7 @@ export interface PublicAccountListInput {
   targetGroupName?: string
   providerCode?: string
   providerProtocolProfileId?: string
+  connectionType?: string
   groupId?: string
   keyword?: string
   type?: string
@@ -119,6 +127,7 @@ export interface PublicGroupAddInput {
   name: string
   providerCode: string
   providerProtocolProfileId?: string
+  connectionType?: string
   description?: string
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -130,6 +139,7 @@ export interface PublicGroupUpdateInput {
   name?: string
   providerCode?: string
   providerProtocolProfileId?: string
+  connectionType?: string
   description?: string | null
   enabled?: boolean
   groupType?: 'personal' | 'high_concurrency'
@@ -153,6 +163,7 @@ export interface PublicGroupListInput {
   keyword?: string
   providerCode?: string
   providerProtocolProfileId?: string
+  connectionType?: string
   page?: number
   pageSize?: number
 }
@@ -233,6 +244,7 @@ export interface PublicGroupSummary {
   name: string
   providerCode: string
   providerProtocolProfileId?: string
+  connectionType?: string
   protocolCode?: string
   protocolVersion?: string
   description?: string

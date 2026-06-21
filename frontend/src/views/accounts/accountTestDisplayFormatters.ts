@@ -1,4 +1,5 @@
 import type { AccountClientCompatibility, AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import { providerDisplayName } from '@/shared/providerDisplay'
 
 import type { AccountBatchTestItem, AccountTestClientCompatibility } from './accountTestFlow'
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
@@ -318,7 +319,7 @@ export function accountTestBatchItemMessage(item: AccountBatchTestItem): string 
   if (item.message) return item.message
   if (item.result?.message) return item.result.message
   if (item.status === 'queued') return '等待后台 worker 接收'
-  if (item.status === 'running') return accountProviderProtocolKind(item.account) === 'anthropic_v1' ? '正在连接 Anthropic API' : '正在连接 OpenAI API'
+  if (item.status === 'running') return `正在连接 ${providerDisplayName(item.account.providerCode)} API`
   if (item.status === 'stopped') return '已停止测试'
   return '等待开始测试'
 }

@@ -22,7 +22,7 @@ logger.level = 'silent'
 const [
   databaseModule,
   catalogService,
-  { providersRouter },
+  { providersRouter, dedupeProviderModelOptions },
   { requireAuth },
   { requestContextMiddleware },
   repositories
@@ -140,7 +140,31 @@ try {
   assertCatalogReleaseDateDescending(openAICompatibleCatalog, 'OpenAI 兼容聚合模型目录')
   assert(openAICompatibleCatalog.some((item) => item.model === 'gpt-regression-global' && item.providerCode === 'gpt'), 'OpenAI 兼容模型目录应聚合 GPT 的 OpenAI v1 模型')
   assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-global' && item.providerCode === 'openai'), 'OpenAI 兼容模型目录应保留自身模型')
+  assert.equal(openAICompatibleCatalog.some((item) => item.providerCode === 'deepseek'), false, 'OpenAI 兼容模型目录不应混入 DeepSeek 独立供应商模型')
+  assert.equal(openAICompatibleCatalog.some((item) => item.providerCode === 'glm'), false, 'OpenAI 兼容模型目录不应混入 GLM 独立供应商模型')
   assert.equal(openAICompatibleCatalog[0]?.model, 'openai-regression-global', '模型目录应按发布时间倒序展示最新模型')
+
+  const dedupedProviderModelOptions = dedupeProviderModelOptions([
+    { providerCode: 'gpt', model: 'shared-model' },
+    { providerCode: 'deepseek', model: 'shared-model' },
+    { providerCode: ' GPT ', model: ' shared-model ' },
+    { providerCode: '', model: 'shared-model' },
+    { providerCode: 'glm', model: ' ' }
+  ])
+  assert.deepEqual(dedupedProviderModelOptions, [
+    { providerCode: 'gpt', model: 'shared-model' },
+    { providerCode: 'deepseek', model: 'shared-model' }
+  ], '供应商模型选项必须按 providerCode + model 去重，不能吞掉跨供应商同名模型')
+
+  const deepSeekCatalog = catalogService.listProviderModelCatalog({
+    providerCode: 'deepseek',
+    systemAccountId: 'sys_admin'
+  })
+  const deepSeekModels = new Set(deepSeekCatalog.map((item) => item.model))
+  assert(deepSeekModels.has('deepseek-v4-flash'), 'DeepSeek 模型目录应包含官方 V4 Flash')
+  assert(deepSeekModels.has('deepseek-v4-pro'), 'DeepSeek 模型目录应包含官方 V4 Pro')
+  assert(deepSeekModels.has('deepseek-ai-v4-flash'), 'DeepSeek 模型目录应包含上游 deepseek-ai V4 Flash 别名')
+  assert(deepSeekModels.has('deepseek-ai-v4-pro'), 'DeepSeek 模型目录应包含上游 deepseek-ai V4 Pro 别名')
 
   const managementCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',

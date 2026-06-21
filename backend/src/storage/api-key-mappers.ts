@@ -1,5 +1,9 @@
 import type { ApiKeyGroupBindingSummary, ApiKeySummary } from '../domain/types.js'
 import { normalizeApiKeyGroupRouteStrategy } from '../domain/api-key-routing.js'
+import {
+  normalizeApiKeyRouteMode,
+  parseHybridRoutingConfigJson
+} from '../domain/api-key-hybrid-routing.js'
 import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
 import { loadApiKeyGroupBindingSummariesByApiKeyIds } from './api-key-group-bindings.repository.js'
@@ -18,7 +22,9 @@ export interface ApiKeyRow {
   key_suffix: string
   key_secret_encrypted?: string | null
   status: 'active' | 'disabled'
+  route_mode?: ApiKeySummary['routeMode'] | null
   group_route_strategy?: ApiKeySummary['groupRouteStrategy'] | null
+  hybrid_routing_config_json?: string | null
   group_owner_system_account_name?: string | null
   expires_at: string | null
   quota_limits_json: string | null
@@ -50,7 +56,11 @@ export function apiKeySummariesFromRows(
       keySuffix: row.key_suffix,
       key: includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
       status: row.status,
+      routeMode: normalizeApiKeyRouteMode(row.route_mode),
       groupRouteStrategy: normalizeApiKeyGroupRouteStrategy(row.group_route_strategy),
+      hybridRoutingConfig: row.route_mode === 'hybrid'
+        ? parseHybridRoutingConfigJson(row.hybrid_routing_config_json)
+        : undefined,
       groupBindings,
       groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
       expiresAt: row.expires_at ?? undefined,

@@ -648,6 +648,10 @@ const nonStreamBodyInterruptedRetrySuccessBody = JSON.stringify({
   ],
   usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 })
+const nonStreamBodyInterruptedDownstreamChunk = Buffer.concat([
+  Buffer.from('{"id":"chatcmpl-partial","object":"chat.completion","padding":"', 'utf8'),
+  Buffer.alloc(1024 * 1024 + 1, 'x')
+])
 const singleAccountLocalSuppressionShouldNotHitBody = JSON.stringify({
   id: 'chatcmpl-single-account-local-suppression-should-not-hit',
   object: 'chat.completion',
@@ -763,7 +767,7 @@ function createRejectedRequestUpstream(): http.Server {
       if (authorization.includes('sk-request-failure-1')) {
         nonStreamBodyInterruptedFirstAccountHitCount += 1
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.write('{"id":"chatcmpl-partial",')
+        res.write(nonStreamBodyInterruptedDownstreamChunk)
         setTimeout(() => {
           res.destroy(new Error('non stream body interrupted regression'))
         }, 20).unref()

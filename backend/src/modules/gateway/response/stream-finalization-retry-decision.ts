@@ -10,8 +10,13 @@ import {
 import type { StreamRetryResponseState } from './stream-retry-decision.js'
 import type { StreamPipeResult } from './stream.js'
 
+const serverRetryableSystemDefaultResponseInspectionPolicyIds = new Set([
+  'default_codex_compaction_contract'
+])
+
 export type StreamServerRetryReason =
   | 'response_inspection'
+  | 'upstream_protocol_failure'
   | 'pre_commit_stream_failure'
   | 'codex_pre_commit_stream_failure'
 
@@ -27,12 +32,24 @@ export function shouldRetryResponseInspectionDecisionOnServer(
   decision: ResponseInspectionDecision | undefined,
   response: StreamRetryResponseState
 ): decision is ResponseInspectionDecision {
-  return decision?.reason === 'configured_response_policy'
+  const serverRetryableSystemDefault = isServerRetryableSystemDefaultResponseInspectionDecision(decision)
+  return decision !== undefined
+    && (decision.reason === 'configured_response_policy' || serverRetryableSystemDefault)
     && decision.retryEnabled === true
-    && decision.policySource !== 'system_default'
+    && (
+      decision.policySource !== 'system_default'
+      || serverRetryableSystemDefault
+    )
     && !response.headersSent
     && !response.writableEnded
     && !response.destroyed
+}
+
+function isServerRetryableSystemDefaultResponseInspectionDecision(
+  decision: ResponseInspectionDecision | undefined
+): boolean {
+  return decision?.policySource === 'system_default'
+    && serverRetryableSystemDefaultResponseInspectionPolicyIds.has(decision.policyId ?? '')
 }
 
 export function shouldRetryCodexPreCommitStreamFailureOnServer(

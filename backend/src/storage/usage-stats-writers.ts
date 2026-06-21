@@ -115,7 +115,9 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   if (row.success !== 1) {
     upsertUsageErrorBuckets(database, row, timeKeys, updatedAt)
   }
-  upsertAccountQualityMinuteStats(database, row, updatedAt)
+  if (shouldRecordAccountQualityStats(row)) {
+    upsertAccountQualityMinuteStats(database, row, updatedAt)
+  }
 }
 
 export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
@@ -134,7 +136,13 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
   if (row.success !== 1) {
     subtractUsageErrorBuckets(database, row, timeKeys, updatedAt)
   }
-  subtractAccountQualityMinuteStats(database, row, updatedAt)
+  if (shouldRecordAccountQualityStats(row)) {
+    subtractAccountQualityMinuteStats(database, row, updatedAt)
+  }
+}
+
+function shouldRecordAccountQualityStats(row: UsageStatsRecordRow): boolean {
+  return row.traffic_source !== 'cooldown_retest' && row.traffic_source !== 'hybrid_scoring'
 }
 
 function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {

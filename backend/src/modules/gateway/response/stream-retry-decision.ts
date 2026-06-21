@@ -1,6 +1,10 @@
 import type { ResponseInspectionDecision } from './inspection.js'
 import { gatewayStreamClientRetryErrorCode } from './responses.js'
 
+const serverRetryableSystemDefaultResponseInspectionPolicyIds = new Set([
+  'default_codex_compaction_contract'
+])
+
 export interface StreamRetryResponseState {
   headersSent: boolean
   writableEnded: boolean
@@ -23,13 +27,25 @@ export function shouldReturnResponseInspectionBeforeDownstreamWrite(
   response: StreamRetryResponseState,
   totalResponseBytes: number
 ): boolean {
-  return decision?.reason === 'configured_response_policy'
+  const serverRetryableSystemDefault = isServerRetryableSystemDefaultResponseInspectionDecision(decision)
+  return decision !== undefined
+    && (decision.reason === 'configured_response_policy' || serverRetryableSystemDefault)
     && decision.retryEnabled === true
-    && decision.policySource !== 'system_default'
+    && (
+      decision.policySource !== 'system_default'
+      || serverRetryableSystemDefault
+    )
     && totalResponseBytes === 0
     && !response.headersSent
     && !response.writableEnded
     && !response.destroyed
+}
+
+function isServerRetryableSystemDefaultResponseInspectionDecision(
+  decision: ResponseInspectionDecision | undefined
+): boolean {
+  return decision?.policySource === 'system_default'
+    && serverRetryableSystemDefaultResponseInspectionPolicyIds.has(decision.policyId ?? '')
 }
 
 export function shouldInterruptCommittedGenericStream(clientRetryEnabled: boolean, downstreamBytesWritten: number): boolean {

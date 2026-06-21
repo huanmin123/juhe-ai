@@ -29,7 +29,7 @@ export function providerScrollXForScope(isManagementView: boolean): number {
 
 export function providerEmptyDescriptionForScope(isManagementView: boolean): string {
   return isManagementView
-    ? '当前内置 OpenAI 兼容、GPT 与 Anthropic 供应商，后续新供应商会在这里扩展。'
+    ? '当前内置 OpenAI 兼容、GPT、DeepSeek、智谱 GLM 与 Anthropic 供应商，后续新供应商会在这里扩展。'
     : '当前没有可用模型目录。'
 }
 

@@ -374,17 +374,19 @@ function openAIAccountSecretFromRow(
   const protocolCode = openAIAccountResourceProtocolCode(row)
   const protocolVersion = openAIAccountResourceProtocolVersion(row)
   const clientCompatibility = openAIAccountResourceClientCompatibility(row)
+  const providerProtocolProfileId = openAIAccountResourceProviderProtocolProfileId(row)
   const supportedEndpointModes = normalizeGatewayEndpointModesForRuntime(credentials.supported_endpoint_modes, {
     providerCode,
     accountType: resourceType,
     clientCompatibility,
+    providerProtocolProfileId,
     protocolCode,
     protocolVersion
   })
   return {
     id: row.id,
     providerCode,
-    providerProtocolProfileId: openAIAccountResourceProviderProtocolProfileId(row),
+    providerProtocolProfileId,
     protocolCode,
     protocolVersion,
     systemAccountId: row.system_account_id,
@@ -448,6 +450,7 @@ function normalizeGatewayEndpointModesForRuntime(
     providerCode: string
     accountType: AccountType
     clientCompatibility: AccountClientCompatibility
+    providerProtocolProfileId: string
     protocolCode: string
     protocolVersion: string
   }

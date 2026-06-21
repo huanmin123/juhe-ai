@@ -4,18 +4,19 @@ import {
   allAccountEndpointModes,
   anthropicAccountEndpointModes,
   defaultEndpointModesForAccount,
+  profileSupportsCodexResponsesChatBridge,
   responsesEndpointModes
 } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
-  { label: 'Chat JSON', value: 'chat_json' },
-  { label: 'Chat SSE', value: 'chat_sse' },
+  { label: '对话 JSON', value: 'chat_json' },
+  { label: '对话流式', value: 'chat_sse' },
   { label: 'Responses JSON', value: 'responses_json' },
-  { label: 'Responses SSE', value: 'responses_sse' },
+  { label: 'Responses 流式', value: 'responses_sse' },
   { label: 'Messages JSON', value: 'messages_json' },
-  { label: 'Messages SSE', value: 'messages_sse' },
-  { label: 'Count Tokens', value: 'message_token_counting' }
+  { label: 'Messages 流式', value: 'messages_sse' },
+  { label: 'Token 计数', value: 'message_token_counting' }
 ]
 
 export function defaultAccountEndpointModes(
@@ -60,8 +61,17 @@ export function validateAccountEndpointModes(input: {
   modes: AccountSupportedEndpointMode[]
   type: AccountType
   clientCompatibility: AccountClientCompatibility
+  allowedModes?: AccountSupportedEndpointMode[]
+  profile?: AccountProviderProfileLike
 }): string | undefined {
   if (!input.modes.length) return '请至少选择一项接口能力'
+  if (input.allowedModes?.length) {
+    const allowedModes = new Set(input.allowedModes)
+    const unsupportedModes = input.modes.filter((mode) => !allowedModes.has(mode))
+    if (unsupportedModes.length) {
+      return `当前供应商协议不支持接口能力：${unsupportedModes.map(accountEndpointModeLabel).join('、')}`
+    }
+  }
   const hasAnthropicMode = input.modes.some((mode) => anthropicAccountEndpointModes.includes(mode))
   const hasOpenAIMode = input.modes.some((mode) => !anthropicAccountEndpointModes.includes(mode))
   if (hasAnthropicMode && hasOpenAIMode) {
@@ -78,6 +88,12 @@ export function validateAccountEndpointModes(input: {
       return 'OAuth 账户必须支持 Responses SSE'
     }
   }
+  if (input.clientCompatibility === 'codex_responses' && hasOpenAIMode && profileSupportsCodexResponsesChatBridge(input.profile)) {
+    if (!input.modes.includes('chat_sse')) {
+      return 'Codex Responses 桥接能力必须启用 Chat SSE'
+    }
+    return undefined
+  }
   if (input.clientCompatibility === 'codex_responses' && hasOpenAIMode && !input.modes.includes('responses_sse')) {
     return 'Codex Responses 兼容能力必须启用 Responses SSE'
   }
@@ -91,8 +107,11 @@ export function endpointModesEqual(left: AccountSupportedEndpointMode[], right: 
 export function accountEndpointModeText(value: unknown): string {
   const modes = normalizeAccountEndpointModes(value, [])
   if (!modes.length) return '-'
-  const labels = new Map(accountEndpointModeOptions.map((item) => [item.value, item.label]))
-  return modes.map((mode) => labels.get(mode) ?? mode).join('、')
+  return modes.map(accountEndpointModeLabel).join('、')
+}
+
+function accountEndpointModeLabel(mode: AccountSupportedEndpointMode): string {
+  return accountEndpointModeOptions.find((item) => item.value === mode)?.label ?? mode
 }
 
 function stableEndpointModeKey(value: AccountSupportedEndpointMode[]): string {

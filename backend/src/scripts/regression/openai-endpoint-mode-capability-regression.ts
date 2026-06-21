@@ -4,6 +4,10 @@ import { resolve } from 'node:path'
 import type { Request } from 'express'
 
 import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
+import {
   defaultOpenAIEndpointModes,
   normalizeOpenAIEndpointModesForWrite
 } from '../../domain/openai-endpoint-modes.js'
@@ -19,9 +23,34 @@ assert.deepEqual(
   '通用 OpenAI 兼容 API Key 默认只启用 Chat JSON/SSE'
 )
 assert.deepEqual(
+  defaultOpenAIEndpointModes({ providerCode: 'deepseek', accountType: 'api_key' }),
+  ['chat_json', 'chat_sse'],
+  'DeepSeek API Key 默认只启用 Chat JSON/SSE'
+)
+assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'openai', accountType: 'api_key', clientCompatibility: 'codex_responses' }),
   ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
   'Codex Responses 兼容能力默认必须包含 Responses SSE'
+)
+assert.deepEqual(
+  defaultOpenAIEndpointModes({
+    providerCode: 'glm',
+    providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
+    accountType: 'api_key',
+    clientCompatibility: 'codex_responses'
+  }),
+  ['chat_json', 'chat_sse'],
+  'GLM Coding Codex bridge 账号默认仍保存真实 Chat JSON/SSE 能力'
+)
+assert.deepEqual(
+  defaultOpenAIEndpointModes({
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    accountType: 'api_key',
+    clientCompatibility: 'codex_responses'
+  }),
+  ['chat_json', 'chat_sse'],
+  'DeepSeek Codex bridge 账号默认仍保存真实 Chat JSON/SSE 能力'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'gpt', accountType: 'api_key' }),
@@ -73,6 +102,32 @@ assert.deepEqual(
   'GPT API Key 凭据归一化应通过 provider driver 使用 OpenAI v1 四项默认能力'
 )
 assert.deepEqual(
+  normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-deepseek', base_url: 'https://api.deepseek.com' }, {
+    providerCode: 'deepseek',
+    accountType: 'api_key',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    providerProtocolProfileId: 'profile_deepseek_openai_v1'
+  }).supported_endpoint_modes,
+  ['chat_json', 'chat_sse'],
+  'DeepSeek API Key 凭据归一化应通过 provider driver 使用 Chat 默认能力'
+)
+assert.throws(
+  () => normalizeAccountCredentialsForWrite('api_key', {
+    api_key: 'sk-deepseek',
+    base_url: 'https://api.deepseek.com',
+    supported_endpoint_modes: ['responses_json']
+  }, {
+    providerCode: 'deepseek',
+    accountType: 'api_key',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    providerProtocolProfileId: 'profile_deepseek_openai_v1'
+  }),
+  /DeepSeek 账户接口能力只支持 Chat JSON 或 Chat SSE/,
+  'DeepSeek API Key 凭据归一化应拒绝 Responses 能力'
+)
+assert.deepEqual(
   normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ant', base_url: 'https://api.anthropic.com/v1' }, {
     providerCode: 'anthropic',
     accountType: 'api_key',
@@ -87,6 +142,7 @@ const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])
 const responsesOnly = account('responses-only', ['responses_json', 'responses_sse'])
 const jsonOnly = account('json-only', ['chat_json', 'responses_json'])
 const codexCapableApiKey = gptApiKeyAccount('gpt-api-key-codex', ['responses_json', 'responses_sse'])
+const deepSeekCodexBridgeAccount = deepSeekApiKeyAccount('deepseek-codex-bridge', ['chat_json', 'chat_sse'], 'codex_responses')
 
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true), [chatOnly, responsesOnly, jsonOnly]).accounts.map((item) => item.id),
@@ -127,6 +183,20 @@ assert.deepEqual(
   ['gpt-api-key-codex', 'oauth-codex'],
   'Codex Responses 请求只能命中具备 Codex 兼容能力的账号'
 )
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, deepSeekCodexBridgeAccount], {
+    requestClientCompatibility: 'codex_responses'
+  }).accounts.map((item) => item.id),
+  ['deepseek-codex-bridge'],
+  'Codex Responses 请求应能命中 DeepSeek Chat SSE 桥接账号'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [deepSeekCodexBridgeAccount], {
+    requestClientCompatibility: 'openai_standard'
+  }).accounts.map((item) => item.id),
+  [],
+  '普通 OpenAI Responses 请求不应命中 DeepSeek Chat SSE 桥接账号'
+)
 
 const accountCredentialsNormalizationSource = readFileSync(resolve('src/storage/account-credentials-normalization.ts'), 'utf8')
 assert.match(accountCredentialsNormalizationSource, /providerAccountCredentialDriverForContext/)
@@ -136,6 +206,7 @@ assert.doesNotMatch(accountCredentialsNormalizationSource, /isAnthropicProtocolP
 const accountCredentialDriverRegistrySource = readFileSync(resolve('src/modules/providers/drivers/account-credentials.registry.ts'), 'utf8')
 assert.match(accountCredentialDriverRegistrySource, /openAICompatibleAccountCredentialDriver/)
 assert.match(accountCredentialDriverRegistrySource, /gptAccountCredentialDriver/)
+assert.match(accountCredentialDriverRegistrySource, /deepSeekAccountCredentialDriver/)
 assert.match(accountCredentialDriverRegistrySource, /anthropicAccountCredentialDriver/)
 
 console.log('OpenAI 接口能力矩阵回归通过：默认值、写入校验和候选账号过滤均符合预期')
@@ -170,6 +241,16 @@ function gptApiKeyAccount(id: string, modes: AccountSupportedEndpointMode[]): Up
     providerCode: 'gpt',
     providerProtocolProfileId: 'profile_gpt_openai_v1',
     clientCompatibility: 'codex_responses'
+  } as unknown as UpstreamAccount
+}
+
+function deepSeekApiKeyAccount(id: string, modes: AccountSupportedEndpointMode[], clientCompatibility: 'openai_standard' | 'codex_responses'): UpstreamAccount {
+  return {
+    ...account(id, modes),
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    baseUrl: 'https://api.deepseek.com',
+    clientCompatibility
   } as unknown as UpstreamAccount
 }
 

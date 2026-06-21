@@ -85,6 +85,7 @@ try {
   })
   const session = repositories.createSession(admin.id, 1)
   const cookie = `juhe_ai_session=${session.token}`
+  prepareMainDatabaseSchemasForChildServer()
   databaseModule.closeStorageDatabases()
 
   backendProcess = startBackendServer(backendPort)
@@ -276,7 +277,7 @@ function startBackendServer(port: number): ChildProcess {
       JUHE_AI_SECRET: runtimeConfig.secret,
       JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true',
       JUHE_AI_LOG_LEVEL: 'warn',
-      JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
+      JUHE_AI_LOG_CONSOLE_ENABLED: process.env.JUHE_AI_REGRESSION_SERVER_LOG_CONSOLE ?? 'false',
       JUHE_AI_LOG_FILE_ENABLED: 'false'
     },
     shell: useShellSpawn,
@@ -289,6 +290,11 @@ function startBackendServer(port: number): ChildProcess {
     process.stderr.write(`[edge-test-backend] ${String(chunk)}`)
   })
   return child
+}
+
+function prepareMainDatabaseSchemasForChildServer(): void {
+  databaseModule.getDatasetDatabase()
+  databaseModule.getStatsDatabase()
 }
 
 async function waitForHealth(baseUrl: string, child: ChildProcess): Promise<void> {

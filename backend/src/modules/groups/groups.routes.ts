@@ -69,6 +69,7 @@ function parseGroupOptionListOptions(query: Record<string, unknown>) {
     ids,
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
+    providerProtocolProfileId: optionalQueryText(query.providerProtocolProfileId),
     limit: optionLimitValue(integerQueryValue(query.limit)),
     manageableOnly: booleanQueryValue(query.manageableOnly),
     preferDefault: booleanQueryValue(query.preferDefault)

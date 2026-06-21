@@ -456,6 +456,7 @@ export const externalPublicApiDocItems = [
         name: '公益站-青芽主通道',
         providerCode: GPT_VENDOR_CODE,
         type: 'api_key',
+        clientCompatibility: 'openai_standard',
         status: 'active',
         supportedModels: ['gpt-5.5'],
         boundGroupId: 'grp_xxx',
@@ -754,6 +755,13 @@ export const externalPublicApiDocItems = [
         example: GPT_VENDOR_CODE
       },
       {
+        name: 'clientCompatibility',
+        type: 'string',
+        required: false,
+        description: '客户端兼容模式：openai_standard 或 codex_responses；未提供时按供应商档案默认。GLM Coding 只有显式传 codex_responses 才启用 Codex Responses 转 Chat bridge，openai_standard 不支持 Codex bridge。',
+        example: 'openai_standard'
+      },
+      {
         name: 'name',
         type: 'string',
         required: true,
@@ -826,6 +834,7 @@ export const externalPublicApiDocItems = [
       targetDisplayName: '欢民',
       targetGroupName: '福利',
       providerCode: GPT_VENDOR_CODE,
+      clientCompatibility: 'openai_standard',
       name: '公益站-青芽主通道',
       type: 'api_key',
       baseUrl: 'https://api.openai.com/v1',
@@ -861,6 +870,7 @@ export const externalPublicApiDocItems = [
         name: '公益站-青芽主通道',
         providerCode: GPT_VENDOR_CODE,
         type: 'api_key',
+        clientCompatibility: 'openai_standard',
         status: 'pending_test',
         supportedModels: ['gpt-5.5', 'gpt-5.4'],
         boundGroupId: 'grp_xxx',
@@ -889,6 +899,7 @@ export const externalPublicApiDocItems = [
       { name: 'targetGroupName', type: 'string', required: false, description: '可选校验条件。提供时账号必须在该目标分组内。', example: '福利' },
       { name: 'providerCode', type: 'string', required: false, description: '可选校验条件。提供时必须与账号供应商一致。', example: GPT_VENDOR_CODE },
       { name: 'providerProtocolProfileId', type: 'string', required: false, description: '可选校验条件。提供时必须与账号协议档案一致。', example: 'profile_gpt_openai_v1' },
+      { name: 'clientCompatibility', type: 'string', required: false, description: '客户端兼容模式；提供时覆盖原值。GLM Coding 只有显式设为 codex_responses 才启用 Codex bridge，设为 openai_standard 时不支持 Codex bridge。', example: 'openai_standard' },
       { name: 'name', type: 'string', required: false, description: '账号名称；提供时覆盖原值。', example: '公益站-青芽主通道' },
       { name: 'type', type: 'string', required: false, description: '可选校验字段；当前公开修改只支持 api_key。', example: 'api_key' },
       { name: 'baseUrl', type: 'string', required: false, description: 'OpenAI 兼容 Base URL；提供时覆盖原值，未提供时保留原值。', example: 'https://api.openai.com/v1' },
@@ -903,6 +914,7 @@ export const externalPublicApiDocItems = [
     example: {
       accountId: 'acc_xxx',
       apiKey: 'sk-...',
+      clientCompatibility: 'openai_standard',
       supportedModels: ['gpt-5.5', 'gpt-5.4'],
       concurrencyLimit: 20,
       priority: 0,
@@ -930,6 +942,7 @@ export const externalPublicApiDocItems = [
         name: '公益站-青芽主通道',
         providerCode: GPT_VENDOR_CODE,
         type: 'api_key',
+        clientCompatibility: 'openai_standard',
         status: 'disabled',
         supportedModels: ['gpt-5.5', 'gpt-5.4'],
         boundGroupId: 'grp_xxx',

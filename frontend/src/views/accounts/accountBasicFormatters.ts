@@ -1,5 +1,11 @@
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import { isGptVendorCode } from '@/shared/providerProtocol'
+import {
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  isDeepSeekProviderCode,
+  isGlmProviderCode,
+  isGptVendorCode
+} from '@/shared/providerProtocol'
 import type { AccountClientCompatibility, AccountSummary, AccountType } from '@/types/domain'
 
 function hasAuthorizedAccessType(account: AccountSummary): boolean {
@@ -43,9 +49,13 @@ export function accountTypeTitle(providerName: string, type: AccountType) {
   return `${providerName} ${type}`.trim()
 }
 
-export function accountTypeDescription(providerCode: string, type: AccountType) {
+export function accountTypeDescription(providerCode: string, type: AccountType, providerProtocolProfileId?: string) {
   if (isGptVendorCode(providerCode) && type === 'oauth') return '适合 GPT / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
   if (isGptVendorCode(providerCode) && type === 'api_key') return '适合 GPT 官方或 OpenAI v1 兼容透传，可配置 Base URL。'
+  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '适合智谱通用 GLM API Key；默认只启用 Chat JSON/SSE，不承接 Responses。'
+  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return '适合 GLM Coding Plan Key；使用 Coding 专用 Base URL，可在客户端兼容中显式选择 Codex Responses 桥接。'
+  if (isGlmProviderCode(providerCode) && type === 'api_key') return '适合智谱 GLM API Key；通用 API 与 Coding Plan 需要选择对应接入档案。'
+  if (isDeepSeekProviderCode(providerCode) && type === 'api_key') return '适合 DeepSeek OpenAI-compatible Chat Completions 直连；默认只启用 Chat JSON/SSE。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 

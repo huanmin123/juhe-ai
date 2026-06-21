@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  DEEPSEEK_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -67,8 +69,12 @@ try {
   const createdOpenAICompatibleDefault = database
     .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
     .get(missingDefaultUserId, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID) as { id?: string } | undefined
+  const createdDeepSeekDefault = database
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, DEEPSEEK_OPENAI_V1_PROFILE_ID) as { id?: string } | undefined
   assert(createdDefault?.id, '缺失默认 GPT 分组时应创建 is_default = 1 的当前默认分组')
   assert(createdOpenAICompatibleDefault?.id, '缺失默认 OpenAI 兼容分组时应创建 is_default = 1 的当前默认分组')
+  assert(createdDeepSeekDefault?.id, '缺失默认 DeepSeek 分组时应创建 is_default = 1 的当前默认分组')
   assert.equal(defaultGroupRepository.defaultGptGroupIdForSystemAccount(missingDefaultUserId), createdDefault.id)
 
   await assertGroupProviderCodeUsesProviderLayer()
@@ -112,6 +118,13 @@ async function assertGroupProviderCodeUsesProviderLayer(): Promise<void> {
   }, access)
   assert.equal(group.providerCode, GPT_VENDOR_CODE, 'GPT 分组创建应落在 GPT 子供应商层')
   assert.equal(group.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, 'GPT 分组应使用 GPT 专属 OpenAI v1 档案')
+
+  const deepSeekGroup = repositories.createGroup({
+    name: 'DeepSeek 供应商分组回归',
+    providerCode: DEEPSEEK_PROVIDER_CODE
+  }, access)
+  assert.equal(deepSeekGroup.providerCode, DEEPSEEK_PROVIDER_CODE, 'DeepSeek 分组创建应落在 DeepSeek 独立供应商层')
+  assert.equal(deepSeekGroup.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek 分组应使用 DeepSeek OpenAI v1 档案')
 
   const moved = repositories.updateGroup(group.id, {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE

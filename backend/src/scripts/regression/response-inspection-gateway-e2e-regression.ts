@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { gzipSync } from 'node:zlib'
 
 import express from 'express'
 
@@ -11,7 +12,15 @@ import { OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../dom
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
-type ScenarioName = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'stream_requested_json'
+type ScenarioName =
+  | 'chat_json'
+  | 'chat_sse'
+  | 'responses_json'
+  | 'responses_sse'
+  | 'stream_requested_json'
+  | 'codex_compaction_sse'
+  | 'codex_incomplete_sse'
+  | 'codex_broken_gzip_sse'
 
 interface UpstreamHit {
   path: string
@@ -92,6 +101,10 @@ try {
     await runScenario(baseUrl, upstreamBaseUrl, 'responses_json')
     await runScenario(baseUrl, upstreamBaseUrl, 'responses_sse')
     await runScenario(baseUrl, upstreamBaseUrl, 'stream_requested_json')
+    await runScenario(baseUrl, upstreamBaseUrl, 'codex_compaction_sse')
+    await runScenario(baseUrl, upstreamBaseUrl, 'codex_incomplete_sse')
+    await runScenario(baseUrl, upstreamBaseUrl, 'codex_broken_gzip_sse')
+    await runCodexBrokenGzipExhaustedScenario(baseUrl, upstreamBaseUrl)
 
     console.log('response inspection gateway e2e regression passed')
   } finally {
@@ -108,6 +121,7 @@ try {
 
 async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: ScenarioName): Promise<void> {
   upstreamHits.length = 0
+  const clientCompatibility = isCodexScenario(scenario) ? 'codex_responses' : 'openai_standard'
   const group = repositories.createGroup({
     name: `响应检查 E2E ${scenario}`,
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
@@ -122,6 +136,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
+    clientCompatibility,
     groupId: group.id,
     status: 'active',
     schedulable: true,
@@ -136,6 +151,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
+    clientCompatibility,
     groupId: group.id,
     status: 'active',
     schedulable: true,
@@ -151,13 +167,25 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   const endpoint = scenario.startsWith('chat') || scenario === 'stream_requested_json'
     ? '/v1/chat/completions'
     : '/v1/responses'
-  const stream = scenario === 'chat_sse' || scenario === 'responses_sse' || scenario === 'stream_requested_json'
+  const stream = scenario === 'chat_sse'
+    || scenario === 'responses_sse'
+    || scenario === 'stream_requested_json'
+    || isCodexScenario(scenario)
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${apiKey.key}`,
+    'content-type': 'application/json'
+  }
+  if (isCodexScenario(scenario)) {
+    headers.accept = 'text/event-stream'
+    headers['x-codex-turn-metadata'] = JSON.stringify({
+      turn_id: `turn_${scenario}`,
+      session_id: `session_${scenario}`,
+      thread_id: `thread_${scenario}`
+    })
+  }
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey.key}`,
-      'content-type': 'application/json'
-    },
+    headers,
     body: JSON.stringify(requestBodyForScenario(scenario, stream))
   })
   const responseText = await response.text()
@@ -168,7 +196,29 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   assert.equal(upstreamHits.some((hit) => hit.bodyText.includes('公益服务器压力很大')), false, `${scenario} 客户端请求体不应携带污染文本`)
   assert(!responseText.includes('公益服务器压力很大'), `${scenario} 最终响应不应透出污染广告`)
   assert(!responseText.includes('dc.hhhl.cc'), `${scenario} 最终响应不应透出污染链接`)
-  assert(responseText.includes(`clean ${scenario}`), `${scenario} 最终响应应来自干净账号：${responseText}`)
+  if (scenario === 'codex_compaction_sse') {
+    assert(upstreamHits[0]?.bodyText.includes('compaction_trigger'), `${scenario} 上游请求应保留 compact trigger`)
+    assert(!responseText.includes('bad compact visible text'), `${scenario} 坏账号 compact output 不应泄露给客户端：${responseText}`)
+    assert(!responseText.includes('item_bad_compaction_missing_content'), `${scenario} 坏账号形状不合法的 compaction output item 不应泄露给客户端：${responseText}`)
+    assert(responseText.includes('mock-clean-compaction'), `${scenario} 最终响应应来自干净 compact 账号：${responseText}`)
+    assert(responseText.includes('"type":"compaction"'), `${scenario} 最终响应必须包含 Codex 可接受的 compaction item：${responseText}`)
+  } else if (scenario === 'codex_incomplete_sse') {
+    assert(!responseText.includes('response.incomplete'), `${scenario} 坏账号 incomplete 事件不应泄露给客户端：${responseText}`)
+    assert(!responseText.includes('mock incomplete primary'), `${scenario} 坏账号 incomplete 原因不应泄露给客户端：${responseText}`)
+    assert(responseText.includes(`clean ${scenario}`), `${scenario} 最终响应应来自干净账号：${responseText}`)
+    assert(responseText.includes('response.completed'), `${scenario} 最终响应应完整完成：${responseText}`)
+  } else if (scenario === 'codex_broken_gzip_sse') {
+    assert(!responseText.includes('response.failed'), `${scenario} 坏账号破损 gzip 不应转换成失败事件泄露给客户端：${responseText}`)
+    assert(!responseText.includes('upstream_retryable_error'), `${scenario} 坏账号破损 gzip 不应泄露客户端重试错误码：${responseText}`)
+    assert(!responseText.includes('incorrect header check'), `${scenario} zlib 解码细节不应泄露给客户端：${responseText}`)
+    assert(!responseText.includes('error decoding response body'), `${scenario} Codex 传输解码错误不应泄露给客户端：${responseText}`)
+    assert(responseText.includes(`clean ${scenario}`), `${scenario} 最终响应应来自干净账号：${responseText}`)
+    assert(responseText.includes('response.completed'), `${scenario} 最终响应应完整完成：${responseText}`)
+    assert.equal(response.headers.get('content-encoding'), null, `${scenario} 网关转发已解压 SSE 时不得保留 content-encoding`)
+    assert.equal(response.headers.get('content-length'), null, `${scenario} 网关转发已解压 SSE 时不得保留上游 content-length`)
+  } else {
+    assert(responseText.includes(`clean ${scenario}`), `${scenario} 最终响应应来自干净账号：${responseText}`)
+  }
   if (stream) {
     assert.match(response.headers.get('content-type') ?? '', /text\/event-stream|application\/json/, `${scenario} 流式或上游 JSON 回退应有明确 content-type`)
   } else {
@@ -176,7 +226,92 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   }
 }
 
+async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const scenario: ScenarioName = 'codex_broken_gzip_sse'
+  upstreamHits.length = 0
+  const group = repositories.createGroup({
+    name: '响应检查 E2E codex broken gzip exhausted',
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    name: '响应检查破损 gzip 单账号',
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-upstream-polluted-${scenario}`,
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_sse']
+    },
+    clientCompatibility: 'codex_responses',
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '响应检查 E2E Key codex broken gzip exhausted',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '回归 API Key 未返回明文密钥')
+
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        turn_id: 'turn_codex_broken_gzip_exhausted',
+        session_id: 'session_codex_broken_gzip_exhausted',
+        thread_id: 'thread_codex_broken_gzip_exhausted'
+      })
+    },
+    body: JSON.stringify(requestBodyForScenario(scenario, true))
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, `codex_broken_gzip_exhausted 应返回 Codex 可重试 SSE，实际 HTTP ${response.status}: ${responseText}`)
+  assert.equal(upstreamHits.length, 1, 'codex_broken_gzip_exhausted 只有单账号时不应重复请求同一坏账号')
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'codex_broken_gzip_exhausted 应返回 SSE')
+  assert.equal(response.headers.get('content-encoding'), null, 'codex_broken_gzip_exhausted 失败 SSE 不应保留 content-encoding')
+  assert(responseText.includes('response.failed'), `codex_broken_gzip_exhausted 应返回失败事件：${responseText}`)
+  assert(responseText.includes('upstream_retryable_error'), `codex_broken_gzip_exhausted 应返回 Codex 可重试错误码：${responseText}`)
+  assert(responseText.includes('上游流式响应在输出前失败，请重试'), `codex_broken_gzip_exhausted 应返回统一客户端可见消息：${responseText}`)
+  assert(!responseText.includes('incorrect header check'), `codex_broken_gzip_exhausted 不应泄露 zlib 解码细节：${responseText}`)
+  assert(!responseText.includes('error decoding response body'), `codex_broken_gzip_exhausted 不应泄露 Codex 传输解码文本：${responseText}`)
+  assert(!responseText.includes('not a valid gzip'), `codex_broken_gzip_exhausted 不应泄露 mock 上游原始破损内容：${responseText}`)
+}
+
 function requestBodyForScenario(scenario: ScenarioName, stream: boolean): Record<string, unknown> {
+  if (scenario === 'codex_compaction_sse') {
+    return {
+      model: 'gpt-5.5',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: `run ${scenario}` }]
+        },
+        { type: 'compaction_trigger' }
+      ],
+      stream
+    }
+  }
+  if (scenario === 'codex_incomplete_sse') {
+    return {
+      model: 'gpt-5.5',
+      input: `run ${scenario}`,
+      stream
+    }
+  }
+  if (scenario === 'codex_broken_gzip_sse') {
+    return {
+      model: 'gpt-5.5',
+      input: `run ${scenario}`,
+      stream
+    }
+  }
   if (scenario.startsWith('responses')) {
     return {
       model: 'gpt-5.5',
@@ -215,6 +350,26 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (path === '/v1/responses') {
+        if (scenario === 'codex_compaction_sse') {
+          sendCodexCompactionSse(res, polluted)
+          return
+        }
+        if (scenario === 'codex_incomplete_sse' && polluted) {
+          sendCodexIncompleteSse(res)
+          return
+        }
+        if (scenario === 'codex_broken_gzip_sse' && polluted) {
+          sendBrokenGzipResponsesSse(res)
+          return
+        }
+        if (scenario === 'codex_broken_gzip_sse') {
+          sendGzipResponsesSse(res, scenario)
+          return
+        }
+        if (scenario === 'codex_incomplete_sse') {
+          sendResponsesSse(res, scenario, false)
+          return
+        }
         if (scenario === 'responses_sse') {
           sendResponsesSse(res, scenario, polluted)
           return
@@ -232,6 +387,12 @@ function scenarioFromAuthorization(authorization: string): ScenarioName {
   const match = authorization.match(/sk-upstream-(?:polluted|clean)-([a-z_]+)/)
   assert(match?.[1], `无法从上游 Authorization 识别回归场景：${authorization}`)
   return match[1] as ScenarioName
+}
+
+function isCodexScenario(scenario: ScenarioName): boolean {
+  return scenario === 'codex_compaction_sse'
+    || scenario === 'codex_incomplete_sse'
+    || scenario === 'codex_broken_gzip_sse'
 }
 
 function pollutedText(): string {
@@ -295,6 +456,101 @@ function sendResponsesSse(res: http.ServerResponse, scenario: ScenarioName, poll
     }
   })}\n\n`)
   res.end()
+}
+
+function sendCodexCompactionSse(res: http.ServerResponse, polluted: boolean): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  if (polluted) {
+    res.write(`event: response.output_item.done\ndata: ${JSON.stringify({
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        id: 'item_bad_message',
+        type: 'message',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'bad compact visible text' }]
+      }
+    })}\n\n`)
+    res.write(`event: response.output_item.done\ndata: ${JSON.stringify({
+      type: 'response.output_item.done',
+      output_index: 1,
+      item: {
+        id: 'item_bad_compaction_missing_content',
+        type: 'compaction',
+        status: 'completed',
+        encrypted_content: null
+      }
+    })}\n\n`)
+  } else {
+    res.write(`event: response.output_item.done\ndata: ${JSON.stringify({
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        id: 'item_clean_compaction',
+        type: 'compaction',
+        status: 'completed',
+        encrypted_content: 'mock-clean-compaction'
+      }
+    })}\n\n`)
+  }
+  res.write(`event: response.completed\ndata: ${JSON.stringify({
+    type: 'response.completed',
+    response: {
+      id: polluted ? 'resp_bad_codex_compaction' : 'resp_clean_codex_compaction',
+      status: 'completed'
+    }
+  })}\n\n`)
+  res.end()
+}
+
+function sendCodexIncompleteSse(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.write(`event: response.incomplete\ndata: ${JSON.stringify({
+    type: 'response.incomplete',
+    response: {
+      id: 'resp_incomplete_primary',
+      status: 'incomplete',
+      incomplete_details: {
+        reason: 'mock incomplete primary'
+      }
+    }
+  })}\n\n`)
+  res.end()
+}
+
+function sendBrokenGzipResponsesSse(res: http.ServerResponse): void {
+  const body = Buffer.from('this is not a valid gzip payload', 'utf8')
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'content-encoding': 'gzip',
+    'content-length': String(body.length)
+  })
+  res.end(body)
+}
+
+function sendGzipResponsesSse(res: http.ServerResponse, scenario: ScenarioName): void {
+  const body = Buffer.from([
+    `event: response.output_text.delta\ndata: ${JSON.stringify({
+      type: 'response.output_text.delta',
+      delta: `clean ${scenario}`
+    })}`,
+    `event: response.completed\ndata: ${JSON.stringify({
+      type: 'response.completed',
+      response: {
+        id: `resp-${scenario}`,
+        status: 'completed',
+        usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 }
+      }
+    })}`,
+    ''
+  ].join('\n\n'), 'utf8')
+  const compressed = gzipSync(body)
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'content-encoding': 'gzip',
+    'content-length': String(compressed.length)
+  })
+  res.end(compressed)
 }
 
 function listen(server: http.Server): Promise<void> {

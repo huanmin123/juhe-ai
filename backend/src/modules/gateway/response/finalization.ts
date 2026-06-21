@@ -66,10 +66,12 @@ import {
   type UsageRequestSnapshot
 } from '../usage/snapshots.js'
 import {
-  emptyUsage
+  emptyUsage,
+  type ParsedUsage
 } from '../usage/types.js'
 import {
   applyGatewayProtocolStreamUsageFallback,
+  extractGatewayProtocolJsonSemanticFrames,
   gatewayProtocolClientErrorProtocolForProfile,
   gatewayProtocolDefaultClientProfileForProfile,
   gatewayProtocolResponseEndpointFamilyForRequest,
@@ -81,6 +83,9 @@ import {
 import {
   requestModel
 } from '../request/metadata.js'
+import {
+  estimateTokenCountFromText
+} from '../protocols/openai-v1/stream-events.js'
 import {
   recordGatewayUpstreamBucketSuccess,
   suppressGatewayUpstreamBucketLocallyForSeconds
@@ -225,7 +230,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         }),
         responseInspectionContext: {
           clientProfile: clientStrategy?.clientProfile ?? defaultClientProfile,
-          accountClientCompatibility: account.clientCompatibility
+          accountClientCompatibility: account.clientCompatibility,
+          codexCompactionExpected: clientStrategy?.codexCompactionExpected
         },
         responseProtocol,
         endpointFamily: responseEndpointFamily,
@@ -549,6 +555,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let responseBody: Buffer | undefined
   let responseBodyText: string | undefined
   let responseUsageText: string | undefined
+  let responseSemanticText: string | undefined
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
   let errorPayload: Record<string, unknown> = {}
@@ -605,6 +612,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           if (jsonInspectionResult) {
             return jsonInspectionResult
           }
+          responseSemanticText = completeBodyText
           if (firstTokenMs === undefined) {
             firstTokenMs = Date.now() - startedAt
           }
@@ -811,6 +819,16 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   } else if (upstreamResponse.ok) {
     usage = parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText)
   }
+  if (upstreamResponse.ok) {
+    usage = applyNonStreamUsageFallback({
+      req,
+      account,
+      usage,
+      responseBody,
+      responseBodyText: responseBodyText ?? responseSemanticText,
+      endpoint: usageContext.endpoint
+    })
+  }
   if (!upstreamResponse.ok) {
     errorPayload = parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
   }
@@ -831,6 +849,49 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     errorPayload
   }
+}
+
+function applyNonStreamUsageFallback(input: {
+  req: Request
+  account: UpstreamAccount
+  usage: ParsedUsage
+  responseBody?: Buffer
+  responseBodyText?: string
+  endpoint: string
+}): ParsedUsage {
+  const bodyText = input.responseBody
+    ? input.responseBody.toString('utf8')
+    : input.responseBodyText
+  if (!bodyText) return input.usage
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bodyText) as unknown
+  } catch {
+    return input.usage
+  }
+  const frames = extractGatewayProtocolJsonSemanticFrames(parsed, input.req, input.account)
+  const outputText = frames
+    .filter((frame) => (frame.frameType === 'output_text_delta' || frame.frameType === 'output_text_done') && typeof frame.text === 'string')
+    .map((frame) => frame.text ?? '')
+    .filter(Boolean)
+    .join('\n')
+  const outputReceived = outputText.length > 0 || frames.some((frame) => frame.visibleOutput === true)
+  if (!outputReceived) return input.usage
+  const fallback = applyGatewayProtocolStreamUsageFallback(input.req, input.account, input.usage, {
+    outputReceived,
+    estimatedOutputTokens: outputText ? estimateTokenCountFromText(outputText) : undefined
+  })
+  if (fallback.estimated) {
+    logger.warn({
+      event: 'gateway_non_stream_usage_estimated',
+      accountId: input.account.id,
+      endpoint: input.endpoint,
+      model: requestModel(input.req),
+      estimatedInputTokens: fallback.estimatedInputTokens,
+      estimatedOutputTokens: fallback.estimatedOutputTokens
+    }, '上游非流式响应缺少有效 usage，网关已按响应语义估算 token 成本')
+  }
+  return fallback.usage
 }
 
 export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): void {

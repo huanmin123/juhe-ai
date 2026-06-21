@@ -65,6 +65,7 @@ export interface GatewayUsageContext {
 
 export interface GatewayFailureUsageContext extends GatewayUsageContext {
   providerCode?: string
+  providerProtocolProfileId?: string
   groupOwnerSystemAccountId?: string
   groupAccessType?: GroupUsageAccessMetadata['groupAccessType']
   groupAuthorizationId?: string
@@ -87,9 +88,10 @@ export function accountUsageMetadata(account: UpstreamAccount): UsageAccessField
   }
 }
 
-export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'providerProtocolProfileId' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
   return {
     providerCode: groupAccess.providerCode,
+    providerProtocolProfileId: groupAccess.providerProtocolProfileId,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
     groupAccessType: groupAccess.groupAccessType,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
@@ -147,6 +149,7 @@ export function recordFailedUpstreamAttempt(
     ...accountUsageMetadata(account),
     endpoint: usageContext.endpoint,
     providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
     usageSemantic: usageSemanticForProviderCode(account.providerCode),
     model,
     upstreamModel: modelAccounting.upstreamModel,
@@ -210,6 +213,7 @@ export function recordCompletedUpstreamAttempt(
     ...accountUsageMetadata(input.account),
     endpoint: input.endpoint,
     providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.account.providerProtocolProfileId,
     usageSemantic: usageSemanticForProviderCode(input.account.providerCode),
     model,
     upstreamModel: modelAccounting.upstreamModel,
@@ -262,6 +266,92 @@ export function recordCompletedUpstreamAttempt(
     errorMessage: input.errorMessage,
     requestSnapshot: usageRecordSnapshot(input, input.requestSnapshot),
     responseSnapshot: usageRecordSnapshot(input, input.responseSnapshot)
+  })
+}
+
+export function recordHybridScoringAttempt(input: {
+  traceId: string
+  clientIp?: string
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  account: UpstreamAccount
+  endpoint: string
+  statusCode?: number
+  success: boolean
+  startedAt: number
+  scoringModel: string
+  usage: ParsedUsage
+  errorCode?: string
+  errorMessage?: string
+  requestSnapshot?: unknown
+  responseSnapshot?: unknown
+}): void {
+  const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
+  const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId)
+  enqueueUsageRecord({
+    traceId: input.traceId,
+    trafficSource: 'hybrid_scoring',
+    clientIp: input.clientIp,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    accountId: input.account.id,
+    ...accountUsageMetadata(input.account),
+    endpoint: input.endpoint,
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.account.providerProtocolProfileId,
+    usageSemantic: usageSemanticForProviderCode(input.account.providerCode),
+    model: input.scoringModel,
+    upstreamModel: modelAccounting.upstreamModel,
+    pricingModel: modelAccounting.pricingModel,
+    modelMappingApplied: modelAccounting.modelMappingApplied,
+    modelMappingSource: modelAccounting.modelMappingSource,
+    stream: false,
+    statusCode: input.statusCode,
+    success: input.success,
+    durationMs: Date.now() - input.startedAt,
+    inputTokens: input.usage.inputTokens,
+    outputTokens: input.usage.outputTokens,
+    cacheReadTokens: input.usage.cacheReadTokens,
+    cacheWriteTokens: input.usage.cacheWriteTokens,
+    cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
+    thinkingTokens: input.usage.thinkingTokens,
+    inputImageTokens: input.usage.inputImageTokens,
+    outputImageTokens: input.usage.outputImageTokens,
+    cacheReadCostUsd: estimateCatalogCacheReadCostUsd({
+      providerCode: input.account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: modelAccounting.upstreamModel,
+      cacheReadTokens: input.usage.cacheReadTokens
+    }),
+    cacheWriteCostUsd: estimateCatalogCacheWriteCostUsd({
+      providerCode: input.account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: modelAccounting.upstreamModel,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      cacheWrite1hTokens: input.usage.cacheWrite1hTokens
+    }),
+    costUsd: estimateCatalogCostUsd({
+      providerCode: input.account.providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: modelAccounting.upstreamModel,
+      inputTokens: input.usage.inputTokens,
+      outputTokens: input.usage.outputTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      cacheWriteTokens: input.usage.cacheWriteTokens,
+      cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
+      thinkingTokens: input.usage.thinkingTokens,
+      inputImageTokens: input.usage.inputImageTokens,
+      outputImageTokens: input.usage.outputImageTokens,
+      inputAudioTokens: input.usage.inputAudioTokens,
+      outputAudioTokens: input.usage.outputAudioTokens,
+      outputImageCount: input.usage.outputImageCount
+    }),
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    requestSnapshot: input.requestSnapshot,
+    responseSnapshot: input.responseSnapshot
   })
 }
 
@@ -320,6 +410,7 @@ export function recordGatewayFailure(
     endpoint: usageContext.endpoint
   }, '网关请求失败')
   const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
+  const providerProtocolProfileId = usageContext.providerProtocolProfileId
 
   enqueueUsageRecord({
     traceId: usageContext.traceId,
@@ -335,6 +426,7 @@ export function recordGatewayFailure(
     groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
     endpoint: usageContext.endpoint,
     providerCode,
+    providerProtocolProfileId,
     usageSemantic: usageSemanticForProviderCode(providerCode),
     model: requestModel(req),
     stream: requestStream(req),

@@ -1,5 +1,10 @@
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import {
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  isGlmProviderCode
+} from '@/shared/providerProtocol'
 
 import {
   accountTypeDescription,
@@ -10,7 +15,10 @@ import {
 type ProviderDisplaySource = Pick<ProviderDefinition, 'code' | 'name'>
 
 export interface AccountTypeChoice {
-  value: AccountType
+  value: string
+  type: AccountType
+  providerCode: string
+  providerProtocolProfileId: string
   label: string
   description: string
   tag: string
@@ -26,6 +34,7 @@ interface AccountEditModalTitleOptions {
   providers: ProviderDisplaySource[]
   targetSystemAccountLabel?: string
   type: AccountType
+  typeTitle?: string
 }
 
 export function accountTypeSortWeight(type: AccountType): number {
@@ -42,6 +51,10 @@ export function accountEditAccountTypeTitle(providerCode: string, type: AccountT
   return buildAccountTypeTitle(accountEditProviderName(providerCode, providers), type)
 }
 
+export function accountTypeChoiceValue(providerProtocolProfileId: string, type: AccountType): string {
+  return `${providerProtocolProfileId}:${type}`
+}
+
 export function accountEditCreateModalTitle(baseTitle: string, targetLabel?: string): string {
   return targetLabel ? `${baseTitle}（${targetLabel}）` : baseTitle
 }
@@ -55,14 +68,62 @@ export function accountTypeChoicesForProfile(
   providerCode: string,
   providers: ProviderDisplaySource[]
 ): AccountTypeChoice[] {
-  return [...(profile?.accountTypes ?? [])]
+  const indexedChoices = [...(profile?.accountTypes ?? [])]
     .map((type) => ({
-      value: type,
-      label: accountEditAccountTypeTitle(providerCode, type, providers),
-      description: accountTypeDescription(providerCode, type),
-      tag: accountTypeText(type)
+      value: accountTypeChoiceValue(profile?.id ?? '', type),
+      type,
+      providerCode,
+      providerProtocolProfileId: profile?.id ?? '',
+      label: accountTypeChoiceLabel(providerCode, profile?.id, type, providers),
+      description: accountTypeDescription(providerCode, type, profile?.id),
+      tag: accountTypeChoiceTag(providerCode, profile?.id, type),
+      index: 0
     }))
-    .sort((left, right) => accountTypeSortWeight(left.value) - accountTypeSortWeight(right.value))
+  return indexedChoices
+    .sort((left, right) => accountTypeSortWeight(left.type) - accountTypeSortWeight(right.type))
+    .map(({ index: _index, ...choice }) => choice)
+}
+
+export function accountTypeChoicesForProvider(
+  provider: ProviderDefinition | undefined,
+  providers: ProviderDisplaySource[]
+): AccountTypeChoice[] {
+  if (!provider) return []
+  const profiles = provider.protocolProfiles.length
+    ? provider.protocolProfiles.filter((profile) => profile.enabled)
+    : []
+  const sourceProfiles = profiles.length
+    ? profiles
+    : [{
+      id: provider.defaultProtocolProfileId,
+      providerCode: provider.code,
+      name: provider.name,
+      enabled: provider.enabled,
+      protocolCode: provider.protocolCode,
+      protocolVersion: provider.protocolVersion,
+      baseUrl: provider.baseUrl,
+      defaultTestModel: provider.defaultTestModel,
+      accountTypes: provider.accountTypes,
+      capabilities: provider.capabilities,
+      endpointFamilies: []
+    }]
+  return sourceProfiles
+    .flatMap((profile, profileIndex) => [...(profile.accountTypes ?? [])].map((type, typeIndex) => ({
+      value: accountTypeChoiceValue(profile.id, type),
+      type,
+      providerCode: provider.code,
+      providerProtocolProfileId: profile.id,
+      label: accountTypeChoiceLabel(provider.code, profile.id, type, providers),
+      description: accountTypeDescription(provider.code, type, profile.id),
+      tag: accountTypeChoiceTag(provider.code, profile.id, type),
+      profileIndex,
+      typeIndex
+    })))
+    .sort((left, right) => accountTypeSortWeight(left.type) - accountTypeSortWeight(right.type)
+      || left.profileIndex - right.profileIndex
+      || left.typeIndex - right.typeIndex
+      || left.label.localeCompare(right.label, 'zh-CN'))
+    .map(({ profileIndex: _profileIndex, typeIndex: _typeIndex, ...choice }) => choice)
 }
 
 export function accountEditModalTitle(options: AccountEditModalTitleOptions): string {
@@ -83,7 +144,32 @@ export function accountEditModalTitle(options: AccountEditModalTitleOptions): st
     return accountEditCreateModalTitle(`添加 ${accountEditProviderName(options.providerCode, options.providers)} 账户`, options.targetSystemAccountLabel)
   }
   return accountEditCreateModalTitle(
-    `添加 ${accountEditAccountTypeTitle(options.providerCode, options.type, options.providers)} 账户`,
+    `添加 ${options.typeTitle || accountEditAccountTypeTitle(options.providerCode, options.type, options.providers)} 账户`,
     options.targetSystemAccountLabel
   )
+}
+
+function accountTypeChoiceLabel(
+  providerCode: string,
+  providerProtocolProfileId: string | undefined,
+  type: AccountType,
+  providers: ProviderDisplaySource[]
+): string {
+  if (isGlmProviderCode(providerCode) && type === 'api_key') {
+    if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'GLM Coding Plan Key'
+    if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用 GLM API Key'
+  }
+  return accountEditAccountTypeTitle(providerCode, type, providers)
+}
+
+function accountTypeChoiceTag(
+  providerCode: string,
+  providerProtocolProfileId: string | undefined,
+  type: AccountType
+): string {
+  if (isGlmProviderCode(providerCode) && type === 'api_key') {
+    if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'Coding'
+    if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用'
+  }
+  return accountTypeText(type)
 }

@@ -1,9 +1,13 @@
 import {
   ANTHROPIC_PROVIDER_CODE,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_PROVIDER_CODE,
   isOpenAICompatibleProviderCode,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
 import { anthropicModelPricingData } from './anthropic-model-pricing.data.js'
+import { deepSeekModelPricingData } from './deepseek-model-pricing.data.js'
+import { glmModelPricingData } from './glm-model-pricing.data.js'
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
 import type {
   ModelPricingProviderDriver,
@@ -14,6 +18,8 @@ import type {
 
 const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
 const anthropicModels = anthropicModelPricingData as readonly RawModelPricing[]
+const deepSeekModels = deepSeekModelPricingData as readonly RawModelPricing[]
+const glmModels = glmModelPricingData as readonly RawModelPricing[]
 
 const openAIModelPricingDriver: ModelPricingProviderDriver = {
   id: 'openai-compatible',
@@ -46,12 +52,48 @@ const anthropicModelPricingDriver: ModelPricingProviderDriver = {
     return item.release_date ?? helpers.extractModelReleaseDate(item.model)
   },
   inferModelApiProtocols(item) {
-    return item.supported_api_protocols?.length ? item.supported_api_protocols : []
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : []
+  }
+}
+
+const deepSeekModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'deepseek',
+  pricingSource: 'deepseek-pricing-snapshot',
+  rawModels: deepSeekModels,
+  usesIncludedCacheReadUsage: true,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === DEEPSEEK_PROVIDER_CODE
+  },
+  buildModelCandidates: buildDeepSeekModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : ['chat_completions']
+  }
+}
+
+const glmModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'glm',
+  pricingSource: 'glm-pricing-snapshot',
+  rawModels: glmModels,
+  usesIncludedCacheReadUsage: true,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === GLM_PROVIDER_CODE
+  },
+  buildModelCandidates: buildGlmModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : ['chat_completions']
   }
 }
 
 const modelPricingProviderDrivers: readonly ModelPricingProviderDriver[] = [
   openAIModelPricingDriver,
+  deepSeekModelPricingDriver,
+  glmModelPricingDriver,
   anthropicModelPricingDriver
 ]
 
@@ -99,6 +141,31 @@ function isUnavailableOpenAIModel(model: string): boolean {
     || model.startsWith('o1-preview')
 }
 
+function buildDeepSeekModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+
+  if (model.startsWith('deepseek-ai-v4-flash')) candidates.add('deepseek-v4-flash')
+  if (model.startsWith('deepseek-v4-flash')) candidates.add('deepseek-ai-v4-flash')
+  if (model.startsWith('deepseek-ai-v4-pro')) candidates.add('deepseek-v4-pro')
+  if (model.startsWith('deepseek-v4-pro')) candidates.add('deepseek-ai-v4-pro')
+
+  return Array.from(candidates)
+}
+
+function buildGlmModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+
+  if (model.startsWith('glm-5.2-free-')) candidates.add('glm-5.2-free')
+  if (model.startsWith('glm-5.2-')) candidates.add('glm-5.2')
+  if (model.startsWith('glm-5-turbo-')) candidates.add('glm-5-turbo')
+
+  return Array.from(candidates)
+}
+
 const unavailableOpenAIModels = new Set([
   'chatgpt-4o-latest',
   'codex-mini-latest',
@@ -121,7 +188,7 @@ function inferOpenAIModelApiProtocols(
   helpers: ModelPricingProviderDriverHelpers
 ): ProviderModelApiProtocol[] {
   if (item.supported_api_protocols?.length) {
-    return item.supported_api_protocols
+    return [...item.supported_api_protocols]
   }
 
   const model = helpers.normalizeModel(item.model)

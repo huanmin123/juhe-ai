@@ -166,6 +166,10 @@ export async function fetchFirstAvailableUpstream(
         lastAttempt = {
           accountId: originalAccount.id,
           accountName: originalAccount.name,
+          providerCode: originalAccount.providerCode,
+          providerProtocolProfileId: originalAccount.providerProtocolProfileId,
+          protocolCode: originalAccount.protocolCode,
+          protocolVersion: originalAccount.protocolVersion,
           upstreamUrl: 'concurrency:limit',
           message
         }
@@ -257,9 +261,19 @@ export async function fetchFirstAvailableUpstream(
                 body,
                 settings,
                 attemptStartedAt,
-                signal
+                signal,
+                requestClientCompatibility
               })
-              lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
+              lastAttempt = {
+                accountId: account.id,
+                accountName: account.name,
+                providerCode: account.providerCode,
+                providerProtocolProfileId: account.providerProtocolProfileId,
+                protocolCode: account.protocolCode,
+                protocolVersion: account.protocolVersion,
+                upstreamUrl,
+                status: response.status
+              }
               if (response.ok) {
                 rememberOpenAIAccountForSession(sessionAffinityKey, account.id, {
                   systemAccountId: usageContext.systemAccountId,
@@ -370,6 +384,10 @@ export async function fetchFirstAvailableUpstream(
     lastAttempt = {
       accountId: accounts[0]?.id ?? 'local_suppression',
       accountName: accounts.length === 1 ? accounts[0]?.name ?? '上游账户' : '上游账户',
+      providerCode: accounts[0]?.providerCode,
+      providerProtocolProfileId: accounts[0]?.providerProtocolProfileId,
+      protocolCode: accounts[0]?.protocolCode,
+      protocolVersion: accounts[0]?.protocolVersion,
       upstreamUrl: 'account:locally_suppressed',
       message: '所有上游账户仍处于本地短期屏蔽'
     }

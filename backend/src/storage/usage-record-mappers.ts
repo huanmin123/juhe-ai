@@ -53,6 +53,7 @@ export function usageRecordSummaryFromRow(
     accountName: optionalString(row.account_name),
     endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot),
     providerCode: optionalString(row.provider_code),
+    providerProtocolProfileId: optionalString(row.provider_protocol_profile_id),
     usageSemantic: optionalString(row.usage_semantic),
     model,
     upstreamModel: optionalString(row.upstream_model),
@@ -84,7 +85,7 @@ export function usageRecordSummaryFromRow(
 }
 
 function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSource'] {
-  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest' || value === 'hybrid_scoring') {
     return value
   }
   throw new Error('使用记录来源无效')

@@ -1,5 +1,8 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 import http from 'node:http'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
@@ -28,8 +31,9 @@ try {
   await drainResponse(await requestUpstream(url, { method: 'GET', headers: new Headers() }))
   await drainResponse(await requestUpstream(url, { method: 'GET', headers: new Headers() }))
   assert.equal(connectionCount, 1, '网关直连上游请求应复用 keep-alive 连接')
+  assertBoundedGatewayUpstreamAgentCache()
 
-  console.log('网关 upstream keep-alive 回归通过：直连上游连接可复用')
+  console.log('网关 upstream keep-alive 回归通过：直连上游连接可复用，直连/代理 agent 缓存有明确上限')
 } finally {
   closeGatewayUpstreamAgentsForTest()
   await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -39,4 +43,16 @@ async function drainResponse(response: Awaited<ReturnType<typeof requestUpstream
   if (!response.body) return
   for await (const _chunk of response.body) {
   }
+}
+
+function assertBoundedGatewayUpstreamAgentCache(): void {
+  const sourcePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../modules/gateway/upstream/request.ts')
+  const source = readFileSync(sourcePath, 'utf8')
+  assert.doesNotMatch(source, /maxSockets:\s*Infinity/, '网关上游 agent 不应使用无限 maxSockets')
+  assert.match(source, /maxSockets:\s*\d+/, '网关上游 agent 应配置有限 maxSockets')
+  assert.match(source, /maxFreeSockets:\s*\d+/, '网关上游 agent 应配置有限 maxFreeSockets')
+  assert.match(source, /createAppCache<string,\s*http\.Agent>/, '代理 agent 缓存应使用有上限的 LRU cache')
+  assert.match(source, /max:\s*gatewayProxyAgentCacheMaxEntries/, '代理 agent 缓存应配置最大条目数')
+  assert.match(source, /ttlMs:\s*gatewayProxyAgentCacheTtlMs/, '代理 agent 缓存应配置 TTL')
+  assert.match(source, /dispose:\s*\(agent\)\s*=>\s*{\s*agent\.destroy\(\)/s, '代理 agent 被驱逐时应销毁连接池')
 }

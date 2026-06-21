@@ -28,10 +28,10 @@ import {
   accountEditAccountTypeTitle,
   accountEditModalTitle,
   accountEditProviderName,
-  accountTypeChoicesForProfile
+  accountTypeChoiceValue,
+  accountTypeChoicesForProvider
 } from './accountEditFormDisplay'
-import { defaultAccountClientCompatibility, defaultAccountForm } from './accountFormDefaults'
-import { defaultAccountEndpointModes } from './accountEndpointModes'
+import { defaultAccountForm } from './accountFormDefaults'
 import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
@@ -127,11 +127,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       ?? selectedProvider.value.protocolProfiles.find((profile) => profile.id === selectedProvider.value?.defaultProtocolProfileId)
       ?? selectedProvider.value.protocolProfiles[0]
     : undefined)
-  const accountTypeChoices = computed(() => accountTypeChoicesForProfile(
-    selectedProtocolProfile.value,
-    selectedProvider.value?.code ?? form.providerCode,
-    availableProviders.value
-  ))
+  const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
+  const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
@@ -182,14 +179,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerProtocolProfileId: form.providerProtocolProfileId,
     providers: availableProviders.value,
     targetSystemAccountLabel: targetSystemAccountLabel.value,
-    type: form.type
+    type: form.type,
+    typeTitle: selectedAccountTypeChoice.value?.label
   }))
   const modalConfirmLoading = computed(() => saving.value)
   const modalOkButtonProps = computed(() => ({
     type: 'primary' as const,
     disabled: saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
   }))
-  const selectedAccountTypeTitle = computed(() => hasAccountType.value ? accountTypeTitle(form.providerCode, form.type) : '')
+  const selectedAccountTypeTitle = computed(() => hasAccountType.value ? selectedAccountTypeChoice.value?.label ?? accountTypeTitle(form.providerCode, form.type) : '')
 
   function defaultForm(providerCode = '', type: AccountType = '', providerProtocolProfileId = ''): AccountFormModel {
     return defaultAccountForm(providerCode, type, options.providers.value, providerProtocolProfileId)
@@ -250,6 +248,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     resetForm('', '')
     void options.loadGroupOptions('', false, {
       providerCode: form.providerCode,
+      providerProtocolProfileId: form.providerProtocolProfileId,
       systemAccountId: options.accountScopeParams.value?.systemAccountId
     }, {
       useLocalWindow: false
@@ -276,27 +275,32 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function selectProvider(providerCode: string) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
-    void loadProviderGroupOptions(providerCode)
+    void loadProviderGroupOptions(providerCode, form.providerProtocolProfileId)
     void loadProviderModelOptions(providerCode)
   }
 
   function selectAccountType(type: AccountType) {
-    if (editingId.value || form.type === type) return
+    const choice = accountTypeChoices.value.find((item) => item.value === accountTypeChoiceValue(form.providerProtocolProfileId, type))
+      ?? accountTypeChoices.value.find((item) => item.type === type)
+    if (!choice) return
+    selectAccountTypeChoice(choice.value)
+  }
+
+  function selectAccountTypeChoice(choiceValue: string) {
+    if (editingId.value) return
+    const choice = accountTypeChoices.value.find((item) => item.value === choiceValue)
+    if (!choice) return
+    if (form.type === choice.type && form.providerProtocolProfileId === choice.providerProtocolProfileId) return
     cloningSourceId.value = undefined
-    const providerCode = form.providerCode
-    const providerProtocolProfileId = form.providerProtocolProfileId
-    const clientCompatibility = defaultAccountClientCompatibility(providerCode, availableProviders.value, providerProtocolProfileId)
+    const providerCode = choice.providerCode || form.providerCode
+    const providerProtocolProfileId = choice.providerProtocolProfileId
+    const keepCurrentGroup = form.providerCode === providerCode && form.providerProtocolProfileId === providerProtocolProfileId
     Object.assign(form, {
-      ...defaultForm(providerCode, type, providerProtocolProfileId),
-      groupId: form.groupId,
-      group: form.group,
+      ...defaultForm(providerCode, choice.type, providerProtocolProfileId),
+      groupId: keepCurrentGroup ? form.groupId : undefined,
+      group: keepCurrentGroup ? form.group : undefined,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
-      clientCompatibility,
-      supportedEndpointModes: defaultAccountEndpointModes(providerCode, type, clientCompatibility, {
-        provider: selectedProvider.value,
-        protocolProfile: selectedProtocolProfile.value
-      }),
       supportedModels: form.supportedModels,
       modelMappings: form.modelMappings,
       tags: form.tags,
@@ -305,7 +309,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountExpiresAt: form.accountExpiresAt,
       availabilitySchedule: form.availabilitySchedule
     })
-    void loadProviderGroupOptions(providerCode)
+    void loadProviderGroupOptions(providerCode, providerProtocolProfileId)
     void loadProviderModelOptions(providerCode)
     ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
     authResult.value = undefined
@@ -348,6 +352,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = true
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
+      providerProtocolProfileId: sourceAccount.providerProtocolProfileId,
       systemAccountId: editScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     }, {
@@ -398,6 +403,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = true
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
+      providerProtocolProfileId: sourceAccount.providerProtocolProfileId,
       systemAccountId: cloneScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     }, {
@@ -407,17 +413,18 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderModelOptions(sourceAccount.providerCode)
   }
 
-  async function loadProviderGroupOptions(providerCode: string): Promise<void> {
+  async function loadProviderGroupOptions(providerCode: string, providerProtocolProfileId = form.providerProtocolProfileId): Promise<void> {
     await nextTick()
     await options.loadGroupOptions('', false, {
       providerCode,
+      providerProtocolProfileId,
       systemAccountId: createScopeParams.value?.systemAccountId,
       selectedIds: [form.groupId]
     }, {
       useLocalWindow: false
     })
     syncFormGroupFromOptions()
-    ensureDefaultGroupSelected(providerCode)
+    ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
   }
 
   async function loadAccountDetailForForm(accountId: string, scopeParams: AccountScopeParams | undefined, fallbackMessage: string): Promise<AccountSummary | undefined> {
@@ -488,6 +495,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelsLoading,
     saveAccount,
     selectAccountType,
+    selectAccountTypeChoice,
     selectedAccountTypeTitle,
     selectedProtocolProfile,
     selectedProvider,

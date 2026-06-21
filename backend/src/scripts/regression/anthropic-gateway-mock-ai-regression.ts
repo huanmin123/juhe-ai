@@ -10,6 +10,11 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { runtimeConfig } from '../../config/runtime.js'
 import { ANTHROPIC_PROTOCOL_CODE, ANTHROPIC_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { gatewayClientProfileHeader } from '../../modules/gateway/client-profiles/strategy.js'
+import { inspectAnthropicStreamText } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
+import {
+  extractAnthropicSseSemanticFrames,
+  parseAnthropicSseEventText
+} from '../../modules/gateway/protocols/anthropic-v1/response-semantics.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -135,6 +140,7 @@ try {
     await assertAnthropicSseErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicGroupRejectsOpenAIResponses(baseUrl, apiKey.key)
+    assertAnthropicSignatureDeltaIsNotOutput()
     if (truthyEnv('JUHE_RUN_CLAUDE_CODE_CLI_MOCK')) {
       await assertOfficialClaudeCodeCliMockCapture(baseUrl, apiKey.key)
     }
@@ -152,6 +158,18 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertAnthropicSignatureDeltaIsNotOutput(): void {
+  const rawEvent = 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"mock-signature"}}\n\n'
+  const inspection = inspectAnthropicStreamText(rawEvent)
+  assert.equal(inspection.outputReceived, false, 'Anthropic signature_delta 不应被视为可见输出')
+  assert.equal(inspection.outputEventCount, 0, 'Anthropic signature_delta 不应增加输出事件计数')
+  assert.equal(inspection.estimatedOutputTokens, undefined, 'Anthropic signature_delta 不应参与输出 token 估算')
+
+  const frames = extractAnthropicSseSemanticFrames(parseAnthropicSseEventText(rawEvent), 'messages')
+  assert.equal(frames.some((frame) => frame.frameType === 'output_text_delta'), false, 'Anthropic signature_delta 不应生成 output_text_delta 语义帧')
+  assert(frames.some((frame) => frame.frameType === 'raw_json_path'), 'Anthropic signature_delta 仍应保留原始语义帧便于审计')
 }
 
 async function assertOfficialClaudeCodeCliMockCapture(baseUrl: string, localApiKey: string): Promise<void> {

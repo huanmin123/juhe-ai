@@ -60,6 +60,7 @@ import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './dispatch/upstream-dispatch.js'
+import type { UpstreamAttempt } from './upstream/attempt.js'
 import type { ResponseInspectionDecision } from './response/inspection.js'
 import type { GatewaySettings } from './policy/account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './adapters/gpt-codex/oauth-adapter.js'
@@ -94,6 +95,7 @@ export interface OpenAIGatewayHandleOptions {
   auditCaptureMode?: 'default' | 'metadata_only'
   settingsOverride?: Partial<GatewaySettings>
   disableAccountStateMutation?: boolean
+  onUpstreamAttemptDiagnostic?: (lastAttempt: UpstreamAttempt) => void
 }
 
 export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, res: Response, next: NextFunction): void {
@@ -453,7 +455,16 @@ export async function handleOpenAIGatewayRequest(
               settings: activeGatewaySettings,
               sessionAffinityKey,
               signal: abortController.signal,
-              lastAttempt: { accountId: account.id, accountName: account.name, upstreamUrl, status: upstreamResponse.status },
+              lastAttempt: {
+                accountId: account.id,
+                accountName: account.name,
+                providerCode: account.providerCode,
+                providerProtocolProfileId: account.providerProtocolProfileId,
+                protocolCode: account.protocolCode,
+                protocolVersion: account.protocolVersion,
+                upstreamUrl,
+                status: upstreamResponse.status
+              },
               failedProxyDispatchKeys: new Map(),
               error,
               clientIpAccountAvoidanceTracker,
@@ -571,6 +582,7 @@ export async function handleOpenAIGatewayRequest(
     }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : '没有可用的上游账户'
+    notifyUpstreamAttemptDiagnostic(options, lastAttempt)
     if (shouldSendCodexDispatchExhaustedStreamRetry(currentPreflight, error, res)) {
       confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'codex_dispatch_exhausted_retryable_sse')
       auditCapture.addGatewayMetadata({
@@ -620,6 +632,24 @@ export async function handleOpenAIGatewayRequest(
     })
   } finally {
     releaseClientIpSlot()
+  }
+}
+
+function notifyUpstreamAttemptDiagnostic(
+  options: OpenAIGatewayHandleOptions,
+  lastAttempt: UpstreamAttempt | undefined
+): void {
+  if (!lastAttempt || !options.onUpstreamAttemptDiagnostic) {
+    return
+  }
+  try {
+    options.onUpstreamAttemptDiagnostic(lastAttempt)
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_upstream_attempt_diagnostic_callback_failed',
+      accountId: lastAttempt.accountId,
+      upstreamStatus: lastAttempt.status
+    }), '网关上游尝试诊断回调失败')
   }
 }
 
@@ -674,9 +704,13 @@ function streamServerRetryLimit(accounts: UpstreamAccount[]): number {
 }
 
 function streamServerRetryFallbackReason(retryReason: StreamServerRetryReason): string {
-  return retryReason === 'response_inspection'
-    ? 'response_inspection_server_retry_exhausted'
-    : 'stream_server_retry_exhausted'
+  if (retryReason === 'response_inspection') {
+    return 'response_inspection_server_retry_exhausted'
+  }
+  if (retryReason === 'upstream_protocol_failure') {
+    return 'upstream_protocol_server_retry_exhausted'
+  }
+  return 'stream_server_retry_exhausted'
 }
 
 function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccountIds: Set<string>): UpstreamAccount[] {
@@ -763,7 +797,7 @@ function sendStreamServerRetryExhaustedResponse(input: {
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): void {
   const message = input.message || '服务端流式重试未找到可用账号'
-  if (input.retryReason === 'pre_commit_stream_failure' || input.retryReason === 'codex_pre_commit_stream_failure') {
+  if (input.retryReason === 'codex_pre_commit_stream_failure') {
     sendPreCommitStreamRetryExhaustedResponse({
       req: input.req,
       res: input.res,
@@ -776,6 +810,80 @@ function sendStreamServerRetryExhaustedResponse(input: {
       uncommittedResponseBody: input.uncommittedResponseBody,
       accountId: input.accountId,
       clientStrategy: input.clientStrategy
+    })
+    return
+  }
+  if (input.retryReason === 'pre_commit_stream_failure') {
+    if (gatewayProtocolClientErrorProtocolForRequest(input.req) === 'anthropic' || !isOpenAIChatCompletionsRequest(input.req)) {
+      sendPreCommitStreamRetryExhaustedResponse({
+        req: input.req,
+        res: input.res,
+        auditCapture: input.auditCapture,
+        usageContext: input.usageContext,
+        startedAt: input.startedAt,
+        retryReason: input.retryReason,
+        message,
+        errorCode: input.errorCode,
+        uncommittedResponseBody: input.uncommittedResponseBody,
+        accountId: input.accountId,
+        clientStrategy: input.clientStrategy
+      })
+      return
+    }
+    const responsePayload = gatewayErrorPayload(message, 'service_unavailable', input.errorCode ?? 'stream_server_retry_exhausted')
+    input.auditCapture.addGatewayMetadata({
+      label: 'stream_server_retry_exhausted',
+      metadata: {
+        retryReason: input.retryReason,
+        errorCode: input.errorCode,
+        responseMode: 'pre_commit_http_error'
+      }
+    })
+    sendGatewayFailureResponse({
+      req: input.req,
+      res: input.res,
+      auditCapture: input.auditCapture,
+      usageContext: input.usageContext,
+      startedAt: input.startedAt,
+      statusCode: 503,
+      responsePayload,
+      audit: {
+        outcome: 'upstream_failed',
+        errorPhase: 'dispatch',
+        errorCode: input.errorCode ?? 'stream_server_retry_exhausted',
+        errorMessage: message
+      },
+      recordUsage: false,
+      usageErrorMessage: message
+    })
+    return
+  }
+  if (input.retryReason === 'upstream_protocol_failure') {
+    const responsePayload = gatewayErrorPayload(message, 'upstream_response_error', input.errorCode ?? 'upstream_protocol_error')
+    input.auditCapture.addGatewayMetadata({
+      label: 'upstream_protocol_server_retry_exhausted',
+      metadata: {
+        retryReason: input.retryReason,
+        errorCode: input.errorCode,
+        responseMode: 'protocol_failure_http_error'
+      }
+    })
+    sendGatewayFailureResponse({
+      req: input.req,
+      res: input.res,
+      auditCapture: input.auditCapture,
+      usageContext: input.usageContext,
+      startedAt: input.startedAt,
+      statusCode: 502,
+      responsePayload,
+      audit: {
+        outcome: 'upstream_failed',
+        errorPhase: 'dispatch',
+        errorCode: input.errorCode ?? 'upstream_protocol_error',
+        errorMessage: message
+      },
+      recordUsage: false,
+      usageErrorMessage: message
     })
     return
   }
@@ -811,6 +919,14 @@ function sendStreamServerRetryExhaustedResponse(input: {
   })
 }
 
+function isOpenAIChatCompletionsRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') return false
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0] ?? ''
+  const requestPath = path.startsWith('/') ? path : `/${path}`
+  const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
+  return normalizedPath === '/chat/completions'
+}
+
 function sendPreCommitStreamRetryExhaustedResponse(input: {
   req: Request
   res: Response
@@ -825,7 +941,8 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
   clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
 }): void {
   const protocol = gatewayProtocolClientErrorProtocolForRequest(input.req)
-  const failureEvent = writeGatewayStreamFailureEvent(input.res, input.message, input.errorCode, protocol)
+  const clientVisibleMessage = clientVisiblePreCommitStreamRetryMessage(input)
+  const failureEvent = writeGatewayStreamFailureEvent(input.res, clientVisibleMessage, input.errorCode, protocol)
   const responseBody = input.uncommittedResponseBody
     ? Buffer.concat([input.uncommittedResponseBody, failureEvent ?? Buffer.alloc(0)])
     : failureEvent
@@ -864,9 +981,27 @@ function sendPreCommitStreamRetryExhaustedResponse(input: {
     responsePartType: 'gateway_response',
     errorPhase: 'stream',
     errorCode: input.errorCode,
-    errorMessage: input.message,
+    errorMessage: clientVisibleMessage,
     accountId: input.accountId
   })
+}
+
+function clientVisiblePreCommitStreamRetryMessage(input: {
+  retryReason: 'pre_commit_stream_failure' | 'codex_pre_commit_stream_failure'
+  errorCode?: string
+  clientStrategy?: OpenAIGatewayDispatchContext['clientStrategy']
+  message: string
+}): string {
+  if (
+    input.retryReason === 'codex_pre_commit_stream_failure'
+    || (
+      input.errorCode === gatewayStreamClientRetryErrorCode
+      && input.clientStrategy?.allowCodexStreamClientRetry === true
+    )
+  ) {
+    return gatewayStreamClientRetryMessage
+  }
+  return input.message
 }
 
 function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {

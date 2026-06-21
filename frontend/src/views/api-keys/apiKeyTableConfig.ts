@@ -1,4 +1,4 @@
-import type { ApiKeyGroupRouteStrategy } from '@/types/domain'
+import type { ApiKeyGroupRouteStrategy, ApiKeyRouteMode } from '@/types/domain'
 
 export type ApiKeyStatusFilter = 'all' | 'active' | 'disabled'
 
@@ -11,6 +11,7 @@ export function buildApiKeyTableColumns(isManagementView: boolean): Array<Record
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
   }
   baseColumns.push(
+    { title: '路由模式', key: 'routeMode', width: 160 },
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '运行状态', key: 'status', width: 120 },
     { title: '时间计划', key: 'availabilitySchedule', width: 260 },
@@ -46,4 +47,9 @@ export const apiKeyGroupRouteStrategyOptions: Array<{ label: string; value: ApiK
   { label: '主备优先', value: 'priority_failover' },
   { label: '轮询分配', value: 'round_robin' },
   { label: '权重分配', value: 'weighted_round_robin' }
+]
+
+export const apiKeyRouteModeOptions: Array<{ label: string; value: ApiKeyRouteMode }> = [
+  { label: '普通路由', value: 'normal' },
+  { label: '混合智能路由', value: 'hybrid' }
 ]

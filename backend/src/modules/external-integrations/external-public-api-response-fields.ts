@@ -275,6 +275,7 @@ function publicAccountFields(prefix: string): ExternalPublicApiField[] {
     apiDocField(`${prefix}.name`, 'string', false, 'AI 账户名称。', '公益站-青芽主通道'),
     apiDocField(`${prefix}.providerCode`, 'string', false, '供应商编码。', GPT_VENDOR_CODE),
     apiDocField(`${prefix}.type`, 'string', false, '账号类型，公开写接口当前只支持 api_key。', 'api_key'),
+    apiDocField(`${prefix}.clientCompatibility`, 'string', false, '客户端兼容模式：openai_standard 或 codex_responses。GLM Coding 只有显式为 codex_responses 时启用 Codex bridge。', 'openai_standard'),
     apiDocField(`${prefix}.status`, 'string', false, '账号状态。', 'active'),
     apiDocField(`${prefix}.supportedModels`, 'string[]', false, '账号支持的模型列表；未限制或未配置时可能缺省。', ['gpt-5.5', 'gpt-5.4']),
     apiDocField(`${prefix}.boundGroupId`, 'string', false, '账号绑定分组 ID。', 'grp_xxx'),

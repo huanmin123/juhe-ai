@@ -95,7 +95,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       capabilities_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      UNIQUE (provider_code, protocol_code, protocol_version),
       FOREIGN KEY (provider_code) REFERENCES providers(code),
       FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
     );
@@ -583,7 +582,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       key_suffix TEXT NOT NULL,
       key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      route_mode TEXT NOT NULL DEFAULT 'normal',
       group_route_strategy TEXT NOT NULL DEFAULT 'priority_failover',
+      hybrid_routing_config_json TEXT,
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
@@ -778,6 +779,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON group_authorization_settings(system_account_id, group_id);
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_route_mode ON api_keys(system_account_id, route_mode);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
       ON api_keys(status, updated_at DESC, id)

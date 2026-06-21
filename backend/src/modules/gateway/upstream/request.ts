@@ -1,10 +1,20 @@
 import * as http from 'node:http'
 import * as https from 'node:https'
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
+import type { Readable } from 'node:stream'
+import {
+  createBrotliDecompress,
+  createGunzip,
+  createInflate,
+  type BrotliDecompress,
+  type Gunzip,
+  type Inflate
+} from 'node:zlib'
 import type { Request } from 'express'
 
 import { createProxyAgent } from '../../openai-oauth/openai-oauth.service.js'
 import { prepareSafeUpstreamRequestUrl } from '../../../shared/upstream-url-policy.js'
+import { createAppCache } from '../../../shared/cache.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   isOpenAIOAuthCodexCompactRequest
@@ -54,14 +64,27 @@ export class UpstreamRequestAbortedError extends Error {
 
 const gatewayUpstreamAgentOptions: http.AgentOptions = {
   keepAlive: true,
-  maxSockets: Infinity,
-  maxFreeSockets: 2048
+  maxSockets: 512,
+  maxFreeSockets: 128,
+  maxTotalSockets: 2048
 }
+const gatewayProxyAgentCacheMaxEntries = 256
+const gatewayProxyAgentCacheTtlMs = 30 * 60 * 1000
 let directHttpAgent: http.Agent | undefined
 let directHttpsAgent: https.Agent | undefined
-const proxyAgents = new Map<string, http.Agent>()
+const proxyAgents = createAppCache<string, http.Agent>({
+  name: 'gateway:proxy-agents',
+  max: gatewayProxyAgentCacheMaxEntries,
+  ttlMs: gatewayProxyAgentCacheTtlMs,
+  updateAgeOnGet: true,
+  dispose: (agent) => {
+    agent.destroy()
+  }
+})
 
 class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
+  private decodedBody: AsyncIterable<Uint8Array> | null | undefined
+
   constructor(private readonly message: IncomingMessage) {}
 
   get status(): number {
@@ -77,7 +100,11 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
   }
 
   get body(): AsyncIterable<Uint8Array> | null {
-    return this.message as AsyncIterable<Uint8Array>
+    if (this.decodedBody !== undefined) {
+      return this.decodedBody
+    }
+    this.decodedBody = decodeUpstreamResponseBody(this.message)
+    return this.decodedBody
   }
 
 }
@@ -109,9 +136,10 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
       settleReject(error)
       return
     }
+    const headers = upstreamRequestHeaders(options.headers, options.body)
     const requestOptions: http.RequestOptions = {
       method: options.method,
-      headers: headersToNodeHeaders(options.headers),
+      headers: headersToNodeHeaders(headers),
       agent,
       lookup: safeRequest.lookup
     }
@@ -185,7 +213,7 @@ function cachedProxyAgent(proxyUrl: string): http.Agent {
     return cached
   }
   const agent = createProxyAgent(proxyUrl, gatewayUpstreamAgentOptions) as http.Agent
-  proxyAgents.set(proxyUrl, agent)
+  proxyAgents.set(proxyUrl, agent, { ttlMs: gatewayProxyAgentCacheTtlMs })
   return agent
 }
 
@@ -348,6 +376,18 @@ function headersToNodeHeaders(headers: Headers): http.OutgoingHttpHeaders {
   return output
 }
 
+function upstreamRequestHeaders(headers: Headers, body?: Buffer | string): Headers {
+  const output = new Headers(headers)
+  if (body !== undefined && !output.has('content-length')) {
+    output.set('content-length', String(upstreamRequestBodyByteLength(body)))
+  }
+  return output
+}
+
+function upstreamRequestBodyByteLength(body: Buffer | string): number {
+  return typeof body === 'string' ? Buffer.byteLength(body) : body.length
+}
+
 function headersFromIncoming(headers: IncomingHttpHeaders): Headers {
   const output = new Headers()
   for (const [name, value] of Object.entries(headers)) {
@@ -359,6 +399,61 @@ function headersFromIncoming(headers: IncomingHttpHeaders): Headers {
     }
   }
   return output
+}
+
+function decodeUpstreamResponseBody(message: IncomingMessage): AsyncIterable<Uint8Array> | null {
+  const encodings = parseContentEncodings(message.headers['content-encoding'])
+  if (encodings.length === 0 || encodings.every((encoding) => encoding === 'identity')) {
+    return message as AsyncIterable<Uint8Array>
+  }
+
+  let stream = message as Readable
+  for (const encoding of [...encodings].reverse()) {
+    if (encoding === 'identity') {
+      continue
+    }
+    const decoder = createUpstreamResponseDecoder(encoding)
+    if (!decoder) {
+      return unsupportedUpstreamResponseEncoding(message, encoding)
+    }
+    stream = stream.pipe(decoder)
+  }
+  return stream as AsyncIterable<Uint8Array>
+}
+
+function parseContentEncodings(value: string | string[] | undefined): string[] {
+  const joined = Array.isArray(value) ? value.join(',') : value
+  if (!joined) {
+    return []
+  }
+  return joined
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+function createUpstreamResponseDecoder(encoding: string): BrotliDecompress | Gunzip | Inflate | undefined {
+  switch (encoding) {
+    case 'br':
+      return createBrotliDecompress()
+    case 'gzip':
+    case 'x-gzip':
+      return createGunzip()
+    case 'deflate':
+    case 'x-deflate':
+      return createInflate()
+    default:
+      return undefined
+  }
+}
+
+async function* unsupportedUpstreamResponseEncoding(
+  message: IncomingMessage,
+  encoding: string
+): AsyncIterable<Uint8Array> {
+  const error = new Error(`不支持的上游响应压缩编码: ${encoding}`)
+  message.destroy(error)
+  throw error
 }
 
 export async function readStreamChunkWithTimeout(

@@ -3,7 +3,7 @@ import type { GroupListParams, GroupOptionParams, ListParams } from '../contract
 import { http, unwrap } from '../http'
 import { groupListParams, groupOptionParams } from '../params'
 
-type MyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>
+type MyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'limit' | 'manageableOnly' | 'preferDefault'>
 
 export const groupsApi = {
   list: async (params?: GroupListParams) => (await unwrap<GroupListResult>(http.get('/groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }) }))).items,

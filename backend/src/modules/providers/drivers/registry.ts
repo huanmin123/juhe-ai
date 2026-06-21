@@ -4,21 +4,25 @@ import type { ProviderCode } from '../../../domain/types.js'
 import { openAIEndpointModeForRequestShape } from '../../../domain/openai-endpoint-modes.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken, type ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../storage/openai-account-selector.types.js'
-import { isEffectiveOpenAIStreamRequest } from '../../gateway/upstream/request.js'
+import { isEffectiveOpenAIStreamRequest, type GatewayUpstreamResponse } from '../../gateway/upstream/request.js'
 import { anthropicProviderDriver } from './anthropic/driver.js'
+import { deepSeekProviderDriver } from './deepseek/driver.js'
 import type {
   ProviderDriver,
   ProviderGatewayRequestContext,
   ProviderRequestCapabilityMismatchReason,
   ProviderUsageModelResolution
 } from './_shared/types.js'
+import { glmProviderDriver } from './glm/driver.js'
 import { gptProviderDriver } from './gpt/driver.js'
 import { openAICompatibleProviderDriver } from './openai-compatible/driver.js'
 
 const providerDrivers: readonly ProviderDriver[] = [
   openAICompatibleProviderDriver,
   gptProviderDriver,
-  anthropicProviderDriver
+  deepSeekProviderDriver,
+  anthropicProviderDriver,
+  glmProviderDriver
 ] as const
 
 export function listProviderDrivers(): readonly ProviderDriver[] {
@@ -94,6 +98,15 @@ export async function buildGatewayUpstreamRequestParts(
     throw new Error(`供应商协议档案未注册请求构造器：${account.providerProtocolProfileId}`)
   }
   return await driver.buildUpstreamRequestParts(req, account, identity, signal, context)
+}
+
+export function transformGatewayUpstreamResponseForAccount(
+  req: Request,
+  account: DispatchAccountSecret,
+  response: GatewayUpstreamResponse,
+  context?: ProviderGatewayRequestContext
+): GatewayUpstreamResponse {
+  return providerDriverForAccount(account)?.transformUpstreamResponse?.(req, account, response, context) ?? response
 }
 
 export function gatewayRequestCapabilityMismatchReason(

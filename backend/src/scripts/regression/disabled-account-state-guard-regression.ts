@@ -10,6 +10,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
+import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-disabled-account-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'disabled-account-guard.sqlite3')
@@ -22,6 +23,8 @@ runtimeConfig.processRole = 'worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [
   { accountsRouter },
@@ -330,6 +333,7 @@ async function main(): Promise<void> {
       databaseModule.closeStorageDatabases()
     } catch {
     }
+    restoreWorkerParentIpc()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 }
@@ -374,7 +378,7 @@ async function login(baseUrl: string): Promise<string> {
   const passwordResponse = await fetch(`${baseUrl}/__aisys__/api/auth/change-password`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ newPassword: 'admin-regression-password' })
+    body: JSON.stringify({ oldPassword: 'admin', newPassword: 'admin-regression-password' })
   })
   assert(passwordResponse.ok, `回归夹具修改初始密码失败：HTTP ${passwordResponse.status} ${await passwordResponse.text()}`)
   return cookie

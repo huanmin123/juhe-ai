@@ -28,6 +28,7 @@ export function usageStatsEntries(row: UsageStatsRecordRow, lookup?: UsageStatsA
     { systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'system_account', scopeId: GLOBAL_STATS_SCOPE_ID, accumulator }
   ]
   if (row.provider_code) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider', scopeId: row.provider_code, accumulator })
+  if (row.provider_protocol_profile_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider_protocol_profile', scopeId: row.provider_protocol_profile_id, accumulator })
   if (row.group_id && groupMetadata && !skipOwnerGroupStats) entries.push({ systemAccountId: groupMetadata.ownerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'caller_account', scopeId: row.account_id, accumulator })
   if (row.account_id && accountStatsSystemAccountId && !skipOwnerAccountStats) entries.push({ systemAccountId: accountStatsSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
@@ -82,8 +83,8 @@ function accountAuthorizationTeamAccountId(row: UsageStatsRecordRow, lookup?: Us
   return row.account_id ?? ''
 }
 
-export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boolean {
-  return row.traffic_source !== 'cooldown_retest'
+export function shouldAggregateUsageStatsRecord(_row: UsageStatsRecordRow): boolean {
+  return true
 }
 
 export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {

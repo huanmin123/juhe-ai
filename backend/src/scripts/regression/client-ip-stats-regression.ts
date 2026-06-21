@@ -610,6 +610,7 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   assert(source.includes('function openDetailDrawer'), 'IP 管理页面应提供 IP 详情抽屉入口')
   assert(source.includes('api.ipStats.detail'), 'IP 管理详情抽屉应通过详情接口加载账号用量')
   assert(source.includes('detailRows.value = result.items'), 'IP 管理详情抽屉应展示后端账号窗口结果')
+  assert(source.includes("{ title: 'AI 账户', key: 'account', width: 180"), 'IP 管理详情账号列应保持紧凑宽度')
   assert(!source.includes('record.accountName ? record.accountId'), 'IP 管理详情账号列不应展示账户号')
   assert(!source.includes('record.systemAccountName'), 'IP 管理详情账号列不应展示系统账户角色')
   assert(listSource.includes("detail: [record: ClientIpStatsRow]"), 'IP 管理列表应向页面抛出详情事件')

@@ -231,6 +231,22 @@ export function downgradeGatewayAutoImageGenerationTool(req: Request): GatewayIm
   }
 }
 
+export function replaceGatewayJsonBodyModel(req: Request, model: string, body?: Record<string, unknown>): boolean {
+  const targetModel = model.trim()
+  if (!targetModel) {
+    return false
+  }
+  const currentBody = body ?? gatewayJsonObjectBody(req)
+  if (!currentBody) {
+    return false
+  }
+  replaceGatewayJsonBody(req, {
+    ...currentBody,
+    model: targetModel
+  })
+  return true
+}
+
 function gatewayJsonObjectBody(req: Request): Record<string, unknown> | undefined {
   const request = req as GatewayRawBodyRequest
   const body = request.body !== undefined
@@ -244,7 +260,7 @@ function gatewayJsonObjectBody(req: Request): Record<string, unknown> | undefine
   return undefined
 }
 
-function replaceGatewayJsonBody(req: Request, body: Record<string, unknown>): void {
+export function replaceGatewayJsonBody(req: Request, body: Record<string, unknown>): void {
   const request = req as GatewayRawBodyRequest
   const previousState = getGatewayRequestBodyState(req)
   const contentType = previousState?.contentType ?? String(req.headers['content-type'] ?? 'application/json')

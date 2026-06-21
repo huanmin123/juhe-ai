@@ -28,6 +28,7 @@ export function extractOpenAIUsage(value: unknown): ParsedUsage {
   const outputTokens = numberValue(usage.output_tokens) ?? numberValue(usage.completion_tokens)
   const cacheReadTokens = numberValue(responsesInputDetails?.cached_tokens)
     ?? numberValue(chatInputDetails?.cached_tokens)
+    ?? numberValue(usage.prompt_cache_hit_tokens)
   const outputDetails = objectValue(usage.output_tokens_details) ?? objectValue(usage.completion_tokens_details)
   const inputImageTokens = numberValue(responsesInputDetails?.image_tokens)
     ?? numberValue(chatInputDetails?.image_tokens)
@@ -35,8 +36,9 @@ export function extractOpenAIUsage(value: unknown): ParsedUsage {
   const inputAudioTokens = numberValue(responsesInputDetails?.audio_tokens)
     ?? numberValue(chatInputDetails?.audio_tokens)
   const outputAudioTokens = numberValue(outputDetails?.audio_tokens)
+  const thinkingTokens = numberValue(outputDetails?.reasoning_tokens)
   const outputImageCount = outputImageCountValue(usage)
-  return { inputTokens, outputTokens, cacheReadTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, outputImageCount }
+  return { inputTokens, outputTokens, cacheReadTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, thinkingTokens, outputImageCount }
 }
 
 function extractJsonObjectPropertyFromTextFragment(text: string, propertyName: string): string | undefined {

@@ -1,6 +1,10 @@
 import type { AccountClientCompatibility, AccountSupportedEndpointMode } from './types.js'
 import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  DEEPSEEK_PROVIDER_CODE,
   GPT_VENDOR_CODE,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   OPENAI_RESPONSES_FAMILY,
@@ -28,6 +32,7 @@ const openAIEndpointModeSet = new Set<string>(OPENAI_ENDPOINT_MODE_VALUES)
 
 export interface OpenAIEndpointModeDefaultContext {
   providerCode?: string
+  providerProtocolProfileId?: string
   accountType?: string
   clientCompatibility?: AccountClientCompatibility
 }
@@ -37,10 +42,13 @@ export function defaultOpenAIEndpointModes(input: OpenAIEndpointModeDefaultConte
     return [...OPENAI_RESPONSES_ENDPOINT_MODES]
   }
   const providerCode = normalizeProviderToken(input.providerCode)
+  if (input.clientCompatibility === 'codex_responses' && supportsCodexResponsesChatBridge(input)) {
+    return [...OPENAI_CHAT_ENDPOINT_MODES]
+  }
   if (providerCode === GPT_VENDOR_CODE || input.clientCompatibility === 'codex_responses') {
     return [...OPENAI_ENDPOINT_MODE_VALUES]
   }
-  if (providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE) {
+  if (providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE || providerCode === DEEPSEEK_PROVIDER_CODE || providerCode === GLM_PROVIDER_CODE) {
     return [...OPENAI_CHAT_ENDPOINT_MODES]
   }
   return [...OPENAI_ENDPOINT_MODE_VALUES]
@@ -121,6 +129,7 @@ export function accountSupportsOpenAIEndpointMode(input: {
   supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
   credentials?: Record<string, unknown>
   providerCode?: string
+  providerProtocolProfileId?: string
   accountType?: string
   clientCompatibility?: AccountClientCompatibility
   mode: AccountSupportedEndpointMode
@@ -129,6 +138,7 @@ export function accountSupportsOpenAIEndpointMode(input: {
     ? [...input.supportedEndpointModes]
     : normalizeOpenAIEndpointModesForRuntime(input.credentials?.supported_endpoint_modes, {
       providerCode: input.providerCode,
+      providerProtocolProfileId: input.providerProtocolProfileId,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
     })
@@ -137,6 +147,8 @@ export function accountSupportsOpenAIEndpointMode(input: {
 
 export function assertOpenAIEndpointModesCompatible(input: {
   modes: readonly AccountSupportedEndpointMode[]
+  providerCode?: string
+  providerProtocolProfileId?: string
   accountType?: string
   clientCompatibility?: AccountClientCompatibility
 }): void {
@@ -149,7 +161,20 @@ export function assertOpenAIEndpointModesCompatible(input: {
       throw new Error('OAuth 账户必须支持 Responses SSE')
     }
   }
+  if (input.clientCompatibility === 'codex_responses' && supportsCodexResponsesChatBridge(input)) {
+    if (!input.modes.includes('chat_sse')) {
+      throw new Error('Codex Responses 桥接能力必须启用 Chat SSE')
+    }
+    return
+  }
   if (input.clientCompatibility === 'codex_responses' && !input.modes.includes('responses_sse')) {
     throw new Error('Codex Responses 兼容能力必须启用 Responses SSE')
   }
+}
+
+export function supportsCodexResponsesChatBridge(input: {
+  providerProtocolProfileId?: string
+}): boolean {
+  return input.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID
+    || input.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
 }

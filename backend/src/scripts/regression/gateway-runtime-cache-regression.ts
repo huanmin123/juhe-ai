@@ -231,8 +231,8 @@ try {
   const multiGroupAccountScheduledSecond = await withMockedNow(scheduleActiveAt + 10_000, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.multiGroupAccountScheduledKey))
   assert.equal(multiGroupAccountScheduledSecond.accounts.length, 0, '多分组账户计划后台同步前应继续命中空候选缓存')
   assert.equal(fakeChild.sentOperationCount, multiGroupAccountScheduleOperationCount + 1, '多分组账户计划后台同步前重复读取应命中缓存')
-  syncAccountScheduleStatusAt(Date.parse('2026-06-01T00:01:01.000Z'))
-  const multiGroupAccountScheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.multiGroupAccountScheduledKey))
+  syncAccountScheduleStatusAt(Date.parse('2026-06-01T00:04:01.000Z'))
+  const multiGroupAccountScheduledAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:04:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.multiGroupAccountScheduledKey))
   assert.equal(multiGroupAccountScheduledAfterBoundary.accounts.length, 1, '多分组账户计划进入允许时段后应重新返回候选账号')
   assert.equal(fakeChild.sentOperationCount, multiGroupAccountScheduleOperationCount + 2, '多分组账户计划后台同步后应重新请求 DB service，不能继续命中空运行配置')
 
@@ -505,7 +505,7 @@ function seedGatewayRuntime(): {
         timezone: 'UTC',
         mode: 'allow_windows',
         windows: [
-          { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:01', end: '00:02' }
+          { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:04', end: '00:05' }
         ]
       }
     }, { systemAccountId: 'sys_admin', role: 'admin' })

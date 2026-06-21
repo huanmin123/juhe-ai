@@ -5,6 +5,11 @@ import {
   normalizeApiKeyGroupBindingWeight,
   normalizeApiKeyGroupRouteStrategy
 } from '../domain/api-key-routing.js'
+import {
+  hybridRoutingConfigJson,
+  normalizeApiKeyRouteMode,
+  normalizeHybridRoutingConfig
+} from '../domain/api-key-hybrid-routing.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canBindApiKeyGroup, canManageApiKeyOwner } from './api-key-access.js'
@@ -33,7 +38,9 @@ const apiKeyMutationInputKeys = new Set([
   'name',
   'description',
   'groupBindings',
+  'routeMode',
   'groupRouteStrategy',
+  'hybridRoutingConfig',
   'status',
   'expiresAt',
   'quotaLimits',
@@ -150,7 +157,9 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
     'api_keys.key_prefix',
     'api_keys.key_suffix',
     'api_keys.status',
+    'api_keys.route_mode',
     'api_keys.group_route_strategy',
+    'api_keys.hybrid_routing_config_json',
     'system_accounts.display_name AS group_owner_system_account_name',
     'api_keys.expires_at',
     'api_keys.quota_limits_json',
@@ -176,12 +185,16 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   if (!rawBindings) {
     throw new Error('API Key 至少需要绑定一个分组')
   }
+  const routeMode = normalizeApiKeyRouteMode(input.routeMode)
   const firstExplicitGroupId = rawBindings?.[0]?.groupId
   const firstGroup = firstExplicitGroupId ? apiKeyGroupOwnerAndProvider(firstExplicitGroupId) : undefined
   if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
     systemAccountId = firstGroup.systemAccountId
   }
-  const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId)
+  const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId, {
+    allowMixedProviderProtocolProfiles: routeMode === 'hybrid'
+  })
+  const hybridRoutingConfig = normalizeApiKeyHybridRoutingConfigForWrite(input.hybridRoutingConfig, routeMode, bindings)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
@@ -199,7 +212,9 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     keyPrefix,
     keySuffix,
     status: normalizeApiKeyStatus(input.status, 'active'),
+    routeMode,
     groupRouteStrategy,
+    hybridRoutingConfig,
     groupBindings,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
@@ -223,7 +238,9 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       'key_suffix',
       'key_secret_encrypted',
       'status',
+      'route_mode',
       'group_route_strategy',
+      'hybrid_routing_config_json',
       'expires_at',
       'quota_limits_json',
       'availability_schedule_json',
@@ -241,7 +258,9 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       record.keySuffix,
       encryptJson({ key }),
       record.status,
+      record.routeMode,
       record.groupRouteStrategy,
+      hybridRoutingConfigJson(record.hybridRoutingConfig),
       record.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
@@ -291,12 +310,30 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     return undefined
   }
 
+  const hasRouteModeInput = Object.prototype.hasOwnProperty.call(input, 'routeMode')
+  const nextRouteMode = hasRouteModeInput
+    ? normalizeApiKeyRouteMode(input.routeMode)
+    : current.routeMode
   const hasBindingInput = hasApiKeyGroupBindingInput(input)
   const nextBindings = hasBindingInput
     ? normalizeApiKeyGroupBindings(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId, {
-      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId)
+      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId),
+      allowMixedProviderProtocolProfiles: nextRouteMode === 'hybrid'
     })
     : undefined
+  const effectiveBindings = nextBindings ?? current.groupBindings.map((binding) => ({
+    groupId: binding.groupId,
+    status: binding.status,
+    groupEnabled: binding.groupEnabled
+  }))
+  const hasHybridRoutingConfigInput = Object.prototype.hasOwnProperty.call(input, 'hybridRoutingConfig')
+  const nextHybridRoutingConfig = (hasHybridRoutingConfigInput || hasRouteModeInput || hasBindingInput)
+    ? normalizeApiKeyHybridRoutingConfigForWrite(
+      hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig,
+      nextRouteMode,
+      effectiveBindings
+    )
+    : current.hybridRoutingConfig
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
   const nextExpiresAt = hasExpiresAtInput
     ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
@@ -328,7 +365,9 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextManualStatus,
+    routeMode: nextRouteMode,
     groupRouteStrategy: nextGroupRouteStrategy,
+    hybridRoutingConfig: nextHybridRoutingConfig,
     groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
     expiresAt: nextExpiresAt,
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
@@ -344,7 +383,9 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       'name = ?',
       'description = ?',
       'status = ?',
+      'route_mode = ?',
       'group_route_strategy = ?',
+      'hybrid_routing_config_json = ?',
       'expires_at = ?',
       'quota_limits_json = ?',
       'availability_schedule_json = ?',
@@ -355,7 +396,9 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       next.name,
       next.description ?? null,
       next.status,
+      next.routeMode,
       next.groupRouteStrategy,
+      hybridRoutingConfigJson(next.hybridRoutingConfig),
       next.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
@@ -547,7 +590,7 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
 function normalizeApiKeyGroupBindings(
   inputs: ApiKeyGroupBindingInput[],
   systemAccountId: string,
-  options: { retainableGroupIds?: string[] } = {}
+  options: { retainableGroupIds?: string[]; allowMixedProviderProtocolProfiles?: boolean } = {}
 ): ApiKeyGroupBindingWrite[] {
   if (!inputs.length) {
     throw new Error('API Key 至少需要绑定一个分组')
@@ -593,7 +636,7 @@ function normalizeApiKeyGroupBindings(
       if (!group || (!canBindNow && !retainableGroupIds.has(binding.groupId))) {
         throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
       }
-      if (providerProtocolProfileId && group.provider_protocol_profile_id !== providerProtocolProfileId) {
+      if (!options.allowMixedProviderProtocolProfiles && providerProtocolProfileId && group.provider_protocol_profile_id !== providerProtocolProfileId) {
         throw new Error(API_KEY_GROUP_PROVIDER_ERROR)
       }
       providerProtocolProfileId = providerProtocolProfileId ?? group.provider_protocol_profile_id
@@ -655,6 +698,24 @@ function loadApiKeyBindableGroups(groupIds: string[], systemAccountId: string): 
     }
   }
   return result
+}
+
+function normalizeApiKeyHybridRoutingConfigForWrite(
+  value: unknown,
+  routeMode: ApiKeySummary['routeMode'],
+  bindings: Array<Pick<ApiKeyGroupBindingWrite, 'groupId' | 'status' | 'groupEnabled'>>
+): ApiKeySummary['hybridRoutingConfig'] {
+  if (routeMode !== 'hybrid') {
+    return undefined
+  }
+  const config = normalizeHybridRoutingConfig(value)
+  const activeGroupIds = new Set(bindings
+    .filter((binding) => binding.status === 'active' && binding.groupEnabled)
+    .map((binding) => binding.groupId))
+  if (!activeGroupIds.has(config.scoringGroupId)) {
+    throw new Error('混合路由评分分组必须是当前 API Key 绑定的启用分组')
+  }
+  return config
 }
 
 function replaceApiKeyGroupBindings(

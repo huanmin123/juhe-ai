@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import type {
   AccountClientCompatibility,
   AccountModelMapping,
@@ -41,6 +42,8 @@ export interface ProviderUpstreamRequestParts {
   body?: Buffer | string
 }
 
+export interface ProviderUpstreamResponseTransformContext extends ProviderGatewayRequestContext {}
+
 export interface ProviderAccountPreparationContext {
   signal?: AbortSignal
 }
@@ -72,6 +75,12 @@ export interface ProviderDriver {
     signal?: AbortSignal,
     context?: ProviderGatewayRequestContext
   ): Promise<ProviderUpstreamRequestParts>
+  transformUpstreamResponse?(
+    req: Request,
+    account: DispatchAccountSecret,
+    response: GatewayUpstreamResponse,
+    context?: ProviderUpstreamResponseTransformContext
+  ): GatewayUpstreamResponse
   endpointModeForRequest(req: Request, account: ProviderDriverAccount): AccountSupportedEndpointMode | undefined
   accountSupportsRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext): boolean
 }

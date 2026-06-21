@@ -10,6 +10,8 @@ import {
   upstreamSocketTimeoutMs,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
+import { transformGatewayUpstreamResponseForAccount } from '../../providers/drivers/registry.js'
+import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 
 interface PerformUpstreamRequestAttemptInput {
   req: Request
@@ -22,6 +24,7 @@ interface PerformUpstreamRequestAttemptInput {
   settings: GatewaySettings
   attemptStartedAt: number
   signal?: AbortSignal
+  requestClientCompatibility?: ClientCompatibilityCapability
 }
 
 export async function performUpstreamRequestAttempt(
@@ -37,7 +40,8 @@ export async function performUpstreamRequestAttempt(
     body,
     settings,
     attemptStartedAt,
-    signal
+    signal,
+    requestClientCompatibility
   } = input
   const socketTimeoutMs = upstreamSocketTimeoutMs(req, settings, account)
   const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
@@ -83,5 +87,7 @@ export async function performUpstreamRequestAttempt(
     stream: isEffectiveOpenAIStreamRequest(req, account)
   }, '网关收到上游响应头')
 
-  return response
+  return transformGatewayUpstreamResponseForAccount(req, account, response, {
+    requestClientCompatibility
+  })
 }

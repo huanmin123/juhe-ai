@@ -32,6 +32,13 @@ const anthropicAccount = accountFixture({
   protocolCode: 'anthropic',
   protocolVersion: 'v1'
 })
+const deepSeekAccount = accountFixture({
+  id: 'acct_model_check_deepseek',
+  providerCode: 'deepseek',
+  providerProtocolProfileId: 'profile_deepseek_openai_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1'
+})
 const unnamedOpenAIAccount = accountFixture({
   id: 'acct_model_check_unnamed',
   providerCode: 'openai',
@@ -42,6 +49,7 @@ const unnamedOpenAIAccount = accountFixture({
 
 assert.equal(canRunModelCheckForAccount(gptOpenAIAccount), true, 'GPT 的 OpenAI v1 账户仍应可进入模型检测')
 assert.equal(canRunModelCheckForAccount(openAICompatibleAccount), true, 'OpenAI-compatible 的 OpenAI v1 账户应可进入模型检测')
+assert.equal(canRunModelCheckForAccount(deepSeekAccount), false, 'DeepSeek Chat-only 账户不应进入当前 Responses 模型检测')
 assert.equal(canRunModelCheckForAccount(anthropicAccount), false, 'Anthropic 原生账户不应进入当前 OpenAI v1 模型检测')
 assert.equal(canSelectModelCheckAccount(openAICompatibleAccount), true, 'OpenAI-compatible 有名称账户应可被选择')
 assert.equal(canSelectModelCheckAccount(openAICompatibleAccount, { excludedAccountId: openAICompatibleAccount.id }), false, '可信对比账户不能选择当前检测目标')
@@ -51,8 +59,9 @@ assert.match(accountOptionsSource, /from '\.\/modelCheckProviderCapabilities'/, 
 assert.doesNotMatch(accountOptionsSource, /isGptVendorCode|GPT_VENDOR_CODE/, '模型检测账户选项不应再绑定 GPT 供应商名')
 assert.doesNotMatch(accountOptionsSource, /isOpenAIProtocolProfile/, '模型检测账户选项不应内联协议判断')
 assert.match(capabilitySource, /isOpenAIProtocolProfile/, '当前模型检测能力 helper 应独立表达 OpenAI v1 协议边界')
+assert.match(capabilitySource, /isOpenAICompatibleProviderCode/, '当前模型检测能力 helper 应排除 DeepSeek 等 Chat-only OpenAI v1 供应商')
 
-console.log('模型检测供应商能力回归通过：OpenAI-compatible 可进入 OpenAI v1 检测，Anthropic 原生仍隔离')
+console.log('模型检测供应商能力回归通过：OpenAI-compatible 可进入 Responses 检测，DeepSeek 与 Anthropic 仍隔离')
 
 function accountFixture(overrides: Partial<AccountOptionSummary> = {}): AccountOptionSummary {
   return {
@@ -84,4 +93,3 @@ function accountFixture(overrides: Partial<AccountOptionSummary> = {}): AccountO
     ...overrides
   }
 }
-

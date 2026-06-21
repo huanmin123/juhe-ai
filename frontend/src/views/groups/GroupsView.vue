@@ -70,6 +70,7 @@
       :max-queue-wait-seconds="formMaxQueueWaitSeconds"
       :provider-locked="providerLocked"
       :provider-options="providerOptions"
+      :provider-profile-options="providerProfileOptions"
       :saving="groupSaving"
       :show-target-alert="!editingId && isManagementView"
       :target-system-account-label="targetSystemAccountLabel"
@@ -217,6 +218,14 @@ const groupScopeParams = computed(() => {
   return systemAccountId ? { systemAccountId } : undefined
 })
 const providerOptions = computed(() => groupsProviderOptions(availableProviders.value))
+const providerProfileOptions = computed(() => {
+  const provider = availableProviders.value.find((item) => item.code === form.providerCode)
+  return (provider?.protocolProfiles ?? []).map((profile) => ({
+    label: profile.name,
+    value: profile.id,
+    disabled: !profile.enabled
+  }))
+})
 const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))
 const editingAuthorizedGroup = computed(() => Boolean(editingGroup.value && isAuthorizedGroup(editingGroup.value)))
 const groupModalTitle = computed(() => {

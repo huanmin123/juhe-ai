@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-import { ANTHROPIC_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, DEEPSEEK_PROVIDER_CODE, GLM_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { getExternalPublicApiCatalog } from '../../modules/external-integrations/external-public-api-catalog.js'
 import {
   parseOpenAIUsageFromJsonBuffer
@@ -42,13 +42,17 @@ const responsesUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
     output_tokens: 200,
     input_tokens_details: {
       cached_tokens: 300
+    },
+    output_tokens_details: {
+      reasoning_tokens: 12
     }
   }
 }))
 assert.deepEqual(defined(responsesUsage), {
   inputTokens: 1000,
   outputTokens: 200,
-  cacheReadTokens: 300
+  cacheReadTokens: 300,
+  thinkingTokens: 12
 })
 
 const chatUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
@@ -57,13 +61,41 @@ const chatUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
     completion_tokens: 150,
     prompt_tokens_details: {
       cached_tokens: 400
+    },
+    completion_tokens_details: {
+      reasoning_tokens: 10
     }
   }
 }))
 assert.deepEqual(defined(chatUsage), {
   inputTokens: 1200,
   outputTokens: 150,
-  cacheReadTokens: 400
+  cacheReadTokens: 400,
+  thinkingTokens: 10
+})
+
+const deepSeekUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
+  choices: [
+    {
+      message: {
+        role: 'assistant',
+        reasoning_content: 'reasoning',
+        content: 'answer'
+      },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: {
+    prompt_tokens: 1000,
+    completion_tokens: 80,
+    prompt_cache_hit_tokens: 640,
+    prompt_cache_miss_tokens: 360
+  }
+}))
+assert.deepEqual(defined(deepSeekUsage), {
+  inputTokens: 1000,
+  outputTokens: 80,
+  cacheReadTokens: 640
 })
 
 const usageAfterLargePayload = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
@@ -108,7 +140,7 @@ const responsesStreamInspection = inspectOpenAIStreamText([
   'data: {"type":"response.output_text.delta","delta":"hi"}',
   '',
   'event: response.completed',
-  'data: {"type":"response.completed","response":{"usage":{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":300}}}}',
+  'data: {"type":"response.completed","response":{"usage":{"input_tokens":1000,"output_tokens":200,"input_tokens_details":{"cached_tokens":300},"output_tokens_details":{"reasoning_tokens":12}}}}',
   ''
 ].join('\n'))
 assert.equal(responsesStreamInspection.terminalReceived, true)
@@ -119,7 +151,7 @@ assert.deepEqual(defined(responsesStreamInspection.usage), defined(responsesUsag
 const chatStreamInspection = inspectOpenAIStreamText([
   'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}',
   '',
-  'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":150,"prompt_tokens_details":{"cached_tokens":400}}}',
+  'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":150,"prompt_tokens_details":{"cached_tokens":400},"completion_tokens_details":{"reasoning_tokens":10}}}',
   '',
   'data: [DONE]',
   ''
@@ -292,6 +324,56 @@ assert.equal(estimateProviderCostUsd({
   outputTokens: 200,
   cacheReadTokens: 300
 }), gpt41Cost)
+
+const deepSeekV4ProCost = estimateProviderCostUsd({
+  providerCode: DEEPSEEK_PROVIDER_CODE,
+  model: 'deepseek-ai-v4-pro',
+  inputTokens: 1000,
+  outputTokens: 100,
+  cacheReadTokens: 400
+})
+assert.equal(deepSeekV4ProCost, 0.00034945, 'DeepSeek V4 Pro 成本应按 cache hit 与 cache miss 拆分')
+const deepSeekModelPricingList = listProviderModelPricing(DEEPSEEK_PROVIDER_CODE)
+const deepSeekPricingById = new Map(deepSeekModelPricingList.map((item) => [item.model, item]))
+for (const id of ['deepseek-v4-flash', 'deepseek-ai-v4-flash', 'deepseek-v4-pro', 'deepseek-ai-v4-pro']) {
+  assert(deepSeekPricingById.has(id), `DeepSeek 模型价格目录应包含 ${id}`)
+  assert.deepEqual(deepSeekPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
+}
+assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.inputUsdPer1M, 0.14)
+assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.cachedInputUsdPer1M, 0.0028)
+assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.outputUsdPer1M, 0.28)
+assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.maxInputTokens, 1_000_000)
+assert.equal(deepSeekPricingById.get('deepseek-v4-flash')?.maxOutputTokens, 384_000)
+assert.equal(deepSeekPricingById.get('deepseek-v4-pro')?.inputUsdPer1M, 0.435)
+assert.equal(deepSeekPricingById.get('deepseek-v4-pro')?.cachedInputUsdPer1M, 0.003625)
+assert.equal(deepSeekPricingById.get('deepseek-v4-pro')?.outputUsdPer1M, 0.87)
+assert.equal(getProviderModelPricing(DEEPSEEK_PROVIDER_CODE, 'deepseek-v4-pro-2026-06-20')?.model, 'deepseek-v4-pro')
+assert.equal(getProviderModelPricing(DEEPSEEK_PROVIDER_CODE, 'deepseek-ai-v4-pro')?.model, 'deepseek-ai-v4-pro')
+
+const glm52Cost = estimateProviderCostUsd({
+  providerCode: GLM_PROVIDER_CODE,
+  model: 'glm-5.2',
+  inputTokens: 1000,
+  outputTokens: 100,
+  cacheReadTokens: 400
+})
+assert.equal(glm52Cost, 0.001384, 'GLM-5.2 成本应按 cache hit 与 cache miss 拆分')
+const glmModelPricingList = listProviderModelPricing(GLM_PROVIDER_CODE)
+const glmPricingById = new Map(glmModelPricingList.map((item) => [item.model, item]))
+for (const id of ['glm-5.2-free', 'glm-5.2', 'glm-5-turbo']) {
+  assert(glmPricingById.has(id), `GLM 模型价格目录应包含 ${id}`)
+  assert.deepEqual(glmPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
+}
+assert.equal(glmPricingById.get('glm-5.2-free')?.inputUsdPer1M, 0)
+assert.equal(glmPricingById.get('glm-5.2-free')?.outputUsdPer1M, 0)
+assert.equal(glmPricingById.get('glm-5.2')?.inputUsdPer1M, 1.4)
+assert.equal(glmPricingById.get('glm-5.2')?.cachedInputUsdPer1M, 0.26)
+assert.equal(glmPricingById.get('glm-5.2')?.outputUsdPer1M, 4.4)
+assert.equal(glmPricingById.get('glm-5-turbo')?.inputUsdPer1M, 1.2)
+assert.equal(glmPricingById.get('glm-5-turbo')?.cachedInputUsdPer1M, 0.24)
+assert.equal(glmPricingById.get('glm-5-turbo')?.outputUsdPer1M, 4)
+assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5.2-20260620')?.model, 'glm-5.2')
+assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5-turbo-20260620')?.model, 'glm-5-turbo')
 
 const openAIModelPricingList = listProviderModelPricing(GPT_VENDOR_CODE)
 const genericOpenAIModelPricingList = listProviderModelPricing(OPENAI_COMPATIBLE_PROVIDER_CODE)
@@ -747,6 +829,8 @@ assert.doesNotMatch(gatewayResponseFinalizationSource, /parseErrorPayload/)
 assert.doesNotMatch(gatewayResponseFinalizationSource, /applyOpenAIStreamUsageFallback/)
 assert.doesNotMatch(gatewayResponseFinalizationSource, /applyAnthropicStreamUsageFallback/)
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
+assert.match(gatewayResponseFinalizationSource, /responseSemanticText\s*=\s*completeBodyText/, '非流式完整 JSON 响应语义文本不能依赖成功审计正文捕获开关')
+assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
 assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应体为空'/)
 
 const gatewayResponseStreamSource = readSource('modules/gateway/response/stream.ts')
@@ -966,7 +1050,8 @@ assert.match(clientIpStatsAggregationRepositorySource, /traffic_source = 'cooldo
 assert.doesNotMatch(clientIpStatsAggregationRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
 
 const usageStatsRepositorySource = readSource('storage/usage-stats.repository.ts')
-assert.match(usageStatsRepositorySource, /traffic_source <> 'cooldown_retest'/)
+assert.doesNotMatch(usageStatsRepositorySource, /traffic_source <> 'cooldown_retest'/)
+assert.doesNotMatch(usageStatsRepositorySource, /latestIgnoredUsageRecordCursor/)
 assert.doesNotMatch(usageStatsRepositorySource, /COALESCE\(traffic_source, 'gateway'\)/)
 
 const usageStatsWritersSource = readSource('storage/usage-stats-writers.ts')
@@ -981,6 +1066,9 @@ assert.match(usageStatsWritersSource, /from '\.\/usage-stats-model-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-error-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-latency-writer\.js'/)
 assert.match(usageStatsWritersSource, /from '\.\/usage-stats-time-buckets\.js'/)
+assert.match(usageStatsWritersSource, /function shouldRecordAccountQualityStats\(row: UsageStatsRecordRow\): boolean \{[\s\S]+row\.traffic_source !== 'cooldown_retest'[\s\S]+row\.traffic_source !== 'hybrid_scoring'[\s\S]+\}/, '恢复探活和混合评分应计入用量统计但不写入账号质量分钟样本')
+assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\(row\)\) \{[\s\S]+upsertAccountQualityMinuteStats/, '恢复探活应计入用量统计但不写入账号质量分钟样本')
+assert.match(usageStatsWritersSource, /if \(shouldRecordAccountQualityStats\(row\)\) \{[\s\S]+subtractAccountQualityMinuteStats/, '恢复探活反向扣减时也不应触碰账号质量分钟样本')
 assert.doesNotMatch(usageStatsWritersSource, /function authorizationReportRows|authorization_team_usage_summary_daily|authorization_user_usage_summary_daily/)
 assert.doesNotMatch(usageStatsWritersSource, /function upsertUsageModelBuckets|usage_model_/)
 assert.doesNotMatch(usageStatsWritersSource, /function upsertUsageErrorBuckets|usage_error_/)
@@ -1008,7 +1096,9 @@ assert.match(usageStatsWriterParamsSource, /export function statsParamsTail/)
 assert.match(usageStatsWriterParamsSource, /export function statsSubtractParams/)
 
 const usageStatsAggregationSource = readSource('storage/usage-stats-aggregation.ts')
-assert.match(usageStatsAggregationSource, /row\.traffic_source !== 'cooldown_retest'/)
+assert.match(usageStatsAggregationSource, /shouldAggregateUsageStatsRecord\(_row: UsageStatsRecordRow\): boolean/)
+assert.match(usageStatsAggregationSource, /return true/)
+assert.doesNotMatch(usageStatsAggregationSource, /traffic_source !== 'cooldown_retest'/)
 assert.doesNotMatch(usageStatsAggregationSource, /traffic_source \?\? 'gateway'/)
 
 const usageStatsTypesSource = readSource('storage/usage-stats-types.ts')

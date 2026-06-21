@@ -68,7 +68,7 @@ export function applyAnthropicStreamUsageFallback(
     estimatedOutputTokens?: number
   }
 ): AnthropicStreamUsageFallbackResult {
-  if (!input.outputReceived || (usage.inputTokens !== undefined && usage.outputTokens !== undefined)) {
+  if (!input.outputReceived || (positiveTokenCount(usage.inputTokens) && positiveTokenCount(usage.outputTokens))) {
     return { usage, estimated: false }
   }
   const nextUsage: ParsedUsage = { ...usage }
@@ -76,7 +76,7 @@ export function applyAnthropicStreamUsageFallback(
   let estimatedInputTokens: number | undefined
   let estimatedOutputTokens: number | undefined
 
-  if (nextUsage.inputTokens === undefined) {
+  if (!positiveTokenCount(nextUsage.inputTokens)) {
     const inputTokens = estimateAnthropicRequestInputTokens(req)
     if (inputTokens !== undefined) {
       nextUsage.inputTokens = inputTokens
@@ -85,7 +85,7 @@ export function applyAnthropicStreamUsageFallback(
     }
   }
 
-  if (nextUsage.outputTokens === undefined) {
+  if (!positiveTokenCount(nextUsage.outputTokens)) {
     const outputTokens = Math.max(1, input.estimatedOutputTokens ?? 0)
     nextUsage.outputTokens = outputTokens
     estimatedOutputTokens = outputTokens
@@ -98,6 +98,10 @@ export function applyAnthropicStreamUsageFallback(
     estimatedInputTokens,
     estimatedOutputTokens
   }
+}
+
+function positiveTokenCount(value: number | undefined): boolean {
+  return typeof value === 'number' && value > 0
 }
 
 export function inspectAnthropicStreamText(text: string): AnthropicStreamInspection {
@@ -286,7 +290,6 @@ function outputTextFromAnthropicStreamEvent(eventType: string, data: Record<stri
   if (delta.type === 'text_delta') return stringValue(delta.text)
   if (delta.type === 'input_json_delta') return stringValue(delta.partial_json)
   if (delta.type === 'thinking_delta') return stringValue(delta.thinking)
-  if (delta.type === 'signature_delta') return stringValue(delta.signature)
   return undefined
 }
 

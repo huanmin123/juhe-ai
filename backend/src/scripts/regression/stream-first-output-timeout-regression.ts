@@ -166,7 +166,7 @@ async function main(): Promise<void> {
     const streamText = await response.text()
     const durationMs = Date.now() - startedAt
     assert(streamText.includes('response.failed'), `客户端未收到网关失败事件：${streamText}`)
-    assert(streamText.includes('未返回首段数据'), `失败事件未说明首段等待超时：${streamText}`)
+    assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段等待超时应返回统一可重试文案：${streamText}`)
     assert(streamText.includes('"code":"upstream_retryable_error"'), `首段等待超时应改写为可重试错误码：${streamText}`)
     assert(durationMs < 15000, `首段等待超时没有及时结束，耗时 ${durationMs}ms`)
 
@@ -198,7 +198,7 @@ async function main(): Promise<void> {
     const firstChunkThenIdleResult = await requestFirstChunkThenIdleTimeout(baseUrl, firstChunkIdleCredential.apiKey.key)
     assert(firstChunkThenIdleResult.streamText.includes('response.created'), `客户端未收到首段上游事件：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('response.failed'), `客户端未收到首段后空闲失败事件：${firstChunkThenIdleResult.streamText}`)
-    assert(firstChunkThenIdleResult.streamText.includes('未返回任何新数据'), `失败事件未说明流式无新数据超时：${firstChunkThenIdleResult.streamText}`)
+    assert(firstChunkThenIdleResult.streamText.includes('上游流式响应在输出前失败，请重试'), `Codex 首段后空闲应返回统一可重试文案：${firstChunkThenIdleResult.streamText}`)
     assert(firstChunkThenIdleResult.streamText.includes('"code":"upstream_retryable_error"'), `首段后空闲应改写为可重试错误码：${firstChunkThenIdleResult.streamText}`)
     assert(
       firstChunkThenIdleResult.durationMs >= 900 && firstChunkThenIdleResult.durationMs < 5000,
@@ -277,7 +277,7 @@ async function main(): Promise<void> {
     const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
     assert(missingTerminalResult.streamText.includes('response.created'), `客户端未收到缺少终止事件场景的首段上游事件：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('response.failed'), `缺少终止事件场景未收到网关失败事件：${missingTerminalResult.streamText}`)
-    assert(missingTerminalResult.streamText.includes('协议终止事件前结束'), `缺少终止事件场景失败原因不正确：${missingTerminalResult.streamText}`)
+    assert(missingTerminalResult.streamText.includes('上游流式响应在输出前失败，请重试'), `缺少终止事件场景应返回统一可重试文案：${missingTerminalResult.streamText}`)
     assert(missingTerminalResult.streamText.includes('"code":"upstream_retryable_error"'), `缺少终止事件应改写为可重试错误码：${missingTerminalResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -469,7 +469,7 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    clientCompatibility: 'openai_standard'
+    clientCompatibility: 'codex_responses'
   }, access)
   const apiKey = apiKeyRepository.createApiKeyRecord({
     name: `流式超时回归 Key-${label}`,
@@ -502,7 +502,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     status: 'active',
     schedulable: true,
     priority: 0,
-    clientCompatibility: 'openai_standard'
+    clientCompatibility: 'codex_responses'
   }, access)
   const backupAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -516,7 +516,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     status: 'active',
     schedulable: true,
     priority: 10,
-    clientCompatibility: 'openai_standard'
+    clientCompatibility: 'codex_responses'
   }, access)
   const apiKey = apiKeyRepository.createApiKeyRecord({
     name: `流式超时回归双账号 Key-${label}`,
@@ -555,8 +555,8 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
     req.on('end', () => {
       let scenario = 'no-first-chunk'
       try {
-        const body = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')) as { input?: unknown }
-        scenario = typeof body.input === 'string' ? body.input : scenario
+        const body = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')) as { input?: unknown; messages?: unknown }
+        scenario = scenarioFromOpenAIRequestBody(body) ?? scenario
       } catch {
       }
       const upstreamAuthorization = String(req.headers.authorization ?? '')
@@ -829,6 +829,57 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
       }
     })
   })
+}
+
+function scenarioFromOpenAIRequestBody(body: { input?: unknown; messages?: unknown }): string | undefined {
+  return scenarioTextFromOpenAIInput(body.input) ?? scenarioTextFromOpenAIMessages(body.messages)
+}
+
+function scenarioTextFromOpenAIInput(input: unknown): string | undefined {
+  if (typeof input === 'string' && input.trim()) {
+    return input
+  }
+  if (!Array.isArray(input)) {
+    return undefined
+  }
+  for (const item of input) {
+    if (!isRecord(item)) continue
+    const text = scenarioTextFromOpenAIContent(item.content)
+    if (text) return text
+  }
+  return undefined
+}
+
+function scenarioTextFromOpenAIMessages(messages: unknown): string | undefined {
+  if (!Array.isArray(messages)) {
+    return undefined
+  }
+  for (const message of messages) {
+    if (!isRecord(message)) continue
+    const text = scenarioTextFromOpenAIContent(message.content)
+    if (text) return text
+  }
+  return undefined
+}
+
+function scenarioTextFromOpenAIContent(content: unknown): string | undefined {
+  if (typeof content === 'string' && content.trim()) {
+    return content
+  }
+  if (!Array.isArray(content)) {
+    return undefined
+  }
+  for (const part of content) {
+    if (!isRecord(part)) continue
+    if (typeof part.text === 'string' && part.text.trim()) {
+      return part.text
+    }
+  }
+  return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 async function assertPreCommitFuzzServerRetryScenarios(

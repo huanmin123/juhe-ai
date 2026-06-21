@@ -24,6 +24,8 @@ assert.equal(categoryFromModeOrModel('audio_speech', 'custom-model'), 'audio', '
 assert.equal(categoryFromModeOrModel(undefined, 'whisper-large-v3'), 'audio', 'whisper 模型名应识别为音频模型')
 assert.equal(categoryFromModeOrModel(undefined, 'tts-1-hd'), 'audio', 'tts 模型名应识别为音频模型')
 assert.equal(categoryFromModeOrModel(undefined, 'claude-opus-4-5'), 'text', 'Claude 模型名应识别为文本模型')
+assert.equal(categoryFromModeOrModel(undefined, 'deepseek-v4-flash'), 'text', 'DeepSeek 官方模型名应识别为文本模型')
+assert.equal(categoryFromModeOrModel(undefined, 'deepseek-ai-v4-pro'), 'text', 'DeepSeek 上游别名应识别为文本模型')
 assert.equal(categoryFromModeOrModel(undefined, 'gpt-5.5'), 'text', 'GPT 模型名应识别为文本模型')
 assert.equal(categoryFromModeOrModel(undefined, 'o3-pro'), 'text', 'o 系列模型名应识别为文本模型')
 
@@ -41,6 +43,16 @@ assert.deepEqual(
   }), 'text'),
   ['messages', 'message_token_counting'],
   'Anthropic 文本自定义模型默认协议应来自当前供应商协议档案'
+)
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(providerFixture({
+    code: 'deepseek',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    endpointFamilies: ['chat_completions']
+  }), 'text'),
+  ['chat_completions'],
+  'DeepSeek 文本自定义模型默认协议应只来自 Chat Completions 档案'
 )
 assert.deepEqual(
   defaultProtocolsForProviderModelCategory(providerFixture({

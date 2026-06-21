@@ -10,6 +10,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
+import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-negative-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'proxy-negative.sqlite3')
@@ -18,10 +19,12 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'proxy-negative-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'db-service'
+runtimeConfig.processRole = 'worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [
   { accountsRouter },
@@ -93,6 +96,10 @@ interface ProxyProfileSummary {
 interface AccountSummary {
   id: string
   name: string
+  status?: string
+  schedulable?: boolean
+  cooldownUntil?: string
+  lastErrorMessage?: string
   ownerSystemAccountId?: string
   proxyProfileId?: string
 }
@@ -114,6 +121,13 @@ interface AccountTestResult {
   proxyUrl?: string
   accountStatusChanged?: boolean
   accountStatus?: string
+}
+
+interface AccountTestTask<T = AccountTestResult> {
+  id: string
+  status: 'queued' | 'running' | 'success' | 'failed' | 'canceled'
+  message?: string
+  result?: T
 }
 
 interface UsageRecordListResult {
@@ -157,7 +171,7 @@ async function main(): Promise<void> {
       providerCode: 'gpt',
       enabled: true
     })
-    const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
+    const accountPayload = {
       providerCode: 'gpt',
       name: '代理负向回归账户',
       type: 'api_key',
@@ -165,11 +179,21 @@ async function main(): Promise<void> {
         api_key: 'sk-proxy-negative',
         base_url: upstreamBaseUrl
       },
-      proxyProfileId: proxy.id,
-      status: 'active',
-      schedulable: true,
       groupId: group.id
+    }
+    const activationTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
+    assert(activationTask.result?.success === true, `代理负向账户草稿测试应先通过：${activationTask.result?.message ?? activationTask.message ?? ''}`)
+    const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
+      ...accountPayload,
+      status: 'active',
+      activationTestTaskId: activationTask.id
     })
+    assert(account.status === 'active' && account.schedulable === true, '草稿测试通过后创建的代理负向账户应为正常可调度')
+    const proxiedAccount = await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
+      proxyProfileId: proxy.id
+    })
+    assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
+    directUpstreamHitCount = 0
     const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '代理负向回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -192,35 +216,47 @@ async function main(): Promise<void> {
     assert(testResult.success === false, '账户测试在代理停用后不应成功')
     assert(testResult.proxyUrl === '[configured]', '账户测试失败结果应保留代理已配置标记')
     assert(testResult.message.includes('代理不存在或已停用'), `账户测试错误信息异常：${testResult.message}`)
-    assert(testResult.accountStatusChanged === true, '账户测试确认账号不可用后应返回状态已变更')
-    assert(testResult.accountStatus === 'temporary_unavailable', `账户测试失败后应标记临时不可调用，实际 ${testResult.accountStatus}`)
-    const cooledAccount = repositories.findAccountSummary(account.id, adminAccess)
-    assert(cooledAccount?.status === 'temporary_unavailable', `账户测试失败后数据库状态应为临时不可调用，实际 ${cooledAccount?.status}`)
+    const cooledAccount = await waitForAccountStatus(account.id, 'temporary_unavailable')
     assert(Boolean(cooledAccount?.cooldownUntil), '账户测试失败后应写入冷却结束时间')
     assert(cooledAccount?.lastErrorMessage?.includes('账户测试失败'), `账户测试失败后应写入最近错误，实际 ${cooledAccount?.lastErrorMessage}`)
-    await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
+    const restoredAccount = await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
       status: 'active',
       schedulable: true,
       clearFailureState: true
     })
+    assert(restoredAccount.status === 'active' && restoredAccount.schedulable === true, `账户测试冷却后恢复正常失败，实际 ${restoredAccount.status}/${restoredAccount.schedulable}`)
     gatewayCache.clearGatewayRuntimeCache()
 
-    const gatewayResponse = await requestJson<Record<string, unknown>>(baseUrl, '/v1/responses', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        input: 'hi',
-        stream: false
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+    let gatewayResponse: Record<string, unknown> & { status: number }
+    try {
+      gatewayResponse = await withProcessRole('db-service', async () => {
+        const response = await requestJson<Record<string, unknown>>(baseUrl, '/v1/responses', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${apiKey.key}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            input: 'hi',
+            stream: false
+          })
+        })
+        usageRecordQueue.flushAllUsageRecordQueue()
+        auditLogQueue.flushAllAuditLogQueue()
+        return response
       })
-    })
+    } finally {
+      usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+      auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+    }
     assert(gatewayResponse.status === 503, `停用代理网关请求应失败为 503，实际 ${gatewayResponse.status}`)
+    const gatewayResponseText = JSON.stringify(gatewayResponse)
+    assert(gatewayResponseText.includes('没有可用的上游账户'), `停用代理网关请求应返回统一无上游错误，实际 ${gatewayResponseText}`)
     assert(directUpstreamHitCount === 0, `停用代理后发生了直连上游请求 ${directUpstreamHitCount} 次`)
 
-    usageRecordQueue.flushAllUsageRecordQueue()
     await waitForUsageRecord(baseUrl, adminCookie, apiKey.id, account.id)
 
     await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: true })
@@ -237,6 +273,7 @@ async function main(): Promise<void> {
       databaseModule.closeStorageDatabases()
     } catch {
     }
+    restoreWorkerParentIpc()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 }
@@ -302,10 +339,40 @@ async function login(baseUrl: string): Promise<string> {
   const passwordResponse = await fetch(`${baseUrl}/__aisys__/api/auth/change-password`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ newPassword: 'admin-regression-password' })
+    body: JSON.stringify({ oldPassword: 'admin', newPassword: 'admin-regression-password' })
   })
   assert(passwordResponse.ok, `回归夹具修改初始密码失败：HTTP ${passwordResponse.status} ${await passwordResponse.text()}`)
   return cookie
+}
+
+async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, account: Record<string, unknown>): Promise<AccountTestTask<AccountTestResult>> {
+  const task = await postEnvelope<AccountTestTask<AccountTestResult>>(baseUrl, '/__aisys__/api/accounts/test-draft', cookie, {
+    account,
+    model: 'gpt-4o-mini'
+  })
+  return await waitForAccountTestTask(baseUrl, cookie, task.id)
+}
+
+async function waitForAccountTestTask(baseUrl: string, cookie: string, taskId: string): Promise<AccountTestTask<AccountTestResult>> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 30_000) {
+    const tasks = await getEnvelope<Array<AccountTestTask<AccountTestResult>>>(
+      baseUrl,
+      `/__aisys__/api/accounts/test-tasks?ids=${encodeURIComponent(taskId)}`,
+      cookie
+    )
+    const task = tasks.find((item) => item.id === taskId)
+    assert(task, `账号测试任务 ${taskId} 应可查询`)
+    if (task.status === 'success' || task.status === 'failed') {
+      assert(task.result, `账号测试任务 ${taskId} 已结束但没有结果`)
+      return task
+    }
+    if (task.status === 'canceled') {
+      throw new Error(`账号测试任务 ${taskId} 已取消：${task.message ?? ''}`)
+    }
+    await sleep(100)
+  }
+  throw new Error(`账号测试任务 ${taskId} 等待超时`)
 }
 
 async function waitForUsageRecord(baseUrl: string, cookie: string, apiKeyId: string, accountId: string): Promise<void> {
@@ -322,7 +389,24 @@ async function waitForUsageRecord(baseUrl: string, cookie: string, apiKeyId: str
     }
     await sleep(100)
   }
-  throw new Error('未找到停用代理网关失败使用记录')
+  const result = await getEnvelope<UsageRecordListResult>(baseUrl, '/__aisys__/api/usage-records?page=1&pageSize=20&result=failed', cookie)
+  const summary = result.items
+    .map((record) => `${record.statusCode ?? '-'} ${record.apiKeyId ?? '-'} ${record.accountId ?? '-'} ${record.errorMessage ?? ''}`.slice(0, 300))
+    .join(' | ')
+  throw new Error(`未找到停用代理网关失败使用记录，最近失败记录：${summary || '无'}`)
+}
+
+async function waitForAccountStatus(accountId: string, status: string): Promise<AccountSummary> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 5000) {
+    const account = repositories.findAccountSummary(accountId, adminAccess)
+    if (account?.status === status) {
+      return account
+    }
+    await sleep(100)
+  }
+  const account = repositories.findAccountSummary(accountId, adminAccess)
+  throw new Error(`账户 ${accountId} 等待状态 ${status} 超时，实际 ${account?.status}`)
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie?: string): Promise<T> {
@@ -340,9 +424,13 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
 }
 
 async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {
+  return await withProcessRole('worker', action)
+}
+
+async function withProcessRole<T>(role: typeof runtimeConfig.processRole, action: () => Promise<T>): Promise<T> {
   const previousProcessRole = runtimeConfig.processRole
   try {
-    runtimeConfig.processRole = 'worker'
+    runtimeConfig.processRole = role
     return await action()
   } finally {
     runtimeConfig.processRole = previousProcessRole

@@ -93,7 +93,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
     let maxLagSeconds = 0
     let aggregationContext: ReturnType<typeof createUsageStatsAggregationContext> | undefined
     const shardsWithMoreRows: UsageRecordShardLocation[] = []
-    const processShard = (location: UsageRecordShardLocation, limitForShard: number, updateIgnoredCursor: boolean): boolean => {
+    const processShard = (location: UsageRecordShardLocation, limitForShard: number): boolean => {
       if (processedRows >= batchLimit) return false
       const state = usageStatsShardJobState(database, location.shardKey)
       const shardDatabase = getUsageRecordShardDatabase(location)
@@ -103,7 +103,6 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
           SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
           FROM usage_records
           WHERE created_at <= ?
-            AND traffic_source <> 'cooldown_retest'
             AND (created_at > ? OR (created_at = ? AND id > ?))
           ORDER BY created_at ASC, id ASC
           LIMIT ?
@@ -133,27 +132,18 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
         return rows.length >= rowLimit
       }
 
-      if (!updateIgnoredCursor) return false
-      const ignoredCursor = latestIgnoredUsageRecordCursor(shardDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
-      const cursorCreatedAt = ignoredCursor?.created_at ?? state.cursorCreatedAt
-      const cursorId = ignoredCursor?.id ?? state.cursorId
-      const lagSeconds = latestUsageRecordLagSeconds(shardDatabase, safeCreatedBefore, cursorCreatedAt, cursorId)
+      const lagSeconds = latestUsageRecordLagSeconds(shardDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
       updateUsageStatsShardJobState(database, location, {
-        cursorCreatedAt: ignoredCursor?.created_at,
-        cursorId: ignoredCursor?.id,
         lastSuccessAt: updatedAt,
         lagSeconds
       })
-      if (ignoredCursor) {
-        globalCursor = latestCursor(globalCursor, ignoredCursor)
-      }
       maxLagSeconds = Math.max(maxLagSeconds, lagSeconds)
       return false
     }
 
     for (const location of shardLocations) {
       if (processedRows >= batchLimit) break
-      if (processShard(location, perShardLimit, true)) {
+      if (processShard(location, perShardLimit)) {
         shardsWithMoreRows.push(location)
       }
     }
@@ -161,7 +151,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       const candidates = shardsWithMoreRows.splice(0, shardsWithMoreRows.length)
       for (const location of candidates) {
         if (processedRows >= batchLimit) break
-        if (processShard(location, batchLimit - processedRows, false)) {
+        if (processShard(location, batchLimit - processedRows)) {
           shardsWithMoreRows.push(location)
         }
       }
@@ -733,28 +723,12 @@ function usageStatsSafeCreatedBefore(): string {
   return new Date(Date.now() - USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS * 1000).toISOString()
 }
 
-function latestIgnoredUsageRecordCursor(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): { created_at: string; id: string } | undefined {
-  const latest = database
-    .prepare(`
-      SELECT created_at, id
-      FROM usage_records
-      WHERE created_at <= ?
-        AND traffic_source = 'cooldown_retest'
-        AND (created_at > ? OR (created_at = ? AND id > ?))
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1
-    `)
-    .get(safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId) as unknown as { created_at?: string; id?: string } | undefined
-  return latest?.created_at && latest.id ? { created_at: latest.created_at, id: latest.id } : undefined
-}
-
 function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): number {
   const latest = database
     .prepare(`
       SELECT created_at
       FROM usage_records
       WHERE created_at <= ?
-        AND traffic_source <> 'cooldown_retest'
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1

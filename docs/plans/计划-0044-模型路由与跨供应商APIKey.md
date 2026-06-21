@@ -5,7 +5,7 @@
 - 编号：PLAN-0044
 - 状态：草稿
 - 创建时间：2026-06-11
-- 更新时间：2026-06-11
+- 更新时间：2026-06-20
 - 需求来源：用户对话
 - 执行者：AI / 维护者
 - 关联模块：前端 / 后端 / 存储 / 网关 / 模型目录 / API Key / 文档 / 验证
@@ -35,6 +35,7 @@
 - 不做跨协议转换；只有同一客户端协议入口下可被本地 adapter 支持的供应商档案才能参与。
 - 不自动从上游 `/models` 同步模型；模型目录仍由内置目录和自定义模型维护。
 - 不把账号级模型映射提前到供应商路由阶段；模型映射仍在选中账号后改写上游 `model`。
+- 智谱 GLM 第一版接入不依赖本计划完成；在本计划落地前，GLM 通用 API、GLM Coding Plan、GPT、OpenAI 和 Anthropic 仍按当前 API Key 同 `provider_protocol_profile_id` 绑定限制运行，不开放跨供应商或跨 GLM profile 混绑。
 
 ## 关联文档
 
@@ -96,6 +97,8 @@ normalize(model) -> exact.get(model) -> providerProtocolProfileId
 ### API Key 跨供应商号池
 
 API Key 绑定分组时不再要求所有分组 `provider_protocol_profile_id` 一致。运行时改为：
+
+该能力是本计划的目标状态，不是 GLM 接入第一版的前置事实。`PLAN-0051` 的 GLM 通用 API 和 GLM Coding Plan 可以先分别使用独立本地 API Key 或同 profile 分组绑定；等模型路由索引、全系统模型名唯一和 API Key 绑定校验改造完成后，再开放一个本地 API Key 同时绑定 GPT、GLM 通用和 GLM Coding 分组。
 
 1. 校验 API Key 和调用方。
 2. 解析请求体 `model`。

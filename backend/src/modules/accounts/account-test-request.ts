@@ -6,7 +6,8 @@ import {
 } from '../../domain/anthropic-endpoint-modes.js'
 import {
   defaultOpenAIEndpointModes,
-  openAIEndpointModeForRequestShape
+  openAIEndpointModeForRequestShape,
+  supportsCodexResponsesChatBridge
 } from '../../domain/openai-endpoint-modes.js'
 import type { RecentOpenAIRequestShape } from '../../storage/repositories.js'
 
@@ -23,6 +24,7 @@ export type AccountTestRequestInput = {
   prompt: string
   isOAuth: boolean
   clientCompatibility: AccountClientCompatibility
+  providerProtocolProfileId?: string
   supportedEndpointModes?: AccountSupportedEndpointMode[]
   requestShape?: RecentOpenAIRequestShape
 }
@@ -38,7 +40,8 @@ export function createOpenAITestRequest(input: AccountTestRequestInput): Account
     input.requestShape,
     input.isOAuth,
     input.clientCompatibility,
-    input.supportedEndpointModes
+    input.supportedEndpointModes,
+    input.providerProtocolProfileId
   )
   const path = testPathFromEndpointMode(mode)
   const stream = mode === 'chat_sse' || mode === 'responses_sse'
@@ -83,24 +86,34 @@ export function testPathFromRecentShape(
   shape: RecentOpenAIRequestShape | undefined,
   isOAuth: boolean,
   clientCompatibility: AccountClientCompatibility,
-  supportedEndpointModes?: AccountSupportedEndpointMode[]
+  supportedEndpointModes?: AccountSupportedEndpointMode[],
+  providerProtocolProfileId?: string
 ): string {
-  return testPathFromEndpointMode(testEndpointModeFromRecentShape(shape, isOAuth, clientCompatibility, supportedEndpointModes))
+  return testPathFromEndpointMode(testEndpointModeFromRecentShape(shape, isOAuth, clientCompatibility, supportedEndpointModes, providerProtocolProfileId))
 }
 
 export function testEndpointModeFromRecentShape(
   shape: RecentOpenAIRequestShape | undefined,
   isOAuth: boolean,
   clientCompatibility: AccountClientCompatibility,
-  supportedEndpointModes?: AccountSupportedEndpointMode[]
+  supportedEndpointModes?: AccountSupportedEndpointMode[],
+  providerProtocolProfileId?: string
 ): AccountSupportedEndpointMode {
   const supportedModes = supportedEndpointModes?.length
     ? supportedEndpointModes
     : defaultOpenAIEndpointModes({
       accountType: isOAuth ? 'oauth' : 'api_key',
+      providerProtocolProfileId,
       clientCompatibility
     })
   const preferredModes: AccountSupportedEndpointMode[] = []
+  if (
+    clientCompatibility === 'codex_responses'
+    && supportsCodexResponsesChatBridge({ providerProtocolProfileId })
+    && supportedModes.includes('chat_sse')
+  ) {
+    return 'responses_sse'
+  }
   if (isOAuth || clientCompatibility === 'codex_responses') {
     preferredModes.push('responses_sse')
   }

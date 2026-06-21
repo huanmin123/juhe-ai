@@ -4,6 +4,8 @@ import { runtimeConfig } from '../config/runtime.js'
 import {
   ANTHROPIC_PROVIDER_CODE,
   isAnthropicProtocolProfile,
+  isDeepSeekProviderCode,
+  isGlmProviderCode,
   isOpenAICompatibleProviderCode,
   normalizeProviderToken
 } from '../domain/provider-protocol.js'
@@ -108,6 +110,8 @@ function isAccountApiKeyPoolProviderSupported(input: {
   protocolVersion?: unknown
 }): boolean {
   return isOpenAICompatibleProviderCode(input.providerCode)
+    || isDeepSeekProviderCode(input.providerCode)
+    || isGlmProviderCode(input.providerCode)
     || isAnthropicProtocolProfile({
       protocolCode: normalizeProviderToken(input.protocolCode),
       protocolVersion: normalizeProviderToken(input.protocolVersion)

@@ -40,8 +40,10 @@ export const anthropicProviderDriver: ProviderDriver = {
   usageSemantic: 'anthropic',
   profileIds: [ANTHROPIC_ANTHROPIC_V1_PROFILE_ID],
   supportsProfile(profile) {
+    const profileId = profile?.providerProtocolProfileId ?? profile?.id
     return profile?.providerCode === ANTHROPIC_PROVIDER_CODE
       && isAnthropicProtocolProfile(profile)
+      && profileId === ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
   },
   resolveUsageModel(account, requestedModel) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)

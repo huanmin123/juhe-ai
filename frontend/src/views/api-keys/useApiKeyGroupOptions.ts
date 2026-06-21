@@ -17,6 +17,7 @@ export type ApiKeyScopeParams = { systemAccountId: string } | undefined
 
 export interface ApiKeyGroupOptionsScope {
   systemAccountId?: string
+  providerProtocolProfileId?: string
   selectedIds?: string[]
 }
 
@@ -29,6 +30,7 @@ interface ApiKeyGroupOptionsApi {
     systemAccountId?: string
     keyword?: string
     ids?: string[]
+    providerProtocolProfileId?: string
     limit?: number
     preferDefault?: boolean
   }): Promise<GroupOptionSummary[]>
@@ -43,6 +45,7 @@ interface UseApiKeyGroupOptionsInput {
   groupFilterSelection: Ref<GroupSelection | undefined>
   formGroupBindings: () => ApiKeyGroupBindingFormRow[]
   formGroupBindingIds: ComputedRef<string[]>
+  allowMixedProviderProtocolProfiles?: () => boolean
   onGroupFilterCleared: () => void
 }
 
@@ -69,6 +72,7 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     const requestKey = JSON.stringify([
       input.isManagementView.value ? `management:${scope.systemAccountId || 'all'}` : 'self',
       requestKeyword ?? '',
+      scope.providerProtocolProfileId,
       scope.selectedIds
     ])
     if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
@@ -76,7 +80,7 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     }
 
     const requestId = ++groupOptionsRequestId
-    const optionWindowKey = groupOptionWindowKey(scope.systemAccountId, requestKeyword)
+    const optionWindowKey = groupOptionWindowKey(scope.systemAccountId, scope.providerProtocolProfileId, requestKeyword)
     const useLocalWindow = loadOptions.useLocalWindow !== false
     const localWindowGroups = !force && useLocalWindow ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
     if (localWindowGroups?.length) {
@@ -107,6 +111,7 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
       try {
         let nextGroups = await input.groupsApi.options({
           systemAccountId: scope.systemAccountId || undefined,
+          providerProtocolProfileId: scope.providerProtocolProfileId || undefined,
           keyword: requestKeyword,
           limit: 50,
           preferDefault: true
@@ -223,8 +228,15 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
       ?? (formContext
         ? [input.groupFilterSelection.value?.id, ...input.formGroupBindingIds.value]
         : [input.groupFilterSelection.value?.id])
+    const providerProtocolProfileId = scopeOverride?.providerProtocolProfileId
+      ?? apiKeyGroupOptionsProviderProtocolProfileId({
+        formContext,
+        allowMixedProviderProtocolProfiles: input.allowMixedProviderProtocolProfiles?.() ?? false,
+        formBindings: input.formGroupBindings()
+      })
     return {
       systemAccountId: systemAccountId.trim(),
+      providerProtocolProfileId: providerProtocolProfileId.trim(),
       selectedIds: [...new Set(selectedIds.filter((id): id is string => Boolean(id?.trim())).map((id) => id.trim()).sort())]
     }
   }
@@ -291,11 +303,12 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     }
   }
 
-  function groupOptionWindowKey(systemAccountId: string | undefined, requestKeyword: string | undefined): string {
+  function groupOptionWindowKey(systemAccountId: string | undefined, providerProtocolProfileId: string | undefined, requestKeyword: string | undefined): string {
     return localSelectStorageKey([
       'group-options',
       input.isManagementView.value ? 'management' : 'self',
       systemAccountId ?? 'all',
+      providerProtocolProfileId || 'all-profiles',
       'api-keys',
       requestKeyword ?? ''
     ])
@@ -314,6 +327,19 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     selectedGroupSelection,
     syncSelectedGroupSelections
   }
+}
+
+export function apiKeyGroupOptionsProviderProtocolProfileId(input: {
+  formContext: boolean
+  allowMixedProviderProtocolProfiles: boolean
+  formBindings: ApiKeyGroupBindingFormRow[]
+}): string {
+  if (!input.formContext || input.allowMixedProviderProtocolProfiles) return ''
+  for (const binding of input.formBindings) {
+    const value = binding.providerProtocolProfileId?.trim()
+    if (value) return value
+  }
+  return ''
 }
 
 function selectedGroupFromOptions(

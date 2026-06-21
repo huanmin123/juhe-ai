@@ -18,9 +18,14 @@ import {
   ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
   ANTHROPIC_PROTOCOL_SEED,
   ANTHROPIC_PROVIDER_SEED,
+  DEEPSEEK_OPENAI_V1_PROFILE_SEED,
+  DEEPSEEK_PROVIDER_SEED,
   DEFAULT_BUILT_IN_GROUPS,
   DEFAULT_GLOBAL_SETTINGS,
   DEFAULT_SYSTEM_SETTINGS,
+  GLM_CODING_OPENAI_V1_PROFILE_SEED,
+  GLM_GENERAL_OPENAI_V1_PROFILE_SEED,
+  GLM_PROVIDER_SEED,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
   OPENAI_COMPATIBLE_PROVIDER_SEED,
   GPT_OPENAI_V1_PROFILE_SEED,
@@ -73,7 +78,7 @@ export function seedDefaults(database: DatabaseSync): void {
       id, code, name, description, parent_code, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED]) {
+  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, DEEPSEEK_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED, GLM_PROVIDER_SEED]) {
     providerStatement.run(
       provider.id,
       provider.code,
@@ -129,7 +134,19 @@ export function seedDefaults(database: DatabaseSync): void {
       base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const profile of [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED, GPT_OPENAI_V1_PROFILE_SEED, ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED]) {
+  const profileSeeds = [
+    OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
+    GPT_OPENAI_V1_PROFILE_SEED,
+    DEEPSEEK_OPENAI_V1_PROFILE_SEED,
+    ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
+    GLM_CODING_OPENAI_V1_PROFILE_SEED,
+    GLM_GENERAL_OPENAI_V1_PROFILE_SEED
+  ]
+  const profileSeedBaseTime = Date.parse(now)
+  for (const [index, profile] of profileSeeds.entries()) {
+    const profileUpdatedAt = Number.isFinite(profileSeedBaseTime)
+      ? new Date(profileSeedBaseTime + index).toISOString()
+      : now
     profileStatement.run(
       profile.id,
       profile.providerCode,
@@ -143,7 +160,7 @@ export function seedDefaults(database: DatabaseSync): void {
       JSON.stringify(profile.accountTypes),
       JSON.stringify(profile.capabilities),
       now,
-      now
+      profileUpdatedAt
     )
   }
 
@@ -152,7 +169,7 @@ export function seedDefaults(database: DatabaseSync): void {
       profile_id, family_code, enabled, capabilities_json, created_at, updated_at
     ) VALUES (?, ?, 1, '[]', ?, ?)
   `)
-  for (const profile of [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED, GPT_OPENAI_V1_PROFILE_SEED, ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED]) {
+  for (const profile of profileSeeds) {
     for (const familyCode of profile.endpointFamilies) {
       profileFamilyStatement.run(profile.id, familyCode, now, now)
     }

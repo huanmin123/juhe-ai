@@ -130,17 +130,20 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 返回侧落点：
 
-- 原生 Responses / Codex adapter 上游 SSE 里的 compaction item 只按 Responses SSE 事件透传，不做特殊解释。
-- Codex V2 compact 请求要求返回一个 `compaction` output item；原生路径只保证事件不被过滤，不负责安装或维护客户端历史。
-- 流式拦截仍只负责失败事件、污染事件和重试信号；自动摘要只能发生在本轮可见输出开始前。
+- 普通原生 Responses 上游 SSE 里的 compaction item 仍按 Responses SSE 事件透传，不由网关安装或维护客户端历史。
+- 明确识别为 Codex compact 期望的请求，包括 `/responses/compact` 以及带 `compaction_trigger` 的 Codex `/responses`，返回侧必须执行最小契约检查：`response.completed` 前按 Codex Remote Compaction V2 语义统计 `response.output_item.done` 中 Codex 可反序列化的 compact item 数量。
+- 可接受 compact item 最小形状为 `type = "compaction"` 或 Codex 接受的别名 `type = "compaction_summary"`，且 `encrypted_content` 必须是字符串；只有类型相同但字段缺失、为 `null` 或非字符串时不能算作合法 compact 输出。
+- Codex compact SSE 的 `response.completed.response.id` 必须是字符串；缺失或非字符串会导致 Codex SSE parser 解析失败，因此同样按 compact 契约错误拦截。非流式 `/responses/compact` JSON 只按 `output` 数组校验，不要求外层 `response.id`。
+- Codex compact 期望请求在最终确认前不得把暂存的 output item 先写给客户端；如果完成时不是恰好 1 个 Codex 可接受的 compact output item，则生成 `codex_compaction_contract_mismatch` 响应语义错误，交给“响应检查策略”的系统默认规则触发服务端换号重试或最终可重试失败。
+- 自动摘要只能发生在本轮可见输出开始前；网关不伪造 `compaction` item，也不把普通 output item 转换成 compact 结果。
 
 ## 性能边界
 
 - 请求路径不得为了 compact 解析普通大 JSON 的完整深层结构；只在必须改写请求体的模式下进入 worker thread 解析。
-- 不在流式拦截器里缓存完整 SSE 流或跨事件全文。
+- 不在流式拦截器里缓存完整 SSE 流或跨事件全文；Codex compact 契约检查只允许暂存完成前的有限 SSE 事件窗口，超过上限按不可接受响应处理。
 - 不在请求链路扫描审计 payload、使用记录或历史请求来找可压缩上下文。
 - compact 输出如果需要用于审计或排障摘要，必须有字节上限，超过上限只记录截断摘要。
-- Codex V2 `compaction_trigger` 仍按普通 Responses 流处理，不因为 compact 语义增加整流缓存。
+- Codex V2 `compaction_trigger` 只增加 compact 契约所需的有界完成前暂存，不做全量整流缓存。
 - 后续如果重新评估本地摘要能力，必须另开计划并先补有界 payload 读取、成本归属和失败终态设计。
 - 所有 compact 相关列表、审计详情或排障接口都按现有 offset / limit / 窗口读取边界处理。
 - 大请求体解析继续遵守当前 `/v1` raw body hard limit、文本 lane 上限和 worker 解析阈值。
@@ -152,6 +155,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 | 客户端显式 `context_management` 字段格式非法 | 原生透传模式不本地校验，交给上游；本地改写模式需要返回本地 `400` |
 | 上游不支持 `context_management` | 按上游失败处理，不标记本地 bug |
 | compact 请求自身超上下文 | 返回 compact 失败，不继续重试 |
+| Codex compact 期望请求完成时没有恰好 1 个 `compaction` output item | 命中系统默认响应检查规则 `default_codex_compaction_contract`，下游未写出时服务端换号重试；账号耗尽时按 Codex 客户端能力返回可重试失败 |
 | `/responses` 请求出现 `context_length_exceeded` | 不触发自动 compact；按现有上游错误或流式失败处理 |
 
 ## 审计与使用记录
@@ -199,6 +203,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - `codex_responses` 请求形态：继续删除 `context_management` 和 `truncation`。
 - `codex_responses` 请求形态：`/responses/compact` 只在账号能力允许时承接。
 - `codex_responses` 请求形态：`compaction_trigger` 作为 Responses input item 透传，不被工具归一化或消息转换误删。
+- Codex compact 响应契约：mock 上游返回 2 个非 compaction output item 时，网关不泄露坏 output，并切到下一个 Codex 兼容账号重试。
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
 - 流式拦截：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。

@@ -108,6 +108,7 @@ export interface CreateAccountTestTaskInput {
 
 const accountTestTaskRetentionHours = 24
 const accountTestSessionStaleMs = 15_000
+const accountTestCleanupBatchSize = 200
 
 export function createAccountTestSession(access: AccessScope): AccountTestSession {
   if (!access) {
@@ -509,20 +510,32 @@ export function cleanupExpiredAccountTestTasks(): void {
   const cutoff = new Date(Date.now() - accountTestTaskRetentionHours * 60 * 60 * 1000).toISOString()
   getBusinessDatabase().prepare(`
     DELETE FROM account_test_tasks
-    WHERE finished_at IS NOT NULL
-      AND finished_at < ?
-  `).run(cutoff)
+    WHERE id IN (
+      SELECT id
+      FROM account_test_tasks
+      WHERE finished_at IS NOT NULL
+        AND finished_at < ?
+      ORDER BY finished_at ASC, id ASC
+      LIMIT ?
+    )
+  `).run(cutoff, accountTestCleanupBatchSize)
   getBusinessDatabase().prepare(`
     DELETE FROM account_test_sessions
-    WHERE updated_at < ?
-      AND NOT EXISTS (
-        SELECT 1
-        FROM account_test_session_tasks st
-        JOIN account_test_tasks t ON t.id = st.task_id
-        WHERE st.session_id = account_test_sessions.id
-          AND t.status IN ('queued', 'running')
-      )
-  `).run(cutoff)
+    WHERE id IN (
+      SELECT s.id
+      FROM account_test_sessions s
+      WHERE s.updated_at < ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM account_test_session_tasks st
+          JOIN account_test_tasks t ON t.id = st.task_id
+          WHERE st.session_id = s.id
+            AND t.status IN ('queued', 'running')
+        )
+      ORDER BY s.updated_at ASC, s.id ASC
+      LIMIT ?
+    )
+  `).run(cutoff, accountTestCleanupBatchSize)
 }
 
 function getAccountTestTaskRow(id: string): AccountTestTaskRow | undefined {

@@ -484,12 +484,7 @@ function sanitizedGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime, no
     }
   }
   return {
-    apiKey: {
-      ...runtime.apiKey,
-      group_bindings: runtime.apiKey.group_bindings
-        ? runtime.apiKey.group_bindings.map((binding) => ({ ...binding }))
-        : undefined
-    },
+    apiKey: cloneGatewayApiKeyRow(runtime.apiKey),
     settings,
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
     accountDispatchDiagnostics: runtime.accountDispatchDiagnostics ? { ...runtime.accountDispatchDiagnostics } : undefined,
@@ -509,14 +504,7 @@ function cloneGroupUsageAccessMetadata(value: GroupUsageAccessMetadata): GroupUs
 
 function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
   return {
-    apiKey: runtime.apiKey
-      ? {
-        ...runtime.apiKey,
-        group_bindings: runtime.apiKey.group_bindings
-          ? runtime.apiKey.group_bindings.map((binding) => ({ ...binding }))
-          : undefined
-      }
-      : undefined,
+    apiKey: runtime.apiKey ? cloneGatewayApiKeyRow(runtime.apiKey) : undefined,
     accountDispatchDiagnostics: runtime.accountDispatchDiagnostics ? { ...runtime.accountDispatchDiagnostics } : undefined,
     settings: { ...runtime.settings },
     groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
@@ -540,7 +528,7 @@ async function routeCachedDynamicGatewayRuntimeForDispatch(runtime: DbServiceGat
   const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(runtime.apiKey)
   const uniqueCandidateGroupIds = [...new Set(orderedBindings.map((binding) => binding.group_id).filter(Boolean))]
   const apiKey = {
-    ...runtime.apiKey,
+    ...cloneGatewayApiKeyRow(runtime.apiKey),
     group_bindings: orderedBindings.length ? orderedBindings.map((binding) => ({ ...binding })) : runtime.apiKey.group_bindings?.map((binding) => ({ ...binding }))
   }
 
@@ -585,6 +573,21 @@ function cloneResponseInspectionPolicy(policy: ResponseInspectionPolicySummary):
   return {
     ...policy,
     match: { ...policy.match }
+  }
+}
+
+function cloneGatewayApiKeyRow(apiKey: NonNullable<DbServiceGatewayRuntime['apiKey']>): NonNullable<DbServiceGatewayRuntime['apiKey']> {
+  return {
+    ...apiKey,
+    hybrid_routing_config: apiKey.hybrid_routing_config
+      ? {
+        ...apiKey.hybrid_routing_config,
+        levelRoutes: apiKey.hybrid_routing_config.levelRoutes.map((route) => ({ ...route }))
+      }
+      : undefined,
+    group_bindings: apiKey.group_bindings
+      ? apiKey.group_bindings.map((binding) => ({ ...binding }))
+      : undefined
   }
 }
 

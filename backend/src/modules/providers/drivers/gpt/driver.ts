@@ -50,8 +50,10 @@ export const gptProviderDriver: ProviderDriver = {
   usageSemantic: 'openai',
   profileIds: [GPT_OPENAI_V1_PROFILE_ID],
   supportsProfile(profile) {
+    const profileId = profile?.providerProtocolProfileId ?? profile?.id
     return isGptVendorCode(profile?.providerCode)
       && isOpenAIProtocolProfile(profile)
+      && profileId === GPT_OPENAI_V1_PROFILE_ID
   },
   resolveUsageModel(account, requestedModel) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
@@ -105,6 +107,7 @@ export const gptProviderDriver: ProviderDriver = {
       supportedEndpointModes: account.supportedEndpointModes,
       credentials: account.credentials,
       providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
       accountType: account.type,
       clientCompatibility: account.clientCompatibility
     })

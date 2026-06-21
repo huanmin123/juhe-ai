@@ -228,10 +228,21 @@ function resolveGatewayRawBodyContentLengthLimit(req: GatewayRawBodyRequest): { 
   if (path === '/images' || path.startsWith('/images/') || path === '/v1/images' || path.startsWith('/v1/images/')) {
     return { limitBytes: gatewayImageRawBodyHardLimitBytes, scope: 'image' }
   }
-  if (path === '/chat/completions' || path === '/v1/chat/completions') {
+  if (isGatewayTextJsonBodyPath(path)) {
     return { limitBytes: gatewayTextRawBodyLimitBytes(req.gatewayRuntime?.settings?.gatewayTextRawBodyLimitMegabytes), scope: 'text' }
   }
   return undefined
+}
+
+function isGatewayTextJsonBodyPath(path: string): boolean {
+  return path === '/chat/completions'
+    || path === '/v1/chat/completions'
+    || path === '/messages'
+    || path.startsWith('/messages/')
+    || path === '/v1/messages'
+    || path.startsWith('/v1/messages/')
+    || path === '/embeddings'
+    || path === '/v1/embeddings'
 }
 
 function requestContentLengthBytes(req: GatewayRawBodyRequest): number | undefined {

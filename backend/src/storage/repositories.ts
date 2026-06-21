@@ -201,7 +201,13 @@ function assertAccountNameWithinLimit(name: string): void {
 }
 
 function assertAccountEndpointModesCompatible(
-  protocolProfile: { protocolCode?: string; protocolVersion?: string },
+  protocolProfile: {
+    id?: string
+    providerCode?: string
+    providerProtocolProfileId?: string
+    protocolCode?: string
+    protocolVersion?: string
+  },
   input: {
     modes: readonly AccountSupportedEndpointMode[]
     accountType?: string
@@ -218,6 +224,8 @@ function assertAccountEndpointModesCompatible(
   if (isOpenAIProtocolProfile(protocolProfile)) {
     assertOpenAIEndpointModesCompatible({
       modes: input.modes,
+      providerCode: protocolProfile.providerCode,
+      providerProtocolProfileId: protocolProfile.providerProtocolProfileId ?? protocolProfile.id,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
     })
@@ -911,6 +919,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     providerCode,
     accountType,
     clientCompatibility,
+    providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion
   })
@@ -1120,6 +1129,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       providerCode: current.providerCode,
       accountType: current.type,
       clientCompatibility: nextClientCompatibility,
+      providerProtocolProfileId: current.providerProtocolProfileId,
       protocolCode: current.protocolCode,
       protocolVersion: current.protocolVersion
     })
@@ -1127,6 +1137,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       providerCode: current.providerCode,
       accountType: current.type,
       clientCompatibility: nextClientCompatibility,
+      providerProtocolProfileId: current.providerProtocolProfileId,
       protocolCode: current.protocolCode,
       protocolVersion: current.protocolVersion
     })

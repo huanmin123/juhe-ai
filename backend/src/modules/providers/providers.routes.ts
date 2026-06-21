@@ -220,16 +220,19 @@ providersRouter.delete('/:code/models/:id', (req, res) => {
   res.json(ok({ deleted: removeCustomProviderModel(existing.id) }))
 })
 
-function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
-  const seenModels = new Set<string>()
+export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
+  const seenProviderModels = new Set<string>()
   const result: ProviderModelOption[] = []
   for (const option of options) {
+    const providerCode = option.providerCode.trim()
     const model = option.model.trim()
-    if (!model) continue
+    if (!providerCode || !model) continue
     const normalizedModel = model.toLowerCase()
-    if (seenModels.has(normalizedModel)) continue
-    seenModels.add(normalizedModel)
-    result.push({ providerCode: option.providerCode, model })
+    const normalizedProviderCode = providerCode.toLowerCase()
+    const providerModelKey = `${normalizedProviderCode}\n${normalizedModel}`
+    if (seenProviderModels.has(providerModelKey)) continue
+    seenProviderModels.add(providerModelKey)
+    result.push({ providerCode, model })
   }
   return result
 }

@@ -22,7 +22,7 @@ interface UseAccountBindGroupOptions {
   groupIdForAccount: (accountId: string) => string | undefined
   groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
-  loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: { providerCode?: string; systemAccountId?: string; selectedIds?: Array<string | undefined> }) => Promise<void>
+  loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: { providerCode?: string; providerProtocolProfileId?: string; systemAccountId?: string; selectedIds?: Array<string | undefined> }) => Promise<void>
   loadData: () => Promise<void>
 }
 
@@ -54,6 +54,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     await options.loadGroupOptions('', false, {
       providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
       systemAccountId: scopeParams?.systemAccountId,
       selectedIds: [bindGroupForm.groupId]
     })
@@ -108,7 +109,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   }
 
   function defaultGroupSelectionForProvider(providerCode: string): GroupSelection | undefined {
-    const group = defaultGroupForProvider(options.groups.value, providerCode)
+    const group = defaultGroupForProvider(options.groups.value, providerCode, bindingAccount.value?.providerProtocolProfileId)
     return group ? { id: group.id, name: group.name } : undefined
   }
 

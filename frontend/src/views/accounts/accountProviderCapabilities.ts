@@ -6,6 +6,12 @@ import type {
   ProviderProtocolProfileDefinition
 } from '@/types/domain'
 import {
+  ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
+  ANTHROPIC_MESSAGES_FAMILY,
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_RESPONSES_FAMILY,
   isGptVendorCode,
   isAnthropicProtocolProfile,
   isOpenAIProtocolProfile
@@ -16,10 +22,13 @@ export type ClientCompatibilityCapability = 'openai_standard' | 'codex_responses
 
 export type AccountProviderProfileLike = {
   providerCode?: string
+  id?: string
+  providerProtocolProfileId?: string
   protocolCode?: string
   protocolVersion?: string
   accountTypes?: AccountType[]
   capabilities?: string[]
+  endpointFamilies?: Array<{ code?: string } | string>
   type?: AccountType
   clientCompatibility?: AccountClientCompatibility
 }
@@ -91,7 +100,11 @@ export function isGatewayTestableAccountProfile(profile?: AccountProviderProfile
 export function canSelectClientCompatibility(account: AccountProviderProfileLike): boolean {
   return account.type === 'api_key'
     && accountProviderProtocolKind(account) === 'openai_v1'
-    && (isGptVendorCode(account.providerCode) || account.clientCompatibility === 'codex_responses')
+    && (
+      isGptVendorCode(account.providerCode)
+      || profileSupportsCodexResponsesChatBridge(account)
+      || account.clientCompatibility === 'codex_responses'
+    )
 }
 
 export function accountClientCompatibilityCapabilities(account: AccountProviderProfileLike): ClientCompatibilityCapability[] {
@@ -107,7 +120,9 @@ export function accountClientCompatibilityCapabilities(account: AccountProviderP
   if (account.type === 'oauth') {
     return ['codex_responses']
   }
-  return isGptVendorCode(account.providerCode) || account.clientCompatibility === 'codex_responses'
+  return isGptVendorCode(account.providerCode)
+    || profileSupportsCodexResponsesChatBridge(account)
+    || account.clientCompatibility === 'codex_responses'
     ? ['openai_standard', 'codex_responses']
     : ['openai_standard']
 }
@@ -141,6 +156,9 @@ export function defaultEndpointModesForAccount(input: {
   if (input.type === 'oauth') return [...responsesEndpointModes]
   if (protocolKind === 'anthropic_v1') return [...anthropicAccountEndpointModes]
   if (protocolKind === 'openai_v1') {
+    if (input.clientCompatibility === 'codex_responses' && profileSupportsCodexResponsesChatBridge(input.profile ?? input.provider)) {
+      return [...chatEndpointModes]
+    }
     return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
       || input.clientCompatibility === 'codex_responses'
       ? [...openAIEndpointModes]
@@ -149,11 +167,41 @@ export function defaultEndpointModesForAccount(input: {
   return [...allAccountEndpointModes]
 }
 
+export function profileSupportsCodexResponsesChatBridge(profile?: AccountProviderProfileLike): boolean {
+  const profileId = profile?.providerProtocolProfileId ?? profile?.id
+  return profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
+    || profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
+}
+
 export function endpointModesForProfile(profile?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
   const protocolKind = accountProviderProtocolKind(profile)
-  if (protocolKind === 'anthropic_v1') return [...anthropicAccountEndpointModes]
-  if (protocolKind === 'openai_v1') return [...openAIEndpointModes]
+  if (protocolKind === 'anthropic_v1') return endpointModesForFamilies(profile, anthropicAccountEndpointModes, [
+    { family: ANTHROPIC_MESSAGES_FAMILY, modes: ['messages_json', 'messages_sse'] },
+    { family: ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY, modes: ['message_token_counting'] }
+  ])
+  if (protocolKind === 'openai_v1') return endpointModesForFamilies(profile, openAIEndpointModes, [
+    { family: OPENAI_CHAT_COMPLETIONS_FAMILY, modes: chatEndpointModes },
+    { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
+  ])
   return [...allAccountEndpointModes]
+}
+
+function endpointModesForFamilies(
+  profile: AccountProviderProfileLike | undefined,
+  fallback: AccountSupportedEndpointMode[],
+  rules: Array<{ family: string; modes: AccountSupportedEndpointMode[] }>
+): AccountSupportedEndpointMode[] {
+  const families = new Set(endpointFamilyCodes(profile))
+  if (!families.size) return [...fallback]
+  const output = rules.flatMap((rule) => families.has(rule.family) ? rule.modes : [])
+  return output.length ? [...new Set(output)] : [...fallback]
+}
+
+function endpointFamilyCodes(profile: AccountProviderProfileLike | undefined): string[] {
+  if (!Array.isArray(profile?.endpointFamilies)) return []
+  return profile.endpointFamilies
+    .map((family) => typeof family === 'string' ? family : family.code)
+    .filter((code): code is string => Boolean(code))
 }
 
 function providerCodeForOAuthFlow(input: {

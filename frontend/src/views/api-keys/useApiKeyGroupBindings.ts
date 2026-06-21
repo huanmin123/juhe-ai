@@ -11,8 +11,18 @@ import {
   type ApiKeyGroupBindingPayload
 } from './apiKeyFormModel'
 import { apiKeyGroupBindings } from './apiKeyFormatters'
+import {
+  apiKeyGroupOptionForId,
+  apiKeyGroupOptionsForBinding,
+  hiddenApiKeyGroupBindingIds,
+  isApiKeyBindableGroup,
+  nextAvailableApiKeyGroupForNewBinding,
+  selectedApiKeyGroupBindingProviderProfileId,
+  validateApiKeyGroupBindings
+} from './apiKeyGroupBindingRules'
 
 interface ApiKeyGroupBindingFormState {
+  routeMode?: 'normal' | 'hybrid'
   groupRouteStrategy: ApiKeyGroupRouteStrategy
   groupBindings: ApiKeyGroupBindingFormRow[]
 }
@@ -73,8 +83,8 @@ export function useApiKeyGroupBindings(input: UseApiKeyGroupBindingsInput) {
       return
     }
     const providerProtocolProfileId = selectedGroupBindingProviderProfileId(index)
-    if (providerProtocolProfileId && group.providerProtocolProfileId !== providerProtocolProfileId) {
-      message.warning('同一个 API Key 的绑定号池必须属于同一供应商协议档案')
+    if (!allowMixedProviderProtocolProfiles() && providerProtocolProfileId && group.providerProtocolProfileId !== providerProtocolProfileId) {
+      message.warning('同一个普通 API Key 的绑定号池必须属于同一供应商协议档案')
       clearGroupBindingSelection(binding)
       return
     }
@@ -107,83 +117,59 @@ export function useApiKeyGroupBindings(input: UseApiKeyGroupBindingsInput) {
   }
 
   function groupOptionsForBinding(index: number): GroupOptionSummary[] {
-    const providerProtocolProfileId = selectedGroupBindingProviderProfileId(index)
-    return input.groups.value.filter((group) => (
-      isApiKeyBindableGroup(group)
-      && group.enabled
-      && (!providerProtocolProfileId || group.providerProtocolProfileId === providerProtocolProfileId)
-    ))
+    return apiKeyGroupOptionsForBinding({
+      bindings: input.form.groupBindings,
+      groups: input.groups.value,
+      index,
+      allowMixedProviderProtocolProfiles: allowMixedProviderProtocolProfiles()
+    })
   }
 
   function hiddenGroupBindingIds(index: number): string[] {
-    const selectedIds = input.form.groupBindings
-      .map((binding, bindingIndex) => bindingIndex === index ? undefined : binding.groupId.trim())
-      .filter((groupId): groupId is string => Boolean(groupId))
-    const disabledIds = input.groups.value
-      .filter((group) => !group.enabled)
-      .map((group) => group.id)
-    return [...new Set([...selectedIds, ...disabledIds])]
+    return hiddenApiKeyGroupBindingIds({
+      bindings: input.form.groupBindings,
+      groups: input.groups.value,
+      index
+    })
   }
 
   function validateGroupBindingsPayload(): ApiKeyGroupBindingPayload[] | undefined {
     const groupBindings = normalizedGroupBindingPayload(input.form.groupBindings)
-    if (!groupBindings.length) {
-      message.warning('请至少选择一个绑定分组')
-      return undefined
-    }
-    const emptyBindingIndex = groupBindings.findIndex((binding) => !binding.groupId)
-    if (emptyBindingIndex >= 0) {
-      message.warning(`请先选择第 ${emptyBindingIndex + 1} 个绑定分组`)
-      return undefined
-    }
-    if (!groupBindings.some((binding) => binding.status === 'active')) {
-      message.warning('至少需要一个启用分组')
-      return undefined
-    }
-    if (new Set(groupBindings.map((binding) => binding.groupId)).size !== groupBindings.length) {
-      message.warning('绑定分组不能重复')
-      return undefined
-    }
-    const providerProtocolProfileIds = new Set(groupBindings.map((binding, index) => groupOptionForId(binding.groupId)?.providerProtocolProfileId ?? input.form.groupBindings[index]?.providerProtocolProfileId).filter(Boolean))
-    if (providerProtocolProfileIds.size > 1) {
-      message.warning('同一个 API Key 的绑定号池必须属于同一供应商协议档案')
-      return undefined
-    }
-    const disabledActiveGroups = groupBindings
-      .filter((binding) => binding.status === 'active')
-      .map((binding) => groupOptionForId(binding.groupId))
-      .filter((group): group is GroupOptionSummary => Boolean(group && !group.enabled))
-    if (disabledActiveGroups.length) {
-      message.warning(`已停用分组不能作为启用号池：${disabledActiveGroups.map((group) => group.name).join('、')}`)
+    const validationMessage = validateApiKeyGroupBindings({
+      groupBindings,
+      formBindings: input.form.groupBindings,
+      groups: input.groups.value,
+      allowMixedProviderProtocolProfiles: allowMixedProviderProtocolProfiles()
+    })
+    if (validationMessage) {
+      message.warning(validationMessage)
       return undefined
     }
     return groupBindings
   }
 
   function nextAvailableGroupForNewBinding(): GroupOptionSummary | undefined {
-    const selectedIds = new Set(input.form.groupBindings.map((binding) => binding.groupId.trim()).filter(Boolean))
-    const providerProtocolProfileId = selectedGroupBindingProviderProfileId()
-    return input.groups.value.find((group) => (
-      isApiKeyBindableGroup(group)
-      && group.enabled
-      && !selectedIds.has(group.id)
-      && (!providerProtocolProfileId || group.providerProtocolProfileId === providerProtocolProfileId)
-    ))
+    return nextAvailableApiKeyGroupForNewBinding({
+      bindings: input.form.groupBindings,
+      groups: input.groups.value,
+      allowMixedProviderProtocolProfiles: allowMixedProviderProtocolProfiles()
+    })
   }
 
   function selectedGroupBindingProviderProfileId(excludeIndex?: number): string | undefined {
-    for (const [index, binding] of input.form.groupBindings.entries()) {
-      if (excludeIndex === index) continue
-      const providerProtocolProfileId = groupOptionForId(binding.groupId)?.providerProtocolProfileId ?? binding.providerProtocolProfileId
-      if (providerProtocolProfileId) return providerProtocolProfileId
-    }
-    return undefined
+    return selectedApiKeyGroupBindingProviderProfileId({
+      bindings: input.form.groupBindings,
+      groups: input.groups.value,
+      excludeIndex
+    })
   }
 
   function groupOptionForId(groupId: string | undefined): GroupOptionSummary | undefined {
-    const id = groupId?.trim()
-    if (!id) return undefined
-    return input.groups.value.find((group) => group.id === id)
+    return apiKeyGroupOptionForId(input.groups.value, groupId)
+  }
+
+  function allowMixedProviderProtocolProfiles(): boolean {
+    return input.form.routeMode === 'hybrid'
   }
 
   return {
@@ -210,14 +196,4 @@ function clearGroupBindingSelection(binding: ApiKeyGroupBindingFormRow): void {
   binding.providerCode = undefined
   binding.providerProtocolProfileId = undefined
   binding.groupEnabled = undefined
-}
-
-function isApiKeyBindableGroup(group: GroupOptionSummary): boolean {
-  if (!group.enabled) return false
-  if (group.permissions?.canBindToApiKey === false) return false
-  if (group.accessType !== 'authorized') return true
-  if (group.authorizationStatus !== 'active') return false
-  if (!group.authorizationExpiresAt) return true
-  const expiresAt = Date.parse(group.authorizationExpiresAt)
-  return !Number.isFinite(expiresAt) || expiresAt > Date.now()
 }

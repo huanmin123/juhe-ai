@@ -23,7 +23,13 @@ import {
   accountMenuItems,
   canManageOAuthAccount
 } from '../../views/accounts/accountRules'
-import { canCreateOAuthAccount } from '../../views/accounts/accountProviderCapabilities'
+import {
+  accountClientCompatibilityCapabilities,
+  canCreateOAuthAccount,
+  canSelectClientCompatibility,
+  defaultEndpointModesForAccount,
+  profileSupportsCodexResponsesChatBridge
+} from '../../views/accounts/accountProviderCapabilities'
 
 const standardAccount = accountFixture({
   name: '标准账户',
@@ -108,6 +114,31 @@ assertEqual(canCreateOAuthAccount({
     protocolVersion: 'v1'
   })
 }), false, 'OpenAI-compatible 即使声明 OAuth 类型，也不应误走 GPT OAuth 创建流程')
+
+const deepSeekBridgeProfile = {
+  id: 'profile_deepseek_openai_v1',
+  providerCode: 'deepseek',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  type: 'api_key' as const,
+  clientCompatibility: 'codex_responses' as const
+}
+assertEqual(profileSupportsCodexResponsesChatBridge(deepSeekBridgeProfile), true, '前端应识别 DeepSeek 支持 Codex Responses 到 Chat SSE 桥接')
+assertEqual(canSelectClientCompatibility(deepSeekBridgeProfile), true, 'DeepSeek API Key 应允许选择 Codex Responses 客户端兼容')
+assertEqual(
+  accountClientCompatibilityCapabilities(deepSeekBridgeProfile).join(','),
+  'openai_standard,codex_responses',
+  'DeepSeek bridge 账号应同时展示 OpenAI 标准与 Codex Responses 测试请求形态'
+)
+assertEqual(
+  defaultEndpointModesForAccount({
+    profile: deepSeekBridgeProfile,
+    type: 'api_key',
+    clientCompatibility: 'codex_responses'
+  }).join(','),
+  'chat_json,chat_sse',
+  'DeepSeek Codex bridge 账号前端默认仍保存真实 Chat JSON/SSE 能力'
+)
 
 console.log('账户基础 formatter 回归通过：基础文案、授权展示、OAuth 菜单能力、到期优先级、排序和门面导出均符合预期')
 

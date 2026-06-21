@@ -798,6 +798,7 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
       account_id TEXT,
       endpoint TEXT,
       provider_code TEXT,
+      provider_protocol_profile_id TEXT,
       usage_semantic TEXT,
       model TEXT,
       upstream_model TEXT,
@@ -866,6 +867,9 @@ function applyUsageRecordShardSchema(database: DatabaseSync): void {
   `)
 
   ensureUsageRecordShardColumns(database)
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at);
+  `)
 
   void usageRecordShardSchemaVersion
 }
@@ -880,7 +884,8 @@ function ensureUsageRecordShardColumns(database: DatabaseSync): void {
     { name: 'cache_write_tokens', definition: 'INTEGER' },
     { name: 'cache_write_1h_tokens', definition: 'INTEGER' },
     { name: 'cache_write_cost_usd', definition: 'REAL' },
-    { name: 'thinking_tokens', definition: 'INTEGER' }
+    { name: 'thinking_tokens', definition: 'INTEGER' },
+    { name: 'provider_protocol_profile_id', definition: 'TEXT' }
   ]
   for (const column of columns) {
     if (existing.has(column.name)) continue

@@ -34,6 +34,7 @@ export interface GroupOptionParams extends ListParams {
   ids?: string[]
   keyword?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   limit?: number
   manageableOnly?: boolean
   preferDefault?: boolean
@@ -151,6 +152,7 @@ export interface AccountDraftTestAccountPayload {
   providerProtocolProfileId?: string
   name: string
   type: string
+  clientCompatibility?: AccountClientCompatibility
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number

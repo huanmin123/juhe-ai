@@ -1,4 +1,5 @@
 import {
+  firstErrorFieldText,
   parseJsonObjectErrorPayload,
   stringErrorField
 } from '../_shared/error-payload.js'
@@ -10,8 +11,8 @@ export function parseAnthropicErrorPayload(text: string, headers: Headers): Gate
   const { payload, error } = parsed
   const type = stringErrorField(error.type) ?? stringErrorField(payload.type)
   return {
-    code: stringErrorField(error.code) ?? stringErrorField(payload.code) ?? type,
+    code: firstErrorFieldText(error.code, payload.code) ?? type,
     type,
-    message: error.message ?? payload.message
+    message: firstErrorFieldText(error.message, error.msg, error.error_message, error.error_description, error.detail, payload.message, payload.msg, payload.error_message, payload.error_description, payload.detail)
   }
 }

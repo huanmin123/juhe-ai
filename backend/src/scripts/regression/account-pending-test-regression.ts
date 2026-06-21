@@ -13,6 +13,7 @@ import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
+import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-pending-test-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-pending-test.sqlite3')
@@ -25,6 +26,8 @@ runtimeConfig.processRole = 'worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [
   databaseModule,
@@ -177,6 +180,7 @@ try {
     databaseModule.closeStorageDatabases()
   } catch {
   }
+  restoreWorkerParentIpc()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
@@ -214,7 +218,7 @@ async function assertRouteCreateActivation(input: {
   const realFailedDraftPayload = routeAccountPayload(input.groupId, '真实失败草稿测试账户', 'sk-real-fail-draft-test', input.mockBaseUrl)
   const failedDraftTask = await submitDraftAccountTestAndWait(input.baseUrl, input.cookie, realFailedDraftPayload)
   assert.equal(failedDraftTask.result?.success, false, '真实 mock 上游失败时，草稿测试结果应失败')
-  assert.equal(failedDraftTask.result?.statusCode, 401, '真实 mock 上游失败应保留上游 HTTP 状态')
+  assert.equal(failedDraftTask.result?.statusCode, 401, `真实 mock 上游失败应保留上游 HTTP 状态：${JSON.stringify(failedDraftTask.result)}`)
   const realFailedCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
     ...realFailedDraftPayload,
     status: 'active',

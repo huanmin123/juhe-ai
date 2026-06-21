@@ -17,6 +17,10 @@
         <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" @change="handleProviderChange" />
         <div class="form-help">供应商决定这个分组后续可绑定的账户范围。</div>
       </a-form-item>
+      <a-form-item v-if="providerProfileOptions.length > 1" label="协议档案" required>
+        <a-select v-model:value="form.providerProtocolProfileId" :options="providerProfileOptions" :disabled="providerLocked || editingAuthorizedGroup" />
+        <div class="form-help">协议档案决定分组承接的协议形态和可绑定账户范围。</div>
+      </a-form-item>
       <a-form-item label="分组类型" required>
         <a-radio-group v-model:value="form.groupType" button-style="solid">
           <a-radio-button value="personal">个人分组</a-radio-button>
@@ -68,6 +72,7 @@ defineProps<{
   open: boolean
   providerLocked: boolean
   providerOptions: Array<{ label: string; value: string; disabled?: boolean }>
+  providerProfileOptions: Array<{ label: string; value: string; disabled?: boolean }>
   saving: boolean
   showTargetAlert: boolean
   targetSystemAccountLabel?: string

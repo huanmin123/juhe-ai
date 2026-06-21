@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -255,8 +255,9 @@ try {
   for (const call of boundedCalls) {
     assert(!/\bMATCH\s+\?/i.test(call.sql), '小时间窗操作日志摘要搜索也不应使用 MATCH 查询')
   }
+  assertManagementLogRoutesUseBoundedTimeouts()
 
-  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志摘要搜索使用倒排词项索引，避免主表 LIKE 扫描')
+  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志摘要搜索使用倒排词项索引，管理日志路由不使用无限超时')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -278,6 +279,20 @@ function assertPlanUses(plan: string[], indexName: string, message: string): voi
 
 function assertNoTempBtree(plan: string[], message: string): void {
   assert(!plan.some((detail) => /USE TEMP B-TREE/i.test(detail)), `${message}：${plan.join(' | ')}`)
+}
+
+function assertManagementLogRoutesUseBoundedTimeouts(): void {
+  const routeFiles = [
+    resolve('src/modules/audit-logs/audit-logs.routes.ts'),
+    resolve('src/modules/runtime-logs/runtime-logs.routes.ts')
+  ]
+  for (const routeFile of routeFiles) {
+    const source = readFileSync(routeFile, 'utf8')
+    assert.doesNotMatch(source, /setTimeout\(\s*0\s*\)/, `${routeFile} 不应使用无限请求超时`)
+    assert.match(source, /const\s+\w+RouteTimeoutMs\s*=\s*120_000/, `${routeFile} 应声明有限管理路由超时`)
+    assert.match(source, /req\.setTimeout\(\w+RouteTimeoutMs\)/, `${routeFile} 请求超时应绑定命名常量`)
+    assert.match(source, /res\.setTimeout\(\w+RouteTimeoutMs\)/, `${routeFile} 响应超时应绑定命名常量`)
+  }
 }
 
 function auditLog(input: {

@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2120 : 1940"
+    :scroll-x="isManagementView ? 2280 : 2100"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -71,6 +71,11 @@
             {{ apiKeyGroupBindingTagText(record, binding, index) }}
           </a-tag>
         </div>
+      </template>
+      <template v-else-if="column.key === 'routeMode'">
+        <a-tooltip :title="apiKeyHybridRouteSummary(record)">
+          <a-tag :color="apiKeyRouteModeTagColor(record)">{{ apiKeyRouteModeText(record) }}</a-tag>
+        </a-tooltip>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
         <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
@@ -141,6 +146,10 @@
             <strong>{{ apiKeyGroupRouteText(record) }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>路由模式</span>
+            <strong>{{ apiKeyRouteModeText(record) }}：{{ apiKeyHybridRouteSummary(record) }}</strong>
+          </div>
+          <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
             <strong>{{ record.description || '-' }}</strong>
           </div>
@@ -170,6 +179,9 @@ import {
   apiKeyGroupBindingTagText,
   apiKeyGroupBindings,
   apiKeyGroupRouteText,
+  apiKeyHybridRouteSummary,
+  apiKeyRouteModeTagColor,
+  apiKeyRouteModeText,
   apiKeyScheduleSummary,
   apiKeyScheduleTagColor,
   apiKeyStatusTagColor,

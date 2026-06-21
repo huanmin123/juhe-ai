@@ -37,11 +37,13 @@ export function trafficSourceText(value: AuditTrafficSource): string {
   return {
     gateway: '网关请求',
     manual_account_test: 'AI账户测试',
-    cooldown_retest: '恢复探活'
+    cooldown_retest: '恢复探活',
+    hybrid_scoring: '混合评分'
   }[value] ?? '网关请求'
 }
 
 export function trafficSourceColor(value: AuditTrafficSource): string {
+  if (value === 'hybrid_scoring') return 'blue'
   if (value === 'cooldown_retest') return 'gold'
   if (value === 'manual_account_test') return 'cyan'
   return 'default'

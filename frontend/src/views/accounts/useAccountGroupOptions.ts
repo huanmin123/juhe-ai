@@ -16,6 +16,7 @@ import type { GroupOptionSummary } from '@/types/domain'
 
 export interface AccountGroupOptionsScope {
   providerCode?: string
+  providerProtocolProfileId?: string
   systemAccountId?: string
   selectedIds?: Array<string | undefined>
 }
@@ -72,6 +73,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     const requestKey = JSON.stringify([
       config.isManagementView() ? `management:${scope.systemAccountId ?? 'all'}` : 'self',
       scope.providerCode ?? '',
+      scope.providerProtocolProfileId ?? '',
       requestKeyword ?? '',
       scope.selectedIds
     ])
@@ -202,6 +204,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
     return {
       providerCode: scope.providerCode?.trim() ?? '',
+      providerProtocolProfileId: scope.providerProtocolProfileId?.trim() ?? '',
       systemAccountId: scope.systemAccountId?.trim() ?? '',
       selectedIds: [...new Set((scope.selectedIds ?? [])
         .map((id) => id?.trim())
@@ -216,6 +219,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
       config.isManagementView() ? 'management' : 'self',
       scope.systemAccountId || 'all',
       scope.providerCode || 'all',
+      scope.providerProtocolProfileId || 'all',
       ...(config.localCacheKeyParts?.(scope) ?? []),
       requestKeyword ?? ''
     ])
@@ -239,6 +243,7 @@ function groupOptionParams(scope: Required<AccountGroupOptionsScope>, keyword: s
   return {
     systemAccountId: scope.systemAccountId || undefined,
     providerCode: scope.providerCode || undefined,
+    providerProtocolProfileId: scope.providerProtocolProfileId || undefined,
     ids,
     keyword,
     limit,

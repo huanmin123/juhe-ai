@@ -1,4 +1,5 @@
 import type { AccountSummary, ApiKeySummary, GroupSummary, SystemAccountSummary } from '../../domain/types.js'
+import { connectionTypeForProviderProtocolProfile } from '../../domain/provider-connection-type.js'
 import type {
   PublicAccountDeleteResponse,
   PublicAccountListResponse,
@@ -142,9 +143,14 @@ export function sanitizeAccount(account: AccountSummary): PublicAccountPushRespo
     name: account.name,
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
+    connectionType: connectionTypeForProviderProtocolProfile({
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId
+    }),
     protocolCode: account.protocolCode,
     protocolVersion: account.protocolVersion,
     type: account.type,
+    clientCompatibility: account.clientCompatibility,
     status: account.status,
     supportedModels: account.supportedModels,
     boundGroupId: account.boundGroupId,
@@ -160,6 +166,10 @@ export function sanitizeGroup(group: GroupSummary): PublicGroupSummary {
     name: group.name,
     providerCode: group.providerCode,
     providerProtocolProfileId: group.providerProtocolProfileId,
+    connectionType: connectionTypeForProviderProtocolProfile({
+      providerCode: group.providerCode,
+      providerProtocolProfileId: group.providerProtocolProfileId
+    }),
     protocolCode: group.protocolCode,
     protocolVersion: group.protocolVersion,
     description: group.description,

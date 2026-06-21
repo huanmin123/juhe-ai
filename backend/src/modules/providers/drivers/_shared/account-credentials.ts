@@ -10,6 +10,7 @@ export interface ProviderAccountCredentialContext {
   clientCompatibility?: AccountClientCompatibility
   protocolCode?: string
   protocolVersion?: string
+  providerProtocolProfileId?: string
 }
 
 export interface ProviderAccountCredentialDriver {

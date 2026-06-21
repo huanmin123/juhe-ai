@@ -1,16 +1,20 @@
 import { normalizeProviderToken } from '../../../domain/provider-protocol.js'
 import { anthropicAccountCredentialDriver } from './anthropic/account-credentials.js'
+import { deepSeekAccountCredentialDriver } from './deepseek/account-credentials.js'
 import type {
   ProviderAccountCredentialContext,
   ProviderAccountCredentialDriver
 } from './_shared/account-credentials.js'
+import { glmAccountCredentialDriver } from './glm/account-credentials.js'
 import { gptAccountCredentialDriver } from './gpt/account-credentials.js'
 import { openAICompatibleAccountCredentialDriver } from './openai-compatible/account-credentials.js'
 
 const providerAccountCredentialDrivers: readonly ProviderAccountCredentialDriver[] = [
   openAICompatibleAccountCredentialDriver,
   gptAccountCredentialDriver,
-  anthropicAccountCredentialDriver
+  deepSeekAccountCredentialDriver,
+  anthropicAccountCredentialDriver,
+  glmAccountCredentialDriver
 ] as const
 
 export function listProviderAccountCredentialDrivers(): readonly ProviderAccountCredentialDriver[] {

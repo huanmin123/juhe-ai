@@ -1,5 +1,6 @@
 import { type AccountAvailabilitySchedule, type AccountClientCompatibility, type AccountModelMapping, type AccountType } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
@@ -43,6 +44,7 @@ export interface NormalizedImportAccount {
   name: string
   providerCode: string
   providerProtocolProfileId?: string
+  connectionType?: string
   protocolCode?: string
   protocolVersion?: string
   clientCompatibility?: AccountClientCompatibility
@@ -105,6 +107,8 @@ export function planImportAccount(
   source.name = optionalTextField(value, 'name', '账户名称', item.messages) ?? ''
   source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? ''
   source.providerProtocolProfileId = optionalTextField(value, 'providerProtocolProfileId', '账户 providerProtocolProfileId', item.messages)
+  source.connectionType = optionalTextField(value, 'connectionType', '账户 connectionType', item.messages)
+  source.clientCompatibility = optionalTextField(value, 'clientCompatibility', '账户 clientCompatibility', item.messages) as AccountClientCompatibility | undefined
   if (!source.providerCode) {
     item.messages.push('账户 providerCode 不能为空')
   }
@@ -147,15 +151,21 @@ export function planImportAccount(
     const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
       source.providerCode,
       source.type,
-      undefined,
+      source.clientCompatibility,
       'openai_standard',
-      { protocolCode: source.protocolCode, protocolVersion: source.protocolVersion }
+      {
+        providerCode: source.providerCode,
+        providerProtocolProfileId: source.providerProtocolProfileId,
+        protocolCode: source.protocolCode,
+        protocolVersion: source.protocolVersion
+      }
     )
     source.clientCompatibility = clientCompatibility
     source.credentials = normalizeAccountCredentialsForWrite(source.type, value.credentials, {
       providerCode: source.providerCode,
       accountType: source.type,
       clientCompatibility,
+      providerProtocolProfileId: source.providerProtocolProfileId,
       protocolCode: source.protocolCode,
       protocolVersion: source.protocolVersion
     })
@@ -166,6 +176,7 @@ export function planImportAccount(
   item.ref = source.ref
   item.name = source.name
   item.providerCode = source.providerCode
+  item.connectionType = source.connectionType
   item.groupName = source.groupName
   item.groupId = source.groupId
   item.proxyRef = source.proxyRef
@@ -198,7 +209,12 @@ function normalizeImportAccountEffectiveClientCompatibility(account: NormalizedI
       account.type,
       account.clientCompatibility,
       'openai_standard',
-      { protocolCode: account.protocolCode, protocolVersion: account.protocolVersion }
+      {
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion
+      }
     )
   } catch (error) {
     account.messages.push(errorMessage(error))
@@ -213,7 +229,12 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
       account.type,
       account.clientCompatibility,
       'openai_standard',
-      { protocolCode: account.protocolCode, protocolVersion: account.protocolVersion }
+      {
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion
+      }
     )
     assertImportEndpointModesCompatible(account, {
       modes: account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
@@ -228,7 +249,17 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
 function applyImportAccountProtocolProfileDefaults(account: NormalizedImportAccount, context: AccountImportProviderContext): void {
   const provider = context.providerByCode.get(account.providerCode)
   if (!provider) return
-  const requestedProfileId = account.providerProtocolProfileId?.trim()
+  let requestedProfileId: string | undefined
+  try {
+    requestedProfileId = resolveProviderProtocolProfileIdFromConnectionType({
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      connectionType: account.connectionType
+    })
+  } catch (error) {
+    account.messages.push(errorMessage(error))
+    return
+  }
   const profile = requestedProfileId
     ? provider.protocolProfiles.find((item) => item.id === requestedProfileId)
     : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
@@ -241,7 +272,7 @@ function applyImportAccountProtocolProfileDefaults(account: NormalizedImportAcco
 }
 
 function assertImportEndpointModesCompatible(
-  account: Pick<NormalizedImportAccount, 'protocolCode' | 'protocolVersion'>,
+  account: Pick<NormalizedImportAccount, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>,
   input: {
     modes: readonly AccountSupportedEndpointMode[]
     accountType?: string
@@ -258,6 +289,8 @@ function assertImportEndpointModesCompatible(
   if (isOpenAIProtocolProfile(account)) {
     assertOpenAIEndpointModesCompatible({
       modes: input.modes,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
     })

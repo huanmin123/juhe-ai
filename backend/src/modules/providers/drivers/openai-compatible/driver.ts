@@ -44,8 +44,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
   usageSemantic: 'openai',
   profileIds: [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID],
   supportsProfile(profile) {
+    const profileId = profile?.providerProtocolProfileId ?? profile?.id
     return profile?.providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE
       && isOpenAIProtocolProfile(profile)
+      && profileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
   },
   resolveUsageModel(account, requestedModel) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
@@ -88,6 +90,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       supportedEndpointModes: account.supportedEndpointModes,
       credentials: account.credentials,
       providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
       accountType: account.type,
       clientCompatibility: account.clientCompatibility
     })

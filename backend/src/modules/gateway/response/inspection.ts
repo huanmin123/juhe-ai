@@ -52,6 +52,7 @@ export interface ResponseInspectionMatchResult {
 export interface ResponseInspectionRuntimeContext {
   clientProfile: ResponseInspectionPolicyClientProfile
   accountClientCompatibility?: AccountClientCompatibility
+  codexCompactionExpected?: boolean
 }
 
 export interface ResponseInspectionDecision {
@@ -68,6 +69,7 @@ export interface ResponseInspectionDecision {
   finishReason?: string
   clientProfile?: ResponseInspectionPolicyClientProfile
   accountClientCompatibility?: AccountClientCompatibility
+  codexCompactionExpected?: boolean
   rewriteErrorCode?: string
   rewriteMessage?: string
   downstreamWritten: boolean
@@ -265,6 +267,7 @@ function buildPolicyDecision(
     finishReason: frame.finishReason ?? frame.status,
     clientProfile: context?.clientProfile,
     accountClientCompatibility: context?.accountClientCompatibility,
+    codexCompactionExpected: context?.codexCompactionExpected,
     rewriteErrorCode: rewriteErrorCode(policy, frame),
     rewriteMessage: frame.errorMessage ?? `响应命中检查策略：${policy.name}`,
     downstreamWritten,

@@ -12,6 +12,7 @@ export interface AccountClientCompatibilityProfile {
   clientCompatibility?: unknown
   protocolCode?: string
   protocolVersion?: string
+  providerProtocolProfileId?: string
 }
 
 export function normalizeAccountClientCompatibility(value: unknown, fallback: AccountClientCompatibility = 'openai_standard'): AccountClientCompatibility {
@@ -27,7 +28,12 @@ export function normalizeOpenAIAccountClientCompatibility(
   accountType: unknown,
   value: unknown,
   fallback: AccountClientCompatibility = 'openai_standard',
-  protocolProfile?: { protocolCode?: string; protocolVersion?: string }
+  protocolProfile?: {
+    providerCode?: string
+    protocolCode?: string
+    protocolVersion?: string
+    providerProtocolProfileId?: string
+  }
 ): AccountClientCompatibility {
   if (isGptVendorCode(providerCode) && isOpenAIProtocolProfile(protocolProfile)) {
     if (accountType === 'oauth') {

@@ -1,4 +1,5 @@
-import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountClientCompatibility, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
+import { connectionTypeForProviderProtocolProfile } from '../../domain/provider-connection-type.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getProxyTestConfig, listAccounts, type ProxyProfileTestConfig } from '../../storage/repositories.js'
 import {
@@ -31,6 +32,9 @@ export interface AccountExportAccount {
   ref: string
   name: string
   providerCode: string
+  providerProtocolProfileId?: string
+  connectionType?: string
+  clientCompatibility?: AccountClientCompatibility
   type: AccountType
   status: AccountExportStatus
   groupId?: string
@@ -155,9 +159,14 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
     ref: account.id,
     name: account.name,
     providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    ...(connectionTypeForExport(account) ? { connectionType: connectionTypeForExport(account) } : {}),
     type: account.type,
     status,
     credentials: exportCredentials(account.type, account.credentials)
+  }
+  if (account.protocolCode === 'openai') {
+    output.clientCompatibility = account.clientCompatibility
   }
   if (account.boundGroupName) {
     output.groupName = account.boundGroupName
@@ -178,6 +187,13 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
   if (account.availabilitySchedule) output.availabilitySchedule = account.availabilitySchedule
   if (account.notes) output.notes = account.notes
   return output
+}
+
+function connectionTypeForExport(account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId'>): string | undefined {
+  return connectionTypeForProviderProtocolProfile({
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId
+  })
 }
 
 function exportAccountStatus(account: AccountSummary): AccountExportStatus {

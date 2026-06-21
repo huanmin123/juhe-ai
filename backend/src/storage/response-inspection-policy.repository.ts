@@ -112,6 +112,7 @@ const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthr
 const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
 const accountClientCompatibilityValues = new Set<AccountClientCompatibility>(ACCOUNT_CLIENT_COMPATIBILITIES)
 const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE])
+const codexCompactionContractMismatchErrorCode = 'codex_compaction_contract_mismatch'
 
 const matchKeys = [
   'clientProfiles',
@@ -199,12 +200,29 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     notes: 'Codex 客户端会把 Responses response.incomplete 当成可重试流式错误；网关在写下游前拦截为统一可重试失败，避免服务端误判成功。'
   },
   {
+    id: 'default_codex_compaction_contract',
+    defaultRule: true,
+    editable: false,
+    name: 'Codex compact 输出契约',
+    enabled: true,
+    priority: 5,
+    scopeType: 'protocol',
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['codex'],
+      accountClientCompatibilities: ['codex_responses'],
+      errorCodes: [codexCompactionContractMismatchErrorCode]
+    },
+    action: 'retry_next_account',
+    notes: 'Codex Remote Compaction V2 要求返回恰好 1 个 compaction output item；不满足时在下游写出前触发重试或可重试失败。'
+  },
+  {
     id: 'default_gpt_cyber_policy',
     defaultRule: true,
     editable: false,
     name: 'GPT cyber_policy',
     enabled: true,
-    priority: 5,
+    priority: 6,
     scopeType: 'provider',
     protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: GPT_VENDOR_CODE,

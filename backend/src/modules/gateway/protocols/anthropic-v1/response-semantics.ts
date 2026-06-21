@@ -213,7 +213,6 @@ function anthropicDeltaText(delta: Record<string, unknown> | undefined): string 
   if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) return delta.text
   if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string' && delta.partial_json.length > 0) return delta.partial_json
   if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) return delta.thinking
-  if (delta.type === 'signature_delta' && typeof delta.signature === 'string' && delta.signature.length > 0) return delta.signature
   return undefined
 }
 

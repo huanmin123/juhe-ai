@@ -231,7 +231,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
-    if (transferredBytes > 0 || downstreamWriting || res.headersSent) {
+    if (downstreamWriting || res.headersSent) {
       if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
         endResponse(res)
       } else {

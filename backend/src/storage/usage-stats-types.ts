@@ -26,6 +26,7 @@ export interface UsageStatsRecordRow {
   account_id: string | null
   endpoint: string | null
   provider_code: string | null
+  provider_protocol_profile_id?: string | null
   model: string | null
   status_code: number | null
   success: number
@@ -63,6 +64,7 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
   account_id,
   endpoint,
   provider_code,
+  provider_protocol_profile_id,
   model,
   status_code,
   success,

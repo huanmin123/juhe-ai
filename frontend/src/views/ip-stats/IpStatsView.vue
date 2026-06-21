@@ -146,7 +146,10 @@
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'account'">
             <div class="ip-detail-account">
-              <span :class="record.accountName ? 'name-cell' : 'muted-cell'">{{ record.accountName || '未匹配到账户名称' }}</span>
+              <a-tooltip v-if="record.accountName" :title="record.accountName">
+                <span class="name-cell ip-detail-account-name">{{ record.accountName }}</span>
+              </a-tooltip>
+              <span v-else class="muted-cell">未匹配到账户名称</span>
             </div>
           </template>
           <template v-else-if="column.key === 'requestCount'">
@@ -218,7 +221,7 @@ const policyDurationOptions = [
 ]
 
 const detailColumns = [
-  { title: 'AI 账户', key: 'account', width: 240, fixed: 'left', align: 'left' },
+  { title: 'AI 账户', key: 'account', width: 180, fixed: 'left', align: 'left' },
   { title: '请求', key: 'requestCount', width: 100, align: 'left', sorter: true },
   { title: 'Token', key: 'totalTokens', width: 120, align: 'left', sorter: true },
   { title: '成本', key: 'cost', width: 120, align: 'left', sorter: true },
@@ -555,7 +558,14 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   min-width: 0;
   flex-direction: column;
   gap: 2px;
-  word-break: break-all;
+}
+
+.ip-detail-account-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request, Response } from 'express'
 
+import type { AccountClientCompatibility } from '../../../domain/types.js'
 import { BoundedBufferCollector } from '../../../shared/bounded-buffer.js'
 import { OpenAIStreamInspector } from '../protocols/openai-v1/stream-inspection.js'
 
@@ -30,13 +31,22 @@ export function createGatewayTestRequest(
   body: Record<string, unknown>,
   rawBodyText: string,
   isOAuth: boolean,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientCompatibility?: AccountClientCompatibility
 ): Request {
   const stream = body.stream === true
   const headers: IncomingHttpHeaders = {
     accept: stream ? isOAuth ? 'text/event-stream' : 'application/json, text/event-stream' : 'application/json',
     'content-type': 'application/json',
     'content-length': String(Buffer.byteLength(rawBodyText))
+  }
+  if (clientCompatibility === 'codex_responses' && stream && path.includes('/responses')) {
+    const turnNonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    headers['x-codex-turn-metadata'] = JSON.stringify({
+      session_id: 'account-test-session',
+      thread_id: 'account-test-thread',
+      turn_id: `account-test-turn-${turnNonce}`
+    })
   }
   return createMemoryGatewayRequestFromAdapterInput({
     method: 'POST',

@@ -4,7 +4,7 @@
 
 当前版本启用两个使用 OpenAI v1 协议的供应商，并通过 OpenAI-compatible 入口对外提供兼容网关：
 
-- `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合所有启用 OpenAI v1 供应商的模型。
+- `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合自身和显式纳入聚合的 OpenAI-compatible 子供应商模型，不自动包含 DeepSeek 等独立供应商。
 - `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。
 
 智谱 GLM 的接入细节单独写在 [智谱 GLM 账号接入](智谱GLM账号接入.md)，DeepSeek 的接入细节单独写在 [DeepSeek 账号接入](DeepSeek账号接入.md)。本文只维护 OpenAI 与 GPT 语义，避免把 GLM、DeepSeek 的厂商兼容差异和 OpenAI / GPT 账户接入混在一起。
@@ -54,7 +54,7 @@ type GptAccountType = 'api_key' | 'oauth'
 
 内置供应商定义：
 
-- `openai`：通用 OpenAI-compatible 供应商，作为同协议优化的父层，只提供 API Key 透传，模型目录聚合所有启用 OpenAI v1 供应商模型。
+- `openai`：通用 OpenAI-compatible 供应商，作为同协议优化的父层，只提供 API Key 透传，模型目录聚合自身和显式纳入聚合的 OpenAI-compatible 子供应商模型；DeepSeek 等独立供应商不进入该聚合目录。
 - `gpt`：GPT 子供应商，`parent_code = openai`，继承通用 OpenAI-compatible 能力，并叠加 GPT OAuth / Codex 专属能力，模型目录只看 GPT 自身模型。
 
 内置供应商协议档案：

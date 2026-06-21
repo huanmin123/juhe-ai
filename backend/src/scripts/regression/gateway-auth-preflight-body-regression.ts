@@ -166,6 +166,21 @@ try {
     assert.equal(chatOversize.status, 413, '超过系统设置里的 Chat Completions 文本请求体上限应在读取 body 前返回 413')
     assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeChatOversize, '超过动态文本上限且 URL 可确定文本端点时不应进入 raw body 读取链路')
 
+    const rawBodyHitsBeforeMessagesOversize = rawBodyMiddlewareHitCount
+    const messagesOversizeBody = JSON.stringify({ model: 'claude-sonnet-4-5', messages: [{ role: 'user', content: 'x'.repeat(configuredTextLimitBytes) }] })
+    const messagesOversize = await postJson(`${baseUrl}/v1/messages`, messagesOversizeBody, apiKey.key, 'messagesOversize')
+    assert.equal(messagesOversize.status, 413, '超过系统设置里的 Anthropic Messages 文本请求体上限应在读取 body 前返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeMessagesOversize, 'Anthropic Messages 超过动态文本上限时不应进入 raw body 读取链路')
+
+    const messageTokensOversize = await postJson(`${baseUrl}/v1/messages/count_tokens`, messagesOversizeBody, apiKey.key, 'messageTokensOversize')
+    assert.equal(messageTokensOversize.status, 413, '超过系统设置里的 Anthropic Count Tokens 文本请求体上限应在读取 body 前返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeMessagesOversize, 'Anthropic Count Tokens 超过动态文本上限时不应进入 raw body 读取链路')
+
+    const embeddingsOversizeBody = JSON.stringify({ model: 'text-embedding-3-large', input: 'x'.repeat(configuredTextLimitBytes) })
+    const embeddingsOversize = await postJson(`${baseUrl}/v1/embeddings`, embeddingsOversizeBody, apiKey.key, 'embeddingsOversize')
+    assert.equal(embeddingsOversize.status, 413, '超过系统设置里的 Embeddings 文本请求体上限应在读取 body 前返回 413')
+    assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeMessagesOversize, 'Embeddings 超过动态文本上限时不应进入 raw body 读取链路')
+
     const oversizeBody = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(configuredTextLimitBytes) })
     const usageQueueLengthBeforeOversize = backgroundIpc.getBackgroundWorkerState().pendingQueues.usageRecords.queueLength
     const oversize = await postJson(`${baseUrl}/v1/responses`, oversizeBody, apiKey.key, 'oversize')

@@ -31,6 +31,8 @@ const modelNameCategoryRules: ModelNameCategoryRule[] = [
   {
     category: 'text',
     matches: (model) => model.includes('codex')
+      || model.startsWith('deepseek-')
+      || model.startsWith('deepseek-ai-')
       || model.startsWith('gpt-')
       || model.startsWith('claude-')
       || model.startsWith('o')
@@ -66,4 +68,3 @@ function categoryFromModeAlias(mode: string): ModelCategoryKey | undefined {
   if (mode === 'chat' || mode === 'responses' || mode === 'completion') return 'text'
   return undefined
 }
-

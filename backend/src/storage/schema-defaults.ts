@@ -6,6 +6,11 @@ import {
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
   ANTHROPIC_PROVIDER_CODE,
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -49,10 +54,46 @@ export const DEFAULT_ANTHROPIC_GROUP = {
   description: ''
 } as const
 
+export const DEFAULT_DEEPSEEK_GROUP = {
+  id: 'grp_default_deepseek_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 DeepSeek 分组',
+  providerCode: DEEPSEEK_PROVIDER_CODE,
+  providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  description: ''
+} as const
+
+export const DEFAULT_GLM_GENERAL_GROUP = {
+  id: 'grp_default_glm_general_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 GLM 通用分组',
+  providerCode: GLM_PROVIDER_CODE,
+  providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  description: ''
+} as const
+
+export const DEFAULT_GLM_CODING_GROUP = {
+  id: 'grp_default_glm_coding_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 GLM Coding 分组',
+  providerCode: GLM_PROVIDER_CODE,
+  providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  description: ''
+} as const
+
 export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_OPENAI_COMPATIBLE_GROUP,
   DEFAULT_GPT_GROUP,
-  DEFAULT_ANTHROPIC_GROUP
+  DEFAULT_DEEPSEEK_GROUP,
+  DEFAULT_ANTHROPIC_GROUP,
+  DEFAULT_GLM_GENERAL_GROUP,
+  DEFAULT_GLM_CODING_GROUP
 ] as const
 
 export const DEFAULT_GLOBAL_SETTINGS = [
@@ -84,6 +125,24 @@ export const ANTHROPIC_PROVIDER_SEED = {
   name: 'Anthropic',
   parentCode: null,
   description: 'Anthropic 官方供应商，当前支持官方 API Key 与 Anthropic Messages 原生协议直连',
+  enabled: 1
+} as const
+
+export const DEEPSEEK_PROVIDER_SEED = {
+  id: DEEPSEEK_PROVIDER_CODE,
+  code: DEEPSEEK_PROVIDER_CODE,
+  name: 'DeepSeek',
+  parentCode: null,
+  description: 'DeepSeek 官方供应商，使用 OpenAI-compatible v1 Chat Completions 协议直连，并可通过 Responses 到 Chat SSE 桥接兼容 Codex 客户端',
+  enabled: 1
+} as const
+
+export const GLM_PROVIDER_SEED = {
+  id: GLM_PROVIDER_CODE,
+  code: GLM_PROVIDER_CODE,
+  name: '智谱 GLM',
+  parentCode: null,
+  description: '智谱 GLM 官方供应商，当前支持通用 GLM API Key 与 GLM Coding Plan Key 的 OpenAI Chat Completions 兼容直连',
   enabled: 1
 } as const
 
@@ -199,6 +258,51 @@ export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
+} as const
+
+export const DEEPSEEK_OPENAI_V1_PROFILE_SEED = {
+  id: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  providerCode: DEEPSEEK_PROVIDER_CODE,
+  name: 'DeepSeek / OpenAI v1',
+  description: 'DeepSeek 供应商的 OpenAI-compatible v1 协议档案，承载 API Key、Chat Completions、DeepSeek 响应扩展字段与 Codex Responses 桥接',
+  enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.deepseek.com',
+  defaultTestModel: 'deepseek-v4-flash',
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'passthrough'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
+} as const
+
+export const GLM_GENERAL_OPENAI_V1_PROFILE_SEED = {
+  id: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  providerCode: GLM_PROVIDER_CODE,
+  name: '智谱 GLM 通用 / OpenAI Chat',
+  description: '智谱通用 GLM API Key 协议档案，使用智谱 OpenAI Chat Completions 兼容端点',
+  enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+  defaultTestModel: 'glm-5.2-free',
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'passthrough'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
+} as const
+
+export const GLM_CODING_OPENAI_V1_PROFILE_SEED = {
+  id: GLM_CODING_OPENAI_V1_PROFILE_ID,
+  providerCode: GLM_PROVIDER_CODE,
+  name: '智谱 GLM Coding / OpenAI Chat',
+  description: '智谱 GLM Coding Plan Key 协议档案，使用 Coding Plan OpenAI Chat Completions 兼容端点',
+  enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+  defaultTestModel: 'glm-5.2',
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'passthrough'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [

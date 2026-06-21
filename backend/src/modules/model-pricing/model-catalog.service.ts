@@ -17,7 +17,7 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { DEEPSEEK_PROVIDER_CODE, GLM_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
@@ -482,7 +482,11 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
     .map((code) => normalizeProviderToken(code))
     .filter((code): code is string => Boolean(code))
-  const childCodes = openAIProtocolProviderCodes.filter((code) => code !== normalizedProviderCode)
+  const childCodes = openAIProtocolProviderCodes.filter((code) => (
+    code !== normalizedProviderCode
+    && code !== DEEPSEEK_PROVIDER_CODE
+    && code !== GLM_PROVIDER_CODE
+  ))
   return [...new Set([...childCodes, normalizedProviderCode])]
 }
 

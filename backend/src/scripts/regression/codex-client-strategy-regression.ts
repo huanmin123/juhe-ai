@@ -36,6 +36,7 @@ function main(): void {
   testAllFailedAccountsBypassAvoidance()
   testMissingTurnStateDoesNotAvoidAccounts()
   testNonResponsesStreamDoesNotUseCodexProfile()
+  testCodexCompactRequestUsesCodexProfile()
   console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、非法/非 Codex metadata 不升级、body hash 不切分 turn 状态、同一 turn 失败两次后才切号、状态丢失不避让和非 Responses 隔离符合预期')
 }
 
@@ -332,6 +333,40 @@ function testNonResponsesStreamDoesNotUseCodexProfile(): void {
   assert.equal(strategy.clientProfile, 'generic_openai')
   assert.equal(strategy.requestClientCompatibility, 'openai_standard')
   assert.equal(strategy.codexTurn, undefined)
+}
+
+function testCodexCompactRequestUsesCodexProfile(): void {
+  const genericStrategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses/compact', {
+    model: 'gpt-5.5',
+    input: 'compact'
+  }), {
+    ...identity,
+    endpoint: 'POST /v1/responses/compact'
+  })
+  assert.equal(genericStrategy.clientProfile, 'generic_openai')
+  assert.equal(genericStrategy.requestClientCompatibility, 'openai_standard')
+  assert.equal(genericStrategy.codexCompactionExpected, false)
+
+  const strategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses/compact', {
+    model: 'gpt-5.5',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'compact' }] },
+      { type: 'compaction_trigger' }
+    ]
+  }, {
+    'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_compact' })
+  }), {
+    ...identity,
+    endpoint: 'POST /v1/responses/compact'
+  })
+
+  assert.equal(strategy.clientProfile, 'codex')
+  assert.equal(strategy.requestClientCompatibility, 'codex_responses')
+  assert.equal(strategy.downstreamProtocol, 'json')
+  assert.equal(strategy.codexCompactionExpected, true)
+  assert.equal(strategy.codexTurn?.turnId, 'turn_compact')
+  assert.equal(strategy.allowCodexStreamClientRetry, true)
+  assert.equal(strategy.allowCodexTurnAccountAvoidance, true)
 }
 
 function createRequest(

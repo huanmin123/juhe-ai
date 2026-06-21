@@ -182,7 +182,7 @@
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
       @test="testAccountFromEditModal"
-      @select-type="selectAccountType"
+      @select-type-choice="selectAccountTypeChoice"
     />
 
     <AccountTrafficMigrationModal
@@ -472,7 +472,7 @@ const {
   providerModelOptions,
   providerModelsLoading,
   saveAccount,
-  selectAccountType,
+  selectAccountTypeChoice,
   selectedAccountTypeTitle,
   selectedProtocolProfile,
   selectedProvider,
@@ -496,6 +496,7 @@ const {
 watch(
   [
     () => form.providerCode,
+    () => form.providerProtocolProfileId,
     () => form.groupId,
     () => createScopeParams.value?.systemAccountId,
     () => editingId.value,
@@ -507,6 +508,7 @@ watch(
       : undefined
     setEditGroupOptionScope({
       providerCode: form.providerCode,
+      providerProtocolProfileId: form.providerProtocolProfileId,
       systemAccountId: isManagementView.value
         ? accountOperationSystemAccountId(activeAccount, createScopeParams.value) ?? ''
         : undefined,

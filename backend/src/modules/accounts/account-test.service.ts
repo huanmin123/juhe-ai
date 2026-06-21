@@ -17,6 +17,7 @@ import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/audit/payload-sanitizer.js'
 import type { GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/runtime/account-side-effects.service.js'
+import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
   createGatewayTestRequest,
   MemoryGatewayResponse
@@ -120,11 +121,13 @@ export async function testOpenAIAccount(
   input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
-  const model = explicitModel || defaultAccountTestModel(account)
   const prompt = stringValue(input.prompt) || accountTestDefaultPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
   const anthropicProtocol = isAnthropicProtocolProfile(account)
+  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createOpenAITestRequest> | undefined
+  let requestBody: Record<string, unknown> | undefined
+  let requestUrl: string | undefined
   // Anthropic 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
   const accountClientCompatibility = anthropicProtocol
     ? 'openai_standard' as const
@@ -144,38 +147,6 @@ export async function testOpenAIAccount(
         accountClientCompatibility,
         account
       )
-  // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
-  const gatewaySupportedEndpointModes = anthropicProtocol
-    ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion
-    })
-    : normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      clientCompatibility
-    })
-  const testRequest = anthropicProtocol
-    ? createAnthropicTestRequest({
-      explicitModel,
-      fallbackModel: model,
-      prompt,
-      supportedEndpointModes: gatewaySupportedEndpointModes
-    })
-    : createOpenAITestRequest({
-      explicitModel,
-      fallbackModel: model,
-      prompt,
-      isOAuth: account.type === 'oauth',
-      clientCompatibility,
-      supportedEndpointModes: gatewaySupportedEndpointModes,
-      requestShape: input.requestShape
-    })
-  const requestBody = testRequest.body
-  const requestBodyText = JSON.stringify(requestBody)
-  const requestUrl = testRequest.path
   const modelsUrl = accountTestModelsPath
   const traceId = createTraceId()
 
@@ -186,8 +157,44 @@ export async function testOpenAIAccount(
       clientCompatibility,
       candidateAccount: input.candidateAccount
     })
-    const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal)
+    const model = explicitModel || defaultAccountTestModel(account)
+    // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
+    const gatewaySupportedEndpointModes = anthropicProtocol
+      ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+        providerCode: account.providerCode,
+        accountType: account.type,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion
+      })
+      : normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility
+      })
+    testRequest = anthropicProtocol
+      ? createAnthropicTestRequest({
+        explicitModel,
+        fallbackModel: model,
+        prompt,
+        supportedEndpointModes: gatewaySupportedEndpointModes
+      })
+      : createOpenAITestRequest({
+        explicitModel,
+        fallbackModel: model,
+        prompt,
+        isOAuth: account.type === 'oauth',
+        clientCompatibility,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        supportedEndpointModes: gatewaySupportedEndpointModes,
+        requestShape: input.requestShape
+      })
+    requestBody = testRequest.body
+    const requestBodyText = JSON.stringify(requestBody)
+    requestUrl = testRequest.path
+    const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal, clientCompatibility)
     const response = new MemoryGatewayResponse(startedAt)
+    let diagnosticLastAttempt: UpstreamAttempt | undefined
     const context: RequestContext = {
       traceId,
       startedAt,
@@ -210,7 +217,10 @@ export async function testOpenAIAccount(
       exposeUpstreamDiagnostics: !limitedDiagnostics,
       trafficSource: input.trafficSource ?? 'manual_account_test',
       settingsOverride: input.gatewaySettingsOverride,
-      disableAccountStateMutation: input.disableAccountStateMutation ?? true
+      disableAccountStateMutation: input.disableAccountStateMutation ?? true,
+      onUpstreamAttemptDiagnostic: (lastAttempt) => {
+        diagnosticLastAttempt = lastAttempt
+      }
     })))
     if (input.signal?.aborted) {
       throw accountTestAbortError(input.signal)
@@ -228,10 +238,11 @@ export async function testOpenAIAccount(
       : findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
+    const diagnosticAttemptText = diagnosticLastAttempt?.responseBodyText?.trim() ?? ''
     const upstreamMessage = anthropicProtocol
-      ? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-      : parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-    const upstreamErrorCode = parseUpstreamErrorCode(responseText)
+      ? parseAnthropicUpstreamMessage(diagnosticAttemptText) ?? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
+      : parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
+    const upstreamErrorCode = parseUpstreamErrorCode(diagnosticAttemptText) ?? parseUpstreamErrorCode(responseText)
     const streamFailureMessage = anthropicProtocol
       ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
       : parseOpenAIStreamFailureMessage(responseText)
@@ -239,6 +250,7 @@ export async function testOpenAIAccount(
       ? extractAnthropicResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
+    const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
@@ -253,12 +265,12 @@ export async function testOpenAIAccount(
       clientCompatibility: accountClientCompatibility,
       testClientCompatibility: clientCompatibility,
       success,
-      statusCode: response.statusCode,
+      statusCode: diagnosticStatusCode,
       errorCode: success ? undefined : upstreamErrorCode,
       message: success
-        ? accountTestSuccessMessage(anthropicProtocol, responseTruncated)
-        : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
-      model: testRequest.model,
+        ? accountTestSuccessMessage(anthropicProtocol, responseTruncated, requestUrl)
+        : proxyFailureMessage || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
+      model: testRequest?.model,
       requestUrl,
       requestBody,
       responseHeaders: response.headersObject(),
@@ -277,7 +289,7 @@ export async function testOpenAIAccount(
     }), limitedDiagnostics)
   } catch (error) {
     const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
-    const message = normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(anthropicProtocol)
+    const message = normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(anthropicProtocol, requestUrl)
     const accountFailureEligible = accountTestFailureEligible(normalizedError)
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
@@ -292,7 +304,7 @@ export async function testOpenAIAccount(
       testClientCompatibility: clientCompatibility,
       success: false,
       message,
-      model: testRequest.model,
+      model: testRequest?.model,
       requestUrl,
       requestBody,
       responseText: message,
@@ -315,6 +327,27 @@ export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'p
 
 function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
   return sanitizeDiagnosticPayload(result)
+}
+
+function accountTestDiagnosticStatusCode(downstreamStatusCode: number, success: boolean, lastAttempt?: UpstreamAttempt): number | undefined {
+  if (success) {
+    return downstreamStatusCode
+  }
+  if (isHttpStatusCode(lastAttempt?.status)) {
+    return lastAttempt.status
+  }
+  return downstreamStatusCode >= 200 && downstreamStatusCode < 300 ? undefined : downstreamStatusCode
+}
+
+function accountTestHttpFailureMessage(statusCode: number | undefined, downstreamStatusCode: number): string {
+  if (typeof statusCode === 'number') {
+    return `API 返回 HTTP ${statusCode}`
+  }
+  return `API 返回 HTTP ${downstreamStatusCode}`
+}
+
+function isHttpStatusCode(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
 }
 
 function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited: boolean): AccountTestResult {
@@ -473,15 +506,20 @@ function parseUpstreamErrorCode(bodyText: string): string | undefined {
   }
 }
 
-function accountTestSuccessMessage(anthropicProtocol: boolean, responseTruncated: boolean): string {
-  const protocolName = anthropicProtocol ? 'Anthropic Messages' : 'OpenAI Responses'
+function accountTestSuccessMessage(anthropicProtocol: boolean, responseTruncated: boolean, requestUrl: string): string {
+  const protocolName = accountTestProtocolName(anthropicProtocol, requestUrl)
   return responseTruncated
     ? `${protocolName} 测试通过（响应体过大，已截断展示）`
     : `${protocolName} 测试通过`
 }
 
-function accountTestFailureMessage(anthropicProtocol: boolean): string {
-  return anthropicProtocol ? 'Anthropic Messages 测试失败' : 'OpenAI Responses 测试失败'
+function accountTestFailureMessage(anthropicProtocol: boolean, requestUrl?: string): string {
+  return `${accountTestProtocolName(anthropicProtocol, requestUrl)} 测试失败`
+}
+
+function accountTestProtocolName(anthropicProtocol: boolean, requestUrl?: string): string {
+  if (anthropicProtocol) return 'Anthropic Messages'
+  return requestUrl?.includes('/chat/completions') ? 'OpenAI Chat Completions' : 'OpenAI Responses'
 }
 
 function stringValue(value: unknown): string {

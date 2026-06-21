@@ -8,10 +8,11 @@ import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 
 export const runtimeLogsRouter = Router()
+const runtimeLogRouteTimeoutMs = 120_000
 
 runtimeLogsRouter.use((req, res, next) => {
-  req.setTimeout(0)
-  res.setTimeout(0)
+  req.setTimeout(runtimeLogRouteTimeoutMs)
+  res.setTimeout(runtimeLogRouteTimeoutMs)
   next()
 })
 

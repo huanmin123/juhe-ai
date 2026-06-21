@@ -1,4 +1,4 @@
-import { isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { isOpenAICompatibleProviderCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { AccountOptionSummary } from '@/types/domain'
 
 export type ModelCheckAccountProfile = Pick<
@@ -7,7 +7,8 @@ export type ModelCheckAccountProfile = Pick<
 >
 
 export function canRunModelCheckForAccount(account: ModelCheckAccountProfile | undefined): boolean {
-  return isOpenAIProtocolProfile(account)
+  if (!account) return false
+  return isOpenAIProtocolProfile(account) && isOpenAICompatibleProviderCode(account.providerCode)
 }
 
 export function canSelectModelCheckAccount(
@@ -18,4 +19,3 @@ export function canSelectModelCheckAccount(
   if (options.excludedAccountId && account.id === options.excludedAccountId) return false
   return Boolean(account.name.trim())
 }
-

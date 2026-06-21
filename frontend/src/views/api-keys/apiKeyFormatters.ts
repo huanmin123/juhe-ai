@@ -37,6 +37,22 @@ export function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
     .join(' / ')
 }
 
+export function apiKeyRouteModeTagColor(apiKey: ApiKeySummary): string {
+  return apiKey.routeMode === 'hybrid' ? 'cyan' : 'default'
+}
+
+export function apiKeyRouteModeText(apiKey: ApiKeySummary): string {
+  return apiKey.routeMode === 'hybrid' ? '混合智能路由' : '普通路由'
+}
+
+export function apiKeyHybridRouteSummary(apiKey: ApiKeySummary): string {
+  if (apiKey.routeMode !== 'hybrid' || !apiKey.hybridRoutingConfig) return '-'
+  return apiKey.hybridRoutingConfig.levelRoutes
+    .filter((route) => route.enabled)
+    .map((route) => `${route.minLevel}-${route.maxLevel}：${route.targetModel}`)
+    .join(' / ') || '-'
+}
+
 function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefined, binding: ApiKeyGroupBindingSummary, index: number): string {
   if (strategy === 'round_robin') return `轮询 ${index + 1}`
   if (strategy === 'weighted_round_robin') return `权重 ${index + 1}`

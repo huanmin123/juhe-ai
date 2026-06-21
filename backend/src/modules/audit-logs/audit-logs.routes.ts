@@ -19,10 +19,11 @@ import { grepAuditHotSearchFiles } from '../../storage/audit-log-hot-search-file
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 
 export const auditLogsRouter = Router()
+const auditLogRouteTimeoutMs = 120_000
 
 auditLogsRouter.use((req, res, next) => {
-  req.setTimeout(0)
-  res.setTimeout(0)
+  req.setTimeout(auditLogRouteTimeoutMs)
+  res.setTimeout(auditLogRouteTimeoutMs)
   next()
 })
 
@@ -132,7 +133,7 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'stream_failed',
   'client_aborted'
 ])
-const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest'])
+const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest', 'hybrid_scoring'])
 
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)

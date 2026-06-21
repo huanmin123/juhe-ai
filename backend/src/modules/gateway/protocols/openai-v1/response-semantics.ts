@@ -169,6 +169,7 @@ function extractChatJsonFrames(root: Record<string, unknown>): ResponseSemanticF
     if (!row) return
     const message = objectValue(row.message)
     const content = textFromOpenAITextValue(message?.content)
+    const reasoningContent = textFromOpenAITextValue(message?.reasoning_content)
     const finishReason = typeof row.finish_reason === 'string' ? row.finish_reason : undefined
     if (content) {
       frames.push({
@@ -180,6 +181,20 @@ function extractChatJsonFrames(root: Record<string, unknown>): ResponseSemanticF
         finishReason,
         status: finishReason,
         rawJsonPaths: [`choices.${choiceIndex}.message.content`],
+        choiceIndex,
+        visibleOutput: true
+      })
+    }
+    if (reasoningContent) {
+      frames.push({
+        frameType: 'output_text_done',
+        protocol: 'openai_v1',
+        endpointFamily: 'chat_completions',
+        transport: 'json',
+        text: reasoningContent,
+        finishReason,
+        status: finishReason,
+        rawJsonPaths: [`choices.${choiceIndex}.message.reasoning_content`],
         choiceIndex,
         visibleOutput: true
       })
@@ -257,6 +272,21 @@ function extractChatSseFrames(
         transport: 'sse',
         text: content,
         rawJsonPaths: [`choices.${choiceIndex}.delta.content`],
+        rawText,
+        eventType,
+        choiceIndex,
+        visibleOutput: true
+      })
+    }
+    const reasoningContent = textFromOpenAITextValue(delta?.reasoning_content)
+    if (reasoningContent) {
+      frames.push({
+        frameType: 'output_text_delta',
+        protocol: 'openai_v1',
+        endpointFamily,
+        transport: 'sse',
+        text: reasoningContent,
+        rawJsonPaths: [`choices.${choiceIndex}.delta.reasoning_content`],
         rawText,
         eventType,
         choiceIndex,

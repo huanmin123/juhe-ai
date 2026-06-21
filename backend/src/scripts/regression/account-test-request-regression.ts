@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
+import {
   accountTestDefaultPrompt,
   accountTestModelsPath,
   createOpenAIChatCompletionsTestPayload,
@@ -21,6 +25,16 @@ assert.equal(testPathFromRecentShape(recentShape('/v1/chat/completions', false),
 assert.equal(testPathFromRecentShape(recentShape('/v1/responses', true), false, 'openai_standard'), '/v1/responses', '普通 API Key 默认走 Responses')
 assert.equal(testPathFromRecentShape(undefined, false, 'openai_standard', ['chat_json', 'chat_sse']), '/v1/chat/completions', 'Chat-only 账户测试不能默认走 Responses')
 assert.equal(testPathFromRecentShape(recentShape('/v1/responses', true), false, 'openai_standard', ['chat_json']), '/v1/chat/completions', '近期 Responses 形态不应覆盖 Chat-only 能力限制')
+assert.equal(
+  testPathFromRecentShape(undefined, false, 'codex_responses', ['chat_json', 'chat_sse'], GLM_CODING_OPENAI_V1_PROFILE_ID),
+  '/v1/responses',
+  'GLM Coding Codex bridge 账户测试应从 Responses 入口进入桥接'
+)
+assert.equal(
+  testPathFromRecentShape(undefined, false, 'codex_responses', ['chat_json', 'chat_sse'], DEEPSEEK_OPENAI_V1_PROFILE_ID),
+  '/v1/responses',
+  'DeepSeek Codex bridge 账户测试应从 Responses 入口进入桥接'
+)
 
 const chatRequest = createOpenAITestRequest({
   explicitModel: '  gpt-5.5-chat  ',
@@ -89,6 +103,28 @@ const chatOnlyRequest = createOpenAITestRequest({
 })
 assert.equal(chatOnlyRequest.path, '/v1/chat/completions', 'Chat JSON-only 账户应构造 chat completions 测试路径')
 assert.equal(chatOnlyRequest.body.stream, false, 'Chat JSON-only 账户测试必须使用非流式 JSON')
+
+const glmCodexBridgeRequest = createOpenAITestRequest({
+  fallbackModel: 'glm-5.2',
+  prompt: 'ok',
+  isOAuth: false,
+  clientCompatibility: 'codex_responses',
+  providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
+  supportedEndpointModes: ['chat_json', 'chat_sse']
+})
+assert.equal(glmCodexBridgeRequest.path, '/v1/responses', 'GLM Coding Codex bridge 测试请求必须走 Responses 下游路径')
+assert.equal(glmCodexBridgeRequest.body.stream, true, 'GLM Coding Codex bridge 测试请求必须使用 Responses SSE')
+
+const deepSeekCodexBridgeRequest = createOpenAITestRequest({
+  fallbackModel: 'deepseek-v4-flash',
+  prompt: 'ok',
+  isOAuth: false,
+  clientCompatibility: 'codex_responses',
+  providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  supportedEndpointModes: ['chat_json', 'chat_sse']
+})
+assert.equal(deepSeekCodexBridgeRequest.path, '/v1/responses', 'DeepSeek Codex bridge 测试请求必须走 Responses 下游路径')
+assert.equal(deepSeekCodexBridgeRequest.body.stream, true, 'DeepSeek Codex bridge 测试请求必须使用 Responses SSE')
 
 const requestSource = readFileSync(resolve('src/modules/accounts/account-test-request.ts'), 'utf8')
 assert.doesNotMatch(requestSource, /handleOpenAIGatewayRequest|findAccountForTest|flushGatewayAccountSideEffects/, '测试请求 payload 模块不能依赖真实网关编排或账号解析')

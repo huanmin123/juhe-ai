@@ -268,6 +268,7 @@ function apiKeyFixture(overrides: Partial<ApiKeySummary> = {}): ApiKeySummary {
     keySuffix: 'suffix',
     key: '',
     status: 'active',
+    routeMode: 'normal',
     groupRouteStrategy: 'priority_failover',
     groupBindings: [],
     quotaLimits: {},

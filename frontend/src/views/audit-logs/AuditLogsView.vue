@@ -309,7 +309,8 @@ const trafficSourceOptions = [
   { label: '全部来源', value: 'all' },
   { label: '网关请求', value: 'gateway' },
   { label: 'AI账户测试', value: 'manual_account_test' },
-  { label: '恢复探活', value: 'cooldown_retest' }
+  { label: '恢复探活', value: 'cooldown_retest' },
+  { label: '混合评分', value: 'hybrid_scoring' }
 ] satisfies Array<{ label: string; value: AuditTrafficSource | 'all' }>
 const {
   managedColumns,

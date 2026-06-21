@@ -14,6 +14,7 @@ const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules
 const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
 const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
 const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storage/account-test-tasks.repository.ts'), 'utf8')
+const dbServiceHandlersSource = readFileSync(resolve(backendSrc, 'modules/db-service/db-service-handlers.ts'), 'utf8')
 const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
 const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background/background-ipc.ts'), 'utf8')
 const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/useAccountTestModal.ts'), 'utf8')
@@ -54,7 +55,7 @@ assert(
     && accountTestDispatchRoutesSource.includes("res.status(403).json({ message: '缺少系统账户上下文' })")
     && accountTestDispatchRoutesSource.includes('accountTestSchema.safeParse(req.body)')
     && accountTestDispatchRoutesSource.includes('findAccountForTest(req.params.id, requestAccess)')
-    && accountTestDispatchRoutesSource.includes('isOpenAIProtocolProfile(account)')
+    && accountTestDispatchRoutesSource.includes('isGatewaySupportedProtocolProfile(account)')
     && accountTestDispatchRoutesSource.includes('accountTestUnavailableMessage(account)')
     && accountTestDispatchRoutesSource.includes("isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'")
     && accountTestDispatchRoutesSource.includes('savedAccountDraftTestSnapshot(account, accountSnapshot, requestAccess)')
@@ -174,7 +175,7 @@ assert(
 )
 assert(
   accountTestTaskQueueSource.includes('accountTestTaskProgressReporter(task.id)')
-    && accountTestTaskQueueSource.includes('updateAccountTestTaskMessage(taskId, accountDiagnosticAttemptMessage(progress))'),
+    && accountTestTaskQueueSource.includes('updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress))'),
   '后台账号测试任务应在每次 10/20/30s 真实请求 attempt 开始时更新进度消息'
 )
 assert(
@@ -184,7 +185,8 @@ assert(
   '手动账号测试后台 worker 应使用系统设置控制并发，默认 100'
 )
 assert(
-  accountTestTaskQueueSource.includes('listRunnableAccountTestTaskIds(manualAccountTestRefillBatchSize())')
+  accountTestTaskQueueSource.includes("type: 'account_test_task_maintenance'")
+    && accountTestTaskQueueSource.includes('refillLimit: manualAccountTestRefillBatchSize()')
     && accountTestTaskQueueSource.includes('manualAccountTestRefillMaxBatchSize = 1000'),
   '手动账号测试队列应持续从 DB 补拉 queued 任务，避免 worker 重启后只执行首批任务'
 )
@@ -231,7 +233,9 @@ assert(
 assert(
   accountTestTaskRepositorySource.includes('failExpiredQueuedAccountTestTasks')
     && accountTestTaskRepositorySource.includes('accountTestQueuedWaitExpiredMessage')
-    && accountTestTaskQueueSource.includes('failExpiredQueuedAccountTestTasks(manualAccountTestQueuedMaxWaitMs')
+    && accountTestTaskQueueSource.includes('maxQueuedMs: manualAccountTestQueuedMaxWaitMs')
+    && accountTestTaskQueueSource.includes('result.expiredQueuedTaskIds')
+    && dbServiceHandlersSource.includes('failExpiredQueuedAccountTestTasks(operation.maxQueuedMs')
     && accountTestTaskQueueSource.includes('manualAccountTestQueuedMaxWaitMs = 10 * 60_000'),
   '未被 worker 消费的 queued 任务不应计算 60s 运行超时，但后台应按独立队列等待上限自动收口'
 )

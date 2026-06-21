@@ -299,7 +299,7 @@ async function login(baseUrl: string): Promise<string> {
   const passwordResponse = await fetch(`${baseUrl}/__aisys__/api/auth/change-password`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ newPassword: 'admin-regression-password' })
+    body: JSON.stringify({ oldPassword: 'admin', newPassword: 'admin-regression-password' })
   })
   assert(passwordResponse.ok, `回归夹具修改初始密码失败：HTTP ${passwordResponse.status} ${await passwordResponse.text()}`)
   return cookie

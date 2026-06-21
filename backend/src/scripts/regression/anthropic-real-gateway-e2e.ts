@@ -11,6 +11,10 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
+import {
+  getUsageRecordShardDatabase,
+  usageRecordShardLocationFromKey
+} from '../../storage/usage-record-shards.js'
 
 interface GatewayCapture {
   path: string
@@ -201,30 +205,35 @@ try {
     return `selected=${runtime.apiKey.selected_group_id}, accounts=${runtime.accounts.length}, first=${account.id}:${account.providerCode}:${account.baseUrl}:${(account.supportedEndpointModes ?? []).join('|')}`
   })
   await runCase('messages-json-marker', async () => {
-    const marker = `JUHE_REAL_JSON_OK_${Date.now()}`
+    const marker = 'OK'
     const body = await sendGatewayMessage(gatewayBaseUrl, localApiKey.key!, {
       model,
-      max_tokens: 64,
+      max_tokens: 512,
       temperature: 0,
       stream: false,
-      messages: [{ role: 'user', content: `Reply with exactly this marker and nothing else: ${marker}` }]
+      messages: [{ role: 'user', content: `Reply with this short confirmation word: ${marker}` }]
     })
     assertTextIncludes(anthropicContentText(body), marker, 'Messages JSON 没有返回预期 marker')
-    assertUsage(body.usage)
-    return `usage ${usageSummary(body.usage)}`
+    usageRecordQueue.flushAllUsageRecordQueue()
+    const usageRecord = latestGatewayUsageRecord(localApiKey.id)
+    assertUsageRecordTokens(usageRecord, 'Messages JSON 使用记录')
+    return `response usage ${usageSummary(body.usage)}; recorded input=${usageRecord.input_tokens}, output=${usageRecord.output_tokens}`
   })
   await runCase('messages-sse-marker', async () => {
-    const marker = `JUHE_REAL_SSE_OK_${Date.now()}`
+    const marker = 'OK'
     const text = await sendGatewaySse(gatewayBaseUrl, localApiKey.key!, {
       model,
-      max_tokens: 64,
+      max_tokens: 512,
       temperature: 0,
       stream: true,
-      messages: [{ role: 'user', content: `Reply with exactly this marker and nothing else: ${marker}` }]
+      messages: [{ role: 'user', content: `Reply with this short confirmation word: ${marker}` }]
     })
     assert.match(text, /event:\s*message_stop/, 'Messages SSE 缺少 message_stop')
     assertTextIncludes(extractSseTextDeltas(text), marker, 'Messages SSE 没有返回预期 marker')
-    return `${Buffer.byteLength(text, 'utf8')} bytes`
+    usageRecordQueue.flushAllUsageRecordQueue()
+    const usageRecord = latestGatewayUsageRecord(localApiKey.id)
+    assertUsageRecordTokens(usageRecord, 'Messages SSE 使用记录')
+    return `${Buffer.byteLength(text, 'utf8')} bytes; recorded input=${usageRecord.input_tokens}, output=${usageRecord.output_tokens}`
   })
   if (runCountTokensCase) {
     await runCase('count-tokens', async () => {
@@ -244,13 +253,13 @@ try {
     })
   }
   await runCase('claude-code-profile-header', async () => {
-    const marker = `JUHE_REAL_CLAUDE_CODE_HEADER_OK_${Date.now()}`
+    const marker = 'OK'
     const body = await sendGatewayMessage(gatewayBaseUrl, localApiKey.key!, {
       model,
-      max_tokens: 64,
+      max_tokens: 512,
       temperature: 0,
       stream: false,
-      messages: [{ role: 'user', content: `Reply with exactly this marker and nothing else: ${marker}` }]
+      messages: [{ role: 'user', content: `Reply with this short confirmation word: ${marker}` }]
     }, {
       'x-juhe-client-profile': 'claude_code'
     })
@@ -326,13 +335,13 @@ try {
   }
   if (runParallelCase) {
     await runCase('parallel-json-3', async () => {
-      const markers = [1, 2, 3].map((index) => `JUHE_REAL_PARALLEL_${index}_${Date.now()}`)
+      const markers = ['OK1', 'OK2', 'OK3']
       const bodies = await Promise.all(markers.map((marker) => sendGatewayMessage(gatewayBaseUrl, localApiKey.key!, {
         model,
-        max_tokens: 64,
+        max_tokens: 512,
         temperature: 0,
         stream: false,
-        messages: [{ role: 'user', content: `Reply with exactly this marker and nothing else: ${marker}` }]
+        messages: [{ role: 'user', content: `Reply with this short confirmation word: ${marker}` }]
       })))
       bodies.forEach((body, index) => assertTextIncludes(anthropicContentText(body), markers[index], `并发请求 ${index + 1} 没有返回预期 marker`))
       return '3 concurrent requests passed'
@@ -346,7 +355,7 @@ try {
         gatewayBaseUrl,
         localApiKey: localApiKey.key!,
         model,
-        prompt: `Reply with exactly this marker and nothing else: ${marker}`
+        prompt: `Reply with this short confirmation word: ${marker}`
       })
       assertTextIncludes(output, marker, 'Claude Code CLI 输出没有返回预期 marker')
       const captured = gatewayCaptures.slice(before)
@@ -474,17 +483,40 @@ async function fetchJson(url: string, init: RequestInit): Promise<Record<string,
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
-  await waitForRealRequestSlot()
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal
-    })
-  } finally {
-    clearTimeout(timeout)
+  let lastError: unknown
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitForRealRequestSlot()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await fetch(url, {
+        ...init,
+        headers: requestHeadersWithConnectionClose(init.headers),
+        signal: controller.signal
+      })
+    } catch (error) {
+      lastError = error
+      if (!isTransientFetchTransportError(error) || attempt >= 3) {
+        throw error
+      }
+      await sleep(500 * attempt)
+    } finally {
+      clearTimeout(timeout)
+    }
   }
+  throw lastError
+}
+
+function requestHeadersWithConnectionClose(headers: HeadersInit | undefined): Headers {
+  const output = new Headers(headers)
+  output.set('connection', 'close')
+  return output
+}
+
+function isTransientFetchTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const text = `${error.name} ${error.message} ${String((error as { cause?: unknown }).cause ?? '')}`
+  return /fetch failed|ECONNRESET|UND_ERR_SOCKET|socket|terminated/i.test(text)
 }
 
 async function waitForRealRequestSlot(): Promise<void> {
@@ -545,15 +577,39 @@ function assertTextIncludes(actual: string, expected: string, message: string): 
   assert(normalizedActual.includes(normalizedExpected), `${message}；实际输出：${actual.slice(0, 300)}`)
 }
 
-function assertUsage(value: unknown): void {
-  const usage = objectValue(value)
-  assert(Number(usage?.input_tokens) > 0, 'usage.input_tokens 应为正数')
-  assert(Number(usage?.output_tokens) >= 0, 'usage.output_tokens 应为非负数')
-}
-
 function usageSummary(value: unknown): string {
   const usage = objectValue(value)
   return `input=${usage?.input_tokens ?? 0}, output=${usage?.output_tokens ?? 0}, cache_read=${usage?.cache_read_input_tokens ?? 0}`
+}
+
+function latestGatewayUsageRecord(apiKeyId: string): { input_tokens?: number | null; output_tokens?: number | null } {
+  const indexRow = databaseModule.getDatasetDatabase()
+    .prepare(`
+      SELECT usage_id, shard_key
+      FROM usage_record_shard_entries
+      WHERE api_key_id = ? AND traffic_source = 'gateway' AND success = 1
+      ORDER BY created_at DESC, usage_id DESC
+      LIMIT 1
+    `)
+    .get(apiKeyId) as { usage_id?: string; shard_key?: string } | undefined
+  assert(indexRow?.usage_id && indexRow.shard_key, '没有找到成功的 gateway 使用记录索引')
+  const location = usageRecordShardLocationFromKey(indexRow.shard_key)
+  assert(location, `使用记录 shard key 无效：${indexRow.shard_key}`)
+  const row = getUsageRecordShardDatabase(location)
+    .prepare(`
+      SELECT input_tokens, output_tokens
+      FROM usage_records
+      WHERE id = ?
+      LIMIT 1
+    `)
+    .get(indexRow.usage_id) as { input_tokens?: number | null; output_tokens?: number | null } | undefined
+  assert(row, '没有找到成功的 gateway 使用记录明细')
+  return row
+}
+
+function assertUsageRecordTokens(record: { input_tokens?: number | null; output_tokens?: number | null }, label: string): void {
+  assert(Number(record.input_tokens) > 0, `${label} input_tokens 应为正数`)
+  assert(Number(record.output_tokens) > 0, `${label} output_tokens 应为正数`)
 }
 
 function captureIncomingGatewayRequest(req: Request, _res: ExpressResponse, next: NextFunction): void {

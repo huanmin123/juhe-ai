@@ -23,7 +23,28 @@ const apiKeyMutationSchema = z.object({
     weight: z.number({ invalid_type_error: '分组权重必须是数字' }).int('分组权重必须是整数').min(1, '分组权重必须在 1-100 之间').max(100, '分组权重必须在 1-100 之间').optional(),
     status: z.enum(['active', 'disabled']).optional()
   }).strict()).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
+  routeMode: z.enum(['normal', 'hybrid']).optional(),
   groupRouteStrategy: z.string().optional().refine((value) => value === undefined || value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin', '分组路由策略无效'),
+  hybridRoutingConfig: z.object({
+    scoringGroupId: z.string().trim().min(1, '评分分组不能为空'),
+    scoringModel: z.string().trim().min(1, '评分模型不能为空'),
+    scoringContextMode: z.literal('full_request').optional(),
+    qualityPreference: z.enum(['cost_first', 'balanced', 'quality_first']).optional(),
+    scoringTimeoutMs: z.number().int().min(1000).max(60000).optional(),
+    failureDefaultLevel: z.number().int().min(1).max(10).optional(),
+    scoringCacheEnabled: z.boolean().optional(),
+    scoringCacheTtlSeconds: z.number().int().min(0).max(3600).optional(),
+    cacheAffinityEnabled: z.boolean().optional(),
+    affinityTtlSeconds: z.number().int().min(0).max(86400).optional(),
+    switchMinLevelDelta: z.number().int().min(0).max(9).optional(),
+    downgradeConsecutiveLowCount: z.number().int().min(1).max(20).optional(),
+    levelRoutes: z.array(z.object({
+      minLevel: z.number().int().min(1).max(10),
+      maxLevel: z.number().int().min(1).max(10),
+      targetModel: z.string().trim().min(1, '目标模型不能为空'),
+      enabled: z.boolean().optional()
+    }).strict()).min(1, '等级范围不能为空')
+  }).strict().nullable().optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
@@ -159,7 +180,9 @@ apiKeysRouter.post('/', mutationGuard({
           changes: [
             safeChange('name', '名称', undefined, apiKey.name),
             safeChange('status', '状态', undefined, apiKey.status),
+            safeChange('routeMode', '路由模式', undefined, apiKey.routeMode),
             safeChange('groupRouteStrategy', '分组路由策略', undefined, apiKey.groupRouteStrategy),
+            safeChange('hybridRoutingConfig', '混合路由配置', undefined, apiKey.hybridRoutingConfig),
             safeChange('groupBindings', '绑定分组路由', undefined, apiKey.groupBindings),
             safeChange('availabilitySchedule', '时间计划', undefined, apiKey.availabilitySchedule),
             safeChange('key', '密钥标识', undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
@@ -211,7 +234,9 @@ apiKeysRouter.patch('/:id', (req, res) => {
             name: '名称',
             description: '说明',
             status: '状态',
+            routeMode: '路由模式',
             groupRouteStrategy: '分组路由策略',
+            hybridRoutingConfig: '混合路由配置',
             groupBindings: '绑定分组路由',
             expiresAt: '过期时间',
             quotaLimits: '额度限制',

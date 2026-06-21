@@ -66,6 +66,7 @@ import {
   rejectMissingGatewayGroupAccess,
   rejectUnavailableGatewayApiKey
 } from './authorization-preflight.js'
+import { resolveHybridGatewayRoute } from '../hybrid/routing.service.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -124,7 +125,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
   let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined = options.responseInspectionPolicies
 
-  const identity = options.identity ?? await (async () => {
+  let identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
     if (!runtime?.apiKey) {
       finalizeGatewayAuthFailureAudit(req, res, auditCapture)
@@ -154,7 +155,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let requestLane = options.requestLane ?? 'text'
   const trafficSource = options.trafficSource ?? 'gateway'
   const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
-  const { systemAccountId, apiKeyId, groupId } = identity
+  let { systemAccountId, apiKeyId, groupId } = identity
   const apiKeyUnavailable = Boolean(apiKeyId && !apiKeyRecord)
   auditCapture.bindContext({
     systemAccountId,
@@ -185,46 +186,18 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIp: gatewayClientIp,
     endpoint
   })
-  if (clientIpErrorCircuit.blocked) {
-    const statusCode = 429
-    const responsePayload = gatewayErrorPayload('当前来源短时间错误过多，请稍后重试', 'rate_limit_exceeded', 'client_ip_error_circuit_open')
-    if (clientIpErrorCircuit.retryAfterSeconds && !res.headersSent) {
-      res.setHeader('Retry-After', String(clientIpErrorCircuit.retryAfterSeconds))
-    }
-    logger.warn({
-      event: 'gateway_client_ip_error_circuit_blocked',
-      reason: clientIpErrorCircuit.reason,
-      retryAfterSeconds: clientIpErrorCircuit.retryAfterSeconds,
-      failureCount: clientIpErrorCircuit.failureCount,
-      systemAccountId,
-      apiKeyId,
-      groupId,
-      clientIp: gatewayClientIp
-    }, '客户端 IP 级错误熔断已短路请求')
-    auditCapture.addGatewayMetadata({
-      label: 'client_ip_error_circuit',
-      metadata: {
-        blocked: true,
-        reason: clientIpErrorCircuit.reason,
-        retryAfterSeconds: clientIpErrorCircuit.retryAfterSeconds,
-        failureCount: clientIpErrorCircuit.failureCount
-      }
-    })
-    sendGatewayFailureResponse({
-      req,
-      res,
-      auditCapture,
-      usageContext: baseUsageContext,
-      startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'security',
-        errorCode: 'client_ip_error_circuit_open',
-        errorMessage: responsePayload.error.message
-      }
-    })
+  if (sendClientIpErrorCircuitGatewayResponse({
+    req,
+    res,
+    auditCapture,
+    usageContext: baseUsageContext,
+    startedAt,
+    circuit: clientIpErrorCircuit,
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    clientIp: gatewayClientIp
+  })) {
     return undefined
   }
   if (rejectUnavailableGatewayApiKey({
@@ -273,6 +246,98 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   requestLane = imagePermissionPreflight.requestLane
+
+  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'hybrid') {
+    const hybridRoute = await resolveHybridGatewayRoute({
+      req,
+      apiKeyRecord,
+      traceId,
+      clientIp,
+      endpoint,
+      auditCapture,
+      requestClientCompatibility: resolveOpenAIGatewayClientStrategy(req, {
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        endpoint
+      }).requestClientCompatibility,
+      signal
+    })
+    if (hybridRoute.outcome === 'failed') {
+      auditCapture.addGatewayMetadata({
+        label: 'hybrid_route',
+        metadata: {
+          failed: true,
+          reason: hybridRoute.reason,
+          targetModel: hybridRoute.targetModel,
+          level: hybridRoute.scoring?.level,
+          scoringDefaulted: hybridRoute.scoring?.defaulted,
+          scoringErrorCode: hybridRoute.scoring?.errorCode,
+          scoringErrorMessage: hybridRoute.scoring?.errorMessage
+        }
+      })
+      const statusCode = 503
+      const responsePayload = gatewayErrorPayload('混合路由目标分组暂不可用', 'service_unavailable', hybridRoute.reason)
+      sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: baseUsageContext,
+        startedAt,
+        statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: 'dispatch',
+          errorCode: hybridRoute.reason,
+          errorMessage: responsePayload.error.message
+        }
+      })
+      return undefined
+    }
+    if (hybridRoute.outcome === 'selected') {
+      apiKeyRecord = hybridRoute.apiKeyRecord
+      groupId = hybridRoute.groupId
+      identity = {
+        systemAccountId,
+        apiKeyId,
+        groupId
+      }
+      runtimeGroupAccess = hybridRoute.groupAccess
+      runtimeAccounts = hybridRoute.accounts
+      runtimeAccountDispatchDiagnostics = undefined
+      runtimeResponseInspectionPolicies = hybridRoute.responseInspectionPolicies
+      options.responseInspectionPolicies = hybridRoute.responseInspectionPolicies
+      auditCapture.bindContext({ groupId })
+      bindRequestContextFields({
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        trafficSource
+      })
+      const targetClientIpErrorCircuit = inspectClientIpErrorCircuit({
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp,
+        endpoint
+      })
+      if (sendClientIpErrorCircuitGatewayResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: { ...baseUsageContext, groupId },
+        startedAt,
+        circuit: targetClientIpErrorCircuit,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp
+      })) {
+        return undefined
+      }
+    }
+  }
 
   const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
   if (groupAccess) {
@@ -590,6 +655,63 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
     streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
     streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
   }
+}
+
+function sendClientIpErrorCircuitGatewayResponse(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  circuit: ReturnType<typeof inspectClientIpErrorCircuit>
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  clientIp?: string
+}): boolean {
+  if (!input.circuit.blocked) {
+    return false
+  }
+  const statusCode = 429
+  const responsePayload = gatewayErrorPayload('当前来源短时间错误过多，请稍后重试', 'rate_limit_exceeded', 'client_ip_error_circuit_open')
+  if (input.circuit.retryAfterSeconds && !input.res.headersSent) {
+    input.res.setHeader('Retry-After', String(input.circuit.retryAfterSeconds))
+  }
+  logger.warn({
+    event: 'gateway_client_ip_error_circuit_blocked',
+    reason: input.circuit.reason,
+    retryAfterSeconds: input.circuit.retryAfterSeconds,
+    failureCount: input.circuit.failureCount,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    clientIp: input.clientIp
+  }, '客户端 IP 级错误熔断已短路请求')
+  input.auditCapture.addGatewayMetadata({
+    label: 'client_ip_error_circuit',
+    metadata: {
+      blocked: true,
+      reason: input.circuit.reason,
+      retryAfterSeconds: input.circuit.retryAfterSeconds,
+      failureCount: input.circuit.failureCount
+    }
+  })
+  sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext,
+    startedAt: input.startedAt,
+    statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: 'security',
+      errorCode: 'client_ip_error_circuit_open',
+      errorMessage: responsePayload.error.message
+    }
+  })
+  return true
 }
 
 export function buildGatewayUsageContext(input: {

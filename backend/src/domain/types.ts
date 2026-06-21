@@ -975,8 +975,33 @@ export interface AuthorizationUserUsageOverview {
 
 export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
 export type ApiKeyGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'weighted_round_robin'
+export type ApiKeyRouteMode = 'normal' | 'hybrid'
+export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
 export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
+
+export interface ApiKeyHybridLevelRoute {
+  minLevel: number
+  maxLevel: number
+  targetModel: string
+  enabled: boolean
+}
+
+export interface ApiKeyHybridRoutingConfig {
+  scoringGroupId: string
+  scoringModel: string
+  scoringContextMode: 'full_request'
+  qualityPreference: ApiKeyHybridQualityPreference
+  scoringTimeoutMs: number
+  failureDefaultLevel: number
+  scoringCacheEnabled: boolean
+  scoringCacheTtlSeconds: number
+  cacheAffinityEnabled: boolean
+  affinityTtlSeconds: number
+  switchMinLevelDelta: number
+  downgradeConsecutiveLowCount: number
+  levelRoutes: ApiKeyHybridLevelRoute[]
+}
 
 export interface ApiKeyGroupBindingSummary {
   id: string
@@ -1065,7 +1090,9 @@ export interface ApiKeySummary {
   keySuffix: string
   key: string
   status: 'active' | 'disabled'
+  routeMode: ApiKeyRouteMode
   groupRouteStrategy: ApiKeyGroupRouteStrategy
+  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: ApiKeyGroupBindingSummary[]
   groupOwnerSystemAccountName?: string
   expiresAt?: string

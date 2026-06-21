@@ -1,4 +1,5 @@
 import { type AccountType, type ProviderDefinition } from '../../domain/types.js'
+import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import { type AccountImportStatus } from './account-import-field-parser.js'
 
@@ -10,6 +11,7 @@ export interface AccountImportProviderAccount {
   name: string
   providerCode: string
   providerProtocolProfileId?: string
+  connectionType?: string
   protocolCode?: string
   protocolVersion?: string
   type: AccountType
@@ -44,7 +46,17 @@ export function validateImportAccountProviderAndBasics(account: AccountImportPro
 }
 
 function resolveImportAccountProtocolProfile(account: AccountImportProviderAccount, provider: ProviderDefinition): ProviderDefinition['protocolProfiles'][number] | undefined {
-  const requestedProfileId = account.providerProtocolProfileId?.trim()
+  let requestedProfileId: string | undefined
+  try {
+    requestedProfileId = resolveProviderProtocolProfileIdFromConnectionType({
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      connectionType: account.connectionType
+    })
+  } catch (error) {
+    account.messages.push(error instanceof Error ? error.message : '账户 connectionType 无效')
+    return undefined
+  }
   const profile = requestedProfileId
     ? provider.protocolProfiles.find((item) => item.id === requestedProfileId)
     : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)

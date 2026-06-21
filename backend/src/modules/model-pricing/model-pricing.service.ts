@@ -336,7 +336,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
       ?? extractModelReleaseDate(item.model),
     shutdownDate: item.shutdown_date,
     supportedApiProtocols: driver?.inferModelApiProtocols(item, modelPricingDriverHelpers)
-      ?? item.supported_api_protocols
+      ?? (item.supported_api_protocols ? [...item.supported_api_protocols] : undefined)
       ?? [],
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),

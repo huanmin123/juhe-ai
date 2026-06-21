@@ -44,6 +44,7 @@ export interface UsageRecordSummary {
   accountName?: string
   endpoint?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   usageSemantic?: string
   model?: string
   upstreamModel?: string
@@ -73,7 +74,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
@@ -130,6 +131,7 @@ export interface UsageRecordInput {
   groupAuthorizationSourceTeamId?: string
   endpoint?: string
   providerCode?: string
+  providerProtocolProfileId?: string
   usageSemantic?: string
   model?: string
   upstreamModel?: string
@@ -320,14 +322,14 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const businessDatabase = getBusinessDatabase()
   const insertSql = `
     INSERT INTO usage_records (
-      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
+      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
       status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
       account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
       account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
       group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `
   const accountLastUsedAt = new Map<string, string>()
@@ -359,6 +361,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
           input.accountId ?? null,
           input.endpoint ?? null,
           input.providerCode ?? null,
+          input.providerProtocolProfileId ?? null,
           input.usageSemantic ?? null,
           input.model ?? null,
           input.upstreamModel ?? null,
@@ -398,8 +401,8 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
           now
         ],
         accountId: input.accountId,
-        accountLastUsedAt: trafficSource !== 'cooldown_retest' ? now : undefined,
-        accountHealthSuccessAt: trafficSource !== 'cooldown_retest' && input.success ? now : undefined
+        accountLastUsedAt: shouldRecordAccountUsageSideEffects(trafficSource) ? now : undefined,
+        accountHealthSuccessAt: shouldRecordAccountUsageSideEffects(trafficSource) && input.success ? now : undefined
       }
 
       const location = usageRecordShardLocationForRecord(id, now)
@@ -526,6 +529,7 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.account_id,
             ur.endpoint,
             ur.provider_code,
+            ${optionalColumns.providerProtocolProfileId},
             ${optionalColumns.usageSemantic},
             ur.model,
             ur.upstream_model,
@@ -588,6 +592,7 @@ function listUsageRecordRowsFromShards(
           ur.account_id,
           ur.endpoint,
           ur.provider_code,
+          ${optionalColumns.providerProtocolProfileId},
           ${optionalColumns.usageSemantic},
           ur.model,
           ur.upstream_model,
@@ -624,6 +629,7 @@ function listUsageRecordRowsFromShards(
 }
 
 function usageRecordOptionalColumnSelects(database: ReturnType<typeof getUsageRecordShardDatabase>): {
+  providerProtocolProfileId: string
   usageSemantic: string
   cacheWriteTokens: string
   cacheWrite1hTokens: string
@@ -632,6 +638,7 @@ function usageRecordOptionalColumnSelects(database: ReturnType<typeof getUsageRe
 } {
   const columns = usageRecordColumnSet(database)
   return {
+    providerProtocolProfileId: columns.has('provider_protocol_profile_id') ? 'ur.provider_protocol_profile_id' : 'NULL AS provider_protocol_profile_id',
     usageSemantic: columns.has('usage_semantic') ? 'ur.usage_semantic' : 'NULL AS usage_semantic',
     cacheWriteTokens: columns.has('cache_write_tokens') ? 'ur.cache_write_tokens' : 'NULL AS cache_write_tokens',
     cacheWrite1hTokens: columns.has('cache_write_1h_tokens') ? 'ur.cache_write_1h_tokens' : 'NULL AS cache_write_1h_tokens',
@@ -759,8 +766,12 @@ const accountLastUsedWriteCache = new Map<string, string>()
 const recentOpenAIRequestShapeLookbackDays = 7
 
 function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSource {
-  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest') {
+  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest' || value === 'hybrid_scoring') {
     return value
   }
   throw new Error('使用记录来源无效')
+}
+
+function shouldRecordAccountUsageSideEffects(trafficSource: UsageRecordTrafficSource): boolean {
+  return trafficSource !== 'cooldown_retest' && trafficSource !== 'hybrid_scoring'
 }
