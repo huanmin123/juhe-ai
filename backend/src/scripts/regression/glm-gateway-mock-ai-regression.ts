@@ -145,6 +145,16 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream',
       expectedContent: 'glm mock sse ok'
     })
+    await assertGlmCodexResponsesBridgeRejectsPreviousResponseId({
+      baseUrl,
+      localApiKey: coding.localApiKey,
+      model: 'glm-5.2'
+    })
+    await assertGlmCodexResponsesBridgeRejectsCompact({
+      baseUrl,
+      localApiKey: coding.localApiKey,
+      model: 'glm-5.2'
+    })
     await assertGlmCodexResponsesBridgeFailsOnTruncatedStream({
       baseUrl,
       localApiKey: coding.localApiKey,
@@ -531,6 +541,54 @@ async function assertGlmCodexResponsesBridge(input: {
         {
           type: 'message',
           role: 'user',
+          content: [{ type: 'input_text', text: 'previous glm tool task' }]
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_glm_history_a',
+          name: 'shell_command',
+          arguments: '{"command":"git log -1"}'
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_glm_history_b',
+          name: 'shell_command',
+          arguments: '{"command":"git status --short"}'
+        },
+        {
+          type: 'message',
+          role: 'tool',
+          content: [{ type: 'input_text', text: 'glm bare tool message must not reach upstream' }]
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_glm_history_a',
+          output: 'glm commit output'
+        },
+        {
+          type: 'message',
+          role: 'developer',
+          content: [{ type: 'input_text', text: 'GLM approved command prefix saved' }]
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_glm_history_b',
+          output: [{ type: 'output_text', text: 'glm status output' }]
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_glm_unanswered',
+          name: 'shell_command',
+          arguments: '{"command":"dangling"}'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_glm_orphan',
+          output: 'glm orphan output'
+        },
+        {
+          type: 'message',
+          role: 'user',
           content: [{ type: 'input_text', text: 'hello glm codex bridge' }]
         }
       ],
@@ -579,9 +637,126 @@ async function assertGlmCodexResponsesBridge(input: {
   assert.equal(body.stream, true, 'GLM Coding Codex 桥接上游请求必须使用 Chat SSE')
   assert(Array.isArray(body.messages), 'GLM Coding Codex 桥接应把 Responses input 转成 Chat messages')
   assert.equal((body.messages as unknown[]).some((message) => JSON.stringify(message).includes('hello glm codex bridge')), true, 'Chat messages 应包含用户输入')
+  const chatMessages = body.messages as Array<Record<string, unknown>>
+  assertValidChatToolMessageSequence(chatMessages, 'GLM Coding Codex bridge')
+  const historyAssistantIndex = chatMessages.findIndex((message) => Array.isArray(message.tool_calls)
+    && (message.tool_calls as Array<{ id?: string }>).some((toolCall) => toolCall.id === 'call_glm_history_a'))
+  assert(historyAssistantIndex >= 0, 'GLM Coding Codex 桥接应把历史 function_call 转成 assistant tool_calls')
+  const historyAssistant = chatMessages[historyAssistantIndex] as { reasoning_content?: string; tool_calls?: Array<{ id?: string }> }
+  assert.equal(historyAssistant.reasoning_content, undefined, 'GLM Coding Codex 桥接不应透传 DeepSeek 专用 reasoning_content 字段')
+  assert.equal(historyAssistant.tool_calls?.length, 2, 'GLM Coding Codex 桥接应把连续历史 function_call 合并到一个 assistant tool_calls 消息')
+  assert.equal(chatMessages[historyAssistantIndex + 1]?.role, 'tool', '历史 assistant tool_calls 后应紧跟第一个 tool 输出')
+  assert.equal(chatMessages[historyAssistantIndex + 1]?.tool_call_id, 'call_glm_history_a')
+  assert.equal(chatMessages[historyAssistantIndex + 1]?.content, 'glm commit output')
+  assert.equal(chatMessages[historyAssistantIndex + 2]?.role, 'tool', '历史 assistant tool_calls 后应紧跟第二个 tool 输出')
+  assert.equal(chatMessages[historyAssistantIndex + 2]?.tool_call_id, 'call_glm_history_b')
+  assert.equal(chatMessages[historyAssistantIndex + 2]?.content, 'glm status output')
+  const deferredSystemIndex = chatMessages.findIndex((message, index) => index > historyAssistantIndex
+    && message.role === 'system'
+    && JSON.stringify(message).includes('GLM approved command prefix saved'))
+  assert(deferredSystemIndex > historyAssistantIndex + 2, '夹在 tool_call 和 tool output 中间的 developer 消息应延后到 tool 输出之后，避免破坏 Chat tool 消息不变量')
+  assert(!JSON.stringify(chatMessages).includes('glm bare tool message must not reach upstream'), 'Responses message role=tool 不能生成裸 Chat tool 消息')
+  assert(!JSON.stringify(chatMessages).includes('call_glm_unanswered'), '未收到输出的 dangling function_call 不应透传给 Chat 上游')
+  assert(!JSON.stringify(chatMessages).includes('call_glm_orphan'), '找不到对应 function_call 的 orphan tool output 不应透传给 Chat 上游')
   assert(Array.isArray(body.tools), 'GLM Coding Codex 桥接应把 function tools 转成 Chat tools')
   assert.equal((body.tools as unknown[]).length, 1, 'GLM Coding Codex 桥接首版只透传 function tools，不透传 web_search/namespace')
   assert.match(JSON.stringify(body.tools), /shell_command/)
+}
+
+async function assertGlmCodexResponsesBridgeRejectsPreviousResponseId(input: {
+  baseUrl: string
+  localApiKey: string
+  model: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-bridge-previous-session',
+        thread_id: 'glm-bridge-previous-thread',
+        turn_id: 'glm-bridge-previous-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      previous_response_id: 'resp_previous_not_available_in_chat_bridge',
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'call_previous_tool',
+          output: 'tool output should not be silently dropped'
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `GLM Coding Codex bridge previous_response_id 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /unsupported_codex_bridge_previous_response_id/, 'previous_response_id 拒绝响应应带稳定错误码')
+  assert.equal(upstreamHits.length, start, 'GLM Coding Codex bridge previous_response_id 受控拒绝时不应命中上游')
+}
+
+async function assertGlmCodexResponsesBridgeRejectsCompact(input: {
+  baseUrl: string
+  localApiKey: string
+  model: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${input.baseUrl}/v1/responses/compact`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-bridge-compact-session',
+        thread_id: 'glm-bridge-compact-thread',
+        turn_id: 'glm-bridge-compact-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'compact this history' }]
+        }
+      ],
+      store: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `GLM Coding Codex bridge /responses/compact 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /unsupported_codex_bridge_compact/, '/responses/compact 拒绝响应应带稳定错误码')
+  assert.equal(upstreamHits.length, start, 'GLM Coding Codex bridge /responses/compact 受控拒绝时不应命中上游')
+}
+
+function assertValidChatToolMessageSequence(messages: Array<Record<string, unknown>>, label: string): void {
+  let expectedToolCallIds: string[] = []
+  for (const [index, message] of messages.entries()) {
+    if (expectedToolCallIds.length > 0) {
+      assert.equal(message.role, 'tool', `${label} assistant tool_calls 后第 ${index} 条消息必须是 tool 输出`)
+      assert.equal(message.tool_call_id, expectedToolCallIds.shift(), `${label} tool 输出顺序必须匹配 assistant tool_calls 顺序`)
+      continue
+    }
+    if (message.role === 'tool') {
+      assert.fail(`${label} 不应生成没有前序 assistant tool_calls 的裸 tool 消息`)
+    }
+    if (Array.isArray(message.tool_calls)) {
+      expectedToolCallIds = (message.tool_calls as Array<{ id?: unknown }>).map((toolCall) => {
+        assert.equal(typeof toolCall.id, 'string', `${label} assistant tool_calls 每项都必须有字符串 id`)
+        return toolCall.id as string
+      })
+      assert(expectedToolCallIds.length > 0, `${label} assistant tool_calls 不能为空`)
+    }
+  }
+  assert.equal(expectedToolCallIds.length, 0, `${label} assistant tool_calls 后缺少对应 tool 输出`)
 }
 
 async function assertGlmCodexResponsesBridgeFailsOnTruncatedStream(input: {

@@ -1,9 +1,9 @@
 import { strict as assert } from 'node:assert'
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
 import express, { type NextFunction, type Request, type Response } from 'express'
 
@@ -406,14 +406,26 @@ function runCodexCli(input: {
       '-s',
       'read-only',
       '-c',
-      'approval_policy="never"',
+      'approval_policy=never',
       '-c',
-      'model_provider="local_gateway"',
+      'model_provider=local_gateway',
       '-c',
-      'model="gpt-5.3-codex"',
+      'model=gpt-5.3-codex',
       '-c',
-      `model_providers.local_gateway={ name = "Local Gateway", base_url = "${input.gatewayBaseUrl}/v1", env_key = "JUHE_CODEX_API_KEY", wire_api = "responses", requires_openai_auth = false, request_max_retries = 0, stream_max_retries = 0 }`,
-      `Reply with exactly this marker and nothing else. Do not run tools: ${input.marker}`
+      'model_providers.local_gateway.name=LocalGateway',
+      '-c',
+      `model_providers.local_gateway.base_url=${input.gatewayBaseUrl}/v1`,
+      '-c',
+      'model_providers.local_gateway.env_key=JUHE_CODEX_API_KEY',
+      '-c',
+      'model_providers.local_gateway.wire_api=responses',
+      '-c',
+      'model_providers.local_gateway.requires_openai_auth=false',
+      '-c',
+      'model_providers.local_gateway.request_max_retries=0',
+      '-c',
+      'model_providers.local_gateway.stream_max_retries=0',
+      '-'
     ],
     cwd: cliRoot,
     env: isolatedCliEnv(cliRoot, {
@@ -422,6 +434,7 @@ function runCodexCli(input: {
       OPENAI_API_KEY: '',
       DISABLE_TELEMETRY: '1'
     }),
+    stdinText: `Reply with exactly this marker and nothing else. Do not run tools: ${input.marker}`,
     timeoutMs: 180_000
   })
 }
@@ -498,12 +511,16 @@ function runCli(input: {
   command: string
   cwd: string
   env: Record<string, string>
+  stdinText?: string
   timeoutMs: number
 }): Promise<CliRunResult> {
-  const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : input.command
-  const args = process.platform === 'win32'
-    ? ['/d', '/s', '/c', windowsCommandLine([input.command, ...input.args])]
-    : input.args
+  const directLauncher = process.platform === 'win32' ? resolveWindowsNodeCliLauncher(input.command) : undefined
+  const command = directLauncher?.command ?? (process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : input.command)
+  const args = directLauncher
+    ? [...directLauncher.args, ...input.args]
+    : process.platform === 'win32'
+      ? ['/d', '/s', '/c', windowsCommandLine([input.command, ...input.args])]
+      : input.args
   const commandLine = windowsCommandLine([input.command, ...input.args])
 
   return new Promise((resolvePromise, rejectPromise) => {
@@ -528,7 +545,11 @@ function runCli(input: {
 
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
-    child.stdin.end()
+    if (input.stdinText) {
+      child.stdin.end(input.stdinText)
+    } else {
+      child.stdin.end()
+    }
     child.on('error', (error) => {
       clearTimeout(timeout)
       settle(() => rejectPromise(error))
@@ -543,6 +564,37 @@ function runCli(input: {
       }))
     })
   })
+}
+
+function resolveWindowsNodeCliLauncher(command: string): { command: string; args: string[] } | undefined {
+  const entryByCommand: Record<string, string> = {
+    claude: 'node_modules\\@anthropic-ai\\claude-code\\cli.js',
+    codex: 'node_modules\\@openai\\codex\\bin\\codex.js',
+    opencode: 'node_modules\\opencode-ai\\bin\\opencode'
+  }
+  const entry = entryByCommand[command]
+  if (!entry) return undefined
+  const commandPath = findOnPath(`${command}.cmd`) ?? findOnPath(`${command}.ps1`) ?? findOnPath(command)
+  if (!commandPath) return undefined
+  const baseDir = dirname(commandPath)
+  const entryPath = join(baseDir, entry)
+  if (!existsSync(entryPath)) return undefined
+  const bundledNode = join(baseDir, 'node.exe')
+  return {
+    command: existsSync(bundledNode) ? bundledNode : 'node.exe',
+    args: [entryPath]
+  }
+}
+
+function findOnPath(filename: string): string | undefined {
+  const pathValue = process.env.PATH ?? process.env.Path ?? ''
+  for (const rawDir of pathValue.split(pathDelimiter)) {
+    const dir = rawDir.trim().replace(/^"|"$/g, '')
+    if (!dir) continue
+    const candidate = join(dir, filename)
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }
 
 function createCliRoot(name: string): string {
@@ -846,7 +898,7 @@ function assertUsageRecords(seeded: SeededCliGateways): void {
     seeded.deepseekCodexApiKey.id,
     seeded.glmOpencodeApiKey.id
   ])
-  const recordsByApiKey = records.filter((record) => apiKeyIds.has(record.apiKeyId))
+  const recordsByApiKey = records.filter((record) => typeof record.apiKeyId === 'string' && apiKeyIds.has(record.apiKeyId))
   assert(recordsByApiKey.some((record) => record.apiKeyId === seeded.anthropicApiKey.id && record.success === true), 'Claude Code 链路应写入成功使用记录')
   assert(recordsByApiKey.some((record) => record.apiKeyId === seeded.deepseekCodexApiKey.id && record.success === true), 'Codex/DeepSeek 链路应写入成功使用记录')
   assert(recordsByApiKey.some((record) => record.apiKeyId === seeded.glmOpencodeApiKey.id && record.success === true), 'opencode/GLM 链路应写入成功使用记录')

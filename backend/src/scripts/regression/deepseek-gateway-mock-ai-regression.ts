@@ -300,6 +300,8 @@ try {
     await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
     await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
     await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeRejectsPreviousResponseId(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeRejectsCompact(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeStringUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
@@ -545,6 +547,58 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
         {
           type: 'message',
           role: 'user',
+          content: [{ type: 'input_text', text: 'previous deepseek tool task' }]
+        },
+        {
+          type: 'reasoning',
+          summary: [{ type: 'summary_text', text: 'inspect repo before tools' }]
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_deepseek_history_a',
+          name: 'shell_command',
+          arguments: '{"command":"git log -1"}'
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_deepseek_history_b',
+          name: 'shell_command',
+          arguments: '{"command":"git status --short"}'
+        },
+        {
+          type: 'message',
+          role: 'tool',
+          content: [{ type: 'input_text', text: 'bare tool message must not reach upstream' }]
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_deepseek_history_a',
+          output: 'commit output'
+        },
+        {
+          type: 'message',
+          role: 'developer',
+          content: [{ type: 'input_text', text: 'Approved command prefix saved' }]
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_deepseek_history_b',
+          output: [{ type: 'output_text', text: 'status output' }]
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_deepseek_unanswered',
+          name: 'shell_command',
+          arguments: '{"command":"dangling"}'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_deepseek_orphan',
+          output: 'orphan output'
+        },
+        {
+          type: 'message',
+          role: 'user',
           content: [
             { type: 'input_text', text: 'hello deepseek codex bridge' },
             { type: 'input_image', image_url: 'data:image/png;base64,REVFUFNFRUs=', detail: 'low' }
@@ -608,9 +662,118 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
   assert(Array.isArray(body.messages), 'DeepSeek Codex bridge 应把 Responses input 转成 Chat messages')
   assert.match(JSON.stringify(body.messages), /hello deepseek codex bridge/, 'Chat messages 应包含用户文本输入')
   assert.match(JSON.stringify(body.messages), /data:image\/png;base64,REVFUFNFRUs=/, 'Chat messages 应保留 Codex input_image data URL')
+  const chatMessages = body.messages as Array<Record<string, unknown>>
+  assertValidChatToolMessageSequence(chatMessages, 'DeepSeek Codex bridge')
+  const historyAssistantIndex = chatMessages.findIndex((message) => Array.isArray(message.tool_calls)
+    && (message.tool_calls as Array<{ id?: string }>).some((toolCall) => toolCall.id === 'call_deepseek_history_a'))
+  assert(historyAssistantIndex >= 0, 'DeepSeek Codex bridge 应把历史 function_call 转成 assistant tool_calls')
+  const historyAssistant = chatMessages[historyAssistantIndex] as { reasoning_content?: string; tool_calls?: Array<{ id?: string }> }
+  assert.equal(historyAssistant.reasoning_content, 'inspect repo before tools', 'DeepSeek Codex bridge 应把 Codex reasoning 历史转成 DeepSeek reasoning_content')
+  assert.equal(historyAssistant.tool_calls?.length, 2, 'DeepSeek Codex bridge 应把连续历史 function_call 合并到一个 assistant tool_calls 消息')
+  assert.equal(chatMessages[historyAssistantIndex + 1]?.role, 'tool', '历史 assistant tool_calls 后应紧跟第一个 tool 输出')
+  assert.equal(chatMessages[historyAssistantIndex + 1]?.tool_call_id, 'call_deepseek_history_a')
+  assert.equal(chatMessages[historyAssistantIndex + 1]?.content, 'commit output')
+  assert.equal(chatMessages[historyAssistantIndex + 2]?.role, 'tool', '历史 assistant tool_calls 后应紧跟第二个 tool 输出')
+  assert.equal(chatMessages[historyAssistantIndex + 2]?.tool_call_id, 'call_deepseek_history_b')
+  assert.equal(chatMessages[historyAssistantIndex + 2]?.content, 'status output')
+  const deferredSystemIndex = chatMessages.findIndex((message, index) => index > historyAssistantIndex
+    && message.role === 'system'
+    && JSON.stringify(message).includes('Approved command prefix saved'))
+  assert(deferredSystemIndex > historyAssistantIndex + 2, '夹在 tool_call 和 tool output 中间的 developer 消息应延后到 tool 输出之后，避免破坏 Chat tool 消息不变量')
+  assert(!JSON.stringify(chatMessages).includes('bare tool message must not reach upstream'), 'Responses message role=tool 不能生成裸 Chat tool 消息')
+  assert(!JSON.stringify(chatMessages).includes('call_deepseek_unanswered'), '未收到输出的 dangling function_call 不应透传给 Chat 上游')
+  assert(!JSON.stringify(chatMessages).includes('call_deepseek_orphan'), '找不到对应 function_call 的 orphan tool output 不应透传给 Chat 上游')
   assert(Array.isArray(body.tools), 'DeepSeek Codex bridge 应把 function tools 转成 Chat tools')
   assert.equal(body.tools.length, 1, 'DeepSeek Codex bridge 首版只透传 function tools，不透传 web_search/namespace')
   assert.match(JSON.stringify(body.tools), /shell_command/)
+}
+
+async function assertDeepSeekCodexResponsesBridgeRejectsPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-bridge-previous-session',
+        thread_id: 'deepseek-bridge-previous-thread',
+        turn_id: 'deepseek-bridge-previous-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      previous_response_id: 'resp_previous_not_available_in_chat_bridge',
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'call_previous_tool',
+          output: 'tool output should not be silently dropped'
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `DeepSeek Codex bridge previous_response_id 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /unsupported_codex_bridge_previous_response_id/, 'previous_response_id 拒绝响应应带稳定错误码')
+  assert.equal(upstreamHits.length, 0, 'DeepSeek Codex bridge previous_response_id 受控拒绝时不应命中上游')
+}
+
+async function assertDeepSeekCodexResponsesBridgeRejectsCompact(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses/compact`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-bridge-compact-session',
+        thread_id: 'deepseek-bridge-compact-thread',
+        turn_id: 'deepseek-bridge-compact-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'compact this history' }]
+        }
+      ],
+      store: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `DeepSeek Codex bridge /responses/compact 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /unsupported_codex_bridge_compact/, '/responses/compact 拒绝响应应带稳定错误码')
+  assert.equal(upstreamHits.length, 0, 'DeepSeek Codex bridge /responses/compact 受控拒绝时不应命中上游')
+}
+
+function assertValidChatToolMessageSequence(messages: Array<Record<string, unknown>>, label: string): void {
+  let expectedToolCallIds: string[] = []
+  for (const [index, message] of messages.entries()) {
+    if (expectedToolCallIds.length > 0) {
+      assert.equal(message.role, 'tool', `${label} assistant tool_calls 后第 ${index} 条消息必须是 tool 输出`)
+      assert.equal(message.tool_call_id, expectedToolCallIds.shift(), `${label} tool 输出顺序必须匹配 assistant tool_calls 顺序`)
+      continue
+    }
+    if (message.role === 'tool') {
+      assert.fail(`${label} 不应生成没有前序 assistant tool_calls 的裸 tool 消息`)
+    }
+    if (Array.isArray(message.tool_calls)) {
+      expectedToolCallIds = (message.tool_calls as Array<{ id?: unknown }>).map((toolCall) => {
+        assert.equal(typeof toolCall.id, 'string', `${label} assistant tool_calls 每项都必须有字符串 id`)
+        return toolCall.id as string
+      })
+      assert(expectedToolCallIds.length > 0, `${label} assistant tool_calls 不能为空`)
+    }
+  }
+  assert.equal(expectedToolCallIds.length, 0, `${label} assistant tool_calls 后缺少对应 tool 输出`)
 }
 
 async function assertDeepSeekCodexResponsesBridgeStringUsage(baseUrl: string, localApiKey: string): Promise<void> {

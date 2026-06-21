@@ -259,6 +259,42 @@
           </div>
         </section>
 
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
+              <h3>数据保留与清理</h3>
+              <p>控制 usage、日志索引和统计缓存的保留清理吞吐，适配高流量部署。</p>
+            </div>
+          </div>
+
+          <a-alert class="setting-alert section-alert" type="warning" show-icon>
+            <template #message>线上日增几十万记录时，清理应按 SQLite 小批多轮执行；常态保持 1000 行级别单批，积压追赶再临时上调。</template>
+          </a-alert>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="使用记录保留天数" extra="默认 7 天；清理前会等待统计游标处理完成，避免破坏聚合。">
+                <a-input-number v-model:value="systemForm.usageRecordRetentionDays" :min="1" :max="7" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="清理间隔（分钟）" extra="默认 10 分钟；修改后重启后台 worker 生效。">
+                <a-input-number v-model:value="systemForm.dataRetentionCleanupIntervalMinutes" :min="5" :max="1440" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="单批删除行数" extra="默认 1000；单批越大，SQLite 写锁和 WAL 抖动越明显。">
+                <a-input-number v-model:value="systemForm.dataRetentionCleanupBatchSize" :min="100" :max="5000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="单轮最大批数" extra="默认 20；默认每类每轮最多 2 万行，靠周期持续追平。">
+                <a-input-number v-model:value="systemForm.dataRetentionCleanupMaxBatchesPerRun" :min="1" :max="100" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
         <div class="settings-actions">
           <a-space>
             <a-button type="primary" :loading="savingSystem" @click="saveSystemSettings">保存系统设置</a-button>

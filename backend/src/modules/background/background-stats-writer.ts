@@ -1,4 +1,5 @@
 import { runtimeConfig } from '../../config/runtime.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import {
@@ -55,6 +56,8 @@ import {
   sendGatewayQuotaSnapshotToServer
 } from './background-ipc.js'
 import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.repository.js'
+import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
+import { getStatsDatabase } from '../../storage/database.js'
 
 export type BackgroundStatsWriteOperation =
   | {
@@ -202,11 +205,11 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       upsertAccountUsageSnapshots(operation.inputs)
       return { upsertedCount: operation.inputs.length }
     case 'cleanup_usage_stats_retention':
-      return cleanupUsageStatsBucketsBefore(operation.input)
+      return cleanupStatsDatabaseAfterDelete(cleanupUsageStatsBucketsBefore(operation.input))
     case 'cleanup_system_metrics_retention':
-      return cleanupSystemMetricsBefore(operation.input)
+      return cleanupStatsDatabaseAfterDelete(cleanupSystemMetricsBefore(operation.input))
     case 'cleanup_table_storage_snapshots_retention':
-      return { deleted: cleanupTableStorageSnapshotsBefore(operation.cutoffIso, operation.limit) }
+      return cleanupStatsDatabaseAfterDelete({ deleted: cleanupTableStorageSnapshotsBefore(operation.cutoffIso, operation.limit) })
     case 'cleanup_non_business_stats_data':
       return await cleanupNonBusinessDataBeforeWithResult({
         cutoffAt: operation.cutoffAt,
@@ -254,6 +257,19 @@ function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs:
   const policies = listActiveClientIpPolicies()
   sendClientIpPolicySnapshotToServer(policies)
   return { processed, policies }
+}
+
+function cleanupStatsDatabaseAfterDelete<T extends object>(result: T): T {
+  if (Object.values(result).some((value) => typeof value === 'number' && value > 0)) {
+    try {
+      checkpointSqliteWal(getStatsDatabase(), 'stats')
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'stats_database_checkpoint_failed'
+      }), '统计库 WAL checkpoint 失败，等待下一轮清理继续维护')
+    }
+  }
+  return result
 }
 
 async function refreshGroupAccountStats(): Promise<number> {

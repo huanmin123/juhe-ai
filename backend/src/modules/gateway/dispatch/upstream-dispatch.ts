@@ -43,6 +43,7 @@ import { type GatewayUpstreamResponse } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { createGatewayCompatibilityRecoveryState } from '../client-profiles/compatibility-policy.js'
+import { GatewayRequestValidationError } from '../request/validation-error.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -211,7 +212,11 @@ export async function fetchFirstAvailableUpstream(
           headers = requestParts.headers
           body = requestParts.body
         } catch (error) {
-          if (signal?.aborted || (error instanceof OpenAIOAuthCodexAdapterError && !error.accountScoped)) {
+          if (
+            signal?.aborted
+            || (error instanceof OpenAIOAuthCodexAdapterError && !error.accountScoped)
+            || (error instanceof GatewayRequestValidationError && !error.accountScoped)
+          ) {
             throw error
           }
           const requestErrorResult = await handleUpstreamRequestError({

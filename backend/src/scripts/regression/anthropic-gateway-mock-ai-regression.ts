@@ -132,6 +132,8 @@ try {
     await assertAnthropicLocalErrorShape(baseUrl)
     await assertAnthropicCountTokens(baseUrl, apiKey.key)
     await assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
+    await assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
+    await assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl, upstreamBaseUrl)
     await assertAnthropicModels(baseUrl, apiKey.key)
     await assertAnthropicModelMapping(baseUrl, upstreamBaseUrl)
     await assertAnthropicApiKeyPoolIsolation(baseUrl, upstreamBaseUrl)
@@ -535,6 +537,113 @@ async function assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUr
     method: 'POST',
     bodyIncludes: 'messages should still work after unsupported count_tokens',
     xApiKey: 'sk-ant-count-unsupported'
+  })
+}
+
+async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const group = repositories.createGroup({
+    name: 'Anthropic model_not_found 不污染账号回归分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic model_not_found 不污染账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-model-not-found',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: 'Anthropic model_not_found 不污染账号 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic model_not_found 回归 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const invalidResponse = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: `juhe-invalid-model-${Date.now()}`,
+      messages: [{ role: 'user', content: 'invalid model should not poison account' }],
+      max_tokens: 8
+    })
+  })
+  const invalidText = await invalidResponse.text()
+  assert.notEqual(invalidResponse.status, 200, `model_not_found 应作为受控失败返回：${invalidText}`)
+  assert(upstreamHits.some((hit) => hit.path === '/v1/messages' && hit.xApiKey === 'sk-ant-model-not-found'), 'model_not_found 场景应命中 mock 上游')
+
+  upstreamHits.length = 0
+  const messageResult = await postAnthropicMessage(baseUrl, apiKey.key, 'messages should still work after model_not_found')
+  assert.equal(messageResult.status, 200, `model_not_found 不应污染账号健康，普通 messages 应继续成功，实际 HTTP ${messageResult.status}: ${messageResult.text}`)
+  assert.equal(upstreamHits.length, 1, 'model_not_found 后普通 messages 应继续调度同一账户')
+  assertAnthropicUpstreamHit(upstreamHits[0], {
+    path: '/v1/messages',
+    method: 'POST',
+    bodyIncludes: 'messages should still work after model_not_found',
+    xApiKey: 'sk-ant-model-not-found'
+  })
+}
+
+async function assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const group = repositories.createGroup({
+    name: 'Anthropic empty content 协议守卫回归分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic empty content 协议守卫账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-empty-json',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: 'Anthropic empty content 协议守卫 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic empty content 回归 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'empty content should be guarded' }],
+      max_tokens: 8
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 502, `Anthropic empty content 应转成协议错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_protocol_error/, 'Anthropic empty content 协议错误应带 upstream_protocol_error')
+  assert.doesNotMatch(text, /"content"\s*:\s*\[\]/, '网关不应把上游 content:[] 原样暴露给下游客户端')
+  assert.equal(upstreamHits.length, 1, 'Anthropic empty content 协议守卫应命中一次 mock 上游')
+  assertAnthropicUpstreamHit(upstreamHits[0], {
+    path: '/v1/messages',
+    method: 'POST',
+    bodyIncludes: 'empty content should be guarded',
+    xApiKey: 'sk-ant-empty-json'
   })
 }
 
@@ -1224,7 +1333,7 @@ function createAnthropicMockUpstream(): http.Server {
             sendAnthropicSse(res)
           }
         } else {
-          sendAnthropicJson(res, String(req.headers['x-api-key'] ?? ''))
+            sendAnthropicJson(res, String(req.headers['x-api-key'] ?? ''), bodyText)
         }
         return
       }
@@ -1234,7 +1343,35 @@ function createAnthropicMockUpstream(): http.Server {
   })
 }
 
-function sendAnthropicJson(res: http.ServerResponse, xApiKey: string): void {
+function sendAnthropicJson(res: http.ServerResponse, xApiKey: string, bodyText: string): void {
+  if (xApiKey === 'sk-ant-model-not-found' && bodyText.includes('juhe-invalid-model')) {
+    res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      type: 'error',
+      error: {
+        code: 'model_not_found',
+        type: 'new_api_error',
+        message: 'No available channel for model juhe-invalid-model under group default'
+      }
+    }))
+    return
+  }
+  if (xApiKey === 'sk-ant-empty-json') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      id: 'msg_mock_empty_json',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-haiku-4-5',
+      content: [],
+      stop_reason: 'end_turn',
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0
+      }
+    }))
+    return
+  }
   if (xApiKey === 'sk-ant-keypool-bad') {
     res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({

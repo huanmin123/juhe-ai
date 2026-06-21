@@ -357,6 +357,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['usageRankSnapshotRetentionDays', 30],
   ['systemMetricsRetentionDays', 7],
   ['systemMetricsHourlyRetentionDays', 30],
+  ['dataRetentionCleanupIntervalMinutes', 10],
   ['dataRetentionCleanupBatchSize', 1000],
-  ['dataRetentionCleanupMaxBatchesPerRun', 2]
+  ['dataRetentionCleanupMaxBatchesPerRun', 20]
 ] as const

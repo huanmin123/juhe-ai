@@ -147,6 +147,7 @@ interface SystemSettings {
   usageStatsHourlyRetentionDays?: number
   systemMetricsRetentionDays?: number
   systemMetricsHourlyRetentionDays?: number
+  dataRetentionCleanupIntervalMinutes?: number
   dataRetentionCleanupBatchSize?: number
   dataRetentionCleanupMaxBatchesPerRun?: number
 }
@@ -221,6 +222,7 @@ async function main(): Promise<void> {
     assert(typeof settings.usageStatsHourlyRetentionDays === 'number', '系统设置缺少 usageStatsHourlyRetentionDays')
     assert(typeof settings.systemMetricsRetentionDays === 'number', '系统设置缺少 systemMetricsRetentionDays')
     assert(typeof settings.systemMetricsHourlyRetentionDays === 'number', '系统设置缺少 systemMetricsHourlyRetentionDays')
+    assert(typeof settings.dataRetentionCleanupIntervalMinutes === 'number', '系统设置缺少 dataRetentionCleanupIntervalMinutes')
     assert(typeof settings.dataRetentionCleanupBatchSize === 'number', '系统设置缺少 dataRetentionCleanupBatchSize')
     assert(typeof settings.dataRetentionCleanupMaxBatchesPerRun === 'number', '系统设置缺少 dataRetentionCleanupMaxBatchesPerRun')
     assertExactSettingKeys(settings)

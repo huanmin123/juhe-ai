@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { getDatasetDatabase } from '../../storage/database.js'
 import { cleanupAuditHotSearchFilesBefore } from '../../storage/audit-log-hot-search-files.js'
 import { cleanupAuditLogsByRetentionAsync } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
@@ -11,6 +12,8 @@ import {
 import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogFileCursorsBefore, cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
 import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
+import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../storage/sqlite-maintenance.js'
+import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -31,6 +34,9 @@ const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const publicApiLogRetentionDays = 7
 const modelCheckRetentionMaxDays = 365
+const retentionCleanupBatchSizeMax = 5_000
+const retentionCleanupMaxBatchesMax = 100
+const retentionCleanupBatchPauseMs = 25
 let cleanupRunning = false
 
 interface DataRetentionPolicy {
@@ -122,8 +128,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
   try {
     const settings = getSettings()
     const timezone = usageStatsTimezone()
-    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', 100, 1000)
-    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, 2)
+    const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', 100, retentionCleanupBatchSizeMax)
+    const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', 1, retentionCleanupMaxBatchesMax)
     const now = Date.now()
     const auditSettings = readAuditLogSettings()
     const retention: DataRetentionPolicy = {
@@ -150,13 +156,17 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
 
     const result = emptyCleanupResult()
     if (runtimeConfig.workerRole === 'ingest-worker') {
-      addCleanupResult(result, await cleanupDatasetAndUsageRetainedData({
+      const datasetCleanup = await cleanupDatasetAndUsageRetainedData({
         now,
         retention,
         batchSize,
         maxBatches,
         successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000)
-      }))
+      })
+      addCleanupResult(result, datasetCleanup)
+      if (sumDeleted(datasetCleanup) > 0) {
+        checkpointDatasetAndUsageDatabasesAfterDelete()
+      }
     }
     if (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'maintenance-worker') {
       await cleanupRetentionInBatches(result, () => requestStatsWriter({
@@ -265,6 +275,7 @@ async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, ba
     if (deleted < batchSize) {
       break
     }
+    await pauseBetweenCleanupBatches()
   }
   return total
 }
@@ -289,6 +300,7 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
     if (batch.blockedReason || batch.deletedRows < batchSize || !batch.hasMore) {
       break
     }
+    await pauseBetweenCleanupBatches()
   }
   return {
     cutoffCreatedAt,
@@ -310,6 +322,7 @@ async function cleanupRetentionInBatches(
     if (sumDeleted(deleted) === 0) {
       break
     }
+    await pauseBetweenCleanupBatches()
   }
 }
 
@@ -364,6 +377,32 @@ function addCleanupResult(
 
 function sumDeleted(deleted: Partial<Record<keyof DataRetentionCleanupResult, number>>): number {
   return Object.values(deleted).reduce((sum, value) => sum + Number(value ?? 0), 0)
+}
+
+function checkpointDatasetAndUsageDatabases(): SqliteWalCheckpointResult[] {
+  const checkpoints: SqliteWalCheckpointResult[] = []
+  const datasetCheckpoint = checkpointSqliteWal(getDatasetDatabase(), 'dataset')
+  if (datasetCheckpoint) {
+    checkpoints.push(datasetCheckpoint)
+  }
+  checkpoints.push(...checkpointOpenUsageRecordShardDatabases())
+  return checkpoints
+}
+
+function checkpointDatasetAndUsageDatabasesAfterDelete(): void {
+  try {
+    const checkpoints = checkpointDatasetAndUsageDatabases()
+    if (checkpoints.length > 0) {
+      logger.info({
+        event: 'data_retention_dataset_checkpoint_completed',
+        checkpoints
+      }, '数据集与使用记录分片 WAL checkpoint 完成')
+    }
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'data_retention_dataset_checkpoint_failed'
+    }), '数据集与使用记录分片 WAL checkpoint 失败，等待下一轮清理继续维护')
+  }
 }
 
 function cutoffIso(now: number, retentionDays: number): string {
@@ -466,4 +505,8 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+function pauseBetweenCleanupBatches(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, retentionCleanupBatchPauseMs))
 }

@@ -7,6 +7,7 @@ import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, nowIso, rollbackDatabaseTransaction, sqliteWriterBoundaryStrictModeEnabled } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
+import { checkpointSqliteWal, type SqliteWalCheckpointResult } from './sqlite-maintenance.js'
 
 export interface UsageRecordShardLocation {
   shardKey: string
@@ -133,6 +134,17 @@ export function closeUsageRecordShardDatabases(): void {
     }
   }
   shardDatabases.clear()
+}
+
+export function checkpointOpenUsageRecordShardDatabases(): SqliteWalCheckpointResult[] {
+  const results: SqliteWalCheckpointResult[] = []
+  for (const [filePath, database] of shardDatabases.entries()) {
+    const result = checkpointSqliteWal(database, `usage-shard:${filePath}`)
+    if (result) {
+      results.push(result)
+    }
+  }
+  return results
 }
 
 export async function cleanupEmptyUsageRecordShardFilesBefore(cutoffAt: string, limit = 1000): Promise<EmptyUsageRecordShardFileCleanupResult> {

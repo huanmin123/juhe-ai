@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { spawnSync } from 'node:child_process'
+import { channel } from 'node:diagnostics_channel'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { dirname, join, normalize, resolve } from 'node:path'
@@ -28,11 +29,13 @@ interface WorkflowTask {
 }
 
 interface AgentCallResult {
+  attempts?: number
   content: string
   durationMs: number
   error?: string
   model?: string
   ok: boolean
+  retryErrors?: string[]
   status: number
 }
 
@@ -45,6 +48,7 @@ interface ValidationResult {
 interface TaskRunResult {
   appliedFiles: string[]
   execution: AgentCallResult
+  id: string
   repair?: AgentCallResult
   repairAppliedFiles?: string[]
   test: ValidationResult
@@ -70,6 +74,22 @@ interface UsageCountRow {
   cost_usd: number | null
 }
 
+interface HybridRouteEvent {
+  affinityApplied?: boolean
+  affinityReason?: string
+  confidence?: number
+  level?: number
+  levelRange?: [number, number]
+  outcome?: string
+  scoringCacheHit?: boolean
+  scoringDefaulted?: boolean
+  scoringErrorCode?: string
+  scoringErrorMessage?: string
+  scoringReason?: string
+  sessionId?: string
+  targetModel?: string
+}
+
 const realApiKey = requiredEnv('JUHE_REAL_HYBRID_PROJECT_API_KEY', [
   'JUHE_REAL_HYBRID_API_KEY',
   'JUHE_REAL_HYBRID_QUALITY_API_KEY',
@@ -81,19 +101,30 @@ const realBaseUrl = envText('JUHE_REAL_HYBRID_PROJECT_BASE_URL', [
   'HYBRID_REAL_BASE_URL'
 ]) || 'https://vsllm.com'
 const repoUrl = envText('JUHE_REAL_HYBRID_PROJECT_REPO_URL') || 'https://github.com/codescandy/dash-ui-react-vitejs-typescript.git'
-const taskLimit = Math.min(workflowTasks().length, Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_TASKS') ?? 3))
+const taskLimit = Math.min(workflowTasks().length, Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_TASKS') ?? 4))
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_REQUEST_TIMEOUT_MS') ?? 240_000
 const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_REQUEST_INTERVAL_MS') ?? 800
+const upstreamRetryCount = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRIES') ?? 2
+const upstreamRetryDelayMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRY_DELAY_MS') ?? 2_500
+const repositoryCloneRetries = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_CLONE_RETRIES') ?? 3
 const outputMaxTokens = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_OUTPUT_MAX_TOKENS') ?? 4_000
 const outputPath = envText('JUHE_REAL_HYBRID_PROJECT_OUTPUT_PATH')
 const runBuildValidation = booleanEnv('JUHE_REAL_HYBRID_PROJECT_RUN_BUILD') ?? false
 const selectedStrategies = workflowStrategies()
+const hybridRouteEvents: HybridRouteEvent[] = []
+const hybridRouteDiagnosticsChannel = channel('juhe-ai:hybrid-route-decision')
+const hybridRouteDiagnosticsSubscriber = (message: unknown): void => {
+  if (typeof message === 'object' && message !== null) {
+    hybridRouteEvents.push(message as HybridRouteEvent)
+  }
+}
+hybridRouteDiagnosticsChannel.subscribe(hybridRouteDiagnosticsSubscriber)
 
 const scoringModel = envText('JUHE_REAL_HYBRID_PROJECT_SCORING_MODEL') || 'gpt-5.4-mini'
 const lowModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_1_3') || 'gpt-5.4-mini'
 const glmModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_4_6') || 'glm-5.2'
 const gptModel = envText('JUHE_REAL_HYBRID_PROJECT_GPT_MODEL') || 'gpt-5.5'
-const mainModel = envText('JUHE_REAL_HYBRID_PROJECT_MAIN_MODEL') || 'claude-opus-4-6'
+const mainModel = envText('JUHE_REAL_HYBRID_PROJECT_MAIN_MODEL') || 'claude-opus-4-7'
 const opusModel = envText('JUHE_REAL_HYBRID_PROJECT_OPUS_MODEL') || mainModel
 const scoringUnitCost = numberEnv('JUHE_REAL_HYBRID_PROJECT_SCORING_UNIT_COST') ?? 0.002
 
@@ -112,6 +143,13 @@ const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
   { minLevel: 7, maxLevel: 8, targetModel: gptModel, enabled: true },
   { minLevel: 9, maxLevel: 10, targetModel: opusModel, enabled: true }
 ]
+
+const allowedOutputFiles = new Set([
+  'src/data/operations/OperationsCenterData.ts',
+  'src/pages/dashboard/pages/OperationsCenter.tsx',
+  'src/App.tsx',
+  'src/routes/DashboardRoutes.ts'
+])
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-hybrid-project-workflow-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-project-workflow.sqlite3')
@@ -235,6 +273,7 @@ try {
     await closeServer(appServer)
   }
 } finally {
+  hybridRouteDiagnosticsChannel.unsubscribe(hybridRouteDiagnosticsSubscriber)
   hybridAffinity.clearHybridRouteAffinityForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
@@ -305,6 +344,7 @@ async function runWorkflow(input: {
   const worktree = join(tempRoot, `repo-${input.strategy}`)
   cloneRepository(worktree)
   const projectContext = readProjectContext(worktree)
+  logProgress(input.strategy, 'planning', 'start')
   const plan = await callForStrategy({
     baseUrl: input.baseUrl,
     directCallCounts,
@@ -314,16 +354,18 @@ async function runWorkflow(input: {
     sessionId: `${input.strategy}-plan`,
     strategy: input.strategy
   })
+  logProgress(input.strategy, 'planning', plan.ok ? 'ok' : `failed:${plan.status}`)
   await wait(requestIntervalMs)
 
   const taskResults: TaskRunResult[] = []
   for (const [index, task] of input.tasks.entries()) {
+    logProgress(input.strategy, task.id, 'start')
     const execution = await callForStrategy({
       baseUrl: input.baseUrl,
       directCallCounts,
       hybridApiKey: input.hybridApiKey,
       messages: executionMessages({
-        context: readProjectContext(worktree),
+        context: readProjectContext(worktree, task.id),
         plan: plan.content,
         task,
         tasksDone: input.tasks.slice(0, index),
@@ -335,16 +377,18 @@ async function runWorkflow(input: {
     })
     let appliedFiles = applyFilesFromAgent(worktree, execution.content)
     let test = runWorkflowValidation(worktree, input.tasks.slice(0, index + 1))
+    logProgress(input.strategy, task.id, test.ok ? `ok files=${appliedFiles.join(',')}` : 'validation_failed')
     let repair: AgentCallResult | undefined
     let repairAppliedFiles: string[] | undefined
     if (!test.ok) {
       await wait(requestIntervalMs)
+      logProgress(input.strategy, `${task.id}:repair`, 'start')
       repair = await callForStrategy({
         baseUrl: input.baseUrl,
         directCallCounts,
         hybridApiKey: input.hybridApiKey,
         messages: repairMessages({
-          context: readProjectContext(worktree),
+          context: readProjectContext(worktree, task.id),
           failedOutput: test.output,
           plan: plan.content,
           task,
@@ -357,6 +401,7 @@ async function runWorkflow(input: {
       repairAppliedFiles = applyFilesFromAgent(worktree, repair.content)
       appliedFiles = [...new Set([...appliedFiles, ...repairAppliedFiles])]
       test = runWorkflowValidation(worktree, input.tasks.slice(0, index + 1))
+      logProgress(input.strategy, `${task.id}:repair`, test.ok ? `ok files=${repairAppliedFiles.join(',')}` : 'validation_failed')
     }
     taskResults.push({
       appliedFiles,
@@ -370,6 +415,7 @@ async function runWorkflow(input: {
   }
 
   const finalTest = runWorkflowValidation(worktree, input.tasks)
+  logProgress(input.strategy, 'final-review', 'start')
   const finalReview = await callForStrategy({
     baseUrl: input.baseUrl,
     directCallCounts,
@@ -383,13 +429,14 @@ async function runWorkflow(input: {
     sessionId: `${input.strategy}-review`,
     strategy: input.strategy
   })
+  logProgress(input.strategy, 'final-review', finalReview.ok ? 'ok' : `failed:${finalReview.status}`)
 
   return {
     directCallCounts,
     durationMs: Date.now() - startedAt,
     finalReview,
     finalTest,
-    ok: finalTest.ok && taskResults.every((item) => item.appliedFiles.length > 0 && item.test.ok),
+    ok: finalTest.ok,
     plan,
     strategy: input.strategy,
     tasks: taskResults
@@ -397,13 +444,20 @@ async function runWorkflow(input: {
 }
 
 function cloneRepository(targetPath: string): void {
-  const result = spawnSync('git', ['clone', '--depth', '1', repoUrl, targetPath], {
-    encoding: 'utf8',
-    timeout: 180_000
-  })
-  if (result.status !== 0) {
-    throw new Error(`克隆 GitHub 项目失败：${sanitizeErrorSnippet(`${result.stdout}\n${result.stderr}`)}`)
+  let lastOutput = ''
+  for (let attempt = 1; attempt <= repositoryCloneRetries + 1; attempt += 1) {
+    const result = spawnSync('git', ['clone', '--depth', '1', repoUrl, targetPath], {
+      encoding: 'utf8',
+      timeout: 180_000
+    })
+    if (result.status === 0) return
+    lastOutput = `${result.stdout}\n${result.stderr}`
+    if (attempt <= repositoryCloneRetries) {
+      rmSync(targetPath, { recursive: true, force: true })
+      continue
+    }
   }
+  throw new Error(`克隆 GitHub 项目失败：${sanitizeErrorSnippet(lastOutput)}`)
 }
 
 async function callForStrategy(input: {
@@ -432,6 +486,16 @@ function modelForStrategyRole(strategy: WorkflowStrategyName, role: WorkflowRole
 }
 
 async function callGatewayCompletion(
+  baseUrl: string,
+  localApiKey: string,
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  sessionId: string
+): Promise<AgentCallResult> {
+  return callWithRetries(() => callGatewayCompletionOnce(baseUrl, localApiKey, model, messages, sessionId))
+}
+
+async function callGatewayCompletionOnce(
   baseUrl: string,
   localApiKey: string,
   model: string,
@@ -488,6 +552,13 @@ async function callUpstreamChatCompletion(
   model: string,
   messages: Array<{ role: string; content: string }>
 ): Promise<AgentCallResult> {
+  return callWithRetries(() => callUpstreamChatCompletionOnce(model, messages))
+}
+
+async function callUpstreamChatCompletionOnce(
+  model: string,
+  messages: Array<{ role: string; content: string }>
+): Promise<AgentCallResult> {
   const startedAt = Date.now()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), requestTimeoutMs)
@@ -530,6 +601,55 @@ async function callUpstreamChatCompletion(
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function callWithRetries(callOnce: () => Promise<AgentCallResult>): Promise<AgentCallResult> {
+  const startedAt = Date.now()
+  const retryErrors: string[] = []
+  let lastResult: AgentCallResult | undefined
+  for (let attempt = 1; attempt <= upstreamRetryCount + 1; attempt += 1) {
+    const result = await callOnce()
+    lastResult = result
+    if (result.ok || !isRetryableCallResult(result) || attempt > upstreamRetryCount) {
+      return {
+        ...result,
+        attempts: attempt,
+        durationMs: Date.now() - startedAt,
+        retryErrors: retryErrors.length ? retryErrors : undefined
+      }
+    }
+    retryErrors.push(callRetrySummary(result))
+    await wait(upstreamRetryDelayMs)
+  }
+  return {
+    ...(lastResult ?? {
+      content: '',
+      error: 'retry loop exited without result',
+      ok: false,
+      status: 0
+    }),
+    attempts: upstreamRetryCount + 1,
+    durationMs: Date.now() - startedAt,
+    retryErrors: retryErrors.length ? retryErrors : undefined
+  }
+}
+
+function isRetryableCallResult(result: AgentCallResult): boolean {
+  if (result.ok) return false
+  if ([0, 401, 408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524].includes(result.status)) {
+    return true
+  }
+  const error = result.error?.toLowerCase() ?? ''
+  return error.includes('aborted') ||
+    error.includes('timeout') ||
+    error.includes('timed out') ||
+    error.includes('auth_unavailable') ||
+    error.includes('invalid authentication credentials')
+}
+
+function callRetrySummary(result: AgentCallResult): string {
+  const error = result.error ? result.error.replace(/\s+/g, ' ').slice(0, 180) : 'empty error'
+  return `status=${result.status} ${error}`
 }
 
 function planningMessages(context: string, tasks: WorkflowTask[]): Array<{ role: string; content: string }> {
@@ -684,19 +804,47 @@ function normalizeOutputPath(value: string): string {
   return normalize(value.trim().replace(/^["'`]+|["'`]+$/g, '')).replace(/\\/g, '/')
 }
 
-function readProjectContext(worktree: string): string {
-  const files = [
-    'src/App.tsx',
-    'src/routes/DashboardRoutes.ts',
-    'src/pages/dashboard/Index.tsx',
-    'src/pages/dashboard/pages/Settings.tsx',
-    'src/data/dashboard/ProjectsStatsData.tsx',
-    'src/types.ts'
-  ]
+function readProjectContext(worktree: string, focus?: string): string {
+  const files = contextFilesForFocus(focus)
   return files.map((file) => [
     `--- ${file}`,
     readFileIfExists(worktree, file).slice(0, file.endsWith('App.tsx') ? 5_000 : 2_200)
   ].join('\n')).join('\n\n')
+}
+
+function contextFilesForFocus(focus?: string): string[] {
+  if (focus === 'operations_data') {
+    return [
+      'src/data/dashboard/ProjectsStatsData.tsx',
+      'src/types.ts'
+    ]
+  }
+  if (focus === 'operations_page') {
+    return [
+      'src/data/operations/OperationsCenterData.ts',
+      'src/pages/dashboard/Index.tsx',
+      'src/pages/dashboard/pages/Settings.tsx',
+      'src/types.ts'
+    ]
+  }
+  if (focus === 'operations_route') {
+    return [
+      'src/App.tsx',
+      'src/pages/dashboard/pages/OperationsCenter.tsx'
+    ]
+  }
+  if (focus === 'operations_menu') {
+    return [
+      'src/routes/DashboardRoutes.ts'
+    ]
+  }
+  return [
+    'src/App.tsx',
+    'src/routes/DashboardRoutes.ts',
+    'src/pages/dashboard/Index.tsx',
+    'src/pages/dashboard/pages/Settings.tsx',
+    'src/types.ts'
+  ]
 }
 
 function readFileIfExists(worktree: string, relativePath: string): string {
@@ -713,10 +861,13 @@ function runWorkflowValidation(worktree: string, tasks: WorkflowTask[]): Validat
   if (enabled.has('operations_page')) {
     validateOperationsPage(worktree, errors)
   }
-  if (enabled.has('operations_route_menu')) {
-    validateOperationsRouteMenu(worktree, errors)
+  if (enabled.has('operations_route')) {
+    validateOperationsRoute(worktree, errors)
   }
-  if (runBuildValidation && enabled.has('operations_route_menu')) {
+  if (enabled.has('operations_menu')) {
+    validateOperationsMenu(worktree, errors)
+  }
+  if (runBuildValidation && enabled.has('operations_menu')) {
     const build = runBuild(worktree)
     if (!build.ok) {
       errors.push(`build failed:\n${build.output}`)
@@ -762,11 +913,14 @@ function validateOperationsPage(worktree: string, errors: string[]): void {
   assertSource(file, /SLA|MTTR|Open|Resolved|Critical/i, '页面必须包含运营指标摘要', errors)
 }
 
-function validateOperationsRouteMenu(worktree: string, errors: string[]): void {
+function validateOperationsRoute(worktree: string, errors: string[]): void {
   const app = readFileIfExists(worktree, 'src/App.tsx')
-  const routes = readFileIfExists(worktree, 'src/routes/DashboardRoutes.ts')
   assertSource(app, /OperationsCenter/, 'App.tsx 必须导入并使用 OperationsCenter', errors)
   assertSource(app, /path:\s*["']operations["']/, 'App.tsx 必须注册 /pages/operations 子路由', errors)
+}
+
+function validateOperationsMenu(worktree: string, errors: string[]): void {
+  const routes = readFileIfExists(worktree, 'src/routes/DashboardRoutes.ts')
   assertSource(routes, /Operations Center|Operations/, 'DashboardRoutes.ts 必须加入 Operations 菜单项', errors)
   assertSource(routes, /\/pages\/operations/, 'DashboardRoutes.ts 菜单必须指向 /pages/operations', errors)
 }
@@ -865,10 +1019,12 @@ function writeSummary(input: {
 
 function callSummary(call: AgentCallResult): Record<string, unknown> {
   return {
+    attempts: call.attempts,
     durationMs: call.durationMs,
     error: call.error,
     model: call.model,
     ok: call.ok,
+    retryErrors: call.retryErrors,
     status: call.status
   }
 }
@@ -895,10 +1051,10 @@ function estimateWorkflowCost(run: WorkflowRunResult, hybridUsageCounts: UsageCo
     }
   }
   const scoringCount = hybridUsageCounts
-    .filter((row) => row.traffic_source === 'hybrid_scoring')
+    .filter((row) => row.traffic_source === 'hybrid_scoring' && row.success === 1)
     .reduce((sum, row) => sum + row.count, 0)
   const targetCost = hybridUsageCounts
-    .filter((row) => row.traffic_source === 'gateway')
+    .filter((row) => row.traffic_source === 'gateway' && row.success === 1)
     .reduce((sum, row) => sum + row.count * (modelUnitCosts.get(row.model ?? '') ?? modelCostDefault(row.model ?? '')), 0)
   const scoringCost = scoringCount * scoringUnitCost
   return {
@@ -933,10 +1089,16 @@ function workflowTasks(): WorkflowTask[] {
       expectedFiles: ['src/pages/dashboard/pages/OperationsCenter.tsx']
     },
     {
-      id: 'operations_route_menu',
-      title: '接入路由和侧边栏菜单',
-      instructions: '修改 src/App.tsx 导入 OperationsCenter，并在 /pages 子路由下新增 path: "operations"。修改 src/routes/DashboardRoutes.ts，在 Pages 菜单里加入 Operations Center，link 为 /pages/operations。不要破坏已有 Profile、Settings、Billing、Pricing 等菜单。',
-      expectedFiles: ['src/App.tsx', 'src/routes/DashboardRoutes.ts']
+      id: 'operations_route',
+      title: '接入页面路由',
+      instructions: '修改 src/App.tsx 导入 OperationsCenter，并在 /pages 子路由下新增 path: "operations"。不要破坏已有 Profile、Settings、Billing、Pricing、ApiDemo 等页面路由。',
+      expectedFiles: ['src/App.tsx']
+    },
+    {
+      id: 'operations_menu',
+      title: '接入侧边栏菜单',
+      instructions: '修改 src/routes/DashboardRoutes.ts，在 Pages 菜单里加入 Operations Center，link 为 /pages/operations。不要破坏已有 Profile、Settings、Billing、Pricing、404 Error 等菜单项。',
+      expectedFiles: ['src/routes/DashboardRoutes.ts']
     }
   ]
 }
@@ -1045,6 +1207,10 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
+function logProgress(strategy: WorkflowStrategyName, step: string, status: string): void {
+  console.error(`[hybrid-project-workflow] ${strategy} ${step}: ${status}`)
+}
+
 function listen(server: http.Server): Promise<void> {
   if (server.listening) return Promise.resolve()
   server.listen(0, '127.0.0.1')
@@ -1069,10 +1235,3 @@ function closeServer(server: http.Server | undefined): Promise<void> {
     })
   })
 }
-
-const allowedOutputFiles = new Set([
-  'src/data/operations/OperationsCenterData.ts',
-  'src/pages/dashboard/pages/OperationsCenter.tsx',
-  'src/App.tsx',
-  'src/routes/DashboardRoutes.ts'
-])

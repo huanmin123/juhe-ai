@@ -243,6 +243,7 @@
     "test:system-metrics-window-query-guard": "tsx src/scripts/regression/system-metrics-window-query-guard-regression.ts",
     "test:system-metrics-event-loop-average": "tsx src/scripts/regression/system-metrics-event-loop-average-regression.ts",
     "test:data-retention-sql-guards": "tsx src/scripts/regression/data-retention-sql-guards-regression.ts",
+    "test:data-retention-high-volume-settings": "tsx src/scripts/regression/data-retention-high-volume-settings-regression.ts",
     "test:data-retention-cleanup-catalog-window": "tsx src/scripts/regression/data-retention-cleanup-catalog-window-regression.ts",
     "test:non-business-data-hard-cleanup": "tsx src/scripts/regression/non-business-data-hard-cleanup-regression.ts",
     "test:sqlite-entrypoint-lazy-open": "tsx src/scripts/regression/sqlite-entrypoint-lazy-open-regression.ts",

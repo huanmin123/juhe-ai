@@ -8,8 +8,8 @@
 
 - 不做 HTTP 请求体压缩重发。`Content-Encoding: gzip` 只能减少传输字节，不减少模型上下文 token，不能解决 `context_length_exceeded`。
 - 不做上游已经返回 `context_length_exceeded` 后的自动 compact retry，不由网关捕获失败后 compact 并重发。
-- 不在原生 Responses passthrough 或 OAuth Codex adapter 中引入服务端会话压缩状态托管。
-- 不把 Chat 摘要伪装成上游原生 Responses opaque compact。
+- 不在原生 Responses passthrough 或 OAuth Codex adapter 中额外托管服务端会话状态；这两类路径仍以原生上游语义为准。
+- 不把 Chat 摘要宣称为上游原生 Responses opaque compact；Chat-only bridge 只能使用网关自有 compact envelope，并由网关负责恢复。
 - 不为未知 OpenAI-compatible 上游默认开启 compact。
 - 不在流式响应已经产生可见输出后静默重放或拼接第二条上游流。
 - 不开放任意 body patch、任意 header 改写或用户自定义压缩脚本。
@@ -17,6 +17,8 @@
 ## 目标
 
 - 支持原生 Responses 上游的上下文压缩能力，避免可用能力在中转层被删除或屏蔽。
+- 为 Chat-only bridge 设计 `previous_response_id` 服务端状态层，避免 Codex 客户端增量上下文丢失。
+- 为 Chat-only bridge 设计可控的网关摘要压缩能力，在当前分组和当前供应商内调度摘要模型，避免跨授权边界兜底。
 - 明确协议、供应商、账户模式、客户端和运行阶段的边界，避免全局误用。
 - 保持网关热路径轻量，不为了压缩能力缓存完整流、完整响应或全量会话历史。
 
@@ -29,6 +31,8 @@
 | `context_management` compaction | Responses 请求语义 | 上游在阈值附近压缩上下文，并在响应里返回 compaction item | 依赖上游原生 Responses 支持和客户端后续携带 |
 | `/responses/compact` | Responses 独立端点 | 显式把一组 input 压缩成新的上下文 | compact 请求本身仍必须能放进上游窗口 |
 | `compaction_trigger` | Codex Responses input item | Codex Remote Compaction V2 通过普通 `/responses` 产出 `compaction` item | 属于 Codex SDK 特性，不是通用 OpenAI-compatible 默认能力 |
+| `previous_response_id` 状态层 | 网关服务端 | 把 Codex / Responses 增量请求还原为完整上下文 | 上游 Chat 不认识该字段，必须在网关内解析和恢复 |
+| `gateway_summary_compact` | 网关服务端 + Chat 上游 | 调用同分组、同供应商内的 Chat Completions 摘要模型生成结构化摘要，再包装成网关自有 compact envelope | 不等价于上游原生 opaque compact，不能跨网关或跨供应商直接消费；内部摘要请求不能打上游 `/responses/compact` |
 
 ## 官方能力口径
 
@@ -58,10 +62,25 @@
 | 客户端层 | Codex / Responses-aware 客户端 | 可以主动调用 `/responses/compact`、发送 Codex V2 `compaction_trigger` 或显式携带官方字段 |
 | 客户端层 | 普通 OpenAI-compatible 客户端 | 只透传客户端显式字段，不主动替它维护上下文 |
 | 运行阶段 | 请求前 | 原生 Responses 可透传官方字段 |
+| 桥接层 | Responses -> Chat bridge | 目标设计中由网关托管 `previous_response_id` 和自有 compact envelope；上游仍只看到 Chat messages |
+| 内部摘要调度 | 当前分组 + 当前供应商 | 摘要请求按普通调度链路选可用账户、切号、统计和审计；禁止跨分组、跨供应商和递归 compact |
 
 ## 当前范围
 
-当前目标是修通官方 Responses 上下文压缩链路。原生 passthrough 不做自动 compact 重发，也不在上游已经失败后重放。
+当前目标分为两条能力线：
+
+- 原生 Responses compact：修通官方 Responses 上下文压缩链路。原生 passthrough 不做自动 compact 重发，也不在上游已经失败后重放。
+- Chat-only gateway compact：为 Responses -> Chat bridge 设计服务端状态和摘要压缩。上游 Chat 只负责生成摘要，协议兼容、状态恢复、compact envelope 和后续展开都由网关负责。
+
+### 能力类型和路由原则
+
+| 能力类型 | 触发入口 | 上游要求 | 网关职责 | 后续请求路由 |
+| --- | --- | --- | --- | --- |
+| `native_responses_compact` | `/responses/compact` 或原生 Responses compaction | 上游支持 Responses compact，返回 `compaction` / `compaction_summary` 且可被后续 `/responses` 消费 | 透传、契约检查、统计审计 | 必须继续走可消费该 opaque item 的原生 Responses 上游 |
+| `chat_bridge_state` | `/responses` 携带 `previous_response_id` | 上游不需要认识 `previous_response_id` | 根据 response id 恢复历史，追加本轮 input，转为 Chat messages | 当前分组和当前供应商内的 Chat bridge 账户 |
+| `gateway_summary_compact` | Chat-only bridge 的 `/responses/compact` 或内部压缩触发 | 同分组、同供应商内存在可用 Chat Completions 摘要模型或当前模型可摘要 | 还原完整上下文，通过 Chat Completions 摘要请求生成摘要，保存 compact snapshot，返回网关自有 envelope | 后续必须回到本网关，由网关解包后转 Chat |
+
+不能只按模型名判断 compact 能力。例如 `gpt-5.5-openai-compact` 经实测可以作为 `native_responses_compact` 的上游模型，但它产生的 `encrypted_content` 只适合同类 Responses 上游继续消费，不能直接给 GLM / DeepSeek / Anthropic Chat bridge 使用。
 
 ### API Key 原生 Responses 透传
 
@@ -116,8 +135,76 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 落地结论：
 
-- 国内 Chat-only 上游没有官方 Responses compact 等价能力。
-- 需要长会话、compact 或稳定 `previous_response_id` 的客户端应选择原生 Responses 上游。
+- 国内 Chat-only 上游通常没有官方 Responses compact 等价能力，也通常不认识 `previous_response_id`。
+- Chat-only bridge 不能把 native Responses compact item 直接交给 Chat 上游，也不能要求 Chat 上游返回 Responses compact item。
+- 可行方案是网关先维护 `previous_response_id` 对应的完整上下文，再把需要压缩的上下文转成 Chat messages，通过当前分组和当前供应商内的 Chat Completions 摘要请求交给上游摘要模型。上游返回普通摘要后，由网关保存为 compact snapshot，并包装成 Codex 可识别的 `compaction_summary`。
+
+### Chat-only bridge 服务端状态
+
+`previous_response_id` 是 Chat-only compact 的基础能力。没有状态层时，compact 会退化成无依据摘要，容易丢记忆并诱发幻觉。
+
+目标状态记录：
+
+| 字段 | 用途 |
+| --- | --- |
+| `responseId` | 对应下游返回给客户端的 Responses id |
+| `apiKeyId` / `teamId` / `groupId` | 保证状态只在当前授权边界内可见 |
+| `providerCode` / `providerProtocolProfileId` | 保证恢复和摘要只在当前供应商能力范围内进行 |
+| `model` / `mappedModel` | 记录下游模型和实际上游模型，供后续恢复和成本口径使用 |
+| `inputItems` / `outputItems` | 保存 Responses 语义历史，用于后续 `previous_response_id` 还原 |
+| `chatMessages` | 保存已归一化的 Chat 历史，减少重复转换和规避非法工具序列 |
+| `toolState` | 保存未闭合工具调用、最近工具结果和必须保留的工具链 |
+| `compactSnapshotId` | 如果该状态来自 compact，记录 compact snapshot 来源 |
+| `stateHash` / `expiresAt` | 防篡改、去重、TTL 清理和排障 |
+
+状态提交规则：
+
+- 只在上游请求成功完成后提交状态；失败、下游中断、流式未完成时不生成可续接状态。
+- `previous_response_id` 找不到、过期、跨 API Key、跨团队、跨分组或跨供应商时，返回受控错误，不继续无状态转换。
+- 新一轮 `instructions` / developer 上下文按 Responses 语义以本轮请求为准；旧 instructions 不应无条件继承。
+- 工具调用未闭合时，不能只靠摘要保留，必须保留最近完整工具调用链或拒绝 compact。
+
+### Gateway summary compact
+
+Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生 opaque compact。外形满足 Codex 可反序列化要求，内容由网关签名和索引：
+
+```json
+{
+  "type": "compaction_summary",
+  "encrypted_content": "juhecmp.v1.<compact_id>.<signature>"
+}
+```
+
+`encrypted_content` 对 Codex 是不透明字符串；Codex 后续会把它带回请求。网关识别 `juhecmp.v1` 后，从本地 compact snapshot 读取摘要和必要最近历史，再展开为 Chat messages 发给当前分组和当前供应商内的上游。
+
+compact snapshot 必须包含结构化摘要，而不是一段自由文本：
+
+| 字段 | 要求 |
+| --- | --- |
+| `durableFacts` | 任务目标、业务事实、长期约束 |
+| `currentGoal` | 当前未完成目标和下一步 |
+| `recentUserIntent` | 最近用户意图，避免摘要只保留早期信息 |
+| `toolState` | 必须保留的工具调用结果、未闭合调用和调用约束 |
+| `filesAndArtifacts` | 已读写文件、关键路径、生成物和待验证项 |
+| `providerConstraints` | 当前供应商、模型、协议限制和不可跨用的 compact 来源 |
+| `risks` | 已知风险、失败原因、不能静默忽略的问题 |
+
+摘要模型调度规则：
+
+- 摘要兜底必须在当前 API Key 绑定的当前分组内进行。
+- 摘要兜底必须限定在当前供应商和当前 provider profile 可接受范围内，不跨供应商寻找便宜模型。
+- Chat-only bridge 的通用摘要路径固定使用 Chat Completions endpoint family，即 OpenAI-compatible 语义下的 `/v1/chat/completions`；不能在 Responses -> Chat 转换后再向 Chat 上游发送 `/v1/responses/compact`。
+- 内部摘要请求走正常候选账号筛选、账号可用性、冷却、切号、统计、审计和错误处理，但候选账号必须支持 Chat Completions 摘要请求。
+- 内部摘要请求必须设置 `purpose = codex_compaction_summary`、`disableCompact = true`，避免递归 compact。
+- 如果供应商明确提供非 Responses 的 Chat 专用 compact endpoint，可以作为供应商特化摘要入口；否则使用当前分组、当前供应商内配置的 Chat Completions 摘要模型。无论哪种方式，都不能使用上游 `/responses/compact` 作为 Chat-only 摘要兜底。
+- 允许摘要模型是专用压缩模型，也允许是普通 Chat 模型，但必须通过固定 schema 校验。
+
+摘要失败处理：
+
+- schema 校验失败时可在同一内部摘要链路内重试或切到同分组同供应商的其他摘要账户。
+- 摘要结果缺少工具状态、当前目标或关键约束时不得返回成功 compact。
+- compact 前的完整状态按 TTL 保留，支持后续重新压缩或排障，但不得无限期保存大上下文。
+- compact 成功后，后续请求优先使用 compact snapshot + 最近未压缩历史，不再把所有旧历史重新塞给 Chat 上游。
 
 ## 请求处理落点
 
@@ -127,6 +214,8 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - API Key 原生 Responses 透传时，`context_management` / `truncation` 保留在上游请求准备层。
 - `codex_responses` 请求形态的字段保留或删除，也在上游请求准备层。
 - Codex V2 `compaction_trigger` 在原生 Responses / Codex adapter 路径中必须作为 Responses input item 透传，不转换为 `context_management`，也不在网关生成该 item。
+- Chat-only bridge 的 `previous_response_id` 解析和上下文恢复应在上游请求准备前完成；恢复失败时不进入候选账号派发。
+- Chat-only bridge 的内部摘要请求应作为受控内部 Chat Completions 请求重新进入候选账号筛选层，但携带 `purpose = codex_compaction_summary`、`allowCrossGroup = false`、`allowCrossProvider = false`、`disableCompact = true`。该内部请求的上游 endpoint family 是 Chat Completions，不能是 `/responses/compact`。
 
 返回侧落点：
 
@@ -135,7 +224,7 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - 可接受 compact item 最小形状为 `type = "compaction"` 或 Codex 接受的别名 `type = "compaction_summary"`，且 `encrypted_content` 必须是字符串；只有类型相同但字段缺失、为 `null` 或非字符串时不能算作合法 compact 输出。
 - Codex compact SSE 的 `response.completed.response.id` 必须是字符串；缺失或非字符串会导致 Codex SSE parser 解析失败，因此同样按 compact 契约错误拦截。非流式 `/responses/compact` JSON 只按 `output` 数组校验，不要求外层 `response.id`。
 - Codex compact 期望请求在最终确认前不得把暂存的 output item 先写给客户端；如果完成时不是恰好 1 个 Codex 可接受的 compact output item，则生成 `codex_compaction_contract_mismatch` 响应语义错误，交给“响应检查策略”的系统默认规则触发服务端换号重试或最终可重试失败。
-- 自动摘要只能发生在本轮可见输出开始前；网关不伪造 `compaction` item，也不把普通 output item 转换成 compact 结果。
+- Chat-only gateway compact 只能发生在本轮可见输出开始前；网关可以返回自有 `compaction_summary` envelope，但必须写入 compact snapshot，并在后续请求中由网关解包恢复，不能把它标记为上游原生 compact。
 
 ## 性能边界
 
@@ -144,7 +233,8 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - 不在请求链路扫描审计 payload、使用记录或历史请求来找可压缩上下文。
 - compact 输出如果需要用于审计或排障摘要，必须有字节上限，超过上限只记录截断摘要。
 - Codex V2 `compaction_trigger` 只增加 compact 契约所需的有界完成前暂存，不做全量整流缓存。
-- 后续如果重新评估本地摘要能力，必须另开计划并先补有界 payload 读取、成本归属和失败终态设计。
+- Chat-only 状态恢复只能读取按 `responseId` 直接索引的 compact state，不得反查或扫描历史请求。
+- 内部摘要请求的输入需要有 token / 字节上限；超限时先按策略保留最近轮次和工具状态，再摘要旧历史，不能把超大上下文一次性塞给上游。
 - 所有 compact 相关列表、审计详情或排障接口都按现有 offset / limit / 窗口读取边界处理。
 - 大请求体解析继续遵守当前 `/v1` raw body hard limit、文本 lane 上限和 worker 解析阈值。
 
@@ -157,6 +247,10 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 | compact 请求自身超上下文 | 返回 compact 失败，不继续重试 |
 | Codex compact 期望请求完成时没有恰好 1 个 `compaction` output item | 命中系统默认响应检查规则 `default_codex_compaction_contract`，下游未写出时服务端换号重试；账号耗尽时按 Codex 客户端能力返回可重试失败 |
 | `/responses` 请求出现 `context_length_exceeded` | 不触发自动 compact；按现有上游错误或流式失败处理 |
+| Chat-only `previous_response_id` 找不到、过期或跨授权边界 | 返回受控错误，不请求上游，不污染账号健康 |
+| Chat-only 内部摘要模型不可用 | 在当前分组和当前供应商内按普通调度切号；耗尽后返回 compact 失败 |
+| Chat-only 摘要 schema 校验失败 | 可重试或切号；最终失败时不生成 compact envelope |
+| compact snapshot 签名无效或来源不匹配 | 视为不可恢复状态，返回受控错误 |
 
 ## 审计与使用记录
 
@@ -167,19 +261,25 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - `compactEndpointRequested`
 - `compactionTriggerPresent`
 - `contextCompressionAccountMode`
+- `previousResponseStateMode`
+- `summaryCompactMode`
+- `summaryCompactProviderCode`
+- `summaryCompactModel`
+- `summaryCompactSnapshotId`
+- `summaryCompactValidationStatus`
 
 审计正文仍按原始审计保全策略处理：
 
 - 不因为 compact 能力保存更多完整大请求体。
-- 不把 compact 输出伪装成客户端原始输入。
+- 不把 compact 输出伪装成客户端原始输入；网关自有 envelope 只记录 compact id、签名状态、摘要模型和摘要校验结果。
 - `/responses/compact` 作为独立请求记录，不和普通 `/responses` 请求混在同一上游尝试链路里。
 - `compaction_trigger` 作为普通 `/responses` 请求的 input item 轻量标记，不记录完整上下文。
 
 ## 前端与配置建议
 
-当前不新增全局系统开关，也不在账户编辑页暴露专用摘要模型配置。
+配置必须遵守授权边界。Chat-only 摘要兜底不是全局直连模型，而是当前分组和当前供应商内的一次内部正常调度请求。
 
-账户编辑中可以后续增加只读或受控配置：
+账户、供应商或分组中可以后续增加只读或受控配置：
 
 | 配置 | 当前建议 |
 | --- | --- |
@@ -187,12 +287,18 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 | `保留 context_management` | 原生 Responses 默认开启；Codex compatibility 当前不开放 |
 | `保留 truncation` | 原生 Responses 默认按客户端显式字段透传；Codex compatibility 当前不开放 |
 | `Codex Remote Compaction V2` | 当前不做普通开关；仅在 Codex client profile 和账号能力验证后承接 |
+| `Chat-only previous_response_id 状态` | 作为 Codex bridge 基础能力设计；开启后按 TTL 保存可续接状态 |
+| `Chat-only 摘要压缩模式` | `disabled` / `chat_completions_summary` / `provider_chat_compact`，默认可先保持 `disabled`；通用模式固定走 Chat Completions，不走上游 `/responses/compact` |
+| `摘要模型` | 只能选择当前分组、当前供应商内可调度的 Chat Completions 模型；不能配置跨供应商全局模型 |
+| `保留最近轮次` | 压缩时始终保留最近 N 轮原文和必要工具链 |
+| `compact snapshot TTL` | 控制状态保留周期和清理策略 |
 
 页面文案必须明确：
 
 - “上下文压缩”不是“HTTP 压缩”。
 - `truncation:auto` 可能丢弃旧上下文。
-- 需要 compact 的客户端应使用原生 Responses passthrough / OAuth Codex adapter，或自行摘要后开启新会话。
+- 原生 Responses compact 和 Chat-only gateway summary compact 不是同一种能力。
+- Chat-only compact 只在本网关内可恢复，不应承诺跨中转或跨供应商可用。
 
 ## 验证计划
 
@@ -207,12 +313,17 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 - OAuth Codex adapter：默认仍按现有字段边界，不被 API Key 调整影响。
 - 流式拦截：`context_length_exceeded` 仍按现有客户端策略处理，不触发 compact。
 - 性能：大请求体在不需要改写时仍 raw passthrough，不新增主线程完整解析。
+- Chat-only bridge：首轮 `/responses` 成功后生成 `response_id` 状态；第二轮带 `previous_response_id` 时能还原历史并转 Chat。
+- Chat-only bridge：`previous_response_id` 跨 API Key、跨分组、跨供应商或过期时受控失败，且不命中上游。
+- Chat-only compact：当前分组当前供应商内有摘要账户时，内部摘要请求按普通调度链路切号并记录 usage。
+- Chat-only compact：摘要成功后返回 1 个 `compaction_summary` envelope，后续请求带回该 envelope 时能恢复为 Chat summary + 最近历史。
+- Chat-only compact：摘要 schema 缺关键字段、工具调用未闭合或内部摘要账户耗尽时不生成 compact envelope。
 
 ## 不做范围
 
 - 不把 compact 做成所有 OpenAI-compatible 上游的默认能力。
-- 不把 Chat Completions 历史 messages 的摘要伪装成上游原生 opaque compact。
+- 不把 Chat Completions 历史 messages 的摘要伪装成上游原生 opaque compact；只能作为网关自有 envelope。
 - 不为普通客户端自动替换上下文。
-- 不做专用摘要模型配置。
+- 不做跨分组、跨供应商、绕过授权和统计的专用摘要模型直连。
 - 不在前端提供“任意压缩 prompt 模板”。
 - 不引入 Redis、Kafka、对象存储或外部分布式会话压缩状态。

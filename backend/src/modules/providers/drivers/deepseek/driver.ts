@@ -31,11 +31,15 @@ import {
 } from '../../../gateway/upstream/request.js'
 import {
   buildCodexResponsesChatBridgeBody,
+  codexResponsesChatBridgeLocalValidationUpstreamUrl,
   codexResponsesChatBridgeRequiredEndpointMode,
   codexResponsesChatBridgeUpstreamPath,
   isCodexResponsesChatBridgeCandidateRequest,
   isCodexResponsesChatBridgeRequest,
+  isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest,
+  isCodexResponsesChatBridgeUnsupportedCompactRequest,
   prepareCodexResponsesChatBridgeHeaders,
+  rejectUnsupportedCodexResponsesChatBridgeCompactRequest,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
@@ -83,6 +87,9 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isDeepSeekCodexResponsesBridgeUnsupportedCompactRequest(req, account, context?.requestClientCompatibility)) {
+      rejectUnsupportedCodexResponsesChatBridgeCompactRequest()
+    }
     if (isDeepSeekCodexResponsesBridgeRequest(req, account, context?.requestClientCompatibility)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
@@ -90,6 +97,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
         headers,
         body: await buildCodexResponsesChatBridgeBody(req, {
           defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
+          includeReasoningContent: true,
           modelOverride: modelMapping?.upstreamModel
         }, signal)
       }
@@ -119,6 +127,17 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
+    if (isDeepSeekCodexResponsesBridgeUnsupportedCompactRequest(req, account, context?.requestClientCompatibility)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: codexResponsesChatBridgeRequiredEndpointMode(),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
     if (isDeepSeekCodexResponsesBridgeRequest(req, account, context?.requestClientCompatibility)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
@@ -155,6 +174,9 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
     const bridgePath = codexResponsesChatBridgeUpstreamPath(req)
     return bridgePath ? [buildUpstreamUrl(account.baseUrl, bridgePath)] : []
   }
+  if (isDeepSeekCodexResponsesBridgeUnsupportedCompactCandidateRequest(req, account)) {
+    return [codexResponsesChatBridgeLocalValidationUpstreamUrl()]
+  }
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
   const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
@@ -180,6 +202,24 @@ function isDeepSeekCodexResponsesBridgeCandidateRequest(
   account: { clientCompatibility?: string; providerProtocolProfileId?: string }
 ): boolean {
   return isCodexResponsesChatBridgeCandidateRequest(req, isDeepSeekCodexResponsesBridgeEnabled(account))
+}
+
+function isDeepSeekCodexResponsesBridgeUnsupportedCompactRequest(
+  req: Request,
+  account: { clientCompatibility?: string; providerProtocolProfileId?: string },
+  requestClientCompatibility?: 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
+): boolean {
+  return isCodexResponsesChatBridgeUnsupportedCompactRequest(req, {
+    enabled: isDeepSeekCodexResponsesBridgeEnabled(account),
+    requestClientCompatibility
+  })
+}
+
+function isDeepSeekCodexResponsesBridgeUnsupportedCompactCandidateRequest(
+  req: Request,
+  account: { clientCompatibility?: string; providerProtocolProfileId?: string }
+): boolean {
+  return isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest(req, isDeepSeekCodexResponsesBridgeEnabled(account))
 }
 
 function isDeepSeekCodexResponsesBridgeEnabled(account: { clientCompatibility?: string; providerProtocolProfileId?: string }): boolean {

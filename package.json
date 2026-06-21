@@ -52,6 +52,8 @@
     "test:deepseek-real-gateway-e2e": "pnpm --filter juhe-ai-backend test:deepseek-real-gateway-e2e",
     "test:glm-gateway-mock-ai": "pnpm --filter juhe-ai-backend test:glm-gateway-mock-ai",
     "test:glm-real-gateway-e2e": "pnpm --filter juhe-ai-backend test:glm-real-gateway-e2e",
+    "test:provider-failure-recovery-matrix": "pnpm --filter juhe-ai-backend test:provider-failure-recovery-matrix",
+    "test:openai-compatible-gateway-e2e": "pnpm --filter juhe-ai-backend test:openai-compatible-gateway-e2e",
     "test:hybrid-gateway-mock-ai": "pnpm --filter juhe-ai-backend test:hybrid-gateway-mock-ai",
     "test:hybrid-real-gateway-e2e": "pnpm --filter juhe-ai-backend test:hybrid-real-gateway-e2e",
     "test:hybrid-quality-comparison": "pnpm --filter juhe-ai-backend test:hybrid-quality-comparison",
@@ -109,6 +111,7 @@
     "test:usage-stats-shard-fanout-boundary": "pnpm --filter juhe-ai-backend test:usage-stats-shard-fanout-boundary",
     "test:usage-stats-batch-statement": "pnpm --filter juhe-ai-backend test:usage-stats-batch-statement",
     "test:authorization-quota-batch": "pnpm --filter juhe-ai-backend test:authorization-quota-batch",
+    "test:data-retention-high-volume-settings": "pnpm --filter juhe-ai-backend test:data-retention-high-volume-settings",
     "test:data-retention-cleanup-catalog-window": "pnpm --filter juhe-ai-backend test:data-retention-cleanup-catalog-window",
     "test:non-business-data-hard-cleanup": "pnpm --filter juhe-ai-backend test:non-business-data-hard-cleanup",
     "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy"

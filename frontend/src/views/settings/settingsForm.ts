@@ -28,6 +28,10 @@ export interface SystemForm {
   accountHealthCheckJitterMinutes: number
   accountHealthCheckBatchSize: number
   accountHealthCheckFailureThreshold: number
+  usageRecordRetentionDays: number
+  dataRetentionCleanupIntervalMinutes: number
+  dataRetentionCleanupBatchSize: number
+  dataRetentionCleanupMaxBatchesPerRun: number
   cooldownAccountRetestMaxBackoffHours: number
   cooldownAccountRetestLongTermIntervalHours: number
 }
@@ -59,6 +63,10 @@ export const defaultSystemSettings: SystemForm = {
   accountHealthCheckJitterMinutes: 120,
   accountHealthCheckBatchSize: 20,
   accountHealthCheckFailureThreshold: 3,
+  usageRecordRetentionDays: 7,
+  dataRetentionCleanupIntervalMinutes: 10,
+  dataRetentionCleanupBatchSize: 1000,
+  dataRetentionCleanupMaxBatchesPerRun: 20,
   cooldownAccountRetestMaxBackoffHours: 12,
   cooldownAccountRetestLongTermIntervalHours: 1
 }
@@ -93,6 +101,10 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     accountHealthCheckJitterMinutes: integerValue(settings.accountHealthCheckJitterMinutes, '健康检测错峰窗口', 0, 1440),
     accountHealthCheckBatchSize: integerValue(settings.accountHealthCheckBatchSize, '健康检测单轮账号数', 1, 100),
     accountHealthCheckFailureThreshold: integerValue(settings.accountHealthCheckFailureThreshold, '健康检测连续失败阈值', 1, 10),
+    usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 7),
+    dataRetentionCleanupIntervalMinutes: integerValue(settings.dataRetentionCleanupIntervalMinutes, '数据保留清理间隔', 5, 1440),
+    dataRetentionCleanupBatchSize: integerValue(settings.dataRetentionCleanupBatchSize, '数据保留清理单批行数', 100, 5_000),
+    dataRetentionCleanupMaxBatchesPerRun: integerValue(settings.dataRetentionCleanupMaxBatchesPerRun, '数据保留清理单轮批数', 1, 100),
     cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),
     cooldownAccountRetestLongTermIntervalHours: integerValue(settings.cooldownAccountRetestLongTermIntervalHours, '长期不可用复测间隔', 1, 720)
   }

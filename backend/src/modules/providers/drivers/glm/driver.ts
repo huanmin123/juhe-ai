@@ -32,11 +32,15 @@ import {
 } from '../../../gateway/upstream/request.js'
 import {
   buildCodexResponsesChatBridgeBody,
+  codexResponsesChatBridgeLocalValidationUpstreamUrl,
   codexResponsesChatBridgeRequiredEndpointMode,
   codexResponsesChatBridgeUpstreamPath,
   isCodexResponsesChatBridgeCandidateRequest,
   isCodexResponsesChatBridgeRequest,
+  isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest,
+  isCodexResponsesChatBridgeUnsupportedCompactRequest,
   prepareCodexResponsesChatBridgeHeaders,
+  rejectUnsupportedCodexResponsesChatBridgeCompactRequest,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
@@ -85,6 +89,9 @@ export const glmProviderDriver: ProviderDriver = {
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isGlmCodexResponsesBridgeUnsupportedCompactRequest(req, account, context?.requestClientCompatibility)) {
+      rejectUnsupportedCodexResponsesChatBridgeCompactRequest()
+    }
     if (isGlmCodexResponsesBridgeRequest(req, account, context?.requestClientCompatibility)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
@@ -121,6 +128,17 @@ export const glmProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
+    if (isGlmCodexResponsesBridgeUnsupportedCompactRequest(req, account, context?.requestClientCompatibility)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: codexResponsesChatBridgeRequiredEndpointMode(),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
     if (isGlmCodexResponsesBridgeRequest(req, account, context?.requestClientCompatibility)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
@@ -157,6 +175,9 @@ function buildGlmOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req: Req
     const bridgePath = codexResponsesChatBridgeUpstreamPath(req)
     return bridgePath ? [`${normalizeGlmBaseUrl(account.baseUrl)}${bridgePath}`] : []
   }
+  if (isGlmCodexResponsesBridgeUnsupportedCompactCandidateRequest(req, account)) {
+    return [codexResponsesChatBridgeLocalValidationUpstreamUrl()]
+  }
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
   const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
@@ -190,6 +211,24 @@ function isGlmCodexResponsesBridgeCandidateRequest(
   account: { clientCompatibility?: string; providerProtocolProfileId?: string }
 ): boolean {
   return isCodexResponsesChatBridgeCandidateRequest(req, isGlmCodexResponsesBridgeEnabled(account))
+}
+
+function isGlmCodexResponsesBridgeUnsupportedCompactRequest(
+  req: Request,
+  account: { clientCompatibility?: string; providerProtocolProfileId?: string },
+  requestClientCompatibility?: ClientCompatibilityCapability
+): boolean {
+  return isCodexResponsesChatBridgeUnsupportedCompactRequest(req, {
+    enabled: isGlmCodexResponsesBridgeEnabled(account),
+    requestClientCompatibility
+  })
+}
+
+function isGlmCodexResponsesBridgeUnsupportedCompactCandidateRequest(
+  req: Request,
+  account: { clientCompatibility?: string; providerProtocolProfileId?: string }
+): boolean {
+  return isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest(req, isGlmCodexResponsesBridgeEnabled(account))
 }
 
 function isGlmCodexResponsesBridgeEnabled(account: { clientCompatibility?: string; providerProtocolProfileId?: string }): boolean {

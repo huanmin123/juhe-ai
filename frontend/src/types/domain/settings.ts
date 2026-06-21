@@ -50,6 +50,7 @@ export interface SystemSettings {
   usageRankSnapshotRetentionDays: number
   systemMetricsRetentionDays: number
   systemMetricsHourlyRetentionDays: number
+  dataRetentionCleanupIntervalMinutes: number
   dataRetentionCleanupBatchSize: number
   dataRetentionCleanupMaxBatchesPerRun: number
 }

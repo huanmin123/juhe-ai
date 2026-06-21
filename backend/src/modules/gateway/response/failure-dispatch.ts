@@ -245,6 +245,8 @@ export async function handleFailedUpstreamResponse(
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   const endpointCapabilityFailure = isEndpointCapabilityFailure(req, account, response.status)
+  const requestScopedFailure = !responseBodyRead.truncated
+    && isRequestScopedUpstreamResponseFailure(response.status, parsedError, responseBodyText)
   if (input.retrySameAccount) {
     auditCapture.addGatewayMetadata({
       label: 'same_account_retry_response_failed',
@@ -259,7 +261,7 @@ export async function handleFailedUpstreamResponse(
     return { action: 'retry', lastAttempt }
   }
 
-  if (!endpointCapabilityFailure) {
+  if (!endpointCapabilityFailure && !requestScopedFailure) {
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   }
   if (endpointCapabilityFailure) {
@@ -273,8 +275,21 @@ export async function handleFailedUpstreamResponse(
       }
     })
   }
+  if (requestScopedFailure) {
+    auditCapture.addGatewayMetadata({
+      label: 'request_scoped_upstream_response_failed',
+      metadata: {
+        accountId: account.id,
+        upstreamUrl: safeUpstreamUrl,
+        statusCode: response.status,
+        endpoint: requestEndpoint(req),
+        errorCode: stringValue(parsedError.code) || undefined,
+        errorType: stringValue(parsedError.type) || undefined
+      }
+    })
+  }
 
-  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false && !endpointCapabilityFailure
+  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false && !endpointCapabilityFailure && !requestScopedFailure
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && isRealUpstreamUrl(upstreamUrl)) {
     recordGatewayAccountApiKeyFailure(account, {
@@ -318,7 +333,7 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  if (!endpointCapabilityFailure) {
+  if (!endpointCapabilityFailure && !requestScopedFailure) {
     rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
       statusCode: response.status,
       errorCode: stringValue(parsedError.code) || undefined,
@@ -353,6 +368,42 @@ function accountApiKeyFailureStatusFromPolicyDecision(
     return 'rate_limited'
   }
   return 'temporary_unavailable'
+}
+
+function isRequestScopedUpstreamResponseFailure(
+  statusCode: number,
+  parsedError: Record<string, unknown>,
+  bodyText: string
+): boolean {
+  const code = normalizedFailureText(parsedError.code)
+  const type = normalizedFailureText(parsedError.type)
+  const message = normalizedFailureText(parsedError.message) || normalizedFailureText(bodyText)
+  const combined = [code, type, message].filter(Boolean).join(' ')
+  if (!combined) {
+    return false
+  }
+  if (/\b(auth|api[_ -]?key|credential|permission|forbidden|quota|billing|balance|arrearage|rate[_ -]?limit|too[_ -]?many[_ -]?requests)\b/.test(combined)) {
+    return false
+  }
+  if (/\b(model[_ -]?not[_ -]?found|invalid[_ -]?model|unsupported[_ -]?model|model[_ -]?not[_ -]?available|context[_ -]?length[_ -]?exceeded|content[_ -]?policy|safety|blocked|invalid[_ -]?request|bad[_ -]?request|not[_ -]?found)\b/.test(combined)) {
+    return true
+  }
+  if (/\bno available channel for model\b/.test(combined)) {
+    return true
+  }
+  if (/\bmodel\b.*\b(not found|not available|unsupported|does not exist|invalid)\b/.test(combined)) {
+    return true
+  }
+  if (/\b(max[_ -]?tokens|tool_choice|tool|schema|parameter|payload|prompt|message)\b.*\b(required|invalid|unsupported|missing|too long)\b/.test(combined)) {
+    return true
+  }
+  return statusCode >= 400 && statusCode < 500 && !/\b(server|overload|timeout|temporar|unavailable|upstream|internal)\b/.test(combined)
+}
+
+function normalizedFailureText(value: unknown): string {
+  return typeof value === 'string'
+    ? value.toLowerCase().replace(/[^a-z0-9_ -]+/g, ' ').replace(/\s+/g, ' ').trim()
+    : ''
 }
 
 function isEndpointCapabilityFailure(

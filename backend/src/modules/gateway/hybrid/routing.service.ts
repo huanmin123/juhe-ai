@@ -1,3 +1,5 @@
+import { channel } from 'node:diagnostics_channel'
+
 import type { Request } from 'express'
 
 import {
@@ -29,6 +31,8 @@ import { applyHybridRouteAffinity } from './affinity.service.js'
 import { scoreHybridGatewayRequest, type HybridScoringResult } from './scoring.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayRawBodyRequest } from '../request/body.js'
+
+const hybridRouteDiagnosticsChannel = channel('juhe-ai:hybrid-route-decision')
 
 export type HybridGatewayRouteResult =
   | {
@@ -106,27 +110,35 @@ export async function resolveHybridGatewayRoute(input: {
     if (!target) {
       continue
     }
+    const routeDiagnostics = {
+      traceId: input.traceId,
+      apiKeyId: input.apiKeyRecord.id,
+      sessionId: input.req.get?.('x-session-id'),
+      clientRequestId: input.req.get?.('x-client-request-id'),
+      endpoint: input.endpoint,
+      outcome: 'selected',
+      level: scoring.level,
+      confidence: scoring.confidence,
+      scoringDefaulted: scoring.defaulted,
+      scoringCacheHit: scoring.cacheHit === true,
+      scoringAccountId: scoring.scoringAccountId,
+      scoringErrorCode: scoring.errorCode,
+      scoringErrorMessage: scoring.errorMessage,
+      scoringReason: scoring.reason,
+      targetModel: candidateRoute.targetModel,
+      targetGroupId: target.groupId,
+      levelRange: [candidateRoute.minLevel, candidateRoute.maxLevel],
+      upgradedFromModel: candidateRoute.targetModel !== route.targetModel ? route.targetModel : undefined,
+      affinityApplied: affinity.applied,
+      affinityReason: affinity.reason,
+      previousModel: affinity.previousModel,
+      lowCount: affinity.lowCount
+    }
     input.auditCapture.addGatewayMetadata({
       label: 'hybrid_route',
-      metadata: {
-        level: scoring.level,
-        confidence: scoring.confidence,
-        scoringDefaulted: scoring.defaulted,
-        scoringCacheHit: scoring.cacheHit === true,
-        scoringAccountId: scoring.scoringAccountId,
-        scoringErrorCode: scoring.errorCode,
-        scoringErrorMessage: scoring.errorMessage,
-        scoringReason: scoring.reason,
-        targetModel: candidateRoute.targetModel,
-        targetGroupId: target.groupId,
-        levelRange: [candidateRoute.minLevel, candidateRoute.maxLevel],
-        upgradedFromModel: candidateRoute.targetModel !== route.targetModel ? route.targetModel : undefined,
-        affinityApplied: affinity.applied,
-        affinityReason: affinity.reason,
-        previousModel: affinity.previousModel,
-        lowCount: affinity.lowCount
-      }
+      metadata: routeDiagnostics
     })
+    hybridRouteDiagnosticsChannel.publish(routeDiagnostics)
     await rewriteHybridRequestModel(input.req, candidateRoute.targetModel, input.signal)
     return {
       outcome: 'selected',
@@ -144,6 +156,23 @@ export async function resolveHybridGatewayRoute(input: {
       affinityApplied: affinity.applied
     }
   }
+  hybridRouteDiagnosticsChannel.publish({
+    traceId: input.traceId,
+    apiKeyId: input.apiKeyRecord.id,
+    sessionId: input.req.get?.('x-session-id'),
+    clientRequestId: input.req.get?.('x-client-request-id'),
+    endpoint: input.endpoint,
+    outcome: 'failed',
+    reason: 'hybrid_target_group_unavailable',
+    level: scoring.level,
+    confidence: scoring.confidence,
+    scoringDefaulted: scoring.defaulted,
+    scoringCacheHit: scoring.cacheHit === true,
+    scoringErrorCode: scoring.errorCode,
+    scoringErrorMessage: scoring.errorMessage,
+    scoringReason: scoring.reason,
+    targetModel: route.targetModel
+  })
   return {
     outcome: 'failed',
     reason: 'hybrid_target_group_unavailable',

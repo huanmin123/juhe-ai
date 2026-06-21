@@ -217,10 +217,15 @@ function validateBufferedJsonProtocolResponse(
   const root = plainObject(parsedJson)
   if (!root) return undefined
   const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
-  if (endpointFamily !== 'chat_completions') return undefined
-  if (!Array.isArray(root.choices) || root.choices.length === 0) {
+  if (endpointFamily === 'chat_completions' && (!Array.isArray(root.choices) || root.choices.length === 0)) {
     return {
       message: '上游 Chat JSON 响应结构无效：choices 必须是非空数组',
+      errorCode: 'upstream_protocol_error'
+    }
+  }
+  if (endpointFamily === 'messages' && root.type === 'message' && (!Array.isArray(root.content) || root.content.length === 0)) {
+    return {
+      message: '上游 Anthropic Messages JSON 响应结构无效：content 必须是非空数组',
       errorCode: 'upstream_protocol_error'
     }
   }

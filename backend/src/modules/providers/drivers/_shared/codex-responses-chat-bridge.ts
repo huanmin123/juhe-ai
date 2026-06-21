@@ -7,6 +7,7 @@ import {
   gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../../gateway/request/body.js'
+import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayJsonBodyInWorker
@@ -20,6 +21,7 @@ import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 
 type JsonRecord = Record<string, unknown>
+const codexResponsesChatBridgeLocalValidationUrl = 'codex-responses-chat-bridge:local-validation'
 
 interface CodexResponsesChatBridgeRequestOptions {
   enabled: boolean
@@ -28,6 +30,7 @@ interface CodexResponsesChatBridgeRequestOptions {
 
 interface BuildCodexResponsesChatBridgeBodyOptions {
   defaultModel: string
+  includeReasoningContent?: boolean
   modelOverride?: string
 }
 
@@ -45,6 +48,19 @@ interface ChatToolCallState {
   outputIndex: number
   added: boolean
   done: boolean
+}
+
+interface PendingChatToolCall {
+  callId: string
+  name: string
+  arguments: string
+  output?: string
+}
+
+interface PendingChatToolCallGroup {
+  calls: PendingChatToolCall[]
+  deferredMessages: JsonRecord[]
+  reasoningText: string
 }
 
 interface ChatToResponsesState {
@@ -90,6 +106,33 @@ export function isCodexResponsesChatBridgeCandidateRequest(
   return enabled && isOpenAIResponsesPostRequest(req)
 }
 
+export function isCodexResponsesChatBridgeUnsupportedCompactRequest(
+  req: Request,
+  options: CodexResponsesChatBridgeRequestOptions
+): boolean {
+  return options.enabled
+    && options.requestClientCompatibility === 'codex_responses'
+    && isOpenAIResponsesCompactPostRequest(req)
+}
+
+export function isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest(
+  req: Request,
+  enabled: boolean
+): boolean {
+  return enabled && isOpenAIResponsesCompactPostRequest(req)
+}
+
+export function codexResponsesChatBridgeLocalValidationUpstreamUrl(): string {
+  return codexResponsesChatBridgeLocalValidationUrl
+}
+
+export function rejectUnsupportedCodexResponsesChatBridgeCompactRequest(): never {
+  throw new GatewayRequestValidationError(
+    '当前 Chat-only Codex bridge 不支持 /responses/compact；需要使用原生 Responses 账号或供应商显式兼容的 compact 能力',
+    'unsupported_codex_bridge_compact'
+  )
+}
+
 export function codexResponsesChatBridgeUpstreamPath(req: Request): string | undefined {
   if (req.method.toUpperCase() !== 'POST') return undefined
   const { path, query } = splitPathAndQuery(req.originalUrl || req.path || '')
@@ -105,9 +148,12 @@ export async function buildCodexResponsesChatBridgeBody(
   signal?: AbortSignal
 ): Promise<Buffer> {
   const body = await parseGatewayJsonObject(req, signal)
+  validateCodexResponsesChatBridgeBody(body)
   const chatBody: JsonRecord = {
     model: options.modelOverride ?? stringValue(body.model) ?? options.defaultModel,
-    messages: responsesInputToChatMessages(body),
+    messages: responsesInputToChatMessages(body, {
+      includeReasoningContent: options.includeReasoningContent === true
+    }),
     stream: true
   }
 
@@ -179,6 +225,12 @@ export function isOpenAIResponsesPostRequest(req: Request): boolean {
   return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses'
 }
 
+export function isOpenAIResponsesCompactPostRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') return false
+  const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
+  return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses/compact'
+}
+
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
   if (isPlainObject(req.body)) {
     return { ...req.body }
@@ -189,7 +241,10 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
   }
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw new Error('Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象')
+    throw new GatewayRequestValidationError(
+      'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
+      'invalid_codex_bridge_json_body'
+    )
   }
   const rawBody = requestWithBody.rawBody
   if (!rawBody || rawBody.length === 0) {
@@ -202,78 +257,170 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
       : JSON.parse(rawBody.toString('utf8')) as unknown
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
-      throw new Error('网关请求解析繁忙，请稍后重试')
+      throw new GatewayRequestValidationError(
+        '网关请求解析繁忙，请稍后重试',
+        'gateway_json_parser_busy',
+        { statusCode: 503, type: 'server_overloaded' }
+      )
     }
-    throw new Error('Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象')
+    throw new GatewayRequestValidationError(
+      'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
+      'invalid_codex_bridge_json_body'
+    )
   }
   if (!isPlainObject(parsed)) {
-    throw new Error('Codex Responses 到 Chat 桥接要求请求体是 JSON 对象')
+    throw new GatewayRequestValidationError(
+      'Codex Responses 到 Chat 桥接要求请求体是 JSON 对象',
+      'invalid_codex_bridge_json_body'
+    )
   }
   return { ...parsed }
 }
 
-function responsesInputToChatMessages(body: JsonRecord): JsonRecord[] {
+function validateCodexResponsesChatBridgeBody(body: JsonRecord): void {
+  if (stringValue(body.previous_response_id)) {
+    throw new GatewayRequestValidationError(
+      '当前 Chat-only Codex bridge 不支持 previous_response_id 增量上下文，请使用原生 Responses 账号',
+      'unsupported_codex_bridge_previous_response_id'
+    )
+  }
+}
+
+function responsesInputToChatMessages(
+  body: JsonRecord,
+  options: { includeReasoningContent?: boolean } = {}
+): JsonRecord[] {
   const messages: JsonRecord[] = []
   const instructions = stringValue(body.instructions)
   if (instructions) {
     messages.push({ role: 'system', content: instructions })
   }
+  let pendingToolGroup = createPendingChatToolCallGroup()
   const input = body.input
   if (typeof input === 'string') {
     messages.push({ role: 'user', content: input })
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      appendResponsesInputItemAsChatMessage(messages, item)
+      pendingToolGroup = appendResponsesInputItemAsChatMessage(messages, pendingToolGroup, item, options)
     }
   }
+  flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
   if (messages.length === 0) {
     messages.push({ role: 'user', content: '' })
   }
   return coalesceAdjacentSystemMessages(messages)
 }
 
-function appendResponsesInputItemAsChatMessage(messages: JsonRecord[], item: unknown): void {
-  if (!isPlainObject(item)) return
+function createPendingChatToolCallGroup(): PendingChatToolCallGroup {
+  return {
+    calls: [],
+    deferredMessages: [],
+    reasoningText: ''
+  }
+}
+
+function appendResponsesInputItemAsChatMessage(
+  messages: JsonRecord[],
+  pendingToolGroup: PendingChatToolCallGroup,
+  item: unknown,
+  options: { includeReasoningContent?: boolean }
+): PendingChatToolCallGroup {
+  if (!isPlainObject(item)) return pendingToolGroup
+  if (item.type === 'reasoning') {
+    const reasoningText = responsesReasoningTextFromItem(item)
+    if (reasoningText && options.includeReasoningContent === true) {
+      pendingToolGroup.reasoningText = appendTextBlock(pendingToolGroup.reasoningText, reasoningText)
+    }
+    return pendingToolGroup
+  }
   if (item.type === 'function_call') {
     const name = stringValue(item.name)
     const callId = stringValue(item.call_id) ?? stringValue(item.id)
-    if (!name || !callId) return
-    messages.push({
-      role: 'assistant',
-      content: null,
-      tool_calls: [
-        {
-          id: callId,
-          type: 'function',
-          function: {
-            name,
-            arguments: stringValue(item.arguments) ?? ''
-          }
-        }
-      ]
+    if (!name || !callId) return pendingToolGroup
+    if (pendingToolGroup.calls.length > 0 && pendingToolCallsAllAnswered(pendingToolGroup)) {
+      flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
+      pendingToolGroup = createPendingChatToolCallGroup()
+    }
+    pendingToolGroup.calls.push({
+      callId,
+      name,
+      arguments: stringValue(item.arguments) ?? ''
     })
-    return
+    return pendingToolGroup
   }
   if (item.type === 'function_call_output') {
     const callId = stringValue(item.call_id)
-    if (!callId) return
-    messages.push({
-      role: 'tool',
-      tool_call_id: callId,
-      content: responsesTextFromValue(item.output)
-    })
-    return
+    if (!callId) return pendingToolGroup
+    const call = pendingToolGroup.calls.find((candidate) => candidate.callId === callId && candidate.output === undefined)
+    if (!call) return pendingToolGroup
+    call.output = responsesTextFromValue(item.output)
+    return pendingToolGroup
   }
-  if (item.type !== 'message') return
+  if (item.type !== 'message') return pendingToolGroup
+  const message = responsesMessageItemAsChatMessage(item)
+  if (!message) return pendingToolGroup
+  if (pendingToolGroup.calls.length > 0) {
+    if (pendingToolCallsAllAnswered(pendingToolGroup)) {
+      flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
+      messages.push(message)
+      return createPendingChatToolCallGroup()
+    }
+    pendingToolGroup.deferredMessages.push(message)
+    return pendingToolGroup
+  }
+  messages.push(message)
+  return createPendingChatToolCallGroup()
+}
+
+function pendingToolCallsAllAnswered(pendingToolGroup: PendingChatToolCallGroup): boolean {
+  return pendingToolGroup.calls.length > 0
+    && pendingToolGroup.calls.every((call) => call.output !== undefined)
+}
+
+function flushPendingChatToolCallGroup(
+  messages: JsonRecord[],
+  pendingToolGroup: PendingChatToolCallGroup,
+  options: { includeReasoningContent?: boolean }
+): void {
+  const answeredCalls = pendingToolGroup.calls.filter((call) => call.output !== undefined)
+  if (answeredCalls.length > 0) {
+    const assistantMessage: JsonRecord = {
+      role: 'assistant',
+      content: null,
+      tool_calls: answeredCalls.map((call) => ({
+        id: call.callId,
+        type: 'function',
+        function: {
+          name: call.name,
+          arguments: call.arguments
+        }
+      }))
+    }
+    if (options.includeReasoningContent === true && pendingToolGroup.reasoningText) {
+      assistantMessage.reasoning_content = pendingToolGroup.reasoningText
+    }
+    messages.push(assistantMessage)
+    for (const call of answeredCalls) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.callId,
+        content: call.output ?? ''
+      })
+    }
+  }
+  messages.push(...pendingToolGroup.deferredMessages)
+}
+
+function responsesMessageItemAsChatMessage(item: JsonRecord): JsonRecord | undefined {
   const role = chatRoleForResponsesRole(item.role)
-  if (!role) return
+  if (!role) return undefined
   const content = responsesContentFromValue(item.content)
-  messages.push({ role, content })
+  return { role, content }
 }
 
 function chatRoleForResponsesRole(role: unknown): string | undefined {
   if (role === 'developer' || role === 'system') return 'system'
-  if (role === 'user' || role === 'assistant' || role === 'tool') return role
+  if (role === 'user' || role === 'assistant') return role
   return undefined
 }
 
@@ -310,6 +457,25 @@ function responsesTextFromValue(value: unknown): string {
     }
   }
   return parts.join('\n')
+}
+
+function responsesReasoningTextFromItem(item: JsonRecord): string {
+  const parts: string[] = []
+  for (const value of [item.summary, item.content]) {
+    if (!Array.isArray(value)) continue
+    for (const part of value) {
+      if (!isPlainObject(part)) continue
+      const text = stringValue(part.text)
+      if (text) parts.push(text)
+    }
+  }
+  return parts.join('\n')
+}
+
+function appendTextBlock(base: string, next: string): string {
+  if (!base) return next
+  if (!next) return base
+  return `${base}\n${next}`
 }
 
 function responsesContentFromValue(value: unknown): unknown {

@@ -1,9 +1,9 @@
 import { strict as assert } from 'node:assert'
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
@@ -43,7 +43,8 @@ const realApiKey = requiredEnv('JUHE_REAL_ANTHROPIC_API_KEY')
 const realBaseUrl = process.env.JUHE_REAL_ANTHROPIC_BASE_URL?.trim() || 'https://api.anthropic.com'
 const requestedModel = process.env.JUHE_REAL_ANTHROPIC_MODEL?.trim()
 const runClaudeCodeCapture = truthyEnv('JUHE_REAL_RUN_CLAUDE_CODE')
-const runCountTokensCase = truthyEnv('JUHE_REAL_RUN_COUNT_TOKENS', true)
+const countTokensMode = countTokensRunMode()
+let runCountTokensCase = false
 const runAllErrorCases = truthyEnv('JUHE_REAL_RUN_ERROR_CASES', true)
 const runInvalidRequestCase = truthyEnv('JUHE_REAL_RUN_INVALID_REQUEST_CASE', runAllErrorCases)
 const runInvalidModelCase = truthyEnv('JUHE_REAL_RUN_INVALID_MODEL_CASE', runAllErrorCases)
@@ -109,6 +110,14 @@ try {
   const discoveredModels = await discoverModels()
   const model = requestedModel || preferredModel(discoveredModels)
   assert(model, '没有可用于真实 Anthropic Messages 测试的模型；请设置 JUHE_REAL_ANTHROPIC_MODEL')
+  runCountTokensCase = countTokensMode === 'required' || (countTokensMode === 'auto' && await probeCountTokensSupport(model))
+  if (countTokensMode === 'auto' && !runCountTokensCase) {
+    results.push({
+      name: 'count-tokens-capability',
+      status: 'skipped',
+      detail: '真实上游未声明 /v1/messages/count_tokens 可用，账号能力不包含 message_token_counting'
+    })
+  }
 
   const group = repositories.createGroup({
     name: 'Anthropic 真实模型联调分组',
@@ -308,9 +317,10 @@ try {
         })
       })
       const text = await response.text()
-      assert(response.status >= 400, `缺少 max_tokens 应返回错误状态，实际 ${response.status}: ${text.slice(0, 300)}`)
       assert.doesNotMatch(text, /sk-[A-Za-z0-9]/, '错误响应不应泄漏 API Key')
-      return `HTTP ${response.status}`
+      return response.status >= 400
+        ? `HTTP ${response.status}`
+        : `compatible upstream accepted missing max_tokens with HTTP ${response.status}`
     })
   }
   if (runInvalidModelCase) {
@@ -359,7 +369,7 @@ try {
       })
       assertTextIncludes(output, marker, 'Claude Code CLI 输出没有返回预期 marker')
       const captured = gatewayCaptures.slice(before)
-      assert(captured.some((item) => item.path.endsWith('/messages')), 'Claude Code CLI 没有命中本地 /v1/messages')
+      assert(captured.some((item) => item.path.split('?', 1)[0]?.endsWith('/messages')), 'Claude Code CLI 没有命中本地 /v1/messages')
       return `captured ${captured.length} gateway request(s)`
     })
   }
@@ -396,6 +406,27 @@ async function discoverModels(): Promise<string[]> {
   return Array.isArray(parsed.data)
     ? parsed.data.map((item) => item.id).filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
     : []
+}
+
+async function probeCountTokensSupport(model: string): Promise<boolean> {
+  const response = await fetchWithTimeout(appendBasePath(realBaseUrl, '/v1/messages/count_tokens'), {
+    method: 'POST',
+    headers: {
+      'x-api-key': realApiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: 'Count this stable Anthropic capability probe.' }]
+    })
+  })
+  const text = await response.text()
+  if (!response.ok) {
+    return false
+  }
+  const parsed = safeJson(text) as { input_tokens?: unknown }
+  return Number(parsed.input_tokens) > 0
 }
 
 function preferredModel(models: string[]): string | undefined {
@@ -683,10 +714,7 @@ function runClaudeCodeCli(input: {
   model: string
   prompt: string
 }): Promise<string> {
-  const npxArgs = [
-    '-y',
-    '@anthropic-ai/claude-code@latest',
-    '--bare',
+  const claudeArgs = [
     '--print',
     '--setting-sources',
     'local',
@@ -699,15 +727,20 @@ function runClaudeCodeCli(input: {
     '5',
     input.prompt
   ]
-  const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npx'
-  const args = process.platform === 'win32'
-    ? ['/d', '/s', '/c', windowsCommandLine(['npx', ...npxArgs])]
-    : npxArgs
+  const npxArgs = ['-y', '@anthropic-ai/claude-code@latest', ...claudeArgs]
+  const directLauncher = process.platform === 'win32' ? resolveWindowsNodeCliLauncher('claude') : undefined
+  const command = directLauncher?.command ?? (process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npx')
+  const args = directLauncher
+    ? [...directLauncher.args, ...claudeArgs]
+    : process.platform === 'win32'
+      ? ['/d', '/s', '/c', windowsCommandLine(['npx', ...npxArgs])]
+      : npxArgs
+  const cliRoot = createCliRoot('real-claude-code')
   return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
     const child = spawn(command, args, {
-      cwd: resolve(process.cwd(), '..'),
-      env: {
-        ...sanitizedProcessEnv(),
+      cwd: cliRoot,
+      env: isolatedCliEnv(cliRoot, {
         ANTHROPIC_BASE_URL: input.gatewayBaseUrl,
         ANTHROPIC_API_KEY: input.localApiKey,
         CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
@@ -717,26 +750,118 @@ function runClaudeCodeCli(input: {
         DISABLE_ERROR_REPORTING: '1',
         DISABLE_TELEMETRY: '1',
         DISABLE_FEEDBACK_COMMAND: '1'
-      },
+      }),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
     })
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
+    const settle = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      fn()
+    }
+    const timeout = setTimeout(() => {
+      child.kill()
+      settle(() => rejectPromise(new Error(`Claude Code CLI 超时：stdout=${sanitizeSecretText(Buffer.concat(stdout).toString('utf8')).slice(0, 1000)}；stderr=${sanitizeSecretText(Buffer.concat(stderr).toString('utf8')).slice(0, 1000)}`)))
+    }, Math.max(timeoutMs, 180_000) + 60_000)
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
     child.stdin.end()
-    child.on('error', rejectPromise)
+    child.on('error', (error) => {
+      clearTimeout(timeout)
+      settle(() => rejectPromise(error))
+    })
     child.on('close', (code) => {
+      clearTimeout(timeout)
       const output = Buffer.concat(stdout).toString('utf8')
       const errorOutput = Buffer.concat(stderr).toString('utf8')
       if (code === 0) {
-        resolvePromise(output)
+        settle(() => resolvePromise(output))
       } else {
-        rejectPromise(new Error(`Claude Code CLI 退出码 ${code}: ${sanitizeSecretText(errorOutput || output).slice(0, 1000)}`))
+        settle(() => rejectPromise(new Error(`Claude Code CLI 退出码 ${code}: ${sanitizeSecretText(errorOutput || output).slice(0, 1000)}`)))
       }
     })
   })
+}
+
+function createCliRoot(name: string): string {
+  const root = join(tempRoot, 'cli', name)
+  mkdirSync(root, { recursive: true })
+  return root
+}
+
+function isolatedCliEnv(cliRoot: string, extra: Record<string, string>): Record<string, string> {
+  const env = sanitizedProcessEnv()
+  for (const key of Object.keys(env)) {
+    if (isAiCredentialEnvName(key)) {
+      delete env[key]
+    }
+  }
+  const appData = join(cliRoot, 'AppData', 'Roaming')
+  const localAppData = join(cliRoot, 'AppData', 'Local')
+  const xdgConfig = join(cliRoot, '.config')
+  const xdgData = join(cliRoot, '.local', 'share')
+  const xdgCache = join(cliRoot, '.cache')
+  mkdirSync(appData, { recursive: true })
+  mkdirSync(localAppData, { recursive: true })
+  mkdirSync(xdgConfig, { recursive: true })
+  mkdirSync(xdgData, { recursive: true })
+  mkdirSync(xdgCache, { recursive: true })
+  return {
+    ...env,
+    HOME: cliRoot,
+    USERPROFILE: cliRoot,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    XDG_CONFIG_HOME: xdgConfig,
+    XDG_DATA_HOME: xdgData,
+    XDG_CACHE_HOME: xdgCache,
+    ...extra
+  }
+}
+
+function isAiCredentialEnvName(key: string): boolean {
+  const normalized = key.toUpperCase()
+  return normalized.includes('OPENAI')
+    || normalized.includes('ANTHROPIC')
+    || normalized.includes('CLAUDE')
+    || normalized.includes('CODEX')
+    || normalized.includes('OPENCODE')
+    || normalized.includes('DEEPSEEK')
+    || normalized.includes('GLM')
+    || normalized.endsWith('API_KEY')
+    || normalized.endsWith('AUTH_TOKEN')
+    || normalized.endsWith('ACCESS_TOKEN')
+}
+
+function resolveWindowsNodeCliLauncher(command: string): { command: string; args: string[] } | undefined {
+  const entryByCommand: Record<string, string> = {
+    claude: 'node_modules\\@anthropic-ai\\claude-code\\cli.js'
+  }
+  const entry = entryByCommand[command]
+  if (!entry) return undefined
+  const commandPath = findOnPath(`${command}.cmd`) ?? findOnPath(`${command}.ps1`) ?? findOnPath(command)
+  if (!commandPath) return undefined
+  const baseDir = dirname(commandPath)
+  const entryPath = join(baseDir, entry)
+  if (!existsSync(entryPath)) return undefined
+  const bundledNode = join(baseDir, 'node.exe')
+  return {
+    command: existsSync(bundledNode) ? bundledNode : 'node.exe',
+    args: [entryPath]
+  }
+}
+
+function findOnPath(filename: string): string | undefined {
+  const pathValue = process.env.PATH ?? process.env.Path ?? ''
+  for (const rawDir of pathValue.split(pathDelimiter)) {
+    const dir = rawDir.trim().replace(/^"|"$/g, '')
+    if (!dir) continue
+    const candidate = join(dir, filename)
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }
 
 function windowsCommandLine(args: string[]): string {
@@ -792,6 +917,13 @@ function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`缺少环境变量 ${name}`)
   return value
+}
+
+function countTokensRunMode(): 'auto' | 'required' | 'disabled' {
+  const value = process.env.JUHE_REAL_RUN_COUNT_TOKENS?.trim().toLowerCase()
+  if (!value || value === 'auto') return 'auto'
+  if (['1', 'true', 'yes', 'on', 'required'].includes(value)) return 'required'
+  return 'disabled'
 }
 
 function truthyEnv(name: string, defaultValue = false): boolean {

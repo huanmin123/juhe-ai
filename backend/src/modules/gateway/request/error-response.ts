@@ -6,6 +6,7 @@ import { gatewayErrorPayload, gatewayErrorPayloadForProtocol, sendGatewayErrorRe
 import { isUpstreamRequestAbortedError } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
+import { GatewayRequestValidationError } from './validation-error.js'
 
 interface HandleGatewayRequestKnownErrorResponseInput {
   req: Request
@@ -33,9 +34,9 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
     return true
   }
 
-  if (error instanceof OpenAIOAuthCodexAdapterError) {
+  if (error instanceof OpenAIOAuthCodexAdapterError || error instanceof GatewayRequestValidationError) {
     const statusCode = error.statusCode
-    const responsePayload = gatewayErrorPayload(error.message, error.type)
+    const responsePayload = gatewayErrorPayload(error.message, error.type, error.code)
     const protocol = gatewayProtocolClientErrorProtocolForRequest(req)
     const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
     sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })

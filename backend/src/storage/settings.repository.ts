@@ -64,6 +64,7 @@ export const systemSettingKeys = [
   'usageRankSnapshotRetentionDays',
   'systemMetricsRetentionDays',
   'systemMetricsHourlyRetentionDays',
+  'dataRetentionCleanupIntervalMinutes',
   'dataRetentionCleanupBatchSize',
   'dataRetentionCleanupMaxBatchesPerRun'
 ] as const
@@ -127,8 +128,9 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   usageRankSnapshotRetentionDays: integerSetting(1, 365),
   systemMetricsRetentionDays: integerSetting(1, 7),
   systemMetricsHourlyRetentionDays: integerSetting(1, 30),
-  dataRetentionCleanupBatchSize: integerSetting(100, 1000),
-  dataRetentionCleanupMaxBatchesPerRun: integerSetting(1, 2)
+  dataRetentionCleanupIntervalMinutes: integerSetting(5, 1440),
+  dataRetentionCleanupBatchSize: integerSetting(100, 5_000),
+  dataRetentionCleanupMaxBatchesPerRun: integerSetting(1, 100)
 }
 const GLOBAL_SETTING_VALIDATORS: Record<GlobalSettingKey, SettingValidator> = {
   appName: nonEmptyStringSetting,
