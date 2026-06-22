@@ -196,6 +196,43 @@ try {
     assert(apiKey.key, '混合路由回归 API Key 未返回明文密钥')
     assert.equal(apiKey.routeMode, 'hybrid')
     assert.equal(apiKey.hybridRoutingConfig?.scoringGroupId, scoring.groupId)
+    const qualityApiKey = repositories.createApiKeyRecord({
+      name: 'Hybrid Mock 质量评分 Key',
+      routeMode: 'hybrid',
+      groupRouteStrategy: 'priority_failover',
+      groupBindings: [scoring, deepseek, glm, gpt, opus].map((item, index) => ({
+        groupId: item.groupId,
+        priority: index + 1,
+        weight: 1,
+        status: 'active'
+      })),
+      hybridRoutingConfig: {
+        scoringGroupId: scoring.groupId,
+        scoringModel,
+        scoringContextMode: 'full_request',
+        qualityPreference: 'balanced',
+        scoringTimeoutMs: 10_000,
+        failureDefaultLevel,
+        scoringCacheEnabled: false,
+        scoringCacheTtlSeconds: 300,
+        cacheAffinityEnabled: false,
+        affinityTtlSeconds: 900,
+        switchMinLevelDelta: 2,
+        downgradeConsecutiveLowCount: 2,
+        qualityInspection: {
+          enabled: true,
+          scoringGroupId: scoring.groupId,
+          scoringModel,
+          triggerMode: 'always_for_hybrid',
+          minTriggerLevel: 1,
+          maxRetries: 1,
+          failureAction: 'upgrade_next_level'
+        },
+        levelRoutes
+      } satisfies ApiKeyHybridRoutingConfig,
+      status: 'active'
+    }, access)
+    assert(qualityApiKey.key, '混合质量评分回归 API Key 未返回明文密钥')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -289,12 +326,22 @@ try {
     const expectedScoringUsageCount = expectedRequests - 1
     assert(scoringUsageCount >= expectedScoringUsageCount, `评分使用记录数量不足，期望至少 ${expectedScoringUsageCount}，实际 ${scoringUsageCount}`)
     assertHybridScoringLargeBodyGuard()
+    await assertHybridQualityUpgradeRequest({
+      baseUrl,
+      localApiKey: qualityApiKey.key,
+      marker: 'HYBRID_LEVEL_5_QUALITY_FAIL',
+      sessionId: 'quality-upgrade'
+    })
+    usageRecordQueue.flushAllUsageRecordQueue()
+    const qualityScoringUsageCount = qualityScoringUsageRecordCount()
+    assert(qualityScoringUsageCount >= 2, `质量评分使用记录数量不足，期望至少 2，实际 ${qualityScoringUsageCount}`)
 
     console.log(JSON.stringify({
       ok: true,
       experiments: expectedRequests,
       upstreamHits: upstreamHits.length,
       scoringUsageCount,
+      qualityScoringUsageCount,
       routeModels: levelRoutes.map((route) => `${route.minLevel}-${route.maxLevel}:${route.targetModel}`)
     }, null, 2))
   } finally {
@@ -512,6 +559,13 @@ function scoringUsageRecordCount(): number {
   return Number(row?.count ?? 0)
 }
 
+function qualityScoringUsageRecordCount(): number {
+  const row = databaseModule.getDatasetDatabase()
+    .prepare("SELECT COUNT(*) AS count FROM usage_record_shard_entries WHERE traffic_source = 'hybrid_quality_scoring'")
+    .get() as unknown as { count: number } | undefined
+  return Number(row?.count ?? 0)
+}
+
 function createHybridMockUpstream(): http.Server {
   return http.createServer((req, res) => {
     const chunks: Buffer[] = []
@@ -531,7 +585,9 @@ function createHybridMockUpstream(): http.Server {
         rawUrl: req.url ?? ''
       })
       if (model === scoringModel) {
-        writeJson(res, scoringResponseBody(bodyText))
+        writeJson(res, bodyText.includes('响应质量评分器')
+          ? qualityResponseBody(bodyText)
+          : scoringResponseBody(bodyText))
         return
       }
       if (body.stream === true) {
@@ -609,6 +665,22 @@ function scoringResponseBody(bodyText: string): Record<string, unknown> {
     prompt_tokens_details: {
       cached_tokens: 3
     }
+  })
+}
+
+function qualityResponseBody(bodyText: string): Record<string, unknown> {
+  const shouldFail = bodyText.includes('HYBRID_LEVEL_5_QUALITY_FAIL') && bodyText.includes(`target:${glmModel}`)
+  return openAIChatResponse(JSON.stringify({
+    pass: !shouldFail,
+    score: shouldFail ? 35 : 92,
+    confidence: 0.98,
+    failureType: shouldFail ? 'missing_required_output' : undefined,
+    reason: shouldFail ? 'mock-quality-upgrade' : 'mock-quality-pass',
+    retryRecommendation: shouldFail ? 'upgrade_next_level' : 'accept'
+  }), {
+    prompt_tokens: 15,
+    completion_tokens: 6,
+    total_tokens: 21
   })
 }
 
