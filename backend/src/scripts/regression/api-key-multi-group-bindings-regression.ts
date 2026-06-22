@@ -5,6 +5,10 @@ import { join, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { maxGroupDeleteAffectedApiKeyRoutes } from '../../storage/api-key-group-binding-limits.js'
 
@@ -70,6 +74,12 @@ try {
     groupId: fallbackGroup.id,
     status: 'active',
     schedulable: true
+  }, access)
+  const deepSeekGroup = repositories.createGroup({
+    name: '多供应商普通 Key DeepSeek 号池',
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    enabled: true
   }, access)
 
   assert.throws(() => {
@@ -199,6 +209,20 @@ try {
       [fallbackGroup.id, 2, 1, 'active']
     ],
     '详情应返回完整分组路由和默认权重'
+  )
+
+  const crossProviderApiKey = repositories.createApiKeyRecord({
+    name: '普通 Key 跨供应商绑定回归',
+    groupBindings: [
+      { groupId: primaryGroup.id, priority: 1, status: 'active' },
+      { groupId: deepSeekGroup.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  assert.equal(crossProviderApiKey.routeMode, 'normal', '跨供应商绑定不应强制切换为混合路由 Key')
+  assert.deepEqual(
+    crossProviderApiKey.groupBindings.map((binding) => binding.providerProtocolProfileId),
+    [GPT_OPENAI_V1_PROFILE_ID, DEEPSEEK_OPENAI_V1_PROFILE_ID],
+    '普通 API Key 应允许同时绑定 GPT 和 DeepSeek 供应商协议档案的分组'
   )
 
   assert.throws(() => {

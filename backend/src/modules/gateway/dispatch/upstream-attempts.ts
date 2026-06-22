@@ -12,6 +12,10 @@ import {
 } from '../upstream/request.js'
 import { transformGatewayUpstreamResponseForAccount } from '../../providers/drivers/registry.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
+import {
+  codexResponsesChatBridgeCompletionHandlerForRequest,
+  getCodexResponsesChatBridgeRequestState
+} from '../codex-responses/chat-bridge-state.js'
 
 interface PerformUpstreamRequestAttemptInput {
   req: Request
@@ -87,7 +91,10 @@ export async function performUpstreamRequestAttempt(
     stream: isEffectiveOpenAIStreamRequest(req, account)
   }, '网关收到上游响应头')
 
+  const codexBridgeState = getCodexResponsesChatBridgeRequestState(req)
   return transformGatewayUpstreamResponseForAccount(req, account, response, {
-    requestClientCompatibility
+    requestClientCompatibility,
+    codexResponsesChatBridgePreviousResponseId: codexBridgeState?.previousResponseId,
+    codexResponsesChatBridgeCompletionHandler: codexResponsesChatBridgeCompletionHandlerForRequest(req, account)
   })
 }

@@ -93,6 +93,7 @@ const runtimeLogDefaultPageSize = 100
 const runtimeLogMaxPageSize = 100
 const runtimeLogMaxListWindowRows = 1001
 export const runtimeLogIndexRetentionDays = 3
+const runtimeLogKeywordDefaultWindowHours = 6
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
 const runtimeLogMaxRawJsonChars = 128 * 1024
@@ -341,6 +342,11 @@ function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: strin
   if (endAt) {
     clauses.push('rl.time <= ?')
     params.push(endAt)
+  }
+
+  if (options.keyword?.trim() && !startAt && !endAt) {
+    clauses.push('rl.time >= ?')
+    params.push(new Date(Date.now() - runtimeLogKeywordDefaultWindowHours * 60 * 60 * 1000).toISOString())
   }
 
   pushMessageKeywordFilter(clauses, params, options.keyword)

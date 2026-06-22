@@ -39,15 +39,9 @@ export function apiKeyGroupOptionsForBinding(input: {
   index: number
   allowMixedProviderProtocolProfiles?: boolean
 }): GroupOptionSummary[] {
-  const providerProtocolProfileId = selectedApiKeyGroupBindingProviderProfileId({
-    bindings: input.bindings,
-    groups: input.groups,
-    excludeIndex: input.index
-  })
   return input.groups.filter((group) => (
     isApiKeyBindableGroup(group)
     && group.enabled
-    && (input.allowMixedProviderProtocolProfiles || !providerProtocolProfileId || group.providerProtocolProfileId === providerProtocolProfileId)
   ))
 }
 
@@ -71,15 +65,10 @@ export function nextAvailableApiKeyGroupForNewBinding(input: {
   allowMixedProviderProtocolProfiles?: boolean
 }): GroupOptionSummary | undefined {
   const selectedIds = new Set(input.bindings.map((binding) => binding.groupId.trim()).filter(Boolean))
-  const providerProtocolProfileId = selectedApiKeyGroupBindingProviderProfileId({
-    bindings: input.bindings,
-    groups: input.groups
-  })
   return input.groups.find((group) => (
     isApiKeyBindableGroup(group)
     && group.enabled
     && !selectedIds.has(group.id)
-    && (input.allowMixedProviderProtocolProfiles || !providerProtocolProfileId || group.providerProtocolProfileId === providerProtocolProfileId)
   ))
 }
 
@@ -101,14 +90,6 @@ export function validateApiKeyGroupBindings(input: {
   }
   if (new Set(input.groupBindings.map((binding) => binding.groupId)).size !== input.groupBindings.length) {
     return '绑定分组不能重复'
-  }
-  if (!input.allowMixedProviderProtocolProfiles) {
-    const providerProtocolProfileIds = new Set(input.groupBindings
-      .map((binding, index) => apiKeyGroupOptionForId(input.groups, binding.groupId)?.providerProtocolProfileId ?? input.formBindings[index]?.providerProtocolProfileId)
-      .filter(Boolean))
-    if (providerProtocolProfileIds.size > 1) {
-      return '同一个普通 API Key 的绑定号池必须属于同一供应商协议档案'
-    }
   }
   const disabledActiveGroups = input.groupBindings
     .filter((binding) => binding.status === 'active')

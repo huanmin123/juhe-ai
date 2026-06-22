@@ -979,6 +979,11 @@ export function applyStatsSchema(database: DatabaseSync): void {
           process_role TEXT NOT NULL,
           process_pid INTEGER,
           event_loop_lag_ms REAL,
+          process_rss_bytes INTEGER,
+          process_heap_used_bytes INTEGER,
+          process_heap_total_bytes INTEGER,
+          process_external_bytes INTEGER,
+          process_array_buffers_bytes INTEGER,
           created_at TEXT NOT NULL
         );
 
@@ -987,7 +992,18 @@ export function applyStatsSchema(database: DatabaseSync): void {
           process_role TEXT NOT NULL,
           sample_count INTEGER NOT NULL DEFAULT 0,
           event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
+          event_loop_lag_ms_count INTEGER NOT NULL DEFAULT 0,
           event_loop_lag_ms_max REAL,
+          process_rss_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_rss_bytes_max INTEGER,
+          process_heap_used_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_heap_used_bytes_max INTEGER,
+          process_heap_total_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_heap_total_bytes_max INTEGER,
+          process_external_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_external_bytes_max INTEGER,
+          process_array_buffers_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_array_buffers_bytes_max INTEGER,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (stat_hour, process_role)
         );
@@ -1000,7 +1016,18 @@ export function applyStatsSchema(database: DatabaseSync): void {
           process_role TEXT NOT NULL,
           sample_count INTEGER NOT NULL DEFAULT 0,
           event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
+          event_loop_lag_ms_count INTEGER NOT NULL DEFAULT 0,
           event_loop_lag_ms_max REAL,
+          process_rss_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_rss_bytes_max INTEGER,
+          process_heap_used_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_heap_used_bytes_max INTEGER,
+          process_heap_total_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_heap_total_bytes_max INTEGER,
+          process_external_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_external_bytes_max INTEGER,
+          process_array_buffers_bytes_sum INTEGER NOT NULL DEFAULT 0,
+          process_array_buffers_bytes_max INTEGER,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (window_key, bucket_key, process_role)
         );

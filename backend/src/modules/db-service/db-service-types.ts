@@ -19,6 +19,16 @@ import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
+import type {
+  CodexContextExpiredStateCleanupResult,
+  CodexContextCompactReadResult,
+  CodexContextCompactStateIndex,
+  CodexContextCompactStateIndexInput,
+  CodexContextResponseChainReadResult,
+  CodexContextResponseStateIndex,
+  CodexContextResponseStateIndexInput,
+  CodexContextStateBoundary
+} from '../../storage/codex-context-state.repository.js'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -208,6 +218,7 @@ export interface DbServiceServerRuntimeSnapshot {
       operationLogQueue: DbServiceRuntimeQueueSnapshot
       publicApiLogQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
+      recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
     }
   }
@@ -237,6 +248,7 @@ export interface DbServiceServerRuntimeSnapshot {
         failureCount: number
         skippedCount: number
       }>
+      recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
     }
   }
   snapshotWorker?: {
@@ -389,6 +401,7 @@ export interface DbServiceRuntimeQueueSnapshot {
   queueBytes?: number
   flushLastSuccessAt?: string
   flushLastError?: string
+  completedCount?: number
   droppedCount?: number
   droppedSuccessCount?: number
   droppedFailureCount?: number
@@ -653,6 +666,34 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'save_codex_context_response_state'
+    input: CodexContextResponseStateIndexInput
+  }
+  | {
+    type: 'save_codex_context_compact_state'
+    input: CodexContextCompactStateIndexInput
+  }
+  | {
+    type: 'read_codex_context_response_chain'
+    responseId: string
+    boundary: CodexContextStateBoundary
+    maxDepth?: number
+    now?: string
+    refreshExpiresAt?: string
+  }
+  | {
+    type: 'read_codex_context_compact_state'
+    compactId: string
+    boundary: CodexContextStateBoundary
+    now?: string
+    refreshExpiresAt?: string
+  }
+  | {
+    type: 'cleanup_expired_codex_context_states'
+    expiredBefore: string
+    limit: number
+  }
+  | {
     type: 'account_test_task_maintenance'
     action: 'start' | 'sweep'
     maxQueuedMs?: number
@@ -768,6 +809,11 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'expire_due_resource_authorizations' } ? { expired: number } :
   T extends { type: 'cleanup_expired_deleted_accounts' } ? import('../../storage/repositories.js').ExpiredDeletedAccountCleanupResult :
   T extends { type: 'cleanup_expired_system_sessions' } ? { deleted: number } :
+  T extends { type: 'save_codex_context_response_state' } ? CodexContextResponseStateIndex :
+  T extends { type: 'save_codex_context_compact_state' } ? CodexContextCompactStateIndex :
+  T extends { type: 'read_codex_context_response_chain' } ? CodexContextResponseChainReadResult :
+  T extends { type: 'read_codex_context_compact_state' } ? CodexContextCompactReadResult :
+  T extends { type: 'cleanup_expired_codex_context_states' } ? CodexContextExpiredStateCleanupResult :
   T extends { type: 'account_test_task_maintenance' } ? { taskIds: string[]; canceledTaskIds: string[]; expiredQueuedTaskIds: string[] } :
   T extends { type: 'mark_account_test_task_running' } ? AccountTestTaskRecord | undefined :
   T extends { type: 'mark_account_test_task_canceled' } ? AccountTestTaskRecord | undefined :

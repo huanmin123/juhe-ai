@@ -30,6 +30,9 @@ export interface RuntimeConfig {
   datasetDatabasePath: string
   statsDatabasePath: string
   usageShardRoot: string
+  codexContextRoot: string
+  codexContextStateShardRoot: string
+  codexContextStateShardCount: number
   usageShardCount: number
   secret: string
   oauthProxyUrl?: string
@@ -74,6 +77,8 @@ export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
+export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
+export const defaultCodexContextStateShardRoot = resolve(defaultCodexContextRoot, 'state-shards')
 export const defaultRuntimeSecret = 'juhe-ai-dev-secret-change-me'
 const minimumProductionSecretLength = 32
 
@@ -90,6 +95,9 @@ export const runtimeConfig: RuntimeConfig = {
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
+  codexContextRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_ROOT', defaultCodexContextRoot),
+  codexContextStateShardRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', defaultCodexContextStateShardRoot),
+  codexContextStateShardCount: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 16, 1, 256),
   usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
   secret: secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret),
   httpSecurity: httpSecurityConfig(),

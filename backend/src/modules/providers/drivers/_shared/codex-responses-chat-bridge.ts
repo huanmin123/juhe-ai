@@ -19,6 +19,7 @@ import {
 } from '../../../gateway/protocols/openai-v1/stream-events.js'
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import type { CodexResponsesChatBridgeCompletionHandler } from '../../../gateway/codex-responses/chat-bridge-state.js'
 
 type JsonRecord = Record<string, unknown>
 const codexResponsesChatBridgeLocalValidationUrl = 'codex-responses-chat-bridge:local-validation'
@@ -38,6 +39,8 @@ interface TransformCodexResponsesChatBridgeResponseOptions extends CodexResponse
   defaultModel: string
   idPrefix?: string
   model?: string
+  previousResponseId?: string
+  onCompleted?: CodexResponsesChatBridgeCompletionHandler
 }
 
 interface ChatToolCallState {
@@ -67,6 +70,7 @@ interface ChatToResponsesState {
   responseId: string
   messageId: string
   reasoningId: string
+  previousResponseId?: string
   idPrefix: string
   createdAt: number
   model: string
@@ -87,6 +91,7 @@ interface ChatToResponsesState {
   completed: boolean
   failed: boolean
   terminalReceived: boolean
+  completionNotified: boolean
 }
 
 export function isCodexResponsesChatBridgeRequest(
@@ -214,7 +219,9 @@ export function transformCodexResponsesChatBridgeUpstreamResponse(
     body: transformChatCompletionsSseToResponsesSse(response.body, {
       idPrefix: options.idPrefix,
       estimatedInputTokens: estimateResponsesRequestInputTokens(req),
-      model: options.model ?? stringValue((req.body as JsonRecord | undefined)?.model) ?? options.defaultModel
+      model: options.model ?? stringValue((req.body as JsonRecord | undefined)?.model) ?? options.defaultModel,
+      previousResponseId: options.previousResponseId,
+      onCompleted: options.onCompleted
     })
   }
 }
@@ -280,8 +287,8 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
 function validateCodexResponsesChatBridgeBody(body: JsonRecord): void {
   if (stringValue(body.previous_response_id)) {
     throw new GatewayRequestValidationError(
-      '当前 Chat-only Codex bridge 不支持 previous_response_id 增量上下文，请使用原生 Responses 账号',
-      'unsupported_codex_bridge_previous_response_id'
+      'previous_response_id 尚未被网关上下文状态层恢复，不能继续无状态转发',
+      'codex_bridge_previous_response_state_unavailable'
     )
   }
 }
@@ -326,6 +333,19 @@ function appendResponsesInputItemAsChatMessage(
   options: { includeReasoningContent?: boolean }
 ): PendingChatToolCallGroup {
   if (!isPlainObject(item)) return pendingToolGroup
+  if (item.type === 'compaction_summary') {
+    const summary = responsesCompactionSummaryTextFromItem(item)
+    if (!summary) return pendingToolGroup
+    if (pendingToolGroup.calls.length > 0) {
+      flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
+      pendingToolGroup = createPendingChatToolCallGroup()
+    }
+    messages.push({
+      role: 'system',
+      content: `上下文摘要：\n${summary}`
+    })
+    return pendingToolGroup
+  }
   if (item.type === 'reasoning') {
     const reasoningText = responsesReasoningTextFromItem(item)
     if (reasoningText && options.includeReasoningContent === true) {
@@ -472,6 +492,24 @@ function responsesReasoningTextFromItem(item: JsonRecord): string {
   return parts.join('\n')
 }
 
+function responsesCompactionSummaryTextFromItem(item: JsonRecord): string {
+  const encryptedContent = stringValue(item.encrypted_content)
+  if (!encryptedContent) return ''
+  const prefix = 'juhecmp.v1.'
+  if (!encryptedContent.startsWith(prefix)) {
+    return encryptedContent
+  }
+  const encoded = encryptedContent.slice(prefix.length)
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as unknown
+    if (isPlainObject(parsed)) {
+      return stringValue(parsed.summary) ?? ''
+    }
+  } catch {
+  }
+  return ''
+}
+
 function appendTextBlock(base: string, next: string): string {
   if (!base) return next
   if (!next) return base
@@ -555,26 +593,36 @@ function responsesToolChoiceToChatToolChoice(value: unknown): unknown {
 
 async function * transformChatCompletionsSseToResponsesSse(
   upstreamBody: AsyncIterable<Uint8Array>,
-  input: { estimatedInputTokens?: number; idPrefix?: string; model: string }
+  input: {
+    estimatedInputTokens?: number
+    idPrefix?: string
+    model: string
+    previousResponseId?: string
+    onCompleted?: CodexResponsesChatBridgeCompletionHandler
+  }
 ): AsyncIterable<Uint8Array> {
   const decoder = new StringDecoder('utf8')
-  const state = createChatToResponsesState(input.model, input.idPrefix, input.estimatedInputTokens)
+  const state = createChatToResponsesState(input.model, input.idPrefix, input.estimatedInputTokens, input.previousResponseId)
   let pending = ''
   for await (const chunk of upstreamBody) {
     pending += decoder.write(Buffer.from(chunk))
     const events = takeCompleteSseEvents(pending)
     pending = events.rest
     for (const eventText of events.events) {
-      for (const output of processChatSseEvent(state, eventText)) {
+      const outputs = processChatSseEvent(state, eventText)
+      for (const output of outputs) {
         yield Buffer.from(output, 'utf8')
       }
+      await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
     }
   }
   pending += decoder.end()
   if (pending.trim()) {
-    for (const output of processChatSseEvent(state, pending)) {
+    const outputs = processChatSseEvent(state, pending)
+    for (const output of outputs) {
       yield Buffer.from(output, 'utf8')
     }
+    await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
   }
   const finalOutputs = state.terminalReceived || state.completed || state.failed
     ? []
@@ -582,14 +630,16 @@ async function * transformChatCompletionsSseToResponsesSse(
   for (const output of finalOutputs) {
     yield Buffer.from(output, 'utf8')
   }
+  await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
 }
 
-function createChatToResponsesState(model: string, idPrefix = 'chat_bridge', estimatedInputTokens?: number): ChatToResponsesState {
+function createChatToResponsesState(model: string, idPrefix = 'chat_bridge', estimatedInputTokens?: number, previousResponseId?: string): ChatToResponsesState {
   const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   return {
     responseId: `resp_${idPrefix}_${suffix}`,
     messageId: `msg_${idPrefix}_${suffix}`,
     reasoningId: `rs_${idPrefix}_${suffix}`,
+    previousResponseId,
     idPrefix,
     createdAt: Math.floor(Date.now() / 1000),
     model,
@@ -606,7 +656,8 @@ function createChatToResponsesState(model: string, idPrefix = 'chat_bridge', est
     estimatedInputTokens,
     completed: false,
     failed: false,
-    terminalReceived: false
+    terminalReceived: false,
+    completionNotified: false
   }
 }
 
@@ -939,7 +990,7 @@ function responseSnapshot(state: ChatToResponsesState, status: 'in_progress' | '
     model: state.model,
     output,
     parallel_tool_calls: false,
-    previous_response_id: null,
+    previous_response_id: state.previousResponseId ?? null,
     reasoning: { effort: null, summary: null },
     store: false,
     temperature: null,
@@ -952,6 +1003,21 @@ function responseSnapshot(state: ChatToResponsesState, status: 'in_progress' | '
     user: null,
     metadata: {}
   }
+}
+
+async function notifyCodexResponsesChatBridgeCompletion(
+  state: ChatToResponsesState,
+  onCompleted: CodexResponsesChatBridgeCompletionHandler | undefined
+): Promise<void> {
+  if (!onCompleted || !state.completed || state.completionNotified) return
+  state.completionNotified = true
+  await onCompleted({
+    responseId: state.responseId,
+    createdAt: state.createdAt,
+    model: state.model,
+    outputItems: state.outputItems.map((item) => ({ ...item })),
+    response: responseSnapshot(state, 'completed', state.outputItems)
+  })
 }
 
 function responseFailedSnapshot(state: ChatToResponsesState, message: string, code: string): JsonRecord {

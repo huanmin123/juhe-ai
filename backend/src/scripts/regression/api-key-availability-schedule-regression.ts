@@ -376,6 +376,11 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     assert.equal(initialSummary?.status, 'active', '保存计划时不应改写 API Key 手动启停状态')
     assert.equal(initialSummary?.availabilityScheduleActive, false, '保存计划时应按当前时间初始化计划派生状态')
     assert.equal(
+      apiKeyNextCheckAt(databaseModule.getBusinessDatabase(), apiKey.id),
+      new Date(startBoundaryAt).toISOString(),
+      '保存计划时应记录下一次边界检查时间，避免后台同步全量扫描'
+    )
+    assert.equal(
       await withMockedNow(beforeStartAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)),
       undefined,
       '保存计划后处于允许时段外的 API Key 应被网关拒绝'
@@ -387,6 +392,11 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     const activeSummary = repositories.findApiKeySummary(apiKey.id, access)
     assert.equal(activeSummary?.status, 'active', '计划开始边界不应改写 API Key 手动启停状态')
     assert.equal(activeSummary?.availabilityScheduleActive, true, '计划开始边界后应通过 availabilityScheduleActive 暴露')
+    assert.equal(
+      apiKeyNextCheckAt(databaseModule.getBusinessDatabase(), apiKey.id),
+      new Date(endBoundaryAt).toISOString(),
+      '开始边界处理后应推进到下一次结束边界'
+    )
     assert(repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '计划命中且手动启用的 API Key 应归入启用父筛选')
     assert.equal(
       await withMockedNow(allowedAt, () => gatewayApiKeyRepository.validateGatewayApiKey(apiKey.key)?.id),
@@ -430,6 +440,11 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     const inactiveSummary = repositories.findApiKeySummary(apiKey.id, access)
     assert.equal(inactiveSummary?.status, 'active', '时间计划结束边界不应改写 API Key 手动启停状态')
     assert.equal(inactiveSummary?.availabilityScheduleActive, false, '时间计划外应通过 availabilityScheduleActive 暴露')
+    assert.equal(
+      apiKeyNextCheckAt(databaseModule.getBusinessDatabase(), apiKey.id),
+      new Date(Date.parse('2026-06-01T14:00:00.000Z')).toISOString(),
+      '结束边界处理后应推进到下一次开始边界'
+    )
     assert(repositories.listApiKeysPage(access, { status: 'disabled', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 应归入停用父筛选')
     assert(!repositories.listApiKeysPage(access, { status: 'active', page: 1, pageSize: 20 }).items.some((item) => item.id === apiKey.id), '时间计划外 API Key 不应归入启用父筛选')
     assert.equal(
@@ -484,6 +499,13 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     }
     rmSync(tempRoot, { recursive: true, force: true })
   }
+}
+
+function apiKeyNextCheckAt(database: ReturnType<typeof import('../../storage/database.js').getBusinessDatabase>, id: string): string | null {
+  const row = database
+    .prepare('SELECT availability_schedule_next_check_at AS next_check_at FROM api_keys WHERE id = ?')
+    .get(id) as { next_check_at?: string | null } | undefined
+  return row?.next_check_at ?? null
 }
 
 async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T): Promise<T> {

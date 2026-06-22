@@ -122,6 +122,8 @@ export const deepSeekProviderDriver: ProviderDriver = {
       enabled: isDeepSeekCodexResponsesBridgeEnabled(account),
       idPrefix: 'deepseek_bridge',
       model: modelMapping?.upstreamModel,
+      previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
+      onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
       requestClientCompatibility: context?.requestClientCompatibility
     })
   },

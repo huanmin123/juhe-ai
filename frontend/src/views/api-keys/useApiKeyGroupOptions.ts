@@ -231,7 +231,7 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     const providerProtocolProfileId = scopeOverride?.providerProtocolProfileId
       ?? apiKeyGroupOptionsProviderProtocolProfileId({
         formContext,
-        allowMixedProviderProtocolProfiles: input.allowMixedProviderProtocolProfiles?.() ?? false,
+        allowMixedProviderProtocolProfiles: input.allowMixedProviderProtocolProfiles?.() ?? true,
         formBindings: input.formGroupBindings()
       })
     return {

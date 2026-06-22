@@ -112,6 +112,34 @@
           <a-checkbox v-model:checked="form.hybridRoutingConfig.scoringCacheEnabled">启用评分缓存</a-checkbox>
           <a-checkbox v-model:checked="form.hybridRoutingConfig.cacheAffinityEnabled">启用缓存亲和</a-checkbox>
         </a-form-item>
+        <a-form-item>
+          <a-checkbox v-model:checked="form.hybridRoutingConfig.qualityInspection.enabled">启用 200 响应质量评分</a-checkbox>
+        </a-form-item>
+        <div v-if="form.hybridRoutingConfig.qualityInspection.enabled" class="hybrid-config-grid">
+          <a-form-item label="质量评分分组" required>
+            <a-select
+              v-model:value="form.hybridRoutingConfig.qualityInspection.scoringGroupId"
+              :options="hybridScoringGroupOptions"
+              :disabled="!hybridScoringGroupOptions.length"
+              placeholder="选择一个已启用的绑定分组"
+            />
+          </a-form-item>
+          <a-form-item label="质量评分模型" required>
+            <a-input v-model:value="form.hybridRoutingConfig.qualityInspection.scoringModel" placeholder="gpt-5.4-mini" />
+          </a-form-item>
+          <a-form-item label="触发模式">
+            <a-select v-model:value="form.hybridRoutingConfig.qualityInspection.triggerMode" :options="hybridQualityInspectionTriggerOptions" />
+          </a-form-item>
+          <a-form-item label="最低触发等级">
+            <a-input-number v-model:value="form.hybridRoutingConfig.qualityInspection.minTriggerLevel" :min="1" :max="10" />
+          </a-form-item>
+          <a-form-item label="最大重试次数">
+            <a-input-number v-model:value="form.hybridRoutingConfig.qualityInspection.maxRetries" :min="0" :max="2" />
+          </a-form-item>
+          <a-form-item label="失败动作">
+            <a-select v-model:value="form.hybridRoutingConfig.qualityInspection.failureAction" :options="hybridQualityInspectionFailureOptions" />
+          </a-form-item>
+        </div>
         <a-form-item label="等级模型区间" required>
           <div class="hybrid-level-routes-field">
             <div v-for="(route, index) in form.hybridRoutingConfig.levelRoutes" :key="index" class="hybrid-level-route-row">
@@ -203,6 +231,10 @@ interface CreatedKeyPayload {
   message: string
 }
 
+type ApiKeyHybridRoutingConfigForm = ApiKeyHybridRoutingConfig & {
+  qualityInspection: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>
+}
+
 const props = defineProps<{
   apiKeysApi: Pick<ScopedApiKeysApi, 'create' | 'update'>
   groupsApi: Pick<ScopedGroupsApi, 'options'>
@@ -233,6 +265,16 @@ const hybridQualityPreferenceOptions = [
   { label: '均衡', value: 'balanced' },
   { label: '质量优先', value: 'quality_first' }
 ] satisfies Array<{ label: string; value: ApiKeyHybridRoutingConfig['qualityPreference'] }>
+const hybridQualityInspectionTriggerOptions = [
+  { label: '按风险触发', value: 'risk_based' },
+  { label: '质量优先触发', value: 'quality_first_only' },
+  { label: '所有混合请求', value: 'always_for_hybrid' }
+] satisfies Array<{ label: string; value: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>['triggerMode'] }>
+const hybridQualityInspectionFailureOptions = [
+  { label: '升级下一档', value: 'upgrade_next_level' },
+  { label: '同模型重试', value: 'retry_same_model' },
+  { label: '返回错误', value: 'return_error' }
+] satisfies Array<{ label: string; value: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>['failureAction'] }>
 const form = reactive({
   name: '',
   routeMode: 'normal' as ApiKeyRouteMode,
@@ -270,7 +312,7 @@ const {
   groupFilterSelection,
   formGroupBindings: () => form.groupBindings,
   formGroupBindingIds: groupBindingIdsForOptions,
-  allowMixedProviderProtocolProfiles: () => form.routeMode === 'hybrid',
+  allowMixedProviderProtocolProfiles: () => true,
   onGroupFilterCleared: () => {
     groupFilterSelection.value = undefined
   }
@@ -456,7 +498,8 @@ function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)
 }
 
-function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig> = {}): ApiKeyHybridRoutingConfig {
+function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig> = {}): ApiKeyHybridRoutingConfigForm {
+  const qualityInspection = input.qualityInspection
   return {
     scoringGroupId: input.scoringGroupId ?? '',
     scoringModel: input.scoringModel ?? 'gpt-5.4-mini',
@@ -465,7 +508,7 @@ function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig>
     scoringTimeoutMs: input.scoringTimeoutMs ?? 15000,
     failureDefaultLevel: input.failureDefaultLevel ?? 7,
     scoringCacheEnabled: input.scoringCacheEnabled ?? true,
-    scoringCacheTtlSeconds: input.scoringCacheTtlSeconds ?? 60,
+    scoringCacheTtlSeconds: input.scoringCacheTtlSeconds ?? 300,
     cacheAffinityEnabled: input.cacheAffinityEnabled ?? true,
     affinityTtlSeconds: input.affinityTtlSeconds ?? 900,
     switchMinLevelDelta: input.switchMinLevelDelta ?? 2,
@@ -475,7 +518,16 @@ function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig>
       maxLevel: route.maxLevel,
       targetModel: route.targetModel,
       enabled: route.enabled
-    }))
+    })),
+    qualityInspection: {
+      enabled: qualityInspection?.enabled ?? false,
+      scoringGroupId: qualityInspection?.scoringGroupId ?? input.scoringGroupId ?? '',
+      scoringModel: qualityInspection?.scoringModel ?? input.scoringModel ?? 'gpt-5.4-mini',
+      triggerMode: qualityInspection?.triggerMode ?? 'risk_based',
+      minTriggerLevel: qualityInspection?.minTriggerLevel ?? 7,
+      maxRetries: qualityInspection?.maxRetries ?? 1,
+      failureAction: qualityInspection?.failureAction ?? 'upgrade_next_level'
+    }
   }
 }
 
@@ -513,6 +565,8 @@ function hybridRoutingConfigPayload(groupBindings: Array<{ groupId: string, stat
   }
   const levelRoutes = normalizedHybridLevelRoutes()
   if (levelRoutes === false) return false
+  const qualityInspection = normalizedHybridQualityInspection(groupBindings)
+  if (qualityInspection === false) return false
   return {
     scoringGroupId,
     scoringModel,
@@ -526,7 +580,48 @@ function hybridRoutingConfigPayload(groupBindings: Array<{ groupId: string, stat
     affinityTtlSeconds,
     switchMinLevelDelta,
     downgradeConsecutiveLowCount,
-    levelRoutes
+    levelRoutes,
+    qualityInspection
+  }
+}
+
+function normalizedHybridQualityInspection(
+  groupBindings: Array<{ groupId: string, status: 'active' | 'disabled' }>
+): ApiKeyHybridRoutingConfig['qualityInspection'] | false {
+  const qualityInspection = form.hybridRoutingConfig.qualityInspection
+  if (!qualityInspection.enabled) {
+    return {
+      ...qualityInspection,
+      enabled: false,
+      scoringGroupId: qualityInspection.scoringGroupId.trim(),
+      scoringModel: qualityInspection.scoringModel.trim()
+    }
+  }
+  const scoringGroupId = qualityInspection.scoringGroupId.trim()
+  if (!scoringGroupId) {
+    message.warning('请选择质量评分分组')
+    return false
+  }
+  if (!groupBindings.some((binding) => binding.status === 'active' && binding.groupId === scoringGroupId)) {
+    message.warning('质量评分分组必须是当前 API Key 已启用的绑定分组')
+    return false
+  }
+  const scoringModel = qualityInspection.scoringModel.trim()
+  if (!scoringModel) {
+    message.warning('请填写质量评分模型')
+    return false
+  }
+  const minTriggerLevel = normalizeIntegerField(qualityInspection.minTriggerLevel, 1, 10, '质量评分最低触发等级')
+  const maxRetries = normalizeIntegerField(qualityInspection.maxRetries, 0, 2, '质量评分最大重试次数')
+  if (minTriggerLevel === false || maxRetries === false) return false
+  return {
+    enabled: true,
+    scoringGroupId,
+    scoringModel,
+    triggerMode: qualityInspection.triggerMode,
+    minTriggerLevel,
+    maxRetries,
+    failureAction: qualityInspection.failureAction
   }
 }
 
@@ -616,13 +711,21 @@ watch(hybridScoringGroupOptions, (options) => {
   const current = form.hybridRoutingConfig.scoringGroupId.trim()
   if (current && options.some((item) => item.value === current)) return
   form.hybridRoutingConfig.scoringGroupId = options[0]?.value ?? ''
+  const qualityGroupId = form.hybridRoutingConfig.qualityInspection.scoringGroupId.trim()
+  if (qualityGroupId && options.some((item) => item.value === qualityGroupId)) return
+  form.hybridRoutingConfig.qualityInspection.scoringGroupId = options[0]?.value ?? ''
 })
 
 watch(() => form.routeMode, (routeMode) => {
   if (routeMode !== 'hybrid') return
   const current = form.hybridRoutingConfig.scoringGroupId.trim()
-  if (current) return
-  form.hybridRoutingConfig.scoringGroupId = hybridScoringGroupOptions.value[0]?.value ?? ''
+  if (!current) {
+    form.hybridRoutingConfig.scoringGroupId = hybridScoringGroupOptions.value[0]?.value ?? ''
+  }
+  const qualityGroupId = form.hybridRoutingConfig.qualityInspection.scoringGroupId.trim()
+  if (!qualityGroupId) {
+    form.hybridRoutingConfig.qualityInspection.scoringGroupId = hybridScoringGroupOptions.value[0]?.value ?? ''
+  }
 })
 
 onBeforeUnmount(clearGroupOptionsSearchTimer)

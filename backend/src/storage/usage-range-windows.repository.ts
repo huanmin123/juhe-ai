@@ -245,11 +245,8 @@ function usageScopeRangeWindowRefreshStartIndex(
   if (!previousSourceWatermark) return 0
   const previousUpdatedAt = rangeWindowSourceWatermarkUpdatedAt(previousSourceWatermark)
   const sourceUpdatedAt = rangeWindowSourceWatermarkUpdatedAt(sourceWatermark)
-  const previousRowCount = rangeWindowSourceWatermarkRowCount(previousSourceWatermark)
-  const sourceRowCount = rangeWindowSourceWatermarkRowCount(sourceWatermark)
   if (!previousUpdatedAt) return 0
   if (sourceUpdatedAt && sourceUpdatedAt < previousUpdatedAt) return 0
-  if (previousRowCount !== undefined && sourceRowCount !== undefined && previousRowCount !== sourceRowCount) return 0
   const row = database.prepare(`
     SELECT MIN(stat_date) AS stat_date
     FROM usage_stats_daily
@@ -268,14 +265,6 @@ function rangeWindowSourceWatermarkUpdatedAt(watermark?: string): string | undef
   if (!watermark) return undefined
   const [updatedAt] = watermark.split('|', 1)
   return updatedAt || undefined
-}
-
-function rangeWindowSourceWatermarkRowCount(watermark?: string): number | undefined {
-  if (!watermark) return undefined
-  const rowCountText = watermark.split('|')[1]
-  if (rowCountText === undefined) return undefined
-  const rowCount = Number(rowCountText)
-  return Number.isFinite(rowCount) ? rowCount : undefined
 }
 
 export async function refreshAuthorizationUsageRangeWindowSnapshotsInStages(

@@ -123,6 +123,8 @@ export const glmProviderDriver: ProviderDriver = {
       enabled: isGlmCodexResponsesBridgeEnabled(account),
       idPrefix: 'glm_bridge',
       model: modelMapping?.upstreamModel,
+      previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
+      onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
       requestClientCompatibility: context?.requestClientCompatibility
     })
   },

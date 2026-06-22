@@ -89,13 +89,22 @@ export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemM
     throw new Error('进程事件循环统计缺少 stat_hour')
   }
   const statBucket = row.stat_hour
+  const sampleCount = Number(row.sample_count ?? 0)
+  const eventLoopLagMsSampleCount = Number(row.event_loop_lag_ms_count ?? row.sample_count ?? 0)
   return {
     statHour: statBucket,
     statMinute: statBucket,
     processRole,
-    sampleCount: Number(row.sample_count ?? 0),
-    eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, row.sample_count),
-    eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max)
+    sampleCount,
+    eventLoopLagMsSampleCount,
+    eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, eventLoopLagMsSampleCount),
+    eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max),
+    processRssBytesAvg: averageFromSum(row.process_rss_bytes_sum, sampleCount),
+    processRssBytesMax: numberFromUnknown(row.process_rss_bytes_max),
+    processHeapUsedBytesAvg: averageFromSum(row.process_heap_used_bytes_sum, sampleCount),
+    processHeapUsedBytesMax: numberFromUnknown(row.process_heap_used_bytes_max),
+    processHeapTotalBytesAvg: averageFromSum(row.process_heap_total_bytes_sum, sampleCount),
+    processHeapTotalBytesMax: numberFromUnknown(row.process_heap_total_bytes_max)
   }
 }
 

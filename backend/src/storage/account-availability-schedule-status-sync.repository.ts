@@ -1,4 +1,4 @@
-import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
+import { nextAccountAvailabilityScheduleCheckAt, parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { dueApiKeyAvailabilityScheduleEvent } from './api-key-availability-schedule.js'
 import {
   beginDatabaseTransaction,
@@ -14,11 +14,13 @@ interface ScheduledAccountAvailabilityRow {
   id: string
   availability_schedule_json: string | null
   availability_schedule_active: number
+  availability_schedule_next_check_at: string | null
 }
 
 interface ScheduledAccountAvailabilityUpdate {
   id: string
-  active: number
+  active?: number
+  nextCheckAt: string | null
   eventKey?: string
   status?: 'active' | 'disabled'
 }
@@ -34,17 +36,12 @@ export interface AccountAvailabilityScheduleStatusSyncResult {
   invalidIds: string[]
 }
 
+const availabilityScheduleStatusSyncBatchLimit = 500
+
 export function syncAccountAvailabilityScheduleStatuses(now = new Date()): AccountAvailabilityScheduleStatusSyncResult {
   const database = getBusinessDatabase()
-  const rows = database
-    .prepare(`
-      SELECT id, availability_schedule_json, availability_schedule_active
-      FROM accounts
-      WHERE availability_schedule_json IS NOT NULL
-        AND deleted_at IS NULL
-      ORDER BY updated_at ASC, id ASC
-    `)
-    .all() as unknown as ScheduledAccountAvailabilityRow[]
+  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
+  const rows = listScheduledAccountStatusRows(database, updatedAt)
   const result: AccountAvailabilityScheduleStatusSyncResult = {
     scanned: rows.length,
     activated: 0,
@@ -60,14 +57,17 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
   for (const row of rows) {
     try {
       const schedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
+      const nextCheckAt = nextAccountAvailabilityScheduleCheckAt(schedule, now)
       const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
       if (!event) {
+        updates.push({ id: row.id, nextCheckAt })
         result.unchanged += 1
         continue
       }
       updates.push({
         id: row.id,
         active: event.status === 'active' ? 1 : 0,
+        nextCheckAt,
         eventKey: `${row.id}:${event.eventKey}`,
         status: event.status
       })
@@ -75,7 +75,9 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
       result.invalid += 1
       result.invalidIds.push(row.id)
       if (row.availability_schedule_active !== 0) {
-        updates.push({ id: row.id, active: 0 })
+        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      } else {
+        updates.push({ id: row.id, nextCheckAt: null })
       }
     }
   }
@@ -84,7 +86,6 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
     return result
   }
 
-  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const insertEvent = database.prepare(`
@@ -93,22 +94,36 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
     `)
     const updateStatus = database.prepare(`
       UPDATE accounts
-      SET availability_schedule_active = ?, updated_at = ?
+      SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
       WHERE id = ?
         AND availability_schedule_json IS NOT NULL
         AND deleted_at IS NULL
         AND availability_schedule_active <> ?
+    `)
+    const updateNextCheck = database.prepare(`
+      UPDATE accounts
+      SET availability_schedule_next_check_at = ?
+      WHERE id = ?
+        AND availability_schedule_json IS NOT NULL
+        AND deleted_at IS NULL
+        AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
     `)
     for (const update of updates) {
       if (update.eventKey && update.status) {
         const eventChanges = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
         if (eventChanges <= 0) {
           result.skipped += 1
+          updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
           continue
         }
       }
-      const changes = updateStatus.run(update.active, updatedAt, update.id, update.active).changes ?? 0
+      if (update.active === undefined) {
+        updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
+        continue
+      }
+      const changes = updateStatus.run(update.active, update.nextCheckAt, updatedAt, update.id, update.active).changes ?? 0
       if (changes <= 0) {
+        updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
         result.unchanged += 1
         continue
       }
@@ -136,4 +151,22 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
   }
 
   return result
+}
+
+function listScheduledAccountStatusRows(database: ReturnType<typeof getBusinessDatabase>, dueAt: string): ScheduledAccountAvailabilityRow[] {
+  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  return database
+    .prepare(`
+      SELECT ${selectColumns}
+      FROM accounts
+      WHERE availability_schedule_json IS NOT NULL
+        AND deleted_at IS NULL
+        AND (
+          availability_schedule_next_check_at IS NULL
+          OR availability_schedule_next_check_at <= ?
+        )
+      ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(dueAt, availabilityScheduleStatusSyncBatchLimit) as unknown as ScheduledAccountAvailabilityRow[]
 }

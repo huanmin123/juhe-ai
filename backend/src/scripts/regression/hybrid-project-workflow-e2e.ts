@@ -18,7 +18,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 
-type WorkflowStrategyName = 'hybrid_main_agent' | 'fixed_gpt55' | 'fixed_opus'
+type WorkflowStrategyName = 'full_hybrid' | 'hybrid_main_agent' | 'fixed_gpt55' | 'fixed_glm52' | 'fixed_opus'
 type WorkflowRole = 'planner' | 'executor' | 'reviewer'
 
 interface WorkflowTask {
@@ -108,6 +108,10 @@ const upstreamRetryCount = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM
 const upstreamRetryDelayMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRY_DELAY_MS') ?? 2_500
 const repositoryCloneRetries = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_CLONE_RETRIES') ?? 3
 const outputMaxTokens = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_OUTPUT_MAX_TOKENS') ?? 4_000
+const scoringCacheTtlSeconds = Math.min(
+  3600,
+  Math.max(300, Math.ceil(((requestTimeoutMs + upstreamRetryDelayMs) * (upstreamRetryCount + 1)) / 1000))
+)
 const outputPath = envText('JUHE_REAL_HYBRID_PROJECT_OUTPUT_PATH')
 const runBuildValidation = booleanEnv('JUHE_REAL_HYBRID_PROJECT_RUN_BUILD') ?? false
 const selectedStrategies = workflowStrategies()
@@ -121,27 +125,40 @@ const hybridRouteDiagnosticsSubscriber = (message: unknown): void => {
 hybridRouteDiagnosticsChannel.subscribe(hybridRouteDiagnosticsSubscriber)
 
 const scoringModel = envText('JUHE_REAL_HYBRID_PROJECT_SCORING_MODEL') || 'gpt-5.4-mini'
+const flashModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_1_2') || 'deepseek-ai-v4-flash'
 const lowModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_1_3') || 'gpt-5.4-mini'
-const glmModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_4_6') || 'glm-5.2'
+const glm51Model = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_5_6') || 'glm-5.1'
+const glmModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_7_8') || envText('JUHE_REAL_HYBRID_PROJECT_MODEL_4_6') || 'glm-5.2'
+const gpt54Model = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_9') || 'gpt-5.4'
 const gptModel = envText('JUHE_REAL_HYBRID_PROJECT_GPT_MODEL') || 'gpt-5.5'
 const mainModel = envText('JUHE_REAL_HYBRID_PROJECT_MAIN_MODEL') || 'claude-opus-4-7'
 const opusModel = envText('JUHE_REAL_HYBRID_PROJECT_OPUS_MODEL') || mainModel
 const scoringUnitCost = numberEnv('JUHE_REAL_HYBRID_PROJECT_SCORING_UNIT_COST') ?? 0.002
+const qualityInspectionEnabled = booleanEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_ENABLED') ?? false
+const qualityScoringModel = envText('JUHE_REAL_HYBRID_PROJECT_QUALITY_MODEL') || scoringModel
+const qualityInspectionMinLevel = Math.min(10, Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_MIN_LEVEL') ?? 7))
+const qualityInspectionMaxRetries = Math.min(2, Math.max(0, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_MAX_RETRIES') ?? 1))
 
 const modelUnitCosts = new Map<string, number>([
+  [flashModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_1_2') ?? modelCostDefault(flashModel)],
   [lowModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_1_3') ?? modelCostDefault(lowModel)],
+  [glm51Model, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_5_6') ?? modelCostDefault(glm51Model)],
   [glmModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_4_6') ?? modelCostDefault(glmModel)],
+  [gpt54Model, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_9') ?? modelCostDefault(gpt54Model)],
   [gptModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_GPT_COST') ?? modelCostDefault(gptModel)],
   [mainModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_MAIN_COST') ?? modelCostDefault(mainModel)],
   [opusModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_OPUS_COST') ?? modelCostDefault(opusModel)],
+  [qualityScoringModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_COST') ?? modelCostDefault(qualityScoringModel)],
   [scoringModel, scoringUnitCost]
 ])
 
 const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
-  { minLevel: 1, maxLevel: 3, targetModel: lowModel, enabled: true },
-  { minLevel: 4, maxLevel: 6, targetModel: glmModel, enabled: true },
-  { minLevel: 7, maxLevel: 8, targetModel: gptModel, enabled: true },
-  { minLevel: 9, maxLevel: 10, targetModel: opusModel, enabled: true }
+  { minLevel: 1, maxLevel: 2, targetModel: flashModel, enabled: true },
+  { minLevel: 3, maxLevel: 4, targetModel: lowModel, enabled: true },
+  { minLevel: 5, maxLevel: 6, targetModel: glm51Model, enabled: true },
+  { minLevel: 7, maxLevel: 8, targetModel: glmModel, enabled: true },
+  { minLevel: 9, maxLevel: 9, targetModel: gpt54Model, enabled: true },
+  { minLevel: 10, maxLevel: 10, targetModel: gptModel, enabled: true }
 ]
 
 const allowedOutputFiles = new Set([
@@ -204,15 +221,20 @@ try {
   try {
     registerWorkflowCustomModels()
     const scoring = createRealGroupAccount('Hybrid Project 评分分组', 'Hybrid Project 评分账户', scoringModel)
-    const low = createRealGroupAccount('Hybrid Project 低档分组', 'Hybrid Project 低档账户', lowModel)
-    const glm = createRealGroupAccount('Hybrid Project GLM 分组', 'Hybrid Project GLM 账户', glmModel)
-    const gpt = createRealGroupAccount('Hybrid Project GPT 分组', 'Hybrid Project GPT 账户', gptModel)
-    const opus = createRealGroupAccount('Hybrid Project Opus 分组', 'Hybrid Project Opus 账户', opusModel)
+    const qualityScoring = qualityScoringModel === scoringModel
+      ? scoring
+      : createRealGroupAccount('Hybrid Project 质量评分分组', 'Hybrid Project 质量评分账户', qualityScoringModel)
+    const flash = createRealGroupAccount('Hybrid Project Flash 分组', 'Hybrid Project Flash 账户', flashModel)
+    const low = createRealGroupAccount('Hybrid Project Mini 分组', 'Hybrid Project Mini 账户', lowModel)
+    const glm51 = createRealGroupAccount('Hybrid Project GLM 5.1 分组', 'Hybrid Project GLM 5.1 账户', glm51Model)
+    const glm = createRealGroupAccount('Hybrid Project GLM 5.2 分组', 'Hybrid Project GLM 5.2 账户', glmModel)
+    const gpt54 = createRealGroupAccount('Hybrid Project GPT 5.4 分组', 'Hybrid Project GPT 5.4 账户', gpt54Model)
+    const gpt = createRealGroupAccount('Hybrid Project GPT 5.5 分组', 'Hybrid Project GPT 5.5 账户', gptModel)
     const hybridApiKey = repositories.createApiKeyRecord({
       name: 'Hybrid Project Workflow Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',
-      groupBindings: [scoring, low, glm, gpt, opus].map((item, index) => ({
+      groupBindings: uniqueGroupBindings([scoring, qualityScoring, flash, low, glm51, glm, gpt54, gpt]).map((item, index) => ({
         groupId: item.groupId,
         priority: index + 1,
         weight: 1,
@@ -226,11 +248,20 @@ try {
         scoringTimeoutMs: 45_000,
         failureDefaultLevel: 7,
         scoringCacheEnabled: true,
-        scoringCacheTtlSeconds: 60,
+        scoringCacheTtlSeconds,
         cacheAffinityEnabled: true,
         affinityTtlSeconds: 900,
         switchMinLevelDelta: 2,
         downgradeConsecutiveLowCount: 2,
+        qualityInspection: qualityInspectionEnabled ? {
+          enabled: true,
+          scoringGroupId: qualityScoring.groupId,
+          scoringModel: qualityScoringModel,
+          triggerMode: 'risk_based',
+          minTriggerLevel: qualityInspectionMinLevel,
+          maxRetries: qualityInspectionMaxRetries,
+          failureAction: 'upgrade_next_level'
+        } : undefined,
         levelRoutes
       } satisfies ApiKeyHybridRoutingConfig,
       status: 'active'
@@ -285,7 +316,7 @@ try {
 }
 
 function registerWorkflowCustomModels(): void {
-  for (const model of new Set([scoringModel, lowModel, glmModel, gptModel, mainModel, opusModel])) {
+  for (const model of new Set([scoringModel, qualityScoringModel, flashModel, lowModel, glm51Model, glmModel, gpt54Model, gptModel, mainModel, opusModel])) {
     saveWorkflowCustomModel(OPENAI_COMPATIBLE_PROVIDER_CODE, model, modelUnitCosts.get(model) ?? modelCostDefault(model))
   }
 }
@@ -331,6 +362,15 @@ function createRealGroupAccount(groupName: string, accountName: string, supporte
   }, access)
   assert.deepEqual(account.supportedModels, [supportedModel])
   return { accountId: account.id, groupId: group.id }
+}
+
+function uniqueGroupBindings(items: Array<{ accountId: string; groupId: string }>): Array<{ accountId: string; groupId: string }> {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    if (seen.has(item.groupId)) return false
+    seen.add(item.groupId)
+    return true
+  })
 }
 
 async function runWorkflow(input: {
@@ -406,6 +446,7 @@ async function runWorkflow(input: {
     taskResults.push({
       appliedFiles,
       execution,
+      id: task.id,
       repair,
       repairAppliedFiles,
       test,
@@ -478,9 +519,13 @@ async function callForStrategy(input: {
 }
 
 function modelForStrategyRole(strategy: WorkflowStrategyName, role: WorkflowRole): string {
+  if (strategy === 'full_hybrid') {
+    return 'hybrid-client-router'
+  }
   if (strategy === 'hybrid_main_agent') {
     return role === 'executor' ? 'hybrid-client-router' : mainModel
   }
+  if (strategy === 'fixed_glm52') return glmModel
   if (strategy === 'fixed_opus') return opusModel
   return gptModel
 }
@@ -492,7 +537,8 @@ async function callGatewayCompletion(
   messages: Array<{ role: string; content: string }>,
   sessionId: string
 ): Promise<AgentCallResult> {
-  return callWithRetries(() => callGatewayCompletionOnce(baseUrl, localApiKey, model, messages, sessionId))
+  const clientRequestId = `${sessionId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return callWithRetries(() => callGatewayCompletionOnce(baseUrl, localApiKey, model, messages, sessionId, clientRequestId))
 }
 
 async function callGatewayCompletionOnce(
@@ -500,7 +546,8 @@ async function callGatewayCompletionOnce(
   localApiKey: string,
   model: string,
   messages: Array<{ role: string; content: string }>,
-  sessionId: string
+  sessionId: string,
+  clientRequestId: string
 ): Promise<AgentCallResult> {
   const startedAt = Date.now()
   const controller = new AbortController()
@@ -513,7 +560,7 @@ async function callGatewayCompletionOnce(
         authorization: `Bearer ${localApiKey}`,
         'content-type': 'application/json',
         'x-session-id': sessionId,
-        'x-client-request-id': `${sessionId}-${Date.now()}`
+        'x-client-request-id': clientRequestId
       },
       body: JSON.stringify({
         model,
@@ -990,11 +1037,13 @@ function buildSummary(input: {
       plan: callSummary(run.plan),
       finalReview: callSummary(run.finalReview),
       tasks: run.tasks.map((task) => ({
+        id: task.id,
         title: task.title,
         appliedFiles: task.appliedFiles,
         execution: callSummary(task.execution),
         repair: task.repair ? callSummary(task.repair) : undefined,
         repairAppliedFiles: task.repairAppliedFiles,
+        routeEvents: routeEventsForTask(run.strategy, task.id),
         test: {
           ok: task.test.ok,
           exitCode: task.test.exitCode,
@@ -1004,6 +1053,8 @@ function buildSummary(input: {
       estimatedCost: estimateWorkflowCost(run, hybridUsageCounts)
     })),
     hybridUsageCounts,
+    hybridRouteEvents: hybridRouteEvents.map(summarizeHybridRouteEvent),
+    hybridScoringStats: summarizeHybridScoringStats(hybridRouteEvents),
     routeModels: levelRoutes.map((route) => `${route.minLevel}-${route.maxLevel}:${route.targetModel}`)
   }
 }
@@ -1015,6 +1066,58 @@ function writeSummary(input: {
 }): void {
   if (!outputPath) return
   writeFileSync(outputPath, `${JSON.stringify(buildSummary(input), null, 2)}\n`, 'utf8')
+}
+
+function routeEventsForTask(strategy: WorkflowStrategyName, taskId: string): Record<string, unknown>[] {
+  return [
+    ...hybridRouteEvents.filter((event) => event.sessionId === `${strategy}-task-${taskId}`),
+    ...hybridRouteEvents.filter((event) => event.sessionId === `${strategy}-repair-${taskId}`)
+  ].map(summarizeHybridRouteEvent)
+}
+
+function hybridRouteEventsForStrategy(strategy: WorkflowStrategyName): HybridRouteEvent[] {
+  return hybridRouteEvents.filter((event) => event.sessionId?.startsWith(`${strategy}-`))
+}
+
+function summarizeHybridRouteEvent(event: HybridRouteEvent): Record<string, unknown> {
+  return {
+    affinityApplied: event.affinityApplied,
+    affinityReason: event.affinityReason,
+    confidence: event.confidence,
+    level: event.level,
+    levelRange: event.levelRange,
+    outcome: event.outcome,
+    scoringCacheHit: event.scoringCacheHit,
+    scoringDefaulted: event.scoringDefaulted,
+    scoringErrorCode: event.scoringErrorCode,
+    scoringErrorMessage: event.scoringErrorMessage,
+    scoringReason: event.scoringReason,
+    sessionId: event.sessionId,
+    targetModel: event.targetModel
+  }
+}
+
+function summarizeHybridScoringStats(events: HybridRouteEvent[]): Record<string, unknown> {
+  const selectedEvents = events.filter((event) => event.outcome === 'selected')
+  return {
+    count: selectedEvents.length,
+    averageLevel: selectedEvents.length
+      ? roundMoney(selectedEvents.reduce((sum, event) => sum + (event.level ?? 0), 0) / selectedEvents.length)
+      : 0,
+    levelCounts: countBy(selectedEvents.map((event) => String(event.level ?? 'unknown'))),
+    targetModelCounts: countBy(selectedEvents.map((event) => event.targetModel ?? 'unknown')),
+    defaultedCount: selectedEvents.filter((event) => event.scoringDefaulted).length,
+    cacheHitCount: selectedEvents.filter((event) => event.scoringCacheHit).length,
+    affinityAppliedCount: selectedEvents.filter((event) => event.affinityApplied).length
+  }
+}
+
+function countBy(values: string[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const value of values) {
+    counts[value] = (counts[value] ?? 0) + 1
+  }
+  return counts
 }
 
 function callSummary(call: AgentCallResult): Record<string, unknown> {
@@ -1041,24 +1144,23 @@ function usageCountsForApiKey(apiKeyId: string): UsageCountRow[] {
     .all(apiKeyId) as unknown as UsageCountRow[]
 }
 
-function estimateWorkflowCost(run: WorkflowRunResult, hybridUsageCounts: UsageCountRow[]): Record<string, number> {
+function estimateWorkflowCost(run: WorkflowRunResult, _hybridUsageCounts: UsageCountRow[]): Record<string, number> {
   const directCost = Object.entries(run.directCallCounts)
     .reduce((sum, [model, count]) => sum + count * (modelUnitCosts.get(model) ?? modelCostDefault(model)), 0)
-  if (run.strategy !== 'hybrid_main_agent') {
+  if (run.strategy !== 'hybrid_main_agent' && run.strategy !== 'full_hybrid') {
     return {
       directCost: roundMoney(directCost),
       estimatedTotal: roundMoney(directCost)
     }
   }
-  const scoringCount = hybridUsageCounts
-    .filter((row) => row.traffic_source === 'hybrid_scoring' && row.success === 1)
-    .reduce((sum, row) => sum + row.count, 0)
-  const targetCost = hybridUsageCounts
-    .filter((row) => row.traffic_source === 'gateway' && row.success === 1)
-    .reduce((sum, row) => sum + row.count * (modelUnitCosts.get(row.model ?? '') ?? modelCostDefault(row.model ?? '')), 0)
+  const selectedEvents = hybridRouteEventsForStrategy(run.strategy).filter((event) => event.outcome === 'selected')
+  const scoringCount = selectedEvents.filter((event) => !event.scoringCacheHit).length
+  const targetCost = selectedEvents
+    .reduce((sum, event) => sum + (modelUnitCosts.get(event.targetModel ?? '') ?? modelCostDefault(event.targetModel ?? '')), 0)
   const scoringCost = scoringCount * scoringUnitCost
   return {
     directCost: roundMoney(directCost),
+    scoringCount,
     scoringCost: roundMoney(scoringCost),
     targetCost: roundMoney(targetCost),
     estimatedTotal: roundMoney(directCost + scoringCost + targetCost)
@@ -1069,8 +1171,8 @@ function workflowStrategies(): WorkflowStrategyName[] {
   const configured = envText('JUHE_REAL_HYBRID_PROJECT_STRATEGIES')
   const values = configured
     ? configured.split(',').map((item) => item.trim()).filter(Boolean)
-    : ['hybrid_main_agent', 'fixed_gpt55', 'fixed_opus']
-  const allowed = new Set<WorkflowStrategyName>(['hybrid_main_agent', 'fixed_gpt55', 'fixed_opus'])
+    : ['full_hybrid', 'hybrid_main_agent', 'fixed_gpt55']
+  const allowed = new Set<WorkflowStrategyName>(['full_hybrid', 'hybrid_main_agent', 'fixed_gpt55', 'fixed_glm52', 'fixed_opus'])
   return values.filter((item): item is WorkflowStrategyName => allowed.has(item as WorkflowStrategyName))
 }
 
@@ -1172,8 +1274,10 @@ function booleanEnv(name: string): boolean | undefined {
 }
 
 function modelCostDefault(model: string): number {
-  if (model === lowModel || model.includes('mini') || model.includes('flash')) return 0.002
+  if (model === flashModel || model === lowModel || model.includes('mini') || model.includes('flash')) return 0.002
+  if (model.includes('glm-5.1')) return 0.006
   if (model.includes('glm')) return 0.01
+  if (model.includes('gpt-5.4') && !model.includes('mini')) return 0.015
   if (model.includes('gpt-5.5')) return 0.02
   if (model.includes('opus')) return 0.05
   return 0.02

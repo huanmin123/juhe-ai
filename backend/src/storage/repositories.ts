@@ -21,6 +21,7 @@ import {
   accountAvailabilityScheduleJson,
   isAccountAvailabilityScheduleAllowed,
   isAccountAvailabilityScheduleInputPresent,
+  nextAccountAvailabilityScheduleCheckAt,
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
 import { accountCredentialsForList, findAccountRowForAccess, listAccountRowsForAccess, listAccountRowsPageForAccess } from './account-read.repository.js'
@@ -1017,6 +1018,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const database = getBusinessDatabase()
   assertAccountNameAvailable(systemAccountId, account.name)
   const transactionStarted = beginDatabaseTransaction(database)
+  const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
   let savedTags = account.tags ?? []
   try {
     database
@@ -1024,9 +1026,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
-          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_active, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
           cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1052,6 +1054,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(account.availabilitySchedule),
         account.availabilityScheduleActive ? 1 : 0,
+        availabilityScheduleNextCheckAt,
         account.notes ?? null,
         account.accountExpiresAt ?? null,
         account.cooldownUntil ?? null,
@@ -1309,6 +1312,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   assertAccountNameAvailable(systemAccountId, next.name, id)
   const database = getBusinessDatabase()
   const updatedAt = nowIso()
+  const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
   let renamedAuthorizationInstanceIds: string[] = []
   let savedTags = next.tags ?? []
@@ -1319,7 +1323,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_active = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_active = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -1341,6 +1345,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.schedulable ? 1 : 0,
         accountAvailabilityScheduleJson(next.availabilitySchedule),
         next.availabilityScheduleActive ? 1 : 0,
+        availabilityScheduleNextCheckAt,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
         next.lastErrorCode ?? null,

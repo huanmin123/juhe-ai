@@ -1,26 +1,44 @@
-import { aggregateUsageStatsBatch, refreshUsageRankSnapshots } from '../../storage/usage-stats.repository.js'
+import { aggregateUsageStatsBatch, refreshUsageRankSnapshotsInStages } from '../../storage/usage-stats.repository.js'
 import { datasetDatabasePath, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../storage/database.js'
 
-const batchSize = normalizeBatchSize(process.argv[2])
+interface RebuildUsageStatsOptions {
+  batchSize: number
+  maxBatches: number
+  confirmOffline: boolean
+  refreshRankSnapshots: boolean
+}
 
-function main(): void {
+async function main(): Promise<void> {
+  const options = parseOptions(process.argv.slice(2))
+  if (!options.confirmOffline && process.env.JUHE_AI_CONFIRM_USAGE_STATS_REBUILD !== '1') {
+    throw new Error('重建用量统计必须显式确认停服/离线执行：追加 --confirm-offline，或设置 JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1')
+  }
+
   getDatasetDatabase()
   const database = getStatsDatabase()
   const startedAt = Date.now()
   resetUsageStatsCache(database)
 
   let totalProcessed = 0
-  while (true) {
-    const processed = aggregateUsageStatsBatch(batchSize)
+  let batches = 0
+  while (batches < options.maxBatches) {
+    const processed = aggregateUsageStatsBatch(options.batchSize)
+    batches += 1
     totalProcessed += processed
     if (processed <= 0) {
       break
     }
+    await yieldToEventLoop()
   }
-  refreshUsageRankSnapshots()
+  if (options.refreshRankSnapshots) {
+    await refreshUsageRankSnapshotsInStages({ yieldToEventLoop })
+  }
 
   const durationMs = Date.now() - startedAt
-  console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，耗时 ${durationMs}ms`)
+  const capped = batches >= options.maxBatches
+    ? `，已达到本轮批次上限 ${options.maxBatches}，如仍有统计滞后请再次离线执行`
+    : ''
+  console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，批次 ${batches}，耗时 ${durationMs}ms${capped}`)
   console.log(`数据集目录库：${datasetDatabasePath()}`)
   console.log(`统计结果库：${statsDatabasePath()}`)
 }
@@ -86,4 +104,50 @@ function normalizeBatchSize(value?: string): number {
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), 1), 50000) : 2000
 }
 
-main()
+function normalizeMaxBatches(value?: string): number {
+  const number = Number(value ?? 1000)
+  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), 1), 10000) : 1000
+}
+
+function parseOptions(args: string[]): RebuildUsageStatsOptions {
+  let batchSize: string | undefined
+  let maxBatches: string | undefined
+  let confirmOffline = false
+  let refreshRankSnapshots = true
+  for (const arg of args) {
+    if (arg === '--confirm-offline') {
+      confirmOffline = true
+      continue
+    }
+    if (arg === '--skip-rank-refresh') {
+      refreshRankSnapshots = false
+      continue
+    }
+    if (arg.startsWith('--batch-size=')) {
+      batchSize = arg.slice('--batch-size='.length)
+      continue
+    }
+    if (arg.startsWith('--max-batches=')) {
+      maxBatches = arg.slice('--max-batches='.length)
+      continue
+    }
+    if (!arg.startsWith('--') && batchSize === undefined) {
+      batchSize = arg
+    }
+  }
+  return {
+    batchSize: normalizeBatchSize(batchSize),
+    maxBatches: normalizeMaxBatches(maxBatches),
+    confirmOffline,
+    refreshRankSnapshots
+  }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error)
+  process.exitCode = 1
+})

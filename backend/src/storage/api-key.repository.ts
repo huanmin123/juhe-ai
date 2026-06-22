@@ -17,7 +17,8 @@ import {
   apiKeyAvailabilityScheduleFromRequest,
   apiKeyAvailabilityScheduleJson,
   evaluateApiKeyAvailabilitySchedule,
-  isApiKeyAvailabilityScheduleInputPresent
+  isApiKeyAvailabilityScheduleInputPresent,
+  nextApiKeyAvailabilityScheduleCheckAt
 } from './api-key-availability-schedule.js'
 import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
@@ -33,7 +34,6 @@ import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalServerDateTimeIso, optionalString } from './value-utils.js'
 
 const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组或有效授权给自己的分组'
-const API_KEY_GROUP_PROVIDER_ERROR = 'API Key 不能绑定不同供应商协议档案的分组'
 const apiKeyMutationInputKeys = new Set([
   'name',
   'description',
@@ -191,9 +191,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
     systemAccountId = firstGroup.systemAccountId
   }
-  const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId, {
-    allowMixedProviderProtocolProfiles: routeMode === 'hybrid'
-  })
+  const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId)
   const hybridRoutingConfig = normalizeApiKeyHybridRoutingConfigForWrite(input.hybridRoutingConfig, routeMode, bindings)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
@@ -228,6 +226,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
+    const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
     const insertColumns = [
       'id',
       'system_account_id',
@@ -245,6 +244,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       'quota_limits_json',
       'availability_schedule_json',
       'availability_schedule_active',
+      'availability_schedule_next_check_at',
       'created_at',
       'updated_at'
     ]
@@ -265,6 +265,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
       availabilityScheduleActive,
+      availabilityScheduleNextCheckAt,
       now,
       now
     ]
@@ -317,8 +318,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const hasBindingInput = hasApiKeyGroupBindingInput(input)
   const nextBindings = hasBindingInput
     ? normalizeApiKeyGroupBindings(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId, {
-      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId),
-      allowMixedProviderProtocolProfiles: nextRouteMode === 'hybrid'
+      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId)
     })
     : undefined
   const effectiveBindings = nextBindings ?? current.groupBindings.map((binding) => ({
@@ -376,9 +376,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   assertApiKeyNameAvailable(systemAccountId, next.name, id)
   const database = getBusinessDatabase()
   const now = nowIso()
+  const nowDate = new Date(now)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
+    const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(next.availabilitySchedule, nowDate)
     const updates = [
       'name = ?',
       'description = ?',
@@ -390,6 +392,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       'quota_limits_json = ?',
       'availability_schedule_json = ?',
       'availability_schedule_active = ?',
+      'availability_schedule_next_check_at = ?',
       'updated_at = ?'
     ]
     const updateValues = [
@@ -403,6 +406,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
       nextAvailabilityScheduleActive,
+      availabilityScheduleNextCheckAt,
       now
     ]
     updateValues.push(id, systemAccountId)
@@ -590,7 +594,7 @@ function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiK
 function normalizeApiKeyGroupBindings(
   inputs: ApiKeyGroupBindingInput[],
   systemAccountId: string,
-  options: { retainableGroupIds?: string[]; allowMixedProviderProtocolProfiles?: boolean } = {}
+  options: { retainableGroupIds?: string[] } = {}
 ): ApiKeyGroupBindingWrite[] {
   if (!inputs.length) {
     throw new Error('API Key 至少需要绑定一个分组')
@@ -628,7 +632,6 @@ function normalizeApiKeyGroupBindings(
 
   const groups = loadApiKeyBindableGroups([...seenGroupIds], systemAccountId)
   const retainableGroupIds = new Set((options.retainableGroupIds ?? []).filter(Boolean))
-  let providerProtocolProfileId: string | undefined
   return normalized
     .map((binding) => {
       const group = groups.get(binding.groupId)
@@ -636,10 +639,6 @@ function normalizeApiKeyGroupBindings(
       if (!group || (!canBindNow && !retainableGroupIds.has(binding.groupId))) {
         throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
       }
-      if (!options.allowMixedProviderProtocolProfiles && providerProtocolProfileId && group.provider_protocol_profile_id !== providerProtocolProfileId) {
-        throw new Error(API_KEY_GROUP_PROVIDER_ERROR)
-      }
-      providerProtocolProfileId = providerProtocolProfileId ?? group.provider_protocol_profile_id
       if (binding.status === 'active' && group.enabled === 0) {
         throw new Error(`API Key 不能启用已停用分组：${group.name ?? binding.groupId}`)
       }
@@ -714,6 +713,9 @@ function normalizeApiKeyHybridRoutingConfigForWrite(
     .map((binding) => binding.groupId))
   if (!activeGroupIds.has(config.scoringGroupId)) {
     throw new Error('混合路由评分分组必须是当前 API Key 绑定的启用分组')
+  }
+  if (config.qualityInspection?.enabled && !activeGroupIds.has(config.qualityInspection.scoringGroupId)) {
+    throw new Error('混合路由质量评分分组必须是当前 API Key 绑定的启用分组')
   }
   return config
 }

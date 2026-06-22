@@ -39,6 +39,8 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-deepseek-gateway-mock-ai-${Date.now(
 runtimeConfig.databasePath = join(tempRoot, 'deepseek-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
+runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
 runtimeConfig.secret = 'deepseek-gateway-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -300,8 +302,9 @@ try {
     await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
     await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
     await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRejectsPreviousResponseId(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRejectsCompact(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeStringUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
@@ -688,7 +691,77 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
   assert.match(JSON.stringify(body.tools), /shell_command/)
 }
 
-async function assertDeepSeekCodexResponsesBridgeRejectsPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const firstResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-bridge-state-session',
+        thread_id: 'deepseek-bridge-state-thread',
+        turn_id: 'deepseek-bridge-state-turn-1'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'remember first deepseek codex context' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const firstText = await firstResponse.text()
+  assert.equal(firstResponse.status, 200, `DeepSeek Codex bridge 首轮应成功，实际 HTTP ${firstResponse.status}: ${firstText}`)
+  const firstResponseId = responsesCompletedPayload(firstText)?.id ?? ''
+  assert.match(firstResponseId, /^resp_deepseek_bridge_/, 'DeepSeek Codex bridge 首轮应生成可续接 response id')
+
+  const secondResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-bridge-state-session',
+        thread_id: 'deepseek-bridge-state-thread',
+        turn_id: 'deepseek-bridge-state-turn-2'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      previous_response_id: firstResponseId,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'continue second deepseek codex context' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const secondText = await secondResponse.text()
+  assert.equal(secondResponse.status, 200, `DeepSeek Codex bridge previous_response_id 续链应成功，实际 HTTP ${secondResponse.status}: ${secondText}`)
+  assert.match(secondText, new RegExp(`"previous_response_id":"${escapeRegExp(firstResponseId)}"`), '续链响应应回显 previous_response_id')
+  assert.equal(upstreamHits.length, 2, 'DeepSeek Codex bridge 续链应每轮各命中一次上游')
+  const secondBody = JSON.parse(upstreamHits[1]?.bodyText ?? '{}') as { messages?: unknown[]; previous_response_id?: unknown }
+  assert.equal(secondBody.previous_response_id, undefined, 'previous_response_id 只能在网关内消费，不能发给 Chat 上游')
+  const messagesText = JSON.stringify(secondBody.messages)
+  assert.match(messagesText, /remember first deepseek codex context/, '续链 Chat messages 应恢复首轮用户输入')
+  assert.match(messagesText, /deepseek sse ok/, '续链 Chat messages 应恢复首轮 assistant 输出')
+  assert.match(messagesText, /continue second deepseek codex context/, '续链 Chat messages 应追加本轮用户输入')
+}
+
+async function assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -717,12 +790,12 @@ async function assertDeepSeekCodexResponsesBridgeRejectsPreviousResponseId(baseU
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `DeepSeek Codex bridge previous_response_id 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /unsupported_codex_bridge_previous_response_id/, 'previous_response_id 拒绝响应应带稳定错误码')
-  assert.equal(upstreamHits.length, 0, 'DeepSeek Codex bridge previous_response_id 受控拒绝时不应命中上游')
+  assert.equal(response.status, 404, `DeepSeek Codex bridge 未知 previous_response_id 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /codex_bridge_previous_response_not_found/, 'previous_response_id 不存在响应应带稳定错误码')
+  assert.equal(upstreamHits.length, 0, 'DeepSeek Codex bridge 未知 previous_response_id 受控拒绝时不应命中上游')
 }
 
-async function assertDeepSeekCodexResponsesBridgeRejectsCompact(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses/compact`, {
     method: 'POST',
@@ -749,9 +822,48 @@ async function assertDeepSeekCodexResponsesBridgeRejectsCompact(baseUrl: string,
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `DeepSeek Codex bridge /responses/compact 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /unsupported_codex_bridge_compact/, '/responses/compact 拒绝响应应带稳定错误码')
-  assert.equal(upstreamHits.length, 0, 'DeepSeek Codex bridge /responses/compact 受控拒绝时不应命中上游')
+  assert.equal(response.status, 200, `DeepSeek Codex bridge /responses/compact 应返回网关摘要，实际 HTTP ${response.status}: ${text}`)
+  const payload = JSON.parse(text) as { output?: Array<Record<string, unknown>> }
+  const compactItem = payload.output?.[0]
+  assert.equal(compactItem?.type, 'compaction_summary', '/responses/compact 应返回 Codex 可消费的 compaction_summary item')
+  assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v1\./, 'compact summary 应使用网关 envelope')
+  assert.equal(upstreamHits.length, 1, 'DeepSeek Codex bridge /responses/compact 应通过内部 Chat Completions 摘要请求命中一次上游')
+  assert.equal(upstreamHits[0]?.path, '/v1/chat/completions', 'compact 内部请求必须走 Chat Completions 路径')
+  const compactUpstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { stream?: boolean; messages?: unknown[] }
+  assert.equal(compactUpstreamBody.stream, false, 'compact 内部摘要请求必须是非流式 Chat 请求')
+  assert.match(JSON.stringify(compactUpstreamBody.messages), /compact this history/, 'compact 内部摘要请求应包含待压缩上下文')
+
+  const bridgeResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-bridge-compact-followup-session',
+        thread_id: 'deepseek-bridge-compact-followup-thread',
+        turn_id: 'deepseek-bridge-compact-followup-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      input: [
+        compactItem,
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'continue after compact summary' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const bridgeText = await bridgeResponse.text()
+  assert.equal(bridgeResponse.status, 200, `DeepSeek Codex bridge 应能消费 compaction_summary，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
+  assert.equal(upstreamHits.length, 2, 'DeepSeek compaction_summary 后续请求应再命中一次上游')
+  assert.match(upstreamHits[1]?.bodyText ?? '', /deepseek json ok/, '后续 Chat messages 应包含 compact 摘要文本')
+  assert.match(upstreamHits[1]?.bodyText ?? '', /continue after compact summary/, '后续 Chat messages 应包含 compact 后的新输入')
 }
 
 function assertValidChatToolMessageSequence(messages: Array<Record<string, unknown>>, label: string): void {
@@ -964,7 +1076,7 @@ function assertDeepSeekSemanticParsing(): void {
   assert(sseFrames.some((frame) => frame.rawJsonPaths?.includes('choices.0.delta.reasoning_content') && frame.text === 'semantic sse reasoning'), 'DeepSeek 流式 reasoning_content 应进入语义帧')
 }
 
-function responsesCompletedPayload(text: string): { usage?: Record<string, unknown> } | undefined {
+function responsesCompletedPayload(text: string): { id?: string; usage?: Record<string, unknown> } | undefined {
   for (const block of text.split(/\r?\n\r?\n/)) {
     if (!/^event:\s*response\.completed$/m.test(block)) continue
     const dataText = block
@@ -973,10 +1085,14 @@ function responsesCompletedPayload(text: string): { usage?: Record<string, unkno
       .map((line) => line.slice(5).trimStart())
       .join('\n')
     if (!dataText) continue
-    const parsed = JSON.parse(dataText) as { response?: { usage?: Record<string, unknown> } }
-    return { usage: parsed.response?.usage }
+    const parsed = JSON.parse(dataText) as { response?: { id?: string; usage?: Record<string, unknown> } }
+    return { id: parsed.response?.id, usage: parsed.response?.usage }
   }
   return undefined
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function assertDeepSeekDispatchCapability(groupId: string, accountId: string): void {

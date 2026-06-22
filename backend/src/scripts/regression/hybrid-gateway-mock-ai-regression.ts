@@ -184,7 +184,7 @@ try {
         scoringTimeoutMs: 10_000,
         failureDefaultLevel,
         scoringCacheEnabled: true,
-        scoringCacheTtlSeconds: 60,
+        scoringCacheTtlSeconds: 300,
         cacheAffinityEnabled: true,
         affinityTtlSeconds: 900,
         switchMinLevelDelta: 2,
@@ -480,7 +480,8 @@ async function assertHybridScoringCacheRequest(input: {
       headers: {
         authorization: `Bearer ${input.localApiKey}`,
         'content-type': 'application/json',
-        'x-session-id': input.sessionId
+        'x-session-id': input.sessionId,
+        'x-client-request-id': `${input.sessionId}-trace-${index}`
       },
       body: JSON.stringify({
         model: 'client-request-model',
@@ -499,7 +500,7 @@ async function assertHybridScoringCacheRequest(input: {
   const hits = upstreamHits.slice(start)
   const scoringHits = hits.filter((hit) => hit.model === scoringModel)
   const targetHits = hits.filter((hit) => hit.model !== scoringModel)
-  assert.equal(scoringHits.length, 1, `完全相同请求短 TTL 内应只调用一次评分模型，实际 ${scoringHits.length}`)
+  assert.equal(scoringHits.length, 1, `完全相同请求即使追踪 ID 不同，短 TTL 内也应只调用一次评分模型，实际 ${scoringHits.length}`)
   assert.equal(targetHits.length, 2, `评分缓存只应省评分调用，目标请求仍应执行两次，实际 ${targetHits.length}`)
   assert(targetHits.every((hit) => hit.model === input.expectedModel), '评分缓存命中后目标模型应保持一致')
 }

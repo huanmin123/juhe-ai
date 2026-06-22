@@ -102,7 +102,7 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 | `worker` | `persistent` | 控制 / fallback 角色，保留运行态快照、事件循环采样响应和后续轻量控制入口 | 统计、写入、探测、维护、系统采样 |
 | `ingest-worker` | `persistent` | 使用记录、审计、操作日志、公开接口日志、运行日志索引、运行日志文件导入、record maintenance、dataset / usage shard 清理 | 重型窗口刷新、统计结果库写入 |
 | `log-worker` | `persistent` | 审计、操作日志、运行日志索引、运行日志文件导入 | 用量统计窗口、外部探测 |
-| `stats-worker` | `persistent` | 系统采样、进程事件循环采样、用量 / IP 聚合、分组账号缓存、额度快照、账号质量、TopN、概览、范围窗口、授权窗口、系统趋势、表监控、统计清理、deleted-record 统计扣减 | 外部探测、业务库写入、usage shard 写入 |
+| `stats-worker` | `persistent` | 系统采样、进程事件循环 / 内存采样、用量 / IP 聚合、分组账号缓存、额度快照、账号质量、TopN、概览、范围窗口、授权窗口、系统趋势、表监控、统计清理、deleted-record 统计扣减 | 外部探测、业务库写入、usage shard 写入 |
 | `snapshot-worker` | `persistent` | 常驻拓扑、控制响应和后续隔离扩展位；当前不直接写 stats SQLite | 高频写入、系统采样写库、窗口刷新写库 |
 | `probe-worker` | `persistent` | 代理检测、账号级 / Key 级冷却复测、手动账号测试、OAuth token 保活 | 使用记录 flush、统计窗口、业务库直写 |
 | `maintenance-worker` | `persistent` | 业务库维护 typed command 调度、授权到期扫描、时间计划同步、过期逻辑删除账号清理协调 | 高频写入、系统采样、长时间硬清理、dataset / stats / usage shard 直写 |
@@ -116,7 +116,7 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 
 | job | 初始角色 | 边界 |
 | --- | --- | --- |
-| `system-metrics-sample` | `stats-worker` | stats writer owner 串行写入系统采样和进程事件循环样本 |
+| `system-metrics-sample` | `stats-worker` | stats writer owner 串行写入系统采样和进程事件循环 / RSS / Heap 样本 |
 | `system-metrics-trend-windows-refresh` | `stats-worker` | stats writer owner 串行写入 |
 | `usage-stats-aggregation` | `stats-worker` | 后续可按 usage shard 租约分片 |
 | `client-ip-stats-aggregation` | `stats-worker` | 后续按 usage shard / IP bucket 分片 |
@@ -202,7 +202,7 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 - `background-ipc` 将 usage 写入放入 ingest 专用 usage 队列，将审计 / 操作 / 公开接口 / 运行日志放入 ingest regular 队列；两类队列分别有消息数和字节上限，拒绝计数进入运行态。
 - `stats-worker` 承载系统采样、`usage-stats-aggregation`、`client-ip-stats-aggregation`、`group-account-stats-refresh`、账号质量刷新、TopN、概览、范围窗口、授权窗口、系统趋势窗口刷新、表空间监控和统计保留期清理；`probe-worker` 承载账号级 / Key 级复测、代理检测、OAuth token 保活和手动账号测试；`maintenance-worker` 承载业务库维护 typed command 调度。
 - 统计聚合和账号质量刷新在读取事实前会请求 ingest drain 状态；如果 server 到 ingest IPC 仍有使用记录积压、ingest 本地 usage 队列未清空或 flush 有失败，本轮统计 / 探测刷新跳过，避免读到未落地的事实。
-- 运行态快照、队列健康和系统指标接口补充所有常驻 worker 的 snapshot available 字段，`cooldown-account-retest`、`account-api-key-cooldown-retest` 和 `account-quality-refresh` 的复测 / 预检队列必须随 `probe-worker` 快照进入后台任务表；进程事件循环样本覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`stats-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`temporary-maintenance-worker`、`db-service` 十类角色；临时维护 worker 只有任务运行期间写入样本，平时显示缺样本。
+- 运行态快照、队列健康和系统指标接口补充所有常驻 worker 的 snapshot available 字段；后台任务表统一展示 scheduled job 以及关键本地队列，`cooldown-account-retest`、`account-api-key-cooldown-retest` 仍挂在对应 probe 定时任务行，手动账号测试队列、账号质量失败预检队列、ingest 数据维护队列和 stats 数据维护队列以独立队列行展示。队列健康中的 record-maintenance 必须按真实 owner 拆成 `ingest-worker` 和 `stats-worker`，不能用 `maintenance-worker` 空队列代表数据维护状态。进程事件循环和内存样本覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`stats-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`temporary-maintenance-worker`、`db-service` 十类角色；临时维护 worker 只有任务运行期间写入样本，平时显示缺样本。
 - 公开接口日志当前已合并到 `ingest-worker`；若公开接口日志写入成为热点，再从 `ingest-worker` 拆出 `log-worker` 或更细的公开接口日志 worker。
 
 ### 阶段 4：临时维护 Worker
@@ -248,7 +248,7 @@ worker 拆分必须同时看“角色”和“生命周期”。角色回答任�
 | 重启稳定性 | 子进程异常退出后的退避重启、重复退出次数和最近错误 | 禁止无退避重启风暴；反复退出时管理页必须显示 snapshot 不可用 |
 | IPC 队列 | 业务消息 owner、队列上限、超时、拒绝和丢弃计数 | append-only 写入投递 ingest-worker，账号测试投递 probe-worker，记录维护投递 maintenance-worker；metrics-worker 不能接业务消息 |
 | SQLite 锁 | 写事务耗时、busy / locked 错误、统计滞后和 DB service 事件循环延迟 | 新 worker 不能靠增加并发写来压 SQLite；先短事务、索引和单 owner |
-| 观测准确性 | 系统指标、事件循环趋势、后台任务表和模拟数据是否覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`stats-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`temporary-maintenance-worker`、`db-service` 十类角色 | 临时维护 worker 平时可缺样本；所有缺样本必须显示未知，不能用 0、空数组或默认时间伪装正常 |
+| 观测准确性 | 系统指标、事件循环趋势、进程内存趋势、后台任务表和模拟数据是否覆盖 `server`、`worker`、`metrics-worker`、`ingest-worker`、`stats-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`temporary-maintenance-worker`、`db-service` 十类角色 | 临时维护 worker 平时可缺样本；所有缺样本必须显示未知，不能用 0、空数组或默认时间伪装正常 |
 | 资源占用 | Node heap、RSS、SQLite 连接、文件句柄、日志输出和定时器数量 | 轻角色只打开必需资源，不能启动无关队列或无关数据库 |
 | 临时 worker | runId、参数快照、状态、超时、退出码、失败重试和人工取消 | 临时任务跑完退出，不能替代常驻队列消费者 |
 | 回滚路径 | 发布包入口、环境变量、数据 schema 和单 worker 合并承载能力 | 回滚不依赖临时 schema；必要时先把角色合并回默认 worker |

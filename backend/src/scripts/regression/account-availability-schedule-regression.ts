@@ -126,26 +126,41 @@ try {
     groupId: group.id
   }, access))
   assert.equal(boundaryAccount.availabilityScheduleActive, false, '保存计划时应按当前时间初始化账户计划派生状态')
+  assert.equal(
+    accountNextCheckAt(databaseModule.getBusinessDatabase(), boundaryAccount.id),
+    '2026-05-31T22:00:00.000Z',
+    '保存账户计划时应记录下一次边界检查时间，避免后台同步全量扫描'
+  )
   assert.equal(repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId).some((account) => account.id === boundaryAccount.id), false, '允许时段外账户不应进入候选')
 
   const activatedResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-05-31T22:00:00.000Z'))
   assert.equal(activatedResult.activated, 1, '账户计划开始边界应自动启用派生状态')
   assert.equal(repositories.findAccountSummary(boundaryAccount.id, access)?.availabilityScheduleActive, true, '开始边界后应暴露账户计划派生可用')
+  assert.equal(
+    accountNextCheckAt(databaseModule.getBusinessDatabase(), boundaryAccount.id),
+    '2026-05-31T23:55:00.000Z',
+    '账户开始边界处理后应推进到下一次结束边界'
+  )
 
-  const earlyClosed = repositories.updateAccount(boundaryAccount.id, { availabilityScheduleActive: false }, access)
+  const earlyClosed = withMockedNow(Date.parse('2026-05-31T22:05:00.000Z'), () => repositories.updateAccount(boundaryAccount.id, { availabilityScheduleActive: false }, access))
   assert.equal(earlyClosed?.status, 'active', '账户计划内提前关闭不应改写账户状态')
   assert.equal(earlyClosed?.availabilityScheduleActive, false, '账户计划内提前关闭应立即改写派生状态')
   const earlyCloseNonBoundaryResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-05-31T22:06:00.000Z'))
   assert.equal(earlyCloseNonBoundaryResult.activated, 0, '非边界同步不应覆盖账户计划内提前关闭')
   assert.equal(repositories.findAccountSummary(boundaryAccount.id, access)?.availabilityScheduleActive, false, '非边界同步后账户提前关闭应保留')
 
-  const reopened = repositories.updateAccount(boundaryAccount.id, { availabilityScheduleActive: true }, access)
+  const reopened = withMockedNow(Date.parse('2026-05-31T22:07:00.000Z'), () => repositories.updateAccount(boundaryAccount.id, { availabilityScheduleActive: true }, access))
   assert.equal(reopened?.availabilityScheduleActive, true, '账户计划内应支持提前关闭后再次启用')
   const disabledResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-05-31T23:55:00.000Z'))
   assert.equal(disabledResult.disabled, 1, '账户计划结束边界应自动关闭派生状态')
   assert.equal(repositories.findAccountSummary(boundaryAccount.id, access)?.availabilityScheduleActive, false, '结束边界后账户计划派生状态应停用')
+  assert.equal(
+    accountNextCheckAt(databaseModule.getBusinessDatabase(), boundaryAccount.id),
+    '2026-06-01T22:00:00.000Z',
+    '账户结束边界处理后应推进到下一次开始边界'
+  )
 
-  const earlyOpened = repositories.updateAccount(boundaryAccount.id, { availabilityScheduleActive: true }, access)
+  const earlyOpened = withMockedNow(Date.parse('2026-05-31T23:56:00.000Z'), () => repositories.updateAccount(boundaryAccount.id, { availabilityScheduleActive: true }, access))
   assert.equal(earlyOpened?.availabilityScheduleActive, true, '账户计划范围外应支持提前启用')
   const earlyOpenNonBoundaryResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-05-31T23:56:00.000Z'))
   assert.equal(earlyOpenNonBoundaryResult.disabled, 0, '非边界同步不应覆盖账户计划外提前启用')
@@ -176,13 +191,45 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
+function accountNextCheckAt(database: ReturnType<typeof import('../../storage/database.js').getBusinessDatabase>, id: string): string | null {
+  const row = database
+    .prepare('SELECT availability_schedule_next_check_at AS next_check_at FROM accounts WHERE id = ?')
+    .get(id) as { next_check_at?: string | null } | undefined
+  return row?.next_check_at ?? null
+}
+
 function withMockedNow<T>(nowMs: number, fn: () => T): T {
-  const originalNow = Date.now
-  Date.now = () => nowMs
+  const OriginalDate = Date
+  const MockedDate = class extends OriginalDate {
+    constructor(value?: string | number | Date, month?: number, date?: number, hours?: number, minutes?: number, seconds?: number, ms?: number) {
+      if (arguments.length === 0) {
+        super(nowMs)
+        return
+      }
+      if (arguments.length === 1) {
+        super(value as string | number | Date)
+        return
+      }
+      super(value as number, month as number, date, hours, minutes, seconds, ms)
+    }
+
+    static now(): number {
+      return nowMs
+    }
+  }
+  Object.defineProperty(globalThis, 'Date', {
+    configurable: true,
+    writable: true,
+    value: MockedDate
+  })
   try {
     return fn()
   } finally {
-    Date.now = originalNow
+    Object.defineProperty(globalThis, 'Date', {
+      configurable: true,
+      writable: true,
+      value: OriginalDate
+    })
   }
 }
 

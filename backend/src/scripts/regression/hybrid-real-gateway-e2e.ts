@@ -163,7 +163,7 @@ try {
         scoringTimeoutMs: 30_000,
         failureDefaultLevel: 7,
         scoringCacheEnabled: true,
-        scoringCacheTtlSeconds: 60,
+        scoringCacheTtlSeconds: 300,
         cacheAffinityEnabled: true,
         affinityTtlSeconds: 900,
         switchMinLevelDelta: 2,

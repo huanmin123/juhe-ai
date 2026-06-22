@@ -66,12 +66,12 @@ assert.equal(isApiKeyBindableGroup(groups[4]), false, '已过期授权分组不�
 assert.equal(
   selectedApiKeyGroupBindingProviderProfileId({ bindings: currentBindings, groups }),
   'profile_gpt_openai_v1',
-  '已选择号池应锁定当前 API Key 的供应商协议档案'
+  '已选择号池应保留供应商协议档案信息'
 )
 assert.deepEqual(
   apiKeyGroupOptionsForBinding({ bindings: currentBindings, groups, index: 1 }).map((group) => group.id),
-  ['grp_gpt_primary', 'grp_gpt_backup'],
-  '新增绑定选项应过滤到同供应商协议档案，且排除跨档案、停用和过期授权分组'
+  ['grp_gpt_primary', 'grp_gpt_backup', 'grp_deepseek'],
+  '新增绑定选项应允许跨供应商协议档案，且排除停用和过期授权分组'
 )
 assert.equal(
   nextAvailableApiKeyGroupForNewBinding({ bindings: currentBindings, groups })?.id,
@@ -86,8 +86,8 @@ assert.deepEqual(
 
 assert.equal(
   validateMessage([bindingFor(groups[0]), bindingFor(groups[2])]),
-  '同一个普通 API Key 的绑定号池必须属于同一供应商协议档案',
-  '跨供应商协议档案绑定应在前端提交前拦截'
+  undefined,
+  '普通 API Key 应允许绑定不同供应商协议档案的号池'
 )
 assert.equal(
   validateMessage([bindingFor(groups[0]), bindingFor(groups[0])]),
@@ -115,7 +115,7 @@ assert.equal(
   '接口能力展示应使用中文主文案'
 )
 
-console.log('API Key 前端分组绑定回归通过：同协议档案过滤、跨档案拦截、重复/停用/无启用校验和中文接口能力文案均符合预期')
+console.log('API Key 前端分组绑定回归通过：跨档案可选可提交、重复/停用/无启用校验和中文接口能力文案均符合预期')
 
 function validateMessage(bindings: ApiKeyGroupBindingFormRow[]): string | undefined {
   return validateApiKeyGroupBindings({

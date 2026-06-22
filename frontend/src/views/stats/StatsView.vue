@@ -127,6 +127,19 @@
         />
       </a-col>
     </a-row>
+
+    <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
+      <a-col :xs="24">
+        <StatsChartCard
+          :title="`进程内存占用趋势（${currentWindowLabel}）`"
+          :loading="systemInitialLoading"
+          :has-data="hasProcessMemoryTrend"
+          :empty-description="processMemoryTrendEmptyDescription"
+        >
+          <div ref="processMemoryChartRef" class="chart-panel chart-panel-large" />
+        </StatsChartCard>
+      </a-col>
+    </a-row>
   </div>
 </template>
 
@@ -150,7 +163,7 @@ import StatsBackgroundJobsCard from './StatsBackgroundJobsCard.vue'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsProcessEventLoopTable from './StatsProcessEventLoopTable.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
-import { buildErrorOption, buildModelDistributionOption, buildProcessEventLoopOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
+import { buildErrorOption, buildModelDistributionOption, buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
 import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
 import { buildProcessEventLoopRows, hasProcessEventLoopRowSample } from './statsProcessEventLoop'
 
@@ -199,12 +212,14 @@ const modelDistributionChartRef = ref<HTMLDivElement>()
 const errorChartRef = ref<HTMLDivElement>()
 const systemMetricsChartRef = ref<HTMLDivElement>()
 const processEventLoopChartRef = ref<HTMLDivElement>()
+const processMemoryChartRef = ref<HTMLDivElement>()
 
 const usageTrendChart = shallowRef<ECharts>()
 const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 const systemMetricsChart = shallowRef<ECharts>()
 const processEventLoopChart = shallowRef<ECharts>()
+const processMemoryChart = shallowRef<ECharts>()
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
   resizeCharts,
@@ -223,7 +238,8 @@ const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribut
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
 const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasSystemTrend.value)
-const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend.length ?? 0) > 0)
+const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend ?? []).some((item) => item.eventLoopLagMsAvg !== undefined || item.eventLoopLagMsMax !== undefined))
+const hasProcessMemoryTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend ?? []).some((item) => item.processRssBytesAvg !== undefined || item.processRssBytesMax !== undefined))
 const processEventLoopRows = computed(() => buildProcessEventLoopRows(systemMetrics.value))
 const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || hasProcessEventLoopRowSample(processEventLoopRows.value))
 const backgroundJobRows = computed(() => {
@@ -285,6 +301,7 @@ const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWi
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
 const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无事件循环趋势，等待后台窗口缓存刷新`)
+const processMemoryTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无进程内存趋势，等待后台窗口缓存刷新`)
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const summaryCards = computed(() => {
@@ -421,6 +438,7 @@ function renderStatsCharts() {
   renderErrorChart()
   renderSystemMetricsChart()
   renderProcessEventLoopChart()
+  renderProcessMemoryChart()
 }
 
 function renderUsageTrendChart() {
@@ -478,8 +496,19 @@ function renderProcessEventLoopChart() {
   chart.setOption(buildProcessEventLoopOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
 }
 
+function renderProcessMemoryChart() {
+  if (!showAdminDetailCharts.value || !hasProcessMemoryTrend.value) {
+    disposeChart(processMemoryChart)
+    return
+  }
+  const chart = ensureChart(processMemoryChartRef, processMemoryChart)
+  if (!chart || !systemMetrics.value) return
+
+  chart.setOption(buildProcessMemoryOption(systemMetrics.value.processEventLoopTrend), { notMerge: true })
+}
+
 function resizeCharts() {
-  resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value, processEventLoopChart.value])
+  resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value, processEventLoopChart.value, processMemoryChart.value])
 }
 
 function disposeCharts() {
@@ -488,6 +517,7 @@ function disposeCharts() {
   disposeChart(errorChart)
   disposeChart(systemMetricsChart)
   disposeChart(processEventLoopChart)
+  disposeChart(processMemoryChart)
 }
 
 function snapshotPageState(): StatsPageState {

@@ -4,6 +4,7 @@ import { providerDisplayName } from '@/shared/providerDisplay'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import {
   axisNumberLabel,
+  formatBytesMiB,
   bytesPerSecondToMbps,
   formatCompactInteger,
   formatCost,
@@ -316,6 +317,49 @@ export function buildProcessEventLoopOption(trend: SystemMetricsOverview['proces
   }
 }
 
+export function buildProcessMemoryOption(trend: SystemMetricsOverview['processEventLoopTrend']): EChartsOption {
+  const roles = processEventLoopRoles(trend).filter((role) => trend.some((item) => item.processRole === role && processMemoryValue(item) !== null))
+  const buckets = processEventLoopBuckets(trend)
+  return {
+    color: ['#1677ff', '#faad14', '#52c41a', '#eb2f96', '#13c2c2', '#722ed1', '#2f54eb', '#fa541c', '#a0d911', '#8c8c8c'],
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: unknown) => processMemoryTooltip(params)
+    },
+    legend: {
+      type: 'scroll',
+      bottom: 0,
+      data: roles.map(processRoleLabel)
+    },
+    grid: {
+      left: 64,
+      right: 24,
+      top: 28,
+      bottom: 56
+    },
+    xAxis: {
+      type: 'category',
+      data: buckets.map((item) => formatHourLabel(item)),
+      axisLabel: { color: '#64748b' },
+      axisLine: { lineStyle: { color: '#d9e2ef' } }
+    },
+    yAxis: {
+      type: 'value',
+      name: 'RSS',
+      axisLabel: { formatter: (value: number) => formatBytesMiB(value), color: '#64748b' },
+      splitLine: { lineStyle: { color: '#edf2f7' } }
+    },
+    series: roles.map((role) => ({
+      name: processRoleLabel(role),
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 6,
+      data: buckets.map((bucketKey) => processMemoryBucketValue(trend, bucketKey, role))
+    }))
+  }
+}
+
 function usageTrendTooltip(params: unknown) {
   const points = tooltipParams(params)
   const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
@@ -383,6 +427,16 @@ function processEventLoopTooltip(params: unknown) {
   return lines.join('<br/>')
 }
 
+function processMemoryTooltip(params: unknown) {
+  const points = tooltipParams(params)
+  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
+  const lines = [`<strong>${title}</strong>`]
+  for (const point of points) {
+    lines.push(`${point.marker ?? ''}${String(point.seriesName ?? '')}: ${formatBytesMiB(pointValue(point))}`)
+  }
+  return lines.join('<br/>')
+}
+
 function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
   const roles = new Set(trend.map((item) => item.processRole))
   return (['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'] as const).filter((role) => roles.has(role))
@@ -395,6 +449,15 @@ function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopT
 function processEventLoopValue(trend: SystemMetricsOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
   const row = trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)
   return row?.eventLoopLagMsMax ?? row?.eventLoopLagMsAvg ?? null
+}
+
+function processMemoryBucketValue(trend: SystemMetricsOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
+  const row = trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)
+  return row ? processMemoryValue(row) : null
+}
+
+function processMemoryValue(row: SystemMetricsOverview['processEventLoopTrend'][number]) {
+  return row.processRssBytesMax ?? row.processRssBytesAvg ?? null
 }
 
 function processEventLoopBucketKey(row: SystemMetricsOverview['processEventLoopTrend'][number]) {

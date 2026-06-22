@@ -9,7 +9,7 @@
     row-key="processRole"
     size="small"
     :pagination="false"
-    :scroll-x="720"
+    :scroll-x="920"
     :table-scroll-enabled="false"
     :lock-body-scroll="false"
     :adaptive-column-width="false"
@@ -20,6 +20,12 @@
       </template>
       <template v-else-if="column.key === 'processPid'">
         {{ record.processPid ?? '-' }}
+      </template>
+      <template v-else-if="column.key === 'processRss'">
+        {{ record.latestSampleAvailable ? formatBytesMiB(record.latestProcessRssBytes) : '未知' }}
+      </template>
+      <template v-else-if="column.key === 'processHeap'">
+        {{ record.latestSampleAvailable ? `${formatBytesMiB(record.latestProcessHeapUsedBytes)} / ${formatBytesMiB(record.latestProcessHeapTotalBytes)}` : '未知' }}
       </template>
       <template v-else-if="column.key === 'latestLag'">
         {{ record.latestSampleAvailable ? formatJobDuration(record.latestEventLoopLagMs ?? undefined) : '未知' }}
@@ -50,6 +56,14 @@
             <strong>{{ record.processPid ?? '-' }}</strong>
           </div>
           <div class="mobile-list-meta-item">
+            <span>RSS</span>
+            <strong>{{ record.latestSampleAvailable ? formatBytesMiB(record.latestProcessRssBytes) : '未知' }}</strong>
+          </div>
+          <div class="mobile-list-meta-item">
+            <span>Heap</span>
+            <strong>{{ record.latestSampleAvailable ? `${formatBytesMiB(record.latestProcessHeapUsedBytes)} / ${formatBytesMiB(record.latestProcessHeapTotalBytes)}` : '未知' }}</strong>
+          </div>
+          <div class="mobile-list-meta-item">
             <span>最新延迟</span>
             <strong>{{ record.latestSampleAvailable ? formatJobDuration(record.latestEventLoopLagMs ?? undefined) : '未知' }}</strong>
           </div>
@@ -71,7 +85,7 @@
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { formatDateTime } from '@/shared/formatters'
 import { processRoleLabel } from './statsChartOptions'
-import { formatDuration } from './statsFormatters'
+import { formatBytesMiB, formatDuration } from './statsFormatters'
 import { processEventLoopColumns, type ProcessEventLoopRow } from './statsProcessEventLoop'
 
 defineProps<{

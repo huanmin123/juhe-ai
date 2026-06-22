@@ -33,7 +33,6 @@ const [
     builtInExternalIntegrationTestTokenId,
     findExternalIntegrationSourceTokenSecret
   },
-  { cleanupExpiredRetainedData },
   { closeStorageDatabases, getDatasetDatabase },
   { logger },
   { enqueuePublicApiLog, flushPublicApiLogQueueForTest },
@@ -44,7 +43,6 @@ const [
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/repositories.js'),
   import('../../storage/external-integration-source.repository.js'),
-  import('../../modules/background/data-retention-cleanup.service.js'),
   import('../../storage/database.js'),
   import('../../shared/logger.js'),
   import('../../modules/public-api-logs/public-api-log-queue.service.js'),
@@ -216,8 +214,8 @@ try {
   const now = Date.now()
   const oldLog = createPublicApiLog(publicApiLogFixture('publog_old_retention', new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString()))
   const recentLog = createPublicApiLog(publicApiLogFixture('publog_recent_retention', new Date(now - 7 * 24 * 60 * 60 * 1000 + 5 * 60 * 1000).toISOString()))
-  const cleanupResult = await cleanupExpiredRetainedData()
-  assert(cleanupResult.publicApiLogs >= 1, '数据保留清理应删除 7 天前的公开接口日志')
+  const cleanupResult = cleanupPublicApiLogsBefore(new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(), 1000)
+  assert(cleanupResult >= 1, '公开接口日志保留清理应删除 7 天前的记录')
   assert.equal(getPublicApiLogDetail(oldLog.id), undefined, '超过 7 天的公开接口日志应被清理')
   assert(getPublicApiLogDetail(recentLog.id), '7 天内公开接口日志应保留')
 

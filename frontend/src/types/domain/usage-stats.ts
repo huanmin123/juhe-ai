@@ -166,6 +166,11 @@ export interface SystemMetricsOverview {
     processPid: number | null
     sampledAt: string | null
     eventLoopLagMs: number | null
+    processRssBytes: number | null
+    processHeapUsedBytes: number | null
+    processHeapTotalBytes: number | null
+    processExternalBytes: number | null
+    processArrayBuffersBytes: number | null
   }>
   processEventLoopPeakStatus: Array<{
     processRole: ProcessRole
@@ -173,14 +178,26 @@ export interface SystemMetricsOverview {
     processPid: number | null
     sampledAt: string | null
     eventLoopLagMs: number | null
+    processRssBytes: number | null
+    processHeapUsedBytes: number | null
+    processHeapTotalBytes: number | null
+    processExternalBytes: number | null
+    processArrayBuffersBytes: number | null
   }>
   processEventLoopTrend: Array<{
     statHour: string
     statMinute: string
     processRole: ProcessRole
     sampleCount: number
+    eventLoopLagMsSampleCount?: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
+    processRssBytesAvg?: number
+    processRssBytesMax?: number
+    processHeapUsedBytesAvg?: number
+    processHeapUsedBytesMax?: number
+    processHeapTotalBytesAvg?: number
+    processHeapTotalBytesMax?: number
   }>
   runtimeSnapshotAvailable: boolean
   workerSnapshotAvailable: boolean
@@ -242,6 +259,21 @@ export interface SystemMetricsOverview {
       pendingCount: number
       runningCount: number
       nextRunAt?: string
+    }
+    localQueue?: {
+      name: string
+      queueLength?: number
+      queueBytes?: number
+      flushLastSuccessAt?: string
+      flushLastError?: string
+      droppedCount?: number
+      droppedSuccessCount?: number
+      droppedFailureCount?: number
+      droppedOverflowCount?: number
+      droppedOversizeCount?: number
+      retainedOverflowWarningCount?: number
+      flushFailureCount?: number
+      [key: string]: unknown
     }
   }> | null
 }

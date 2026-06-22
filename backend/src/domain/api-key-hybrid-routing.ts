@@ -1,5 +1,6 @@
 import type {
   ApiKeyHybridLevelRoute,
+  ApiKeyHybridQualityInspectionConfig,
   ApiKeyHybridRoutingConfig,
   ApiKeyRouteMode
 } from './types.js'
@@ -10,10 +11,14 @@ export const DEFAULT_HYBRID_QUALITY_PREFERENCE: ApiKeyHybridRoutingConfig['quali
 export const DEFAULT_HYBRID_SCORING_TIMEOUT_MS = 15000
 export const DEFAULT_HYBRID_FAILURE_DEFAULT_LEVEL = 7
 export const DEFAULT_HYBRID_SCORING_CACHE_ENABLED = true
-export const DEFAULT_HYBRID_SCORING_CACHE_TTL_SECONDS = 60
+export const DEFAULT_HYBRID_SCORING_CACHE_TTL_SECONDS = 300
 export const DEFAULT_HYBRID_AFFINITY_TTL_SECONDS = 900
 export const DEFAULT_HYBRID_SWITCH_MIN_LEVEL_DELTA = 2
 export const DEFAULT_HYBRID_DOWNGRADE_CONSECUTIVE_LOW_COUNT = 2
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE: ApiKeyHybridQualityInspectionConfig['triggerMode'] = 'risk_based'
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL = 7
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 1
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION: ApiKeyHybridQualityInspectionConfig['failureAction'] = 'upgrade_next_level'
 
 export function normalizeApiKeyRouteMode(value: unknown): ApiKeyRouteMode {
   if (value === undefined || value === null || value === '') return DEFAULT_API_KEY_ROUTE_MODE
@@ -93,6 +98,7 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     '混合路由降级确认次数必须是 1-20'
   )
   const levelRoutes = normalizeLevelRoutes(record.levelRoutes)
+  const qualityInspection = normalizeQualityInspectionConfig(record.qualityInspection)
   return {
     scoringGroupId,
     scoringModel,
@@ -106,7 +112,8 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     affinityTtlSeconds,
     switchMinLevelDelta,
     downgradeConsecutiveLowCount,
-    levelRoutes
+    levelRoutes,
+    ...(qualityInspection ? { qualityInspection } : {})
   }
 }
 
@@ -147,6 +154,58 @@ function normalizeQualityPreference(value: unknown): ApiKeyHybridRoutingConfig['
   if (value === undefined || value === null || value === '') return DEFAULT_HYBRID_QUALITY_PREFERENCE
   if (value === 'cost_first' || value === 'balanced' || value === 'quality_first') return value
   throw new Error('混合路由质量偏好无效')
+}
+
+function normalizeQualityInspectionConfig(value: unknown): ApiKeyHybridQualityInspectionConfig | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('混合路由质量评分配置无效')
+  }
+  const record = value as Record<string, unknown>
+  const enabled = record.enabled === undefined
+    ? false
+    : normalizeBoolean(record.enabled, '混合路由质量评分开关必须是布尔值')
+  const scoringGroupId = normalizeOptionalString(record.scoringGroupId)
+  const scoringModel = normalizeOptionalString(record.scoringModel)
+  if (enabled && !scoringGroupId) {
+    throw new Error('混合路由质量评分分组不能为空')
+  }
+  if (enabled && !scoringModel) {
+    throw new Error('混合路由质量评分模型不能为空')
+  }
+  return {
+    enabled,
+    scoringGroupId: scoringGroupId ?? '',
+    scoringModel: scoringModel ?? '',
+    triggerMode: normalizeQualityInspectionTriggerMode(record.triggerMode),
+    minTriggerLevel: normalizeIntegerRange(
+      record.minTriggerLevel,
+      DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL,
+      1,
+      10,
+      '混合路由质量评分最低触发等级必须是 1-10'
+    ),
+    maxRetries: normalizeIntegerRange(
+      record.maxRetries,
+      DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES,
+      0,
+      2,
+      '混合路由质量评分重试次数必须是 0-2'
+    ),
+    failureAction: normalizeQualityInspectionFailureAction(record.failureAction)
+  }
+}
+
+function normalizeQualityInspectionTriggerMode(value: unknown): ApiKeyHybridQualityInspectionConfig['triggerMode'] {
+  if (value === undefined || value === null || value === '') return DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE
+  if (value === 'quality_first_only' || value === 'risk_based' || value === 'always_for_hybrid') return value
+  throw new Error('混合路由质量评分触发模式无效')
+}
+
+function normalizeQualityInspectionFailureAction(value: unknown): ApiKeyHybridQualityInspectionConfig['failureAction'] {
+  if (value === undefined || value === null || value === '') return DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION
+  if (value === 'upgrade_next_level' || value === 'retry_same_model' || value === 'return_error') return value
+  throw new Error('混合路由质量评分失败动作无效')
 }
 
 function normalizeLevelRoutes(value: unknown): ApiKeyHybridLevelRoute[] {
@@ -199,6 +258,10 @@ function normalizedNonEmptyString(value: unknown, message: string): string {
     throw new Error(message)
   }
   return value.trim()
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 function normalizeBoolean(value: unknown, message: string): boolean {

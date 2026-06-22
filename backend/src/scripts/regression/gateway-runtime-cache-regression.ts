@@ -360,7 +360,7 @@ function seedGatewayRuntime(): {
     name: '运行配置缓存 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  const scheduledApiKey = repositories.createApiKeyRecord({
+  const scheduledApiKey = withMockedNowSync(Date.parse('2026-05-31T23:59:30.000Z'), () => repositories.createApiKeyRecord({
     name: '运行配置缓存计划 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     availabilitySchedule: {
@@ -371,8 +371,8 @@ function seedGatewayRuntime(): {
         { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '00:01' }
       ]
     }
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
-  const disabledScheduledApiKey = repositories.createApiKeyRecord({
+  }, { systemAccountId: 'sys_admin', role: 'admin' }))
+  const disabledScheduledApiKey = withMockedNowSync(Date.parse('2026-06-01T00:01:30.000Z'), () => repositories.createApiKeyRecord({
     name: '运行配置缓存手动停用计划 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'disabled',
@@ -384,7 +384,7 @@ function seedGatewayRuntime(): {
         { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:02', end: '00:03' }
       ]
     }
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  }, { systemAccountId: 'sys_admin', role: 'admin' }))
   const expiringApiKey = repositories.createApiKeyRecord({
     name: '运行配置缓存临期 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -428,7 +428,7 @@ function seedGatewayRuntime(): {
     providerCode: 'gpt',
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  repositories.createAccount({
+  withMockedNowSync(Date.parse('2026-05-31T23:59:30.000Z'), () => repositories.createAccount({
     providerCode: 'gpt',
     name: '运行配置缓存账户计划账号',
     type: 'api_key',
@@ -448,7 +448,7 @@ function seedGatewayRuntime(): {
         { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '00:01' }
       ]
     }
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  }, { systemAccountId: 'sys_admin', role: 'admin' }))
   const accountScheduledApiKey = repositories.createApiKeyRecord({
     name: '运行配置缓存账户计划 API Key',
     groupBindings: [{ groupId: accountScheduledGroup.id, priority: 1, status: 'active' }],
@@ -488,7 +488,7 @@ function seedGatewayRuntime(): {
     enabled: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   for (const [index, groupId] of [multiGroupAccountScheduledPrimaryGroup.id, multiGroupAccountScheduledFallbackGroup.id].entries()) {
-    repositories.createAccount({
+    withMockedNowSync(Date.parse('2026-06-01T00:03:30.000Z'), () => repositories.createAccount({
       providerCode: 'gpt',
       name: `运行配置缓存多分组账户计划账号 ${index + 1}`,
       type: 'api_key',
@@ -508,7 +508,7 @@ function seedGatewayRuntime(): {
           { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:04', end: '00:05' }
         ]
       }
-    }, { systemAccountId: 'sys_admin', role: 'admin' })
+    }, { systemAccountId: 'sys_admin', role: 'admin' }))
   }
   const multiGroupAccountScheduledApiKey = repositories.createApiKeyRecord({
     name: '运行配置缓存多分组账户计划 API Key',
@@ -648,6 +648,41 @@ function syncAccountScheduleStatusAt(nowMs: number): void {
 function clearGatewayCachesForRegression(): void {
   repositories.clearGatewayApiKeyValidationCache()
   gatewayCache.clearGatewayRuntimeCacheLocal()
+}
+
+function withMockedNowSync<T>(nowMs: number, operation: () => T): T {
+  const OriginalDate = Date
+  const MockedDate = class extends OriginalDate {
+    constructor(value?: string | number | Date, month?: number, date?: number, hours?: number, minutes?: number, seconds?: number, ms?: number) {
+      if (arguments.length === 0) {
+        super(nowMs)
+        return
+      }
+      if (arguments.length === 1) {
+        super(value as string | number | Date)
+        return
+      }
+      super(value as number, month as number, date, hours, minutes, seconds, ms)
+    }
+
+    static now(): number {
+      return nowMs
+    }
+  }
+  Object.defineProperty(globalThis, 'Date', {
+    configurable: true,
+    writable: true,
+    value: MockedDate
+  })
+  try {
+    return operation()
+  } finally {
+    Object.defineProperty(globalThis, 'Date', {
+      configurable: true,
+      writable: true,
+      value: OriginalDate
+    })
+  }
 }
 
 async function withMockedNow<T>(nowMs: number, operation: () => Promise<T> | T): Promise<T> {

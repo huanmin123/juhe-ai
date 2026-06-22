@@ -227,7 +227,6 @@ type UsageRankSnapshotSourceTable =
 interface UsageRankSnapshotStage {
   name: UsageRankSnapshotStageName
   sourceTables: UsageRankSnapshotSourceTable[]
-  deletionAwareSourceTables?: UsageRankSnapshotSourceTable[]
   run: (database: DatabaseSync, context: UsageRankSnapshotContext) => void
   runInBackground?: (database: DatabaseSync, context: UsageRankSnapshotContext, options: UsageRankSnapshotBackgroundStageOptions) => Promise<void>
 }
@@ -365,21 +364,15 @@ function usageRankSnapshotDefaultJobName(stages: UsageRankSnapshotStage[]): stri
 
 function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageRankSnapshotStage[]): string {
   const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
-  const deletionAwareSourceTables = new Set(stages.flatMap((stage) => stage.deletionAwareSourceTables ?? []))
   let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
-  let rowCount = 0
   for (const table of sourceTables) {
     const row = database.prepare(`SELECT MAX(updated_at) AS updated_at FROM ${table}`).get() as { updated_at?: string | null } | undefined
     const updatedAt = row?.updated_at
     if (typeof updatedAt === 'string' && updatedAt > watermark) {
       watermark = updatedAt
     }
-    if (deletionAwareSourceTables.has(table)) {
-      const countRow = database.prepare(`SELECT COUNT(*) AS row_count FROM ${table}`).get() as { row_count?: number | bigint | null } | undefined
-      rowCount += Number(countRow?.row_count ?? 0)
-    }
   }
-  return deletionAwareSourceTables.size > 0 ? `${watermark}|${rowCount}` : watermark
+  return watermark
 }
 
 function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
@@ -496,7 +489,6 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
     {
       name: 'usage_scope_range_windows',
       sourceTables: ['usage_stats_daily'],
-      deletionAwareSourceTables: ['usage_stats_daily'],
       run: (database, context) => refreshUsageScopeRangeWindowSnapshots(database, context.updatedAt, context.timezone),
       runInBackground: (database, context, options) => refreshUsageScopeRangeWindowSnapshotsInStages(database, context.updatedAt, context.timezone, options.yieldToEventLoop, context.previousSourceWatermark, context.sourceWatermark)
     },

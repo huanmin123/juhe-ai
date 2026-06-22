@@ -17,6 +17,11 @@ export interface ProcessEventLoopSample {
   processPid: number
   sampledAt: string
   eventLoopLagMs?: number
+  processRssBytes?: number
+  processHeapUsedBytes?: number
+  processHeapTotalBytes?: number
+  processExternalBytes?: number
+  processArrayBuffersBytes?: number
 }
 
 const eventLoopDelayHistogram = monitorEventLoopDelay({ resolution: 10 })
@@ -42,11 +47,17 @@ export function currentProcessEventLoopLagMs(): number | undefined {
 }
 
 export function buildProcessEventLoopSample(processRole: ProcessEventLoopRole = currentProcessEventLoopRole()): ProcessEventLoopSample {
+  const memoryUsage = process.memoryUsage()
   return {
     processRole,
     processPid: process.pid,
     sampledAt: new Date().toISOString(),
-    eventLoopLagMs: currentProcessEventLoopLagMs()
+    eventLoopLagMs: currentProcessEventLoopLagMs(),
+    processRssBytes: memoryUsage.rss,
+    processHeapUsedBytes: memoryUsage.heapUsed,
+    processHeapTotalBytes: memoryUsage.heapTotal,
+    processExternalBytes: memoryUsage.external,
+    processArrayBuffersBytes: memoryUsage.arrayBuffers
   }
 }
 

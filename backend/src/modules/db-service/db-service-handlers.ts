@@ -59,6 +59,13 @@ import {
 import { listActiveResponseInspectionPoliciesForGateway } from '../../storage/response-inspection-policy.repository.js'
 import { cleanupExpiredSystemSessions } from '../../storage/data-retention.repository.js'
 import {
+  cleanupExpiredCodexContextStates,
+  readCodexContextCompactState,
+  readCodexContextResponseStateChain,
+  saveCodexContextCompactStateIndex,
+  saveCodexContextResponseStateIndex
+} from '../../storage/codex-context-state.repository.js'
+import {
   deleteGroupAccountStatsDirtyRowsLocal,
   markAllGroupAccountStatsDirty,
   updateGroupAccountStatsAllCursorLocal,
@@ -372,6 +379,30 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'cleanup_expired_system_sessions':
       return { deleted: cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit) }
+    case 'save_codex_context_response_state':
+      return saveCodexContextResponseStateIndex(operation.input)
+    case 'save_codex_context_compact_state':
+      return saveCodexContextCompactStateIndex(operation.input)
+    case 'read_codex_context_response_chain':
+      return readCodexContextResponseStateChain({
+        responseId: operation.responseId,
+        boundary: operation.boundary,
+        maxDepth: operation.maxDepth,
+        now: operation.now,
+        refreshExpiresAt: operation.refreshExpiresAt
+      })
+    case 'read_codex_context_compact_state':
+      return readCodexContextCompactState({
+        compactId: operation.compactId,
+        boundary: operation.boundary,
+        now: operation.now,
+        refreshExpiresAt: operation.refreshExpiresAt
+      })
+    case 'cleanup_expired_codex_context_states':
+      return cleanupExpiredCodexContextStates({
+        expiredBefore: operation.expiredBefore,
+        limit: operation.limit
+      })
     case 'account_test_task_maintenance': {
       cleanupExpiredAccountTestTasks()
       const canceledTaskIds = operation.action === 'start' || operation.action === 'sweep'

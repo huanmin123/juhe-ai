@@ -5,6 +5,9 @@ export interface ProcessEventLoopRow {
   processPid: number | null
   latestSampleAvailable: boolean
   latestEventLoopLagMs: number | null
+  latestProcessRssBytes: number | null
+  latestProcessHeapUsedBytes: number | null
+  latestProcessHeapTotalBytes: number | null
   latestSampledAt: string | null
   peakSampleAvailable: boolean
   peakEventLoopLagMs: number | null
@@ -14,6 +17,8 @@ export interface ProcessEventLoopRow {
 export const processEventLoopColumns = [
   { title: '进程', key: 'processRole', width: 116 },
   { title: 'PID', key: 'processPid', width: 90 },
+  { title: 'RSS', key: 'processRss', width: 96 },
+  { title: 'Heap', key: 'processHeap', width: 118 },
   { title: '最新延迟', key: 'latestLag', width: 104 },
   { title: '24小时峰值', key: 'peakLag', width: 112 },
   { title: '采样时间', key: 'sampledAt', width: 168 },
@@ -47,6 +52,9 @@ export function buildProcessEventLoopRows(metrics?: SystemMetricsOverview): Proc
       processPid: latest?.processPid ?? peak?.processPid ?? null,
       latestSampleAvailable: latest?.sampleAvailable === true,
       latestEventLoopLagMs: latest?.eventLoopLagMs ?? null,
+      latestProcessRssBytes: latest?.processRssBytes ?? null,
+      latestProcessHeapUsedBytes: latest?.processHeapUsedBytes ?? null,
+      latestProcessHeapTotalBytes: latest?.processHeapTotalBytes ?? null,
       latestSampledAt: latest?.sampledAt ?? null,
       peakSampleAvailable: peak?.sampleAvailable === true,
       peakEventLoopLagMs: peak?.eventLoopLagMs ?? null,

@@ -28,8 +28,10 @@ export function createMonitoringMockdata(options: MockdataOptions): void {
   `)
   const insertProcess = database.prepare(`
     INSERT INTO process_event_loop_samples (
-      id, sampled_at, process_role, process_pid, event_loop_lag_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      id, sampled_at, process_role, process_pid, event_loop_lag_ms,
+      process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes,
+      process_external_bytes, process_array_buffers_bytes, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const roles = ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'] as const
   let metricIndex = 0
@@ -60,12 +62,19 @@ export function createMonitoringMockdata(options: MockdataOptions): void {
         sampledAt
       )
       roles.forEach((role, roleIndex) => {
+        const rssBytes = (180 + roleIndex * 24) * 1024 * 1024 + metricIndex * (roleIndex + 1) * 512
+        const heapUsedBytes = (58 + roleIndex * 7) * 1024 * 1024 + metricIndex * (roleIndex + 1) * 256
         insertProcess.run(
           `${idPrefix}process_metric_${String(metricIndex + 1).padStart(5, '0')}_${role}`,
           sampledAt,
           role,
           31000 + roleIndex,
           roundNumber(2 + Math.abs(Math.sin((metricIndex + roleIndex) / 4)) * (roleIndex + 3), 2),
+          rssBytes,
+          heapUsedBytes,
+          Math.max(heapUsedBytes, (128 + roleIndex * 8) * 1024 * 1024),
+          (20 + roleIndex * 2) * 1024 * 1024,
+          (8 + roleIndex) * 1024 * 1024,
           sampledAt
         )
       })
@@ -158,13 +167,34 @@ function rebuildProcessEventLoopHourly(database: StatsDatabase): void {
     const processRole = String(row.process_role ?? '')
     if (!processRole) continue
     const key = `${statHour}:${processRole}`
-    const bucket = buckets.get(key) ?? { sample_count: 0, event_loop_lag_ms_sum: 0, event_loop_lag_ms_max: null }
+    const bucket = buckets.get(key) ?? {
+      sample_count: 0,
+      event_loop_lag_ms_sum: 0,
+      event_loop_lag_ms_count: 0,
+      event_loop_lag_ms_max: null,
+      process_rss_bytes_sum: 0,
+      process_rss_bytes_max: null,
+      process_heap_used_bytes_sum: 0,
+      process_heap_used_bytes_max: null,
+      process_heap_total_bytes_sum: 0,
+      process_heap_total_bytes_max: null,
+      process_external_bytes_sum: 0,
+      process_external_bytes_max: null,
+      process_array_buffers_bytes_sum: 0,
+      process_array_buffers_bytes_max: null
+    }
+    bucket.sample_count += 1
     const lag = numeric(row.event_loop_lag_ms)
     if (lag !== undefined) {
-      bucket.sample_count += 1
+      bucket.event_loop_lag_ms_count += 1
       bucket.event_loop_lag_ms_sum += lag
       bucket.event_loop_lag_ms_max = bucket.event_loop_lag_ms_max === null ? lag : Math.max(bucket.event_loop_lag_ms_max, lag)
     }
+    addProcessMetric(bucket, 'process_rss_bytes', row.process_rss_bytes)
+    addProcessMetric(bucket, 'process_heap_used_bytes', row.process_heap_used_bytes)
+    addProcessMetric(bucket, 'process_heap_total_bytes', row.process_heap_total_bytes)
+    addProcessMetric(bucket, 'process_external_bytes', row.process_external_bytes)
+    addProcessMetric(bucket, 'process_array_buffers_bytes', row.process_array_buffers_bytes)
     buckets.set(key, bucket)
   }
   database.exec('BEGIN')
@@ -172,19 +202,49 @@ function rebuildProcessEventLoopHourly(database: StatsDatabase): void {
     database.prepare('DELETE FROM process_event_loop_hourly').run()
     const insert = database.prepare(`
       INSERT INTO process_event_loop_hourly (
-        stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
+        process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum, process_heap_used_bytes_max,
+        process_heap_total_bytes_sum, process_heap_total_bytes_max, process_external_bytes_sum, process_external_bytes_max,
+        process_array_buffers_bytes_sum, process_array_buffers_bytes_max, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const updatedAt = nowIso()
     for (const [key, bucket] of buckets) {
       const [statHour, processRole] = key.split(':')
-      insert.run(statHour, processRole, bucket.sample_count, bucket.event_loop_lag_ms_sum, bucket.event_loop_lag_ms_max, updatedAt)
+      insert.run(
+        statHour,
+        processRole,
+        bucket.sample_count,
+        bucket.event_loop_lag_ms_sum,
+        bucket.event_loop_lag_ms_count,
+        bucket.event_loop_lag_ms_max,
+        bucket.process_rss_bytes_sum,
+        bucket.process_rss_bytes_max,
+        bucket.process_heap_used_bytes_sum,
+        bucket.process_heap_used_bytes_max,
+        bucket.process_heap_total_bytes_sum,
+        bucket.process_heap_total_bytes_max,
+        bucket.process_external_bytes_sum,
+        bucket.process_external_bytes_max,
+        bucket.process_array_buffers_bytes_sum,
+        bucket.process_array_buffers_bytes_max,
+        updatedAt
+      )
     }
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
     throw error
   }
+}
+
+function addProcessMetric(row: ProcessMetricRow, key: string, value: unknown): void {
+  const number = numeric(value)
+  if (number === undefined) return
+  const sumKey = `${key}_sum` as keyof ProcessMetricRow
+  const maxKey = `${key}_max` as keyof ProcessMetricRow
+  row[sumKey] = Number(row[sumKey] ?? 0) + number as never
+  row[maxKey] = row[maxKey] === null ? number as never : Math.max(Number(row[maxKey]), number) as never
 }
 
 function addMetric(row: AccountMetricRow, key: string, value: unknown, counted = false): void {

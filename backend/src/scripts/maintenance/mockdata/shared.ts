@@ -180,7 +180,18 @@ export interface AccountMetricRow {
 export interface ProcessMetricRow {
   sample_count: number
   event_loop_lag_ms_sum: number
+  event_loop_lag_ms_count: number
   event_loop_lag_ms_max: number | null
+  process_rss_bytes_sum: number
+  process_rss_bytes_max: number | null
+  process_heap_used_bytes_sum: number
+  process_heap_used_bytes_max: number | null
+  process_heap_total_bytes_sum: number
+  process_heap_total_bytes_max: number | null
+  process_external_bytes_sum: number
+  process_external_bytes_max: number | null
+  process_array_buffers_bytes_sum: number
+  process_array_buffers_bytes_max: number | null
 }
 
 export const idPrefix = 'mockdata_'

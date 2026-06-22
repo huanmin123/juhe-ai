@@ -2,6 +2,7 @@ import type { AccountAvailabilitySchedule } from '../domain/types.js'
 import {
   apiKeyAvailabilityScheduleJson,
   evaluateApiKeyAvailabilitySchedule,
+  nextApiKeyAvailabilityScheduleCheckAt,
   normalizeApiKeyAvailabilitySchedule,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
@@ -26,6 +27,10 @@ export function isAccountAvailabilityScheduleAllowed(value: string | null | unde
   const schedule = parseAccountAvailabilityScheduleJson(value)
   if (!schedule) return true
   return evaluateApiKeyAvailabilitySchedule(schedule, now).allowed
+}
+
+export function nextAccountAvailabilityScheduleCheckAt(schedule: AccountAvailabilitySchedule | undefined, now = new Date()): string | null {
+  return nextApiKeyAvailabilityScheduleCheckAt(schedule, now)
 }
 
 function normalizeAccountAvailabilitySchedule(input: unknown): AccountAvailabilitySchedule | undefined {

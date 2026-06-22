@@ -17,7 +17,6 @@ import {
   hiddenApiKeyGroupBindingIds,
   isApiKeyBindableGroup,
   nextAvailableApiKeyGroupForNewBinding,
-  selectedApiKeyGroupBindingProviderProfileId,
   validateApiKeyGroupBindings
 } from './apiKeyGroupBindingRules'
 
@@ -79,12 +78,6 @@ export function useApiKeyGroupBindings(input: UseApiKeyGroupBindingsInput) {
     if (!group) return
     if (!isApiKeyBindableGroup(group)) {
       message.warning('该分组当前不可用，请选择其他 API Key 号池')
-      clearGroupBindingSelection(binding)
-      return
-    }
-    const providerProtocolProfileId = selectedGroupBindingProviderProfileId(index)
-    if (!allowMixedProviderProtocolProfiles() && providerProtocolProfileId && group.providerProtocolProfileId !== providerProtocolProfileId) {
-      message.warning('同一个普通 API Key 的绑定号池必须属于同一供应商协议档案')
       clearGroupBindingSelection(binding)
       return
     }
@@ -156,20 +149,12 @@ export function useApiKeyGroupBindings(input: UseApiKeyGroupBindingsInput) {
     })
   }
 
-  function selectedGroupBindingProviderProfileId(excludeIndex?: number): string | undefined {
-    return selectedApiKeyGroupBindingProviderProfileId({
-      bindings: input.form.groupBindings,
-      groups: input.groups.value,
-      excludeIndex
-    })
-  }
-
   function groupOptionForId(groupId: string | undefined): GroupOptionSummary | undefined {
     return apiKeyGroupOptionForId(input.groups.value, groupId)
   }
 
   function allowMixedProviderProtocolProfiles(): boolean {
-    return input.form.routeMode === 'hybrid'
+    return true
   }
 
   return {

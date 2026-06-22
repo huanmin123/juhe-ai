@@ -59,6 +59,8 @@ import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 
+const statsAggregationBatchPauseMs = 25
+
 export type BackgroundStatsWriteOperation =
   | {
     type: 'aggregate_usage_stats'
@@ -173,9 +175,9 @@ export async function requestStatsWriter<T extends BackgroundStatsWriteOperation
 export async function handleStatsWriteOperation(operation: BackgroundStatsWriteOperation): Promise<unknown> {
   switch (operation.type) {
     case 'aggregate_usage_stats':
-      return aggregateUsageStats(operation.batchSize, operation.maxBatches)
+      return await aggregateUsageStats(operation.batchSize, operation.maxBatches)
     case 'aggregate_client_ip_stats':
-      return aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)
+      return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)
     case 'refresh_group_account_stats':
       return { refreshed: await refreshGroupAccountStats() }
     case 'refresh_account_quality':
@@ -231,27 +233,37 @@ function currentProcessOwnsStatsWriter(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'stats-worker'
 }
 
-function aggregateUsageStats(batchSize: number, maxBatches: number): { processed: number; quotaSnapshotSent: boolean } {
+async function aggregateUsageStats(batchSize: number, maxBatches: number): Promise<{ processed: number; quotaSnapshotSent: boolean }> {
   let processed = 0
-  for (let index = 0; index < boundedPositiveInteger(maxBatches, 1, 100); index += 1) {
-    const batchProcessed = aggregateUsageStatsBatch(boundedPositiveInteger(batchSize, 1, 10000))
+  const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
+  const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
+  for (let index = 0; index < normalizedMaxBatches; index += 1) {
+    const batchProcessed = aggregateUsageStatsBatch(normalizedBatchSize)
     processed += batchProcessed
-    if (batchProcessed < batchSize) break
+    if (batchProcessed < normalizedBatchSize) break
+    await yieldToEventLoop()
+    await pauseBetweenStatsAggregationBatches()
   }
-  refreshUsageQuotaHourlyWindowsCache()
-  sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())
-  return { processed, quotaSnapshotSent: true }
+  if (processed > 0) {
+    refreshUsageQuotaHourlyWindowsCache()
+    sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())
+    return { processed, quotaSnapshotSent: true }
+  }
+  return { processed, quotaSnapshotSent: false }
 }
 
-function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): { processed: number; policies: ActiveClientIpPolicy[] } {
+async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number; policies: ActiveClientIpPolicy[] }> {
   const startedAtMs = Date.now()
   let processed = 0
   const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
-  for (let index = 0; index < boundedPositiveInteger(maxBatches, 1, 100); index += 1) {
+  const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
+  for (let index = 0; index < normalizedMaxBatches; index += 1) {
     const batchProcessed = aggregateClientIpStatsBatch(normalizedBatchSize)
     processed += batchProcessed
     if (batchProcessed < normalizedBatchSize) break
     if (Date.now() - startedAtMs >= boundedPositiveInteger(maxRunMs, 1, 60_000)) break
+    await yieldToEventLoop()
+    await pauseBetweenStatsAggregationBatches()
   }
   refreshClientIpUsageRangeWindows()
   const policies = listActiveClientIpPolicies()
@@ -302,7 +314,12 @@ function processEventLoopSampleInput(sample: ProcessEventLoopSample): ProcessEve
     processRole: sample.processRole,
     processPid: sample.processPid,
     sampledAt: sample.sampledAt,
-    eventLoopLagMs: sample.eventLoopLagMs
+    eventLoopLagMs: sample.eventLoopLagMs,
+    processRssBytes: sample.processRssBytes,
+    processHeapUsedBytes: sample.processHeapUsedBytes,
+    processHeapTotalBytes: sample.processHeapTotalBytes,
+    processExternalBytes: sample.processExternalBytes,
+    processArrayBuffersBytes: sample.processArrayBuffersBytes
   }
 }
 
@@ -313,6 +330,10 @@ function boundedPositiveInteger(value: number, min: number, max: number): number
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
+}
+
+function pauseBetweenStatsAggregationBatches(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, statsAggregationBatchPauseMs))
 }
 
 function assertNever(value: never): never {

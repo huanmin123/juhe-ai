@@ -33,6 +33,16 @@ export function bytesPerSecondToMbps(value?: number) {
   return value === undefined ? null : (value * 8) / 1_000_000
 }
 
+export function bytesToMiB(value?: number | null) {
+  return value === undefined || value === null ? null : value / 1024 / 1024
+}
+
+export function formatBytesMiB(value?: number | null) {
+  const mib = bytesToMiB(value)
+  if (mib === null) return '-'
+  return `${mib.toFixed(mib >= 100 ? 0 : 1)} MB`
+}
+
 export function formatNetworkRateFromMbps(value?: number) {
   return value === undefined ? '-' : `${value.toFixed(value >= 10 ? 1 : 2)} Mbps`
 }

@@ -8,7 +8,10 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  OPENAI_PROTOCOL_CODE
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import type { UsageRecordSummary } from '../../storage/repositories.js'
@@ -98,6 +101,7 @@ try {
   await assertCapabilityFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertModelFallback(gatewayBaseUrl, upstreamBaseUrl)
+  await assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl, upstreamBaseUrl)
   await assertHighConcurrencyBusyFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertPersonalConcurrencyBusyFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertLocalSuppressionFallback(gatewayBaseUrl, upstreamBaseUrl)
@@ -107,7 +111,7 @@ try {
   await assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
   await assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl, upstreamBaseUrl)
 
-  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；响应检查未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
+  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、普通 Key 跨供应商模型路由、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；响应检查未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
 } finally {
   clearAccountConcurrency()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -853,6 +857,103 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
   assert.equal(newRequests[0]?.accountKey, fallbackUpstreamKey, '请求模型应命中支持该模型的后备号池')
   assert.equal(newRequests[0]?.model, 'gpt-5.5')
   assert(!newRequests.some((request) => request.accountKey === primaryUpstreamKey), '模型不匹配的主号池账号不应被派发')
+}
+
+async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_normal_cross_provider_owner',
+    displayName: '普通Key跨供应商模型路由用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const gptGroup = repositories.createGroup({
+    name: '普通 Key 跨供应商 GPT 号池',
+    providerCode: 'gpt',
+    groupType: 'personal'
+  }, access)
+  const deepSeekGroup = repositories.createGroup({
+    name: '普通 Key 跨供应商 DeepSeek 号池',
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    groupType: 'personal'
+  }, access)
+  const gptUpstreamKey = 'sk-route-normal-cross-provider-gpt'
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '普通 Key 跨供应商 GPT 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: gptUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: gptGroup.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const deepSeekUpstreamKey = 'sk-route-normal-cross-provider-deepseek'
+  repositories.createAccount({
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    name: '普通 Key 跨供应商 DeepSeek 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: deepSeekUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: deepSeekGroup.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: ['deepseek-ai-v4-flash'],
+    modelMappings: [
+      {
+        sourceModel: 'deepseek-v4-flash',
+        upstreamModel: 'deepseek-ai-v4-flash',
+        enabled: true
+      }
+    ]
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '普通 Key 跨供应商模型路由 API Key',
+    routeMode: 'normal',
+    groupBindings: [
+      { groupId: gptGroup.id, priority: 1, status: 'active' },
+      { groupId: deepSeekGroup.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const runtime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: apiKey.key })
+  assert.equal(runtime.apiKey?.selected_group_id, gptGroup.id, '基础运行时应按优先级先选 GPT 号池，回归才能覆盖请求模型切到 DeepSeek')
+
+  const beforeCount = upstreamRequests.length
+  const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-normal-cross-provider-model')
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'deepseek-v4-flash', traceId)
+  assert.equal(response.status, 200, `普通 Key 跨供应商模型路由应切 DeepSeek 并成功，实际 ${response.status}: ${response.text}`)
+  const newRequests = upstreamRequests.slice(beforeCount)
+  assert.equal(newRequests.length, 1, '普通 Key 跨供应商模型路由切换后只应请求一次目标供应商上游')
+  assert.equal(newRequests[0]?.accountKey, deepSeekUpstreamKey, 'DeepSeek 模型请求应命中 DeepSeek 号池账号')
+  assert.equal(newRequests[0]?.model, 'deepseek-ai-v4-flash', 'DeepSeek 跨供应商路由应继续应用账号模型映射后再打上游')
+  assert(!newRequests.some((request) => request.accountKey === gptUpstreamKey), 'DeepSeek 模型请求不应派发到 GPT 号池账号')
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  auditLogQueue.flushAllAuditLogQueue()
+  const usageRecords = usageRecordsByTraceId(traceId)
+  assert.equal(usageRecords.length, 1, '普通 Key 跨供应商模型路由成功后应写入一条使用记录')
+  assert.equal(usageRecords[0]?.groupId, deepSeekGroup.id, '普通 Key 跨供应商模型路由使用记录必须归属 DeepSeek 分组')
+  const auditLogs = repositories.listAuditLogs({ traceId, pageSize: 10 })
+  assert.equal(auditLogs.total, 1, '普通 Key 跨供应商模型路由应写入一条审计事件')
+  const auditLog = auditLogs.items[0]
+  assert.equal(auditLog?.groupId, deepSeekGroup.id, '普通 Key 跨供应商模型路由审计主记录必须归属 DeepSeek 分组')
+  const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
+  assert(metadataPayloads.some((metadata) => metadata.label === 'normal_model_route'
+    && metadata.metadata?.requestedModel === 'deepseek-v4-flash'
+    && metadata.metadata?.fromGroupId === gptGroup.id
+    && metadata.metadata?.toGroupId === deepSeekGroup.id
+    && metadata.metadata?.matchedProviderCode === 'deepseek'), '审计 metadata 应记录普通 Key 根据请求模型从 GPT 分组切到 DeepSeek 分组')
 }
 
 async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {

@@ -163,6 +163,11 @@ export interface ProcessEventLoopSampleInput {
   processPid?: number
   sampledAt?: string
   eventLoopLagMs?: number
+  processRssBytes?: number
+  processHeapUsedBytes?: number
+  processHeapTotalBytes?: number
+  processExternalBytes?: number
+  processArrayBuffersBytes?: number
 }
 
 export interface UsageStatsOverview {
@@ -219,6 +224,11 @@ export interface SystemMetricsOverview {
     processPid: number | null
     sampledAt: string | null
     eventLoopLagMs: number | null
+    processRssBytes: number | null
+    processHeapUsedBytes: number | null
+    processHeapTotalBytes: number | null
+    processExternalBytes: number | null
+    processArrayBuffersBytes: number | null
   }>
   processEventLoopPeakStatus: Array<{
     processRole: ProcessEventLoopRole
@@ -226,17 +236,30 @@ export interface SystemMetricsOverview {
     processPid: number | null
     sampledAt: string | null
     eventLoopLagMs: number | null
+    processRssBytes: number | null
+    processHeapUsedBytes: number | null
+    processHeapTotalBytes: number | null
+    processExternalBytes: number | null
+    processArrayBuffersBytes: number | null
   }>
   processEventLoopTrend: Array<{
     statHour: string
     statMinute: string
     processRole: ProcessEventLoopRole
     sampleCount: number
+    eventLoopLagMsSampleCount?: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
+    processRssBytesAvg?: number
+    processRssBytesMax?: number
+    processHeapUsedBytesAvg?: number
+    processHeapUsedBytesMax?: number
+    processHeapTotalBytesAvg?: number
+    processHeapTotalBytesMax?: number
   }>
   backgroundJobs: Array<{
     name: string
+    workerRole?: ProcessEventLoopRole
     intervalMs: number
     running: boolean
     lastStartedAt?: string
@@ -250,5 +273,26 @@ export interface SystemMetricsOverview {
     successCount: number
     failureCount: number
     skippedCount: number
+    retryQueue?: {
+      name: string
+      pendingCount: number
+      runningCount: number
+      nextRunAt?: string
+    }
+    localQueue?: {
+      name: string
+      queueLength?: number
+      queueBytes?: number
+      flushLastSuccessAt?: string
+      flushLastError?: string
+      droppedCount?: number
+      droppedSuccessCount?: number
+      droppedFailureCount?: number
+      droppedOverflowCount?: number
+      droppedOversizeCount?: number
+      retainedOverflowWarningCount?: number
+      flushFailureCount?: number
+      [key: string]: unknown
+    }
   }>
 }

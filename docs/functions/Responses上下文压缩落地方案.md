@@ -151,11 +151,19 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 | `apiKeyId` / `teamId` / `groupId` | 保证状态只在当前授权边界内可见 |
 | `providerCode` / `providerProtocolProfileId` | 保证恢复和摘要只在当前供应商能力范围内进行 |
 | `model` / `mappedModel` | 记录下游模型和实际上游模型，供后续恢复和成本口径使用 |
-| `inputItems` / `outputItems` | 保存 Responses 语义历史，用于后续 `previous_response_id` 还原 |
-| `chatMessages` | 保存已归一化的 Chat 历史，减少重复转换和规避非法工具序列 |
-| `toolState` | 保存未闭合工具调用、最近工具结果和必须保留的工具链 |
+| `payloadRef` / `checkpointRef` | 指向本地 data 文件中的 Responses 语义历史和 Chat checkpoint |
+| `toolStateRef` | 指向本地 data 文件中的未闭合工具调用、最近工具结果和必须保留的工具链 |
 | `compactSnapshotId` | 如果该状态来自 compact，记录 compact snapshot 来源 |
 | `stateHash` / `expiresAt` | 防篡改、去重、TTL 清理和排障 |
+
+存储边界：
+
+- `JUHE_AI_CODEX_CONTEXT_DATABASE_PATH` 指向的 Codex Responses 上下文索引库只保存关系索引、授权边界、文件引用、offset、size、sha256、`lastUsedAt` 和 `expiresAt`，不得保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload；这些表不属于业务库。
+- 完整上下文落在 `backend/data/codex-context/`，按 `sessionId` 分目录保存：`session.log.jsonl` 记录增量轮次，`checkpoints/` 保存可快速恢复的 Chat checkpoint，`compacts/` 保存网关摘要 snapshot。
+- `responseId -> sessionId -> checkpointRef` 是恢复主索引；每次成功响应只追加本轮 delta 并生成必要 checkpoint，避免为每个 response id 复制一份完整历史。
+- 文件写入使用临时文件加原子 rename；SQLite 事务只在文件写入和 hash 校验成功后提交引用，避免数据库指向半文件。
+- 恢复读取必须按 SQLite 中记录的文件引用、offset、size 和 sha256 做有界读取，不扫描整个上下文目录，也不从审计日志或使用记录反查历史。
+- `lastUsedAt` 在成功读取、续写或 compact 时刷新；超过 7 天没有继续使用的 session 由后台清理删除 Codex Responses 上下文索引关系和对应 data 文件。清理后客户端再携带旧 `previous_response_id` 或 `juhecmp.v1` compact id 时返回受控的状态不存在错误。
 
 状态提交规则：
 
@@ -166,18 +174,18 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 ### Gateway summary compact
 
-Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生 opaque compact。外形满足 Codex 可反序列化要求，内容由网关签名和索引：
+Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生 opaque compact。当前已落地版本使用 inline summary envelope；后续可升级为 `compact_id + signature + compact snapshot`：
 
 ```json
 {
   "type": "compaction_summary",
-  "encrypted_content": "juhecmp.v1.<compact_id>.<signature>"
+  "encrypted_content": "juhecmp.v1.<base64url-json-summary>"
 }
 ```
 
-`encrypted_content` 对 Codex 是不透明字符串；Codex 后续会把它带回请求。网关识别 `juhecmp.v1` 后，从本地 compact snapshot 读取摘要和必要最近历史，再展开为 Chat messages 发给当前分组和当前供应商内的上游。
+`encrypted_content` 对 Codex 是不透明字符串；Codex 后续会把它带回请求。当前实现中，网关识别 `juhecmp.v1` 后直接解包摘要，并作为 Chat system summary 展开发给当前分组和当前供应商内的上游。完整 compact snapshot 索引已经在存储设计中预留，但当前版本尚未把 compact 摘要写成 `compact_id` 文件快照。
 
-compact snapshot 必须包含结构化摘要，而不是一段自由文本：
+后续 compact snapshot 增强版本应包含结构化摘要，而不是一段自由文本：
 
 | 字段 | 要求 |
 | --- | --- |
@@ -195,16 +203,16 @@ compact snapshot 必须包含结构化摘要，而不是一段自由文本：
 - 摘要兜底必须限定在当前供应商和当前 provider profile 可接受范围内，不跨供应商寻找便宜模型。
 - Chat-only bridge 的通用摘要路径固定使用 Chat Completions endpoint family，即 OpenAI-compatible 语义下的 `/v1/chat/completions`；不能在 Responses -> Chat 转换后再向 Chat 上游发送 `/v1/responses/compact`。
 - 内部摘要请求走正常候选账号筛选、账号可用性、冷却、切号、统计、审计和错误处理，但候选账号必须支持 Chat Completions 摘要请求。
-- 内部摘要请求必须设置 `purpose = codex_compaction_summary`、`disableCompact = true`，避免递归 compact。
+- 当前内部摘要请求通过合成的非流式 `/v1/chat/completions` 请求进入同分组同供应商调度；后续应补充 `purpose = codex_compaction_summary`、`disableCompact = true` 等内部元数据，避免递归 compact。
 - 如果供应商明确提供非 Responses 的 Chat 专用 compact endpoint，可以作为供应商特化摘要入口；否则使用当前分组、当前供应商内配置的 Chat Completions 摘要模型。无论哪种方式，都不能使用上游 `/responses/compact` 作为 Chat-only 摘要兜底。
-- 允许摘要模型是专用压缩模型，也允许是普通 Chat 模型，但必须通过固定 schema 校验。
+- 允许摘要模型是专用压缩模型，也允许是普通 Chat 模型。当前实现先校验摘要为非空文本；后续 snapshot 版本再提升为固定 schema 校验。
 
 摘要失败处理：
 
-- schema 校验失败时可在同一内部摘要链路内重试或切到同分组同供应商的其他摘要账户。
-- 摘要结果缺少工具状态、当前目标或关键约束时不得返回成功 compact。
+- 当前摘要为空时返回受控失败；后续结构化 schema 校验失败时可在同一内部摘要链路内重试或切到同分组同供应商的其他摘要账户。
+- 后续结构化摘要结果缺少工具状态、当前目标或关键约束时不得返回成功 compact。
 - compact 前的完整状态按 TTL 保留，支持后续重新压缩或排障，但不得无限期保存大上下文。
-- compact 成功后，后续请求优先使用 compact snapshot + 最近未压缩历史，不再把所有旧历史重新塞给 Chat 上游。
+- 当前 compact 成功后，后续请求使用 inline summary 作为 Chat system context；后续 snapshot 版本再切换为 compact snapshot + 最近未压缩历史。
 
 ## 请求处理落点
 
@@ -224,7 +232,7 @@ compact snapshot 必须包含结构化摘要，而不是一段自由文本：
 - 可接受 compact item 最小形状为 `type = "compaction"` 或 Codex 接受的别名 `type = "compaction_summary"`，且 `encrypted_content` 必须是字符串；只有类型相同但字段缺失、为 `null` 或非字符串时不能算作合法 compact 输出。
 - Codex compact SSE 的 `response.completed.response.id` 必须是字符串；缺失或非字符串会导致 Codex SSE parser 解析失败，因此同样按 compact 契约错误拦截。非流式 `/responses/compact` JSON 只按 `output` 数组校验，不要求外层 `response.id`。
 - Codex compact 期望请求在最终确认前不得把暂存的 output item 先写给客户端；如果完成时不是恰好 1 个 Codex 可接受的 compact output item，则生成 `codex_compaction_contract_mismatch` 响应语义错误，交给“响应检查策略”的系统默认规则触发服务端换号重试或最终可重试失败。
-- Chat-only gateway compact 只能发生在本轮可见输出开始前；网关可以返回自有 `compaction_summary` envelope，但必须写入 compact snapshot，并在后续请求中由网关解包恢复，不能把它标记为上游原生 compact。
+- Chat-only gateway compact 只能发生在本轮可见输出开始前；网关可以返回自有 `compaction_summary` envelope，并在后续请求中由网关解包恢复，不能把它标记为上游原生 compact。当前版本是 inline summary envelope，后续版本再落完整 compact snapshot。
 
 ## 性能边界
 

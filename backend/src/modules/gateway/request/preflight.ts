@@ -66,7 +66,10 @@ import {
   rejectMissingGatewayGroupAccess,
   rejectUnavailableGatewayApiKey
 } from './authorization-preflight.js'
-import { resolveHybridGatewayRoute } from '../hybrid/routing.service.js'
+import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
+import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
+import { applyCodexResponsesChatBridgeStatePreflight } from '../codex-responses/chat-bridge-state.js'
+import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -109,6 +112,7 @@ export interface OpenAIGatewayDispatchContext {
   groupSchedulingPolicy?: GroupSchedulingPolicy
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
+  hybridRoute?: HybridGatewayRuntimeRoute
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
   releaseClientIpConcurrency: () => void
@@ -124,6 +128,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeAccounts: UpstreamAccount[] | undefined
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
   let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined = options.responseInspectionPolicies
+  let selectedHybridRoute: HybridGatewayRuntimeRoute | undefined
 
   let identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
@@ -247,6 +252,76 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
   requestLane = imagePermissionPreflight.requestLane
 
+  const initialClientStrategy = resolveOpenAIGatewayClientStrategy(req, {
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    endpoint
+  })
+  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'normal') {
+    const previousGroupId = groupId
+    const previousBindingCount = apiKeyRecord.group_bindings?.length ?? 0
+    const normalRoute = await resolveNormalGatewayModelRoute({
+      req,
+      apiKeyRecord,
+      requestClientCompatibility: initialClientStrategy.requestClientCompatibility
+    })
+    if (normalRoute.outcome === 'selected') {
+      apiKeyRecord = normalRoute.apiKeyRecord
+      groupId = normalRoute.groupId
+      identity = {
+        systemAccountId,
+        apiKeyId,
+        groupId
+      }
+      runtimeGroupAccess = normalRoute.groupAccess
+      runtimeAccounts = normalRoute.accounts
+      runtimeAccountDispatchDiagnostics = undefined
+      runtimeResponseInspectionPolicies = normalRoute.responseInspectionPolicies
+      options.responseInspectionPolicies = normalRoute.responseInspectionPolicies
+      auditCapture.addGatewayMetadata({
+        label: 'normal_model_route',
+        metadata: {
+          requestedModel: normalRoute.requestedModel,
+          fromGroupId: previousGroupId,
+          toGroupId: normalRoute.groupId,
+          routeSource: normalRoute.routeSource,
+          matchedProviderCode: normalRoute.matchedProviderCode,
+          sourceBindingCount: previousBindingCount,
+          candidateBindingCount: normalRoute.apiKeyRecord.group_bindings?.length ?? 0
+        }
+      })
+      auditCapture.bindContext({ groupId })
+      bindRequestContextFields({
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        trafficSource
+      })
+      const targetClientIpErrorCircuit = inspectClientIpErrorCircuit({
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp,
+        endpoint
+      })
+      if (sendClientIpErrorCircuitGatewayResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: { ...baseUsageContext, groupId },
+        startedAt,
+        circuit: targetClientIpErrorCircuit,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp
+      })) {
+        return undefined
+      }
+    }
+  }
+
   if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'hybrid') {
     const hybridRoute = await resolveHybridGatewayRoute({
       req,
@@ -255,12 +330,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp,
       endpoint,
       auditCapture,
-      requestClientCompatibility: resolveOpenAIGatewayClientStrategy(req, {
-        systemAccountId,
-        apiKeyId,
-        groupId,
-        endpoint
-      }).requestClientCompatibility,
+      requestClientCompatibility: initialClientStrategy.requestClientCompatibility,
       signal
     })
     if (hybridRoute.outcome === 'failed') {
@@ -308,6 +378,15 @@ export async function prepareOpenAIGatewayDispatchContext(
       runtimeAccountDispatchDiagnostics = undefined
       runtimeResponseInspectionPolicies = hybridRoute.responseInspectionPolicies
       options.responseInspectionPolicies = hybridRoute.responseInspectionPolicies
+      selectedHybridRoute = {
+        apiKeyRecord,
+        config: hybridRoute.config,
+        scoring: hybridRoute.scoring,
+        route: hybridRoute.route,
+        targetModel: hybridRoute.targetModel,
+        affinityApplied: hybridRoute.affinityApplied,
+        qualityRetryCount: 0
+      }
       auditCapture.bindContext({ groupId })
       bindRequestContextFields({
         systemAccountId,
@@ -463,6 +542,44 @@ export async function prepareOpenAIGatewayDispatchContext(
       }
     })
   }
+  const codexBridgeCompactPreflight = await applyCodexResponsesChatBridgeCompactPreflight({
+    req,
+    res,
+    auditCapture,
+    usageContext,
+    startedAt,
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    groupAccess,
+    requestClientCompatibility: clientStrategy.requestClientCompatibility,
+    rawCandidateAccounts,
+    activeGatewaySettings,
+    clientIpAccountAvoidanceTracker,
+    requestLane,
+    groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    signal
+  })
+  if (codexBridgeCompactPreflight === 'completed') {
+    return undefined
+  }
+  const codexBridgeStatePreflight = await applyCodexResponsesChatBridgeStatePreflight({
+    req,
+    res,
+    auditCapture,
+    usageContext,
+    startedAt,
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    groupAccess,
+    requestClientCompatibility: clientStrategy.requestClientCompatibility,
+    rawCandidateAccounts,
+    signal
+  })
+  if (codexBridgeStatePreflight === 'completed') {
+    return undefined
+  }
   const candidateFilter = await filterOpenAIGatewayRequestCandidateAccounts({
     req,
     res,
@@ -559,6 +676,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],
     apiKeyRecord,
+    hybridRoute: selectedHybridRoute,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency

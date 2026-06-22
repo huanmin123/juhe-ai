@@ -78,24 +78,31 @@ try {
   assert.equal(usageScopeRequestCount(today), 9, '重新刷新应发布新的范围窗口')
 
   deleteDaily(yesterday)
-  const deletedYesterday = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+  const skippedDeletedYesterday = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
     skipIfUnchanged: true,
     jobName,
     yieldToEventLoop: async () => {}
   })
-  assert.equal(deletedYesterday.skipped, false, '非最大更新时间聚合行删除导致源表签名变化后应重新刷新')
-  assert.equal(usageScopeRequestCount(yesterday), 0, '昨日聚合行删除后不应保留旧范围窗口')
+  assert.equal(skippedDeletedYesterday.skipped, true, '排行快照水位不应为了删除感知对 usage_stats_daily 执行 COUNT(*) 扫描')
+  const explicitDeletedYesterday = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: false,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(explicitDeletedYesterday.skipped, false, '删除清理应通过显式刷新衍生窗口处理删除事实')
+  assert.equal(usageScopeRequestCount(yesterday), 0, '显式刷新后昨日聚合行删除不应保留旧范围窗口')
   assert.equal(usageScopeRequestCount(today), 9, '昨日聚合行删除后今日范围窗口仍应按剩余数据发布')
 
   deleteDaily(today)
   const deletedToday = await usageStatsRepository.refreshUsageRankSnapshotsInStages({
     stageNames,
-    skipIfUnchanged: true,
+    skipIfUnchanged: false,
     jobName,
     yieldToEventLoop: async () => {}
   })
-  assert.equal(deletedToday.skipped, false, '聚合行删除导致源表签名变化后应重新刷新')
+  assert.equal(deletedToday.skipped, false, '显式刷新应处理今日聚合行删除')
   assert.equal(usageScopeRequestCount(today), 0, '今日聚合行删除后不应保留旧范围窗口')
 
   database.prepare(`
@@ -113,7 +120,7 @@ try {
   })
   assert.equal(fourth.skipped, false, '统计窗口日期变化时应强制刷新')
 
-  console.log('用量排行快照跳过回归通过：无新增聚合数据跳过，水位或日期变化会重新刷新')
+  console.log('用量排行快照跳过回归通过：无新增聚合数据跳过，删除事实由显式刷新处理且水位不做 COUNT(*)')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

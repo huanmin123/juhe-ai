@@ -280,6 +280,7 @@ function buildHybridScoringRequestBody(
           '你是网关请求分级器，只做成本路由评分。',
           '必须根据当前请求的真实目标、完整上下文、约束数量、失败代价、所需可靠性、输出可验证性、可逆性和返工成本动态评分。',
           '不要按固定关键词、固定业务领域或固定任务名称机械分级；同一类任务可能因为上下文、风险、约束和质量要求不同而落入不同等级。',
+          '如果请求明确包含上一次执行失败、验证失败、缺文件、输出协议不合格或修复要求，要把真实返工风险纳入评分；但不能因为出现“修复”等字样机械给高等级。',
           qualityPreferenceInstruction(qualityPreference),
           '1 表示最低成本模型也足够，10 表示必须使用可用的最强模型；只输出你对本次请求的相对等级。',
           '只输出 JSON：{"level":数字,"confidence":0到1,"reason":"一句话"}。'
@@ -597,6 +598,5 @@ const scoringCacheHeaderNames = [
   'previous_response_id',
   'previous-response-id',
   'x-previous-response-id',
-  'x-client-request-id',
   'x-codex-turn-metadata'
 ]

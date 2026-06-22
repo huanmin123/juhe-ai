@@ -4,6 +4,7 @@ export type DbServiceOperationPriority = 'high' | 'normal' | 'low'
 
 const lowPriorityOperationTypes = new Set<DbServiceOperation['type']>([
   'account_test_task_maintenance',
+  'cleanup_expired_codex_context_states',
   'cleanup_expired_deleted_accounts',
   'cleanup_expired_system_sessions',
   'delete_group_account_stats_dirty_rows',

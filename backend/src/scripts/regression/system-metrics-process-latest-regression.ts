@@ -31,34 +31,12 @@ try {
   })
   assert.deepEqual(
     emptyOverview.processEventLoopLatestStatus,
-    [
-      { processRole: 'server', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'metrics-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'ingest-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'stats-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'snapshot-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'probe-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'temporary-maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'db-service', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null }
-    ],
+    expectedUnavailableProcessStatus(),
     '无最新采样时应显式返回每个进程角色的不可用状态'
   )
   assert.deepEqual(
     emptyOverview.processEventLoopPeakStatus,
-    [
-      { processRole: 'server', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'metrics-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'ingest-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'stats-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'snapshot-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'probe-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'temporary-maintenance-worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
-      { processRole: 'db-service', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null }
-    ],
+    expectedUnavailableProcessStatus(),
     '无最近 24 小时采样时应显式返回每个进程角色的峰值不可用状态'
   )
 
@@ -66,7 +44,10 @@ try {
     processRole: 'server',
     processPid: 1001,
     sampledAt: '2026-01-01T00:00:00.000Z',
-    eventLoopLagMs: 11
+    eventLoopLagMs: 11,
+    processRssBytes: 1100,
+    processHeapUsedBytes: 510,
+    processHeapTotalBytes: 900
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'db-service',
@@ -135,6 +116,9 @@ try {
   assert.deepEqual([...latestStatusByRole.keys()], ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'], '最新进程样本可用性应固定覆盖所有角色')
   assert.equal(latestStatusByRole.get('server')?.sampleAvailable, true, 'server 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 最新样本不应被 worker 连续样本挤掉')
+  assert.equal(latestStatusByRole.get('server')?.processRssBytes, 1100, 'server 最新样本应带进程 RSS 内存')
+  assert.equal(latestStatusByRole.get('server')?.processHeapUsedBytes, 510, 'server 最新样本应带进程 heap used')
+  assert.equal(latestStatusByRole.get('server')?.processHeapTotalBytes, 900, 'server 最新样本应带进程 heap total')
   assert.equal(latestStatusByRole.get('worker')?.sampleAvailable, true, 'worker 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('worker')?.processPid, 2124, 'worker 可用性行应带最新 PID')
   assert.equal(latestStatusByRole.get('metrics-worker')?.sampleAvailable, true, 'metrics-worker 有最新采样时应显式标记可用')
@@ -169,14 +153,20 @@ try {
     processRole: 'server',
     processPid: 1002,
     sampledAt: recentMinute.toISOString(),
-    eventLoopLagMs: 10
+    eventLoopLagMs: 10,
+    processRssBytes: 100 * 1024 * 1024,
+    processHeapUsedBytes: 40 * 1024 * 1024,
+    processHeapTotalBytes: 80 * 1024 * 1024
   })
   const serverPeakAt = new Date(recentMinute.getTime() + 30_000).toISOString()
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
     processPid: 1002,
     sampledAt: serverPeakAt,
-    eventLoopLagMs: 20
+    eventLoopLagMs: 20,
+    processRssBytes: 130 * 1024 * 1024,
+    processHeapUsedBytes: 50 * 1024 * 1024,
+    processHeapTotalBytes: 90 * 1024 * 1024
   })
   const workerPeakAt = new Date(recentMinute.getTime() + 10_000).toISOString()
   usageStatsRepository.insertProcessEventLoopSample({
@@ -207,6 +197,8 @@ try {
   assert.match(serverMinuteBucket.statMinute, /^\d{4}-\d{2}-\d{2}T\d{2}$/, '单日窗口内事件循环趋势桶应精确到小时')
   assert.equal(serverMinuteBucket.eventLoopLagMsAvg, 15, '同一窗口桶内多个采样应按缓存计算平均延迟')
   assert.equal(serverMinuteBucket.eventLoopLagMsMax, 20, '窗口桶应保留峰值延迟，便于定位尖峰')
+  assert.equal(serverMinuteBucket.processRssBytesMax, 130 * 1024 * 1024, '窗口桶应保留进程 RSS 峰值，便于发现 worker 内存爬升')
+  assert.equal(serverMinuteBucket.processHeapUsedBytesMax, 50 * 1024 * 1024, '窗口桶应保留进程 heap used 峰值')
 
   console.log('系统指标进程事件循环回归通过：最新样本和 24 小时峰值按进程角色独立计算')
 } finally {
@@ -216,4 +208,30 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function expectedUnavailableProcessStatus() {
+  return [
+    'server',
+    'worker',
+    'metrics-worker',
+    'ingest-worker',
+    'stats-worker',
+    'snapshot-worker',
+    'probe-worker',
+    'maintenance-worker',
+    'temporary-maintenance-worker',
+    'db-service'
+  ].map((processRole) => ({
+    processRole,
+    sampleAvailable: false,
+    processPid: null,
+    sampledAt: null,
+    eventLoopLagMs: null,
+    processRssBytes: null,
+    processHeapUsedBytes: null,
+    processHeapTotalBytes: null,
+    processExternalBytes: null,
+    processArrayBuffersBytes: null
+  }))
 }

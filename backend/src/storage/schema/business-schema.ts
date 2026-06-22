@@ -246,6 +246,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       schedulable INTEGER NOT NULL DEFAULT 1,
       availability_schedule_json TEXT,
       availability_schedule_active INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_next_check_at TEXT,
       notes TEXT,
       account_expires_at TEXT,
       last_used_at TEXT,
@@ -589,6 +590,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
       availability_schedule_active INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_next_check_at TEXT,
       last_used_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -699,6 +701,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_availability_schedule_status_sync
       ON accounts(availability_schedule_active, id)
       WHERE availability_schedule_json IS NOT NULL AND deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_availability_schedule_next_check
+      ON accounts(availability_schedule_next_check_at ASC, id ASC)
+      WHERE availability_schedule_json IS NOT NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due
@@ -786,6 +791,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE quota_limits_json IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_status_sync
       ON api_keys(availability_schedule_active, updated_at ASC, id ASC)
+      WHERE availability_schedule_json IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_next_check
+      ON api_keys(availability_schedule_next_check_at ASC, id ASC)
       WHERE availability_schedule_json IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);

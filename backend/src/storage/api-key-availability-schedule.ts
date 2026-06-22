@@ -9,6 +9,8 @@ import { DEFAULT_USAGE_STATS_TIMEZONE, usageStatsTimezone } from './usage-stats-
 const allDaysOfWeek = [1, 2, 3, 4, 5, 6, 7]
 const maxScheduleWindows = 32
 const maxScheduleExceptions = 128
+const scheduleNextCheckHorizonDays = 14
+const scheduleNextCheckFallbackDays = 7
 const timePattern = /^([01]\d|2[0-3]):([0-5]\d)$/
 const datePattern = /^\d{4}-\d{2}-\d{2}$/
 const scheduleInputKeys = ['enabled', 'timezone', 'mode', 'windows', 'dateRange', 'exceptions'] as const
@@ -158,6 +160,20 @@ export function latestApiKeyAvailabilityScheduleStartEvent(
     status: 'active',
     eventKey: `${latest.dateKey}:${latest.minuteOfDay}:start:${sameBoundaryCandidates.map((candidate) => candidate.key).sort().join('|')}`
   }
+}
+
+export function nextApiKeyAvailabilityScheduleCheckAt(
+  schedule: ApiKeyAvailabilitySchedule | undefined,
+  now = new Date()
+): string | null {
+  if (!schedule?.enabled || !Number.isFinite(now.getTime())) return null
+  const candidates = scheduleBoundaryUtcTimes(schedule, now)
+    .filter((time) => time > now.getTime())
+    .sort((left, right) => left - right)
+  const next = candidates[0]
+  return next === undefined
+    ? new Date(now.getTime() + scheduleNextCheckFallbackDays * 24 * 60 * 60 * 1000).toISOString()
+    : new Date(next).toISOString()
 }
 
 export function apiKeyScheduleCacheTtlMs(now = Date.now()): number {
@@ -377,6 +393,76 @@ function dueScheduleWindowEvents(schedule: ApiKeyAvailabilitySchedule, current: 
     events.push(...schedule.windows.flatMap((window, index) => scheduleWindowEvents(current, startDateKey, window, `window:${index}`)))
   }
   return events
+}
+
+function scheduleBoundaryUtcTimes(schedule: ApiKeyAvailabilitySchedule, now: Date): number[] {
+  const current = zonedDateTimeParts(now, schedule.timezone)
+  const dateKeys = scheduleBoundaryCandidateDateKeys(current.dateKey)
+  const times = new Set<number>()
+  for (const dateKey of dateKeys) {
+    if (isDateInScheduleRange(dateKey, schedule)) {
+      const exception = schedule.exceptions?.find((item) => item.date === dateKey)
+      if (exception?.action === 'allow') {
+        for (const window of exception.windows) {
+          addBoundaryUtcTime(times, dateKey, minuteOfDay(window.start), schedule.timezone)
+          addBoundaryUtcTime(times, windowEndDateKey(dateKey, window.start, window.end), minuteOfDay(window.end), schedule.timezone)
+        }
+      } else if (exception?.action !== 'deny') {
+        for (const window of schedule.windows) {
+          if (!new Set(window.daysOfWeek).has(dayOfWeekForDateKey(dateKey))) continue
+          addBoundaryUtcTime(times, dateKey, minuteOfDay(window.start), schedule.timezone)
+          addBoundaryUtcTime(times, windowEndDateKey(dateKey, window.start, window.end), minuteOfDay(window.end), schedule.timezone)
+        }
+      }
+    }
+  }
+  return [...times]
+}
+
+function scheduleBoundaryCandidateDateKeys(currentDateKey: string): string[] {
+  const keys: string[] = []
+  const start = new Date(`${currentDateKey}T00:00:00.000Z`)
+  start.setUTCDate(start.getUTCDate() - 1)
+  for (let offset = 0; offset <= scheduleNextCheckHorizonDays + 2; offset += 1) {
+    const date = new Date(start)
+    date.setUTCDate(start.getUTCDate() + offset)
+    keys.push(date.toISOString().slice(0, 10))
+  }
+  return keys
+}
+
+function windowEndDateKey(startDateKey: string, startText: string, endText: string): string {
+  return minuteOfDay(startText) < minuteOfDay(endText) ? startDateKey : nextDateKey(startDateKey)
+}
+
+function addBoundaryUtcTime(times: Set<number>, dateKey: string, minute: number, timezone: string): void {
+  const utcTime = zonedLocalMinuteToUtcTime(dateKey, minute, timezone)
+  if (utcTime !== undefined) times.add(utcTime)
+}
+
+function zonedLocalMinuteToUtcTime(dateKey: string, minute: number, timezone: string): number | undefined {
+  const [yearText, monthText, dayText] = dateKey.split('-')
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const day = Number(dayText)
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return undefined
+  let guess = Date.UTC(year, month - 1, day, Math.floor(minute / 60), minute % 60)
+  const targetSerial = localMinuteSerial(dateKey, minute)
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const parts = zonedDateTimeParts(new Date(guess), timezone)
+    const currentSerial = localMinuteSerial(parts.dateKey, parts.minuteOfDay)
+    const deltaMinutes = targetSerial - currentSerial
+    if (deltaMinutes === 0) {
+      return guess
+    }
+    guess += deltaMinutes * 60 * 1000
+  }
+  const verified = zonedDateTimeParts(new Date(guess), timezone)
+  return verified.dateKey === dateKey && verified.minuteOfDay === minute ? guess : undefined
+}
+
+function localMinuteSerial(dateKey: string, minute: number): number {
+  return Math.trunc(new Date(`${dateKey}T00:00:00.000Z`).getTime() / 60000) + minute
 }
 
 function scheduleWindowOccurrence(

@@ -1,5 +1,6 @@
 import {
   dueApiKeyAvailabilityScheduleEvent,
+  nextApiKeyAvailabilityScheduleCheckAt,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
 import {
@@ -14,11 +15,13 @@ interface ScheduledApiKeyStatusRow {
   id: string
   availability_schedule_json: string | null
   availability_schedule_active: number
+  availability_schedule_next_check_at: string | null
 }
 
 interface ScheduledApiKeyStatusUpdate {
   id: string
-  active: number
+  active?: number
+  nextCheckAt: string | null
   eventKey?: string
   status?: 'active' | 'disabled'
 }
@@ -34,16 +37,12 @@ export interface ApiKeyScheduleStatusSyncResult {
   invalidIds: string[]
 }
 
+const availabilityScheduleStatusSyncBatchLimit = 500
+
 export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKeyScheduleStatusSyncResult {
   const database = getBusinessDatabase()
-  const rows = database
-    .prepare(`
-      SELECT id, availability_schedule_json, availability_schedule_active
-      FROM api_keys
-      WHERE availability_schedule_json IS NOT NULL
-      ORDER BY updated_at ASC, id ASC
-    `)
-    .all() as unknown as ScheduledApiKeyStatusRow[]
+  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
+  const rows = listScheduledApiKeyStatusRows(database, updatedAt)
   const result: ApiKeyScheduleStatusSyncResult = {
     scanned: rows.length,
     activated: 0,
@@ -59,14 +58,17 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
   for (const row of rows) {
     try {
       const schedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
+      const nextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(schedule, now)
       const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
       if (!event) {
+        updates.push({ id: row.id, nextCheckAt })
         result.unchanged += 1
         continue
       }
       updates.push({
         id: row.id,
         active: event.status === 'active' ? 1 : 0,
+        nextCheckAt,
         eventKey: `${row.id}:${event.eventKey}`,
         status: event.status
       })
@@ -74,7 +76,9 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
       result.invalid += 1
       result.invalidIds.push(row.id)
       if (row.availability_schedule_active !== 0) {
-        updates.push({ id: row.id, active: 0 })
+        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      } else {
+        updates.push({ id: row.id, nextCheckAt: null })
       }
     }
   }
@@ -83,7 +87,6 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
     return result
   }
 
-  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const insertEvent = database.prepare(`
@@ -92,21 +95,34 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
     `)
     const updateStatus = database.prepare(`
       UPDATE api_keys
-      SET availability_schedule_active = ?, updated_at = ?
+      SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
       WHERE id = ?
         AND availability_schedule_json IS NOT NULL
         AND availability_schedule_active <> ?
+    `)
+    const updateNextCheck = database.prepare(`
+      UPDATE api_keys
+      SET availability_schedule_next_check_at = ?
+      WHERE id = ?
+        AND availability_schedule_json IS NOT NULL
+        AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
     `)
     for (const update of updates) {
       if (update.eventKey && update.status) {
         const eventChanges = insertEvent.run(update.eventKey, update.id, update.status, updatedAt).changes ?? 0
         if (eventChanges <= 0) {
           result.skipped += 1
+          updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
           continue
         }
       }
-      const changes = updateStatus.run(update.active, updatedAt, update.id, update.active).changes ?? 0
+      if (update.active === undefined) {
+        updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
+        continue
+      }
+      const changes = updateStatus.run(update.active, update.nextCheckAt, updatedAt, update.id, update.active).changes ?? 0
       if (changes <= 0) {
+        updateNextCheck.run(update.nextCheckAt, update.id, update.nextCheckAt)
         result.unchanged += 1
         continue
       }
@@ -127,4 +143,21 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
   }
 
   return result
+}
+
+function listScheduledApiKeyStatusRows(database: ReturnType<typeof getBusinessDatabase>, dueAt: string): ScheduledApiKeyStatusRow[] {
+  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  return database
+    .prepare(`
+      SELECT ${selectColumns}
+      FROM api_keys
+      WHERE availability_schedule_json IS NOT NULL
+        AND (
+          availability_schedule_next_check_at IS NULL
+          OR availability_schedule_next_check_at <= ?
+        )
+      ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(dueAt, availabilityScheduleStatusSyncBatchLimit) as unknown as ScheduledApiKeyStatusRow[]
 }

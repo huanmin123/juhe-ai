@@ -56,7 +56,7 @@
 
 历史工具调用会先做 Chat 消息不变量归一化：一个 assistant `tool_calls` 消息后面必须紧跟对应 `tool` 输出，夹在 `function_call` 和 `function_call_output` 之间的 `developer/message` 会延后到工具输出之后；并行工具调用即使出现 `output A -> developer -> output B` 交错，也会等已登记工具输出归齐后再写入 Chat history。没有输出的 dangling `function_call`、找不到调用的 orphan `function_call_output` 和普通 `message role=tool` 会丢弃，避免把上游很容易 400 的非法 Chat history 暴露给客户端。
 
-当前实现不透传 `web_search`、namespace tool、custom tool、MCP tool、tool search、local shell call、image generation、Responses `include`、`store`、`truncation`、`context_management`、`previous_response_id` 和 `/responses/compact` 语义。`previous_response_id` 代表服务端持有上一轮 Responses 状态，Chat-only bridge 当前没有这份状态，会在请求准备阶段返回 `unsupported_codex_bridge_previous_response_id`，不命中上游、不污染账号健康。`/responses/compact` 需要返回 Codex / Responses 可继续消费的 compact output；当前 Chat-only bridge 默认返回 `unsupported_codex_bridge_compact`。目标设计中，Chat-only bridge 可以通过网关自有状态和 `juhecmp.v1` envelope 承接 compact，但不能把该能力标记为上游原生 Responses compact。
+当前实现不透传 `web_search`、namespace tool、custom tool、MCP tool、tool search、local shell call、image generation、Responses `include`、`store`、`truncation` 和 `context_management` 等原生 Responses 语义。`previous_response_id` 已由 Chat-only bridge 的网关状态层在服务端消费：首轮成功后保存 response 状态，后续同 API Key、同分组、同供应商 profile 的请求可恢复历史并追加本轮 input；找不到、过期或跨边界时受控失败，不命中上游。`/responses/compact` 已支持网关摘要压缩：网关还原上下文后，在当前分组、当前供应商内发起内部 Chat Completions 摘要请求，再返回 Codex 可反序列化的 `compaction_summary`。该能力不是上游原生 Responses compact，也不能跨网关或跨供应商消费。
 
 请求头会清理 Codex / OpenAI 专属元数据，例如 `openai-beta`、`originator`、`session-id`、`thread-id`、`x-client-request-id`、`x-codex-*`，并把上游 `accept` 固定为 `text/event-stream`。
 
@@ -125,8 +125,8 @@ usage 策略：
 
 - 原生 Responses / OpenAI OAuth Codex 路径：可以按账号能力承接 `POST /responses/compact` 和 Codex Remote Compaction V2 的 `compaction_trigger`。网关不生成 compact 内容，只透传请求，并在返回侧做 Codex compact 契约检查。
 - Codex compact 契约检查：识别 `/responses/compact` 或带 `compaction_trigger` 的 Codex `/responses` 请求后，SSE 返回必须在完成时恰好包含 1 个 Codex 可反序列化的 `compaction` / `compaction_summary` item，且 `encrypted_content` 必须是字符串；否则在写给客户端前拦截并触发服务端换号或返回 Codex 可重试失败。
-- Chat-only bridge 当前实现：不支持 `/responses/compact`，不把 Chat 摘要伪装成原生 Responses compact。需要 compact 时先返回受控错误，避免静默丢上下文。
-- Chat-only bridge 目标设计：由网关托管 `previous_response_id` 对应的完整 Responses / Chat 历史；compact 时先还原完整上下文，再在当前分组和当前供应商内调度 Chat Completions 摘要请求，保存 compact snapshot，并返回 `type=compaction_summary`、`encrypted_content=juhecmp.v1.<compact_id>.<signature>` 的网关自有 envelope。
+- Chat-only bridge 当前实现：由网关托管 `previous_response_id` 对应的 Responses input/output 增量状态；状态关系索引写入 `JUHE_AI_CODEX_CONTEXT_DATABASE_PATH` 指向的 Codex Responses 上下文索引库，完整上下文 payload 写入 `JUHE_AI_CODEX_CONTEXT_ROOT`，不进入业务库。compact 时先还原完整上下文，再在当前分组和当前供应商内调度非流式 Chat Completions 摘要请求，返回 `type=compaction_summary`、`encrypted_content=juhecmp.v1.<base64url-json-summary>` 的网关自有 envelope。后续请求带回该 item 时，bridge 会解包为 Chat system summary。
+- Chat-only bridge 后续增强：把 inline summary envelope 升级为 compact snapshot 索引，保存 `compact_id`、摘要、最近未压缩历史和校验签名；这仍然是网关自有 compact，不等价于上游原生 Responses compact。
 - 供应商自有压缩能力：如果供应商提供非 Responses 的 Chat 侧 `/compact` 或等价摘要接口，可以作为 Chat-only gateway compact 的摘要来源，但返回结果仍要落到网关 compact snapshot；通用兜底必须走 Chat Completions，即 OpenAI-compatible 语义下的 `/v1/chat/completions`，不能把已转换为 Chat 的压缩请求继续发给上游 `/v1/responses/compact`。只有供应商明确提供可被后续原生 `/responses` 直接消费的 compact output，才属于原生 Responses compact。
 
 ### `previous_response_id` 目标处理
@@ -148,24 +148,24 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 通用摘要请求固定使用 Chat Completions endpoint family；上游不能收到 `/responses/compact`。
 - 内部摘要请求必须设置 `disableCompact = true`，避免递归 compact。
 
-摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。无论来源如何，输出都必须通过网关 schema 校验并保存为 compact snapshot。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关解包恢复为 Chat summary + 最近未压缩历史。
+摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。当前实现使用普通非流式 Chat Completions，并校验返回摘要必须是非空文本。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关解包恢复为 Chat summary。
 
 ## 已验证结论
 
 - 已用 Codex 源码确认：普通 function call 应通过最终 `response.output_item.done` 的 `type=function_call` item 交给 Codex；`response.function_call_arguments.delta` 当前不被普通 function call 路径消费。
 - 已用 Codex 源码确认：Codex input / output item 覆盖 `function_call_output`、`custom_tool_call_output`、`input_image`、`reasoning`、`web_search_call`、`image_generation_call`、`compaction` 等多个形态；Chat bridge 只覆盖其中能无损或低风险映射到 Chat Completions 的子集。
-- GLM mock AI 已覆盖显式 `client_compatibility=codex_responses` 时 `/v1/responses` 改写到 `/chat/completions`、function tools 透传、web_search 丢弃、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 和 `/responses/compact` 受控拒绝、Chat text delta 转 Responses text delta、Chat tool_calls 转 Responses function_call item；同时覆盖 GLM Coding 账号选择 `openai_standard` 时拒绝 Codex bridge 且不命中上游。
-- DeepSeek mock AI 已覆盖 Codex bridge 的文本、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 和 `/responses/compact` 受控拒绝、function tool、input_image data URL 和 usage 映射。
-- 本地真实 CLI 回归已覆盖 Codex CLI -> 本地网关 -> DeepSeek Chat bridge 的基础链路，但仍只是基础文本链路，不代表完整 Codex 协议面。
+- GLM mock AI 已覆盖显式 `client_compatibility=codex_responses` 时 `/v1/responses` 改写到 `/chat/completions`、function tools 透传、web_search 丢弃、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、Chat text delta 转 Responses text delta、Chat tool_calls 转 Responses function_call item；同时覆盖 GLM Coding 账号选择 `openai_standard` 时拒绝 Codex bridge 且不命中上游。
+- DeepSeek mock AI 已覆盖 Codex bridge 的文本、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL 和 usage 映射。
+- 本地真实 CLI 回归已覆盖 Claude Code、Codex CLI、opencode -> 本地网关 -> 上游 mock 的基础链路，但仍只是基础文本链路，不代表完整 Codex 协议面。
 - 真实 vsllm.com 已验证 `glm-5.2`、`glm-5-turbo`、`deepseek-v4-flash` 和 `deepseek-v4-pro`：Chat 和 Codex bridge 主路径均可通。
 
 ## 当前限制
 
 - 非 2xx Chat 上游错误当前仍走现有网关错误处理和统一失败响应，不在桥接层主动包装成 Responses `response.failed`。
 - 首版只支持流式 Codex 请求，不承接非流式 `/v1/responses`。
-- 当前不支持 Responses namespace tools、web_search、custom tool、MCP tool、tool search、local shell call、image generation、computer use 和 `/responses/compact`。
-- 当前实现不支持 HTTP `previous_response_id` 增量上下文；目标设计需要服务端保存或重放上一轮 Responses output item，不能用无状态 Chat body 可靠模拟。
-- 当前实现不支持 gateway summary compact；目标设计允许网关自有 `juhecmp.v1` envelope，但不能宣称为上游原生 Responses compact。
+- 当前不支持 Responses namespace tools、web_search、custom tool、MCP tool、tool search、local shell call、image generation 和 computer use。
+- `previous_response_id` 当前只在 Chat-only bridge 的本网关 file-backed 状态层内有效；跨网关、跨 API Key、跨分组、跨供应商或 7 天未使用过期后都会受控失败。
+- Gateway summary compact 当前是 inline summary envelope，还不是完整 compact snapshot；它只能恢复为 Chat summary，不能宣称为原生 Responses opaque compact。
 - 当前只把 `reasoning_content` 映射成 reasoning summary；不支持 encrypted reasoning 的生成，也不承诺和原生 OpenAI reasoning state 等价。
 - 如果模型频繁只输出 reasoning 而没有 `content`，Codex bridge 会只有 reasoning item、没有普通 assistant 文本；需要用模型参数、提示词或供应商策略处理。
 - input image 只做 data URL / URL 到 Chat `image_url` content part 的结构转换；没有覆盖 Codex App 图片视图、image generation output item 或非视觉模型的受控降级。
@@ -175,6 +175,6 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 把 bridge 标记写入审计摘要，便于排障区分下游 `/responses` 和上游 `/chat/completions`。
 - 补充 bridge 标记的结构化审计字段和后台探针筛选条件，避免只靠路径和日志文本判断是否走了桥接。
 - 补充 Codex bridge 的真实 CLI 工具调用场景，覆盖真实 Codex CLI 产生 `function_call_output` 后的下一轮请求。
-- 落地 `previous_response_id` 状态层，覆盖同 API Key 同分组同供应商恢复、跨边界拒绝、过期拒绝和失败流不提交状态。
-- 落地 Chat-only gateway summary compact，覆盖同分组同供应商内部 Chat Completions 摘要调度、摘要 schema 校验、compact snapshot 恢复、禁止上游 `/responses/compact` 和递归 compact 禁止。
+- 补充 compact snapshot 索引，实现 `juhecmp.v1.<compact_id>.<signature>`，保存结构化摘要、最近未压缩历史和校验信息。
+- 为 gateway summary compact 增加更严格的结构化摘要 schema 校验、内部请求 purpose 标记和完整用量记录。
 - 增加 Chat JSON -> Responses JSON 的非流式桥接，前提是有明确客户端需求和真实验证。

@@ -151,6 +151,8 @@
     "test:base-list-page-window": "tsx src/scripts/regression/base-list-page-window-regression.ts",
     "test:log-maintenance-bounded-scan": "tsx src/scripts/regression/log-maintenance-bounded-scan-regression.ts",
     "test:usage-stats-batch-statement": "tsx src/scripts/regression/usage-stats-batch-statement-regression.ts",
+    "test:stats-aggregation-batch-yield": "tsx src/scripts/regression/stats-aggregation-batch-yield-regression.ts",
+    "test:sqlite-high-volume-guards": "tsx src/scripts/regression/sqlite-high-volume-guards-regression.ts",
     "test:usage-quota-hourly-window-config": "tsx src/scripts/regression/usage-quota-hourly-window-config-regression.ts",
     "test:usage-overview-window-atomic": "tsx src/scripts/regression/usage-overview-window-atomic-regression.ts",
     "test:usage-rank-staged-refresh": "tsx src/scripts/regression/usage-rank-staged-refresh-regression.ts",

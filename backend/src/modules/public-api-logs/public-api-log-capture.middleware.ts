@@ -15,6 +15,9 @@ interface CapturedSnapshot {
 }
 
 const publicApiSnapshotMaxBytes = 32 * 1024
+const publicApiSnapshotMaxDepth = 8
+const publicApiSnapshotMaxEntries = 200
+const publicApiSnapshotStringPreviewBytes = 4096
 
 export function capturePublicApiLog(req: Request, res: Response, next: NextFunction): void {
   const startedAt = new Date()
@@ -206,7 +209,6 @@ function buildResponseSnapshot(payload: ResponsePayload, statusCode: number): Ca
 
 function boundedSnapshot(data: Record<string, unknown>, sizeBytes: number): CapturedSnapshot {
   const sanitizedSizeBytes = Math.max(0, Math.trunc(sizeBytes))
-  const json = safeJsonStringify(data)
   if (isSnapshotEmpty(data)) {
     return {
       data,
@@ -214,10 +216,12 @@ function boundedSnapshot(data: Record<string, unknown>, sizeBytes: number): Capt
       sizeBytes: sanitizedSizeBytes
     }
   }
+  const bounded = boundedSnapshotValue(data, publicApiSnapshotMaxBytes)
+  const json = safeJsonStringify(bounded.value)
   const jsonSizeBytes = Buffer.byteLength(json, 'utf8')
-  if (jsonSizeBytes <= publicApiSnapshotMaxBytes) {
+  if (!bounded.truncated && jsonSizeBytes <= publicApiSnapshotMaxBytes) {
     return {
-      data,
+      data: bounded.value as Record<string, unknown>,
       status: 'complete',
       sizeBytes: sanitizedSizeBytes || jsonSizeBytes
     }
@@ -225,24 +229,31 @@ function boundedSnapshot(data: Record<string, unknown>, sizeBytes: number): Capt
   return {
     data: {
       truncated: true,
-      originalJsonSizeBytes: jsonSizeBytes,
+      originalJsonSizeBytes: sanitizedSizeBytes || Math.max(jsonSizeBytes, publicApiSnapshotMaxBytes + 1),
       preview: sliceUtf8(json, publicApiSnapshotMaxBytes)
     },
     status: 'truncated',
-    sizeBytes: sanitizedSizeBytes || jsonSizeBytes
+    sizeBytes: sanitizedSizeBytes || Math.max(jsonSizeBytes, publicApiSnapshotMaxBytes + 1)
   }
 }
 
 function isSnapshotEmpty(data: Record<string, unknown>): boolean {
   const body = data.body
   const query = data.query
-  if (body !== undefined && body !== null && !(typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 0)) {
+  if (body !== undefined && body !== null && !(typeof body === 'object' && !Array.isArray(body) && !hasOwnEnumerableKey(body))) {
     return false
   }
-  if (query && typeof query === 'object' && !Array.isArray(query) && Object.keys(query).length > 0) {
+  if (query && typeof query === 'object' && !Array.isArray(query) && hasOwnEnumerableKey(query)) {
     return false
   }
   return body === undefined || body === null
+}
+
+function hasOwnEnumerableKey(value: object): boolean {
+  for (const key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true
+  }
+  return false
 }
 
 function extractPublicApiErrorInfo(payload: ResponsePayload, statusCode: number): { errorCode?: string; errorMessage?: string } {
@@ -312,8 +323,142 @@ function estimatePayloadSizeBytes(value: unknown): number {
   if (value === undefined || value === null) return 0
   if (Buffer.isBuffer(value)) return value.byteLength
   if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
-  const json = safeJsonStringify(value)
-  return Buffer.byteLength(json, 'utf8')
+  const bounded = boundedSnapshotValue(value, publicApiSnapshotMaxBytes + 1)
+  const json = safeJsonStringify(bounded.value)
+  const jsonSizeBytes = Buffer.byteLength(json, 'utf8')
+  return bounded.truncated ? Math.max(jsonSizeBytes, publicApiSnapshotMaxBytes + 1) : jsonSizeBytes
+}
+
+interface SnapshotBudgetState {
+  remainingBytes: number
+  truncated: boolean
+  seen: WeakSet<object>
+}
+
+function boundedSnapshotValue(value: unknown, maxBytes: number): { value: unknown; truncated: boolean } {
+  const state: SnapshotBudgetState = {
+    remainingBytes: Math.max(1, Math.trunc(maxBytes)),
+    truncated: false,
+    seen: new WeakSet<object>()
+  }
+  return {
+    value: cloneSnapshotValue(value, state, 0),
+    truncated: state.truncated
+  }
+}
+
+function cloneSnapshotValue(value: unknown, state: SnapshotBudgetState, depth: number): unknown {
+  if (state.remainingBytes <= 0) return truncatedSnapshotMarker(state)
+  if (value === undefined || value === null) {
+    chargeSnapshotBytes(state, 4)
+    return value
+  }
+  if (typeof value === 'string') return cloneSnapshotString(value, state)
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    const text = JSON.stringify(value) ?? 'null'
+    chargeSnapshotBytes(state, Buffer.byteLength(text, 'utf8'))
+    return value
+  }
+  if (typeof value === 'bigint') {
+    return cloneSnapshotString(value.toString(), state)
+  }
+  if (typeof value !== 'object') {
+    return cloneSnapshotString(String(value), state)
+  }
+  if (depth >= publicApiSnapshotMaxDepth) {
+    return truncatedSnapshotMarker(state)
+  }
+  if (state.seen.has(value)) {
+    return cloneSnapshotString('[Circular]', state)
+  }
+  state.seen.add(value)
+  try {
+    if (Buffer.isBuffer(value)) {
+      return cloneSnapshotBuffer(value, state)
+    }
+    if (value instanceof Date) {
+      return cloneSnapshotString(value.toISOString(), state)
+    }
+    if (Array.isArray(value)) {
+      return cloneSnapshotArray(value, state, depth)
+    }
+    return cloneSnapshotObject(value as Record<string, unknown>, state, depth)
+  } finally {
+    state.seen.delete(value)
+  }
+}
+
+function cloneSnapshotArray(value: unknown[], state: SnapshotBudgetState, depth: number): unknown[] {
+  chargeSnapshotBytes(state, 2)
+  const output: unknown[] = []
+  const length = Math.min(value.length, publicApiSnapshotMaxEntries)
+  for (let index = 0; index < length; index += 1) {
+    if (state.remainingBytes <= 0) break
+    output.push(cloneSnapshotValue(value[index], state, depth + 1))
+  }
+  if (value.length > length || state.remainingBytes <= 0) {
+    output.push(truncatedSnapshotMarker(state))
+  }
+  return output
+}
+
+function cloneSnapshotObject(value: Record<string, unknown>, state: SnapshotBudgetState, depth: number): Record<string, unknown> {
+  chargeSnapshotBytes(state, 2)
+  const output: Record<string, unknown> = {}
+  let count = 0
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue
+    if (count >= publicApiSnapshotMaxEntries || state.remainingBytes <= 0) {
+      output.__truncated = true
+      state.truncated = true
+      break
+    }
+    count += 1
+    chargeSnapshotBytes(state, Buffer.byteLength(key, 'utf8') + 4)
+    try {
+      output[key] = cloneSnapshotValue(value[key], state, depth + 1)
+    } catch {
+      output[key] = '[unavailable]'
+    }
+  }
+  return output
+}
+
+function cloneSnapshotBuffer(value: Buffer, state: SnapshotBudgetState): Record<string, unknown> {
+  const previewBytes = Math.min(value.byteLength, publicApiSnapshotStringPreviewBytes, Math.max(0, state.remainingBytes))
+  chargeSnapshotBytes(state, previewBytes + 64)
+  if (value.byteLength > previewBytes) state.truncated = true
+  return {
+    type: 'Buffer',
+    byteLength: value.byteLength,
+    preview: sliceUtf8(value.subarray(0, previewBytes).toString('utf8'), previewBytes),
+    truncated: value.byteLength > previewBytes
+  }
+}
+
+function cloneSnapshotString(value: string, state: SnapshotBudgetState): string {
+  const size = Buffer.byteLength(value, 'utf8')
+  if (size <= state.remainingBytes) {
+    chargeSnapshotBytes(state, size)
+    return value
+  }
+  state.truncated = true
+  const previewBytes = Math.max(0, Math.min(state.remainingBytes, publicApiSnapshotStringPreviewBytes))
+  state.remainingBytes = 0
+  return `${sliceUtf8(value, previewBytes)}...[truncated]`
+}
+
+function truncatedSnapshotMarker(state: SnapshotBudgetState): string {
+  state.truncated = true
+  return '[truncated]'
+}
+
+function chargeSnapshotBytes(state: SnapshotBudgetState, bytes: number): void {
+  state.remainingBytes -= Math.max(0, Math.trunc(bytes))
+  if (state.remainingBytes < 0) {
+    state.truncated = true
+    state.remainingBytes = 0
+  }
 }
 
 function safeJsonStringify(value: unknown): string {

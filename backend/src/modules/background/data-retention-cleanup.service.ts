@@ -18,6 +18,7 @@ import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } fr
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
+import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 7
@@ -114,6 +115,10 @@ export interface DataRetentionCleanupResult {
   processEventLoopTrendWindows: number
   tableStorageSnapshots: number
   systemSessions: number
+  codexContextSessions: number
+  codexContextResponses: number
+  codexContextCompacts: number
+  codexContextFiles: number
 }
 
 export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanupResult> {
@@ -194,6 +199,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
         })
         return cleanupResult?.deleted ?? 0
       }, batchSize, maxBatches)
+      await cleanupCodexContextStatesInBatches(result, new Date(now).toISOString(), batchSize, maxBatches)
     }
 
     logger.info({
@@ -320,6 +326,33 @@ async function cleanupRetentionInBatches(
     addCleanupResult(result, deleted)
     await yieldToEventLoop()
     if (sumDeleted(deleted) === 0) {
+      break
+    }
+    await pauseBetweenCleanupBatches()
+  }
+}
+
+async function cleanupCodexContextStatesInBatches(
+  result: DataRetentionCleanupResult,
+  expiredBefore: string,
+  batchSize: number,
+  maxBatches: number
+): Promise<void> {
+  for (let index = 0; index < maxBatches; index += 1) {
+    const cleanupResult = await requestBackgroundWorkerDbService({
+      type: 'cleanup_expired_codex_context_states',
+      expiredBefore,
+      limit: batchSize
+    })
+    if (!cleanupResult) {
+      break
+    }
+    result.codexContextSessions += cleanupResult.deletedSessions
+    result.codexContextResponses += cleanupResult.deletedResponses
+    result.codexContextCompacts += cleanupResult.deletedCompacts
+    result.codexContextFiles += await deleteCodexContextStorageKeys(cleanupResult.storageKeys)
+    await yieldToEventLoop()
+    if (!cleanupResult.hasMore || cleanupResult.deletedSessions < batchSize) {
       break
     }
     await pauseBetweenCleanupBatches()
@@ -499,7 +532,11 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     processEventLoopHourly: 0,
     processEventLoopTrendWindows: 0,
     tableStorageSnapshots: 0,
-    systemSessions: 0
+    systemSessions: 0,
+    codexContextSessions: 0,
+    codexContextResponses: 0,
+    codexContextCompacts: 0,
+    codexContextFiles: 0
   }
 }
 

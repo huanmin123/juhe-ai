@@ -32,8 +32,9 @@ try {
   database.prepare(`
     INSERT INTO process_event_loop_trend_windows (
       window_key, start_date, end_date, bucket_key, process_role, sample_count,
-      event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
-    ) VALUES (?, ?, ?, ?, 'server', 3, 60, 30, ?)
+      event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
+      process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum, process_heap_used_bytes_max, updated_at
+    ) VALUES (?, ?, ?, ?, 'server', 3, 60, 3, 30, 128, 128, 64, 64, ?)
   `).run(windowKey, range.startDate, range.endDate, bucketKey, '2026-01-01T00:00:00.000Z')
 
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare

@@ -11,6 +11,7 @@ import type {
 } from '../../../../domain/types.js'
 import type { ProviderProtocolProfileDefinition } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
+import type { CodexResponsesChatBridgeCompletionHandler } from '../../../gateway/codex-responses/chat-bridge-state.js'
 
 export type ProviderRequestCapabilityMismatchReason =
   | 'request_capability_mismatch'
@@ -35,6 +36,8 @@ export interface ProviderUpstreamRequestIdentity {
 
 export interface ProviderGatewayRequestContext {
   requestClientCompatibility?: ClientCompatibilityCapability
+  codexResponsesChatBridgePreviousResponseId?: string
+  codexResponsesChatBridgeCompletionHandler?: CodexResponsesChatBridgeCompletionHandler
 }
 
 export interface ProviderUpstreamRequestParts {

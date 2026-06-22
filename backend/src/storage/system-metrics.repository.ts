@@ -88,8 +88,20 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
 }
 
 export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput): void {
-  const eventLoopLagMs = input.eventLoopLagMs
-  if (eventLoopLagMs === undefined || !Number.isFinite(eventLoopLagMs)) {
+  const eventLoopLagMs = nullableNumber(input.eventLoopLagMs)
+  const processRssBytes = nullableNumber(input.processRssBytes)
+  const processHeapUsedBytes = nullableNumber(input.processHeapUsedBytes)
+  const processHeapTotalBytes = nullableNumber(input.processHeapTotalBytes)
+  const processExternalBytes = nullableNumber(input.processExternalBytes)
+  const processArrayBuffersBytes = nullableNumber(input.processArrayBuffersBytes)
+  if (
+    eventLoopLagMs === null
+    && processRssBytes === null
+    && processHeapUsedBytes === null
+    && processHeapTotalBytes === null
+    && processExternalBytes === null
+    && processArrayBuffersBytes === null
+  ) {
     return
   }
 
@@ -101,18 +113,33 @@ export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput)
     database
       .prepare(`
         INSERT INTO process_event_loop_samples (
-          sampled_at, process_role, process_pid, event_loop_lag_ms, id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          sampled_at, process_role, process_pid, event_loop_lag_ms,
+          process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes,
+          process_external_bytes, process_array_buffers_bytes, id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         sampledAt,
         input.processRole,
         input.processPid ?? null,
         eventLoopLagMs,
+        processRssBytes,
+        processHeapUsedBytes,
+        processHeapTotalBytes,
+        processExternalBytes,
+        processArrayBuffersBytes,
         newId('process_metric'),
         sampledAt
       )
-    upsertProcessEventLoopHourly(database, statHour, input.processRole, eventLoopLagMs, sampledAt)
+    upsertProcessEventLoopHourly(database, statHour, {
+      ...input,
+      eventLoopLagMs: eventLoopLagMs ?? undefined,
+      processRssBytes: processRssBytes ?? undefined,
+      processHeapUsedBytes: processHeapUsedBytes ?? undefined,
+      processHeapTotalBytes: processHeapTotalBytes ?? undefined,
+      processExternalBytes: processExternalBytes ?? undefined,
+      processArrayBuffersBytes: processArrayBuffersBytes ?? undefined
+    }, sampledAt)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -243,8 +270,11 @@ function refreshProcessEventLoopTrendWindows(
   const insert = database.prepare(`
     INSERT INTO process_event_loop_trend_windows (
       window_key, start_date, end_date, bucket_key, process_role, sample_count,
-      event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
+      process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum, process_heap_used_bytes_max,
+      process_heap_total_bytes_sum, process_heap_total_bytes_max, process_external_bytes_sum, process_external_bytes_max,
+      process_array_buffers_bytes_sum, process_array_buffers_bytes_max, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const buckets = aggregateProcessEventLoopRows(rowsForDateRange(rowsByDate, range), trendBucketHours(range))
@@ -257,7 +287,18 @@ function refreshProcessEventLoopTrendWindows(
         String(row.process_role ?? ''),
         Number(row.sample_count ?? 0),
         Number(row.event_loop_lag_ms_sum ?? 0),
+        Number(row.event_loop_lag_ms_count ?? 0),
         nullableNumber(row.event_loop_lag_ms_max),
+        Number(row.process_rss_bytes_sum ?? 0),
+        nullableNumber(row.process_rss_bytes_max),
+        Number(row.process_heap_used_bytes_sum ?? 0),
+        nullableNumber(row.process_heap_used_bytes_max),
+        Number(row.process_heap_total_bytes_sum ?? 0),
+        nullableNumber(row.process_heap_total_bytes_max),
+        Number(row.process_external_bytes_sum ?? 0),
+        nullableNumber(row.process_external_bytes_max),
+        Number(row.process_array_buffers_bytes_sum ?? 0),
+        nullableNumber(row.process_array_buffers_bytes_max),
         updatedAt
       )
     }
@@ -271,17 +312,34 @@ function aggregateProcessEventLoopRows(rows: Array<Record<string, unknown>>, buc
     if (!processRole) continue
     const statHour = trendBucketKey(String(row.stat_hour ?? ''), bucketHours)
     const bucketKey = `${statHour}:${processRole}`
-    const bucket = buckets.get(bucketKey) ?? { stat_hour: statHour, process_role: processRole, sample_count: 0, event_loop_lag_ms_sum: 0 }
+    const bucket = buckets.get(bucketKey) ?? { stat_hour: statHour, process_role: processRole, sample_count: 0, event_loop_lag_ms_sum: 0, event_loop_lag_ms_count: 0 }
     bucket.sample_count = Number(bucket.sample_count ?? 0) + Number(row.sample_count ?? 0)
     bucket.event_loop_lag_ms_sum = Number(bucket.event_loop_lag_ms_sum ?? 0) + Number(row.event_loop_lag_ms_sum ?? 0)
+    bucket.event_loop_lag_ms_count = Number(bucket.event_loop_lag_ms_count ?? 0) + Number(row.event_loop_lag_ms_count ?? row.sample_count ?? 0)
     const value = nullableNumber(row.event_loop_lag_ms_max)
     const current = nullableNumber(bucket.event_loop_lag_ms_max)
     if (value !== null) {
       bucket.event_loop_lag_ms_max = current === null ? value : Math.max(current, value)
     }
+    addProcessMemoryBucketMetric(bucket, row, 'process_rss_bytes')
+    addProcessMemoryBucketMetric(bucket, row, 'process_heap_used_bytes')
+    addProcessMemoryBucketMetric(bucket, row, 'process_heap_total_bytes')
+    addProcessMemoryBucketMetric(bucket, row, 'process_external_bytes')
+    addProcessMemoryBucketMetric(bucket, row, 'process_array_buffers_bytes')
     buckets.set(bucketKey, bucket)
   }
   return [...buckets.values()]
+}
+
+function addProcessMemoryBucketMetric(bucket: Record<string, unknown>, row: Record<string, unknown>, key: string): void {
+  const sumKey = `${key}_sum`
+  const maxKey = `${key}_max`
+  bucket[sumKey] = Number(bucket[sumKey] ?? 0) + Number(row[sumKey] ?? 0)
+  const value = nullableNumber(row[maxKey])
+  const current = nullableNumber(bucket[maxKey])
+  if (value !== null) {
+    bucket[maxKey] = current === null ? value : Math.max(current, value)
+  }
 }
 
 function systemMetricsHourlySelectColumns(): string {
@@ -318,7 +376,18 @@ function processEventLoopHourlySelectColumns(): string {
     'process_role',
     'sample_count',
     'event_loop_lag_ms_sum',
-    'event_loop_lag_ms_max'
+    'event_loop_lag_ms_count',
+    'event_loop_lag_ms_max',
+    'process_rss_bytes_sum',
+    'process_rss_bytes_max',
+    'process_heap_used_bytes_sum',
+    'process_heap_used_bytes_max',
+    'process_heap_total_bytes_sum',
+    'process_heap_total_bytes_max',
+    'process_external_bytes_sum',
+    'process_external_bytes_max',
+    'process_array_buffers_bytes_sum',
+    'process_array_buffers_bytes_max'
   ].join(', ')
 }
 
@@ -328,7 +397,11 @@ function processEventLoopPeakStartIso(): string {
 
 function loadProcessEventLoopTrendWindowRows(database: DatabaseSync, range: AccountUsageStatsRange): SystemMetricsOverview['processEventLoopTrend'] {
   const rows = database.prepare(`
-    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max
+    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum,
+      event_loop_lag_ms_count, event_loop_lag_ms_max,
+      process_rss_bytes_sum, process_rss_bytes_max,
+      process_heap_used_bytes_sum, process_heap_used_bytes_max,
+      process_heap_total_bytes_sum, process_heap_total_bytes_max
     FROM process_event_loop_trend_windows
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC, process_role ASC
@@ -356,14 +429,28 @@ function processRoleFromValue(value: unknown): ProcessEventLoopRole | undefined 
 }
 
 function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatestStatus'] {
-  const statusByRole = new Map<ProcessEventLoopRole, { processPid?: number; sampledAt: string; eventLoopLagMs?: number }>()
+  const statusByRole = new Map<ProcessEventLoopRole, {
+    processPid?: number
+    sampledAt: string
+    eventLoopLagMs?: number
+    processRssBytes?: number
+    processHeapUsedBytes?: number
+    processHeapTotalBytes?: number
+    processExternalBytes?: number
+    processArrayBuffersBytes?: number
+  }>()
   for (const row of rows) {
     const processRole = processRoleFromValue(row.process_role)
     if (!processRole || statusByRole.has(processRole)) continue
     statusByRole.set(processRole, {
       processPid: nullableNumber(row.process_pid) ?? undefined,
       sampledAt: String(row.sampled_at ?? ''),
-      eventLoopLagMs: nullableNumber(row.event_loop_lag_ms) ?? undefined
+      eventLoopLagMs: nullableNumber(row.event_loop_lag_ms) ?? undefined,
+      processRssBytes: nullableNumber(row.process_rss_bytes) ?? undefined,
+      processHeapUsedBytes: nullableNumber(row.process_heap_used_bytes) ?? undefined,
+      processHeapTotalBytes: nullableNumber(row.process_heap_total_bytes) ?? undefined,
+      processExternalBytes: nullableNumber(row.process_external_bytes) ?? undefined,
+      processArrayBuffersBytes: nullableNumber(row.process_array_buffers_bytes) ?? undefined
     })
   }
   return PROCESS_EVENT_LOOP_ROLES.map((processRole) => {
@@ -374,7 +461,12 @@ function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): Syst
         sampleAvailable: false,
         processPid: null,
         sampledAt: null,
-        eventLoopLagMs: null
+        eventLoopLagMs: null,
+        processRssBytes: null,
+        processHeapUsedBytes: null,
+        processHeapTotalBytes: null,
+        processExternalBytes: null,
+        processArrayBuffersBytes: null
       }
     }
     return {
@@ -382,7 +474,12 @@ function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): Syst
       sampleAvailable: true,
       processPid: row.processPid ?? null,
       sampledAt: row.sampledAt,
-      eventLoopLagMs: row.eventLoopLagMs ?? null
+      eventLoopLagMs: row.eventLoopLagMs ?? null,
+      processRssBytes: row.processRssBytes ?? null,
+      processHeapUsedBytes: row.processHeapUsedBytes ?? null,
+      processHeapTotalBytes: row.processHeapTotalBytes ?? null,
+      processExternalBytes: row.processExternalBytes ?? null,
+      processArrayBuffersBytes: row.processArrayBuffersBytes ?? null
     }
   })
 }
@@ -412,7 +509,12 @@ function processEventLoopLatestSelectColumns(): string {
     'process_role',
     'process_pid',
     'sampled_at',
-    'event_loop_lag_ms'
+    'event_loop_lag_ms',
+    'process_rss_bytes',
+    'process_heap_used_bytes',
+    'process_heap_total_bytes',
+    'process_external_bytes',
+    'process_array_buffers_bytes'
   ].join(', ')
 }
 
@@ -482,25 +584,55 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
 function upsertProcessEventLoopHourly(
   database: DatabaseSync,
   statHour: string,
-  processRole: ProcessEventLoopSampleInput['processRole'],
-  eventLoopLagMs: number,
+  input: ProcessEventLoopSampleInput,
   updatedAt: string
 ): void {
+  const eventLoopLagMs = nullableNumber(input.eventLoopLagMs)
+  const processRssBytes = nullableNumber(input.processRssBytes)
+  const processHeapUsedBytes = nullableNumber(input.processHeapUsedBytes)
+  const processHeapTotalBytes = nullableNumber(input.processHeapTotalBytes)
+  const processExternalBytes = nullableNumber(input.processExternalBytes)
+  const processArrayBuffersBytes = nullableNumber(input.processArrayBuffersBytes)
   database.prepare(`
     INSERT INTO process_event_loop_hourly (
-      stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
+      stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
+      process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum, process_heap_used_bytes_max,
+      process_heap_total_bytes_sum, process_heap_total_bytes_max, process_external_bytes_sum, process_external_bytes_max,
+      process_array_buffers_bytes_sum, process_array_buffers_bytes_max, updated_at
     )
-    VALUES (?, ?, 1, ?, ?, ?)
+    VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(stat_hour, process_role) DO UPDATE SET
       sample_count = sample_count + 1,
       event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
+      event_loop_lag_ms_count = event_loop_lag_ms_count + excluded.event_loop_lag_ms_count,
       event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN process_event_loop_hourly.event_loop_lag_ms_max WHEN process_event_loop_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > process_event_loop_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE process_event_loop_hourly.event_loop_lag_ms_max END,
+      process_rss_bytes_sum = process_rss_bytes_sum + excluded.process_rss_bytes_sum,
+      process_rss_bytes_max = CASE WHEN excluded.process_rss_bytes_max IS NULL THEN process_event_loop_hourly.process_rss_bytes_max WHEN process_event_loop_hourly.process_rss_bytes_max IS NULL OR excluded.process_rss_bytes_max > process_event_loop_hourly.process_rss_bytes_max THEN excluded.process_rss_bytes_max ELSE process_event_loop_hourly.process_rss_bytes_max END,
+      process_heap_used_bytes_sum = process_heap_used_bytes_sum + excluded.process_heap_used_bytes_sum,
+      process_heap_used_bytes_max = CASE WHEN excluded.process_heap_used_bytes_max IS NULL THEN process_event_loop_hourly.process_heap_used_bytes_max WHEN process_event_loop_hourly.process_heap_used_bytes_max IS NULL OR excluded.process_heap_used_bytes_max > process_event_loop_hourly.process_heap_used_bytes_max THEN excluded.process_heap_used_bytes_max ELSE process_event_loop_hourly.process_heap_used_bytes_max END,
+      process_heap_total_bytes_sum = process_heap_total_bytes_sum + excluded.process_heap_total_bytes_sum,
+      process_heap_total_bytes_max = CASE WHEN excluded.process_heap_total_bytes_max IS NULL THEN process_event_loop_hourly.process_heap_total_bytes_max WHEN process_event_loop_hourly.process_heap_total_bytes_max IS NULL OR excluded.process_heap_total_bytes_max > process_event_loop_hourly.process_heap_total_bytes_max THEN excluded.process_heap_total_bytes_max ELSE process_event_loop_hourly.process_heap_total_bytes_max END,
+      process_external_bytes_sum = process_external_bytes_sum + excluded.process_external_bytes_sum,
+      process_external_bytes_max = CASE WHEN excluded.process_external_bytes_max IS NULL THEN process_event_loop_hourly.process_external_bytes_max WHEN process_event_loop_hourly.process_external_bytes_max IS NULL OR excluded.process_external_bytes_max > process_event_loop_hourly.process_external_bytes_max THEN excluded.process_external_bytes_max ELSE process_event_loop_hourly.process_external_bytes_max END,
+      process_array_buffers_bytes_sum = process_array_buffers_bytes_sum + excluded.process_array_buffers_bytes_sum,
+      process_array_buffers_bytes_max = CASE WHEN excluded.process_array_buffers_bytes_max IS NULL THEN process_event_loop_hourly.process_array_buffers_bytes_max WHEN process_event_loop_hourly.process_array_buffers_bytes_max IS NULL OR excluded.process_array_buffers_bytes_max > process_event_loop_hourly.process_array_buffers_bytes_max THEN excluded.process_array_buffers_bytes_max ELSE process_event_loop_hourly.process_array_buffers_bytes_max END,
       updated_at = excluded.updated_at
   `).run(
     statHour,
-    processRole,
+    input.processRole,
+    eventLoopLagMs ?? 0,
+    eventLoopLagMs === null ? 0 : 1,
     eventLoopLagMs,
-    eventLoopLagMs,
+    processRssBytes ?? 0,
+    processRssBytes,
+    processHeapUsedBytes ?? 0,
+    processHeapUsedBytes,
+    processHeapTotalBytes ?? 0,
+    processHeapTotalBytes,
+    processExternalBytes ?? 0,
+    processExternalBytes,
+    processArrayBuffersBytes ?? 0,
+    processArrayBuffersBytes,
     updatedAt
   )
 }

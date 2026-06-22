@@ -33,6 +33,8 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-glm-gateway-mock-ai-${Date.now()}-${
 runtimeConfig.databasePath = join(tempRoot, 'glm-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
+runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
 runtimeConfig.secret = 'glm-gateway-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -145,12 +147,17 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream',
       expectedContent: 'glm mock sse ok'
     })
-    await assertGlmCodexResponsesBridgeRejectsPreviousResponseId({
+    await assertGlmCodexResponsesBridgeRestoresPreviousResponseId({
       baseUrl,
       localApiKey: coding.localApiKey,
       model: 'glm-5.2'
     })
-    await assertGlmCodexResponsesBridgeRejectsCompact({
+    await assertGlmCodexResponsesBridgeRejectsUnknownPreviousResponseId({
+      baseUrl,
+      localApiKey: coding.localApiKey,
+      model: 'glm-5.2'
+    })
+    await assertGlmCodexResponsesBridgeGatewaySummaryCompact({
       baseUrl,
       localApiKey: coding.localApiKey,
       model: 'glm-5.2'
@@ -663,7 +670,82 @@ async function assertGlmCodexResponsesBridge(input: {
   assert.match(JSON.stringify(body.tools), /shell_command/)
 }
 
-async function assertGlmCodexResponsesBridgeRejectsPreviousResponseId(input: {
+async function assertGlmCodexResponsesBridgeRestoresPreviousResponseId(input: {
+  baseUrl: string
+  localApiKey: string
+  model: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const firstResponse = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-bridge-state-session',
+        thread_id: 'glm-bridge-state-thread',
+        turn_id: 'glm-bridge-state-turn-1'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'remember first glm codex context' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const firstText = await firstResponse.text()
+  assert.equal(firstResponse.status, 200, `GLM Coding Codex bridge 首轮应成功，实际 HTTP ${firstResponse.status}: ${firstText}`)
+  const firstResponseId = responsesCompletedPayload(firstText)?.id ?? ''
+  assert.match(firstResponseId, /^resp_glm_bridge_/, 'GLM Coding Codex bridge 首轮应生成可续接 response id')
+
+  const secondResponse = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-bridge-state-session',
+        thread_id: 'glm-bridge-state-thread',
+        turn_id: 'glm-bridge-state-turn-2'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      previous_response_id: firstResponseId,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'continue second glm codex context' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const secondText = await secondResponse.text()
+  assert.equal(secondResponse.status, 200, `GLM Coding Codex bridge previous_response_id 续链应成功，实际 HTTP ${secondResponse.status}: ${secondText}`)
+  assert.match(secondText, new RegExp(`"previous_response_id":"${escapeRegExp(firstResponseId)}"`), '续链响应应回显 previous_response_id')
+  const hits = upstreamHits.slice(start)
+  assert.equal(hits.length, 2, 'GLM Coding Codex bridge 续链应每轮各命中一次上游')
+  const secondBody = parseJsonObject(hits[1]?.bodyText ?? '{}')
+  assert.equal(secondBody.previous_response_id, undefined, 'previous_response_id 只能在网关内消费，不能发给 Chat 上游')
+  const messagesText = JSON.stringify(secondBody.messages)
+  assert.match(messagesText, /remember first glm codex context/, '续链 Chat messages 应恢复首轮用户输入')
+  assert.match(messagesText, /glm mock sse ok/, '续链 Chat messages 应恢复首轮 assistant 输出')
+  assert.match(messagesText, /continue second glm codex context/, '续链 Chat messages 应追加本轮用户输入')
+}
+
+async function assertGlmCodexResponsesBridgeRejectsUnknownPreviousResponseId(input: {
   baseUrl: string
   localApiKey: string
   model: string
@@ -696,12 +778,12 @@ async function assertGlmCodexResponsesBridgeRejectsPreviousResponseId(input: {
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `GLM Coding Codex bridge previous_response_id 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /unsupported_codex_bridge_previous_response_id/, 'previous_response_id 拒绝响应应带稳定错误码')
-  assert.equal(upstreamHits.length, start, 'GLM Coding Codex bridge previous_response_id 受控拒绝时不应命中上游')
+  assert.equal(response.status, 404, `GLM Coding Codex bridge 未知 previous_response_id 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /codex_bridge_previous_response_not_found/, 'previous_response_id 不存在响应应带稳定错误码')
+  assert.equal(upstreamHits.length, start, 'GLM Coding Codex bridge 未知 previous_response_id 受控拒绝时不应命中上游')
 }
 
-async function assertGlmCodexResponsesBridgeRejectsCompact(input: {
+async function assertGlmCodexResponsesBridgeGatewaySummaryCompact(input: {
   baseUrl: string
   localApiKey: string
   model: string
@@ -732,9 +814,50 @@ async function assertGlmCodexResponsesBridgeRejectsCompact(input: {
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `GLM Coding Codex bridge /responses/compact 应受控拒绝，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /unsupported_codex_bridge_compact/, '/responses/compact 拒绝响应应带稳定错误码')
-  assert.equal(upstreamHits.length, start, 'GLM Coding Codex bridge /responses/compact 受控拒绝时不应命中上游')
+  assert.equal(response.status, 200, `GLM Coding Codex bridge /responses/compact 应返回网关摘要，实际 HTTP ${response.status}: ${text}`)
+  const payload = JSON.parse(text) as { output?: Array<Record<string, unknown>> }
+  const compactItem = payload.output?.[0]
+  assert.equal(compactItem?.type, 'compaction_summary', '/responses/compact 应返回 Codex 可消费的 compaction_summary item')
+  assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v1\./, 'compact summary 应使用网关 envelope')
+  let hits = upstreamHits.slice(start)
+  assert.equal(hits.length, 1, 'GLM Coding Codex bridge /responses/compact 应通过内部 Chat Completions 摘要请求命中一次上游')
+  assert.equal(hits[0]?.path, '/api/coding/paas/v4/chat/completions', 'compact 内部请求必须走 Chat Completions 路径')
+  const compactUpstreamBody = parseJsonObject(hits[0]?.bodyText ?? '{}')
+  assert.equal(compactUpstreamBody.stream, false, 'compact 内部摘要请求必须是非流式 Chat 请求')
+  assert.match(JSON.stringify(compactUpstreamBody.messages), /compact this history/, 'compact 内部摘要请求应包含待压缩上下文')
+
+  const bridgeResponse = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-bridge-compact-followup-session',
+        thread_id: 'glm-bridge-compact-followup-thread',
+        turn_id: 'glm-bridge-compact-followup-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: [
+        compactItem,
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'continue after compact summary' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const bridgeText = await bridgeResponse.text()
+  assert.equal(bridgeResponse.status, 200, `GLM Coding Codex bridge 应能消费 compaction_summary，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
+  hits = upstreamHits.slice(start)
+  assert.equal(hits.length, 2, 'GLM compaction_summary 后续请求应再命中一次上游')
+  assert.match(hits[1]?.bodyText ?? '', /glm mock json ok/, '后续 Chat messages 应包含 compact 摘要文本')
+  assert.match(hits[1]?.bodyText ?? '', /continue after compact summary/, '后续 Chat messages 应包含 compact 后的新输入')
 }
 
 function assertValidChatToolMessageSequence(messages: Array<Record<string, unknown>>, label: string): void {
@@ -757,6 +880,25 @@ function assertValidChatToolMessageSequence(messages: Array<Record<string, unkno
     }
   }
   assert.equal(expectedToolCallIds.length, 0, `${label} assistant tool_calls 后缺少对应 tool 输出`)
+}
+
+function responsesCompletedPayload(text: string): { id?: string; usage?: Record<string, unknown> } | undefined {
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    if (!/^event:\s*response\.completed$/m.test(block)) continue
+    const dataText = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n')
+    if (!dataText) continue
+    const parsed = JSON.parse(dataText) as { response?: { id?: string; usage?: Record<string, unknown> } }
+    return { id: parsed.response?.id, usage: parsed.response?.usage }
+  }
+  return undefined
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 async function assertGlmCodexResponsesBridgeFailsOnTruncatedStream(input: {
