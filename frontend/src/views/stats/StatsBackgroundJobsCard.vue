@@ -1,7 +1,7 @@
 <template>
   <StatsChartCard
     title="后台任务运行状态"
-    description="展示各后台 worker 内定时任务的最近耗时、失败、跳过和复测队列情况。"
+    description="展示各后台 worker 内定时任务的最近耗时、失败、跳过和关键本地队列情况。"
     :loading="loading"
     :has-data="hasData"
     :empty-description="emptyDescription"
@@ -38,8 +38,8 @@
                 <InfoCircleOutlined class="background-job-info-icon" />
               </a-tooltip>
             </span>
-            <span v-if="backgroundJobRetryQueueSummary(record)" class="background-job-queue-summary">
-              {{ backgroundJobRetryQueueSummary(record) }}
+            <span v-if="backgroundJobQueueSummary(record)" class="background-job-queue-summary">
+              {{ backgroundJobQueueSummary(record) }}
             </span>
           </span>
         </template>
@@ -110,9 +110,9 @@
               <span>最近错误</span>
               <strong>{{ record.lastError }}</strong>
             </div>
-            <div v-if="backgroundJobRetryQueueSummary(record)" class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>复活队列</span>
-              <strong>{{ backgroundJobRetryQueueSummary(record) }}</strong>
+            <div v-if="backgroundJobQueueSummary(record)" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>队列状态</span>
+              <strong>{{ backgroundJobQueueSummary(record) }}</strong>
             </div>
           </div>
         </article>
@@ -130,7 +130,7 @@ import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { SystemMetricsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { processRoleLabel } from './statsChartOptions'
-import { formatDuration, formatInteger } from './statsFormatters'
+import { formatBytesMiB, formatDuration, formatInteger } from './statsFormatters'
 
 type BackgroundJobRow = NonNullable<SystemMetricsOverview['backgroundJobs']>[number]
 
@@ -171,11 +171,29 @@ function formatJobCounts(row: BackgroundJobRow): string {
   return `${formatInteger(row.successCount)} / ${formatInteger(row.failureCount)} / ${formatInteger(row.skippedCount)}`
 }
 
+function backgroundJobQueueSummary(row: BackgroundJobRow): string | undefined {
+  return backgroundJobRetryQueueSummary(row) ?? backgroundJobLocalQueueSummary(row)
+}
+
 function backgroundJobRetryQueueSummary(row: BackgroundJobRow): string | undefined {
   const queue = row.retryQueue
   if (!queue) return undefined
   const nextRunAt = formatRetryQueueNextRunAt(queue.nextRunAt)
   return `队列：待执行 ${formatInteger(queue.pendingCount)} / 运行中 ${formatInteger(queue.runningCount)}${nextRunAt ? ` / 下次 ${nextRunAt}` : ''}`
+}
+
+function backgroundJobLocalQueueSummary(row: BackgroundJobRow): string | undefined {
+  const queue = row.localQueue
+  if (!queue) return undefined
+  const parts = [
+    `积压 ${formatInteger(numberValue(queue.queueLength))}`,
+    `大小 ${formatBytesMiB(numberValue(queue.queueBytes))}`
+  ]
+  const droppedCount = numberValue(queue.droppedCount)
+  const flushFailureCount = numberValue(queue.flushFailureCount)
+  if (droppedCount > 0) parts.push(`丢弃 ${formatInteger(droppedCount)}`)
+  if (flushFailureCount > 0) parts.push(`Flush 失败 ${formatInteger(flushFailureCount)}`)
+  return `队列：${parts.join(' / ')}`
 }
 
 function formatRetryQueueNextRunAt(value?: string): string | undefined {
@@ -198,6 +216,10 @@ function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {
     return '该任务会在冷却到期后按真实网关链路复测账户内 API Key；队列堆积表示 Key 级恢复探测仍在排队。'
   }
   return undefined
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 </script>
 

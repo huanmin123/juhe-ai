@@ -56,6 +56,7 @@ import {
   type OpenAIGatewayDispatchContext,
   type OpenAIGatewayRequestIdentity
 } from './request/preflight.js'
+import { resolveNextHybridGatewayRoute } from './hybrid/routing.service.js'
 import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
@@ -265,6 +266,89 @@ export async function handleOpenAIGatewayRequest(
     maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
     return 'switched'
   }
+  const switchToHybridQualityUpgrade = async (
+    reason: string
+  ): Promise<'none' | 'switched' | 'completed'> => {
+    const hybridRoute = currentPreflight.hybridRoute
+    if (!hybridRoute) {
+      return 'none'
+    }
+    const nextRoute = await resolveNextHybridGatewayRoute({
+      req,
+      apiKeyRecord: hybridRoute.apiKeyRecord,
+      currentRoute: hybridRoute.route,
+      requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
+      signal: abortController.signal
+    })
+    if (!nextRoute) {
+      auditCapture.addGatewayMetadata({
+        label: 'hybrid_quality_upgrade_unavailable',
+        metadata: {
+          reason,
+          currentTargetModel: hybridRoute.targetModel,
+          currentLevelRange: [hybridRoute.route.minLevel, hybridRoute.route.maxLevel]
+        }
+      })
+      return 'none'
+    }
+    auditCapture.addGatewayMetadata({
+      label: 'hybrid_quality_upgrade_route',
+      metadata: {
+        reason,
+        fromModel: hybridRoute.targetModel,
+        toModel: nextRoute.targetModel,
+        fromLevelRange: [hybridRoute.route.minLevel, hybridRoute.route.maxLevel],
+        toLevelRange: [nextRoute.route.minLevel, nextRoute.route.maxLevel],
+        toGroupId: nextRoute.groupId,
+        retryCount: hybridRoute.qualityRetryCount + 1
+      }
+    })
+    const context = await prepareOpenAIGatewayDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options: {
+        ...options,
+        identity: {
+          systemAccountId: currentPreflight.usageContext.systemAccountId,
+          apiKeyId: currentPreflight.usageContext.apiKeyId,
+          groupId: nextRoute.groupId
+        },
+        apiKeyRecord: nextRoute.apiKeyRecord,
+        candidateAccounts: nextRoute.accounts,
+        responseInspectionPolicies: nextRoute.responseInspectionPolicies,
+        trafficSource,
+        requestLane: currentPreflight.requestLane
+      },
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal: abortController.signal
+    })
+    if (!context) {
+      return 'completed'
+    }
+    releaseClientIpSlot()
+    currentPreflight = {
+      ...context,
+      hybridRoute: {
+        apiKeyRecord: nextRoute.apiKeyRecord,
+        config: hybridRoute.config,
+        scoring: hybridRoute.scoring,
+        route: nextRoute.route,
+        targetModel: nextRoute.targetModel,
+        affinityApplied: false,
+        qualityRetryCount: hybridRoute.qualityRetryCount + 1
+      }
+    }
+    releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
+    streamServerRetryExcludedAccountIds = new Set<string>()
+    streamServerRetryCount = 0
+    maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
+    return 'switched'
+  }
 
   try {
     while (true) {
@@ -412,6 +496,7 @@ export async function handleOpenAIGatewayRequest(
             sessionAffinityKey,
             clientStrategy,
             responseInspectionPolicies,
+            hybridRoute: currentPreflight.hybridRoute,
             markFirstOutput,
             clientIpAccountAvoidanceTracker,
             accountStateMutationEnabled: options.disableAccountStateMutation !== true,
@@ -433,6 +518,7 @@ export async function handleOpenAIGatewayRequest(
               signal: abortController.signal,
               sessionAffinityKey,
               responseInspectionPolicies,
+              hybridRoute: currentPreflight.hybridRoute,
               clientStrategy,
               markFirstOutput,
               clientIpAccountAvoidanceTracker,
@@ -483,6 +569,71 @@ export async function handleOpenAIGatewayRequest(
           return
         }
         if (handledResponse.retryUpstream) {
+          if (handledResponse.retryReason === 'hybrid_quality') {
+            const hybridRoute = currentPreflight.hybridRoute
+            const qualityConfig = hybridRoute?.config.qualityInspection
+            const retryCount = hybridRoute?.qualityRetryCount ?? 0
+            const maxRetries = qualityConfig?.maxRetries ?? 0
+            const action = handledResponse.hybridQuality?.actualAction ?? 'return_error'
+            auditCapture.addGatewayMetadata({
+              label: 'hybrid_quality_retry_dispatch',
+              metadata: {
+                action,
+                retryCount,
+                maxRetries,
+                accountId: account.id,
+                targetModel: hybridRoute?.targetModel,
+                errorCode: handledResponse.errorCode,
+                failureType: handledResponse.hybridQuality?.result?.failureType,
+                score: handledResponse.hybridQuality?.result?.score,
+                confidence: handledResponse.hybridQuality?.result?.confidence
+              }
+            })
+            if (action !== 'return_error' && retryCount < maxRetries && hybridRoute) {
+              if (action === 'upgrade_next_level') {
+                const qualitySwitch = await switchToHybridQualityUpgrade(handledResponse.errorCode ?? 'hybrid_quality_failed')
+                if (qualitySwitch === 'completed') {
+                  return
+                }
+                if (qualitySwitch === 'switched') {
+                  continue
+                }
+              }
+              if (action === 'retry_same_model') {
+                currentPreflight = {
+                  ...currentPreflight,
+                  hybridRoute: {
+                    ...hybridRoute,
+                    qualityRetryCount: retryCount + 1
+                  }
+                }
+                continue
+              }
+            }
+            const responsePayload = gatewayErrorPayload(
+              handledResponse.message || '混合路由质量评分未通过',
+              'upstream_response_error',
+              handledResponse.errorCode ?? 'hybrid_quality_failed'
+            )
+            sendGatewayFailureResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              statusCode: 502,
+              responsePayload,
+              audit: {
+                outcome: 'upstream_failed',
+                errorPhase: 'dispatch',
+                errorCode: handledResponse.errorCode ?? 'hybrid_quality_failed',
+                errorMessage: responsePayload.error.message
+              },
+              recordUsage: false,
+              usageErrorMessage: handledResponse.message
+            })
+            return
+          }
           streamServerRetryCount += 1
           if (
             handledResponse.excludeCurrentAccount

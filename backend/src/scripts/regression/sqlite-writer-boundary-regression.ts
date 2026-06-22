@@ -15,6 +15,8 @@ runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
+runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
+runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
 runtimeConfig.secret = 'sqlite-writer-boundary-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -27,6 +29,7 @@ const repositories = await import('../../storage/repositories.js')
 
 try {
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('business'), 'db-service')
+  assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('codex-context-state'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('dataset'), 'ingest-worker')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('stats'), 'stats-writer')
   assert.equal(databaseModule.sqliteWriterBoundaryStrictModeEnabled(), true)
@@ -34,15 +37,18 @@ try {
   runtimeConfig.processRole = 'db-service'
   runtimeConfig.workerRole = 'worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   databaseModule.getBusinessDatabase()
+  databaseModule.getCodexContextStateDatabase()
   databaseModule.closeStorageDatabases()
 
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'ingest-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), true)
@@ -55,6 +61,7 @@ try {
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'stats-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), true)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
@@ -64,13 +71,16 @@ try {
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'maintenance-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   assertNonOwnerWriteBlocked(databaseModule.getBusinessDatabase(), '业务库')
+  assertNonOwnerWriteBlocked(databaseModule.getCodexContextStateDatabase(), 'Codex Responses 上下文索引库')
   assertNonOwnerWriteBlocked(databaseModule.getDatasetDatabase(), '数据集目录库')
   assertNonOwnerWriteBlocked(databaseModule.getStatsDatabase(), '统计库')
   assertNonOwnerWriteBlocked(usageRecordShards.getUsageRecordShardDatabase(shardLocation), 'usage shard')
+  assertCodexContextStateSchemaBoundary()
   assertRuntimeWriteQueueSourceGuards()
   await assertDatasetWriterBridge()
 
@@ -150,6 +160,23 @@ function assertRuntimeWriteQueueSourceGuards(): void {
   const runtimeLogQueueSource = readFileSync(resolve('src/modules/runtime-logs/runtime-log-index-queue.service.ts'), 'utf8')
   assert(runtimeLogQueueSource.includes("runtimeConfig.processRole === 'db-service'"), 'DB service 运行日志索引不能回退到本地 dataset 队列')
   assert(runtimeLogQueueSource.includes('sendRuntimeLogLineFromDbServiceToServer'), 'DB service 运行日志索引必须投递父进程后再由 ingest-worker 写入')
+}
+
+function assertCodexContextStateSchemaBoundary(): void {
+  const businessSchemaSource = readFileSync(resolve('src/storage/schema/business-schema.ts'), 'utf8')
+  assert.equal(
+    businessSchemaSource.includes('codex_context_'),
+    false,
+    'Codex Responses 上下文运行态索引不能放入业务库 schema'
+  )
+
+  const codexContextSchemaSource = readFileSync(resolve('src/storage/schema/codex-context-state-schema.ts'), 'utf8')
+  assert(
+    codexContextSchemaSource.includes('codex_context_sessions')
+      && codexContextSchemaSource.includes('codex_context_responses')
+      && codexContextSchemaSource.includes('codex_context_compacts'),
+    'Codex Responses 上下文索引必须保留在独立 schema'
+  )
 }
 
 async function assertDatasetWriterBridge(): Promise<void> {

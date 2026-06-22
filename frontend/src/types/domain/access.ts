@@ -22,6 +22,8 @@ export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
 export type ApiKeyGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'weighted_round_robin'
 export type ApiKeyRouteMode = 'normal' | 'hybrid'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
+export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
+export type ApiKeyHybridQualityInspectionFailureAction = 'upgrade_next_level' | 'retry_same_model' | 'return_error'
 export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
 export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
 
@@ -30,6 +32,16 @@ export interface ApiKeyHybridLevelRoute {
   maxLevel: number
   targetModel: string
   enabled: boolean
+}
+
+export interface ApiKeyHybridQualityInspectionConfig {
+  enabled: boolean
+  scoringGroupId: string
+  scoringModel: string
+  triggerMode: ApiKeyHybridQualityInspectionTriggerMode
+  minTriggerLevel: number
+  maxRetries: number
+  failureAction: ApiKeyHybridQualityInspectionFailureAction
 }
 
 export interface ApiKeyHybridRoutingConfig {
@@ -46,6 +58,7 @@ export interface ApiKeyHybridRoutingConfig {
   switchMinLevelDelta: number
   downgradeConsecutiveLowCount: number
   levelRoutes: ApiKeyHybridLevelRoute[]
+  qualityInspection?: ApiKeyHybridQualityInspectionConfig
 }
 
 export interface ApiKeyGroupBindingSummary {

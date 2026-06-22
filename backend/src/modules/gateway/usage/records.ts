@@ -286,12 +286,13 @@ export function recordHybridScoringAttempt(input: {
   errorMessage?: string
   requestSnapshot?: unknown
   responseSnapshot?: unknown
+  trafficSource?: Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
 }): void {
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId)
   enqueueUsageRecord({
     traceId: input.traceId,
-    trafficSource: 'hybrid_scoring',
+    trafficSource: input.trafficSource ?? 'hybrid_scoring',
     clientIp: input.clientIp,
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,

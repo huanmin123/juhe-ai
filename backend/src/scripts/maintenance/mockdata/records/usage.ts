@@ -429,6 +429,34 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
         trafficSource: 'cooldown_retest'
       },
       account: created.accounts.temporary
+    },
+    {
+      ordinal: nextOrdinal(records.length + 1600, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
+      idSuffix: 'coverage_hybrid_scoring',
+      scenario: {
+        key: created.apiKeys.adminMain,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.primary],
+        label: 'admin-hybrid-scoring-coverage',
+        clientIpBase: '10.10.17.',
+        trafficSource: 'hybrid_scoring'
+      },
+      account: created.accounts.primary
+    },
+    {
+      ordinal: nextOrdinal(records.length + 1700, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
+      idSuffix: 'coverage_hybrid_quality_scoring',
+      scenario: {
+        key: created.apiKeys.adminMain,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.primary],
+        label: 'admin-hybrid-quality-scoring-coverage',
+        clientIpBase: '10.10.18.',
+        trafficSource: 'hybrid_quality_scoring'
+      },
+      account: created.accounts.primary
     }
   ]
 

@@ -58,6 +58,23 @@ interface ResponseInspectionPolicyCacheEntry {
   revalidateAtMs?: number
 }
 
+interface ProviderModelRouteIndexCacheEntry {
+  index: Map<string, string[]>
+}
+
+export type ProviderModelRouteResolution =
+  | {
+      outcome: 'matched'
+      modelKey: string
+      providerCode: string
+      matchedProviderCodes: string[]
+    }
+  | {
+      outcome: 'missing' | 'ambiguous'
+      modelKey: string
+      matchedProviderCodes: string[]
+    }
+
 const gatewayRuntimeCache = createAppCache<string, GatewayRuntimeCacheEntry>({
   name: 'gateway:runtime',
   max: 10000,
@@ -85,6 +102,12 @@ const openAIAccountsCache = createAppCache<string, OpenAIAccountsCacheEntry>({
 
 const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogItem[]>({
   name: 'gateway:provider-model-catalog',
+  max: 1000,
+  ttlMs: providerModelCatalogTtlMs
+})
+
+const providerModelRouteIndexCache = createAppCache<string, ProviderModelRouteIndexCacheEntry>({
+  name: 'gateway:provider-model-route-index',
   max: 1000,
   ttlMs: providerModelCatalogTtlMs
 })
@@ -231,6 +254,49 @@ export async function listCachedProviderModelCatalogAsync(input: {
   return value.map((item) => ({ ...item }))
 }
 
+export async function resolveCachedProviderModelRouteAsync(input: {
+  model: string
+  providerCodes: string[]
+  systemAccountId?: string
+  includeUnpriced?: boolean
+}): Promise<ProviderModelRouteResolution> {
+  const modelKey = normalizeProviderModelRouteKey(input.model)
+  const providerCodes = normalizedProviderRouteCodes(input.providerCodes)
+  if (!modelKey || !providerCodes.length) {
+    return { outcome: 'missing', modelKey, matchedProviderCodes: [] }
+  }
+  const cacheKey = providerModelRouteIndexCacheKey({
+    providerCodes,
+    systemAccountId: input.systemAccountId,
+    includeUnpriced: input.includeUnpriced
+  })
+  let cached = providerModelRouteIndexCache.get(cacheKey)
+  if (!cached) {
+    cached = {
+      index: await buildProviderModelRouteIndex({
+        providerCodes,
+        systemAccountId: input.systemAccountId,
+        includeUnpriced: input.includeUnpriced
+      })
+    }
+    providerModelRouteIndexCache.set(cacheKey, cached)
+  }
+  const matchedProviderCodes = cached.index.get(modelKey) ?? []
+  if (matchedProviderCodes.length === 1) {
+    return {
+      outcome: 'matched',
+      modelKey,
+      providerCode: matchedProviderCodes[0]!,
+      matchedProviderCodes
+    }
+  }
+  return {
+    outcome: matchedProviderCodes.length > 1 ? 'ambiguous' : 'missing',
+    modelKey,
+    matchedProviderCodes
+  }
+}
+
 export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
   protocolCode: string
   providerCode?: string
@@ -307,6 +373,7 @@ export function clearGatewayRuntimeCacheLocal(): void {
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
   providerModelCatalogCache.clear()
+  providerModelRouteIndexCache.clear()
   responseInspectionPolicyCache.clear()
   clearSettingsRepositoryCache()
 }
@@ -317,6 +384,59 @@ function gatewayCacheKey(groupId: string, systemAccountId: string): string {
 
 function responseInspectionPolicyCacheKey(protocolCode: string, providerCode?: string): string {
   return `${protocolCode}:${providerCode ?? ''}`
+}
+
+function providerModelRouteIndexCacheKey(input: {
+  providerCodes: string[]
+  systemAccountId?: string
+  includeUnpriced?: boolean
+}): string {
+  return [
+    input.systemAccountId ?? '',
+    input.includeUnpriced === true ? 'unpriced' : 'priced',
+    input.providerCodes.join(',')
+  ].join(':')
+}
+
+async function buildProviderModelRouteIndex(input: {
+  providerCodes: string[]
+  systemAccountId?: string
+  includeUnpriced?: boolean
+}): Promise<Map<string, string[]>> {
+  const providerCodesByModel = new Map<string, Set<string>>()
+  for (const providerCode of input.providerCodes) {
+    const catalog = await listCachedProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId: input.systemAccountId,
+      includeUnpriced: input.includeUnpriced
+    })
+    for (const item of catalog) {
+      const modelKey = normalizeProviderModelRouteKey(item.model)
+      if (!modelKey) {
+        continue
+      }
+      let providerCodes = providerCodesByModel.get(modelKey)
+      if (!providerCodes) {
+        providerCodes = new Set<string>()
+        providerCodesByModel.set(modelKey, providerCodes)
+      }
+      providerCodes.add(providerCode)
+    }
+  }
+  const index = new Map<string, string[]>()
+  for (const [modelKey, providerCodes] of providerCodesByModel.entries()) {
+    index.set(modelKey, [...providerCodes].sort((left, right) => left.localeCompare(right)))
+  }
+  return index
+}
+
+function normalizedProviderRouteCodes(providerCodes: string[]): string[] {
+  return [...new Set(providerCodes.map(providerCode => providerCode.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+}
+
+function normalizeProviderModelRouteKey(model: string | null | undefined): string {
+  return typeof model === 'string' ? model.trim().toLowerCase() : ''
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {

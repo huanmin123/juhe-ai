@@ -1,20 +1,21 @@
 import { mkdirSync } from 'node:fs'
-import { dirname, normalize } from 'node:path'
+import { dirname, normalize, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { isProductionRuntime, runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { applyBusinessSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
+import { applyBusinessSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 import { closeUsageRecordShardDatabases } from './usage-record-shards.js'
 
 let businessDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
+const codexContextStateShardDatabases = new Map<number, DatabaseSync>()
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
 
-export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'stats'
+export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'stats' | 'codex-context-state'
 export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer'
 
 export interface SqliteDatabaseRuntimeInfo {
@@ -63,14 +64,30 @@ export function getStatsDatabase(): DatabaseSync {
   return statsDatabase
 }
 
+export function getCodexContextStateShardDatabase(shardIndex: number): DatabaseSync {
+  assertDistinctStoragePaths()
+  const normalizedShardIndex = normalizeCodexContextStateShardIndex(shardIndex)
+  const existing = codexContextStateShardDatabases.get(normalizedShardIndex)
+  if (existing) {
+    return existing
+  }
+  const database = openCodexContextStateDatabase(codexContextStateShardPath(normalizedShardIndex))
+  codexContextStateShardDatabases.set(normalizedShardIndex, database)
+  return database
+}
+
 export function closeStorageDatabases(): void {
   closeUsageRecordShardDatabases()
   closeDatabaseHandle(businessDatabase)
   closeDatabaseHandle(datasetDatabase)
   closeDatabaseHandle(statsDatabase)
+  for (const database of codexContextStateShardDatabases.values()) {
+    closeDatabaseHandle(database)
+  }
   businessDatabase = undefined
   datasetDatabase = undefined
   statsDatabase = undefined
+  codexContextStateShardDatabases.clear()
 }
 
 export function datasetDatabasePath(): string {
@@ -79,6 +96,33 @@ export function datasetDatabasePath(): string {
 
 export function statsDatabasePath(): string {
   return runtimeConfig.statsDatabasePath
+}
+
+export function codexContextStateShardRootPath(): string {
+  return runtimeConfig.codexContextStateShardRoot
+}
+
+export function codexContextStateShardCount(): number {
+  return Math.max(1, Math.min(Math.trunc(runtimeConfig.codexContextStateShardCount), 256))
+}
+
+export function codexContextStateShardIndexes(): number[] {
+  return Array.from({ length: codexContextStateShardCount() }, (_, index) => index)
+}
+
+export function codexContextStateShardIndexForKey(key: string): number {
+  const text = String(key || '')
+  let hash = 2166136261
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0) % codexContextStateShardCount()
+}
+
+export function codexContextStateShardPath(shardIndex: number): string {
+  const normalizedShardIndex = normalizeCodexContextStateShardIndex(shardIndex)
+  return resolve(runtimeConfig.codexContextStateShardRoot, `state-${String(normalizedShardIndex).padStart(3, '0')}.sqlite3`)
 }
 
 function openDatasetDatabase(databasePath: string): DatabaseSync {
@@ -97,6 +141,16 @@ function openStatsDatabase(databasePath: string): DatabaseSync {
   configureDatabase(database, 'stats')
   if (shouldApplyMainDatabaseSchema('stats')) {
     applyStatsSchema(database)
+  }
+  return database
+}
+
+function openCodexContextStateDatabase(databasePath: string): DatabaseSync {
+  mkdirSync(dirname(databasePath), { recursive: true })
+  const database = new DatabaseSync(databasePath)
+  configureDatabase(database, 'codex-context-state')
+  if (shouldApplyMainDatabaseSchema('codex-context-state')) {
+    applyCodexContextStateSchema(database)
   }
   return database
 }
@@ -167,14 +221,18 @@ function assertDistinctStoragePaths(): void {
   const targets = [
     { role: '业务库', path: runtimeConfig.databasePath },
     { role: '数据集目录库', path: datasetDatabasePath() },
-    { role: '统计结果库', path: statsDatabasePath() }
+    { role: '统计结果库', path: statsDatabasePath() },
+    ...codexContextStateShardIndexes().map((shardIndex) => ({
+      role: `Codex Responses 上下文索引库分片 ${shardIndex}`,
+      path: codexContextStateShardPath(shardIndex)
+    }))
   ]
   const seen = new Map<string, string>()
   for (const target of targets) {
     const key = normalize(target.path).toLowerCase()
     const existingRole = seen.get(key)
     if (existingRole) {
-      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH 和 JUHE_AI_STATS_DATABASE_PATH`)
+      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
     }
     seen.set(key, target.role)
   }
@@ -185,7 +243,7 @@ export function nowIso(): string {
 }
 
 export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): SqliteWriterOwner {
-  if (kind === 'business') {
+  if (kind === 'business' || kind === 'codex-context-state') {
     return 'db-service'
   }
   if (kind === 'dataset') {
@@ -195,7 +253,7 @@ export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): 
 }
 
 export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKind): boolean {
-  if (kind === 'business') {
+  if (kind === 'business' || kind === 'codex-context-state') {
     return runtimeConfig.processRole === 'db-service'
   }
   if (kind === 'dataset') {
@@ -222,7 +280,9 @@ export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDat
     ? runtimeConfig.databasePath
     : kind === 'dataset'
       ? datasetDatabasePath()
-      : statsDatabasePath()
+      : kind === 'stats'
+        ? statsDatabasePath()
+        : codexContextStateShardRootPath()
   return {
     kind,
     path,
@@ -252,6 +312,15 @@ function applySqliteWriterBoundary(database: DatabaseSync, kind: SqliteMainDatab
 
 function shouldApplyMainDatabaseSchema(kind: SqliteMainDatabaseKind): boolean {
   return currentProcessOwnsSqliteMainDatabase(kind) || !sqliteWriterBoundaryStrictModeEnabled()
+}
+
+function normalizeCodexContextStateShardIndex(shardIndex: number): number {
+  const count = codexContextStateShardCount()
+  const integer = Math.trunc(Number(shardIndex))
+  if (!Number.isFinite(integer) || integer < 0 || integer >= count) {
+    throw new Error(`Codex Responses 上下文索引库分片编号必须在 0 到 ${count - 1} 之间`)
+  }
+  return integer
 }
 
 function isOfflineSqliteScriptRuntime(): boolean {

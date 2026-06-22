@@ -30,6 +30,7 @@ export interface BackgroundWorkerQueueRuntime {
   queueBytes?: number
   flushLastSuccessAt?: string
   flushLastError?: string
+  completedCount?: number
   droppedCount?: number
   droppedSuccessCount?: number
   droppedFailureCount?: number

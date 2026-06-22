@@ -27,7 +27,7 @@ usageRecordsRouter.get('/:id', (req, res) => {
 })
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])
-const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest', 'hybrid_scoring'])
+const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
 const usageRecordDefaultLookbackDays = 31
 const dayMs = 24 * 60 * 60 * 1000
 

@@ -21,7 +21,7 @@ console.log('SQLite 入口懒打开回归通过：DB service、后台 worker 和
 
 function assertNoEagerDatabaseOpen(relativePath: string, content: string, allowedCalls: Set<string>): void {
   const stripped = stripImports(content)
-  for (const functionName of ['getBusinessDatabase', 'getDatasetDatabase', 'getStatsDatabase']) {
+  for (const functionName of ['getBusinessDatabase', 'getDatasetDatabase', 'getStatsDatabase', 'getCodexContextStateDatabase']) {
     if (allowedCalls.has(functionName)) {
       continue
     }

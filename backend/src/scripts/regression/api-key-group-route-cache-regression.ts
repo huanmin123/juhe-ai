@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { DEEPSEEK_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-group-route-cache-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -33,6 +34,7 @@ const [
 interface MockUpstreamRequest {
   path: string
   accountKey: string
+  model?: string
 }
 
 interface SeededRoute {
@@ -49,6 +51,11 @@ interface SeededRoundRobinRoute {
   secondUpstreamKey: string
 }
 
+interface SeededCrossProviderRoute {
+  apiKey: string
+  deepSeekUpstreamKey: string
+}
+
 const upstreamRequests: MockUpstreamRequest[] = []
 let upstreamServer: http.Server | undefined
 let gatewayServer: http.Server | undefined
@@ -60,6 +67,7 @@ try {
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
   const seededRoute = seedRoute(upstreamBaseUrl)
   const roundRobinRoute = seedRoundRobinRoute(upstreamBaseUrl)
+  const crossProviderRoute = seedCrossProviderRoute(upstreamBaseUrl)
 
   const [
     { openAIGatewayRouter },
@@ -220,7 +228,50 @@ try {
     '轮询策略应缓存静态运行快照，第二次请求只在 server 本地重新计算候选分组起点'
   )
 
-  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略缓存静态运行快照但不缓存最终命中分组，连续请求可在 server 本地重新选组')
+  const modelCatalogOperationsBeforeCrossProvider = fakeChild.operationCount('list_provider_model_catalog')
+  const crossProviderFirstStart = upstreamRequests.length
+  const crossProviderFirstResponse = await requestChatCompletion(
+    gatewayBaseUrl,
+    crossProviderRoute.apiKey,
+    'trace-route-cache-cross-provider-first',
+    'deepseek-v4-flash'
+  )
+  assert.equal(crossProviderFirstResponse.status, 200, `跨供应商模型路由首次请求应成功，实际 ${crossProviderFirstResponse.status}: ${crossProviderFirstResponse.text}`)
+  const crossProviderFirstRequests = upstreamRequests.slice(crossProviderFirstStart)
+  assert.equal(crossProviderFirstRequests.length, 1, '跨供应商模型路由首次请求只应派发一次目标供应商上游')
+  assert.equal(crossProviderFirstRequests[0]?.accountKey, crossProviderRoute.deepSeekUpstreamKey, '跨供应商模型路由首次请求应命中 DeepSeek 账号')
+  assert.equal(crossProviderFirstRequests[0]?.model, 'deepseek-v4-flash')
+  assert.equal(
+    fakeChild.operationCount('list_provider_model_catalog'),
+    modelCatalogOperationsBeforeCrossProvider + 2,
+    '跨供应商模型路由首次请求应为当前 Key 的 GPT/DeepSeek 供应商集合构建一次模型索引'
+  )
+
+  const modelCatalogOperationsAfterFirstCrossProvider = fakeChild.operationCount('list_provider_model_catalog')
+  const totalOperationsAfterFirstCrossProvider = fakeChild.totalOperationCount()
+  const crossProviderSecondStart = upstreamRequests.length
+  const crossProviderSecondResponse = await requestChatCompletion(
+    gatewayBaseUrl,
+    crossProviderRoute.apiKey,
+    'trace-route-cache-cross-provider-second',
+    'deepseek-v4-flash'
+  )
+  assert.equal(crossProviderSecondResponse.status, 200, `跨供应商模型路由第二次请求应成功，实际 ${crossProviderSecondResponse.status}: ${crossProviderSecondResponse.text}`)
+  const crossProviderSecondRequests = upstreamRequests.slice(crossProviderSecondStart)
+  assert.equal(crossProviderSecondRequests.length, 1, '跨供应商模型路由第二次请求只应派发一次目标供应商上游')
+  assert.equal(crossProviderSecondRequests[0]?.accountKey, crossProviderRoute.deepSeekUpstreamKey, '跨供应商模型路由第二次请求应继续命中 DeepSeek 账号')
+  assert.equal(
+    fakeChild.operationCount('list_provider_model_catalog'),
+    modelCatalogOperationsAfterFirstCrossProvider,
+    '模型路由索引热命中后，相同供应商集合和模型不应再次读取模型目录'
+  )
+  assert.equal(
+    fakeChild.totalOperationCount(),
+    totalOperationsAfterFirstCrossProvider,
+    '跨供应商模型路由第二次请求应完全命中 server 本地缓存，验证模型选择热路径为 Map 查询'
+  )
+
+  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略缓存静态运行快照但不缓存最终命中分组；跨供应商模型路由首个请求构建索引后，后续相同模型请求不再读取模型目录')
 } finally {
   closeGatewayUpstreamAgentsForTest?.()
   await closeServer(gatewayServer)
@@ -231,6 +282,68 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRoute {
+  const owner = repositories.createSystemAccount({
+    username: 'route_cache_cross_provider_owner',
+    displayName: '路由缓存跨供应商用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const gptGroup = repositories.createGroup({
+    name: '路由缓存跨供应商 GPT 号池',
+    providerCode: 'gpt',
+    groupType: 'personal'
+  }, access)
+  const deepSeekGroup = repositories.createGroup({
+    name: '路由缓存跨供应商 DeepSeek 号池',
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    groupType: 'personal'
+  }, access)
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '路由缓存跨供应商 GPT 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-route-cache-cross-provider-gpt',
+      base_url: upstreamBaseUrl
+    },
+    groupId: gptGroup.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const deepSeekUpstreamKey = 'sk-route-cache-cross-provider-deepseek'
+  repositories.createAccount({
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    name: '路由缓存跨供应商 DeepSeek 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: deepSeekUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: deepSeekGroup.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: ['deepseek-v4-flash']
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '路由缓存跨供应商 API Key',
+    groupBindings: [
+      { groupId: gptGroup.id, priority: 1, status: 'active' },
+      { groupId: deepSeekGroup.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  return {
+    apiKey: apiKey.key,
+    deepSeekUpstreamKey
+  }
 }
 
 function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
@@ -405,10 +518,14 @@ function createGatewayServer(
 
 function createMockOpenAIUpstream(): http.Server {
   return http.createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
     req.on('end', () => {
+      const body = parseJsonObject(Buffer.concat(chunks).toString('utf8'))
       upstreamRequests.push({
         path: String(req.url ?? '').split('?')[0] || '/',
-        accountKey: bearerToken(req.headers.authorization)
+        accountKey: bearerToken(req.headers.authorization),
+        model: typeof body.model === 'string' ? body.model : undefined
       })
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
@@ -424,11 +541,10 @@ function createMockOpenAIUpstream(): http.Server {
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
       }))
     })
-    req.resume()
   })
 }
 
-async function requestChatCompletion(baseUrl: string, apiKey: string, traceId: string): Promise<{ status: number; text: string }> {
+async function requestChatCompletion(baseUrl: string, apiKey: string, traceId: string, model = 'gpt-5.5'): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -437,13 +553,24 @@ async function requestChatCompletion(baseUrl: string, apiKey: string, traceId: s
       'x-trace-id': traceId
     },
     body: JSON.stringify({
-      model: 'gpt-5.5',
+      model,
       messages: [{ role: 'user', content: 'route cache' }]
     })
   })
   return {
     status: response.status,
     text: await response.text()
+  }
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text) as unknown
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
   }
 }
 

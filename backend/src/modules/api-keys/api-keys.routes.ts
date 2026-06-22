@@ -43,7 +43,16 @@ const apiKeyMutationSchema = z.object({
       maxLevel: z.number().int().min(1).max(10),
       targetModel: z.string().trim().min(1, '目标模型不能为空'),
       enabled: z.boolean().optional()
-    }).strict()).min(1, '等级范围不能为空')
+    }).strict()).min(1, '等级范围不能为空'),
+    qualityInspection: z.object({
+      enabled: z.boolean().optional(),
+      scoringGroupId: z.string().trim().optional(),
+      scoringModel: z.string().trim().optional(),
+      triggerMode: z.enum(['quality_first_only', 'risk_based', 'always_for_hybrid']).optional(),
+      minTriggerLevel: z.number().int().min(1).max(10).optional(),
+      maxRetries: z.number().int().min(0).max(2).optional(),
+      failureAction: z.enum(['upgrade_next_level', 'retry_same_model', 'return_error']).optional()
+    }).strict().optional()
   }).strict().nullable().optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().nullable().optional(),

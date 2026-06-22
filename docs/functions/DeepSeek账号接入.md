@@ -344,8 +344,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 - DeepSeek 账户只允许加入自身 `provider_protocol_profile_id` 对应分组；当前 OpenAI-compatible 账户进入 `profile_deepseek_openai_v1` 分组
 - 默认 DeepSeek 分组承接 DeepSeek Chat Completions 请求；当账号显式 `clientCompatibility = codex_responses` 且请求为 Codex Responses SSE 时，可通过本地 bridge 承接 Codex `/responses`
 - DeepSeek 分组不承接 Anthropic Messages、普通 OpenAI Responses、FIM 或 Chat Prefix beta；DeepSeek Anthropic-compatible 分组只有后续档案落地后才能新增
-- 模型路由落地前，同一个 API Key 仍按当前规则保持绑定分组协议档案一致
-- 模型路由落地后，一个 API Key 可以同时绑定 DeepSeek 与其他供应商分组，但每次请求必须先由模型目录、协议档案和客户端兼容唯一定位到目标 DeepSeek 账号池
+- 一个 API Key 可以同时绑定 DeepSeek 与其他供应商分组；每次请求优先由模型目录、协议档案和客户端兼容定位到目标 DeepSeek 账号池，再只在该 Key 已绑定的目标档案分组内调度
 - 会话亲和、IP 级账号回避、本地账号屏蔽、上游桶避让和高并发队列继续使用现有运行态，不为 DeepSeek 另起一套调度状态
 - 如果后续 DeepSeek API Key 账户支持同一账户内多个上游 Key，应复用账户内 Key 故障隔离能力：只摘除当前失败 Key，不因单个 Key 的认证失败、余额不足或限流直接打坏整个账户；第一阶段如果只开放单 Key 表单，则不展示 Key 池配置
 - 账户测试、批量测试、模型检测、后台恢复探活和真实网关请求都必须走账号绑定代理；不能只让真实请求走代理、测试请求直连
@@ -408,7 +407,7 @@ DeepSeek 目标创建两个默认分组：
 
 账户只能加入相同 `provider_protocol_profile_id` 的分组。
 
-当前 API Key 多分组绑定仍以同一供应商协议档案为硬边界；后续如果模型路由落地，一个本地 API Key 可以同时绑定 DeepSeek OpenAI、DeepSeek Anthropic 和其他供应商分组，但每次请求必须先用入口协议与 `model` 命中目标 `provider_protocol_profile_id`，再只在该档案的分组内调度。
+API Key 多分组绑定允许跨供应商协议档案；一个本地 API Key 可以同时绑定 DeepSeek OpenAI、DeepSeek Anthropic 和其他供应商分组，但每次请求必须先用入口协议与 `model` 命中目标 `provider_protocol_profile_id`，再只在该 Key 已绑定的目标档案分组内调度。
 
 ## 账号测试
 

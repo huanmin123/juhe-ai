@@ -177,7 +177,7 @@ GLM 两个 OpenAI v1 档案应创建独立默认分组：
 
 账户只能加入相同 `provider_protocol_profile_id` 的分组。通用 GLM API 账户不能加入 Coding Plan 分组，Coding Plan Key 也不能加入通用 GLM 分组。
 
-当前 API Key 多分组绑定仍以同一供应商协议档案为硬边界；模型路由方案落地后，一个本地 API Key 可以同时绑定 GPT、GLM 通用和 GLM Coding 分组，但每次请求必须先用 `model` 命中目标 `provider_protocol_profile_id`，再只在该档案的分组内调度。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
+API Key 多分组绑定允许跨供应商协议档案；一个本地 API Key 可以同时绑定 GPT、GLM 通用和 GLM Coding 分组，但每次请求必须先用 `model` 命中目标 `provider_protocol_profile_id`，再只在该 Key 已绑定的目标档案分组内调度。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
 
 ## 账号测试
 
@@ -211,7 +211,7 @@ GLM 账户测试必须复用真实网关链路：
 | 模型目录 | GLM 云 API 模型、Coding Plan 模型、历史别名和 `glm-5.2[1m]` 这类工具侧模型后缀要逐项确认；开源权重只作为自托管参考，不等于云 API 模型。 | 把开源模型 ID、工具侧别名或已自动升级旧模型当成官方 API 计价模型，会导致 `/v1/models`、模型映射和成本估算失真。 |
 | 价格与 usage | 按官方价格页维护 GLM 价格；解析 `usage.prompt_tokens_details.cached_tokens`、推理 token 和 GLM 扩展 usage 字段；Coding Plan 的本地成本只作估算，不代表官方套餐余额。 | 普通 API 计费和 Coding 套餐权益语义不同，不能把本地美元成本展示成 Coding Plan 额度；漏解析推理 / 缓存字段会导致成本和诊断偏差。 |
 | 统计聚合 | `usage_records`、审计尝试、模型排行、错误排行和 AI 性能窗口都必须带 `providerCode=glm`、`provider_protocol_profile_id` 和实际 `model`；业务统计继续由 worker 预聚合，不在接口实时扫明细。 | GLM 通用和 Coding 可能有同名模型，仅按 `providerCode + model` 聚合会混掉不同档案的用量和错误。 |
-| 模型映射 | 下游模型名必须唯一路由到目标 `provider_protocol_profile_id`；账户级模型映射要保存下游模型和 GLM 实际上游模型，用实际上游模型查价。 | 模型路由落地前跨供应商 API Key 仍有限制；误把 `providerCode=openai` 聚合目录当作账号池会导致跨供应商错调度。 |
+| 模型映射 | 下游模型名必须路由到目标 `provider_protocol_profile_id`；账户级模型映射要保存下游模型和 GLM 实际上游模型，用实际上游模型查价。 | 误把 `providerCode=openai` 聚合目录当作账号池，或让模型名在多个供应商档案中含义不清，会导致跨供应商错调度。 |
 | 审计排障 | 审计尝试、使用记录详情和错误详情应展示 `providerProtocolProfileId`、GLM 接入类型、下游模型、实际上游模型、价格模型和有界 usage 摘要。 | Coding Plan Key 错档案、同名模型路由、usage 字段异常时，只靠账号和分组反查定位成本高。 |
 | 授权与分组 | GLM 通用账户只能加入通用 GLM 档案分组，Coding 账户只能加入 Coding 档案分组；授权实例继承来源账户档案和上游凭据事实。 | 授权实例、分组绑定或 API Key 多分组路由如果只校验供应商，会把不同额度体系混在同一号池。 |
 | 前端体验 | 账户创建页、编辑页、批量导入说明、模型选择、测试连接、错误提示、状态标签和日志筛选都要显示中文，并明确区分“通用 GLM API Key”和“GLM Coding Plan Key”。 | 用户把 Key 填错档案时，如果前端只显示“API Key”，无法定位是 Key 无效还是接入类型选错。 |

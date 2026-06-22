@@ -142,7 +142,9 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
 }
 
 function shouldRecordAccountQualityStats(row: UsageStatsRecordRow): boolean {
-  return row.traffic_source !== 'cooldown_retest' && row.traffic_source !== 'hybrid_scoring'
+  return row.traffic_source !== 'cooldown_retest'
+    && row.traffic_source !== 'hybrid_scoring'
+    && row.traffic_source !== 'hybrid_quality_scoring'
 }
 
 function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {

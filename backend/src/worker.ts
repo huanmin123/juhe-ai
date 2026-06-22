@@ -286,6 +286,7 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     queueBytes: typeof input.queueBytes === 'number' ? input.queueBytes : undefined,
     flushLastSuccessAt: typeof input.flushLastSuccessAt === 'string' ? input.flushLastSuccessAt : undefined,
     flushLastError: typeof input.flushLastError === 'string' ? input.flushLastError : undefined,
+    completedCount: typeof input.completedCount === 'number' ? input.completedCount : undefined,
     droppedCount: typeof input.droppedCount === 'number' ? input.droppedCount : undefined,
     droppedSuccessCount: typeof input.droppedSuccessCount === 'number' ? input.droppedSuccessCount : undefined,
     droppedFailureCount: typeof input.droppedFailureCount === 'number' ? input.droppedFailureCount : undefined,

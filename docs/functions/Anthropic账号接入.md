@@ -166,8 +166,7 @@ type AnthropicAccountType = 'api_key'
 模型路由：
 
 - Anthropic native 请求的目标模型来自请求体 `model`。
-- 模型路由落地前，一个本地 API Key 仍只能绑定同一供应商协议档案的分组。
-- 模型路由落地后，本地 API Key 可以同时绑定 OpenAI、Anthropic、GLM、DeepSeek 等分组，但每次请求必须先用 `model` 命中全系统唯一的 `provider_protocol_profile_id`，再只在该档案的分组内调度。
+- 本地 API Key 可以同时绑定 OpenAI、Anthropic、GLM、DeepSeek 等分组，但每次请求必须先用 `model` 命中目标 `provider_protocol_profile_id`，再只在该 Key 已绑定的目标档案分组内调度。
 - `GET /v1/models` 的响应形态应按请求协议渲染。Anthropic native 客户端应看到 Anthropic Models API 形态；OpenAI-compatible 客户端继续看到 OpenAI list 形态。
 
 ## 分层落点与兼容边界
@@ -397,7 +396,7 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 - Anthropic 账户只能加入相同 `provider_protocol_profile_id` 的分组。
 - Anthropic 官方账户不能加入 DeepSeek Anthropic-compatible、GLM Anthropic-compatible 或其他第三方兼容档案分组。
 - 授权实例账户继承来源账户的官方 Anthropic 资源事实，但被授权侧实例状态、分组绑定、冷却和用量归属仍保持独立。
-- 当前 API Key 多分组绑定仍以同一供应商协议档案为硬边界。模型路由落地后，跨供应商 API Key 必须先按请求 `model` 定位目标档案，再进入对应档案分组调度。
+- API Key 多分组绑定允许跨供应商协议档案。跨供应商 API Key 必须先按请求 `model` 定位目标档案，再进入该 Key 已绑定的对应档案分组调度。
 - Anthropic native 请求的会话连续性主要来自客户端请求内容和 prompt cache；当前不新增跨请求会话亲和特殊规则。如果 Claude SDK / Claude Code 需要按会话稳定命中同一账号，必须通过新需求复用当前会话亲和机制扩展协议字段来源。
 
 ## 账号测试

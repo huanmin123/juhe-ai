@@ -19,6 +19,7 @@ export type StreamServerRetryReason =
   | 'upstream_protocol_failure'
   | 'pre_commit_stream_failure'
   | 'codex_pre_commit_stream_failure'
+  | 'hybrid_quality'
 
 export function shouldRetryResponseInspectionOnServer(
   streamResult: StreamPipeResult,

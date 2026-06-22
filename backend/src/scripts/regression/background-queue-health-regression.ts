@@ -6,6 +6,7 @@ import type { DbServiceServerRuntimeSnapshot } from '../../modules/db-service/db
 testUnavailableRuntime()
 testNormalRuntime()
 testBackloggedRuntime()
+testStatsRecordMaintenanceBackloggedRuntime()
 testDegradedRuntime()
 
 console.log('后台队列健康快照回归通过：worker 本地队列和 server IPC 队列可统一识别不可用、积压、丢弃、拒绝和 flush 失败')
@@ -30,6 +31,8 @@ function testNormalRuntime(): void {
   assert.equal(health.summary.backloggedCount, 0)
   assert.equal(health.summary.unavailableCount, 0)
   assert.equal(health.workerQueues.find((queue) => queue.key === 'usageRecords')?.queueLength, 2)
+  assert.equal(health.workerQueues.find((queue) => queue.key === 'recordMaintenanceIngest')?.queueLength, 3)
+  assert.equal(health.workerQueues.find((queue) => queue.key === 'recordMaintenanceStats')?.queueLength, 4)
   assert.equal(health.serverIpcQueues.find((queue) => queue.key === 'usageRecords')?.queueLength, 1)
 }
 
@@ -42,6 +45,18 @@ function testBackloggedRuntime(): void {
   assert.equal(health.status, 'backlogged')
   assert.equal(usageQueue?.status, 'backlogged')
   assert.deepEqual(usageQueue?.reasons, ['queue_backlogged'])
+  assert.equal(health.summary.backloggedCount, 1)
+}
+
+function testStatsRecordMaintenanceBackloggedRuntime(): void {
+  const runtime = buildRuntimeSnapshot()
+  runtime.statsWorker!.snapshot!.recordMaintenanceQueue.queueLength = 1000
+  runtime.statsWorker!.snapshot!.recordMaintenanceQueue.queueBytes = 256 * 1024
+  const health = buildBackgroundQueueHealthSnapshot(runtime)
+  const recordMaintenanceQueue = health.workerQueues.find((queue) => queue.key === 'recordMaintenanceStats')
+  assert.equal(health.status, 'backlogged')
+  assert.equal(recordMaintenanceQueue?.status, 'backlogged')
+  assert.deepEqual(recordMaintenanceQueue?.reasons, ['queue_backlogged'])
   assert.equal(health.summary.backloggedCount, 1)
 }
 
@@ -160,10 +175,22 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
         auditLogQueue: queue(),
         operationLogQueue: queue(),
         publicApiLogQueue: queue(),
+        recordMaintenanceQueue: queue({ queueLength: 3, queueBytes: 3072 }),
         runtimeLogIndexQueue: {
           ...queue(),
           retentionDays: 30
         }
+      }
+    },
+    statsWorker: {
+      pid: 1007,
+      ready: true,
+      snapshot: {
+        pid: 1008,
+        ready: true,
+        workerRole: 'stats-worker',
+        jobs: [],
+        recordMaintenanceQueue: queue({ queueLength: 4, queueBytes: 4096 })
       }
     }
   }

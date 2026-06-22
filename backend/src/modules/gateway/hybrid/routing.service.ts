@@ -17,14 +17,8 @@ import type {
   OpenAIAccountSecret
 } from '../../../storage/repositories.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
-import { filterGatewayAccountsByRequestCapability } from '../dispatch/account-capability-filter.js'
-import { filterGatewayAccountsByRequestedModel } from '../dispatch/model-filter.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../routing/api-key-group-route-selector.service.js'
-import {
-  listCachedActiveResponseInspectionPoliciesAsync,
-  listCachedOpenAIAccountsForGroupAsync,
-  resolveCachedGroupUsageAccessMetadataAsync
-} from '../runtime/runtime-cache.service.js'
+import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
 import { replaceGatewayJsonBodyModel } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { applyHybridRouteAffinity } from './affinity.service.js'
@@ -44,6 +38,7 @@ export type HybridGatewayRouteResult =
     responseInspectionPolicies: ResponseInspectionPolicySummary[]
     scoring: HybridScoringResult
     route: ApiKeyHybridLevelRoute
+    config: ApiKeyHybridRoutingConfig
     targetModel: string
     affinityApplied: boolean
   }
@@ -57,6 +52,26 @@ export type HybridGatewayRouteResult =
     scoring?: HybridScoringResult
     targetModel?: string
   }
+
+export interface HybridGatewayRuntimeRoute {
+  apiKeyRecord: GatewayApiKeyRow
+  config: ApiKeyHybridRoutingConfig
+  scoring: HybridScoringResult
+  route: ApiKeyHybridLevelRoute
+  targetModel: string
+  affinityApplied: boolean
+  qualityRetryCount: number
+}
+
+export interface HybridGatewayTargetRoute {
+  apiKeyRecord: GatewayApiKeyRow
+  groupId: string
+  groupAccess: GroupUsageAccessMetadata
+  accounts: OpenAIAccountSecret[]
+  responseInspectionPolicies: ResponseInspectionPolicySummary[]
+  route: ApiKeyHybridLevelRoute
+  targetModel: string
+}
 
 export async function resolveHybridGatewayRoute(input: {
   req: Request
@@ -102,10 +117,8 @@ export async function resolveHybridGatewayRoute(input: {
     const target = await selectHybridTargetGroup({
       req: input.req,
       apiKeyRecord: input.apiKeyRecord,
-      config,
       route: candidateRoute,
-      requestClientCompatibility: input.requestClientCompatibility,
-      signal: input.signal
+      requestClientCompatibility: input.requestClientCompatibility
     })
     if (!target) {
       continue
@@ -152,6 +165,7 @@ export async function resolveHybridGatewayRoute(input: {
       responseInspectionPolicies: target.responseInspectionPolicies,
       scoring,
       route: candidateRoute,
+      config,
       targetModel: candidateRoute.targetModel,
       affinityApplied: affinity.applied
     }
@@ -181,56 +195,60 @@ export async function resolveHybridGatewayRoute(input: {
   }
 }
 
+export async function resolveNextHybridGatewayRoute(input: {
+  req: Request
+  apiKeyRecord: GatewayApiKeyRow
+  currentRoute: ApiKeyHybridLevelRoute
+  requestClientCompatibility?: ClientCompatibilityCapability
+  signal?: AbortSignal
+}): Promise<HybridGatewayTargetRoute | undefined> {
+  const config = input.apiKeyRecord.hybrid_routing_config
+  if (input.apiKeyRecord.route_mode !== 'hybrid' || !config) {
+    return undefined
+  }
+  for (const candidateRoute of higherHybridLevelRoutes(config, input.currentRoute)) {
+    const target = await selectHybridTargetGroup({
+      req: input.req,
+      apiKeyRecord: input.apiKeyRecord,
+      route: candidateRoute,
+      requestClientCompatibility: input.requestClientCompatibility
+    })
+    if (!target) continue
+    await rewriteHybridRequestModel(input.req, candidateRoute.targetModel, input.signal)
+    return {
+      apiKeyRecord: {
+        ...input.apiKeyRecord,
+        selected_group_id: target.groupId
+      },
+      groupId: target.groupId,
+      groupAccess: target.groupAccess,
+      accounts: target.accounts,
+      responseInspectionPolicies: target.responseInspectionPolicies,
+      route: candidateRoute,
+      targetModel: candidateRoute.targetModel
+    }
+  }
+  return undefined
+}
+
 async function selectHybridTargetGroup(input: {
   req: Request
   apiKeyRecord: GatewayApiKeyRow
-  config: ApiKeyHybridRoutingConfig
   route: ApiKeyHybridLevelRoute
   requestClientCompatibility?: ClientCompatibilityCapability
-  signal?: AbortSignal
 }): Promise<{
   groupId: string
   groupAccess: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
 } | undefined> {
-  const bindings = orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord)
-  const seenGroupIds = new Set<string>()
-  for (const binding of bindings) {
-    if (!binding.group_id || seenGroupIds.has(binding.group_id)) {
-      continue
-    }
-    seenGroupIds.add(binding.group_id)
-    const groupAccess = await resolveCachedGroupUsageAccessMetadataAsync(binding.group_id, input.apiKeyRecord.system_account_id)
-    if (!groupAccess) {
-      continue
-    }
-    const accounts = await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.apiKeyRecord.system_account_id)
-    if (!accounts.length) {
-      continue
-    }
-    const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, accounts, {
-      requestClientCompatibility: input.requestClientCompatibility
-    })
-    if (!capabilityFilter.accounts.length) {
-      continue
-    }
-    const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, input.route.targetModel)
-    if (!modelFilter.accounts.length) {
-      continue
-    }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
-      protocolCode: groupAccess.protocolCode,
-      providerCode: groupAccess.providerCode
-    })
-    return {
-      groupId: binding.group_id,
-      groupAccess,
-      accounts: modelFilter.accounts,
-      responseInspectionPolicies
-    }
-  }
-  return undefined
+  return selectGatewayModelTargetGroup({
+    req: input.req,
+    apiKeyRecord: input.apiKeyRecord,
+    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
+    targetModel: input.route.targetModel,
+    requestClientCompatibility: input.requestClientCompatibility
+  })
 }
 
 async function rewriteHybridRequestModel(req: Request, targetModel: string, signal?: AbortSignal): Promise<void> {

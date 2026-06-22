@@ -1008,6 +1008,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           operationLogQueue: { ...ingestWorkerSnapshot.operationLogQueue },
           publicApiLogQueue: { ...ingestWorkerSnapshot.publicApiLogQueue },
           auditLogQueue: { ...ingestWorkerSnapshot.auditLogQueue },
+          recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue },
           runtimeLogIndexQueue: { ...ingestWorkerSnapshot.runtimeLogIndexQueue }
         }
         : undefined
@@ -1023,7 +1024,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           pid: statsWorkerSnapshot.pid,
           ready: statsWorkerSnapshot.ready,
           workerRole: statsWorkerSnapshot.workerRole,
-          jobs: statsWorkerSnapshot.jobs.map((job) => ({ ...job }))
+          jobs: statsWorkerSnapshot.jobs.map((job) => ({ ...job })),
+          recordMaintenanceQueue: { ...statsWorkerSnapshot.recordMaintenanceQueue }
         }
         : undefined
     },

@@ -12,6 +12,8 @@ runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
+runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
+runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
 runtimeConfig.secret = 'sqlite-busy-timeout-boundary-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -27,6 +29,7 @@ const [databaseModule, usageRecordShards] = await Promise.all([
 try {
   assert(sqliteBusyTimeoutMs >= 1000 && sqliteBusyTimeoutMs <= 5000, `SQLite busy_timeout 应保持在 1-5 秒内，当前为 ${sqliteBusyTimeoutMs}ms`)
   assert.equal(readBusyTimeout(databaseModule.getBusinessDatabase()), sqliteBusyTimeoutMs, '业务库 busy_timeout 应使用统一锁等待配置')
+  assert.equal(readBusyTimeout(databaseModule.getCodexContextStateDatabase()), sqliteBusyTimeoutMs, 'Codex Responses 上下文索引库 busy_timeout 应使用统一锁等待配置')
   assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集目录库 busy_timeout 应使用统一锁等待配置')
   assert.equal(readBusyTimeout(databaseModule.getStatsDatabase()), sqliteBusyTimeoutMs, '统计库 busy_timeout 应使用统一锁等待配置')
 

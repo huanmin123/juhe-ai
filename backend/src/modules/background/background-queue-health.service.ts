@@ -43,11 +43,12 @@ export interface BackgroundQueueHealthSnapshot {
 interface WorkerQueueSpec {
   key: string
   label: string
+  workerRole: 'ingest-worker' | 'stats-worker'
   snapshotKey: 'usageRecordQueue' | 'auditLogQueue' | 'operationLogQueue' | 'publicApiLogQueue' | 'recordMaintenanceQueue' | 'runtimeLogIndexQueue'
 }
 
 type IngestWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['ingestWorker']>['snapshot']>
-type MaintenanceWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['maintenanceWorker']>['snapshot']>
+type StatsWorkerRuntimeSnapshot = NonNullable<NonNullable<DbServiceServerRuntimeSnapshot['statsWorker']>['snapshot']>
 
 interface IpcQueueSpec {
   key: string
@@ -70,12 +71,13 @@ const queueLengthBacklogWarning = 1000
 const queueBytesBacklogWarning = 8 * 1024 * 1024
 
 const workerQueueSpecs: WorkerQueueSpec[] = [
-  { key: 'usageRecords', label: '使用记录', snapshotKey: 'usageRecordQueue' },
-  { key: 'auditLogs', label: '审计日志', snapshotKey: 'auditLogQueue' },
-  { key: 'operationLogs', label: '操作日志', snapshotKey: 'operationLogQueue' },
-  { key: 'publicApiLogs', label: '公开接口日志', snapshotKey: 'publicApiLogQueue' },
-  { key: 'recordMaintenance', label: '数据维护', snapshotKey: 'recordMaintenanceQueue' },
-  { key: 'runtimeLogIndex', label: '运行日志索引', snapshotKey: 'runtimeLogIndexQueue' }
+  { key: 'usageRecords', label: '使用记录', workerRole: 'ingest-worker', snapshotKey: 'usageRecordQueue' },
+  { key: 'auditLogs', label: '审计日志', workerRole: 'ingest-worker', snapshotKey: 'auditLogQueue' },
+  { key: 'operationLogs', label: '操作日志', workerRole: 'ingest-worker', snapshotKey: 'operationLogQueue' },
+  { key: 'publicApiLogs', label: '公开接口日志', workerRole: 'ingest-worker', snapshotKey: 'publicApiLogQueue' },
+  { key: 'recordMaintenanceIngest', label: '数据维护 ingest', workerRole: 'ingest-worker', snapshotKey: 'recordMaintenanceQueue' },
+  { key: 'recordMaintenanceStats', label: '数据维护 stats', workerRole: 'stats-worker', snapshotKey: 'recordMaintenanceQueue' },
+  { key: 'runtimeLogIndex', label: '运行日志索引', workerRole: 'ingest-worker', snapshotKey: 'runtimeLogIndexQueue' }
 ]
 
 const ipcQueueSpecs: IpcQueueSpec[] = [
@@ -96,7 +98,7 @@ export function buildBackgroundQueueHealthSnapshot(
   serverRuntime: DbServiceServerRuntimeSnapshot | undefined
 ): BackgroundQueueHealthSnapshot {
   const ingestWorkerSnapshot = serverRuntime?.ingestWorker?.snapshot
-  const maintenanceWorkerSnapshot = serverRuntime?.maintenanceWorker?.snapshot
+  const statsWorkerSnapshot = serverRuntime?.statsWorker?.snapshot
   const serverIpcQueues = serverRuntime?.worker?.pendingQueues
   const workerQueues = workerQueueSpecs.map((spec) => buildQueueHealthItem({
     key: spec.key,
@@ -104,7 +106,8 @@ export function buildBackgroundQueueHealthSnapshot(
     source: 'worker_local',
     snapshot: workerQueueSnapshot(spec.snapshotKey, {
       ingestWorkerSnapshot,
-      maintenanceWorkerSnapshot
+      statsWorkerSnapshot,
+      workerRole: spec.workerRole
     })
   }))
   const ipcQueues = ipcQueueSpecs.map((spec) => buildQueueHealthItem({
@@ -116,12 +119,12 @@ export function buildBackgroundQueueHealthSnapshot(
   const allQueues = [...workerQueues, ...ipcQueues]
   const summary = summarizeQueueHealthItems(allQueues)
   const available = Boolean(serverRuntime)
-  const workerSnapshotAvailable = Boolean(ingestWorkerSnapshot && maintenanceWorkerSnapshot)
+  const workerSnapshotAvailable = Boolean(ingestWorkerSnapshot && statsWorkerSnapshot)
   const serverIpcQueueAvailable = Boolean(serverIpcQueues)
   const reasons: string[] = []
   if (!available) reasons.push('server_runtime_unavailable')
   if (available && !ingestWorkerSnapshot) reasons.push('ingest_worker_snapshot_unavailable')
-  if (available && !maintenanceWorkerSnapshot) reasons.push('maintenance_worker_snapshot_unavailable')
+  if (available && !statsWorkerSnapshot) reasons.push('stats_worker_snapshot_unavailable')
   if (available && !serverIpcQueueAvailable) reasons.push('server_ipc_queue_unavailable')
   if (summary.degradedCount > 0) reasons.push('queue_degraded')
   if (summary.backloggedCount > 0) reasons.push('queue_backlogged')
@@ -143,11 +146,14 @@ function workerQueueSnapshot(
   snapshotKey: WorkerQueueSpec['snapshotKey'],
   input: {
     ingestWorkerSnapshot?: IngestWorkerRuntimeSnapshot
-    maintenanceWorkerSnapshot?: MaintenanceWorkerRuntimeSnapshot
+    statsWorkerSnapshot?: StatsWorkerRuntimeSnapshot
+    workerRole: WorkerQueueSpec['workerRole']
   }
 ): DbServiceRuntimeQueueSnapshot | undefined {
-  if (snapshotKey === 'recordMaintenanceQueue') {
-    return input.maintenanceWorkerSnapshot?.recordMaintenanceQueue
+  if (input.workerRole === 'stats-worker') {
+    return snapshotKey === 'recordMaintenanceQueue'
+      ? input.statsWorkerSnapshot?.recordMaintenanceQueue
+      : undefined
   }
   return input.ingestWorkerSnapshot?.[snapshotKey]
 }

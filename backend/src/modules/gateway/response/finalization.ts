@@ -91,6 +91,11 @@ import {
   suppressGatewayUpstreamBucketLocallyForSeconds
 } from '../runtime/proxy-health.service.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
+import type { HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
+import {
+  inspectHybridGatewayQuality,
+  type HybridQualityInspectionOutcome
+} from '../hybrid/quality-inspection.service.js'
 import {
   recordClientAbortedUpstreamAttempt,
   recordCompletedUpstreamAttempt,
@@ -131,6 +136,7 @@ interface HandleUpstreamResponseInput {
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
+  hybridRoute?: HybridGatewayRuntimeRoute
   markFirstOutput?: () => void
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
@@ -612,6 +618,15 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           if (jsonInspectionResult) {
             return jsonInspectionResult
           }
+          const hybridQualityResult = await inspectBufferedHybridQualityResponse({
+            ...input,
+            responseBody: completeBody,
+            responseBodyText: completeBodyText,
+            firstTokenMs
+          })
+          if (hybridQualityResult) {
+            return hybridQualityResult
+          }
           responseSemanticText = completeBodyText
           if (firstTokenMs === undefined) {
             firstTokenMs = Date.now() - startedAt
@@ -848,6 +863,114 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     firstTokenMs,
     responseBodyText,
     errorPayload
+  }
+}
+
+async function inspectBufferedHybridQualityResponse(input: {
+  req: Request
+  res: Response
+  account: UpstreamAccount
+  upstreamResponse: GatewayUpstreamResponse
+  upstreamUrl: string
+  auditAttemptId: string
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayUsageContext
+  startedAt: number
+  responseBody: Buffer
+  responseBodyText: string
+  firstTokenMs?: number
+  hybridRoute?: HybridGatewayRuntimeRoute
+  signal: AbortSignal
+}): Promise<UpstreamResponseHandlingResult | undefined> {
+  const hybridRoute = input.hybridRoute
+  if (!hybridRoute || !input.upstreamResponse.ok) {
+    return undefined
+  }
+  const quality = await inspectHybridGatewayQuality({
+    req: input.req,
+    apiKeyRecord: hybridRoute.apiKeyRecord,
+    config: hybridRoute.config,
+    scoring: hybridRoute.scoring,
+    targetModel: hybridRoute.targetModel,
+    responseBodyText: input.responseBodyText,
+    traceId: input.usageContext.traceId,
+    clientIp: input.usageContext.clientIp,
+    endpoint: input.usageContext.endpoint,
+    signal: input.signal
+  })
+  input.auditCapture.addGatewayMetadata({
+    label: 'hybrid_quality_inspection',
+    metadata: hybridQualityAuditMetadata(quality, hybridRoute)
+  })
+  if (!quality.triggered || quality.pass) {
+    return undefined
+  }
+  const usage = parseGatewayProtocolUsageFromJsonBuffer(input.account, input.responseBody)
+  const message = quality.result?.reason
+    ? `混合路由质量评分未通过：${quality.result.reason}`
+    : '混合路由质量评分未通过'
+  const errorCode = `hybrid_quality_${quality.result?.failureType ?? 'failed'}`
+  input.auditCapture.completeAttempt(input.auditAttemptId, {
+    statusCode: input.upstreamResponse.status,
+    responseHeaders: input.upstreamResponse.headers,
+    responseBody: input.responseBody,
+    success: false,
+    errorPhase: 'response_inspection',
+    errorCode,
+    errorMessage: message
+  })
+  recordCompletedUpstreamAttempt(input.req, {
+    ...input.usageContext,
+    account: input.account,
+    statusCode: input.upstreamResponse.status,
+    success: false,
+    stream: isEffectiveOpenAIStreamRequest(input.req, input.account),
+    firstTokenMs: input.firstTokenMs,
+    startedAt: input.startedAt,
+    usage,
+    errorCode,
+    requestSnapshot: input.usageContext.requestSnapshot,
+    responseSnapshot: buildUsageResponseSnapshot({
+      upstreamUrl: input.upstreamUrl,
+      statusCode: input.upstreamResponse.status,
+      headers: input.upstreamResponse.headers,
+      bodyText: input.responseBodyText,
+      errorMessage: message
+    }),
+    errorMessage: message
+  })
+  return {
+    alreadyFinalized: false,
+    retryUpstream: true,
+    retryReason: 'hybrid_quality',
+    excludeCurrentAccount: false,
+    message,
+    errorCode,
+    hybridQuality: quality
+  }
+}
+
+function hybridQualityAuditMetadata(
+  quality: HybridQualityInspectionOutcome,
+  hybridRoute: HybridGatewayRuntimeRoute
+): Record<string, unknown> {
+  return {
+    triggered: quality.triggered,
+    triggerReason: quality.triggerReason,
+    pass: quality.pass,
+    score: quality.result?.score,
+    confidence: quality.result?.confidence,
+    failureType: quality.result?.failureType,
+    retryRecommendation: quality.result?.retryRecommendation,
+    actualAction: quality.actualAction,
+    reason: quality.result?.reason,
+    errorCode: quality.errorCode,
+    errorMessage: quality.errorMessage,
+    statusCode: quality.statusCode,
+    qualityAccountId: quality.qualityAccountId,
+    routeLevel: hybridRoute.scoring.level,
+    targetModel: hybridRoute.targetModel,
+    qualityRetryCount: hybridRoute.qualityRetryCount
   }
 }
 

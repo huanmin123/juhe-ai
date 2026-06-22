@@ -85,7 +85,13 @@ export function usageRecordSummaryFromRow(
 }
 
 function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSource'] {
-  if (value === 'gateway' || value === 'manual_account_test' || value === 'cooldown_retest' || value === 'hybrid_scoring') {
+  if (
+    value === 'gateway'
+    || value === 'manual_account_test'
+    || value === 'cooldown_retest'
+    || value === 'hybrid_scoring'
+    || value === 'hybrid_quality_scoring'
+  ) {
     return value
   }
   throw new Error('使用记录来源无效')

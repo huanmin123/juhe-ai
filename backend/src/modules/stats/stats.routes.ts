@@ -19,6 +19,7 @@ import { fixedUsageStatsDateKeys } from '../../storage/usage-stats-window-helper
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
+import type { DbServiceRuntimeQueueSnapshot } from '../db-service/db-service-types.js'
 
 export const statsRouter = Router()
 
@@ -31,6 +32,45 @@ const aiPerformanceAccountOptionsQuerySchema = z.object({
   keyword: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(50).optional()
 })
+
+interface BackgroundScheduledJobSnapshot {
+  name: string
+  intervalMs: number
+  running: boolean
+  lastStartedAt?: string
+  lastFinishedAt?: string
+  lastSuccessAt?: string
+  lastErrorAt?: string
+  lastError?: string
+  lastDurationMs?: number
+  maxDurationMs?: number
+  runCount: number
+  successCount: number
+  failureCount: number
+  skippedCount: number
+}
+
+interface BackgroundRetryQueueSnapshot {
+  name: string
+  pendingCount: number
+  runningCount: number
+  nextRunAt?: string
+}
+
+interface BackgroundLocalQueueSnapshot extends DbServiceRuntimeQueueSnapshot {
+  name: string
+}
+
+interface BackgroundJobRuntimeRow extends BackgroundScheduledJobSnapshot {
+  workerRole?: string
+  retryQueue?: BackgroundRetryQueueSnapshot
+  localQueue?: BackgroundLocalQueueSnapshot
+}
+
+interface BackgroundJobsSnapshot {
+  workerRole?: string
+  jobs?: BackgroundScheduledJobSnapshot[]
+}
 
 statsRouter.get('/usage-overview', (req, res) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
@@ -116,6 +156,81 @@ function parseAccountIds(value: unknown): string[] {
   return ids
 }
 
+function backgroundJobsFromSnapshot(snapshot: BackgroundJobsSnapshot | undefined): BackgroundJobRuntimeRow[] | undefined {
+  return snapshot?.jobs?.map((job) => ({ ...job, workerRole: snapshot.workerRole }))
+}
+
+function retryQueueBackgroundJobRow(
+  name: string,
+  workerRole: string | undefined,
+  queue: BackgroundRetryQueueSnapshot | undefined
+): BackgroundJobRuntimeRow | undefined {
+  if (!queue) return undefined
+  return emptyBackgroundJobRow({
+    name,
+    workerRole,
+    running: queue.runningCount > 0,
+    retryQueue: queue
+  })
+}
+
+function localQueueBackgroundJobRow(
+  name: string,
+  workerRole: string | undefined,
+  queue: DbServiceRuntimeQueueSnapshot | undefined
+): BackgroundJobRuntimeRow | undefined {
+  if (!queue) return undefined
+  const queueLength = numberValue(queue.queueLength)
+  const flushFailureCount = numberValue(queue.flushFailureCount)
+  const completedCount = numberValue(queue.completedCount)
+  return emptyBackgroundJobRow({
+    name,
+    workerRole,
+    running: queueLength > 0,
+    lastSuccessAt: queue.flushLastSuccessAt,
+    lastFinishedAt: queue.flushLastSuccessAt,
+    lastError: typeof queue.flushLastError === 'string' ? queue.flushLastError : undefined,
+    runCount: completedCount + flushFailureCount,
+    successCount: completedCount,
+    failureCount: flushFailureCount,
+    localQueue: { ...queue, name }
+  })
+}
+
+function emptyBackgroundJobRow(input: {
+  name: string
+  workerRole?: string
+  running?: boolean
+  lastFinishedAt?: string
+  lastSuccessAt?: string
+  lastError?: string
+  runCount?: number
+  successCount?: number
+  failureCount?: number
+  retryQueue?: BackgroundRetryQueueSnapshot
+  localQueue?: BackgroundLocalQueueSnapshot
+}): BackgroundJobRuntimeRow {
+  return {
+    name: input.name,
+    workerRole: input.workerRole,
+    intervalMs: 0,
+    running: input.running ?? false,
+    lastFinishedAt: input.lastFinishedAt,
+    lastSuccessAt: input.lastSuccessAt,
+    lastError: input.lastError,
+    runCount: input.runCount ?? 0,
+    successCount: input.successCount ?? 0,
+    failureCount: input.failureCount ?? 0,
+    skippedCount: 0,
+    retryQueue: input.retryQueue,
+    localQueue: input.localQueue
+  }
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
 statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
@@ -131,12 +246,18 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   const snapshotWorkerSnapshot = runtime?.snapshotWorker?.snapshot
   const probeWorkerSnapshot = runtime?.probeWorker?.snapshot
   const maintenanceWorkerSnapshot = runtime?.maintenanceWorker?.snapshot
+  const backgroundQueueRows = [
+    retryQueueBackgroundJobRow('manual-account-test-queue', probeWorkerSnapshot?.workerRole, probeWorkerSnapshot?.manualAccountTestQueue),
+    retryQueueBackgroundJobRow('account-quality-failure-precheck-queue', probeWorkerSnapshot?.workerRole, probeWorkerSnapshot?.accountQualityFailurePrecheckQueue),
+    localQueueBackgroundJobRow('record-maintenance-ingest-queue', ingestWorkerSnapshot?.workerRole, ingestWorkerSnapshot?.recordMaintenanceQueue),
+    localQueueBackgroundJobRow('record-maintenance-stats-queue', statsWorkerSnapshot?.workerRole, statsWorkerSnapshot?.recordMaintenanceQueue)
+  ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
   const backgroundJobGroups = [
-    workerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: workerSnapshot.workerRole })),
-    metricsWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: metricsWorkerSnapshot.workerRole })),
-    ingestWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: ingestWorkerSnapshot.workerRole })),
-    statsWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: statsWorkerSnapshot.workerRole })),
-    snapshotWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: snapshotWorkerSnapshot.workerRole })),
+    backgroundJobsFromSnapshot(workerSnapshot),
+    backgroundJobsFromSnapshot(metricsWorkerSnapshot),
+    backgroundJobsFromSnapshot(ingestWorkerSnapshot),
+    backgroundJobsFromSnapshot(statsWorkerSnapshot),
+    backgroundJobsFromSnapshot(snapshotWorkerSnapshot),
     probeWorkerSnapshot?.jobs?.map((job) => {
       const roleAwareJob = { ...job, workerRole: probeWorkerSnapshot.workerRole }
       if (job.name === 'account-health-check' && probeWorkerSnapshot.accountHealthCheckQueue) {
@@ -148,12 +269,10 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
       if (job.name === 'account-api-key-cooldown-retest' && probeWorkerSnapshot.accountApiKeyCooldownRetestQueue) {
         return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountApiKeyCooldownRetestQueue }
       }
-      if (job.name === 'account-quality-refresh' && probeWorkerSnapshot.accountQualityFailurePrecheckQueue) {
-        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountQualityFailurePrecheckQueue }
-      }
       return roleAwareJob
     }),
-    maintenanceWorkerSnapshot?.jobs?.map((job) => ({ ...job, workerRole: maintenanceWorkerSnapshot.workerRole }))
+    backgroundJobsFromSnapshot(maintenanceWorkerSnapshot),
+    backgroundQueueRows.length > 0 ? backgroundQueueRows : undefined
   ]
   const backgroundJobs = backgroundJobGroups.some(Array.isArray)
     ? backgroundJobGroups.flatMap((items) => items ?? [])

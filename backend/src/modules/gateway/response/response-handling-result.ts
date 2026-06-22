@@ -2,6 +2,7 @@ import type { StreamServerRetryReason } from './stream-finalization-retry-decisi
 import type { ResponseInspectionDecision } from './inspection.js'
 import type { StreamBodyOmissionSummary } from './stream-result.js'
 import type { ParsedUsage } from '../usage/types.js'
+import type { HybridQualityInspectionOutcome } from '../hybrid/quality-inspection.service.js'
 
 export type UpstreamResponseHandlingResult =
   | { alreadyFinalized: true }
@@ -14,6 +15,7 @@ export type UpstreamResponseHandlingResult =
     message: string
     errorCode?: string
     uncommittedResponseBody?: Buffer
+    hybridQuality?: HybridQualityInspectionOutcome
   }
   | {
     alreadyFinalized: false
