@@ -11,6 +11,7 @@ import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
+import type { AccountModelMapping } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -119,7 +120,8 @@ try {
       status: 'active',
       schedulable: true,
       concurrencyLimit: 4,
-      supportedModels: realModels
+      supportedModels: realModels,
+      modelMappings: codexBridgeModelMappings(realModels)
     }, access)
     assert.equal(codexBridgeAccount.clientCompatibility, 'codex_responses')
 
@@ -369,6 +371,16 @@ function modelListFromEnv(): string[] {
     throw new Error('JUHE_REAL_DEEPSEEK_MODELS must contain at least one model')
   }
   return models
+}
+
+function codexBridgeModelMappings(models: string[]): AccountModelMapping[] {
+  return models.map((model) => ({
+    sourceModel: model,
+    sourceEndpointFamily: 'responses',
+    upstreamModel: model,
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }))
 }
 
 function positiveIntegerEnv(name: string): number | undefined {

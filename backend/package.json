@@ -57,6 +57,7 @@
     "test:third-party-anthropic-profiles": "tsx src/scripts/regression/third-party-anthropic-profiles-regression.ts",
     "test:cli-local-gateway": "tsx src/scripts/regression/cli-local-gateway-regression.ts",
     "test:anthropic-real-gateway-e2e": "tsx src/scripts/regression/anthropic-real-gateway-e2e.ts",
+    "test:openai-compatible-real-gateway-e2e": "tsx src/scripts/regression/openai-compatible-real-gateway-e2e.ts",
     "test:deepseek-gateway-mock-ai": "tsx src/scripts/regression/deepseek-gateway-mock-ai-regression.ts",
     "test:deepseek-real-gateway-e2e": "tsx src/scripts/regression/deepseek-real-gateway-e2e.ts",
     "test:glm-gateway-mock-ai": "tsx src/scripts/regression/glm-gateway-mock-ai-regression.ts",

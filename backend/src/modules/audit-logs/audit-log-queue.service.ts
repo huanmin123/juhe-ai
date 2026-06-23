@@ -11,6 +11,8 @@ import { readAuditLogSettings } from './audit-log-settings.js'
 
 const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
 const auditLogFlushBatchMaxBytes = 8 * 1024 * 1024
+const auditLogScheduledFlushMaxBatches = 20
+const auditLogFlushBatchYieldMs = 5
 const auditLogShutdownFlushMaxBatches = 100
 const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
 const auditLogEstimateMaxStringChars = 16 * 1024
@@ -269,6 +271,9 @@ async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}):
         removeAuditLogFlushBatch(batch.length, batchBytes)
         lastFlushSuccessAt = nowIso()
         lastFlushError = undefined
+        if (options.drain && pendingAuditLogs.length > 0 && flushedBatches < maxBatches) {
+          await yieldBetweenAuditLogFlushBatches()
+        }
       } catch (error) {
         failed = true
         lastFlushError = error instanceof Error ? error.message : String(error)
@@ -479,7 +484,7 @@ function scheduleAuditLogFlush(delayMs: number): void {
   if (flushTimer || flushing) return
   flushTimer = setTimeout(() => {
     flushTimer = undefined
-    void flushAuditLogQueueAsync().catch((error) => {
+    void flushAuditLogQueueAsync({ drain: true, maxBatches: auditLogScheduledFlushMaxBatches }).catch((error) => {
       lastFlushError = error instanceof Error ? error.message : String(error)
       logger.error(errorLogFields(error, {
         event: 'audit_log_queue_async_flush_unhandled_error',
@@ -492,6 +497,12 @@ function scheduleAuditLogFlush(delayMs: number): void {
     })
   }, delayMs)
   flushTimer.unref()
+}
+
+function yieldBetweenAuditLogFlushBatches(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, auditLogFlushBatchYieldMs).unref()
+  })
 }
 
 function estimateAuditLogBytes(input: AuditLogInput): number {

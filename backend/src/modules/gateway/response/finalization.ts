@@ -907,10 +907,8 @@ async function inspectBufferedHybridQualityResponse(input: {
     return undefined
   }
   const usage = parseGatewayProtocolUsageFromJsonBuffer(input.account, input.responseBody)
-  const message = quality.result?.reason
-    ? `混合路由质量评分未通过：${quality.result.reason}`
-    : '混合路由质量评分未通过'
-  const errorCode = `hybrid_quality_${quality.result?.failureType ?? 'failed'}`
+  const message = hybridQualityFailureMessage(quality)
+  const errorCode = quality.errorCode ?? `hybrid_quality_${quality.result?.failureType ?? 'failed'}`
   input.auditCapture.completeAttempt(input.auditAttemptId, {
     statusCode: input.upstreamResponse.status,
     responseHeaders: input.upstreamResponse.headers,
@@ -947,8 +945,25 @@ async function inspectBufferedHybridQualityResponse(input: {
     excludeCurrentAccount: false,
     message,
     errorCode,
+    statusCode: hybridQualityFailureStatusCode(quality),
     hybridQuality: quality
   }
+}
+
+function hybridQualityFailureStatusCode(quality: HybridQualityInspectionOutcome): number {
+  if (quality.errorCode === 'no_quality_scoring_account' || quality.errorCode === 'quality_scoring_account_busy') {
+    return 503
+  }
+  return 502
+}
+
+function hybridQualityFailureMessage(quality: HybridQualityInspectionOutcome): string {
+  if (quality.errorMessage) {
+    return `混合路由质量评分不可用：${quality.errorMessage}`
+  }
+  return quality.result?.reason
+    ? `混合路由质量评分未通过：${quality.result.reason}`
+    : '混合路由质量评分未通过'
 }
 
 function hybridQualityAuditMetadata(

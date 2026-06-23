@@ -956,6 +956,9 @@ function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
 }
 
 function coalesceWorkerMessage(message: BackgroundWorkerMessage): BackgroundWorkerMessage | undefined {
+  if (message.type === 'background_worker_audit_logs') {
+    return coalesceAuditLogMessage(message)
+  }
   if (message.type !== 'background_worker_record_maintenance') {
     return message
   }
@@ -973,6 +976,37 @@ function coalesceWorkerMessage(message: BackgroundWorkerMessage): BackgroundWork
   return remainingItems.length === message.items.length
     ? message
     : { ...message, items: remainingItems }
+}
+
+function coalesceAuditLogMessage(
+  message: Extract<BackgroundWorkerMessage, { type: 'background_worker_audit_logs' }>
+): BackgroundWorkerMessage | undefined {
+  if (message.items.length === 0) {
+    return undefined
+  }
+  const queueIndex = ingestRegularWorkerMessageQueue.findIndex((queued) => queued.type === 'background_worker_audit_logs')
+  if (queueIndex < 0) {
+    return message
+  }
+  const current = ingestRegularWorkerMessageQueue.at(queueIndex)
+  if (!current || current.type !== 'background_worker_audit_logs') {
+    return message
+  }
+  const currentBytes = estimateWorkerMessageBytes(current)
+  const nextMessage: BackgroundWorkerMessage = {
+    ...current,
+    items: [...current.items, ...message.items]
+  }
+  const nextBytes = estimateWorkerMessageBytes(nextMessage)
+  const runtime = ingestPendingQueueRuntime.auditLogs
+  const nextQueueBytes = (runtime.queueBytes ?? 0) - currentBytes + nextBytes
+  if (nextBytes > auditWorkerMessageMaxBytes || nextQueueBytes > regularWorkerMessageQueueMaxBytes) {
+    return message
+  }
+  ingestRegularWorkerMessageQueue.set(queueIndex, nextMessage)
+  ingestRegularWorkerMessageQueueBytes = Math.max(0, ingestRegularWorkerMessageQueueBytes - currentBytes + nextBytes)
+  runtime.queueBytes = Math.max(0, (runtime.queueBytes ?? 0) - currentBytes + nextBytes)
+  return undefined
 }
 
 function compactRecordMaintenanceJobsForCoalescing(items: RecordMaintenanceJob[]): RecordMaintenanceJob[] {

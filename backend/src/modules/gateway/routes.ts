@@ -57,6 +57,7 @@ import {
   type OpenAIGatewayRequestIdentity
 } from './request/preflight.js'
 import { resolveNextHybridGatewayRoute } from './hybrid/routing.service.js'
+import { appendHybridQualityRepairInstruction } from './hybrid/quality-repair.service.js'
 import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
@@ -590,6 +591,40 @@ export async function handleOpenAIGatewayRequest(
               }
             })
             if (action !== 'return_error' && retryCount < maxRetries && hybridRoute) {
+              if (action === 'repair_then_upgrade') {
+                if (retryCount === 0) {
+                  const repairInstructionApplied = await appendHybridQualityRepairInstruction(req, handledResponse.hybridQuality, abortController.signal)
+                  auditCapture.addGatewayMetadata({
+                    label: 'hybrid_quality_repair_retry',
+                    metadata: {
+                      applied: repairInstructionApplied,
+                      retryCount: retryCount + 1,
+                      targetModel: hybridRoute.targetModel,
+                      accountId: account.id,
+                      errorCode: handledResponse.errorCode,
+                      failureType: handledResponse.hybridQuality?.result?.failureType,
+                      score: handledResponse.hybridQuality?.result?.score
+                    }
+                  })
+                  if (repairInstructionApplied) {
+                    currentPreflight = {
+                      ...currentPreflight,
+                      hybridRoute: {
+                        ...hybridRoute,
+                        qualityRetryCount: retryCount + 1
+                      }
+                    }
+                    continue
+                  }
+                }
+                const qualitySwitch = await switchToHybridQualityUpgrade(handledResponse.errorCode ?? 'hybrid_quality_failed')
+                if (qualitySwitch === 'completed') {
+                  return
+                }
+                if (qualitySwitch === 'switched') {
+                  continue
+                }
+              }
               if (action === 'upgrade_next_level') {
                 const qualitySwitch = await switchToHybridQualityUpgrade(handledResponse.errorCode ?? 'hybrid_quality_failed')
                 if (qualitySwitch === 'completed') {
@@ -600,14 +635,29 @@ export async function handleOpenAIGatewayRequest(
                 }
               }
               if (action === 'retry_same_model') {
-                currentPreflight = {
-                  ...currentPreflight,
-                  hybridRoute: {
-                    ...hybridRoute,
-                    qualityRetryCount: retryCount + 1
+                const repairInstructionApplied = await appendHybridQualityRepairInstruction(req, handledResponse.hybridQuality, abortController.signal)
+                auditCapture.addGatewayMetadata({
+                  label: 'hybrid_quality_repair_retry',
+                  metadata: {
+                    applied: repairInstructionApplied,
+                    retryCount: retryCount + 1,
+                    targetModel: hybridRoute.targetModel,
+                    accountId: account.id,
+                    errorCode: handledResponse.errorCode,
+                    failureType: handledResponse.hybridQuality?.result?.failureType,
+                    score: handledResponse.hybridQuality?.result?.score
                   }
+                })
+                if (repairInstructionApplied) {
+                  currentPreflight = {
+                    ...currentPreflight,
+                    hybridRoute: {
+                      ...hybridRoute,
+                      qualityRetryCount: retryCount + 1
+                    }
+                  }
+                  continue
                 }
-                continue
               }
             }
             const responsePayload = gatewayErrorPayload(
@@ -621,7 +671,7 @@ export async function handleOpenAIGatewayRequest(
               auditCapture,
               usageContext: gatewayUsageContext,
               startedAt,
-              statusCode: 502,
+              statusCode: handledResponse.statusCode ?? 502,
               responsePayload,
               audit: {
                 outcome: 'upstream_failed',

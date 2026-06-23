@@ -14,6 +14,7 @@ export type UpstreamResponseHandlingResult =
     excludeCurrentAccount: boolean
     message: string
     errorCode?: string
+    statusCode?: number
     uncommittedResponseBody?: Buffer
     hybridQuality?: HybridQualityInspectionOutcome
   }

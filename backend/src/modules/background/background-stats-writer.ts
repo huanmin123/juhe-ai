@@ -60,7 +60,7 @@ import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 
 const statsAggregationBatchPauseMs = 25
-const usageStatsAggregationOnlineBatchSizeCap = 500
+const usageStatsAggregationOnlineBatchSizeCap = 1000
 const usageStatsAggregationMaxRunMsCap = 60_000
 
 export type BackgroundStatsWriteOperation =

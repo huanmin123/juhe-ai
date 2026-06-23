@@ -3,15 +3,15 @@ import type { DatabaseSync } from 'node:sqlite'
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
 import { getBusinessDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { shouldAggregateUsageStatsRecord, usageStatsEntries, type UsageStatsAuthorizationLookup } from './usage-stats-aggregation.js'
+import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries, type UsageStatsAuthorizationLookup } from './usage-stats-aggregation.js'
 import { subtractAuthorizationUsageReportRows, upsertAuthorizationUsageReportRows } from './usage-stats-authorization-daily-writer.js'
 import { subtractAccountQualityMinuteStats, upsertAccountQualityMinuteStats } from './usage-stats-account-quality-writer.js'
 import { subtractUsageErrorBuckets, upsertUsageErrorBuckets } from './usage-stats-error-writer.js'
 import { subtractUsageLatencyEntry, upsertUsageLatencyEntry } from './usage-stats-latency-writer.js'
 import { subtractUsageModelBuckets, upsertUsageModelBuckets } from './usage-stats-model-writer.js'
-import { usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
+import { usageLatencyTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
-import type { UsageStatsAccumulator, UsageStatsEntry, UsageStatsRecordRow } from './usage-stats-types.js'
+import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID, type UsageStatsAccumulator, type UsageStatsEntry, type UsageStatsRecordRow } from './usage-stats-types.js'
 
 export interface UsageStatsAggregationContext extends UsageStatsAuthorizationLookup {
   usageStatsUpsertStatements?: UsageStatsUpsertStatements
@@ -20,12 +20,63 @@ export interface UsageStatsAggregationContext extends UsageStatsAuthorizationLoo
 }
 
 type SqliteStatement = ReturnType<DatabaseSync['prepare']>
+type LatencyMetricType = 'duration_ms' | 'first_token_ms'
 
 interface UsageStatsUpsertStatements {
   database: DatabaseSync
   total: SqliteStatement
   timeBuckets: Map<string, SqliteStatement>
 }
+
+interface AggregatedUsageStatsEntry {
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  accumulator: UsageStatsAccumulator
+}
+
+interface AggregatedUsageStatsTimeEntry extends AggregatedUsageStatsEntry {
+  bucket: UsageStatsTimeBucketDefinition
+  timeValue: string
+}
+
+interface AggregatedLatencyEntry {
+  bucket: UsageStatsTimeBucketDefinition
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  metricType: LatencyMetricType
+  timeValue: string
+  bucketUpperBoundMs: number
+  sampleCount: number
+}
+
+interface AggregatedModelEntry {
+  bucket: UsageStatsTimeBucketDefinition
+  systemAccountId: string
+  providerCode: string
+  model: string
+  timeValue: string
+  accumulator: UsageStatsAccumulator
+}
+
+interface AggregatedAccountQualityEntry {
+  accountId: string
+  systemAccountId: string
+  providerCode: string
+  statMinute: string
+  requestCount: number
+  successCount: number
+  errorCount: number
+  firstTokenMsSum: number
+  firstTokenMsCount: number
+  lastSampleAt: string
+  lastSuccessAt?: string
+  lastErrorAt?: string
+  lastErrorMessage?: string
+}
+
+const latencyBucketUpperBoundsMs = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000, -1] as const
 
 export function createUsageStatsAggregationContext(rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
   const context: UsageStatsAggregationContext = {
@@ -120,6 +171,49 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   }
 }
 
+export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageStatsRecordRow[], updatedAt: string, context?: UsageStatsAggregationContext): void {
+  if (rows.length === 0) return
+  const totalEntries = new Map<string, AggregatedUsageStatsEntry>()
+  const timeEntries = new Map<string, AggregatedUsageStatsTimeEntry>()
+  const latencyEntries = new Map<string, AggregatedLatencyEntry>()
+  const modelEntries = new Map<string, AggregatedModelEntry>()
+  const accountQualityEntries = new Map<string, AggregatedAccountQualityEntry>()
+
+  for (const row of rows) {
+    if (!shouldAggregateUsageStatsRecord(row)) {
+      continue
+    }
+    persistEstimatedCacheReadCost(row)
+    const timeKeys = usageStatsTimeKeys(row)
+    for (const entry of usageStatsEntries(row, context)) {
+      addAggregatedUsageStatsEntry(totalEntries, entry)
+      for (const bucket of usageStatsTimeBuckets) {
+        addAggregatedUsageStatsTimeEntry(timeEntries, bucket, timeKeys[bucket.valueKey], entry)
+      }
+      addAggregatedLatencyEntries(latencyEntries, entry, row, timeKeys)
+    }
+    addAggregatedUsageModelEntries(modelEntries, row, timeKeys)
+    addAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    if (row.account_authorization_id || row.group_authorization_id) {
+      upsertAuthorizationUsageReportRows(database, row, timeKeys.statDate, updatedAt, context)
+    }
+    if (row.success !== 1) {
+      upsertUsageErrorBuckets(database, row, timeKeys, updatedAt)
+    }
+  }
+
+  const statements = usageStatsUpsertStatementsFor(database, context)
+  for (const entry of totalEntries.values()) {
+    upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt, statements?.total)
+  }
+  for (const entry of timeEntries.values()) {
+    upsertUsageStatsTimeBucket(database, entry.bucket, entry.timeValue, entry, updatedAt, statements?.timeBuckets.get(entry.bucket.tableName))
+  }
+  upsertAggregatedLatencyEntries(database, latencyEntries, updatedAt)
+  upsertAggregatedModelEntries(database, modelEntries, updatedAt)
+  upsertAggregatedAccountQualityEntries(database, accountQualityEntries, updatedAt)
+}
+
 export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
   if (!shouldAggregateUsageStatsRecord(row)) {
     return
@@ -145,6 +239,314 @@ function shouldRecordAccountQualityStats(row: UsageStatsRecordRow): boolean {
   return row.traffic_source !== 'cooldown_retest'
     && row.traffic_source !== 'hybrid_scoring'
     && row.traffic_source !== 'hybrid_quality_scoring'
+}
+
+function addAggregatedUsageStatsEntry(target: Map<string, AggregatedUsageStatsEntry>, entry: UsageStatsEntry): void {
+  const key = usageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId)
+  const existing = target.get(key)
+  if (existing) {
+    mergeAccumulator(existing.accumulator, entry.accumulator)
+    return
+  }
+  target.set(key, {
+    systemAccountId: entry.systemAccountId,
+    scopeType: entry.scopeType,
+    scopeId: entry.scopeId,
+    accumulator: cloneAccumulator(entry.accumulator)
+  })
+}
+
+function addAggregatedUsageStatsTimeEntry(target: Map<string, AggregatedUsageStatsTimeEntry>, bucket: UsageStatsTimeBucketDefinition, timeValue: string, entry: UsageStatsEntry): void {
+  const key = `${bucket.tableName}\u0000${timeValue}\u0000${usageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId)}`
+  const existing = target.get(key)
+  if (existing) {
+    mergeAccumulator(existing.accumulator, entry.accumulator)
+    return
+  }
+  target.set(key, {
+    bucket,
+    timeValue,
+    systemAccountId: entry.systemAccountId,
+    scopeType: entry.scopeType,
+    scopeId: entry.scopeId,
+    accumulator: cloneAccumulator(entry.accumulator)
+  })
+}
+
+function addAggregatedLatencyEntries(target: Map<string, AggregatedLatencyEntry>, entry: UsageStatsEntry, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys): void {
+  for (const sample of latencySamples(row)) {
+    for (const bucket of usageLatencyTimeBuckets) {
+      const timeValue = timeKeys[bucket.valueKey]
+      const key = `${bucket.tableName}\u0000${timeValue}\u0000${usageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId)}\u0000${sample.metricType}\u0000${sample.bucketUpperBoundMs}`
+      const existing = target.get(key)
+      if (existing) {
+        existing.sampleCount += 1
+        continue
+      }
+      target.set(key, {
+        bucket,
+        systemAccountId: entry.systemAccountId,
+        scopeType: entry.scopeType,
+        scopeId: entry.scopeId,
+        metricType: sample.metricType,
+        timeValue,
+        bucketUpperBoundMs: sample.bucketUpperBoundMs,
+        sampleCount: 1
+      })
+    }
+  }
+}
+
+function addAggregatedUsageModelEntries(target: Map<string, AggregatedModelEntry>, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys): void {
+  const model = row.model?.trim()
+  if (!model) return
+  const accumulator = usageStatsAccumulatorFromRecord(row)
+  const providerCode = row.provider_code ?? 'unknown'
+  for (const systemAccountId of [row.system_account_id, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    for (const bucket of usageModelTimeBuckets) {
+      const timeValue = timeKeys[bucket.valueKey]
+      const key = `${bucket.tableName}\u0000${timeValue}\u0000${systemAccountId}\u0000${providerCode}\u0000${model}`
+      const existing = target.get(key)
+      if (existing) {
+        mergeAccumulator(existing.accumulator, accumulator)
+        continue
+      }
+      target.set(key, {
+        bucket,
+        systemAccountId,
+        providerCode,
+        model,
+        timeValue,
+        accumulator: cloneAccumulator(accumulator)
+      })
+    }
+  }
+}
+
+function addAggregatedAccountQualityEntry(target: Map<string, AggregatedAccountQualityEntry>, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys): void {
+  if (!shouldRecordAccountQualityStats(row) || !row.account_id || !row.api_key_id) {
+    return
+  }
+  const success = row.success === 1
+  const firstTokenMsValue = Number(row.first_token_ms ?? NaN)
+  const hasFirstTokenSample = success && Number.isFinite(firstTokenMsValue) && firstTokenMsValue >= 0
+  const firstTokenMs = hasFirstTokenSample ? firstTokenMsValue : 0
+  const statsSystemAccountId = accountQualityStatsSystemAccountId(row)
+  const key = `${row.account_id}\u0000${timeKeys.statMinute}`
+  const existing = target.get(key)
+  if (!existing) {
+    target.set(key, {
+      accountId: row.account_id,
+      systemAccountId: statsSystemAccountId,
+      providerCode: row.provider_code ?? 'unknown',
+      statMinute: timeKeys.statMinute,
+      requestCount: 1,
+      successCount: success ? 1 : 0,
+      errorCount: success ? 0 : 1,
+      firstTokenMsSum: firstTokenMs,
+      firstTokenMsCount: hasFirstTokenSample ? 1 : 0,
+      lastSampleAt: row.created_at,
+      lastSuccessAt: success ? row.created_at : undefined,
+      lastErrorAt: success ? undefined : row.created_at,
+      lastErrorMessage: success ? undefined : row.error_message ?? undefined
+    })
+    return
+  }
+  existing.requestCount += 1
+  existing.successCount += success ? 1 : 0
+  existing.errorCount += success ? 0 : 1
+  existing.firstTokenMsSum += firstTokenMs
+  existing.firstTokenMsCount += hasFirstTokenSample ? 1 : 0
+  if (row.created_at > existing.lastSampleAt) {
+    existing.lastSampleAt = row.created_at
+    existing.systemAccountId = statsSystemAccountId
+    existing.providerCode = row.provider_code ?? 'unknown'
+  }
+  if (success) {
+    existing.lastSuccessAt = maxIso(existing.lastSuccessAt, row.created_at)
+  } else if (!existing.lastErrorAt || row.created_at >= existing.lastErrorAt) {
+    existing.lastErrorAt = row.created_at
+    existing.lastErrorMessage = row.error_message ?? undefined
+  }
+}
+
+function upsertAggregatedLatencyEntries(database: DatabaseSync, entries: Map<string, AggregatedLatencyEntry>, updatedAt: string): void {
+  const statements = new Map<string, SqliteStatement>()
+  for (const entry of entries.values()) {
+    const statement = statements.get(entry.bucket.tableName) ?? prepareUsageLatencyBucketCountUpsertStatement(database, entry.bucket)
+    statements.set(entry.bucket.tableName, statement)
+    statement.run(entry.systemAccountId, entry.scopeType, entry.scopeId, entry.metricType, entry.timeValue, entry.bucketUpperBoundMs, entry.sampleCount, updatedAt)
+  }
+}
+
+function prepareUsageLatencyBucketCountUpsertStatement(database: DatabaseSync, bucket: UsageStatsTimeBucketDefinition): SqliteStatement {
+  return database.prepare(`
+    INSERT INTO ${bucket.tableName} (system_account_id, scope_type, scope_id, metric_type, ${bucket.columnName}, bucket_upper_bound_ms, sample_count, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, scope_type, scope_id, metric_type, ${bucket.columnName}, bucket_upper_bound_ms) DO UPDATE SET
+      sample_count = sample_count + excluded.sample_count,
+      updated_at = excluded.updated_at
+  `)
+}
+
+function upsertAggregatedModelEntries(database: DatabaseSync, entries: Map<string, AggregatedModelEntry>, updatedAt: string): void {
+  const statements = new Map<string, SqliteStatement>()
+  for (const entry of entries.values()) {
+    const statement = statements.get(entry.bucket.tableName) ?? prepareUsageModelBucketAggregateUpsertStatement(database, entry.bucket)
+    statements.set(entry.bucket.tableName, statement)
+    const stats = entry.accumulator
+    statement.run(
+      entry.systemAccountId,
+      entry.timeValue,
+      entry.providerCode,
+      entry.model,
+      stats.requestCount,
+      stats.successCount,
+      stats.errorCount,
+      stats.inputTokens,
+      stats.outputTokens,
+      stats.cacheReadTokens,
+      stats.cacheReadCostUsd,
+      stats.totalCostUsd,
+      updatedAt
+    )
+  }
+}
+
+function prepareUsageModelBucketAggregateUpsertStatement(database: DatabaseSync, bucket: UsageStatsTimeBucketDefinition): SqliteStatement {
+  return database.prepare(`
+    INSERT INTO ${bucket.tableName} (system_account_id, ${bucket.columnName}, provider_code, model, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, ${bucket.columnName}, provider_code, model) DO UPDATE SET
+      request_count = request_count + excluded.request_count,
+      success_count = success_count + excluded.success_count,
+      error_count = error_count + excluded.error_count,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
+      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+      updated_at = excluded.updated_at
+  `)
+}
+
+function upsertAggregatedAccountQualityEntries(database: DatabaseSync, entries: Map<string, AggregatedAccountQualityEntry>, updatedAt: string): void {
+  if (entries.size === 0) return
+  const upsertStatement = database.prepare(`
+    INSERT INTO account_quality_minute_stats (
+      account_id, system_account_id, provider_code, stat_minute,
+      request_count, success_count, error_count, first_token_ms_sum, first_token_ms_count,
+      last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, stat_minute) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      provider_code = excluded.provider_code,
+      request_count = request_count + excluded.request_count,
+      success_count = success_count + excluded.success_count,
+      error_count = error_count + excluded.error_count,
+      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
+      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
+      last_sample_at = CASE WHEN account_quality_minute_stats.last_sample_at IS NULL OR excluded.last_sample_at > account_quality_minute_stats.last_sample_at THEN excluded.last_sample_at ELSE account_quality_minute_stats.last_sample_at END,
+      last_success_at = CASE WHEN excluded.last_success_at IS NULL THEN account_quality_minute_stats.last_success_at WHEN account_quality_minute_stats.last_success_at IS NULL OR excluded.last_success_at > account_quality_minute_stats.last_success_at THEN excluded.last_success_at ELSE account_quality_minute_stats.last_success_at END,
+      last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN account_quality_minute_stats.last_error_at WHEN account_quality_minute_stats.last_error_at IS NULL OR excluded.last_error_at > account_quality_minute_stats.last_error_at THEN excluded.last_error_at ELSE account_quality_minute_stats.last_error_at END,
+      last_error_message = CASE WHEN excluded.last_error_at IS NULL THEN account_quality_minute_stats.last_error_message WHEN account_quality_minute_stats.last_error_at IS NULL OR excluded.last_error_at >= account_quality_minute_stats.last_error_at THEN excluded.last_error_message ELSE account_quality_minute_stats.last_error_message END,
+      updated_at = excluded.updated_at
+  `)
+  const dirtyStatement = database.prepare(`
+    INSERT INTO account_quality_dirty_accounts (account_id, first_dirty_at, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      updated_at = excluded.updated_at
+  `)
+  for (const entry of entries.values()) {
+    upsertStatement.run(
+      entry.accountId,
+      entry.systemAccountId,
+      entry.providerCode,
+      entry.statMinute,
+      entry.requestCount,
+      entry.successCount,
+      entry.errorCount,
+      entry.firstTokenMsSum,
+      entry.firstTokenMsCount,
+      entry.lastSampleAt,
+      entry.lastSuccessAt ?? null,
+      entry.lastErrorAt ?? null,
+      entry.lastErrorMessage ?? null,
+      updatedAt
+    )
+    dirtyStatement.run(entry.accountId, updatedAt, updatedAt)
+  }
+}
+
+function accountQualityStatsSystemAccountId(row: UsageStatsRecordRow): string {
+  if (!row.account_access_type) {
+    throw new Error(`使用记录 ${row.id} 缺少账户访问类型字段 account_access_type`)
+  }
+  if (row.account_access_type === 'account_authorized') {
+    return row.system_account_id
+  }
+  if (!row.account_owner_system_account_id) {
+    throw new Error(`使用记录 ${row.id} 缺少账户归属字段 account_owner_system_account_id`)
+  }
+  return row.account_owner_system_account_id
+}
+
+function usageStatsEntryKey(systemAccountId: string, scopeType: string, scopeId: string): string {
+  return `${systemAccountId}\u0000${scopeType}\u0000${scopeId}`
+}
+
+function cloneAccumulator(accumulator: UsageStatsAccumulator): UsageStatsAccumulator {
+  return { ...accumulator }
+}
+
+function mergeAccumulator(target: UsageStatsAccumulator, source: UsageStatsAccumulator): void {
+  target.requestCount += source.requestCount
+  target.successCount += source.successCount
+  target.errorCount += source.errorCount
+  target.inputTokens += source.inputTokens
+  target.outputTokens += source.outputTokens
+  target.cacheReadTokens += source.cacheReadTokens
+  target.cacheReadCostUsd += source.cacheReadCostUsd
+  target.totalCostUsd += source.totalCostUsd
+  target.durationMsSum += source.durationMsSum
+  target.durationMsCount += source.durationMsCount
+  target.durationMsMax = Math.max(target.durationMsMax, source.durationMsMax)
+  target.firstTokenMsSum += source.firstTokenMsSum
+  target.firstTokenMsCount += source.firstTokenMsCount
+  target.firstTokenMsMax = Math.max(target.firstTokenMsMax, source.firstTokenMsMax)
+  target.lastUsedAt = maxIso(target.lastUsedAt, source.lastUsedAt)
+  target.lastErrorAt = maxIso(target.lastErrorAt, source.lastErrorAt)
+}
+
+function maxIso(left?: string, right?: string): string | undefined {
+  if (!left) return right
+  if (!right) return left
+  return left >= right ? left : right
+}
+
+function latencySamples(row: UsageStatsRecordRow): Array<{ metricType: LatencyMetricType; bucketUpperBoundMs: number }> {
+  const samples: Array<{ metricType: LatencyMetricType; bucketUpperBoundMs: number }> = []
+  const durationMs = finiteNonNegativeNumber(row.duration_ms)
+  if (durationMs !== undefined) {
+    samples.push({ metricType: 'duration_ms', bucketUpperBoundMs: latencyBucketUpperBound(durationMs) })
+  }
+  const firstTokenMs = finiteNonNegativeNumber(row.first_token_ms)
+  if (firstTokenMs !== undefined) {
+    samples.push({ metricType: 'first_token_ms', bucketUpperBoundMs: latencyBucketUpperBound(firstTokenMs) })
+  }
+  return samples
+}
+
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  const number = Number(value ?? NaN)
+  return Number.isFinite(number) && number >= 0 ? number : undefined
+}
+
+function latencyBucketUpperBound(value: number): number {
+  return latencyBucketUpperBoundsMs.find((upperBound) => upperBound === -1 || value <= upperBound) ?? -1
 }
 
 function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {

@@ -25,7 +25,7 @@ import {
   refreshCallerAccountLast7dRequestRankSnapshot,
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
-import { aggregateUsageStatsRecord, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
+import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
 import {
   aggregateUsageRowsForRange,
   type UsageStatsDailyWindowRow
@@ -117,9 +117,7 @@ export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride
         aggregationContext = aggregationContext
           ? extendUsageStatsAggregationContext(aggregationContext, rows)
           : createUsageStatsAggregationContext(rows)
-        for (const row of rows) {
-          aggregateUsageStatsRecord(database, row, updatedAt, aggregationContext)
-        }
+        aggregateUsageStatsRecords(database, rows, updatedAt, aggregationContext)
         processedRows += rows.length
         const last = rows[rows.length - 1]
         updateUsageStatsShardJobState(database, location, {

@@ -12,6 +12,7 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
+import type { AccountModelMapping } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -101,7 +102,8 @@ try {
       },
       groupId: codingGroup.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      modelMappings: codexBridgeModelMappings(realModels)
     }, access)
     const generalApiKey = repositories.createApiKeyRecord({
       name: 'GLM 真实上游 E2E Key',
@@ -283,6 +285,16 @@ function modelsFromEnv(value: string | undefined): string[] {
     .filter(Boolean)
   if (!models.length) throw new Error('GLM_REAL_MODELS 至少需要一个模型')
   return models
+}
+
+function codexBridgeModelMappings(models: string[]): AccountModelMapping[] {
+  return models.map((model) => ({
+    sourceModel: model,
+    sourceEndpointFamily: 'responses',
+    upstreamModel: model,
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }))
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {

@@ -368,14 +368,18 @@ export async function prepareOpenAIGatewayDispatchContext(
           failed: true,
           reason: hybridRoute.reason,
           targetModel: hybridRoute.targetModel,
-          level: hybridRoute.scoring?.level,
+          level: hybridRoute.scoring?.failed ? undefined : hybridRoute.scoring?.level,
           scoringDefaulted: hybridRoute.scoring?.defaulted,
           scoringErrorCode: hybridRoute.scoring?.errorCode,
           scoringErrorMessage: hybridRoute.scoring?.errorMessage
         }
       })
-      const statusCode = 503
-      const responsePayload = gatewayErrorPayload('混合路由目标分组暂不可用', 'service_unavailable', hybridRoute.reason)
+      const statusCode = hybridRouteFailureStatusCode(hybridRoute.reason)
+      const responsePayload = gatewayErrorPayload(
+        hybridRouteFailureMessage(hybridRoute.reason),
+        statusCode === 503 ? 'service_unavailable' : 'upstream_response_error',
+        hybridRoute.reason
+      )
       sendGatewayFailureResponse({
         req,
         res,
@@ -862,6 +866,32 @@ function sendClientIpErrorCircuitGatewayResponse(input: {
     }
   })
   return true
+}
+
+function hybridRouteFailureMessage(reason: string): string {
+  if (reason === 'no_scoring_account') {
+    return '混合路由评分模型暂不可用：绑定分组池没有可用评分账户'
+  }
+  if (reason === 'scoring_account_busy') {
+    return '混合路由评分模型暂不可用：评分账户并发已满'
+  }
+  if (reason === 'hybrid_scoring_failed' || reason === 'hybrid_scoring_http_error') {
+    return '混合路由评分模型调用失败'
+  }
+  if (reason === 'hybrid_level_route_missing') {
+    return '混合路由等级配置不可用'
+  }
+  if (reason === 'hybrid_target_group_unavailable') {
+    return '混合路由目标分组暂不可用'
+  }
+  return '混合路由暂不可用'
+}
+
+function hybridRouteFailureStatusCode(reason: string): number {
+  if (reason === 'hybrid_scoring_failed' || reason === 'hybrid_scoring_http_error') {
+    return 502
+  }
+  return 503
 }
 
 export function buildGatewayUsageContext(input: {
