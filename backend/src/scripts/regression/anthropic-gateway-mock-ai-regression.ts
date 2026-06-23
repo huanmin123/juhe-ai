@@ -574,8 +574,8 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: `juhe-invalid-model-${Date.now()}`,
-      messages: [{ role: 'user', content: 'invalid model should not poison account' }],
+      model: 'claude-fable-5',
+      messages: [{ role: 'user', content: 'force-model-not-found should not poison account' }],
       max_tokens: 8
     })
   })
@@ -1047,7 +1047,7 @@ async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, 
   })
   const text = await response.text()
   assert.equal(response.status, 400, `OpenAI 分组不应承接 Anthropic Messages，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /请求路径|客户端协议|request_capability_mismatch/)
+  assert.match(text, /请求路径|客户端协议|request_capability_mismatch|没有可路由模型|model_not_routable_for_api_key/)
   assert.equal(upstreamHits.length, 0, 'OpenAI 分组被拒绝后不应命中 Anthropic mock 上游')
 }
 
@@ -1344,7 +1344,7 @@ function createAnthropicMockUpstream(): http.Server {
 }
 
 function sendAnthropicJson(res: http.ServerResponse, xApiKey: string, bodyText: string): void {
-  if (xApiKey === 'sk-ant-model-not-found' && bodyText.includes('juhe-invalid-model')) {
+  if (xApiKey === 'sk-ant-model-not-found' && bodyText.includes('force-model-not-found')) {
     res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
       type: 'error',

@@ -10,6 +10,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-client-ip-stats-shard-fanout-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.usageShardCount = 64
@@ -65,7 +66,7 @@ try {
 }
 
 function captureUsageShardRegistryReads(): Array<{ sql: string; rowCount: number; params: unknown[] }> {
-  const database = databaseModule.getDatasetDatabase()
+  const database = databaseModule.getUsageCatalogDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const calls: Array<{ sql: string; rowCount: number; params: unknown[] }> = []
   database.prepare = ((sql: string) => {

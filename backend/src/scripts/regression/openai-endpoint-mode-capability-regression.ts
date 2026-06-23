@@ -4,9 +4,18 @@ import { resolve } from 'node:path'
 import type { Request } from 'express'
 
 import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID
 } from '../../domain/provider-protocol.js'
+import {
+  defaultAnthropicEndpointModes
+} from '../../domain/anthropic-endpoint-modes.js'
 import {
   defaultOpenAIEndpointModes,
   normalizeOpenAIEndpointModesForWrite
@@ -20,17 +29,17 @@ import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'openai', accountType: 'api_key' }),
   ['chat_json', 'chat_sse'],
-  '通用 OpenAI 兼容 API Key 默认只启用 Chat JSON/SSE'
+  '通用 OpenAI 兼容 API Key 默认只启用 Chat Completions JSON/Streaming'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'deepseek', accountType: 'api_key' }),
   ['chat_json', 'chat_sse'],
-  'DeepSeek API Key 默认只启用 Chat JSON/SSE'
+  'DeepSeek API Key 默认只启用 Chat Completion JSON/Streaming'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'openai', accountType: 'api_key', clientCompatibility: 'codex_responses' }),
   ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-  'Codex Responses 兼容能力默认必须包含 Responses SSE'
+  'Codex Responses 兼容能力默认必须包含 Responses API Streaming'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({
@@ -40,7 +49,7 @@ assert.deepEqual(
     clientCompatibility: 'codex_responses'
   }),
   ['chat_json', 'chat_sse'],
-  'GLM Coding Codex bridge 账号默认仍保存真实 Chat JSON/SSE 能力'
+  'GLM Coding Codex bridge 账号默认仍保存真实 OpenAI Chat Completions JSON/Streaming 能力'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({
@@ -50,7 +59,40 @@ assert.deepEqual(
     clientCompatibility: 'codex_responses'
   }),
   ['chat_json', 'chat_sse'],
-  'DeepSeek Codex bridge 账号默认仍保存真实 Chat JSON/SSE 能力'
+  'DeepSeek Codex bridge 账号默认仍保存真实 Chat Completion JSON/Streaming 能力'
+)
+assert.deepEqual(
+  defaultAnthropicEndpointModes({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION
+  }),
+  ['messages_json', 'messages_sse', 'message_token_counting'],
+  '官方 Anthropic API Key 默认保留 Messages JSON/Streaming 和 count_tokens 能力'
+)
+assert.deepEqual(
+  defaultAnthropicEndpointModes({
+    providerCode: DEEPSEEK_PROVIDER_CODE,
+    providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION
+  }),
+  ['messages_json', 'messages_sse'],
+  'DeepSeek Claude Code 档案默认只启用 Messages JSON/Streaming'
+)
+assert.deepEqual(
+  defaultAnthropicEndpointModes({
+    providerCode: 'glm',
+    providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION
+  }),
+  ['messages_json', 'messages_sse'],
+  'GLM Coding Claude Code 档案默认只启用 Messages JSON/Streaming'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'gpt', accountType: 'api_key' }),
@@ -60,7 +102,7 @@ assert.deepEqual(
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'gpt', accountType: 'oauth' }),
   ['responses_json', 'responses_sse'],
-  'GPT OAuth 默认只启用 Responses JSON/SSE'
+  'GPT OAuth 默认只启用 Responses API JSON/Streaming'
 )
 assert.throws(
   () => normalizeOpenAIEndpointModesForWrite(['chat_json', 'bad_mode'], { providerCode: 'openai', accountType: 'api_key' }),
@@ -124,7 +166,7 @@ assert.throws(
     protocolVersion: 'v1',
     providerProtocolProfileId: 'profile_deepseek_openai_v1'
   }),
-  /DeepSeek 账户接口能力只支持 Chat JSON 或 Chat SSE/,
+  /DeepSeek 账户接口能力只支持 Chat Completion \(JSON\) 或 Chat Completion \(Streaming\)/,
   'DeepSeek API Key 凭据归一化应拒绝 Responses 能力'
 )
 assert.deepEqual(
@@ -136,6 +178,58 @@ assert.deepEqual(
   }).supported_endpoint_modes,
   ['messages_json', 'messages_sse', 'message_token_counting'],
   'Anthropic API Key 凭据归一化应通过 provider driver 使用 Anthropic 默认能力'
+)
+assert.deepEqual(
+  normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-deepseek-ant', base_url: 'https://api.deepseek.com/anthropic' }, {
+    providerCode: DEEPSEEK_PROVIDER_CODE,
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
+  }).supported_endpoint_modes,
+  ['messages_json', 'messages_sse'],
+  'DeepSeek Claude Code 凭据归一化应通过 provider driver 使用 Messages 默认能力'
+)
+assert.throws(
+  () => normalizeAccountCredentialsForWrite('api_key', {
+    api_key: 'sk-deepseek-ant',
+    base_url: 'https://api.deepseek.com/anthropic',
+    supported_endpoint_modes: ['message_token_counting']
+  }, {
+    providerCode: DEEPSEEK_PROVIDER_CODE,
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
+  }),
+  /DeepSeek Anthropic 账户接口能力只支持 Messages API/,
+  'DeepSeek Claude Code 凭据归一化应拒绝 count_tokens 能力'
+)
+assert.deepEqual(
+  normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-glm-ant', base_url: 'https://open.bigmodel.cn/api/anthropic' }, {
+    providerCode: 'glm',
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+  }).supported_endpoint_modes,
+  ['messages_json', 'messages_sse'],
+  'GLM Coding Claude Code 凭据归一化应通过 provider driver 使用 Messages 默认能力'
+)
+assert.throws(
+  () => normalizeAccountCredentialsForWrite('api_key', {
+    api_key: 'sk-glm-ant',
+    base_url: 'https://open.bigmodel.cn/api/anthropic',
+    supported_endpoint_modes: ['message_token_counting']
+  }, {
+    providerCode: 'glm',
+    accountType: 'api_key',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+    providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+  }),
+  /智谱 GLM Coding Anthropic 账户接口能力只支持 Messages API/,
+  'GLM Coding Claude Code 凭据归一化应拒绝 count_tokens 能力'
 )
 
 const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])
@@ -174,7 +268,7 @@ assert.deepEqual(
     requestClientCompatibility: 'openai_standard'
   }).accounts.map((item) => item.id),
   ['responses-only', 'gpt-api-key-codex'],
-  '普通 OpenAI Responses 请求只能命中 OpenAI 标准兼容账号，GPT API Key 可同时承接'
+  '普通 OpenAI Responses 请求只能命中 OpenAI-compatible 账号，GPT API Key 可同时承接'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, codexCapableApiKey, oauthAccount('oauth-codex')], {
@@ -208,8 +302,9 @@ assert.match(accountCredentialDriverRegistrySource, /openAICompatibleAccountCred
 assert.match(accountCredentialDriverRegistrySource, /gptAccountCredentialDriver/)
 assert.match(accountCredentialDriverRegistrySource, /deepSeekAccountCredentialDriver/)
 assert.match(accountCredentialDriverRegistrySource, /anthropicAccountCredentialDriver/)
+assert.match(accountCredentialDriverRegistrySource, /glmAccountCredentialDriver/)
 
-console.log('OpenAI 接口能力矩阵回归通过：默认值、写入校验和候选账号过滤均符合预期')
+console.log('OpenAI/Anthropic 接口能力矩阵回归通过：默认值、写入校验和候选账号过滤均符合预期')
 
 function request(path: string, stream: boolean): Request {
   return {

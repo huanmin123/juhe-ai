@@ -186,7 +186,15 @@ try {
       largeCreatedAt
     )
   }
-  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(2000), 1200, '大批量待清理记录应先全部完成统计聚合')
+  let aggregatedRows = 0
+  for (let attempt = 0; attempt < 20 && aggregatedRows < 1200; attempt += 1) {
+    const rows = usageStatsRepository.aggregateUsageStatsBatch(2000)
+    aggregatedRows += rows
+    if (rows === 0) {
+      break
+    }
+  }
+  assert.equal(aggregatedRows, 1200, '大批量待清理记录应先通过有界 shard 窗口轮转完成统计聚合')
   assert.equal(
     usageStatsTotal('sys_admin', 'api_key', largeApiKeyId),
     1200,
@@ -261,7 +269,7 @@ function assertDeletedRecordCleanupUsesShardCatalog(): void {
   const apiKeyCleanupSource = readFileSync(new URL('../../storage/api-key-record-cleanup.ts', import.meta.url), 'utf8')
   const accountCleanupSource = readFileSync(new URL('../../storage/account-record-cleanup.ts', import.meta.url), 'utf8')
   const shardSource = readFileSync(new URL('../../storage/usage-record-shards.ts', import.meta.url), 'utf8')
-  const datasetSchemaSource = readFileSync(new URL('../../storage/schema/dataset-schema.ts', import.meta.url), 'utf8')
+  const usageCatalogSchemaSource = readFileSync(new URL('../../storage/schema/usage-catalog-schema.ts', import.meta.url), 'utf8')
 
   assert(apiKeyCleanupSource.includes('listUsageRecordShardLocationsForApiKey'), 'API Key 删除清理应通过 usage shard 目录索引定位相关 shard')
   assert(accountCleanupSource.includes('listUsageRecordShardLocationsForAccount'), 'AI 账户删除清理应通过 usage shard 目录索引定位相关 shard')
@@ -271,12 +279,12 @@ function assertDeletedRecordCleanupUsesShardCatalog(): void {
   assert(shardSource.includes('usage_record_account_shards'), 'usage shard 应维护账号到 shard 的去重目录')
   assert(shardSource.includes('usage_record_api_key_shards'), 'usage shard 应维护 API Key 到 shard 的去重目录')
   assert(!/FROM usage_record_shard_entries[\s\S]{0,260}GROUP BY shard_key/.test(shardSource), '删除清理定位 shard 不应从明细目录 GROUP BY 聚合')
-  assert(datasetSchemaSource.includes('api_key_id TEXT'), 'usage shard 目录表应有 api_key_id 字段')
-  assert(datasetSchemaSource.includes('usage_record_account_shards'), '数据集目录库应声明账号 shard 去重目录表')
-  assert(datasetSchemaSource.includes('usage_record_api_key_shards'), '数据集目录库应声明 API Key shard 去重目录表')
-  assert(datasetSchemaSource.includes('idx_usage_record_shard_entries_api_key_created_sort'), 'usage shard 目录应有 API Key 定位索引')
-  assert(datasetSchemaSource.includes('idx_usage_record_account_shards_account_created'), '账号 shard 去重目录应有定位索引')
-  assert(datasetSchemaSource.includes('idx_usage_record_api_key_shards_key_created'), 'API Key shard 去重目录应有定位索引')
+  assert(usageCatalogSchemaSource.includes('api_key_id TEXT'), 'usage shard 目录表应有 api_key_id 字段')
+  assert(usageCatalogSchemaSource.includes('usage_record_account_shards'), '使用记录目录库应声明账号 shard 去重目录表')
+  assert(usageCatalogSchemaSource.includes('usage_record_api_key_shards'), '使用记录目录库应声明 API Key shard 去重目录表')
+  assert(usageCatalogSchemaSource.includes('idx_usage_record_shard_entries_api_key_created_sort'), 'usage shard 目录应有 API Key 定位索引')
+  assert(usageCatalogSchemaSource.includes('idx_usage_record_account_shards_account_created'), '账号 shard 去重目录应有定位索引')
+  assert(usageCatalogSchemaSource.includes('idx_usage_record_api_key_shards_key_created'), 'API Key shard 去重目录应有定位索引')
 }
 
 function seedAuthorizationUsageRangeWindow(systemAccountId: string): void {

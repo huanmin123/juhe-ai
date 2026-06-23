@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE
@@ -34,7 +35,8 @@ runtimeConfig.databasePath = join(tempRoot, 'glm-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
-runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
+runtimeConfig.codexContextStateShardRoot = join(tempRoot, 'codex-context', 'state-shards')
+runtimeConfig.codexContextStateShardCount = 4
 runtimeConfig.secret = 'glm-gateway-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -126,7 +128,7 @@ try {
     await assertGlmChatJson({
       baseUrl,
       localApiKey: general.localApiKey,
-      model: 'glm-5.2-free',
+      model: 'glm-4.7-flash',
       expectedPath: '/api/paas/v4/chat/completions',
       expectedAuthorization: 'Bearer sk-glm-general-upstream',
       expectedContent: 'glm mock json ok'
@@ -201,24 +203,46 @@ function assertGlmSeeds(): void {
   assert.equal(glmProvider.defaultProtocolProfileId, GLM_GENERAL_OPENAI_V1_PROFILE_ID, 'GLM 默认档案应是通用 API')
   assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_GENERAL_OPENAI_V1_PROFILE_ID), 'GLM provider 应包含通用 OpenAI Chat 档案')
   assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_CODING_OPENAI_V1_PROFILE_ID), 'GLM provider 应包含 Coding OpenAI Chat 档案')
+  assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), 'GLM provider 应包含 Coding Anthropic Messages 档案')
 
   const defaultGroups = repositories.listGroups(access).filter((group) => group.providerCode === GLM_PROVIDER_CODE && group.isDefault)
   assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID), '默认分组应包含 GLM 通用分组')
   assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID), '默认分组应包含 GLM Coding 分组')
+  assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), '默认分组应包含 GLM Coding Claude Code 分组')
 }
 
 function assertGlmModelCatalog(): void {
   const pricing = listProviderModelPricing(GLM_PROVIDER_CODE)
-  assert(pricing.some((item) => item.model === 'glm-5.2-free'), 'GLM 价格目录应包含 glm-5.2-free')
-  assert(pricing.some((item) => item.model === 'glm-5.2'), 'GLM 价格目录应包含 glm-5.2')
-  assert(pricing.some((item) => item.model === 'glm-5-turbo'), 'GLM 价格目录应包含 glm-5-turbo')
+  for (const id of [
+    'glm-5.2',
+    'glm-5.1',
+    'glm-5',
+    'glm-5-turbo',
+    'glm-4.7',
+    'glm-4.7-flashx',
+    'glm-4.7-flash',
+    'glm-4.6',
+    'glm-4.5',
+    'glm-4.5-x',
+    'glm-4.5-air',
+    'glm-4.5-airx',
+    'glm-4.5-flash',
+    'glm-4-32b-0414-128k',
+    'glm-4-long',
+    'glm-4-flashx-250414',
+    'glm-4-flash-250414'
+  ]) {
+    assert(pricing.some((item) => item.model === id), `GLM 价格目录应包含官方文本模型 ${id}`)
+  }
+  assert(pricing.some((item) => item.model === 'glm-5.2-free'), 'GLM 价格目录应保留历史 glm-5.2-free 估算项')
 
   const catalog = listProviderModelCatalog({
     providerCode: GLM_PROVIDER_CODE,
     systemAccountId: access.systemAccountId,
     includeUnpriced: true
   })
-  assert(catalog.some((item) => item.model === 'glm-5.2-free'), 'GLM 模型目录应包含 glm-5.2-free')
+  assert(catalog.some((item) => item.model === 'glm-4.7-flash'), 'GLM 模型目录应包含官方免费 glm-4.7-flash')
+  assert.equal(catalog.some((item) => item.model === 'glm-5.2-free'), false, '非官方 glm-5.2-free 不应进入 GLM 可见模型目录')
   assert(catalog.every((item) => item.providerCode === GLM_PROVIDER_CODE), 'GLM 模型目录不应混入其他供应商模型')
 }
 
@@ -420,7 +444,7 @@ async function assertGlmJsonErrorSuppressesAndRecovers(baseUrl: string, localApi
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'glm-5.2-free',
+      model: 'glm-4.7-flash',
       messages: [{ role: 'user', content: 'hello glm failover' }],
       stream: false
     })
@@ -443,7 +467,7 @@ async function assertGlmJsonErrorSuppressesAndRecovers(baseUrl: string, localApi
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'glm-5.2-free',
+      model: 'glm-4.7-flash',
       messages: [{ role: 'user', content: 'hello glm recovery' }],
       stream: false
     })
@@ -818,7 +842,7 @@ async function assertGlmCodexResponsesBridgeGatewaySummaryCompact(input: {
   const payload = JSON.parse(text) as { output?: Array<Record<string, unknown>> }
   const compactItem = payload.output?.[0]
   assert.equal(compactItem?.type, 'compaction_summary', '/responses/compact 应返回 Codex 可消费的 compaction_summary item')
-  assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v1\./, 'compact summary 应使用网关 envelope')
+  assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v2\.cmp_[^.]+\.[a-f0-9]{64}$/i, 'compact summary 应使用网关 snapshot reference envelope')
   let hits = upstreamHits.slice(start)
   assert.equal(hits.length, 1, 'GLM Coding Codex bridge /responses/compact 应通过内部 Chat Completions 摘要请求命中一次上游')
   assert.equal(hits[0]?.path, '/api/coding/paas/v4/chat/completions', 'compact 内部请求必须走 Chat Completions 路径')
@@ -981,7 +1005,7 @@ async function assertGlmRejectsResponses(baseUrl: string, localApiKey: string): 
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'glm-5.2-free',
+      model: 'glm-4.7-flash',
       input: 'responses should not reach glm'
     })
   })

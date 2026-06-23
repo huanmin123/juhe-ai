@@ -48,7 +48,7 @@ import {
 } from './background-ipc-worker-runtime.js'
 import {
   isSnapshotRoleWorker,
-  nonMetricsProcessEventLoopWorkerRoles,
+  processEventLoopWorkerRoles,
   workerMessageTargetRole,
   type BackgroundWorkerQueueTargetRole,
   type BackgroundWorkerSnapshotRole
@@ -92,6 +92,7 @@ const usageRecordMessageQueueMaxMessages = 10_000
 const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
 const regularWorkerMessageQueueMaxMessages = 5_000
 const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
+const ingestUsageBurstBeforeRegular = 8
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const ingestUsageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const ingestRegularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
@@ -106,6 +107,7 @@ let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
 let sendingIngestMessage = false
 let sendingIngestWorkerMessage: BackgroundWorkerMessage | undefined
+let consecutiveIngestUsageMessages = 0
 let sendingProbeMessage = false
 let sendingProbeWorkerMessage: BackgroundWorkerMessage | undefined
 let sendingMaintenanceMessage = false
@@ -621,7 +623,7 @@ async function requestIngestWorkerProcessEventLoopSamples(timeoutMs = 800): Prom
 }
 
 async function requestChildProcessEventLoopSamples(
-  role: Exclude<BackgroundWorkerProcessRole, 'metrics-worker'>,
+  role: BackgroundWorkerProcessRole,
   timeoutMs = 800
 ): Promise<ProcessEventLoopSample[] | undefined> {
   const child = processForRole(role)
@@ -705,6 +707,8 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
         pendingMessageCount: ingestUsageRecordMessageQueue.length + ingestRegularWorkerMessageQueue.length,
         pendingMessageBytes: ingestUsageRecordMessageQueueBytes + ingestRegularWorkerMessageQueueBytes,
         pendingQueues: buildIngestPendingQueuesRuntime(),
+        pendingWriteRequestCount: pendingDatasetWriteRequests.size,
+        oldestPendingWriteMs: oldestPendingRequestMs(pendingDatasetWriteRequests),
         pendingSnapshotRequestCount: ingestSnapshotStats.pendingSnapshotRequestCount,
         timedOutSnapshotRequestCount: ingestSnapshotStats.timedOutSnapshotRequestCount,
         rejectedSnapshotRequestCount: ingestSnapshotStats.rejectedSnapshotRequestCount
@@ -713,6 +717,8 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
         pid: statsWorkerPid,
         ready: statsWorkerReady,
         lastSnapshot: statsSnapshotStats.lastSnapshot,
+        pendingWriteRequestCount: pendingStatsWriteRequests.size,
+        oldestPendingWriteMs: oldestPendingRequestMs(pendingStatsWriteRequests),
         pendingSnapshotRequestCount: statsSnapshotStats.pendingSnapshotRequestCount,
         timedOutSnapshotRequestCount: statsSnapshotStats.timedOutSnapshotRequestCount,
         rejectedSnapshotRequestCount: statsSnapshotStats.rejectedSnapshotRequestCount
@@ -868,12 +874,14 @@ interface PendingDatasetWriteRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
+  createdAt: number
 }
 
 interface PendingStatsWriteRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
+  createdAt: number
 }
 
 export async function requestBackgroundWorkerDatasetWrite<T extends import('./background-dataset-writer.js').BackgroundDatasetWriteOperation>(
@@ -898,7 +906,7 @@ export async function requestBackgroundWorkerDatasetWrite<T extends import('./ba
         pendingDatasetWriteRequests.delete(requestId)
         pending.reject(new Error('后台 dataset-writer 请求超时'))
       }, timeoutMs)
-      pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+      pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
       sendToParentOrServer({
         type: 'background_worker_dataset_write_request',
         requestId,
@@ -928,7 +936,7 @@ export async function requestBackgroundWorkerDatasetWrite<T extends import('./ba
     const timeout = setTimeout(() => {
       finishDatasetWriteRequest(requestId, undefined)
     }, timeoutMs)
-    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout })
+    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout, createdAt: Date.now() })
     try {
       child.send({
         type: 'background_worker_dataset_write_request',
@@ -987,7 +995,7 @@ export async function requestBackgroundWorkerStatsWrite<T extends import('./back
         pendingStatsWriteRequests.delete(requestId)
         pending.reject(new Error('后台 stats-writer 请求超时'))
       }, timeoutMs)
-      pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+      pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
       sendToParentOrServer({
         type: 'background_worker_stats_write_request',
         requestId,
@@ -1012,7 +1020,7 @@ export async function requestBackgroundWorkerStatsWrite<T extends import('./back
     const timeout = setTimeout(() => {
       finishStatsWriteRequest(requestId, undefined)
     }, timeoutMs)
-    pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout })
+    pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout, createdAt: Date.now() })
     try {
       child.send({
         type: 'background_worker_stats_write_request',
@@ -1047,6 +1055,18 @@ function finishStatsWriteRequest(requestId: string, response: { ok: true; result
     return
   }
   pending.reject(new Error(response.errorMessage))
+}
+
+function oldestPendingRequestMs(
+  requests: Map<string, { createdAt: number }>
+): number {
+  let oldestAt = 0
+  for (const request of requests.values()) {
+    if (oldestAt === 0 || request.createdAt < oldestAt) {
+      oldestAt = request.createdAt
+    }
+  }
+  return oldestAt === 0 ? 0 : Math.max(0, Date.now() - oldestAt)
 }
 
 function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
@@ -1422,8 +1442,25 @@ function shiftWorkerMessage(): BackgroundWorkerMessage | undefined {
 
 function shiftIngestWorkerMessage(): BackgroundWorkerMessage | undefined {
   let queueKey: IpcQueueKey | undefined
-  const usageMessage = ingestUsageRecordMessageQueue.shift()
-  const message = usageMessage ?? shiftIngestRegularWorkerMessage()
+  let message: BackgroundWorkerMessage | undefined
+  if (shouldShiftIngestRegularBeforeUsage()) {
+    message = shiftIngestRegularWorkerMessage()
+    if (message) {
+      consecutiveIngestUsageMessages = 0
+    }
+  }
+  if (!message) {
+    const usageMessage = ingestUsageRecordMessageQueue.shift()
+    if (usageMessage) {
+      message = usageMessage
+      consecutiveIngestUsageMessages += 1
+    } else {
+      message = shiftIngestRegularWorkerMessage()
+      if (message) {
+        consecutiveIngestUsageMessages = 0
+      }
+    }
+  }
   if (message) {
     queueKey = ipcQueueKeyForMessage(message)
     const messageBytes = estimateWorkerMessageBytes(message)
@@ -1435,6 +1472,11 @@ function shiftIngestWorkerMessage(): BackgroundWorkerMessage | undefined {
     removePendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
   }
   return message
+}
+
+function shouldShiftIngestRegularBeforeUsage(): boolean {
+  return consecutiveIngestUsageMessages >= ingestUsageBurstBeforeRegular
+    && ingestRegularWorkerMessageQueue.length > 0
 }
 
 function shiftIngestRegularWorkerMessage(): BackgroundWorkerMessage | undefined {
@@ -1920,7 +1962,7 @@ async function respondToProcessEventLoopRequest(requestId: string, targetChild =
   if (dbServiceSample) {
     samples.push(dbServiceSample)
   }
-  for (const role of nonMetricsProcessEventLoopWorkerRoles()) {
+  for (const role of processEventLoopWorkerRoles()) {
     if (targetChild === processForRole(role)) {
       continue
     }

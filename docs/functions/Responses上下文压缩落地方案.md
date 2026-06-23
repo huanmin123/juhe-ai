@@ -158,12 +158,12 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 存储边界：
 
-- `JUHE_AI_CODEX_CONTEXT_DATABASE_PATH` 指向的 Codex Responses 上下文索引库只保存关系索引、授权边界、文件引用、offset、size、sha256、`lastUsedAt` 和 `expiresAt`，不得保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload；这些表不属于业务库。
-- 完整上下文落在 `backend/data/codex-context/`，按 `sessionId` 分目录保存：`session.log.jsonl` 记录增量轮次，`checkpoints/` 保存可快速恢复的 Chat checkpoint，`compacts/` 保存网关摘要 snapshot。
-- `responseId -> sessionId -> checkpointRef` 是恢复主索引；每次成功响应只追加本轮 delta 并生成必要 checkpoint，避免为每个 response id 复制一份完整历史。
-- 文件写入使用临时文件加原子 rename；SQLite 事务只在文件写入和 hash 校验成功后提交引用，避免数据库指向半文件。
-- 恢复读取必须按 SQLite 中记录的文件引用、offset、size 和 sha256 做有界读取，不扫描整个上下文目录，也不从审计日志或使用记录反查历史。
-- `lastUsedAt` 在成功读取、续写或 compact 时刷新；超过 7 天没有继续使用的 session 由后台清理删除 Codex Responses 上下文索引关系和对应 data 文件。清理后客户端再携带旧 `previous_response_id` 或 `juhecmp.v1` compact id 时返回受控的状态不存在错误。
+- `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 指向的 Codex Responses 上下文索引 shard 只保存关系索引、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`lastUsedAt` 和 `expiresAt`，不得保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload；这些表不属于业务库。
+- 完整上下文落在 `backend/data/codex-context/`，按 `sessionId` hash 目录和小时分段追加 gzip segment；索引通过 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 精确定位单条 payload。
+- `responseId -> sessionId -> segment offset` 是恢复主索引；每次成功响应只追加本轮 request input / instructions 和 output items，不为每个 response id 复制一份完整历史文件。
+- 文件写入先 gzip 单条 payload，再追加到 session/hour segment；SQLite 事务只在 append 成功和 hash 计算完成后提交引用，避免数据库指向不存在的 payload。
+- 恢复读取必须按 SQLite 中记录的 `storage_key`、`storage_offset_bytes`、`compressed_size_bytes` 和 `sha256` 做有界读取，不扫描整个上下文目录，也不从审计日志或使用记录反查历史。
+- `lastUsedAt` 在成功读取、续写或 compact 时刷新；超过 7 天没有继续使用的 session 由后台清理删除过期 Codex Responses 上下文索引关系。segment 文件只有在没有任何剩余 response / compact 引用时才会删除，避免同 session/hour 内仍有活跃上下文时误删。清理后客户端再携带旧 `previous_response_id` 或 `juhecmp.v2` compact snapshot 时返回受控的状态不存在错误。
 
 状态提交规则：
 
@@ -174,18 +174,18 @@ OAuth Codex adapter 面向 ChatGPT / Codex backend，不等价于公开 OpenAI A
 
 ### Gateway summary compact
 
-Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生 opaque compact。当前已落地版本使用 inline summary envelope；后续可升级为 `compact_id + signature + compact snapshot`：
+Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生 opaque compact。当前已落地版本使用 `compact_id + digest + compact snapshot`：
 
 ```json
 {
   "type": "compaction_summary",
-  "encrypted_content": "juhecmp.v1.<base64url-json-summary>"
+  "encrypted_content": "juhecmp.v2.<compact_id>.<sha256-summary-digest>"
 }
 ```
 
-`encrypted_content` 对 Codex 是不透明字符串；Codex 后续会把它带回请求。当前实现中，网关识别 `juhecmp.v1` 后直接解包摘要，并作为 Chat system summary 展开发给当前分组和当前供应商内的上游。完整 compact snapshot 索引已经在存储设计中预留，但当前版本尚未把 compact 摘要写成 `compact_id` 文件快照。
+`encrypted_content` 对 Codex 是不透明字符串；Codex 后续会把它带回请求。当前实现中，网关识别 `juhecmp.v2` 后按 compact id 读取 snapshot，校验 API Key / 分组 / 供应商档案边界、TTL 和摘要 digest，再作为 Chat system summary 展开发给当前分组和当前供应商内的上游。
 
-后续 compact snapshot 增强版本应包含结构化摘要，而不是一段自由文本：
+后续增强应把摘要内容提升为结构化 schema，而不是只依赖一段自由文本：
 
 | 字段 | 要求 |
 | --- | --- |
@@ -212,7 +212,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 当前摘要为空时返回受控失败；后续结构化 schema 校验失败时可在同一内部摘要链路内重试或切到同分组同供应商的其他摘要账户。
 - 后续结构化摘要结果缺少工具状态、当前目标或关键约束时不得返回成功 compact。
 - compact 前的完整状态按 TTL 保留，支持后续重新压缩或排障，但不得无限期保存大上下文。
-- 当前 compact 成功后，后续请求使用 inline summary 作为 Chat system context；后续 snapshot 版本再切换为 compact snapshot + 最近未压缩历史。
+- 当前 compact 成功后，后续请求使用 compact snapshot 中的 summary 作为 Chat system context；后续再增加最近未压缩历史和更严格的工具状态保留。
 
 ## 请求处理落点
 
@@ -232,7 +232,7 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 可接受 compact item 最小形状为 `type = "compaction"` 或 Codex 接受的别名 `type = "compaction_summary"`，且 `encrypted_content` 必须是字符串；只有类型相同但字段缺失、为 `null` 或非字符串时不能算作合法 compact 输出。
 - Codex compact SSE 的 `response.completed.response.id` 必须是字符串；缺失或非字符串会导致 Codex SSE parser 解析失败，因此同样按 compact 契约错误拦截。非流式 `/responses/compact` JSON 只按 `output` 数组校验，不要求外层 `response.id`。
 - Codex compact 期望请求在最终确认前不得把暂存的 output item 先写给客户端；如果完成时不是恰好 1 个 Codex 可接受的 compact output item，则生成 `codex_compaction_contract_mismatch` 响应语义错误，交给“响应检查策略”的系统默认规则触发服务端换号重试或最终可重试失败。
-- Chat-only gateway compact 只能发生在本轮可见输出开始前；网关可以返回自有 `compaction_summary` envelope，并在后续请求中由网关解包恢复，不能把它标记为上游原生 compact。当前版本是 inline summary envelope，后续版本再落完整 compact snapshot。
+- Chat-only gateway compact 只能发生在本轮可见输出开始前；网关可以返回自有 `compaction_summary` envelope，并在后续请求中由网关按 compact snapshot 恢复，不能把它标记为上游原生 compact。
 
 ## 性能边界
 

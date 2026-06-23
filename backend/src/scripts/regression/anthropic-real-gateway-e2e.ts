@@ -56,6 +56,7 @@ const requestIntervalMs = positiveIntEnv('JUHE_REAL_REQUEST_INTERVAL_MS') ?? 0
 const tempRoot = resolve(tmpdir(), `juhe-ai-anthropic-real-gateway-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'anthropic-real-gateway.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'anthropic-real-gateway-e2e-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -614,7 +615,7 @@ function usageSummary(value: unknown): string {
 }
 
 function latestGatewayUsageRecord(apiKeyId: string): { input_tokens?: number | null; output_tokens?: number | null } {
-  const indexRow = databaseModule.getDatasetDatabase()
+  const indexRow = databaseModule.getUsageCatalogDatabase()
     .prepare(`
       SELECT usage_id, shard_key
       FROM usage_record_shard_entries

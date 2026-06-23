@@ -6,8 +6,10 @@ import {
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
   ANTHROPIC_PROVIDER_CODE,
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
@@ -65,6 +67,17 @@ export const DEFAULT_DEEPSEEK_GROUP = {
   description: ''
 } as const
 
+export const DEFAULT_DEEPSEEK_ANTHROPIC_GROUP = {
+  id: 'grp_default_deepseek_anthropic_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 DeepSeek Claude Code 分组',
+  providerCode: DEEPSEEK_PROVIDER_CODE,
+  providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  description: ''
+} as const
+
 export const DEFAULT_GLM_GENERAL_GROUP = {
   id: 'grp_default_glm_general_sys_admin',
   systemAccountId: 'sys_admin',
@@ -87,13 +100,26 @@ export const DEFAULT_GLM_CODING_GROUP = {
   description: ''
 } as const
 
+export const DEFAULT_GLM_CODING_ANTHROPIC_GROUP = {
+  id: 'grp_default_glm_coding_anthropic_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 GLM Coding Claude Code 分组',
+  providerCode: GLM_PROVIDER_CODE,
+  providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  description: ''
+} as const
+
 export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_OPENAI_COMPATIBLE_GROUP,
   DEFAULT_GPT_GROUP,
   DEFAULT_DEEPSEEK_GROUP,
+  DEFAULT_DEEPSEEK_ANTHROPIC_GROUP,
   DEFAULT_ANTHROPIC_GROUP,
   DEFAULT_GLM_GENERAL_GROUP,
-  DEFAULT_GLM_CODING_GROUP
+  DEFAULT_GLM_CODING_GROUP,
+  DEFAULT_GLM_CODING_ANTHROPIC_GROUP
 ] as const
 
 export const DEFAULT_GLOBAL_SETTINGS = [
@@ -133,7 +159,7 @@ export const DEEPSEEK_PROVIDER_SEED = {
   code: DEEPSEEK_PROVIDER_CODE,
   name: 'DeepSeek',
   parentCode: null,
-  description: 'DeepSeek 官方供应商，使用 OpenAI-compatible v1 Chat Completions 协议直连，并可通过 Responses 到 Chat SSE 桥接兼容 Codex 客户端',
+  description: 'DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code',
   enabled: 1
 } as const
 
@@ -142,7 +168,7 @@ export const GLM_PROVIDER_SEED = {
   code: GLM_PROVIDER_CODE,
   name: '智谱 GLM',
   parentCode: null,
-  description: '智谱 GLM 官方供应商，当前支持通用 GLM API Key 与 GLM Coding Plan Key 的 OpenAI Chat Completions 兼容直连',
+  description: '智谱 GLM 官方供应商，支持通用 GLM API Key、GLM Coding Plan OpenAI Chat 档案，以及 GLM Coding Anthropic v1 档案兼容 Claude Code',
   enabled: 1
 } as const
 
@@ -254,7 +280,7 @@ export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
-  defaultTestModel: 'claude-haiku-4-5',
+  defaultTestModel: 'claude-fable-5',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
@@ -275,6 +301,21 @@ export const DEEPSEEK_OPENAI_V1_PROFILE_SEED = {
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
 } as const
 
+export const DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED = {
+  id: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+  providerCode: DEEPSEEK_PROVIDER_CODE,
+  name: 'DeepSeek / Anthropic v1',
+  description: 'DeepSeek 供应商的 Anthropic v1 Messages 协议档案，承载 Claude Code 使用的 /v1/messages 与 /v1/models 直连',
+  enabled: 1,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  baseUrl: 'https://api.deepseek.com/anthropic',
+  defaultTestModel: 'deepseek-v4-flash',
+  accountTypes: ['api_key'],
+  capabilities: ['messages', 'models', 'passthrough'],
+  endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY]
+} as const
+
 export const GLM_GENERAL_OPENAI_V1_PROFILE_SEED = {
   id: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   providerCode: GLM_PROVIDER_CODE,
@@ -284,7 +325,7 @@ export const GLM_GENERAL_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-  defaultTestModel: 'glm-5.2-free',
+  defaultTestModel: 'glm-5.2',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
@@ -303,6 +344,21 @@ export const GLM_CODING_OPENAI_V1_PROFILE_SEED = {
   accountTypes: ['api_key'],
   capabilities: ['chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
+} as const
+
+export const GLM_CODING_ANTHROPIC_V1_PROFILE_SEED = {
+  id: GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+  providerCode: GLM_PROVIDER_CODE,
+  name: '智谱 GLM Coding / Anthropic v1',
+  description: '智谱 GLM Coding Plan Key 的 Anthropic v1 Messages 协议档案，面向 Claude Code 原生协议直连',
+  enabled: 1,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+  defaultTestModel: 'glm-5.2',
+  accountTypes: ['api_key'],
+  capabilities: ['messages', 'models', 'passthrough'],
+  endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY]
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [

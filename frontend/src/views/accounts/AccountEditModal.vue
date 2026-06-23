@@ -104,7 +104,7 @@
               :form="form"
               :is-management-view="isManagementView"
               :is-o-auth-form="isOAuthForm"
-              :mapping-target-model-options="mappingTargetModelOptions"
+              :mapping-source-model-options="mappingSourceModelOptions"
               :model-options="modelOptions"
               :models-loading="modelsLoading"
               :proxy-options="proxyOptions"
@@ -206,7 +206,7 @@ const props = withDefaults(defineProps<{
   isManagementView: boolean
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
-  mappingTargetModelOptions: SelectOption[]
+  mappingSourceModelOptions: SelectOption[]
   modelOptions: SelectOption[]
   modelsLoading: boolean
   okButtonProps: Record<string, unknown>
@@ -231,7 +231,7 @@ const publicCredentialItems = computed(() => {
     credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
     credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
     credentialItem('plan_type', '套餐类型', credentials.plan_type),
-    credentialItem('supported_endpoint_modes', '接口能力', accountEndpointModeText(credentials.supported_endpoint_modes))
+    credentialItem('supported_endpoint_modes', '接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))
   ]
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
 })

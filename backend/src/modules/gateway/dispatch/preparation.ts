@@ -41,6 +41,7 @@ import {
 import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
+import type { GatewayAccountModelPriority } from './model-filter.js'
 
 export interface DispatchPreparationFallbackResult {
   attempted: boolean
@@ -65,6 +66,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   usageContext: GatewayFailureUsageContext
   startedAt: number
   candidateAccounts: UpstreamAccount[]
+  modelPriority: GatewayAccountModelPriority
   sessionAffinityKey?: string
   groupAccess: GroupUsageAccessMetadata
   systemAccountId: string
@@ -79,6 +81,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   const dispatchOrderingOptions = {
     groupType: input.groupAccess.groupType,
     schedulingPolicy: input.groupAccess.schedulingPolicy,
+    modelPriority: input.modelPriority,
     trafficMigrationScope: {
       systemAccountId: input.systemAccountId,
       apiKeyId: input.apiKeyId,

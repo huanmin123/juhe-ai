@@ -14,7 +14,7 @@ interface ModelProbeResult {
 const realApiKey = requiredEnv('JUHE_REAL_HYBRID_API_KEY', ['JUHE_REAL_HYBRID_QUALITY_API_KEY', 'HYBRID_REAL_API_KEY'])
 const realBaseUrl = envText('JUHE_REAL_HYBRID_BASE_URL', ['JUHE_REAL_HYBRID_QUALITY_BASE_URL', 'HYBRID_REAL_BASE_URL']) || 'https://vsllm.com'
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_HYBRID_MODEL_PROBE_TIMEOUT_MS') ?? 120_000
-const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_MODEL_PROBE_INTERVAL_MS') ?? 800
+const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_MODEL_PROBE_INTERVAL_MS') ?? 3_500
 const outputPath = envText('JUHE_REAL_HYBRID_MODEL_PROBE_OUTPUT_PATH')
 const candidates = candidateModels()
 
@@ -108,7 +108,9 @@ function candidateModels(): string[] {
     : [
       'gpt-5.4-mini',
       'deepseek-ai-v4-flash',
+      'glm-5.1',
       'glm-5.2',
+      'gpt-5.4',
       'gpt-5.5',
       'claude-opus-4-6',
       'claude-opus-4-7',

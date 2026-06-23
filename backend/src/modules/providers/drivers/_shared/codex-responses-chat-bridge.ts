@@ -495,6 +495,12 @@ function responsesReasoningTextFromItem(item: JsonRecord): string {
 function responsesCompactionSummaryTextFromItem(item: JsonRecord): string {
   const encryptedContent = stringValue(item.encrypted_content)
   if (!encryptedContent) return ''
+  if (encryptedContent.startsWith('juhecmp.v2.')) {
+    throw new GatewayRequestValidationError(
+      'Chat-only Codex bridge compact snapshot 未完成服务端恢复，不能直接转发给 Chat 上游',
+      'codex_bridge_compact_snapshot_unresolved'
+    )
+  }
   const prefix = 'juhecmp.v1.'
   if (!encryptedContent.startsWith(prefix)) {
     return encryptedContent

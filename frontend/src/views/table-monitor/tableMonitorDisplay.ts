@@ -15,7 +15,7 @@ export const tableMonitorColumns = [
   { title: '采样时间', key: 'sampledAt', width: 190 }
 ]
 
-export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
+export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats']
 
 export function tableMonitorRowKey(row: TableStorageSnapshotSummary) {
   return `${row.databaseRole}:${row.tableName}`
@@ -25,6 +25,7 @@ export function databaseRoleLabel(role: MonitoredDatabaseRole) {
   return {
     business: '业务库',
     dataset: '数据集目录库',
+    'usage-catalog': '使用记录目录库',
     stats: '统计结果库'
   }[role]
 }
@@ -33,6 +34,7 @@ export function databaseRoleColor(role: MonitoredDatabaseRole) {
   return {
     business: 'blue',
     dataset: 'orange',
+    'usage-catalog': 'cyan',
     stats: 'purple'
   }[role]
 }
@@ -86,7 +88,7 @@ export function buildTableMonitorHistoryChartOption(input: {
 }): EChartsOption {
   const buckets = [...new Set(input.rows.map((row) => row.sampledAt))].sort()
   return {
-    color: ['#1677ff', '#fa8c16', '#722ed1'],
+    color: ['#1677ff', '#fa8c16', '#13c2c2', '#722ed1'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => historyTooltip(params)

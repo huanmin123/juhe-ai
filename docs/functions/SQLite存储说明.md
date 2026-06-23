@@ -6,14 +6,15 @@
 
 ## 默认位置
 
-后端运行时按业务库、统计数据集域、统计结果库和 Codex Responses 上下文索引库组织 SQLite。统计数据集域由数据集目录库和 usage shard 文件组成；未配置这些路径时，直接使用各自默认位置：
+后端运行时按业务库、数据集目录库、使用记录目录库、统计结果库和 Codex Responses 上下文索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成；未配置这些路径时，直接使用各自默认位置：
 
 ```text
 业务库：backend/data/juhe-ai.sqlite3
 统计数据集目录库：backend/data/juhe-ai-dataset.sqlite3
+使用记录目录库：backend/data/juhe-ai-usage-catalog.sqlite3
 统计结果库：backend/data/juhe-ai-stats.sqlite3
 使用记录分片：backend/data/usage-shards/
-Codex Responses 上下文索引库：backend/data/codex-context/state.sqlite3
+Codex Responses 上下文索引库分片：backend/data/codex-context/state-shards/state-000.sqlite3 ...
 Codex Responses 上下文文件：backend/data/codex-context/
 ```
 
@@ -22,18 +23,26 @@ Codex Responses 上下文文件：backend/data/codex-context/
 ```dotenv
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
+JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_CODEX_CONTEXT_ROOT=./data/codex-context
-JUHE_AI_CODEX_CONTEXT_DATABASE_PATH=./data/codex-context/state.sqlite3
+JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=./data/codex-context/state-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
+JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT=16
+JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED=true
+JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_SIZE=0
+JUHE_AI_CODEX_CONTEXT_STATE_WRITER_QUEUE_MAX_ITEMS=5000
+JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED=false
+JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE=0
+JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。四个 SQLite 文件路径必须互不相同，usage shard 根目录和 Codex 上下文目录也必须与这些文件路径区分；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-usage-catalog.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Codex 上下文索引 shard 文件必须互不相同，usage shard 根目录、Codex 上下文目录和 Codex state shard 根目录也必须与这些文件路径区分；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
 
 搬到其他电脑或服务器时，保留 `backend/.env` 和当前数据目录即可带走配置与数据；如果本地库结构和当前 schema 不一致，按当前 schema 离线修复或重建，不在运行时代码里放结构适配分支。
 
-## 业务库、统计数据集域与统计结果库边界
+## 业务库、数据集目录库、使用记录目录库与统计结果库边界
 
 业务库只保存可恢复的核心业务数据：
 
@@ -48,9 +57,10 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 
 `system_accounts.image_generation_enabled` 保存系统账户是否允许发起图像生成，默认 `0`。该字段不是敏感正文，也不进入系统账户 options 轻量查询；网关运行态通过 API Key 校验行携带这个布尔值，禁用图像生成时不额外反查系统账户表。
 
-统计数据集域保存高增长、可丢失、可过期或排障类事实数据；其中数据集目录库保存未分片明细和元数据，新写入的 `usage_records` 保存到 usage shard 文件：
+数据集目录库保存高增长、可丢失、可过期或排障类事实数据中的非 usage 明细；新写入的 `usage_records` 保存到 usage shard 文件，usage shard 的全局定位和筛选目录保存在独立使用记录目录库：
 
 - `usage_records`（usage shard 文件）
+- `usage_record_shards`、`usage_record_shard_entries`、`usage_record_account_shards`、`usage_record_api_key_shards`（使用记录目录库）
 - `audit_logs`、`audit_log_attempts`、`audit_payload_blobs`、`audit_payload_refs`、`audit_error_groups`
 - `public_api_logs`
 - `operation_logs`、`operation_log_targets`、`operation_log_viewers`
@@ -69,60 +79,67 @@ JUHE_AI_USAGE_SHARD_COUNT=16
 - `process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows`
 - `database_storage_snapshots`、`table_storage_snapshots`
 
-Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态关系索引，不属于业务库：
+Codex Responses 上下文索引库分片保存 Chat-only bridge 的可丢弃运行态关系索引，不属于业务库。SQLite 单个数据库文件同一时间只有一个写事务，WAL 只能改善读写并发，不能把单文件变成多写者；因此 context state 按 `session_id`、`response_id` 或 `compact_id` 的稳定 hash 路由到多个 `state-XXX.sqlite3` 文件，避免所有 Codex 续链状态挤在一个 SQLite 写锁上：
 
 - `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts`
-- 只保存 `response_id`、`session_id`、API Key / 分组 / 供应商档案边界、文件引用、size、sha256、`last_used_at` 和 `expires_at`
+- 只保存 `response_id`、`session_id`、API Key / 分组 / 供应商档案边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at` 和 `expires_at`
 - 不保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload
 
-运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；统计数据集目录库、usage shard、统计结果库和 Codex Responses 上下文索引库都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计、排障明细或 Codex 续链状态时，可以直接新建空数据集目录库、usage shard 目录、统计结果库和 Codex 上下文目录。
+Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED` 启用后，DB service 内部通过可复用 keyed child process writer pool 按目标 shard 分发 response / compact / touch 操作，每个 shard 始终只进入一个 writer 队列，同一 SQLite shard 不允许多 writer 并发写。`save response` 和 `save compact` 先在 DB service 内按 shard 做短窗口批量合并，再分别等待 session shard 与 response / compact shard 批量写入完成后才向调用方确认，保证刚返回给 Codex 客户端的 `response_id` / compact envelope 立刻可读。`last_used_at` / `expires_at` touch 不阻塞 response chain restore 结果返回，会按 session / response shard 做 best-effort 合并刷新，失败只记录运行日志。过期清理是跨 shard 操作，但不再一次扫描全部 session shard；writer pool 维护 cleanup cursor，每次只选择一个 session shard 做小步清理，并在删除后全 shard 检查 `storage_key` 是否仍被活跃 response / compact 引用，避免误删共享 segment 文件，减少全局屏障持续时间。
+
+运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；数据集目录库、使用记录目录库、usage shard、统计结果库和 Codex Responses 上下文索引 shard 都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计、排障明细或 Codex 续链状态时，可以直接新建空数据集目录库、使用记录目录库、usage shard 目录、统计结果库和 Codex 上下文目录。
 
 ## 统计数据集与结果库拆分方案
 
-当前实现已经落地统计数据集域和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，数据集与统计职责按当前模型拆为：
+当前实现已经落地数据集目录库、使用记录目录库、usage shard 和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，数据集与统计职责按当前模型拆为：
 
-- 统计数据集目录库：保存原始审计、操作日志、运行日志索引、模型检测明细、记录清理目标和 usage shard catalog 等高增长事实元数据；新写入的 `usage_records` 已拆到 usage shard 文件。
+- 统计数据集目录库：保存原始审计、操作日志、运行日志索引、模型检测明细和记录清理目标等非 usage 高增长事实元数据。
+- 使用记录目录库：保存 `usage_record_shards`、`usage_record_shard_entries` 以及按账号 / API Key 去重的 shard scope catalog，只用于定位 usage shard、列表筛选和清理，不保存完整使用记录正文。
+- usage shard 文件：保存新写入的 `usage_records` 明细，按日期和稳定 hash 分散到多个 SQLite 文件。
 - 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、系统监控采样、监控趋势、`stats_job_state` 和使用记录清理扣减账本等紧凑结果。
 
-页面统计、列表用量和网关额度只读统计结果库；明细排障通过 repository 读取 usage shard 和数据集目录库中的其他明细；后台 worker 从 usage shard 按分片游标读取事实，并在统计结果库事务中写入结果和推进水位。既有明细如果需要取证，只能停服务后用一次性离线脚本处理，处理逻辑不得进入源码主路径。
+页面统计、列表用量和网关额度只读统计结果库；明细排障通过 repository 读取使用记录目录库、usage shard 和数据集目录库中的其他明细；后台 worker 从 usage shard 按分片游标读取事实，并在统计结果库事务中写入结果和推进水位。既有明细如果需要取证，只能停服务后用一次性离线脚本处理，处理逻辑不得进入源码主路径。
 
 ## 数据集库分片写入设计
 
-三库拆分解决了业务库、数据集目录库和统计结果库之间互相拖慢的问题，但不能消除单个数据集目录库 SQLite 文件内部的单 writer 上限。当前高频写入优化以 [数据集库分片写入设计](数据集库分片写入设计.md) 为准，先只拆最热的 `usage_records`：
+四个主库拆分解决了业务库、数据集目录库、使用记录目录库和统计结果库之间互相拖慢的问题，但不能消除单个 SQLite 文件内部的单 writer 上限。当前高频写入优化以 [数据集库分片写入设计](数据集库分片写入设计.md) 为准，先只拆最热的 `usage_records`：
 
-- `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、操作日志、运行日志索引、模型检测和 shard catalog。
-- 新增 `JUHE_AI_USAGE_SHARD_ROOT`，未配置或留空时默认跟随数据集目录库所在目录生成 `usage-shards`；生产也可以显式配置为 `./data/usage-shards` 或其他独立目录。
+- `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、操作日志、运行日志索引和模型检测等非 usage 明细。
+- `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 作为使用记录目录库，保存 usage shard 注册表、列表筛选目录和按账号 / API Key 去重的 shard scope catalog。它是高频写入瓶颈之一，必须独立于数据集目录库，避免审计、日志和 usage 目录抢同一个 SQLite 写锁。
+- `JUHE_AI_USAGE_SHARD_ROOT` 未配置或留空时默认跟随使用记录目录库所在目录生成 `usage-shards`；生产也可以显式配置为 `./data/usage-shards` 或其他独立目录。
 - 新增 `JUHE_AI_USAGE_SHARD_COUNT`，默认 `16`。
 - 新写入的 `usage_records` 按 `bucket_date + stable_hash(id) % shardCount` 路由到多个 SQLite shard 文件。
-- 当前实现由 `ingest-worker` 承接 background worker usage 队列，在 ingest-worker 内按 shard 分组并对每个 shard 执行短事务；独立 child writer pool 作为后续性能增强。
+- 当前实现由 `ingest-worker` 承接 background worker usage 队列，在 ingest-worker 内按 shard 分组并对每个 shard 执行短事务；usage shard catalog 写入会在同一批使用记录目录库事务内合并 shard location、entry 和 scope catalog。已知 shard location 使用进程内缓存跳过重复 upsert；同一批 entry 先按 `usage_id` 去重；scope catalog 按账号 / API Key / shard 计算 `first_created_at` 最小值和 `last_seen_at` 最大值，冲突更新带 `WHERE` 条件避免无变化写页。真实压测显示 shard 数不是越大越好，需要按机器测试 8 / 16 / 32 shard 的吞吐和 usage catalog 写放大后再定默认值。
+- `JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED` 是可选优化开关，默认关闭。开启后只有 usage shard 行写入会按目标 shard 交给 keyed child process writer pool；使用记录目录库里的 `usage_record_shards`、`usage_record_shard_entries`、scope catalog、账号最后使用时间和成功时间副作用仍由 `ingest-worker` 单写者批量提交，避免子进程并发写同一个 usage catalog。当前本机真实 SQLite 压测显示 usage writer pool 在现有批量模型下未提升吞吐，反而会被 IPC 与 catalog 单写者瓶颈抵消，因此不能默认开启；后续只在目标机器压测 direct 与 pool 都稳定后再考虑打开。
 - 统计结果库仍不分片；统计 worker 改为按 shard 独立游标读取 usage，再在统计结果库同事务写结果和推进水位。
 - 使用记录详情通过 usage id 中的日期和 shard 信息直接定位；usage id 必须携带可定位 shard 的日期信息。
 - 使用记录列表由 repository 内部跨 shard 有界读取并稳定合并，不做全 shard 精确 `COUNT(*)`。
 - 使用记录账户名筛选不在 usage shard 上做 `LIKE`。后端先在业务库按账户名称精确 / 前缀匹配解析最多 200 个当前作用域可见的实际 `account_id`，再对 usage shard 使用 `account_id IN (...)`。对授权场景，解析必须覆盖被授权人的授权实例名称、授权实例来源账户名称，以及分组授权来源分组内账户名称；这样被授权用户用来源账户名查询时能命中自己的使用记录，同时不会越过 `usage_records.system_account_id` 看到授权方或其他调用方明细。
 - 数据保留优先按 shard 文件删除或归档旧数据，避免大表批量 `DELETE` 和 freelist 膨胀。
 
-分片设计不改变外部 API 响应、统计结果口径、API Key 额度读取口径或统一授权额度口径。业务主库必须保护；统计数据集目录库、usage shard 和统计结果库可以按需要删除重建。
+分片设计不改变外部 API 响应、统计结果口径、API Key 额度读取口径或统一授权额度口径。业务主库必须保护；数据集目录库、使用记录目录库、usage shard 和统计结果库可以按需要删除重建。
 
 ## 当前实现
 
 - 使用 Node 内置 `node:sqlite`，要求官方 Node.js LTS；当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 `node:sqlite` 必须可用。
 - 启动时自动建表
-- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `glm` 供应商、`profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、目标 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1` 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、默认 Anthropic 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、默认全局设置和默认系统设置
+- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1` 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、默认 Anthropic 分组、目标默认 DeepSeek OpenAI 分组、目标默认 DeepSeek Claude Code 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、目标默认 GLM Coding Claude Code 分组、默认全局设置和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
-- 运行时写入必须遵循 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)：业务库写入归 DB service，Codex Responses 上下文索引库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按单 shard writer 串行写。多 worker 可以并行生产 command，但不能并行写同一个 SQLite 文件。
+- 运行时写入必须遵循 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)：业务库写入归 DB service，Codex Responses 上下文索引 shard 写入归 DB service 并按目标 shard 短事务提交，数据集目录库和使用记录目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按单 shard writer 串行写。多 worker 可以并行生产 command，但不能并行写同一个 SQLite 文件。
+- 写队列必须暴露可观测指标：DB service runtime 包含按优先级拆分的排队数量、最老等待时间、最近 / 最大排队等待、最近 / 最大执行耗时和慢操作计数；background worker role state 包含 pending 写请求数量和最老等待时间；usage 队列包含最老本地等待、最近 / 最大 flush 耗时、慢 flush 计数，以及可选 usage writer pool 的 worker 数、排队数、活跃任务、失败 / 拒绝数和最大等待 / 执行耗时。排查 `database is locked`、worker 堵塞或请求延迟时先看这些指标，不直接扩大 shard 数或 writer 数。
 - IP 封禁命中计数只在 server 进程内做短暂有界聚合后投递 DB service：待写 distinct `ip_hash + policy_id` 最多 `5000` 个，单次 flush 最多 `1000` 条，满载时丢弃新的 distinct 命中并计数，不能让恶意多来源封禁流量形成无界 Map 或一次大 IPC。
-- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开；Codex Responses 上下文索引库通过 `JUHE_AI_CODEX_CONTEXT_DATABASE_PATH` 打开。四类入口都使用 WAL，并且四个路径必须互不相同。
+- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；使用记录目录库通过 `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开；Codex Responses 上下文索引库通过 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 打开多个 shard。所有 SQLite 入口都使用 WAL，并且业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Codex context state shard 文件必须互不相同。
 - 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。server 角色只把使用记录投递给 ingest-worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照先按深度、字段数量和字节预算克隆，再按 32KB 上限保存或截断，不能为了估算大小先把完整大对象 `JSON.stringify` 到内存。公开接口日志最大保留 7 天，由后台数据保留任务分批清理。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志；防重复提交缓存属于进程内易失状态，过期维护固定小批量轮转，容量淘汰不全量展开排序。
 - 原始审计日志使用独立表保存最近 1 小时完全成功请求热窗口、超过热窗口后的 10% 稳定成功样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 ingest-worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
-- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，ingest-worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。
+- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集目录库表 `runtime_logs`，ingest-worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志索引队列在 80% 高水位后对 `trace` / `debug` / `info` 做采样丢弃，`warn` / `error` / `fatal` 仍保留到硬上限，避免低优先级运行日志拖垮 dataset writer。
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
-- `protocols` 保存协议族和版本，当前包含 `openai/v1` 和 `anthropic/v1`；`protocol_endpoint_families` 保存协议下的端点族，OpenAI v1 当前包含 `chat_completions` 和 `responses`，Anthropic v1 当前包含 `messages`、`models` 和 `message_token_counting`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商、`gpt.parent_code = openai` 子供应商、独立 `anthropic` 供应商，以及目标 `glm.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1`、`profile_gpt_openai_v1` 和 `profile_anthropic_anthropic_v1`，目标 GLM 档案为 `profile_glm_general_openai_v1` 和 `profile_glm_coding_openai_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。Anthropic 当前只允许 `api_key` 账户类型并启用 Messages / Models / Count Tokens，不保存 OAuth 或 Claude Code token 生命周期字段；GLM 两个档案当前只启用 `chat_completions`，不启用 `responses`。账户凭据 JSON 中的 `supported_endpoint_modes` 保存单个上游实际支持的协议端点与 JSON / SSE 组合，OpenAI v1 使用 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，Anthropic v1 使用 `messages_json`、`messages_sse`、`message_token_counting`；网关候选筛选和账户测试都按该字段执行。Anthropic 账户省略该字段时默认视为 `messages_json`、`messages_sse`、`message_token_counting`，GLM 账户省略该字段时默认视为 `chat_json`、`chat_sse`。
+- `protocols` 保存协议族和版本，当前包含 `openai/v1` 和 `anthropic/v1`；`protocol_endpoint_families` 保存协议下的端点族，OpenAI v1 当前包含 `chat_completions` 和 `responses`，Anthropic v1 当前包含 `messages`、`models` 和 `message_token_counting`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商、`gpt.parent_code = openai` 子供应商、独立 `anthropic` 供应商、目标 `deepseek` 供应商，以及 `glm.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 和 `profile_glm_coding_anthropic_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。Anthropic 当前只允许 `api_key` 账户类型并启用 Messages / Models / Count Tokens，不保存 OAuth 或 Claude Code token 生命周期字段；DeepSeek Anthropic 和 GLM Coding Anthropic 当前只允许 `api_key`，只启用 Messages / Models，不默认启用 Count Tokens；GLM OpenAI 档案当前只启用 `chat_completions`，Anthropic 档案只启用 `messages`。账户凭据 JSON 中的 `supported_endpoint_modes` 保存单个上游实际支持的协议端点与 JSON / SSE 组合，OpenAI v1 使用 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，Anthropic v1 使用 `messages_json`、`messages_sse`、`message_token_counting`；网关候选筛选和账户测试都按该字段执行。Anthropic 账户省略该字段时默认视为 `messages_json`、`messages_sse`、`message_token_counting`，DeepSeek Anthropic 和 GLM Coding Anthropic 省略该字段时默认视为 `messages_json`、`messages_sse`，GLM 账户省略该字段时默认视为 `chat_json`、`chat_sse`。
 - `provider_protocol_profiles` 的长期唯一性不能只使用 `provider_code + protocol_code + protocol_version`。同一供应商可能在同一协议版本下暴露多个业务档案，例如智谱 GLM 的通用 API 和 Coding Plan 都是 `glm + openai/v1`，但默认 Base URL、账户创建类型、额度解释和默认分组不同。落地 GLM 前，schema 应以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 并按 `provider_code + connection_type` 建业务唯一约束；运行路径不得通过 `provider_code + protocol_code + protocol_version` 反查唯一档案。
 - `accounts.provider_protocol_profile_id`、`groups.provider_protocol_profile_id` 和 `account_test_tasks.provider_protocol_profile_id` 保存供应商协议档案；`protocol_code` / `protocol_version` 从档案冗余写入，用于运行时策略、审计和排障。账户只能加入同 `provider_protocol_profile_id` 的分组；分组名称唯一和默认分组唯一都按协议档案维度判断，不能只按 `provider_code` 判断。API Key 可绑定多个供应商协议档案分组，但请求链路必须先按 `model` 在当前 Key 已绑定范围内筛出目标档案。
 - 账户级错误处理策略保存在 `accounts.credentials.error_handling_rules`，用于描述该账户上游非 `2xx` 错误命中后的账号副作用。规则保存启用状态、名称、优先级、状态码 / 错误码 / 错误类型 / 关键字匹配条件、动作和限流恢复策略。请求头、请求体和上下文改写不进入该字段，仍由网关 adapter 内部处理。
@@ -172,12 +189,12 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 
 ## 大文件与频繁读取底线
 
-数据集目录库会持有日志索引、审计 payload 和原始监控采样等持续增长数据，usage shard 会持有使用记录。任何运行路径只要涉及大文件或高频文件读取，都必须按 offset / cursor / stream / 分块窗口推进，不能先全量读入内存再 `split`、过滤、排序或分页。
+数据集目录库会持有日志索引、审计 payload 和原始监控采样等持续增长数据，使用记录目录库会持有 usage shard 定位索引，usage shard 会持有使用记录。任何运行路径只要涉及大文件或高频文件读取，都必须按 offset / cursor / stream / 分块窗口推进，不能先全量读入内存再 `split`、过滤、排序或分页。
 
 - 运行日志索引通过 `runtime_log_file_cursors` 保存文件 offset、行号和文件标识；worker 重启后从游标继续，首次遇到已有当前日志文件时默认从文件末尾开始，避免导入历史大文件。
 - 按行读取只在完整换行结束后推进 offset；末尾半行保留到下一轮，轮转、截断或文件标识变化时重置游标。
 - 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。超过单次最大读取窗口的 payload 默认保持未压缩，避免读取后半段时反复从头解压 gzip。
-- Codex Responses Chat-only bridge 的 `previous_response_id` 状态和 gateway compact snapshot 不把完整上下文写入 SQLite。Codex Responses 上下文索引库只保存 `response_id`、`session_id`、授权边界、文件引用、offset、size、sha256、`last_used_at`、`expires_at` 等轻量索引；完整 Responses items、Chat checkpoint、工具状态和摘要 snapshot 都放在 `backend/data/codex-context/` 下。读取时必须按索引做有界文件读取，不能扫描目录、审计 payload、使用记录或运行日志反推上下文。
+- Codex Responses Chat-only bridge 的 `previous_response_id` 状态和 gateway compact snapshot 不把完整上下文写入 SQLite。Codex Responses 上下文索引 shard 只保存 `response_id`、`session_id`、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at`、`expires_at` 等轻量索引；每轮 request input / instructions、output items 和摘要 snapshot 都放在 `backend/data/codex-context/` 下，并按 session/hour 追加到 gzip segment 文件。session 目录名使用可读前缀加 `session_id` hash，不能只靠字符替换或截断。读取时必须按 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 做有界文件读取，不能扫描目录、审计 payload、使用记录或运行日志反推上下文。
 - 使用记录、操作日志、原始审计日志、审计错误组和运行日志索引这类高增长列表，默认只读取当前页 `pageSize + 1` 条来判断 `hasMore`，不在请求路径执行全量 `COUNT(*)`；返回的 `total` 只是前端分页器上界值，不代表精确全表总数。
 - 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前入口硬上限为 `64mb`，认证预检和可提前识别的图像权限拒绝通过后才读取 body；文本 lane 业务上限默认 `8mb`，由系统设置 `gatewayTextRawBodyLimitMegabytes` 在 `1..64` MB 内调整；图像生成 lane 保留 `64mb` 上限。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过入口硬上限时进入 worker thread 做顶层元数据扫描，其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具等必须改写请求体的路径才完整解析；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
 
@@ -224,7 +241,7 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 - `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，当前角色为 `server`、`worker`、`metrics-worker`、`ingest-worker`、`stats-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`temporary-maintenance-worker`、`db-service`，用于区分主 Web 进程、默认控制 worker、监控 worker、写入 worker、统计 worker、快照 worker、探测 worker、维护 worker、临时维护 worker 和本地 DB service 哪个进程卡顿或内存爬升。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟有效样本数、平均值、最大值，以及进程 RSS / Heap 的平均值和峰值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势和进程内存占用趋势均读取该窗口，不在接口请求时扫描 `process_event_loop_samples`。
-- `database_storage_snapshots`：按采样时间保存业务库、数据集目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
+- `database_storage_snapshots`：按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
 - `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样通过 `dbstat` 叶子页 cell 数滚动写入可推导的行数，不提供精确 `COUNT(*)` 采样分支；SQLite `dbstat` 不可用或表类型不适合推导时，表大小、索引大小、总大小、页数和行数保持为空，不写入伪造的 0。
 - 表监控文件级采样由后台 worker 每 10 分钟执行一次；表级采样默认每轮每个库最多刷新 4 张表，历史默认保留最近一月。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。IP 范围窗口额外使用 `scope_type = client_ip_range_window` 记录窗口刷新 ready/stale 标记，只表达窗口是否完成刷新，不保存数量或范围总量。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
@@ -387,8 +404,7 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 - `audit_error_groups(window_started_at, id)`、`audit_error_groups(fingerprint, window_started_at)`：错误组列表和 upsert 定位。
 - `runtime_logs(trace_id, time, id)`：按链路 ID 快速抓取同一次请求相关运行日志。
 - `runtime_logs(time, id)`：默认读取最近日志。
-- `runtime_logs(level, time, id)`、`runtime_logs(event, time, id)`：按通用日志级别和事件定位问题；接口、状态码和客户端 IP 等请求维度只放在审计日志中查询。
-- `runtime_logs(created_at, id)`：保留运行日志写入顺序定位能力。
+- 运行日志不再为 `level`、`event` 和 `created_at` 单独维护索引；管理员低频筛选按时间窗口内过滤，优先降低运行日志索引体积和写入放大。接口、状态码和客户端 IP 等请求维度只放在审计日志中查询。
 - `announcements(status, published_at, created_at)`：用户侧读取最近已发布公告。
 - `announcements(updated_at, created_at, id)`：管理员公告管理列表按最近更新分页排序。
 - `announcement_reads(system_account_id, read_at)`：按用户读取或排查公告已读状态。
@@ -430,7 +446,7 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 操作日志在业务库写操作提交成功后入队，worker 从操作日志队列批量写入 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 和 `operation_log_summary_search_terms`；操作日志入队或落库失败只影响追溯数据，不反向回滚已提交业务变更。
-- 数据集目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker。usage shard / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
+- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker。usage shard / usage catalog / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs`，并随新增日志增量维护级别 / 事件 facets；常规维护只在 facets 缺失时重建，数据保留清理按已删除索引行扣减 facets，不能每轮或每次清理后对 `runtime_logs` 全量 `COUNT/GROUP BY`。
 - 日志搜索不再有额外回填任务；运行日志 keyword 只查 `runtime_logs.message`，操作日志 `summaryKeyword` 读取随操作日志写入同步生成的 `operation_log_summary_search_terms` 摘要倒排词项。
 - “日志搜索”索引查询读取当前 SQLite `runtime_logs` 表，使用 `traceId`、级别、事件和日志时间等通用索引条件缩小结果，关键字只对 `message` 列做普通模糊匹配；如果只有 keyword、没有显式开始或结束时间，后端默认只查最近 6 小时。列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制。
@@ -451,7 +467,8 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 | `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 按清理间隔清理长期过期数据 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只做展示和排障聚合，不替代事件记录 |
-| `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts` | Codex Responses Chat-only bridge 状态索引 | 固定 7 天未使用即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理关系并删除 `backend/data/codex-context/` 对应文件 | 位于 `JUHE_AI_CODEX_CONTEXT_DATABASE_PATH`，不属于业务库。SQLite 只保存关系和文件引用；当前已落地 `previous_response_id` response 状态文件，`codex_context_compacts` 为后续 compact snapshot 预留。当前 gateway summary compact 使用 inline `juhecmp.v1` 摘要 envelope，过期后旧 `previous_response_id` 必须返回状态不存在 |
+| `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts` | Codex Responses Chat-only bridge 状态索引 | 固定 7 天未使用即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理过期关系，并且只删除没有任何剩余 response / compact 引用的 `backend/data/codex-context/` segment 文件 | 位于 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的多个 shard，不属于业务库。SQLite 只保存关系和文件引用；当前已落地 `previous_response_id` response 状态索引和 `juhecmp.v2.<compact_id>.<digest>` compact snapshot 索引。过期后旧 `previous_response_id` 或 compact snapshot 必须返回状态不存在 |
+| `usage_record_shards`、`usage_record_shard_entries`、`usage_record_account_shards`、`usage_record_api_key_shards` | usage shard 全局目录和 scope catalog | 跟随 `usage_records` 和物理 shard 文件 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理；表监控硬清理会按截止时间清理目录和空 shard 文件 | 只保存定位关系、筛选字段和 shard 文件引用，不保存完整使用记录正文；目录库按批删除，避免大事务拖住 usage catalog 写锁 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |
 | `usage_stats_minute`、`usage_model_minute`、`usage_error_minute`、`usage_latency_minute` | 分钟级统计缓存 | 默认 48 小时 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理 | 供短窗口、账号质量和后续精细统计使用，不作为页面大范围查询事实源 |
@@ -470,7 +487,7 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 | `process_event_loop_samples` | 进程事件循环 / 内存原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理 | 按 `server`、`worker`、`metrics-worker`、`ingest-worker`、`stats-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`temporary-maintenance-worker`、`db-service` 分进程角色保存，用于短期定位哪个进程卡顿或内存爬升 |
 | `process_event_loop_hourly` | 进程事件循环 / 内存小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理 | 长期粗粒度排障缓存，包含延迟有效样本数、RSS / Heap 平均值和峰值 |
 | `process_event_loop_trend_windows` | 进程运行态窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理；刷新任务会覆盖当前窗口 | 供进程事件循环趋势和进程内存占用趋势接口直读 |
-| `database_storage_snapshots`、`table_storage_snapshots` | 表监控采样历史 | 默认最近一月，最多最近一月 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理，采样写入时也会轻量兜底清理 | 用于管理员表监控页面展示业务库、数据集目录库和统计结果库容量趋势，不纳入默认业务备份 |
+| `database_storage_snapshots`、`table_storage_snapshots` | 表监控采样历史 | 默认最近一月，最多最近一月 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理，采样写入时也会轻量兜底清理 | 用于管理员表监控页面展示业务库、数据集目录库、使用记录目录库和统计结果库容量趋势，不纳入默认业务备份 |
 | `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理 | 查询时也会校验过期时间，定时清理用于回收表数据；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
 
 不按保留期物理清理：
@@ -478,7 +495,7 @@ Codex Responses 上下文索引库保存 Chat-only bridge 的可丢弃运行态�
 - `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
 - `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务和管理员手动清理删除 `usage_records` 的安全边界。
 - `group_account_stats` 是当前分组账户状态缓存，由刷新任务按脏分组刷新；业务库 `group_account_stats_dirty` 是刷新队列，不属于历史日志，处理完成即可删除。
-- 数据集目录库不维护需要回填的日志搜索影子表；操作日志摘要词项只随新操作日志同步写入并随保留期级联清理。数据集目录库和统计结果库新增表都应是普通表或普通索引，必须接入统一保留期或明确说明长期保留理由。
+- 数据集目录库不维护需要回填的日志搜索影子表；操作日志摘要词项只随新操作日志同步写入并随保留期级联清理。数据集目录库、使用记录目录库和统计结果库新增表都应是普通表或普通索引，必须接入统一保留期或明确说明长期保留理由。
 - 普通日志文件由文件日志滚动配置清理，不属于 SQLite 表清理；当前默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制；`grep 模式` 扫描当前保留的 `.log` 文件，但单次文件时间范围最多 7 天。
 
 统一清理规则：

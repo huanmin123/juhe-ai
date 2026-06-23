@@ -101,7 +101,12 @@ try {
   await assertCapabilityFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertModelFallback(gatewayBaseUrl, upstreamBaseUrl)
+  await assertModelSpecificAccountPreferred(gatewayBaseUrl, upstreamBaseUrl)
+  await assertHighConcurrencyModelSpecificAccountPreferred(gatewayBaseUrl, upstreamBaseUrl)
+  await assertPersonalQualityTieBreakWithMockAI(gatewayBaseUrl, upstreamBaseUrl)
+  await assertHighConcurrencyQualityTieBreakWithMockAI(gatewayBaseUrl, upstreamBaseUrl)
   await assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl, upstreamBaseUrl)
+  await assertNormalApiKeyUnknownModelReturnsLocalError(gatewayBaseUrl, upstreamBaseUrl)
   await assertHighConcurrencyBusyFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertPersonalConcurrencyBusyFallback(gatewayBaseUrl, upstreamBaseUrl)
   await assertLocalSuppressionFallback(gatewayBaseUrl, upstreamBaseUrl)
@@ -111,7 +116,7 @@ try {
   await assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
   await assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl, upstreamBaseUrl)
 
-  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、普通 Key 跨供应商模型路由、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；响应检查未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
+  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、同组显式模型命中账户优先、高并发号池显式模型命中账户优先、普通/高并发同级多账号按历史质量分选择、普通 Key 跨供应商模型路由、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；响应检查未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
 } finally {
   clearAccountConcurrency()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -859,6 +864,288 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
   assert(!newRequests.some((request) => request.accountKey === primaryUpstreamKey), '模型不匹配的主号池账号不应被派发')
 }
 
+async function assertModelSpecificAccountPreferred(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_model_specific_account_owner',
+    displayName: '模型显式账号优先用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const group = repositories.createGroup({
+    name: '模型显式账号优先号池',
+    providerCode: 'gpt',
+    groupType: 'personal'
+  }, access)
+  const unrestrictedUpstreamKey = 'sk-route-model-specific-unrestricted'
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '模型显式账号优先-无限制高优先账号',
+    type: 'api_key',
+    credentials: {
+      api_key: unrestrictedUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    superPriorityEnabled: true
+  }, access)
+  const directUpstreamKey = 'sk-route-model-specific-direct'
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '模型显式账号优先-显式支持账号',
+    type: 'api_key',
+    credentials: {
+      api_key: directUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 100,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '模型显式账号优先 API Key',
+    groupBindings: [
+      { groupId: group.id, priority: 1, status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-model-specific-preferred')
+  assert.equal(response.status, 200, `显式支持模型账号应优先承接，实际 ${response.status}: ${response.text}`)
+  const preferredRequests = upstreamRequests.slice(beforeCount)
+  assert.equal(preferredRequests.length, 1, '显式支持模型账号正常时不应先打无限制账号')
+  assert.equal(preferredRequests[0]?.accountKey, directUpstreamKey, '请求模型应优先命中显式支持该模型的账号')
+  assert(!preferredRequests.some((request) => request.accountKey === unrestrictedUpstreamKey), '无限制账号优先级更高也不应抢在显式支持模型账号前面')
+
+  try {
+    failingUpstreamKeys.add(directUpstreamKey)
+    const beforeFailoverCount = upstreamRequests.length
+    const failoverResponse = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-model-specific-failover')
+    assert.equal(failoverResponse.status, 200, `显式支持模型账号失败后应继续切到无限制账号，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
+    const failoverRequests = upstreamRequests.slice(beforeFailoverCount)
+    assert.deepEqual(
+      failoverRequests.map((request) => request.accountKey),
+      [directUpstreamKey, unrestrictedUpstreamKey],
+      '显式支持模型账号真实上游失败后，应在同组继续尝试无限制账号，不能影响客户端可用性'
+    )
+  } finally {
+    failingUpstreamKeys.delete(directUpstreamKey)
+  }
+}
+
+async function assertHighConcurrencyModelSpecificAccountPreferred(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_hc_model_specific_account_owner',
+    displayName: '高并发模型显式账号优先用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const group = repositories.createGroup({
+    name: '高并发模型显式账号优先号池',
+    providerCode: 'gpt',
+    groupType: 'high_concurrency'
+  }, access)
+  const unrestrictedUpstreamKey = 'sk-route-hc-model-specific-unrestricted'
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '高并发模型显式账号优先-无限制高优先账号',
+    type: 'api_key',
+    credentials: {
+      api_key: unrestrictedUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    superPriorityEnabled: true
+  }, access)
+  const directUpstreamKey = 'sk-route-hc-model-specific-direct'
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '高并发模型显式账号优先-显式支持账号',
+    type: 'api_key',
+    credentials: {
+      api_key: directUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 100,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '高并发模型显式账号优先 API Key',
+    groupBindings: [
+      { groupId: group.id, priority: 1, status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-hc-model-specific-preferred')
+  assert.equal(response.status, 200, `高并发号池显式支持模型账号应优先承接，实际 ${response.status}: ${response.text}`)
+  const preferredRequests = upstreamRequests.slice(beforeCount)
+  assert.equal(preferredRequests.length, 1, '高并发号池显式支持模型账号正常时不应先打无限制账号')
+  assert.equal(preferredRequests[0]?.accountKey, directUpstreamKey, '高并发号池请求模型应优先命中显式支持该模型的账号')
+  assert(!preferredRequests.some((request) => request.accountKey === unrestrictedUpstreamKey), '高并发号池无限制账号超级优先也不应抢在显式支持模型账号前面')
+
+  try {
+    failingUpstreamKeys.add(directUpstreamKey)
+    const beforeFailoverCount = upstreamRequests.length
+    const failoverResponse = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-hc-model-specific-failover')
+    assert.equal(failoverResponse.status, 200, `高并发号池显式支持模型账号失败后应继续切到无限制账号，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
+    const failoverRequests = upstreamRequests.slice(beforeFailoverCount)
+    assert.deepEqual(
+      failoverRequests.map((request) => request.accountKey),
+      [directUpstreamKey, unrestrictedUpstreamKey],
+      '高并发号池显式支持模型账号真实上游失败后，应继续尝试无限制账号，不能影响客户端可用性'
+    )
+  } finally {
+    failingUpstreamKeys.delete(directUpstreamKey)
+  }
+}
+
+async function assertPersonalQualityTieBreakWithMockAI(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_personal_quality_tie_owner',
+    displayName: '普通分组质量分同级选择用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const group = repositories.createGroup({
+    name: '普通分组质量分同级选择号池',
+    providerCode: 'gpt',
+    groupType: 'personal'
+  }, access)
+  const slowerUpstreamKey = 'sk-route-personal-quality-slower'
+  const slowerAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '普通分组质量分同级选择-慢账号',
+    type: 'api_key',
+    credentials: {
+      api_key: slowerUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const fasterUpstreamKey = 'sk-route-personal-quality-faster'
+  const fasterAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '普通分组质量分同级选择-快账号',
+    type: 'api_key',
+    credentials: {
+      api_key: fasterUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  seedQualityScore(owner.id, slowerAccount.id, 500)
+  seedQualityScore(owner.id, fasterAccount.id, 100)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '普通分组质量分同级选择 API Key',
+    groupBindings: [
+      { groupId: group.id, priority: 1, status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-personal-quality-tie')
+  assert.equal(response.status, 200, `普通分组同级多账号应按历史质量分选择，实际 ${response.status}: ${response.text}`)
+  const requests = upstreamRequests.slice(beforeCount)
+  assert.equal(requests.length, 1, '普通分组质量分同级选择应只派发一次上游')
+  assert.equal(requests[0]?.accountKey, fasterUpstreamKey, '普通分组同级 direct 命中账号应优先命中质量分更低的账号')
+  assert(!requests.some((request) => request.accountKey === slowerUpstreamKey), '普通分组质量分较差账号不应抢在同级更快账号前面')
+}
+
+async function assertHighConcurrencyQualityTieBreakWithMockAI(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_hc_quality_tie_owner',
+    displayName: '高并发质量分同级选择用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const group = repositories.createGroup({
+    name: '高并发质量分同级选择号池',
+    providerCode: 'gpt',
+    groupType: 'high_concurrency'
+  }, access)
+  const slowerUpstreamKey = 'sk-route-hc-quality-slower'
+  const slowerAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '高并发质量分同级选择-慢账号',
+    type: 'api_key',
+    credentials: {
+      api_key: slowerUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  const fasterUpstreamKey = 'sk-route-hc-quality-faster'
+  const fasterAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '高并发质量分同级选择-快账号',
+    type: 'api_key',
+    credentials: {
+      api_key: fasterUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0,
+    supportedModels: ['gpt-5.5']
+  }, access)
+  seedQualityScore(owner.id, slowerAccount.id, 500)
+  seedQualityScore(owner.id, fasterAccount.id, 100)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '高并发质量分同级选择 API Key',
+    groupBindings: [
+      { groupId: group.id, priority: 1, status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-hc-quality-tie')
+  assert.equal(response.status, 200, `高并发分组同级多账号应按历史质量分选择，实际 ${response.status}: ${response.text}`)
+  const requests = upstreamRequests.slice(beforeCount)
+  assert.equal(requests.length, 1, '高并发质量分同级选择应只派发一次上游')
+  assert.equal(requests[0]?.accountKey, fasterUpstreamKey, '高并发同级 direct 命中账号应优先命中质量分更低的账号')
+  assert(!requests.some((request) => request.accountKey === slowerUpstreamKey), '高并发质量分较差账号不应抢在同级更快账号前面')
+}
+
 async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const owner = repositories.createSystemAccount({
     username: 'route_normal_cross_provider_owner',
@@ -954,6 +1241,87 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
     && metadata.metadata?.fromGroupId === gptGroup.id
     && metadata.metadata?.toGroupId === deepSeekGroup.id
     && metadata.metadata?.matchedProviderCode === 'deepseek'), '审计 metadata 应记录普通 Key 根据请求模型从 GPT 分组切到 DeepSeek 分组')
+}
+
+async function assertNormalApiKeyUnknownModelReturnsLocalError(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const owner = repositories.createSystemAccount({
+    username: 'route_normal_unknown_model_owner',
+    displayName: '普通Key未知模型用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const access = { systemAccountId: owner.id, role: 'user' as const }
+  const gptGroup = repositories.createGroup({
+    name: '普通 Key 未知模型 GPT 号池',
+    providerCode: 'gpt',
+    groupType: 'personal'
+  }, access)
+  const deepSeekGroup = repositories.createGroup({
+    name: '普通 Key 未知模型 DeepSeek 号池',
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    groupType: 'personal'
+  }, access)
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '普通 Key 未知模型 GPT 未限制账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-route-normal-unknown-model-gpt',
+      base_url: upstreamBaseUrl
+    },
+    groupId: gptGroup.id,
+    status: 'active',
+    schedulable: true
+  }, access)
+  repositories.createAccount({
+    providerCode: 'deepseek',
+    providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+    name: '普通 Key 未知模型 DeepSeek 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-route-normal-unknown-model-deepseek',
+      base_url: upstreamBaseUrl
+    },
+    groupId: deepSeekGroup.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: ['deepseek-v4-flash']
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '普通 Key 未知模型 API Key',
+    routeMode: 'normal',
+    groupBindings: [
+      { groupId: gptGroup.id, priority: 1, status: 'active' },
+      { groupId: deepSeekGroup.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const beforeCount = upstreamRequests.length
+  const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-normal-unknown-model')
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'unknown-route-model-for-regression', traceId)
+  assert.equal(response.status, 400, `普通 Key 未知模型应返回本地 400，实际 ${response.status}: ${response.text}`)
+  const payload = parseJsonObject(response.text)
+  assert.equal(payload.error && typeof payload.error === 'object' && !Array.isArray(payload.error)
+    ? (payload.error as Record<string, unknown>).code
+    : undefined, 'model_not_routable_for_api_key', '未知模型应返回模型不可路由错误码')
+  assert.equal(upstreamRequests.length, beforeCount, '普通 Key 未知模型不应命中任何上游账号，即使首选供应商账号未配置 supportedModels')
+
+  usageRecordQueue.flushAllUsageRecordQueue()
+  auditLogQueue.flushAllAuditLogQueue()
+  const usageRecords = usageRecordsByTraceId(traceId)
+  assert.equal(usageRecords.length, 1, '普通 Key 未知模型本地拒绝也应写入一条失败使用记录')
+  assert.equal(usageRecords[0]?.success, false, '普通 Key 未知模型使用记录应标记失败')
+  assert.equal(usageRecords[0]?.groupId, gptGroup.id, '普通 Key 未知模型失败记录保留认证阶段初始分组归属')
+  const auditLogs = repositories.listAuditLogs({ traceId, pageSize: 10 })
+  assert.equal(auditLogs.total, 1, '普通 Key 未知模型本地拒绝应写入审计事件')
+  const metadataPayloads = await gatewayMetadataPayloads(auditLogs.items[0]?.id ?? '')
+  assert(metadataPayloads.some((metadata) => metadata.label === 'normal_model_route_failed'
+    && metadata.metadata?.requestedModel === 'unknown-route-model-for-regression'
+    && metadata.metadata?.reason === 'model_not_routable_for_api_key'), '审计 metadata 应记录普通 Key 未知模型被本地模型路由拒绝')
 }
 
 async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -1460,6 +1828,34 @@ function insertUsageTotal(database: ReturnType<typeof databaseModule.getStatsDat
       system_account_id, scope_type, scope_id, total_cost_usd, updated_at
     ) VALUES (?, ?, ?, ?, ?)
   `).run(systemAccountId, scopeType, scopeId, totalCost, new Date().toISOString())
+}
+
+function seedQualityScore(systemAccountId: string, accountId: string, qualityScore: number): void {
+  const now = new Date().toISOString()
+  databaseModule.getStatsDatabase()
+    .prepare(`
+      INSERT INTO account_quality_scores (
+        account_id, system_account_id, provider_code, quality_score, quality_state,
+        recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
+        recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
+        window_started_at, window_ended_at, last_sample_at, updated_at
+      ) VALUES (?, ?, 'gpt', ?, 'healthy', 10, 10, 0, 10, ?, ?, 1, ?, ?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET
+        quality_score = excluded.quality_score,
+        quality_state = excluded.quality_state,
+        recent_request_count = excluded.recent_request_count,
+        recent_success_count = excluded.recent_success_count,
+        recent_error_count = excluded.recent_error_count,
+        recent_first_token_sample_count = excluded.recent_first_token_sample_count,
+        recent_avg_first_token_ms = excluded.recent_avg_first_token_ms,
+        ewma_first_token_ms = excluded.ewma_first_token_ms,
+        success_rate = excluded.success_rate,
+        window_started_at = excluded.window_started_at,
+        window_ended_at = excluded.window_ended_at,
+        last_sample_at = excluded.last_sample_at,
+        updated_at = excluded.updated_at
+    `)
+    .run(accountId, systemAccountId, qualityScore, qualityScore, qualityScore, now, now, now, now)
 }
 
 async function gatewayMetadataPayloads(auditLogId: string): Promise<Array<{

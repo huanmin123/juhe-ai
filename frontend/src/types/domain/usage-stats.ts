@@ -266,6 +266,7 @@ export interface SystemMetricsOverview {
       queueBytes?: number
       flushLastSuccessAt?: string
       flushLastError?: string
+      completedCount?: number
       droppedCount?: number
       droppedSuccessCount?: number
       droppedFailureCount?: number

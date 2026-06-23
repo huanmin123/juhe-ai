@@ -45,6 +45,8 @@ interface DbServiceState {
   httpPort?: number
   lastSnapshot?: DbServiceRuntimeSnapshot
   pendingRequestCount: number
+  pendingDatasetWriteRequestCount: number
+  oldestDatasetWriteRequestMs: number
   timedOutRequestCount: number
   rejectedRequestCount: number
   failedRequestCount: number
@@ -110,6 +112,7 @@ interface PendingDatasetWriteRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
+  createdAt: number
 }
 
 export function attachDbServiceProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
@@ -245,6 +248,8 @@ export function getDbServiceState(): DbServiceState {
     httpPort: dbServiceHttpPort,
     lastSnapshot,
     pendingRequestCount: pendingRequests.size,
+    pendingDatasetWriteRequestCount: pendingDatasetWriteRequests.size,
+    oldestDatasetWriteRequestMs: oldestDbServiceDatasetWriteRequestMs(),
     timedOutRequestCount,
     rejectedRequestCount,
     failedRequestCount,
@@ -433,7 +438,7 @@ export async function requestDbServiceDatasetWrite<T extends import('../backgrou
       pendingDatasetWriteRequests.delete(requestId)
       pending.reject(new Error('后台 dataset-writer 请求超时'))
     }, timeoutMs)
-    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+    pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
     sendDbServiceChildMessage({
       type: 'background_worker_dataset_write_request',
       requestId,
@@ -877,6 +882,16 @@ function finishDatasetWriteRequest(
   pending.reject(new Error(response.errorMessage))
 }
 
+function oldestDbServiceDatasetWriteRequestMs(): number {
+  let oldestAt = 0
+  for (const pending of pendingDatasetWriteRequests.values()) {
+    if (oldestAt === 0 || pending.createdAt < oldestAt) {
+      oldestAt = pending.createdAt
+    }
+  }
+  return oldestAt === 0 ? 0 : Math.max(0, Date.now() - oldestAt)
+}
+
 function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
   if (!child.connected) {
     markDbServiceIpcBroken(new Error('本地数据库服务通信已断开'), child)
@@ -995,6 +1010,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       pendingQueues: ingestWorkerState?.pendingQueues
         ? backgroundPendingQueuesSnapshot(ingestWorkerState.pendingQueues)
         : undefined,
+      pendingWriteRequestCount: ingestWorkerState?.pendingWriteRequestCount,
+      oldestPendingWriteMs: ingestWorkerState?.oldestPendingWriteMs,
       pendingSnapshotRequestCount: ingestWorkerState?.pendingSnapshotRequestCount,
       timedOutSnapshotRequestCount: ingestWorkerState?.timedOutSnapshotRequestCount,
       rejectedSnapshotRequestCount: ingestWorkerState?.rejectedSnapshotRequestCount,
@@ -1016,6 +1033,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     statsWorker: {
       pid: statsWorkerSnapshot?.pid ?? statsWorkerState?.pid,
       ready: statsWorkerSnapshot?.ready ?? statsWorkerState?.ready ?? false,
+      pendingWriteRequestCount: statsWorkerState?.pendingWriteRequestCount,
+      oldestPendingWriteMs: statsWorkerState?.oldestPendingWriteMs,
       pendingSnapshotRequestCount: statsWorkerState?.pendingSnapshotRequestCount,
       timedOutSnapshotRequestCount: statsWorkerState?.timedOutSnapshotRequestCount,
       rejectedSnapshotRequestCount: statsWorkerState?.rejectedSnapshotRequestCount,
@@ -1104,9 +1123,24 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       pid: dbServiceState.pid,
       ready: dbServiceState.ready,
       pendingRequestCount: dbServiceState.pendingRequestCount,
+      pendingDatasetWriteRequestCount: dbServiceState.pendingDatasetWriteRequestCount,
+      oldestDatasetWriteRequestMs: dbServiceState.oldestDatasetWriteRequestMs,
       timedOutRequestCount: dbServiceState.timedOutRequestCount,
       rejectedRequestCount: dbServiceState.rejectedRequestCount,
       failedRequestCount: dbServiceState.failedRequestCount,
+      queuedRequestCount: dbServiceState.lastSnapshot?.queuedRequestCount,
+      queuedHighRequestCount: dbServiceState.lastSnapshot?.queuedHighRequestCount,
+      queuedNormalRequestCount: dbServiceState.lastSnapshot?.queuedNormalRequestCount,
+      queuedLowRequestCount: dbServiceState.lastSnapshot?.queuedLowRequestCount,
+      oldestQueuedMs: dbServiceState.lastSnapshot?.oldestQueuedMs,
+      lastQueueWaitMs: dbServiceState.lastSnapshot?.lastQueueWaitMs,
+      maxQueueWaitMs: dbServiceState.lastSnapshot?.maxQueueWaitMs,
+      lastExecMs: dbServiceState.lastSnapshot?.lastExecMs,
+      maxExecMs: dbServiceState.lastSnapshot?.maxExecMs,
+      slowOpCount: dbServiceState.lastSnapshot?.slowOpCount,
+      lastSlowOpType: dbServiceState.lastSnapshot?.lastSlowOpType,
+      lastSlowOpMs: dbServiceState.lastSnapshot?.lastSlowOpMs,
+      lastSlowOpAt: dbServiceState.lastSnapshot?.lastSlowOpAt,
       pendingProcessEventLoopRequestCount: dbServiceState.pendingProcessEventLoopRequestCount,
       timedOutProcessEventLoopRequestCount: dbServiceState.timedOutProcessEventLoopRequestCount,
       failedProcessEventLoopRequestCount: dbServiceState.failedProcessEventLoopRequestCount,

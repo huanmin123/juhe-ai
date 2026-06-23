@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
@@ -40,7 +41,8 @@ runtimeConfig.databasePath = join(tempRoot, 'deepseek-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
-runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
+runtimeConfig.codexContextStateShardRoot = join(tempRoot, 'codex-context', 'state-shards')
+runtimeConfig.codexContextStateShardCount = 4
 runtimeConfig.secret = 'deepseek-gateway-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -86,6 +88,8 @@ try {
     upstreamServer = createDeepSeekMockUpstream()
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}`
+
+    assertDeepSeekSeeds()
 
     const group = repositories.createGroup({
       name: 'DeepSeek Mock AI 回归分组',
@@ -326,6 +330,18 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertDeepSeekSeeds(): void {
+  const deepSeekProvider = repositories.listProviders().find((provider) => provider.code === DEEPSEEK_PROVIDER_CODE)
+  assert(deepSeekProvider, '默认 provider seed 应包含 deepseek')
+  assert.equal(deepSeekProvider.defaultProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek 默认档案应保持 OpenAI-compatible Chat')
+  assert(deepSeekProvider.protocolProfiles.some((profile) => profile.id === DEEPSEEK_OPENAI_V1_PROFILE_ID), 'DeepSeek provider 应包含 OpenAI Chat 档案')
+  assert(deepSeekProvider.protocolProfiles.some((profile) => profile.id === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID), 'DeepSeek provider 应包含 Anthropic Messages 档案')
+
+  const defaultGroups = repositories.listGroups(access).filter((group) => group.providerCode === DEEPSEEK_PROVIDER_CODE && group.isDefault)
+  assert(defaultGroups.some((group) => group.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID), '默认分组应包含 DeepSeek OpenAI-compatible 分组')
+  assert(defaultGroups.some((group) => group.providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID), '默认分组应包含 DeepSeek Claude Code 分组')
 }
 
 async function assertDeepSeekModels(baseUrl: string, localApiKey: string): Promise<void> {
@@ -826,7 +842,7 @@ async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: 
   const payload = JSON.parse(text) as { output?: Array<Record<string, unknown>> }
   const compactItem = payload.output?.[0]
   assert.equal(compactItem?.type, 'compaction_summary', '/responses/compact 应返回 Codex 可消费的 compaction_summary item')
-  assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v1\./, 'compact summary 应使用网关 envelope')
+  assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v2\.cmp_[^.]+\.[a-f0-9]{64}$/i, 'compact summary 应使用网关 snapshot reference envelope')
   assert.equal(upstreamHits.length, 1, 'DeepSeek Codex bridge /responses/compact 应通过内部 Chat Completions 摘要请求命中一次上游')
   assert.equal(upstreamHits[0]?.path, '/v1/chat/completions', 'compact 内部请求必须走 Chat Completions 路径')
   const compactUpstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { stream?: boolean; messages?: unknown[] }
@@ -864,6 +880,50 @@ async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: 
   assert.equal(upstreamHits.length, 2, 'DeepSeek compaction_summary 后续请求应再命中一次上游')
   assert.match(upstreamHits[1]?.bodyText ?? '', /deepseek json ok/, '后续 Chat messages 应包含 compact 摘要文本')
   assert.match(upstreamHits[1]?.bodyText ?? '', /continue after compact summary/, '后续 Chat messages 应包含 compact 后的新输入')
+
+  const hitsBeforeTamperedCompact = upstreamHits.length
+  const tamperedCompactResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-bridge-compact-tampered-session',
+        thread_id: 'deepseek-bridge-compact-tampered-thread',
+        turn_id: 'deepseek-bridge-compact-tampered-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      input: [
+        {
+          ...compactItem,
+          encrypted_content: tamperCompactDigest(String(compactItem?.encrypted_content ?? ''))
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'this must not reach upstream with tampered compact' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const tamperedCompactText = await tamperedCompactResponse.text()
+  assert.equal(tamperedCompactResponse.status, 404, `DeepSeek tampered compact snapshot 应受控失败，实际 HTTP ${tamperedCompactResponse.status}: ${tamperedCompactText}`)
+  assert.match(tamperedCompactText, /codex_bridge_compact_snapshot_not_found/, '篡改 compact digest 应返回稳定错误码')
+  assert.equal(upstreamHits.length, hitsBeforeTamperedCompact, '篡改 compact snapshot 受控失败时不应命中上游')
+}
+
+function tamperCompactDigest(encryptedContent: string): string {
+  const parts = encryptedContent.split('.')
+  assert.equal(parts.length, 4, 'compact envelope 应包含 prefix、version、compact id 和 digest')
+  const digest = parts[3] ?? ''
+  assert.match(digest, /^[a-f0-9]{64}$/i, 'compact digest 应为 64 位 hex')
+  parts[3] = `${digest.slice(0, -1)}${digest.endsWith('0') ? '1' : '0'}`
+  return parts.join('.')
 }
 
 function assertValidChatToolMessageSequence(messages: Array<Record<string, unknown>>, label: string): void {

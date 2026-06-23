@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { GLM_PROVIDER_CODE, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 import {
   buildOpenAIModelMappedJsonBody,
@@ -20,6 +20,7 @@ import { createAuditCapture } from '../../modules/gateway/audit/capture.service.
 import { flushAllAuditLogQueue } from '../../modules/audit-logs/audit-log-queue.service.js'
 import { previewAccountImport } from '../../modules/accounts/account-import.service.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
+import { customProviderModelBindings } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import { withRequestAuthContext } from '../../modules/auth/request-context.js'
@@ -47,6 +48,8 @@ const [databaseModule, repositories] = await Promise.all([
 
 const ownerAccess = { systemAccountId: 'sys_admin', role: 'admin' as const, systemAccountFilterId: 'sys_admin' }
 const sourceModel = 'gpt-mapping-regression-source'
+const crossProviderSourceModel = 'glm-mapping-regression-source'
+const crossProviderUpstreamModel = 'glm-mapping-regression-upstream'
 const upstreamModel = 'gpt-mapping-regression-upstream-personal'
 const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
 const unavailableSourceModel = 'gpt-mapping-regression-draft-source'
@@ -59,6 +62,24 @@ try {
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GLM_PROVIDER_CODE,
+    model: crossProviderSourceModel,
+    scope: 'global',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GLM_PROVIDER_CODE,
+    model: crossProviderUpstreamModel,
+    scope: 'global',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 5,
+    outputUsdPer1M: 15,
     actorSystemAccountId: ownerAccess.systemAccountId
   })
   saveCustomProviderModel({
@@ -153,13 +174,42 @@ try {
     { sourceModel, upstreamModel: replacementUpstreamModel, enabled: false }
   ], '未提交 modelMappings 时不应清空已有映射')
 
+  const crossProviderUpstreamUpdated = repositories.updateAccount(account.id, {
+    modelMappings: [
+      { sourceModel, upstreamModel: crossProviderUpstreamModel, enabled: true }
+    ]
+  }, ownerAccess)
+  assert.deepEqual(crossProviderUpstreamUpdated?.modelMappings, [
+    { sourceModel, upstreamModel: crossProviderUpstreamModel, enabled: true }
+  ], '映射上游模型应允许来自全供应商模型目录')
+  const crossProviderUpstreamBindings = customProviderModelBindings({
+    providerCode: GLM_PROVIDER_CODE,
+    model: crossProviderUpstreamModel,
+    scope: 'global'
+  })
+  assert.equal(crossProviderUpstreamBindings.mappingUpstreamAccountCount, 1, '跨供应商上游映射应计入绑定统计')
+
+  assert.throws(() => {
+    repositories.updateAccount(account.id, {
+      modelMappings: [
+        { sourceModel: crossProviderSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
+      ]
+    }, ownerAccess)
+  }, /账户已配置支持模型时，映射下游模型只能选择支持模型/, '映射下游模型不在支持模型中时应拒绝保存')
+  const crossProviderSourceBindings = customProviderModelBindings({
+    providerCode: GLM_PROVIDER_CODE,
+    model: crossProviderSourceModel,
+    scope: 'global'
+  })
+  assert.equal(crossProviderSourceBindings.mappingSourceAccountCount, 0, '被支持模型限制拒绝的下游映射不应计入绑定统计')
+
   assert.throws(() => {
     repositories.updateAccount(account.id, {
       modelMappings: [
         { sourceModel: unavailableSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
       ]
     }, ownerAccess)
-  }, /映射下游模型不在可请求模型目录中/, '草稿模型不能作为下游映射源')
+  }, /映射下游模型不在全局可请求模型目录中/, '草稿模型不能作为下游映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -167,7 +217,7 @@ try {
         { sourceModel, upstreamModel: 'gpt-mapping-regression-missing', enabled: true }
       ]
     }, ownerAccess)
-  }, /映射上游模型不在可请求模型目录中/, '映射上游模型必须存在于可请求模型目录')
+  }, /映射上游模型不在全局可请求模型目录中/, '映射上游模型必须存在于全局可请求模型目录')
   assertImportPreviewRejectsInvalidMapping(group.id)
 
   console.log('account model mapping regression passed')
@@ -204,7 +254,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在可请求模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在全局可请求模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
 }
 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {

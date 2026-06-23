@@ -271,7 +271,32 @@ try {
     '跨供应商模型路由第二次请求应完全命中 server 本地缓存，验证模型选择热路径为 Map 查询'
   )
 
-  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略缓存静态运行快照但不缓存最终命中分组；跨供应商模型路由首个请求构建索引后，后续相同模型请求不再读取模型目录')
+  const unknownModelStart = upstreamRequests.length
+  const operationsBeforeUnknownModel = fakeChild.totalOperationCount()
+  const modelCatalogOperationsBeforeUnknownModel = fakeChild.operationCount('list_provider_model_catalog')
+  const unknownModelResponse = await requestChatCompletion(
+    gatewayBaseUrl,
+    crossProviderRoute.apiKey,
+    'trace-route-cache-cross-provider-unknown-model',
+    'unknown-route-model-for-cache-regression'
+  )
+  assert.equal(unknownModelResponse.status, 400, `跨供应商模型路由未知模型应本地拒绝，实际 ${unknownModelResponse.status}: ${unknownModelResponse.text}`)
+  const unknownPayload = parseJsonObject(unknownModelResponse.text)
+  const unknownError = isRecord(unknownPayload.error) ? unknownPayload.error : {}
+  assert.equal(unknownError.code, 'model_not_routable_for_api_key', '跨供应商未知模型应返回模型不可路由错误码')
+  assert.equal(upstreamRequests.length, unknownModelStart, '跨供应商未知模型不应命中任何上游')
+  assert.equal(
+    fakeChild.operationCount('list_provider_model_catalog'),
+    modelCatalogOperationsBeforeUnknownModel,
+    '模型路由索引热命中后，未知模型也不应再次读取模型目录'
+  )
+  assert.equal(
+    fakeChild.totalOperationCount(),
+    operationsBeforeUnknownModel,
+    '跨供应商未知模型错误路径也应完全命中 server 本地索引，不应请求 DB service'
+  )
+
+  console.log('API Key 多分组路由缓存回归通过：主备同组合第二次请求不再读取运行时；轮询策略缓存静态运行快照但不缓存最终命中分组；跨供应商模型路由首个请求构建索引后，后续相同模型和未知模型请求不再读取模型目录')
 } finally {
   closeGatewayUpstreamAgentsForTest?.()
   await closeServer(gatewayServer)
@@ -572,6 +597,10 @@ function parseJsonObject(text: string): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; operation: Parameters<typeof import('../../modules/db-service/db-service-handlers.js')['handleDbServiceOperation']>[0] } {

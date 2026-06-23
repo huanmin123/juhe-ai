@@ -31,14 +31,17 @@ providersRouter.get('/options', (_req, res) => {
   res.json(ok(listProviders().filter((provider) => provider.enabled)))
 })
 
-providersRouter.get('/models/options', (_req, res) => {
+providersRouter.get('/models/options', (req, res) => {
   const context = getRequestAuthContext()
+  const access = getRequestAccessScope(req.query.systemAccountId)
+  const systemAccountId = modelCatalogSystemAccountId(access) ?? context?.systemAccountId
   const options = dedupeProviderModelOptions(
     listProviders()
       .filter((provider) => provider.enabled)
       .flatMap((provider) => listProviderModelCatalog({
         providerCode: provider.code,
-        systemAccountId: context?.systemAccountId
+        systemAccountId,
+        includeUnpriced: true
       }).map((item) => ({
         providerCode: item.providerCode,
         model: item.model
@@ -209,7 +212,9 @@ providersRouter.delete('/:code/models/:id', (req, res) => {
   }
   const bindings = customProviderModelBindings({
     providerCode: existing.providerCode,
-    model: existing.model
+    model: existing.model,
+    scope: existing.scope,
+    systemAccountId: existing.systemAccountId
   })
   if (bindings.totalAccountCount > 0) {
     res.status(409).json({

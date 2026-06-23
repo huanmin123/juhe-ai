@@ -11,6 +11,7 @@ export type ProviderModelApiProtocol =
 export interface RawModelPricing {
   model: string
   mode?: string
+  catalog_order?: number
   release_date?: string
   input_cost_per_token?: number
   output_cost_per_token?: number

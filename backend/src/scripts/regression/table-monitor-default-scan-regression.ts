@@ -10,6 +10,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-table-monitor-default-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'table-monitor-default-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -45,7 +46,7 @@ try {
   })()
   assert.equal(result.tableScanMode, 'cursor', '表监控默认采样应使用 cursor，避免误触发全库表扫描')
   assert(result.tableSnapshots > 0, '表监控默认采样应写入本轮 cursor 表快照')
-  assert(result.tableSnapshots < 16, `默认 cursor 采样不应一次采完业务库、数据集目录库、usage shard 和统计结果库所有表，实际 ${result.tableSnapshots}`)
+  assert(result.tableSnapshots < 20, `默认 cursor 采样不应一次采完业务库、数据集目录库、使用记录目录库、usage shard 和统计结果库所有表，实际 ${result.tableSnapshots}`)
   assert(capturedSamplingSql.every((sql) => !/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+AS\s+count\s+FROM/i.test(sql)), '表监控行数采样不应回退为精确 COUNT(*) 扫表')
 
   const sampledRows = databaseModule.getStatsDatabase()
@@ -116,9 +117,10 @@ try {
     statsDatabase.prepare = originalPrepare as typeof statsDatabase.prepare
   }
   const databaseHistoryRoles = new Set(databaseHistory.map((row) => row.databaseRole))
-  assert.equal(databaseHistory.length, 3, '三库增长趋势应一次返回业务库、数据集目录库和统计结果库历史点')
+  assert.equal(databaseHistory.length, 4, '四库增长趋势应一次返回业务库、数据集目录库、使用记录目录库和统计结果库历史点')
   assert(databaseHistoryRoles.has('business'), '三库增长趋势应包含业务库')
   assert(databaseHistoryRoles.has('dataset'), '三库增长趋势应包含数据集目录库')
+  assert(databaseHistoryRoles.has('usage-catalog'), '四库增长趋势应包含使用记录目录库')
   assert(databaseHistoryRoles.has('stats'), '三库增长趋势应包含统计结果库')
   const databaseHistorySql = capturedHistorySql.find((sql) => sql.includes('FROM database_storage_snapshots'))
   assert(databaseHistorySql, '三库增长趋势应按库角色读取历史快照')

@@ -11,6 +11,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'usage-record-list-query-guard-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -343,7 +344,7 @@ try {
     return statement
   }) as typeof businessDatabase.prepare
 
-  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const datasetDatabase = databaseModule.getUsageCatalogDatabase()
   const originalPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
   const usageRecordListCalls: Array<{ sql: string; params: unknown[] }> = []
   const shardPrepareRestorers: Array<() => void> = []
@@ -639,7 +640,7 @@ try {
 }
 
 function assertDatasetQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
-  const details = databaseModule.getDatasetDatabase()
+  const details = databaseModule.getUsageCatalogDatabase()
     .prepare(`EXPLAIN QUERY PLAN ${sql}`)
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))

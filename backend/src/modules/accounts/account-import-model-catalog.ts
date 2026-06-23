@@ -1,5 +1,6 @@
 import { type AccountModelMapping, type ProviderDefinition } from '../../domain/types.js'
 import {
+  assertAccountModelMappingSourcesAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
   normalizeAccountSupportedModelsForProvider
 } from '../../storage/repositories.js'
@@ -35,6 +36,7 @@ export function validateAccountModelCatalogFields(
       account.providerCode,
       context.targetSystemAccountId
     )
+    assertAccountModelMappingSourcesAllowedBySupportedModels(account.modelMappings ?? [], account.supportedModels ?? [])
   } catch (error) {
     account.messages.push(errorMessage(error))
   }

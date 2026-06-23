@@ -29,25 +29,21 @@ export function invalidateAccountProviderModelOptionsCache(providerCode?: string
 
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
   const providerModelOptions = ref<AccountModelSelectOption[]>([])
-  const mappingTargetModelOptions = ref<AccountModelSelectOption[]>([])
   const providerModelsLoading = ref(false)
 
   function resetProviderModelOptions(): void {
     providerModelOptions.value = []
-    mappingTargetModelOptions.value = []
     providerModelsLoading.value = false
   }
 
   async function loadProviderModelOptions(providerCode: string): Promise<void> {
     const code = providerCode.trim()
     providerModelOptions.value = []
-    mappingTargetModelOptions.value = []
     if (!code) return
     const cacheKey = providerModelCacheKey(code)
     const cached = providerModelOptionsCache.get(cacheKey)
     if (cached) {
       providerModelOptions.value = cached
-      mappingTargetModelOptions.value = cached
       providerModelsLoading.value = false
       return
     }
@@ -58,7 +54,6 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       providerModelOptionsCache.set(cacheKey, modelOptions)
       if (options.currentProviderCode() === code) {
         providerModelOptions.value = modelOptions
-        mappingTargetModelOptions.value = modelOptions
       }
     } catch (error) {
       console.error(error)
@@ -76,7 +71,6 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
 
   return {
     loadProviderModelOptions,
-    mappingTargetModelOptions,
     providerModelOptions,
     providerModelsLoading,
     resetProviderModelOptions

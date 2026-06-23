@@ -26,6 +26,6 @@ export function isSnapshotRoleWorker(role: BackgroundWorkerProcessRole): role is
   return role === 'stats-worker' || role === 'snapshot-worker' || role === 'probe-worker' || role === 'maintenance-worker'
 }
 
-export function nonMetricsProcessEventLoopWorkerRoles(): Array<Exclude<BackgroundWorkerProcessRole, 'metrics-worker'>> {
-  return ['worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker']
+export function processEventLoopWorkerRoles(): BackgroundWorkerProcessRole[] {
+  return ['worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker']
 }

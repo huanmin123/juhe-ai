@@ -51,6 +51,12 @@ export function usageSemanticForProviderCode(providerCode: string | undefined): 
   return providerDriverForProviderCode(providerCode)?.usageSemantic ?? 'openai'
 }
 
+export function usageSemanticForProfile(profile: ProviderProtocolProfileDefinition | undefined): string {
+  const profileDriver = providerDriverForProfile(profile)
+  if (profileDriver) return profileDriver.usageSemantic
+  return usageSemanticForProviderCode(profile?.providerCode)
+}
+
 export function resolveGatewayUsageModel(
   account: DispatchAccountSecret,
   requestedModel?: string

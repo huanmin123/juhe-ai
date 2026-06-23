@@ -9,6 +9,9 @@ import {
 } from './account-api-key-failure-guard.service.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 
+const accountApiKeySuccessWriteThrottleMs = 30_000
+const recentAccountApiKeySuccessWrites = new Map<string, number>()
+
 export function recordGatewayAccountApiKeyFailure(
   account: OpenAIAccountSecret,
   input: {
@@ -26,6 +29,7 @@ export function recordGatewayAccountApiKeyFailure(
   if (!account.selectedApiKeyFingerprint) {
     return
   }
+  recentAccountApiKeySuccessWrites.delete(accountApiKeyRuntimeCoalesceKey(account))
   const guardDecision = recordGatewayAccountApiKeyFailureGuard(account, {
     status: input.status,
     statusCode: input.statusCode,
@@ -64,10 +68,14 @@ export function recordGatewayAccountApiKeyFailure(
 }
 
 export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, source: string): void {
-  recordGatewayAccountApiKeySuccessGuard(account)
+  const clearedLocalFailure = recordGatewayAccountApiKeySuccessGuard(account)
   if (!account.selectedApiKeyFingerprint) {
     return
   }
+  if (!clearedLocalFailure && shouldSkipRecentAccountApiKeySuccessWrite(account)) {
+    return
+  }
+  rememberAccountApiKeySuccessWrite(account)
   void requestDbService({
     type: 'record_account_api_key_success',
     account
@@ -83,4 +91,31 @@ export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, 
       source
     }), '账户内 API Key 成功运行态写入失败')
   })
+}
+
+function shouldSkipRecentAccountApiKeySuccessWrite(account: OpenAIAccountSecret): boolean {
+  const key = accountApiKeyRuntimeCoalesceKey(account)
+  const previous = recentAccountApiKeySuccessWrites.get(key)
+  return previous !== undefined && Date.now() - previous < accountApiKeySuccessWriteThrottleMs
+}
+
+function rememberAccountApiKeySuccessWrite(account: OpenAIAccountSecret): void {
+  pruneRecentAccountApiKeySuccessWrites()
+  recentAccountApiKeySuccessWrites.set(accountApiKeyRuntimeCoalesceKey(account), Date.now())
+}
+
+function accountApiKeyRuntimeCoalesceKey(account: OpenAIAccountSecret): string {
+  return `${account.id}\u0000${account.selectedApiKeyFingerprint ?? ''}`
+}
+
+function pruneRecentAccountApiKeySuccessWrites(): void {
+  if (recentAccountApiKeySuccessWrites.size < 5000) {
+    return
+  }
+  const cutoff = Date.now() - accountApiKeySuccessWriteThrottleMs
+  for (const [key, timestamp] of recentAccountApiKeySuccessWrites) {
+    if (timestamp < cutoff) {
+      recentAccountApiKeySuccessWrites.delete(key)
+    }
+  }
 }

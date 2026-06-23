@@ -36,7 +36,7 @@ export interface ApiKeyHybridLevelRoute {
 
 export interface ApiKeyHybridQualityInspectionConfig {
   enabled: boolean
-  scoringGroupId: string
+  scoringGroupId?: string
   scoringModel: string
   triggerMode: ApiKeyHybridQualityInspectionTriggerMode
   minTriggerLevel: number
@@ -45,7 +45,7 @@ export interface ApiKeyHybridQualityInspectionConfig {
 }
 
 export interface ApiKeyHybridRoutingConfig {
-  scoringGroupId: string
+  scoringGroupId?: string
   scoringModel: string
   scoringContextMode: 'full_request'
   qualityPreference: ApiKeyHybridQualityPreference

@@ -16,7 +16,7 @@ import type {
 import type { GatewayApiKeyGroupBindingRow } from '../../../storage/gateway-api-key.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 
-export type NormalGatewayModelRouteSource = 'catalog_provider' | 'account_model'
+export type NormalGatewayModelRouteSource = 'catalog_provider'
 
 export interface SelectedNormalGatewayModelRouteResult {
   outcome: 'selected'
@@ -37,6 +37,15 @@ export type NormalGatewayModelRouteResult =
       reason: string
       requestedModel?: string
     }
+  | {
+      outcome: 'failed'
+      statusCode: number
+      type: string
+      code: string
+      message: string
+      requestedModel: string
+      matchedProviderCodes?: string[]
+    }
 
 export interface ResolveNormalGatewayModelRouteInput {
   req: Request
@@ -47,6 +56,7 @@ export interface ResolveNormalGatewayModelRouteInput {
 interface CatalogProviderRoute {
   providerCode: string
   providerProtocolProfileIds: Set<string>
+  matchedProviderCodes: string[]
 }
 
 export async function resolveNormalGatewayModelRoute(
@@ -63,23 +73,69 @@ export async function resolveNormalGatewayModelRoute(
   }
 
   const bindings = activeGatewayApiKeyGroupBindings(apiKeyRecord)
-  if (bindings.length <= 1) {
-    return { outcome: 'skipped', reason: 'single_or_empty_binding', requestedModel }
+  if (!bindings.length) {
+    return { outcome: 'skipped', reason: 'empty_binding', requestedModel }
   }
 
-  const selectedBinding = bindings.find(binding => binding.group_id === apiKeyRecord.selected_group_id)
-  const selectedProviderProtocolProfileId = selectedBinding?.provider_protocol_profile_id
   const catalogRoute = await resolveCatalogProviderRoute({
     bindings,
     requestedModel,
     systemAccountId: apiKeyRecord.system_account_id
   })
-  const candidateBindings = catalogRoute
-    ? bindings.filter(binding => catalogRoute.providerProtocolProfileIds.has(binding.provider_protocol_profile_id))
-    : bindings
+  if (catalogRoute.outcome === 'missing') {
+    return {
+      outcome: 'failed',
+      statusCode: 400,
+      type: 'invalid_request_error',
+      code: 'model_not_routable_for_api_key',
+      message: `当前 API Key 绑定的供应商中没有可路由模型：${requestedModel}`,
+      requestedModel,
+      matchedProviderCodes: catalogRoute.matchedProviderCodes
+    }
+  }
+  if (catalogRoute.outcome === 'ambiguous') {
+    return {
+      outcome: 'failed',
+      statusCode: 400,
+      type: 'invalid_request_error',
+      code: 'model_route_ambiguous',
+      message: `请求模型在多个供应商中同时存在，无法确定目标号池：${requestedModel}`,
+      requestedModel,
+      matchedProviderCodes: catalogRoute.matchedProviderCodes
+    }
+  }
+  if (catalogRoute.outcome !== 'matched') {
+    return {
+      outcome: 'failed',
+      statusCode: 400,
+      type: 'invalid_request_error',
+      code: 'model_route_unavailable',
+      message: `请求模型无法确定目标号池：${requestedModel}`,
+      requestedModel
+    }
+  }
+  const matchedRoute = catalogRoute.route
+  const activeProviderProtocolProfileIds = new Set(bindings.map(binding => binding.provider_protocol_profile_id))
+  if (
+    activeProviderProtocolProfileIds.size === 1
+    && matchedRoute.providerProtocolProfileIds.size === 1
+    && matchedRoute.providerProtocolProfileIds.has(bindings[0]!.provider_protocol_profile_id)
+  ) {
+    return { outcome: 'skipped', reason: 'single_provider_protocol_profile', requestedModel }
+  }
+  const candidateBindings = bindings
+    .filter(binding => matchedRoute.providerProtocolProfileIds.has(binding.provider_protocol_profile_id))
 
   if (!candidateBindings.length) {
-    return { outcome: 'skipped', reason: 'empty_candidate_bindings', requestedModel }
+    return {
+      outcome: 'failed',
+      statusCode: 400,
+      type: 'invalid_request_error',
+      code: 'model_target_group_not_bound',
+      message: `当前 API Key 未绑定请求模型对应的供应商分组：${requestedModel}`,
+      requestedModel,
+      matchedProviderCodes: matchedRoute.matchedProviderCodes
+    }
   }
 
   const target = await selectGatewayModelTargetGroup({
@@ -87,17 +143,18 @@ export async function resolveNormalGatewayModelRoute(
     apiKeyRecord,
     bindings: candidateBindings,
     targetModel: requestedModel,
-    requestClientCompatibility,
-    acceptCandidate: ({ binding, modelFilter }) => {
-      const explicitModelMatchCount = modelFilter.directMatchedCount + modelFilter.mappingMatchedCount
-      const isCrossProfileCandidate =
-        !selectedProviderProtocolProfileId ||
-        binding.provider_protocol_profile_id !== selectedProviderProtocolProfileId
-      return Boolean(catalogRoute || (isCrossProfileCandidate && explicitModelMatchCount > 0))
-    }
+    requestClientCompatibility
   })
   if (!target) {
-    return { outcome: 'skipped', reason: 'no_matching_group', requestedModel }
+    return {
+      outcome: 'failed',
+      statusCode: 503,
+      type: 'service_unavailable',
+      code: 'model_target_group_unavailable',
+      message: `请求模型对应的供应商分组当前没有可用账号：${requestedModel}`,
+      requestedModel,
+      matchedProviderCodes: matchedRoute.matchedProviderCodes
+    }
   }
 
   const selectedProfileBindings = bindings
@@ -115,8 +172,8 @@ export async function resolveNormalGatewayModelRoute(
     accounts: target.accounts,
     responseInspectionPolicies: target.responseInspectionPolicies,
     requestedModel,
-    routeSource: catalogRoute ? 'catalog_provider' : 'account_model',
-    matchedProviderCode: catalogRoute?.providerCode
+    routeSource: 'catalog_provider',
+    matchedProviderCode: matchedRoute.providerCode
   }
 }
 
@@ -134,12 +191,11 @@ async function resolveCatalogProviderRoute(input: {
   bindings: GatewayApiKeyGroupBindingRow[]
   requestedModel: string
   systemAccountId: string
-}): Promise<CatalogProviderRoute | undefined> {
+}): Promise<
+  | { outcome: 'matched'; route: CatalogProviderRoute }
+  | { outcome: 'missing' | 'ambiguous'; matchedProviderCodes: string[] }
+> {
   const providerCodes = [...new Set(input.bindings.map(binding => binding.provider_code))]
-  if (providerCodes.length <= 1) {
-    return undefined
-  }
-
   const route = await resolveCachedProviderModelRouteAsync({
     model: input.requestedModel,
     providerCodes,
@@ -147,7 +203,10 @@ async function resolveCatalogProviderRoute(input: {
     includeUnpriced: true
   })
   if (route.outcome !== 'matched') {
-    return undefined
+    return {
+      outcome: route.outcome,
+      matchedProviderCodes: route.matchedProviderCodes
+    }
   }
 
   const providerCode = route.providerCode
@@ -157,8 +216,15 @@ async function resolveCatalogProviderRoute(input: {
       .map(binding => binding.provider_protocol_profile_id)
   )
   if (!providerProtocolProfileIds.size) {
-    return undefined
+    return { outcome: 'missing', matchedProviderCodes: route.matchedProviderCodes }
   }
 
-  return { providerCode, providerProtocolProfileIds }
+  return {
+    outcome: 'matched',
+    route: {
+      providerCode,
+      providerProtocolProfileIds,
+      matchedProviderCodes: route.matchedProviderCodes
+    }
+  }
 }

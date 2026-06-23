@@ -4,6 +4,7 @@ import {
   DEEPSEEK_PROVIDER_CODE,
   GPT_VENDOR_CODE,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
@@ -155,20 +156,20 @@ export function assertOpenAIEndpointModesCompatible(input: {
   if (input.accountType === 'oauth') {
     const unsupported = input.modes.filter((mode) => !OPENAI_RESPONSES_ENDPOINT_MODES.includes(mode))
     if (unsupported.length) {
-      throw new Error('OAuth 账户接口能力只能选择 Responses JSON 或 Responses SSE')
+      throw new Error(`OAuth 账户接口能力只能选择 ${openAIEndpointModeLabel('responses_json', input)} 或 ${openAIEndpointModeLabel('responses_sse', input)}`)
     }
     if (!input.modes.includes('responses_sse')) {
-      throw new Error('OAuth 账户必须支持 Responses SSE')
+      throw new Error(`OAuth 账户必须支持 ${openAIEndpointModeLabel('responses_sse', input)}`)
     }
   }
   if (input.clientCompatibility === 'codex_responses' && supportsCodexResponsesChatBridge(input)) {
     if (!input.modes.includes('chat_sse')) {
-      throw new Error('Codex Responses 桥接能力必须启用 Chat SSE')
+      throw new Error(`Codex Responses 桥接能力必须启用 ${openAIEndpointModeLabel('chat_sse', input)}`)
     }
     return
   }
   if (input.clientCompatibility === 'codex_responses' && !input.modes.includes('responses_sse')) {
-    throw new Error('Codex Responses 兼容能力必须启用 Responses SSE')
+    throw new Error(`Codex Responses 兼容能力必须启用 ${openAIEndpointModeLabel('responses_sse', input)}`)
   }
 }
 
@@ -177,4 +178,33 @@ export function supportsCodexResponsesChatBridge(input: {
 }): boolean {
   return input.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID
     || input.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
+}
+
+function openAIEndpointModeLabel(
+  mode: AccountSupportedEndpointMode,
+  context: OpenAIEndpointModeDefaultContext = {}
+): string {
+  switch (mode) {
+    case 'chat_json':
+      return `${openAIChatCapabilityName(context)} (JSON)`
+    case 'chat_sse':
+      return `${openAIChatCapabilityName(context)} (Streaming)`
+    case 'responses_json':
+      return 'Responses API (JSON)'
+    case 'responses_sse':
+      return 'Responses API (Streaming)'
+    default:
+      return mode
+  }
+}
+
+function openAIChatCapabilityName(context: OpenAIEndpointModeDefaultContext): string {
+  const providerCode = normalizeProviderToken(context.providerCode)
+  if (providerCode === DEEPSEEK_PROVIDER_CODE || context.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) {
+    return 'Chat Completion'
+  }
+  if (providerCode === GLM_PROVIDER_CODE || context.providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID || context.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) {
+    return context.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID ? 'OpenAI Chat Completions' : '对话补全'
+  }
+  return 'Chat Completions'
 }

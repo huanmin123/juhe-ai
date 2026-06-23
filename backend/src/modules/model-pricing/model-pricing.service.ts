@@ -12,6 +12,7 @@ export interface ProviderModelPricing {
   providerCode: string
   model: string
   mode?: string
+  catalogOrder?: number
   releaseDate?: string
   shutdownDate?: string
   supportedApiProtocols: ProviderModelApiProtocol[]
@@ -331,6 +332,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     providerCode,
     model: item.model,
     mode: item.mode,
+    catalogOrder: normalizeCatalogOrder(item.catalog_order),
     releaseDate: driver?.getModelReleaseDate(item, modelPricingDriverHelpers)
       ?? item.release_date
       ?? extractModelReleaseDate(item.model),
@@ -375,6 +377,10 @@ function perMillion(value?: number): number | undefined {
   return price === undefined ? undefined : Number((price * 1_000_000).toFixed(8))
 }
 
+function normalizeCatalogOrder(value?: number): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 function roundCost(value: number): number {
   return Number(value.toFixed(10))
 }
@@ -393,6 +399,9 @@ function currentUtcDate(): string {
 }
 
 function compareProviderModels(left: ProviderModelPricing, right: ProviderModelPricing): number {
+  const catalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
+  if (catalogOrder !== 0) return catalogOrder
+
   if (left.releaseDate && right.releaseDate && left.releaseDate !== right.releaseDate) {
     return right.releaseDate.localeCompare(left.releaseDate)
   }
@@ -400,4 +409,11 @@ function compareProviderModels(left: ProviderModelPricing, right: ProviderModelP
   if (!left.releaseDate && right.releaseDate) return 1
 
   return left.model.localeCompare(right.model)
+}
+
+function compareSharedCatalogOrder(left?: number, right?: number): number {
+  if (left !== undefined && right !== undefined && left !== right) {
+    return left - right
+  }
+  return 0
 }

@@ -1,10 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { getDatasetDatabase, getStatsDatabase } from './database.js'
+import { getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase } from './database.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 
 export type HardCleanupCutoffKey = 'iso' | 'minute' | 'hour' | 'date' | 'week' | 'month'
-export type HardCleanupDatabaseRole = 'dataset' | 'stats'
+export type HardCleanupDatabaseRole = 'dataset' | 'usage-catalog' | 'stats'
 
 export interface HardCleanupCutoffs extends Record<HardCleanupCutoffKey, string> {}
 
@@ -33,9 +33,12 @@ const nonBusinessDatasetCleanupTables: HardCleanupTableRule[] = [
   { databaseRole: 'dataset', tableName: 'runtime_log_level_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'runtime_log_event_facets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
   { databaseRole: 'dataset', tableName: 'api_key_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'usage_record_account_shards', timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
-  { databaseRole: 'dataset', tableName: 'usage_record_api_key_shards', timeColumnName: 'last_seen_at', cutoffKey: 'iso' }
+  { databaseRole: 'dataset', tableName: 'account_record_cleanup_targets', timeColumnName: 'updated_at', cutoffKey: 'iso' }
+]
+
+const nonBusinessUsageCatalogCleanupTables: HardCleanupTableRule[] = [
+  { databaseRole: 'usage-catalog', tableName: 'usage_record_account_shards', timeColumnName: 'last_seen_at', cutoffKey: 'iso' },
+  { databaseRole: 'usage-catalog', tableName: 'usage_record_api_key_shards', timeColumnName: 'last_seen_at', cutoffKey: 'iso' }
 ]
 
 const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
@@ -97,7 +100,9 @@ const nonBusinessStatsCleanupTables: HardCleanupTableRule[] = [
 
 const hardCleanupSpecialTables: Record<HardCleanupDatabaseRole, Set<string>> = {
   dataset: new Set([
-    'audit_payload_blobs',
+    'audit_payload_blobs'
+  ]),
+  'usage-catalog': new Set([
     'usage_record_shards',
     'usage_record_shard_entries'
   ]),
@@ -105,7 +110,7 @@ const hardCleanupSpecialTables: Record<HardCleanupDatabaseRole, Set<string>> = {
 }
 
 const hardCleanupPreferredRuleByTable = new Map(
-  [...nonBusinessDatasetCleanupTables, ...nonBusinessStatsCleanupTables]
+  [...nonBusinessDatasetCleanupTables, ...nonBusinessUsageCatalogCleanupTables, ...nonBusinessStatsCleanupTables]
     .map((rule) => [hardCleanupTableKey(rule.databaseRole, rule.tableName), rule] as const)
 )
 
@@ -238,7 +243,13 @@ function tableColumnNames(database: DatabaseSync, tableName: string): Set<string
 }
 
 function databaseForHardCleanupRole(databaseRole: HardCleanupDatabaseRole): DatabaseSync {
-  return databaseRole === 'dataset' ? getDatasetDatabase() : getStatsDatabase()
+  if (databaseRole === 'dataset') {
+    return getDatasetDatabase()
+  }
+  if (databaseRole === 'usage-catalog') {
+    return getUsageCatalogDatabase()
+  }
+  return getStatsDatabase()
 }
 
 function hardCleanupTableKey(databaseRole: HardCleanupDatabaseRole, tableName: string): string {

@@ -48,8 +48,8 @@ assertEqual(accountTypeText('oauth'), 'OAuth', 'OAuth 类型文案应保持不�
 assertEqual(accountTypeText('api_key'), 'API Key', 'API Key 类型文案应保持不变')
 assertEqual(accountTypeText('custom' as AccountSummary['type']), 'custom', '未知类型应透传展示')
 assertEqual(accountClientCompatibilityText('codex_responses'), 'Codex Responses', 'Codex 兼容文案应保持不变')
-assertEqual(accountClientCompatibilityText('openai_standard'), 'OpenAI 标准', 'OpenAI 标准兼容文案应保持不变')
-assertEqual(accountClientCompatibilityText(), 'OpenAI 标准', '空客户端兼容应按 OpenAI 标准展示')
+assertEqual(accountClientCompatibilityText('openai_standard'), 'OpenAI-compatible', 'OpenAI-compatible 兼容文案应保持不变')
+assertEqual(accountClientCompatibilityText(), 'OpenAI-compatible', '空客户端兼容应按 OpenAI-compatible 展示')
 assertEqual(accountTypeTitle('OpenAI', 'oauth'), 'OpenAI OAuth', 'OAuth 标题应包含供应商名')
 assertEqual(accountTypeTitle('OpenAI', 'api_key'), 'OpenAI API Key', 'API Key 标题应包含供应商名')
 assertTrue(accountTypeDescription('gpt', 'oauth').includes('Responses / compact'), 'GPT OAuth 描述应说明网关路径限制')
@@ -128,7 +128,7 @@ assertEqual(canSelectClientCompatibility(deepSeekBridgeProfile), true, 'DeepSeek
 assertEqual(
   accountClientCompatibilityCapabilities(deepSeekBridgeProfile).join(','),
   'openai_standard,codex_responses',
-  'DeepSeek bridge 账号应同时展示 OpenAI 标准与 Codex Responses 测试请求形态'
+  'DeepSeek bridge 账号应同时展示 OpenAI-compatible 与 Codex Responses 测试请求形态'
 )
 assertEqual(
   defaultEndpointModesForAccount({
@@ -137,7 +137,7 @@ assertEqual(
     clientCompatibility: 'codex_responses'
   }).join(','),
   'chat_json,chat_sse',
-  'DeepSeek Codex bridge 账号前端默认仍保存真实 Chat JSON/SSE 能力'
+  'DeepSeek Codex bridge 账号前端默认仍保存真实 Chat Completions JSON/Streaming 能力'
 )
 
 console.log('账户基础 formatter 回归通过：基础文案、授权展示、OAuth 菜单能力、到期优先级、排序和门面导出均符合预期')

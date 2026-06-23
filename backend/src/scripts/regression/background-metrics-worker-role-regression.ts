@@ -6,6 +6,7 @@ import { backgroundWorkerRegistry } from '../../modules/background/background-jo
 const supervisorSource = readSource('../../modules/background/background-worker-supervisor.ts')
 const serverSource = readSource('../../server.ts')
 const backgroundJobsSource = readSource('../../modules/background/background-jobs.ts')
+const backgroundIpcWorkerRolesSource = readSource('../../modules/background/background-ipc-worker-roles.ts')
 const workerSource = readSource('../../worker.ts')
 const runtimeSource = readSource('../../config/runtime.ts')
 const processMonitorSource = readSource('../../shared/process-event-loop-monitor.ts')
@@ -82,6 +83,8 @@ assert(workerSource.includes('isMaintenanceWorkerMessage'), 'worker.ts 必须禁
 assert(workerSource.includes("message.type === 'background_worker_process_event_loop_request'"), 'worker 必须响应 server 发起的事件循环采样请求')
 
 assert(processMonitorSource.includes("runtimeConfig.workerRole"), '事件循环采样必须使用 workerRole 区分 metrics-worker')
+assert(backgroundIpcWorkerRolesSource.includes('processEventLoopWorkerRoles'), '后台进程事件循环采样必须集中维护 worker 角色清单')
+assert(backgroundIpcWorkerRolesSource.includes("'metrics-worker'"), '后台进程事件循环采样必须包含 metrics-worker，避免监控 worker 内存缺样本')
 for (const role of expectedSupervisedRoles) {
   assert(systemMetricsSource.includes(`'${role}'`), `系统指标角色清单必须包含 ${role}`)
 }

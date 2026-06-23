@@ -10,6 +10,7 @@ import type { BackgroundTaskRunSummary } from '../../storage/background-task-run
 const tempRoot = resolve(tmpdir(), `juhe-ai-temporary-maintenance-worker-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.processRole = 'worker'
@@ -139,7 +140,7 @@ function usageRecordCount(id: string): number {
 }
 
 function usageRecordShardKey(id: string): string {
-  const row = databaseModule.getDatasetDatabase().prepare(`
+  const row = databaseModule.getUsageCatalogDatabase().prepare(`
     SELECT shard_key AS shardKey
     FROM usage_record_shard_entries
     WHERE usage_id = ?

@@ -9,6 +9,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-non-business-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.secret = 'non-business-cleanup-secret'
@@ -56,13 +57,13 @@ try {
   assert.equal(existsSync(auditBlobFilePath(oldAuditBlobStorageKey)), false, '旧审计 blob 外部文件应被删除')
   assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'audit_payload_blobs', "id = 'audblob_recent_non_business_cleanup'"), 1, 'cutoff 之后的审计 blob 元数据应保留')
   assert.equal(existsSync(auditBlobFilePath(recentAuditBlobStorageKey)), true, 'cutoff 之后的审计 blob 外部文件应保留')
-  assert.equal(tableCount(databaseModule.getDatasetDatabase(), 'usage_record_shards'), 0, '旧 usage shard 目录应被硬清理')
+  assert.equal(tableCount(databaseModule.getUsageCatalogDatabase(), 'usage_record_shards'), 0, '旧 usage shard 目录应被硬清理')
   assert.equal(existsSync(oldShardFilePath), false, '旧 usage shard SQLite 文件应被删除')
   assert.equal(tableCount(businessDatabase, 'system_accounts'), businessRowsBefore, '非业务数据硬清理不应清业务库')
   assert(result.deletedRows >= 4, '硬清理结果应累计删除行数')
   assert(result.deletedFiles >= 2, '硬清理结果应累计删除外部文件数')
 
-  console.log('非业务数据硬清理回归通过：业务库保留，数据集库、统计库、usage shard 和审计 blob 文件按 cutoff 清理')
+  console.log('非业务数据硬清理回归通过：业务库保留，数据集库、usage catalog、统计库、usage shard 和审计 blob 文件按 cutoff 清理')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

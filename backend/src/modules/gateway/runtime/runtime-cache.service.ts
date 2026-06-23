@@ -62,6 +62,10 @@ interface ProviderModelRouteIndexCacheEntry {
   index: Map<string, string[]>
 }
 
+interface CachedOpenAIAccountsForGroupOptions {
+  requestedModel?: string
+}
+
 export type ProviderModelRouteResolution =
   | {
       outcome: 'matched'
@@ -185,14 +189,20 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
   return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
-export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret[] {
+export function listCachedOpenAIAccountsForGroup(
+  groupId: string,
+  systemAccountId: string,
+  options: CachedOpenAIAccountsForGroupOptions = {}
+): OpenAIAccountSecret[] {
   assertLocalGatewayDatabaseAccess('listCachedOpenAIAccountsForGroup')
-  const cacheKey = gatewayCacheKey(groupId, systemAccountId)
+  const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
     return cloneOpenAIAccountsWithCurrentConcurrency(cached.accounts)
   }
-  const value = listOpenAIAccountsForGroupResult(groupId, systemAccountId)
+  const value = listOpenAIAccountsForGroupResult(groupId, systemAccountId, {
+    requestedModel: options.requestedModel
+  })
   const accounts = value.accounts.map(cloneStaticOpenAIAccountSecret)
   openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
     ttlMs: openAIAccountsRetainTtlMs
@@ -200,22 +210,27 @@ export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountI
   return cloneOpenAIAccountsWithCurrentConcurrency(value.accounts)
 }
 
-export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, systemAccountId: string): Promise<OpenAIAccountSecret[]> {
+export async function listCachedOpenAIAccountsForGroupAsync(
+  groupId: string,
+  systemAccountId: string,
+  options: CachedOpenAIAccountsForGroupOptions = {}
+): Promise<OpenAIAccountSecret[]> {
   if (runtimeConfig.processRole !== 'server') {
-    return listCachedOpenAIAccountsForGroup(groupId, systemAccountId)
+    return listCachedOpenAIAccountsForGroup(groupId, systemAccountId, options)
   }
-  const cacheKey = gatewayCacheKey(groupId, systemAccountId)
+  const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
     if (!isGatewayRuntimeCacheEntryFresh(cached)) {
-      refreshOpenAIAccountsForGroupInBackground(groupId, systemAccountId, cacheKey)
+      refreshOpenAIAccountsForGroupInBackground(groupId, systemAccountId, cacheKey, options.requestedModel)
     }
     return cloneOpenAIAccountsWithCurrentConcurrency(cached.accounts)
   }
   const result = await requestDbService({
     type: 'list_openai_accounts_for_group_result',
     groupId,
-    systemAccountId
+    systemAccountId,
+    requestedModel: options.requestedModel
   })
   const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
   openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
@@ -380,6 +395,13 @@ export function clearGatewayRuntimeCacheLocal(): void {
 
 function gatewayCacheKey(groupId: string, systemAccountId: string): string {
   return `${groupId}:${systemAccountId}`
+}
+
+function gatewayOpenAIAccountsCacheKey(groupId: string, systemAccountId: string, requestedModel?: string): string {
+  const modelKey = normalizeProviderModelRouteKey(requestedModel)
+  return modelKey
+    ? `${gatewayCacheKey(groupId, systemAccountId)}:model:${modelKey}`
+    : gatewayCacheKey(groupId, systemAccountId)
 }
 
 function responseInspectionPolicyCacheKey(protocolCode: string, providerCode?: string): string {
@@ -855,13 +877,18 @@ function refreshGroupUsageAccessMetadataInBackground(groupId: string, systemAcco
   pendingGroupUsageAccessRefreshes.set(cacheKey, refresh)
 }
 
-function refreshOpenAIAccountsForGroupInBackground(groupId: string, systemAccountId: string, cacheKey: string): void {
+function refreshOpenAIAccountsForGroupInBackground(
+  groupId: string,
+  systemAccountId: string,
+  cacheKey: string,
+  requestedModel?: string
+): void {
   if (pendingOpenAIAccountsRefreshes.has(cacheKey)) {
     return
   }
   const refresh = (runtimeConfig.processRole === 'server'
-    ? requestDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId })
-    : Promise.resolve(listOpenAIAccountsForGroupResult(groupId, systemAccountId)))
+    ? requestDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId, requestedModel })
+    : Promise.resolve(listOpenAIAccountsForGroupResult(groupId, systemAccountId, { requestedModel })))
     .then((result) => {
       openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(result.accounts.map(cloneStaticOpenAIAccountSecret)), {
         ttlMs: openAIAccountsRetainTtlMs

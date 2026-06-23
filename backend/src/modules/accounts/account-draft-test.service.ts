@@ -14,6 +14,7 @@ import {
 } from '../../storage/account-test-tasks.repository.js'
 import { newId } from '../../storage/database.js'
 import {
+  assertAccountModelMappingSourcesAllowedBySupportedModels,
   findGroupSummary,
   listProviders,
   normalizeAccountCredentialsForWrite,
@@ -305,6 +306,9 @@ function accountCreateActivationFingerprintSnapshot(input: {
     protocolVersion: input.protocolVersion
   })
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
+  const supportedModels = normalizedTextList(account.supportedModels)
+  const modelMappings = normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId) ?? []
+  assertAccountModelMappingSourcesAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     ownerSystemAccountId: input.ownerSystemAccountId,
     groupId: account.groupId,
@@ -320,8 +324,8 @@ function accountCreateActivationFingerprintSnapshot(input: {
     superPriorityEnabled: account.superPriorityEnabled ?? false,
     fallbackEnabled: account.fallbackEnabled ?? false,
     clientCompatibility,
-    supportedModels: normalizedTextList(account.supportedModels),
-    modelMappings: normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId),
+    supportedModels,
+    modelMappings,
     proxyProfileId: optionalText(account.proxyProfileId),
     accountExpiresAt: optionalText(account.accountExpiresAt),
     availabilityScheduleJson: accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined,
@@ -422,6 +426,9 @@ function draftTestAccountSummary(input: {
   protocolVersion: string
 }): AccountSummary {
   const usage = emptyAccountUsageSummary()
+  const supportedModels = normalizedTextList(input.account.supportedModels)
+  const modelMappings = normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId) ?? []
+  assertAccountModelMappingSourcesAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     id: input.id ?? newId('acctdraft'),
     systemAccountId: input.ownerSystemAccountId,
@@ -441,8 +448,8 @@ function draftTestAccountSummary(input: {
     superPriorityEnabled: input.account.superPriorityEnabled ?? false,
     fallbackEnabled: input.account.fallbackEnabled ?? false,
     clientCompatibility: input.clientCompatibility,
-    supportedModels: normalizedTextList(input.account.supportedModels),
-    modelMappings: normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId),
+    supportedModels,
+    modelMappings,
     proxyProfileId: optionalText(input.account.proxyProfileId),
     schedulable: true,
     availabilitySchedule: input.availabilitySchedule,

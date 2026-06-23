@@ -34,9 +34,9 @@ export type AccountProviderProfileLike = {
 }
 
 export const clientCompatibilityCapabilityOptions: Array<{ label: string; value: ClientCompatibilityCapability }> = [
-  { label: 'OpenAI 标准', value: 'openai_standard' },
+  { label: 'OpenAI-compatible', value: 'openai_standard' },
   { label: 'Codex Responses', value: 'codex_responses' },
-  { label: 'Anthropic 原生', value: 'anthropic_native' },
+  { label: 'Anthropic API', value: 'anthropic_native' },
   { label: 'Claude Code', value: 'claude_code' }
 ]
 
@@ -137,13 +137,13 @@ export function fixedCompatibilityLabel(accounts: AccountProviderProfileLike[]):
 
 export function fixedCompatibilityText(accounts: AccountProviderProfileLike[]): string {
   if (accounts.some((account) => accountProviderProtocolKind(account) === 'anthropic_v1')) {
-    return 'Anthropic 原生请求'
+    return 'Anthropic API 请求'
   }
   const capabilities = new Set(accounts.flatMap(accountClientCompatibilityCapabilities))
   if (capabilities.has('codex_responses') && !capabilities.has('openai_standard')) {
     return 'Codex Responses 请求'
   }
-  return 'OpenAI 标准请求'
+  return 'OpenAI-compatible 请求'
 }
 
 export function defaultEndpointModesForAccount(input: {
@@ -154,7 +154,7 @@ export function defaultEndpointModesForAccount(input: {
 }): AccountSupportedEndpointMode[] {
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
   if (input.type === 'oauth') return [...responsesEndpointModes]
-  if (protocolKind === 'anthropic_v1') return [...anthropicAccountEndpointModes]
+  if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'openai_v1') {
     if (input.clientCompatibility === 'codex_responses' && profileSupportsCodexResponsesChatBridge(input.profile ?? input.provider)) {
       return [...chatEndpointModes]

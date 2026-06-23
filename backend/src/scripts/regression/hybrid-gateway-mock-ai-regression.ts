@@ -63,6 +63,8 @@ const basicCases: HybridMockCase[] = [
 const tempRoot = resolve(tmpdir(), `juhe-ai-hybrid-gateway-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
+runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'hybrid-gateway-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -177,7 +179,6 @@ try {
         status: 'active'
       })),
       hybridRoutingConfig: {
-        scoringGroupId: scoring.groupId,
         scoringModel,
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
@@ -195,7 +196,11 @@ try {
     }, access)
     assert(apiKey.key, '混合路由回归 API Key 未返回明文密钥')
     assert.equal(apiKey.routeMode, 'hybrid')
-    assert.equal(apiKey.hybridRoutingConfig?.scoringGroupId, scoring.groupId)
+    assert.equal(apiKey.hybridRoutingConfig?.scoringGroupId, undefined)
+    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.enabled, true)
+    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.scoringGroupId, undefined)
+    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.scoringModel, scoringModel)
+    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.triggerMode, 'risk_based')
     const qualityApiKey = repositories.createApiKeyRecord({
       name: 'Hybrid Mock 质量评分 Key',
       routeMode: 'hybrid',
@@ -207,21 +212,19 @@ try {
         status: 'active'
       })),
       hybridRoutingConfig: {
-        scoringGroupId: scoring.groupId,
         scoringModel,
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
         scoringTimeoutMs: 10_000,
         failureDefaultLevel,
-        scoringCacheEnabled: false,
+        scoringCacheEnabled: true,
         scoringCacheTtlSeconds: 300,
-        cacheAffinityEnabled: false,
+        cacheAffinityEnabled: true,
         affinityTtlSeconds: 900,
         switchMinLevelDelta: 2,
         downgradeConsecutiveLowCount: 2,
         qualityInspection: {
           enabled: true,
-          scoringGroupId: scoring.groupId,
           scoringModel,
           triggerMode: 'always_for_hybrid',
           minTriggerLevel: 1,
@@ -502,15 +505,55 @@ async function assertHybridRequest(input: {
   const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> }
   assert.equal(body.choices?.[0]?.message?.content, `target:${input.expectedModel}:${input.marker}`)
   const hits = upstreamHits.slice(start)
-  const scoringHits = hits.filter((hit) => hit.model === scoringModel)
+  const routeScoringHits = hits.filter(isRouteScoringHit)
+  const qualityScoringHits = hits.filter(isQualityScoringHit)
   const targetHits = hits.filter((hit) => hit.model !== scoringModel)
-  assert.equal(scoringHits.length, 1, `每次混合请求应恰好调用一次评分模型，实际 ${scoringHits.length}`)
+  assert.equal(routeScoringHits.length, 1, `每次混合请求应恰好调用一次入口评分模型，实际 ${routeScoringHits.length}`)
+  assert(qualityScoringHits.length <= 1, `风险触发质量评分时每次混合请求最多调用一次质量评分模型，实际 ${qualityScoringHits.length}`)
   assert.equal(targetHits.length, 1, `每次混合请求应恰好调用一次目标模型，实际 ${targetHits.length}`)
-  assert.equal(scoringHits[0]!.path, '/chat/completions', 'GLM 评分账号 baseUrl 不带 /v1 时不应被硬拼成 /v1/chat/completions')
+  assert.equal(routeScoringHits[0]!.path, '/chat/completions', 'GLM 评分账号 baseUrl 不带 /v1 时不应被硬拼成 /v1/chat/completions')
   const targetHit = targetHits[0]!
   assert.equal(targetHit.model, input.expectedModel, `目标模型路由错误：${input.marker}`)
-  assert(scoringHits[0]!.bodyText.includes(input.marker), '评分上下文应包含原始请求内容')
+  assert(routeScoringHits[0]!.bodyText.includes(input.marker), '评分上下文应包含原始请求内容')
   return targetHit
+}
+
+async function assertHybridQualityUpgradeRequest(input: {
+  baseUrl: string
+  localApiKey: string
+  marker: string
+  sessionId: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${input.baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      'x-session-id': input.sessionId
+    },
+    body: JSON.stringify({
+      model: 'client-request-model',
+      messages: [
+        { role: 'system', content: 'hybrid quality mock regression' },
+        { role: 'user', content: input.marker }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `质量评分升级请求应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> }
+  assert.equal(body.choices?.[0]?.message?.content, `target:${gptModel}:${input.marker}`)
+  const hits = upstreamHits.slice(start)
+  const routeScoringHits = hits.filter(isRouteScoringHit)
+  const qualityScoringHits = hits.filter(isQualityScoringHit)
+  const targetHits = hits.filter((hit) => hit.model !== scoringModel)
+  assert.equal(routeScoringHits.length, 1, `质量升级请求应只做一次入口评分，实际 ${routeScoringHits.length}`)
+  assert.equal(qualityScoringHits.length, 2, `质量升级请求应做失败和通过两次质量评分，实际 ${qualityScoringHits.length}`)
+  assert.equal(targetHits.length, 2, `质量升级请求应产生原模型和升级模型两次目标请求，实际 ${targetHits.length}`)
+  assert.equal(targetHits[0]!.model, glmModel, '质量失败前应先落到 4-6 档 GLM')
+  assert.equal(targetHits[1]!.model, gptModel, '质量失败后应升级到下一档 GPT')
 }
 
 async function assertHybridScoringCacheRequest(input: {
@@ -545,25 +588,48 @@ async function assertHybridScoringCacheRequest(input: {
     assert.equal(body.choices?.[0]?.message?.content, `target:${input.expectedModel}:${input.marker}`)
   }
   const hits = upstreamHits.slice(start)
-  const scoringHits = hits.filter((hit) => hit.model === scoringModel)
+  const routeScoringHits = hits.filter(isRouteScoringHit)
   const targetHits = hits.filter((hit) => hit.model !== scoringModel)
-  assert.equal(scoringHits.length, 1, `完全相同请求即使追踪 ID 不同，短 TTL 内也应只调用一次评分模型，实际 ${scoringHits.length}`)
+  assert.equal(routeScoringHits.length, 1, `完全相同请求即使追踪 ID 不同，短 TTL 内也应只调用一次入口评分模型，实际 ${routeScoringHits.length}`)
   assert.equal(targetHits.length, 2, `评分缓存只应省评分调用，目标请求仍应执行两次，实际 ${targetHits.length}`)
   assert(targetHits.every((hit) => hit.model === input.expectedModel), '评分缓存命中后目标模型应保持一致')
 }
 
+function isRouteScoringHit(hit: HybridMockHit): boolean {
+  return hit.model === scoringModel && !hit.bodyText.includes('响应质量评分器')
+}
+
+function isQualityScoringHit(hit: HybridMockHit): boolean {
+  return hit.model === scoringModel && hit.bodyText.includes('响应质量评分器')
+}
+
 function scoringUsageRecordCount(): number {
-  const row = databaseModule.getDatasetDatabase()
-    .prepare("SELECT COUNT(*) AS count FROM usage_record_shard_entries WHERE traffic_source = 'hybrid_scoring'")
-    .get() as unknown as { count: number } | undefined
-  return Number(row?.count ?? 0)
+  return usageTrafficSourceRecordCount('hybrid_scoring')
 }
 
 function qualityScoringUsageRecordCount(): number {
-  const row = databaseModule.getDatasetDatabase()
-    .prepare("SELECT COUNT(*) AS count FROM usage_record_shard_entries WHERE traffic_source = 'hybrid_quality_scoring'")
-    .get() as unknown as { count: number } | undefined
+  return usageTrafficSourceRecordCount('hybrid_quality_scoring')
+}
+
+function usageTrafficSourceRecordCount(trafficSource: string): number {
+  const database = databaseModule.getUsageCatalogDatabase()
+  const tableName = sqliteTableExists('usage_record_shard_entries')
+    ? 'usage_record_shard_entries'
+    : sqliteTableExists('usage_records')
+      ? 'usage_records'
+      : undefined
+  if (!tableName) return 0
+  const row = database
+    .prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE traffic_source = ?`)
+    .get(trafficSource) as unknown as { count: number } | undefined
   return Number(row?.count ?? 0)
+}
+
+function sqliteTableExists(tableName: string): boolean {
+  const row = databaseModule.getUsageCatalogDatabase()
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName) as unknown as { name?: string } | undefined
+  return Boolean(row?.name)
 }
 
 function createHybridMockUpstream(): http.Server {

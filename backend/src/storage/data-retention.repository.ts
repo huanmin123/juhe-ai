@@ -1,4 +1,4 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { cleanupAuditPayloadBlobsBeforeAsync } from './audit-log-payload-blobs.js'
 import {
@@ -265,9 +265,10 @@ export async function cleanupNonBusinessDataBeforeWithResult(input: {
     hasMore = hasMore || usageRecords.hasMore
 
     cleanupDiscoveredHardCleanupTablesBefore('dataset', cutoffs, batchLimit, addRows)
+    cleanupDiscoveredHardCleanupTablesBefore('usage-catalog', cutoffs, batchLimit, addRows)
 
     const emptyUsageShards = await cleanupEmptyUsageRecordShardFilesBefore(cutoffs.iso, batchLimit)
-    addRows('dataset.usage_record_shards', emptyUsageShards.usageRecordShards)
+    addRows('usage_catalog.usage_record_shards', emptyUsageShards.usageRecordShards)
     addFiles('usage_shard_files', emptyUsageShards.usageShardFiles)
     hasMore = hasMore || emptyUsageShards.hasMore
   }
@@ -311,7 +312,7 @@ function selectUsageRecordCleanupRows(
 }
 
 function hasUsageRecordsBefore(cutoffCreatedAt: string): boolean {
-  const row = getDatasetDatabase()
+  const row = getUsageCatalogDatabase()
     .prepare(`
       SELECT ue.usage_id
       FROM usage_record_shard_entries ue
@@ -412,7 +413,7 @@ function selectUsageRecordCleanupCatalogRows(input: {
     params.push(input.cursorCreatedAt as string, input.cursorCreatedAt as string, input.cursorId as string)
   }
   params.push(positiveLimit(input.limit))
-  const rows = getDatasetDatabase()
+  const rows = getUsageCatalogDatabase()
     .prepare(`
       SELECT ue.usage_id, ue.created_at, s.shard_key, s.bucket_date, s.shard_id, s.file_path
       FROM usage_record_shard_entries ue

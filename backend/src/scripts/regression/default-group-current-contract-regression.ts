@@ -5,8 +5,14 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -72,9 +78,17 @@ try {
   const createdDeepSeekDefault = database
     .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
     .get(missingDefaultUserId, DEEPSEEK_OPENAI_V1_PROFILE_ID) as { id?: string } | undefined
+  const createdDeepSeekAnthropicDefault = database
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) as { id?: string } | undefined
+  const createdGlmCodingAnthropicDefault = database
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID) as { id?: string } | undefined
   assert(createdDefault?.id, '缺失默认 GPT 分组时应创建 is_default = 1 的当前默认分组')
   assert(createdOpenAICompatibleDefault?.id, '缺失默认 OpenAI 兼容分组时应创建 is_default = 1 的当前默认分组')
   assert(createdDeepSeekDefault?.id, '缺失默认 DeepSeek 分组时应创建 is_default = 1 的当前默认分组')
+  assert(createdDeepSeekAnthropicDefault?.id, '缺失默认 DeepSeek Claude Code 分组时应创建 is_default = 1 的当前默认分组')
+  assert(createdGlmCodingAnthropicDefault?.id, '缺失默认 GLM Coding Claude Code 分组时应创建 is_default = 1 的当前默认分组')
   assert.equal(defaultGroupRepository.defaultGptGroupIdForSystemAccount(missingDefaultUserId), createdDefault.id)
 
   await assertGroupProviderCodeUsesProviderLayer()
@@ -125,6 +139,33 @@ async function assertGroupProviderCodeUsesProviderLayer(): Promise<void> {
   }, access)
   assert.equal(deepSeekGroup.providerCode, DEEPSEEK_PROVIDER_CODE, 'DeepSeek 分组创建应落在 DeepSeek 独立供应商层')
   assert.equal(deepSeekGroup.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek 分组应使用 DeepSeek OpenAI v1 档案')
+
+  const deepSeekAnthropicGroup = repositories.createGroup({
+    name: 'DeepSeek Claude Code 供应商分组回归',
+    providerCode: DEEPSEEK_PROVIDER_CODE,
+    providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
+  }, access)
+  assert.equal(deepSeekAnthropicGroup.providerCode, DEEPSEEK_PROVIDER_CODE, 'DeepSeek Claude Code 分组仍应落在 DeepSeek 独立供应商层')
+  assert.equal(deepSeekAnthropicGroup.providerProtocolProfileId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID, 'DeepSeek Claude Code 分组应使用 DeepSeek Anthropic v1 档案')
+  assert.equal(deepSeekAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'DeepSeek Claude Code 分组应使用 Anthropic 协议代码')
+  assert.equal(deepSeekAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'DeepSeek Claude Code 分组应使用 Anthropic v1 协议版本')
+
+  const glmGroup = repositories.createGroup({
+    name: 'GLM 供应商分组回归',
+    providerCode: GLM_PROVIDER_CODE
+  }, access)
+  assert.equal(glmGroup.providerCode, GLM_PROVIDER_CODE, 'GLM 分组创建应落在 GLM 独立供应商层')
+  assert.equal(glmGroup.providerProtocolProfileId, GLM_GENERAL_OPENAI_V1_PROFILE_ID, 'GLM 默认分组应使用通用 GLM OpenAI v1 档案')
+
+  const glmCodingAnthropicGroup = repositories.createGroup({
+    name: 'GLM Coding Claude Code 供应商分组回归',
+    providerCode: GLM_PROVIDER_CODE,
+    providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+  }, access)
+  assert.equal(glmCodingAnthropicGroup.providerCode, GLM_PROVIDER_CODE, 'GLM Coding Claude Code 分组仍应落在 GLM 独立供应商层')
+  assert.equal(glmCodingAnthropicGroup.providerProtocolProfileId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID, 'GLM Coding Claude Code 分组应使用 GLM Coding Anthropic v1 档案')
+  assert.equal(glmCodingAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'GLM Coding Claude Code 分组应使用 Anthropic 协议代码')
+  assert.equal(glmCodingAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'GLM Coding Claude Code 分组应使用 Anthropic v1 协议版本')
 
   const moved = repositories.updateGroup(group.id, {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE

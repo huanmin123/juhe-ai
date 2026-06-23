@@ -69,6 +69,7 @@ const [
   databaseModule,
   repositories,
   settingsRepository,
+  customProviderModelsRepository,
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
@@ -79,6 +80,7 @@ const [
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/settings.repository.js'),
+  import('../../storage/custom-provider-models.repository.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
@@ -124,7 +126,7 @@ const cases: MatrixCase[] = [
     providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
     protocolKind: 'openai',
     upstreamPrefix: 'glm',
-    model: 'glm-5.2-free',
+    model: 'glm-4.7-flash',
     usageSemantic: 'openai',
     baseUrl: (origin) => `${origin}/glm/v1`
   },
@@ -187,6 +189,7 @@ try {
 }
 
 function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntime {
+  ensureMatrixCaseModelCatalogEntry(item)
   const group = repositories.createGroup({
     name: `${item.label} 异常交替矩阵分组`,
     providerCode: item.providerCode,
@@ -230,6 +233,20 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     primaryAccountId: primary.id,
     rescueAccountId: rescue.id
   }
+}
+
+function ensureMatrixCaseModelCatalogEntry(item: MatrixCase): void {
+  if (item.providerCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) {
+    return
+  }
+  customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: item.providerCode,
+    model: item.model,
+    scope: 'global',
+    status: 'active',
+    supportedApiProtocols: ['chat_completions'],
+    actorSystemAccountId: access.systemAccountId
+  })
 }
 
 function credentialsForCase(item: MatrixCase, upstreamOrigin: string, lane: 'primary' | 'rescue'): Record<string, unknown> {

@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { nowIso } from '../../../storage/database.js'
-import { createUsageRecordsBatch, type UsageRecordInput } from '../../../storage/repositories.js'
+import { createUsageRecordsBatch, createUsageRecordsBatchAsync, type UsageRecordInput } from '../../../storage/repositories.js'
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
+import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
@@ -18,18 +19,25 @@ const usageRecordShutdownFlushMaxBatches = 100
 const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
+const slowUsageRecordFlushMs = 500
 
 interface QueuedUsageRecord {
   input: UsageRecordInput
   bytes: number
+  enqueuedAt: number
 }
 
 let pendingUsageRecords: QueuedUsageRecord[] = []
 let pendingUsageRecordBytes = 0
 let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
+let activeAsyncFlush: Promise<void> | undefined
 let retainedOverflowWarningCount = 0
 let flushFailureCount = 0
+let lastFlushMs = 0
+let maxFlushMs = 0
+let slowFlushCount = 0
+let lastSlowFlushAt: string | undefined
 let droppedDispatchCount = 0
 let droppedOverflowCount = 0
 let droppedOversizeCount = 0
@@ -72,7 +80,8 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordLocal')
   const queued = {
     input,
-    bytes: estimateUsageRecordBytes(input)
+    bytes: estimateUsageRecordBytes(input),
+    enqueuedAt: Date.now()
   }
   if (queued.bytes > usageRecordQueueMaxBytes) {
     recordUsageRecordLocalDrop(queued, 'oversize')
@@ -89,6 +98,14 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
 }
 
 export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): void {
+  if (usageRecordWriterPoolEnabled()) {
+    void flushUsageRecordQueueAsync(options)
+    return
+  }
+  flushUsageRecordQueueSync(options)
+}
+
+function flushUsageRecordQueueSync(options: UsageRecordFlushOptions = {}): void {
   if (!isLocalUsageRecordWriteAllowed()) {
     return
   }
@@ -115,7 +132,82 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
       flushedBatches += 1
 
       try {
+        const startedAt = Date.now()
         createUsageRecordsBatch(batch.map((item) => item.input))
+        recordUsageRecordFlushDuration(Date.now() - startedAt)
+        removeUsageRecordFlushBatch(batch.length, batchBytes)
+        flushFailureCount = 0
+      } catch (error) {
+        failed = true
+        flushFailureCount += 1
+        logger.error(errorLogFields(error, {
+          event: 'usage_record_queue_flush_failed',
+          batchSize: batch.length,
+          pendingCount: pendingUsageRecords.length,
+          pendingBytes: pendingUsageRecordBytes,
+          flushFailureCount
+        }), '使用记录队列写入失败，已保留记录等待重试')
+        shouldRetry = options.retryOnFailure !== false
+        break
+      }
+    } while (options.drain && pendingUsageRecords.length > 0 && flushedBatches < maxBatches)
+  } finally {
+    flushing = false
+  }
+
+  if (pendingUsageRecords.length > 0 && (!failed || shouldRetry)) {
+    scheduleUsageRecordFlush(shouldRetry ? retryDelayMs(usageRecordRetryPolicy) : 0)
+  }
+}
+
+export async function flushUsageRecordQueueAsync(options: UsageRecordFlushOptions = {}): Promise<void> {
+  if (!isLocalUsageRecordWriteAllowed()) {
+    return
+  }
+  if (activeAsyncFlush) {
+    await activeAsyncFlush
+    return
+  }
+  if (flushing || pendingUsageRecords.length === 0) {
+    return
+  }
+
+  activeAsyncFlush = runUsageRecordQueueAsyncFlush(options).finally(() => {
+    activeAsyncFlush = undefined
+  })
+  await activeAsyncFlush
+}
+
+async function runUsageRecordQueueAsyncFlush(options: UsageRecordFlushOptions = {}): Promise<void> {
+  if (!isLocalUsageRecordWriteAllowed()) {
+    return
+  }
+  if (flushing || pendingUsageRecords.length === 0) {
+    return
+  }
+
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+
+  flushing = true
+  let shouldRetry = false
+  let failed = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
+  try {
+    do {
+      const { batch, bytes: batchBytes } = peekUsageRecordFlushBatch(usageRecordBatchSize, usageRecordFlushBatchMaxBytes)
+      if (batch.length === 0) {
+        break
+      }
+      flushedBatches += 1
+
+      try {
+        const startedAt = Date.now()
+        await createUsageRecordsBatchAsync(batch.map((item) => item.input))
+        recordUsageRecordFlushDuration(Date.now() - startedAt)
         removeUsageRecordFlushBatch(batch.length, batchBytes)
         flushFailureCount = 0
       } catch (error) {
@@ -145,8 +237,28 @@ export function flushAllUsageRecordQueue(): void {
   flushUsageRecordQueue({ drain: true, retryOnFailure: false })
 }
 
-export function flushUsageRecordQueueForShutdown(): void {
-  flushUsageRecordQueue({ drain: true, retryOnFailure: false, maxBatches: usageRecordShutdownFlushMaxBatches })
+export async function flushAllUsageRecordQueueAsync(): Promise<void> {
+  if (usageRecordWriterPoolEnabled()) {
+    await waitForActiveUsageRecordFlush()
+    await flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false })
+    return
+  }
+  flushUsageRecordQueueSync({ drain: true, retryOnFailure: false })
+}
+
+export async function flushUsageRecordQueueForShutdown(): Promise<void> {
+  if (usageRecordWriterPoolEnabled()) {
+    await waitForActiveUsageRecordFlush()
+    await flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false, maxBatches: usageRecordShutdownFlushMaxBatches })
+    return
+  }
+  flushUsageRecordQueueSync({ drain: true, retryOnFailure: false, maxBatches: usageRecordShutdownFlushMaxBatches })
+}
+
+async function waitForActiveUsageRecordFlush(): Promise<void> {
+  if (activeAsyncFlush) {
+    await activeAsyncFlush
+  }
 }
 
 export function getUsageRecordQueueRuntime(): {
@@ -157,7 +269,23 @@ export function getUsageRecordQueueRuntime(): {
   droppedOverflowCount: number
   droppedOversizeCount: number
   flushFailureCount: number
+  oldestQueuedMs: number
+  lastFlushMs: number
+  maxFlushMs: number
+  slowFlushCount: number
+  lastSlowFlushAt?: string
+  writerPoolEnabled: boolean
+  writerPoolWorkerCount: number
+  writerPoolQueueLength: number
+  writerPoolActiveJobs: number
+  writerPoolHandledJobs: number
+  writerPoolFailedJobs: number
+  writerPoolRejectedJobs: number
+  writerPoolOldestQueuedMs: number
+  writerPoolMaxQueueWaitMs: number
+  writerPoolMaxRunMs: number
 } {
+  const writerPoolRuntime = getUsageRecordWriterPoolRuntime()
   return {
     queueLength: pendingUsageRecords.length,
     queueBytes: pendingUsageRecordBytes,
@@ -165,7 +293,22 @@ export function getUsageRecordQueueRuntime(): {
     retainedOverflowWarningCount,
     droppedOverflowCount,
     droppedOversizeCount,
-    flushFailureCount
+    flushFailureCount,
+    oldestQueuedMs: oldestUsageRecordQueuedMs(),
+    lastFlushMs,
+    maxFlushMs,
+    slowFlushCount,
+    lastSlowFlushAt,
+    writerPoolEnabled: writerPoolRuntime.enabled,
+    writerPoolWorkerCount: writerPoolRuntime.workerCount,
+    writerPoolQueueLength: writerPoolRuntime.queueLength,
+    writerPoolActiveJobs: writerPoolRuntime.activeJobs,
+    writerPoolHandledJobs: writerPoolRuntime.handledJobs,
+    writerPoolFailedJobs: writerPoolRuntime.failedJobs,
+    writerPoolRejectedJobs: writerPoolRuntime.rejectedJobs,
+    writerPoolOldestQueuedMs: writerPoolRuntime.oldestQueuedMs,
+    writerPoolMaxQueueWaitMs: writerPoolRuntime.maxQueueWaitMs,
+    writerPoolMaxRunMs: writerPoolRuntime.maxRunMs
   }
 }
 
@@ -175,7 +318,11 @@ export function installUsageRecordQueueShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('beforeExit', flushUsageRecordQueueForShutdown)
+  process.once('beforeExit', () => {
+    void flushUsageRecordQueueForShutdown().finally(() => {
+      void closeUsageRecordWriterPool()
+    })
+  })
 }
 
 function scheduleUsageRecordFlush(delayMs: number): void {
@@ -262,8 +409,13 @@ export function clearUsageRecordQueueForTest(): void {
   pendingUsageRecords = []
   pendingUsageRecordBytes = 0
   flushing = false
+  activeAsyncFlush = undefined
   retainedOverflowWarningCount = 0
   flushFailureCount = 0
+  lastFlushMs = 0
+  maxFlushMs = 0
+  slowFlushCount = 0
+  lastSlowFlushAt = undefined
   droppedDispatchCount = 0
   droppedOverflowCount = 0
   droppedOversizeCount = 0
@@ -468,6 +620,21 @@ function removeUsageRecordFlushBatch(count: number, bytes: number): void {
 
 function estimateUsageRecordBytes(input: UsageRecordInput): number {
   return estimateJsonLikeBytes(input, { maxBytes: usageRecordEstimateMaxBytes }) + 256
+}
+
+function recordUsageRecordFlushDuration(durationMs: number): void {
+  const rounded = Math.max(0, Math.round(durationMs))
+  lastFlushMs = rounded
+  maxFlushMs = Math.max(maxFlushMs, rounded)
+  if (rounded >= slowUsageRecordFlushMs) {
+    slowFlushCount += 1
+    lastSlowFlushAt = new Date().toISOString()
+  }
+}
+
+function oldestUsageRecordQueuedMs(): number {
+  const first = pendingUsageRecords[0]
+  return first ? Math.max(0, Date.now() - first.enqueuedAt) : 0
 }
 
 function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' | 'oversize'): void {

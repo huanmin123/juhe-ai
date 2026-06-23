@@ -702,22 +702,12 @@ function loadApiKeyBindableGroups(groupIds: string[], systemAccountId: string): 
 function normalizeApiKeyHybridRoutingConfigForWrite(
   value: unknown,
   routeMode: ApiKeySummary['routeMode'],
-  bindings: Array<Pick<ApiKeyGroupBindingWrite, 'groupId' | 'status' | 'groupEnabled'>>
+  _bindings: Array<Pick<ApiKeyGroupBindingWrite, 'groupId' | 'status' | 'groupEnabled'>>
 ): ApiKeySummary['hybridRoutingConfig'] {
   if (routeMode !== 'hybrid') {
     return undefined
   }
-  const config = normalizeHybridRoutingConfig(value)
-  const activeGroupIds = new Set(bindings
-    .filter((binding) => binding.status === 'active' && binding.groupEnabled)
-    .map((binding) => binding.groupId))
-  if (!activeGroupIds.has(config.scoringGroupId)) {
-    throw new Error('混合路由评分分组必须是当前 API Key 绑定的启用分组')
-  }
-  if (config.qualityInspection?.enabled && !activeGroupIds.has(config.qualityInspection.scoringGroupId)) {
-    throw new Error('混合路由质量评分分组必须是当前 API Key 绑定的启用分组')
-  }
-  return config
+  return normalizeHybridRoutingConfig(value)
 }
 
 function replaceApiKeyGroupBindings(

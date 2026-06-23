@@ -5,6 +5,7 @@ import type {
   ProviderModelsParams,
   ProviderModelUpsertPayload
 } from '@/types/domain'
+import type { ListParams } from '../contracts'
 import { createShortLivedRequestCache } from '@/shared/shortLivedRequestCache'
 import { http, unwrap } from '../http'
 
@@ -14,7 +15,7 @@ const providerModelOptionsCache = createShortLivedRequestCache<ProviderModelOpti
 export const providersApi = {
   list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
   options: () => providerOptionsCache.load('providers/options', () => unwrap<ProviderDefinition[]>(http.get('/providers/options'))),
-  modelOptions: () => providerModelOptionsCache.load('providers/models/options', () => unwrap<ProviderModelOption[]>(http.get('/providers/models/options'))),
+  modelOptions: (params?: ListParams) => providerModelOptionsCache.load(`providers/models/options:${params?.systemAccountId ?? ''}`, () => unwrap<ProviderModelOption[]>(http.get('/providers/models/options', { params }))),
   models: (code: string, params?: ProviderModelsParams) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`, { params })),
   createModel: async (code: string, payload: ProviderModelUpsertPayload) => {
     const model = await unwrap<ProviderModelPricing>(http.post(`/providers/${code}/models`, payload))

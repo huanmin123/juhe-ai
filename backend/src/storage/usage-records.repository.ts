@@ -1,5 +1,5 @@
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
@@ -14,10 +14,14 @@ import {
   queryUsageRecordShardById,
   recordUsageRecordShardEntries,
   usageRecordShardLocationForRecord,
+  writeUsageRecordShardRows,
   type UsageRecordShardEntryInput,
   type UsageRecordShardLocation,
-  type UsageRecordShardQueryWindow
+  type UsageRecordShardQueryWindow,
+  type UsageRecordShardWriteResult,
+  type UsageRecordShardWriteRow
 } from './usage-record-shards.js'
+import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-pool.js'
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
@@ -320,150 +324,18 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   }
 
   const businessDatabase = getBusinessDatabase()
-  const insertSql = `
-    INSERT INTO usage_records (
-      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
-      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
-      request_snapshot_json, response_snapshot_json,
-      account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
-      account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
-      group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
-      created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO NOTHING
-  `
   const accountLastUsedAt = new Map<string, string>()
   const accountHealthSuccessAt = new Map<string, string>()
-  const accessLookupContext = buildUsageAccessLookupContext(inputs)
-  const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordInsertRow[] }>()
-  const shardEntries: UsageRecordShardEntryInput[] = []
+  const writePlan = buildUsageRecordBatchWritePlan(inputs)
   let accountLastUsedFlushed = false
 
   try {
-    for (const input of inputs) {
-      if (input.apiKeyId && !usageApiKeyExists(input.apiKeyId, accessLookupContext)) {
-        continue
-      }
-      const now = input.createdAt ?? nowIso()
-      const id = input.id ?? generateUsageRecordId(now, newId('usage'))
-      const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input, accessLookupContext)
-      const accessMetadata = usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
-      const trafficSource = normalizeUsageRecordTrafficSource(input.trafficSource)
-      const row: UsageRecordInsertRow = {
-        params: [
-          id,
-          systemAccountId,
-          input.traceId,
-          trafficSource,
-          input.clientIp ?? null,
-          input.apiKeyId ?? null,
-          input.groupId ?? null,
-          input.accountId ?? null,
-          input.endpoint ?? null,
-          input.providerCode ?? null,
-          input.providerProtocolProfileId ?? null,
-          input.usageSemantic ?? null,
-          input.model ?? null,
-          input.upstreamModel ?? null,
-          input.pricingModel ?? null,
-          input.modelMappingApplied ? 1 : 0,
-          input.modelMappingSource ?? null,
-          input.stream ? 1 : 0,
-          input.statusCode ?? null,
-          input.success ? 1 : 0,
-          input.firstTokenMs ?? null,
-          input.durationMs ?? null,
-          input.inputTokens ?? null,
-          input.outputTokens ?? null,
-          input.cacheReadTokens ?? null,
-          input.cacheReadCostUsd ?? null,
-          input.cacheWriteTokens ?? null,
-          input.cacheWrite1hTokens ?? null,
-          input.cacheWriteCostUsd ?? null,
-          input.thinkingTokens ?? null,
-          input.inputImageTokens ?? null,
-          input.outputImageTokens ?? null,
-          input.costUsd ?? null,
-          input.errorCode ?? null,
-          input.errorMessage ?? null,
-          input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
-          input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
-          accessMetadata.accountOwnerSystemAccountId ?? null,
-          accessMetadata.groupOwnerSystemAccountId ?? null,
-          accessMetadata.accountAccessType ?? null,
-          accessMetadata.groupAccessType ?? null,
-          accessMetadata.accountAuthorizationId ?? null,
-          accessMetadata.accountAuthorizationSourceType ?? null,
-          accessMetadata.accountAuthorizationSourceTeamId ?? null,
-          accessMetadata.groupAuthorizationId ?? null,
-          accessMetadata.groupAuthorizationSourceType ?? null,
-          accessMetadata.groupAuthorizationSourceTeamId ?? null,
-          now
-        ],
-        accountId: input.accountId,
-        accountLastUsedAt: shouldRecordAccountUsageSideEffects(trafficSource) ? now : undefined,
-        accountHealthSuccessAt: shouldRecordAccountUsageSideEffects(trafficSource) && input.success ? now : undefined
-      }
-
-      const location = usageRecordShardLocationForRecord(id, now)
-      const shardRows = rowsByShard.get(location.shardKey) ?? { location, rows: [] }
-      shardRows.rows.push(row)
-      rowsByShard.set(location.shardKey, shardRows)
-      shardEntries.push({
-        id,
-        shardKey: location.shardKey,
-        systemAccountId,
-        traceId: input.traceId,
-        apiKeyId: input.apiKeyId ?? null,
-        accountId: input.accountId ?? null,
-        groupId: input.groupId ?? null,
-        model: input.model ?? null,
-        trafficSource,
-        success: input.success,
-        statusCode: input.statusCode ?? null,
-        clientIp: input.clientIp ?? null,
-        firstTokenMs: input.firstTokenMs ?? null,
-        durationMs: input.durationMs ?? null,
-        costUsd: input.costUsd ?? null,
-        createdAt: now
-      })
+    for (const shardRows of writePlan.rowsByShard.values()) {
+      const writeResult = writeUsageRecordShardRows(shardRows.location, shardRows.rows)
+      mergeUsageRecordShardWriteResult(accountLastUsedAt, accountHealthSuccessAt, writeResult)
     }
 
-    for (const shardRows of rowsByShard.values()) {
-      const shardDatabase = getUsageRecordShardDatabase(shardRows.location)
-      const insertStatement = shardDatabase.prepare(insertSql)
-      const transactionStarted = beginDatabaseTransaction(shardDatabase)
-      const shardAccountLastUsedAt = new Map<string, string>()
-      const shardAccountHealthSuccessAt = new Map<string, string>()
-      try {
-        for (const row of shardRows.rows) {
-          const result = insertStatement.run(...row.params)
-          if (Number(result.changes ?? 0) === 0 || !row.accountId) {
-            continue
-          }
-          if (row.accountLastUsedAt) {
-            const previous = shardAccountLastUsedAt.get(row.accountId)
-            if (!previous || row.accountLastUsedAt > previous) {
-              shardAccountLastUsedAt.set(row.accountId, row.accountLastUsedAt)
-            }
-          }
-          if (row.accountHealthSuccessAt) {
-            const previous = shardAccountHealthSuccessAt.get(row.accountId)
-            if (!previous || row.accountHealthSuccessAt > previous) {
-              shardAccountHealthSuccessAt.set(row.accountId, row.accountHealthSuccessAt)
-            }
-          }
-        }
-        commitDatabaseTransaction(shardDatabase, transactionStarted)
-        mergeAccountLastUsedAt(accountLastUsedAt, shardAccountLastUsedAt)
-        mergeAccountLastUsedAt(accountHealthSuccessAt, shardAccountHealthSuccessAt)
-      } catch (error) {
-        rollbackDatabaseTransaction(shardDatabase, transactionStarted)
-        throw error
-      }
-    }
-
-    recordUsageRecordShardEntries(shardEntries)
+    recordUsageRecordShardEntries(writePlan.shardEntries, { locations: writePlan.locations })
     flushUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, businessDatabase)
     accountLastUsedFlushed = true
   } catch (error) {
@@ -474,11 +346,166 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   }
 }
 
-interface UsageRecordInsertRow {
-  params: Array<string | number | null>
-  accountId?: string
-  accountLastUsedAt?: string
-  accountHealthSuccessAt?: string
+export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): Promise<void> {
+  if (inputs.length === 0) {
+    return
+  }
+
+  const businessDatabase = getBusinessDatabase()
+  const accountLastUsedAt = new Map<string, string>()
+  const accountHealthSuccessAt = new Map<string, string>()
+  const writePlan = buildUsageRecordBatchWritePlan(inputs)
+  let accountLastUsedFlushed = false
+
+  try {
+    const writeResults = await Promise.allSettled([...writePlan.rowsByShard.values()].map(async (shardRows) => {
+      return await writeUsageRecordShardRowsWithWriterPool(shardRows.location, shardRows.rows)
+    }))
+    const writeErrors: unknown[] = []
+    for (const writeResult of writeResults) {
+      if (writeResult.status === 'fulfilled') {
+        mergeUsageRecordShardWriteResult(accountLastUsedAt, accountHealthSuccessAt, writeResult.value)
+      } else {
+        writeErrors.push(writeResult.reason)
+      }
+    }
+    if (writeErrors.length > 0) {
+      throw normalizeUsageRecordBatchWriteError(writeErrors)
+    }
+    recordUsageRecordShardEntries(writePlan.shardEntries, { locations: writePlan.locations })
+    flushUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, businessDatabase)
+    accountLastUsedFlushed = true
+  } catch (error) {
+    if (!accountLastUsedFlushed && accountLastUsedAt.size > 0) {
+      flushUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, businessDatabase)
+    }
+    throw error
+  }
+}
+
+function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {
+  const first = errors[0]
+  if (first instanceof Error) {
+    return first
+  }
+  return new Error(first === undefined ? 'usage record shard write failed' : String(first))
+}
+
+interface UsageRecordBatchWritePlan {
+  rowsByShard: Map<string, { location: UsageRecordShardLocation; rows: UsageRecordShardWriteRow[] }>
+  shardEntries: UsageRecordShardEntryInput[]
+  locations: UsageRecordShardLocation[]
+}
+
+function buildUsageRecordBatchWritePlan(inputs: UsageRecordInput[]): UsageRecordBatchWritePlan {
+  const accessLookupContext = buildUsageAccessLookupContext(inputs)
+  const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordShardWriteRow[] }>()
+  const shardEntries: UsageRecordShardEntryInput[] = []
+
+  for (const input of inputs) {
+    if (input.apiKeyId && !usageApiKeyExists(input.apiKeyId, accessLookupContext)) {
+      continue
+    }
+    const now = input.createdAt ?? nowIso()
+    const id = input.id ?? generateUsageRecordId(now, newId('usage'))
+    const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input, accessLookupContext)
+    const accessMetadata = usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
+    const trafficSource = normalizeUsageRecordTrafficSource(input.trafficSource)
+    const row: UsageRecordShardWriteRow = {
+      id,
+      params: [
+        id,
+        systemAccountId,
+        input.traceId,
+        trafficSource,
+        input.clientIp ?? null,
+        input.apiKeyId ?? null,
+        input.groupId ?? null,
+        input.accountId ?? null,
+        input.endpoint ?? null,
+        input.providerCode ?? null,
+        input.providerProtocolProfileId ?? null,
+        input.usageSemantic ?? null,
+        input.model ?? null,
+        input.upstreamModel ?? null,
+        input.pricingModel ?? null,
+        input.modelMappingApplied ? 1 : 0,
+        input.modelMappingSource ?? null,
+        input.stream ? 1 : 0,
+        input.statusCode ?? null,
+        input.success ? 1 : 0,
+        input.firstTokenMs ?? null,
+        input.durationMs ?? null,
+        input.inputTokens ?? null,
+        input.outputTokens ?? null,
+        input.cacheReadTokens ?? null,
+        input.cacheReadCostUsd ?? null,
+        input.cacheWriteTokens ?? null,
+        input.cacheWrite1hTokens ?? null,
+        input.cacheWriteCostUsd ?? null,
+        input.thinkingTokens ?? null,
+        input.inputImageTokens ?? null,
+        input.outputImageTokens ?? null,
+        input.costUsd ?? null,
+        input.errorCode ?? null,
+        input.errorMessage ?? null,
+        input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
+        input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
+        accessMetadata.accountOwnerSystemAccountId ?? null,
+        accessMetadata.groupOwnerSystemAccountId ?? null,
+        accessMetadata.accountAccessType ?? null,
+        accessMetadata.groupAccessType ?? null,
+        accessMetadata.accountAuthorizationId ?? null,
+        accessMetadata.accountAuthorizationSourceType ?? null,
+        accessMetadata.accountAuthorizationSourceTeamId ?? null,
+        accessMetadata.groupAuthorizationId ?? null,
+        accessMetadata.groupAuthorizationSourceType ?? null,
+        accessMetadata.groupAuthorizationSourceTeamId ?? null,
+        now
+      ],
+      accountId: input.accountId,
+      accountLastUsedAt: shouldRecordAccountUsageSideEffects(trafficSource) ? now : undefined,
+      accountHealthSuccessAt: shouldRecordAccountUsageSideEffects(trafficSource) && input.success ? now : undefined
+    }
+
+    const location = usageRecordShardLocationForRecord(id, now)
+    const shardRows = rowsByShard.get(location.shardKey) ?? { location, rows: [] }
+    shardRows.rows.push(row)
+    rowsByShard.set(location.shardKey, shardRows)
+    shardEntries.push({
+      id,
+      shardKey: location.shardKey,
+      systemAccountId,
+      traceId: input.traceId,
+      apiKeyId: input.apiKeyId ?? null,
+      accountId: input.accountId ?? null,
+      groupId: input.groupId ?? null,
+      model: input.model ?? null,
+      trafficSource,
+      success: input.success,
+      statusCode: input.statusCode ?? null,
+      clientIp: input.clientIp ?? null,
+      firstTokenMs: input.firstTokenMs ?? null,
+      durationMs: input.durationMs ?? null,
+      costUsd: input.costUsd ?? null,
+      createdAt: now
+    })
+  }
+
+  return {
+    rowsByShard,
+    shardEntries,
+    locations: [...rowsByShard.values()].map((entry) => entry.location)
+  }
+}
+
+function mergeUsageRecordShardWriteResult(
+  accountLastUsedAt: Map<string, string>,
+  accountHealthSuccessAt: Map<string, string>,
+  result: UsageRecordShardWriteResult
+): void {
+  mergeAccountLastUsedAt(accountLastUsedAt, new Map(result.accountLastUsedAt.map((row) => [row.accountId, row.lastUsedAt])))
+  mergeAccountLastUsedAt(accountHealthSuccessAt, new Map(result.accountHealthSuccessAt.map((row) => [row.accountId, row.successAt])))
 }
 
 interface UsageRecordEntryRow {
@@ -492,7 +519,7 @@ function listUsageRecordEntries(
   orderClause: string,
   limit: number
 ): UsageRecordEntryRow[] {
-  return getDatasetDatabase()
+  return getUsageCatalogDatabase()
     .prepare(`
       SELECT usage_id, shard_key, created_at
       FROM usage_record_shard_entries ue
@@ -747,12 +774,7 @@ function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, databas
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const [accountId, lastUsedAt] of accountLastUsedAt) {
-      const previousFlushAt = accountLastUsedWriteCache.get(accountId)
-      if (previousFlushAt && Date.parse(lastUsedAt) - Date.parse(previousFlushAt) < accountLastUsedThrottleMs) {
-        continue
-      }
       updateAccountStatement.run(lastUsedAt, lastUsedAt, accountId, lastUsedAt)
-      accountLastUsedWriteCache.set(accountId, lastUsedAt)
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -761,8 +783,6 @@ function updateAccountLastUsedAt(accountLastUsedAt: Map<string, string>, databas
   }
 }
 
-const accountLastUsedThrottleMs = 30_000
-const accountLastUsedWriteCache = new Map<string, string>()
 const recentOpenAIRequestShapeLookbackDays = 7
 
 function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSource {

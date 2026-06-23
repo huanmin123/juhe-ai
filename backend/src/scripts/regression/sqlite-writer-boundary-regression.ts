@@ -13,10 +13,12 @@ process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT = 'true'
 const tempRoot = resolve(tmpdir(), `juhe-ai-sqlite-writer-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
-runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
+runtimeConfig.codexContextStateShardRoot = join(tempRoot, 'codex-context', 'state-shards')
+runtimeConfig.codexContextStateShardCount = 4
 runtimeConfig.secret = 'sqlite-writer-boundary-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -31,6 +33,7 @@ try {
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('business'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('codex-context-state'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('dataset'), 'ingest-worker')
+  assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('usage-catalog'), 'ingest-worker')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('stats'), 'stats-writer')
   assert.equal(databaseModule.sqliteWriterBoundaryStrictModeEnabled(), true)
 
@@ -39,10 +42,13 @@ try {
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   databaseModule.getBusinessDatabase()
-  databaseModule.getCodexContextStateDatabase()
+  for (const shardIndex of databaseModule.codexContextStateShardIndexes()) {
+    databaseModule.getCodexContextStateShardDatabase(shardIndex)
+  }
   databaseModule.closeStorageDatabases()
 
   runtimeConfig.processRole = 'worker'
@@ -50,9 +56,11 @@ try {
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), true)
   databaseModule.getDatasetDatabase()
+  databaseModule.getUsageCatalogDatabase()
   const shardLocation = usageRecordShards.usageRecordShardLocationForRecord('usage_20260618_s00_boundary', '2026-06-18T00:00:00.000Z')
   usageRecordShards.getUsageRecordShardDatabase(shardLocation)
   assertIngestWorkerUsageRecordWriteDoesNotTouchReadonlyBusinessDatabase()
@@ -63,6 +71,7 @@ try {
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), true)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   databaseModule.getStatsDatabase()
@@ -73,11 +82,18 @@ try {
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   assertNonOwnerWriteBlocked(databaseModule.getBusinessDatabase(), '业务库')
-  assertNonOwnerWriteBlocked(databaseModule.getCodexContextStateDatabase(), 'Codex Responses 上下文索引库')
+  for (const shardIndex of databaseModule.codexContextStateShardIndexes()) {
+    assertNonOwnerWriteBlocked(
+      databaseModule.getCodexContextStateShardDatabase(shardIndex),
+      `Codex Responses 上下文索引库分片 ${shardIndex}`
+    )
+  }
   assertNonOwnerWriteBlocked(databaseModule.getDatasetDatabase(), '数据集目录库')
+  assertNonOwnerWriteBlocked(databaseModule.getUsageCatalogDatabase(), '使用记录目录库')
   assertNonOwnerWriteBlocked(databaseModule.getStatsDatabase(), '统计库')
   assertNonOwnerWriteBlocked(usageRecordShards.getUsageRecordShardDatabase(shardLocation), 'usage shard')
   assertCodexContextStateSchemaBoundary()
@@ -117,10 +133,10 @@ function assertIngestWorkerUsageRecordWriteDoesNotTouchReadonlyBusinessDatabase(
     .get(id) as { id?: string } | undefined
   assert.equal(shardRow?.id, id, 'ingest-worker 应能写入 usage shard，不应被业务库只读副作用阻塞')
 
-  const entryRow = databaseModule.getDatasetDatabase()
+  const entryRow = databaseModule.getUsageCatalogDatabase()
     .prepare('SELECT usage_id FROM usage_record_shard_entries WHERE usage_id = ?')
     .get(id) as { usage_id?: string } | undefined
-  assert.equal(entryRow?.usage_id, id, 'ingest-worker 应能写入使用记录索引，不应被业务库只读副作用阻塞')
+  assert.equal(entryRow?.usage_id, id, 'ingest-worker 应能写入使用记录目录索引，不应被业务库只读副作用阻塞')
 }
 
 function assertNonOwnerWriteBlocked(database: import('node:sqlite').DatabaseSync, label: string): void {

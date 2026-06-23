@@ -1,14 +1,11 @@
 import type { Request } from 'express'
 
-import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import type {
   ApiKeyHybridQualityInspectionConfig,
   ApiKeyHybridRoutingConfig
 } from '../../../domain/types.js'
 import { tryAcquireAccountConcurrency } from '../../../shared/account-concurrency.js'
 import type { GatewayApiKeyRow, OpenAIAccountSecret } from '../../../storage/repositories.js'
-import { filterGatewayAccountsByRequestCapability } from '../dispatch/account-capability-filter.js'
-import { filterGatewayAccountsByRequestedModel } from '../dispatch/model-filter.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
 import {
   buildGatewayUpstreamRequestParts,
@@ -17,7 +14,10 @@ import {
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
-import { listCachedOpenAIAccountsForGroupAsync } from '../runtime/runtime-cache.service.js'
+import {
+  orderGatewayApiKeyGroupBindingsForDispatch
+} from '../routing/api-key-group-route-selector.service.js'
+import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
 import { requestUpstream } from '../upstream/request.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
 import { emptyUsage } from '../usage/types.js'
@@ -91,6 +91,7 @@ export async function inspectHybridGatewayQuality(input: {
 
   const startedAt = Date.now()
   let account: OpenAIAccountSecret | undefined
+  let qualityGroupId: string | undefined
   let statusCode: number | undefined
   try {
     const requestBody = await parseHybridQualityRequestBody(input.req, input.signal)
@@ -104,15 +105,17 @@ export async function inspectHybridGatewayQuality(input: {
     })
     const qualityBody = buildHybridQualityRequestBody(qualityConfig, context)
     const qualityReq = createHybridQualityGatewayRequest(qualityBody)
-    account = await selectHybridQualityAccount({
-      groupId: qualityConfig.scoringGroupId,
-      systemAccountId: input.apiKeyRecord.system_account_id,
+    const qualitySelection = await selectHybridQualityAccount({
+      apiKeyRecord: input.apiKeyRecord,
       scoringModel: qualityConfig.scoringModel,
       qualityReq
     })
-    if (!account) {
-      return qualityInspectionUnavailable('no_quality_scoring_account', '混合路由质量评分分组没有可用评分账户')
+    if (!qualitySelection) {
+      return qualityInspectionUnavailable('no_quality_scoring_account', '混合路由绑定分组池没有可用质量评分账户')
     }
+    account = qualitySelection.account
+    const selectedQualityGroupId = qualitySelection.groupId
+    qualityGroupId = selectedQualityGroupId
     const slot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
     if (!slot.acquired) {
       return qualityInspectionUnavailable('quality_scoring_account_busy', '混合路由质量评分账户并发已满', account.id)
@@ -126,7 +129,7 @@ export async function inspectHybridGatewayQuality(input: {
       const requestParts = await buildGatewayUpstreamRequestParts(qualityReq, account, {
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: qualityConfig.scoringGroupId
+        groupId: selectedQualityGroupId
       }, input.signal, {
         requestClientCompatibility: 'openai_standard'
       })
@@ -148,7 +151,7 @@ export async function inspectHybridGatewayQuality(input: {
           clientIp: input.clientIp,
           systemAccountId: input.apiKeyRecord.system_account_id,
           apiKeyId: input.apiKeyRecord.id,
-          groupId: qualityConfig.scoringGroupId,
+          groupId: selectedQualityGroupId,
           account,
           endpoint: `${input.endpoint}#hybrid-quality-scoring`,
           statusCode: response.status,
@@ -176,7 +179,7 @@ export async function inspectHybridGatewayQuality(input: {
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: qualityConfig.scoringGroupId,
+        groupId: selectedQualityGroupId,
         account,
         endpoint: `${input.endpoint}#hybrid-quality-scoring`,
         statusCode: response.status,
@@ -201,13 +204,13 @@ export async function inspectHybridGatewayQuality(input: {
       slot.release()
     }
   } catch (error) {
-    if (account) {
+    if (account && qualityGroupId) {
       recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: input.config.qualityInspection?.scoringGroupId ?? input.config.scoringGroupId,
+        groupId: qualityGroupId,
         account,
         endpoint: `${input.endpoint}#hybrid-quality-scoring`,
         statusCode,
@@ -276,23 +279,19 @@ function resolveHybridQualityAction(
 }
 
 async function selectHybridQualityAccount(input: {
-  groupId: string
-  systemAccountId: string
+  apiKeyRecord: GatewayApiKeyRow
   scoringModel: string
   qualityReq: Request
-}): Promise<OpenAIAccountSecret | undefined> {
-  const accounts = (await listCachedOpenAIAccountsForGroupAsync(input.groupId, input.systemAccountId))
-    .filter((account) =>
-      account.status === 'active'
-      && account.proxyProfileUnavailable !== true
-      && Boolean(account.apiKey)
-      && Boolean(account.baseUrl)
-      && isOpenAIProtocolProfile(account)
-    )
-  const capabilityFilter = filterGatewayAccountsByRequestCapability(input.qualityReq, accounts, {
+}): Promise<{ account: OpenAIAccountSecret; groupId: string } | undefined> {
+  const selection = await selectGatewayModelTargetGroup({
+    req: input.qualityReq,
+    apiKeyRecord: input.apiKeyRecord,
+    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
+    targetModel: input.scoringModel,
     requestClientCompatibility: 'openai_standard'
   })
-  return filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, input.scoringModel).accounts[0]
+  const account = selection?.accounts[0]
+  return selection && account ? { account, groupId: selection.groupId } : undefined
 }
 
 async function parseHybridQualityRequestBody(req: Request, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {

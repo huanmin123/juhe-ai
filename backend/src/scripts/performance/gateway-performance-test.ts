@@ -152,6 +152,7 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-perf-${Date.now()}-${Math.random().t
 const perfListenBacklog = 8192
 runtimeConfig.databasePath = join(tempRoot, 'perf.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'juhe-ai-performance-test-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -308,6 +309,7 @@ function prewarmUsageRecordShards(): void {
 function prewarmStorageDatabases(): void {
   databaseModule.getBusinessDatabase().prepare('SELECT 1').get()
   databaseModule.getDatasetDatabase().prepare('SELECT 1').get()
+  databaseModule.getUsageCatalogDatabase().prepare('SELECT 1').get()
   databaseModule.getStatsDatabase().prepare('SELECT 1').get()
 }
 
@@ -810,6 +812,12 @@ function buildSummary(
       bytes: fileBytes(runtimeConfig.datasetDatabasePath),
       walBytes: fileBytes(`${runtimeConfig.datasetDatabasePath}-wal`)
     },
+    usageCatalogDatabase: {
+      entries: countUsageCatalogRows('usage_record_shard_entries'),
+      shards: countUsageCatalogRows('usage_record_shards'),
+      bytes: fileBytes(databaseModule.usageCatalogDatabasePath()),
+      walBytes: fileBytes(`${databaseModule.usageCatalogDatabasePath()}-wal`)
+    },
     statsDatabase: {
       bytes: fileBytes(runtimeConfig.statsDatabasePath),
       walBytes: fileBytes(`${runtimeConfig.statsDatabasePath}-wal`)
@@ -899,6 +907,14 @@ function countRows(tableName: string): number {
       }, 0)
   }
   const row = databaseModule.getDatasetDatabase().prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+function countUsageCatalogRows(tableName: string): number {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+    throw new Error(`非法表名：${tableName}`)
+  }
+  const row = databaseModule.getUsageCatalogDatabase().prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 

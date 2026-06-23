@@ -9,6 +9,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-shard-routing-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.usageShardCount = 4
@@ -126,7 +127,7 @@ try {
     '恢复探活请求形态学习应限制最近窗口，避免扫描超出窗口的 shard'
   )
 
-  console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，数据集目录库不再创建单表，统计可从 shard 聚合')
+  console.log('使用记录分片写入回归通过：新 usage 落到多个 shard，usage catalog 独立建表，统计可从 shard 聚合')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -138,14 +139,14 @@ try {
 
 function assertCurrentShardRegistry(): void {
   const tables = new Set(
-    (databaseModule.getDatasetDatabase()
+    (databaseModule.getUsageCatalogDatabase()
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
       .all() as Array<{ name?: string }>)
       .map((row) => row.name)
       .filter((name): name is string => Boolean(name))
   )
-  assert(tables.has('usage_record_shards'), '数据集目录库应创建 usage shard 注册表')
-  assert(tables.has('usage_record_shard_entries'), '数据集目录库应创建 usage shard 记录索引表')
+  assert(tables.has('usage_record_shards'), '使用记录目录库应创建 usage shard 注册表')
+  assert(tables.has('usage_record_shard_entries'), '使用记录目录库应创建 usage shard 记录索引表')
 }
 
 function shardUsageRecordCount(): number {

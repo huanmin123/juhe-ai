@@ -98,7 +98,7 @@ type AnthropicAccountType = 'api_key'
 国产或第三方兼容入口即使支持 `POST /v1/messages`，也只能描述为“Anthropic Messages 兼容协议”。UI、文档、模型目录和授权说明不得把这类入口称为“Claude 官方直连”。例如：
 
 - DeepSeek Anthropic API 是 DeepSeek 模型的 Anthropic-compatible surface，已有独立文档见 [DeepSeek 账号接入](DeepSeek账号接入.md)。
-- 智谱 GLM Coding Plan 的 Anthropic Messages 端点如果接入，必须新增 `profile_glm_coding_anthropic_v1`，不能混进官方 `anthropic` 供应商。
+- 智谱 GLM Coding Plan 的 Anthropic Messages 端点已使用独立 `profile_glm_coding_anthropic_v1`，不能混进官方 `anthropic` 供应商。
 - Kimi / Moonshot、UCloud、OpenRouter、AiHubMix 等入口应按真实传输方和模型来源建立独立供应商或代理供应商档案。
 
 ## 账户创建类型
@@ -109,7 +109,7 @@ type AnthropicAccountType = 'api_key'
 
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认测试模型 |
 | --- | --- | --- | --- | --- |
-| Anthropic API Key | `api_key` | `profile_anthropic_anthropic_v1` | `api_key`、`base_url`、`supported_endpoint_modes` | 本地 Anthropic 目录中最低成本且可用的模型 |
+| Anthropic API Key | `api_key` | `profile_anthropic_anthropic_v1` | `api_key`、`base_url`、`supported_endpoint_modes` | `claude-fable-5` |
 
 保存规则：
 
@@ -237,7 +237,7 @@ Anthropic 返回侧必须新增协议适配器，不能复用 OpenAI v1 的 `cho
   "id": "msg_...",
   "type": "message",
   "role": "assistant",
-  "model": "claude-haiku-4-5",
+  "model": "claude-fable-5",
   "content": [
     { "type": "text", "text": "..." }
   ],
@@ -362,7 +362,35 @@ Anthropic usage 与 OpenAI usage 不同，必须单独维护语义。
 
 Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 
-模型目录从官方 Models API / 模型文档同步，优先覆盖当前可调用 Claude 文本模型。目录维护应能跟随官方 Models API 返回，不把具体型号写成长期硬编码依赖；如果要展示某个默认测试型号，必须以官方 Models API 返回值和当时可用性为准。
+模型目录从官方 Models API / 模型文档同步，优先覆盖当前可调用 Claude 文本模型。目录维护应能跟随官方 Models API 返回，不把具体型号写成长期硬编码依赖；列表顺序同时作为账户测试和模型下拉框的默认优先顺序，按官方 Models API“新模型在前”的口径维护。
+
+截至 `2026-06-22`，当前可见官方 / Claude Code 兼容模型顺序：
+
+- `claude-fable-5`
+- `claude-mythos-5`
+- `claude-mythos-preview`（`2026-06-30` 前可见）
+- `claude-opus-4-8`
+- `claude-opus-4-7`
+- `claude-opus-4-6`
+- `claude-opus-4-6-thinking`
+- `claude-opus-4-5`
+- `claude-opus-4-5-20251101`
+- `claude-opus-4-1`（`2026-08-05` 前可见）
+- `claude-opus-4-1-20250805`（`2026-08-05` 前可见）
+- `claude-sonnet-4-6`
+- `claude-sonnet-4-6-thinking`
+- `claude-sonnet-4-5`
+- `claude-sonnet-4-5-20250929`
+- `claude-haiku-4-5`
+- `claude-haiku-4-5-20251001`
+- `best`
+- `fable`
+- `opus`
+- `opus[1m]`
+- `opusplan`
+- `sonnet`
+- `sonnet[1m]`
+- `haiku`
 
 模型目录字段要求：
 
@@ -375,7 +403,7 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 - `claude-fake-5` 是本项目真实 Anthropic-compatible 代理联调用过的模型 ID，仅保留隐藏计价能力，不进入官方 Anthropic 模型发现目录；后续如果该代理拆成独立供应商，应迁移到对应供应商目录。
 - 已退休或 shutdown date 已过的模型不进入目录，例如 `claude-opus-4-20250514`、`claude-sonnet-4-20250514`、`claude-3-7-sonnet-20250219`、`claude-3-5-haiku-20241022`。
 - `supportedApiProtocols` 填 Anthropic Messages 对应能力。
-- `contextWindowTokens`、`releaseDate`、`displayName` 以官方 Models API 或官方模型文档为准；不确定时留空，不为了排序编造。
+- `contextWindowTokens`、`releaseDate`、`displayName` 以官方 Models API 或官方模型文档为准；不确定时留空，不为了排序编造；同一代或无精确发布日期的模型使用内置目录顺序字段保持下拉框从新到旧。
 - `ownedBy` 或等价展示字段应明确为 Anthropic，不跟第三方 Anthropic-compatible 模型混在一起。
 - `GET /v1/models` 对 Anthropic native 客户端返回本地 Anthropic 模型目录，不请求上游；如需增加“同步上游模型”能力，必须限制响应体大小并按当前性能底线分块读取。
 
@@ -407,7 +435,7 @@ Anthropic 账户测试必须复用真实网关链路。
 
 ```json
 {
-  "model": "claude-haiku-4-5",
+  "model": "claude-fable-5",
   "max_tokens": 16,
   "messages": [
     { "role": "user", "content": "请回复 OK" }
@@ -418,7 +446,7 @@ Anthropic 账户测试必须复用真实网关链路。
 测试要求：
 
 - 测试路径使用 `/v1/messages`。
-- 默认测试模型优先使用本地 Anthropic 目录中最低成本且可用的模型；如果目录不可用，则使用供应商 `default_test_model`。目录落库以官方 Models API 返回值为准。
+- 默认测试模型优先使用本地 Anthropic 目录中最新官方可用模型；如果目录不可用，则使用供应商 `default_test_model`。目录落库以官方 Models API 返回值为准。
 - 测试请求必须带 `anthropic-version: 2023-06-01`。
 - 测试成功后记录 `last_successful_test_model`。
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。

@@ -320,6 +320,34 @@ export async function prepareOpenAIGatewayDispatchContext(
         return undefined
       }
     }
+    if (normalRoute.outcome === 'failed') {
+      auditCapture.addGatewayMetadata({
+        label: 'normal_model_route_failed',
+        metadata: {
+          requestedModel: normalRoute.requestedModel,
+          reason: normalRoute.code,
+          matchedProviderCodes: normalRoute.matchedProviderCodes,
+          sourceBindingCount: previousBindingCount
+        }
+      })
+      const responsePayload = gatewayErrorPayload(normalRoute.message, normalRoute.type, normalRoute.code)
+      sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: baseUsageContext,
+        startedAt,
+        statusCode: normalRoute.statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: normalRoute.statusCode >= 500 ? 'dispatch' : 'request_validation',
+          errorCode: normalRoute.code,
+          errorMessage: normalRoute.message
+        }
+      })
+      return undefined
+    }
   }
 
   if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'hybrid') {
@@ -593,6 +621,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     clientIp: gatewayClientIp,
     endpoint,
+    loadModelAwareCandidateAccounts: options.candidateAccounts
+      ? undefined
+      : (model) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model }),
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
@@ -628,6 +659,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     usageContext,
     startedAt,
     candidateAccounts: candidateFilter.accounts,
+    modelPriority: candidateFilter.modelPriority,
     sessionAffinityKey,
     groupAccess,
     systemAccountId,

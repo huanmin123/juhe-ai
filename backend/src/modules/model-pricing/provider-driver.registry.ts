@@ -109,7 +109,7 @@ export function modelPricingProviderDriverForProvider(providerCode: string | und
 
 function buildOpenAIModelCandidates(model: string): string[] {
   const candidates = new Set<string>()
-  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
   if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
@@ -143,7 +143,7 @@ function isUnavailableOpenAIModel(model: string): boolean {
 
 function buildDeepSeekModelCandidates(model: string): string[] {
   const candidates = new Set<string>()
-  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
   if (model.startsWith('deepseek-ai-v4-flash')) candidates.add('deepseek-v4-flash')
@@ -156,15 +156,40 @@ function buildDeepSeekModelCandidates(model: string): string[] {
 
 function buildGlmModelCandidates(model: string): string[] {
   const candidates = new Set<string>()
-  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
-  if (model.startsWith('glm-5.2-free-')) candidates.add('glm-5.2-free')
-  if (model.startsWith('glm-5.2-')) candidates.add('glm-5.2')
-  if (model.startsWith('glm-5-turbo-')) candidates.add('glm-5-turbo')
+  for (const base of glmModelCandidateBasesBySpecificity) {
+    if (model === base || model.startsWith(`${base}-`)) candidates.add(base)
+  }
 
   return Array.from(candidates)
 }
+
+const modelDateSuffixPattern = /-(?:\d{4}-\d{2}-\d{2}|\d{8})$/
+
+const glmModelCandidateBases = [
+  'glm-5.2-free',
+  'glm-5.2',
+  'glm-5.1',
+  'glm-5-turbo',
+  'glm-5',
+  'glm-4.7-flashx',
+  'glm-4.7-flash',
+  'glm-4.7',
+  'glm-4.6',
+  'glm-4.5-airx',
+  'glm-4.5-air',
+  'glm-4.5-flash',
+  'glm-4.5-x',
+  'glm-4.5',
+  'glm-4-32b-0414-128k',
+  'glm-4-long',
+  'glm-4-flashx-250414',
+  'glm-4-flash-250414'
+]
+const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]
+  .sort((left, right) => right.length - left.length)
 
 const unavailableOpenAIModels = new Set([
   'chatgpt-4o-latest',
@@ -306,7 +331,7 @@ const openAIModelReleaseDates = new Map<string, string>([
 
 function buildAnthropicModelCandidates(model: string): string[] {
   const candidates = new Set<string>()
-  const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
   for (const base of anthropicModelCandidateBasesBySpecificity) {

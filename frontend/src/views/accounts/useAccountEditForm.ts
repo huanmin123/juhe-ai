@@ -1,6 +1,7 @@
 import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
+import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
@@ -89,9 +90,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   let formOpenRequestToken = 0
 
   const createScopeParams = computed<AccountScopeParams>(() => creatingAccountScopeParams.value ?? options.accountScopeParams.value)
+  const allProviderModelScopeParams = computed<AccountScopeParams>(() => editingId.value ? editingAccountScopeParams() : createScopeParams.value)
   const {
     loadProviderModelOptions,
-    mappingTargetModelOptions,
     providerModelOptions,
     providerModelsLoading,
     resetProviderModelOptions
@@ -101,6 +102,17 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     extractApiErrorMessage: options.extractApiErrorMessage,
     isManagementView: options.isManagementView
   })
+  const {
+    loading: allProviderModelsLoading,
+    loadModelOptions: loadAllProviderModelOptions,
+    selectOptions: mappingSourceModelOptions
+  } = useProviderModelSelectOptions({
+    scopeParams: allProviderModelScopeParams,
+    onLoadError: (error) => {
+      message.error(options.extractApiErrorMessage(error, '加载全局模型目录失败'))
+    }
+  })
+  const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value)
   const {
     accountTagOptions,
     accountTagOptionsLoading,
@@ -255,6 +267,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadAccountTagOptions(options.accountScopeParams.value)
     void loadProviderModelOptions(form.providerCode)
+    void loadAllProviderModelOptions()
     modalOpen.value = true
   }
 
@@ -277,6 +290,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     resetForm(providerCode, '')
     void loadProviderGroupOptions(providerCode, form.providerProtocolProfileId)
     void loadProviderModelOptions(providerCode)
+    void loadAllProviderModelOptions()
   }
 
   function selectAccountType(type: AccountType) {
@@ -311,6 +325,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadProviderGroupOptions(providerCode, providerProtocolProfileId)
     void loadProviderModelOptions(providerCode)
+    void loadAllProviderModelOptions()
     ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
     authResult.value = undefined
   }
@@ -360,6 +375,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadAccountTagOptions(editScopeParams)
     void loadProviderModelOptions(sourceAccount.providerCode)
+    void loadAllProviderModelOptions()
   }
 
   async function openClone(account: AccountSummary) {
@@ -411,6 +427,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadAccountTagOptions(cloneScopeParams)
     void loadProviderModelOptions(sourceAccount.providerCode)
+    void loadAllProviderModelOptions()
   }
 
   async function loadProviderGroupOptions(providerCode: string, providerProtocolProfileId = form.providerProtocolProfileId): Promise<void> {
@@ -481,7 +498,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isApiKeyForm,
     isOAuthForm,
     isOpenAIOAuthForm,
-    mappingTargetModelOptions,
+    mappingSourceModelOptions,
     modalConfirmLoading,
     modalOkButtonProps,
     modalOpen,
@@ -500,6 +517,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     selectedProtocolProfile,
     selectedProvider,
     selectProvider,
+    strategyModelsLoading,
     targetSystemAccountLabel
   }
 

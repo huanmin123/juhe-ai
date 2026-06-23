@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     assert.match(featureResponseText, /没有可用的上游账户/, `所有账号失败不应透传上游原文，应返回网关统一错误：${featureResponseText}`)
     assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
     assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
-    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Invalid value/, '未命中账户错误处理规则的上游失败应进入运行态屏障')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级 invalid_request 失败不应污染账号运行态')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     currentScenario = 'same_signature_third_account_success'
@@ -240,8 +240,7 @@ async function main(): Promise<void> {
     assert.equal(thirdSuccessResponse.status, 200, `前两个账号返回相同上游错误但第三账号可用时应救回请求，实际 HTTP ${thirdSuccessResponse.status}: ${thirdSuccessResponseText}`)
     assert.equal(thirdSuccessResponseText, thirdAccountSuccessBody, `第三账号救回响应体异常：${thirdSuccessResponseText}`)
     assert.equal(thirdAccountSuccessHitCount, 3, `第三账号救回应尝试三个账号，实际 ${thirdAccountSuccessHitCount}`)
-    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount], /上游账号返回非成功状态：HTTP 422|Regression request payload is invalid/, '后续账号成功也不能掩盖前序账号运行态屏障')
-    assertAccountsActive([thirdAccount], '成功救回请求的第三账号应保持正常')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级相同签名失败后由第三账号救回时不应污染账号运行态')
     restoreRegressionAccounts([firstAccount, secondAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -265,7 +264,7 @@ async function main(): Promise<void> {
     assert.match(signatureResponseText, /没有可用的上游账户/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
     assert.notEqual(signatureResponseText, sameSignatureRejectedRequestBody, '相同上游错误失败不应保留上游原始错误体')
     assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应尝试全部三个账号，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Regression request payload is invalid/, '相同上游错误也应逐个进入运行态屏障')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级相同上游错误不应逐个进入运行态屏障')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     const repeatedSignatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -279,7 +278,7 @@ async function main(): Promise<void> {
     const repeatedSignatureResponseText = await repeatedSignatureResponse.text()
     assert.equal(repeatedSignatureResponse.status, 503, `重复相同上游错误请求必须重新探测上游，实际 HTTP ${repeatedSignatureResponse.status}: ${repeatedSignatureResponseText}`)
     assert.equal(sameSignatureUpstreamHitCount, 6, `重复相同上游错误请求清理本地屏蔽后应重新探测上游，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount, thirdAccount], /上游账号返回非成功状态：HTTP 422|Regression request payload is invalid/, '重复上游错误仍应进入运行态屏障')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '重复请求级上游错误仍不应污染账号运行态')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -301,8 +300,7 @@ async function main(): Promise<void> {
     assert.equal(instructionsRequiredResponse.status, 200, `首账号 invalid_request_error 但后续账号可用时应切号成功，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
     assert.equal(instructionsRequiredResponseText, invalidRequestSwitchSuccessBody, `invalid_request_error 切号成功响应体异常：${instructionsRequiredResponseText}`)
     assert.equal(invalidRequestSwitchUpstreamHitCount, 2, `invalid_request_error 切号成功应命中两个账号，实际 ${invalidRequestSwitchUpstreamHitCount}`)
-    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 400|Instructions are required/, '首账号 invalid_request_error 也应进入运行态屏障')
-    assertAccountsActive([secondAccount], '切号成功账号应保持正常')
+    assertAccountsActive([firstAccount, secondAccount], '首账号请求级 invalid_request_error 后由第二账号救回时不应污染账号运行态')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 

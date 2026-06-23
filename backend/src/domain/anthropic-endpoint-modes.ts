@@ -1,4 +1,8 @@
 import type { AccountSupportedEndpointMode } from './types.js'
+import {
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+} from './provider-protocol.js'
 
 export const ANTHROPIC_ENDPOINT_MODE_VALUES: readonly AccountSupportedEndpointMode[] = [
   'messages_json',
@@ -13,9 +17,16 @@ export interface AnthropicEndpointModeDefaultContext {
   accountType?: string
   protocolCode?: string
   protocolVersion?: string
+  providerProtocolProfileId?: string
 }
 
-export function defaultAnthropicEndpointModes(_input: AnthropicEndpointModeDefaultContext = {}): AccountSupportedEndpointMode[] {
+export function defaultAnthropicEndpointModes(input: AnthropicEndpointModeDefaultContext = {}): AccountSupportedEndpointMode[] {
+  if (
+    input.providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
+    || input.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+  ) {
+    return ['messages_json', 'messages_sse']
+  }
   return [...ANTHROPIC_ENDPOINT_MODE_VALUES]
 }
 
@@ -99,6 +110,7 @@ export function accountSupportsAnthropicEndpointMode(input: {
   accountType?: string
   protocolCode?: string
   protocolVersion?: string
+  providerProtocolProfileId?: string
   mode: AccountSupportedEndpointMode
 }): boolean {
   const supportedModes = input.supportedEndpointModes?.length
@@ -107,7 +119,8 @@ export function accountSupportsAnthropicEndpointMode(input: {
       providerCode: input.providerCode,
       accountType: input.accountType,
       protocolCode: input.protocolCode,
-      protocolVersion: input.protocolVersion
+      protocolVersion: input.protocolVersion,
+      providerProtocolProfileId: input.providerProtocolProfileId
     })
   return supportedModes.includes(input.mode)
 }
@@ -124,6 +137,6 @@ export function assertAnthropicEndpointModesCompatible(input: {
     throw new Error(`Anthropic API Key 账户接口能力不支持：${unsupported.join(', ')}`)
   }
   if (!input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
-    throw new Error('Anthropic API Key 账户必须至少支持 Messages JSON 或 Messages SSE')
+    throw new Error('Anthropic API Key 账户必须至少支持 Messages API (JSON) 或 Messages API (Streaming)')
   }
 }

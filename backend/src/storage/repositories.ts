@@ -12,8 +12,16 @@ import { accountCredentialFingerprint } from './account-identity.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { maxAccountNameLength, replaceAccountNameSearchTerms } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
-import { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
-export { normalizeAccountModelMappingsForProvider, normalizeAccountSupportedModelsForProvider } from './account-model-normalization.js'
+import {
+  assertAccountModelMappingSourcesAllowedBySupportedModels,
+  normalizeAccountModelMappingsForProvider,
+  normalizeAccountSupportedModelsForProvider
+} from './account-model-normalization.js'
+export {
+  assertAccountModelMappingSourcesAllowedBySupportedModels,
+  normalizeAccountModelMappingsForProvider,
+  normalizeAccountSupportedModelsForProvider
+} from './account-model-normalization.js'
 import { replaceAccountModelMappings } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import {
@@ -434,6 +442,7 @@ export {
 } from './account-usage-snapshot.repository.js'
 export {
   createUsageRecord,
+  createUsageRecordsBatchAsync,
   createUsageRecordsBatch,
   findRecentOpenAIRequestShapeForAccount,
   getUsageRecordDetail,
@@ -936,6 +945,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
   const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId) ?? []
+  assertAccountModelMappingSourcesAllowedBySupportedModels(modelMappings, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
@@ -1163,6 +1173,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const nextModelMappings = hasModelMappingsInput
     ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId) ?? []
     : current.modelMappings ?? []
+  assertAccountModelMappingSourcesAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
   const hasTagsInput = hasOwnInput(input, 'tags')
   const nextTagNames = hasTagsInput
     ? normalizeAccountTagNamesInput(input.tags) ?? []

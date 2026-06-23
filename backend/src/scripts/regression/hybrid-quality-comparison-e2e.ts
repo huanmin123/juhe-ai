@@ -27,11 +27,13 @@ interface QualityCase {
 }
 
 interface CompletionResult {
+  attempts?: number
   content: string
   durationMs: number
   error?: string
   model?: string
   ok: boolean
+  retryErrors?: string[]
   status: number
 }
 
@@ -72,11 +74,12 @@ const realBaseUrl = envText('JUHE_REAL_HYBRID_QUALITY_BASE_URL', [
 ]) || 'https://vsllm.com'
 const caseLimit = Math.min(
   allQualityCases.length,
-  Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_CASES') ?? 16)
+  Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_CASES') ?? 20)
 )
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_REQUEST_TIMEOUT_MS') ?? 240_000
-const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_REQUEST_INTERVAL_MS') ?? 800
-const upstreamRetryCount = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_UPSTREAM_RETRIES') ?? 2
+const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_REQUEST_INTERVAL_MS') ?? 6_500
+const upstreamRetryCount = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_UPSTREAM_RETRIES') ?? 20
+const upstreamRetryDelayMs = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_UPSTREAM_RETRY_DELAY_MS') ?? 5_000
 const parallelTargetRequests = booleanEnv('JUHE_REAL_HYBRID_QUALITY_PARALLEL_REQUESTS') ?? false
 const parallelJudgeRequests = booleanEnv('JUHE_REAL_HYBRID_QUALITY_PARALLEL_JUDGES') ?? false
 const outputPath = envText('JUHE_REAL_HYBRID_QUALITY_OUTPUT_PATH')
@@ -109,6 +112,7 @@ const modelUnitCosts = new Map<string, number>([
 const tempRoot = resolve(tmpdir(), `juhe-ai-hybrid-quality-comparison-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-quality-comparison.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'hybrid-quality-comparison-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -175,7 +179,6 @@ try {
         status: 'active'
       })),
       hybridRoutingConfig: {
-        scoringGroupId: scoring.groupId,
         scoringModel,
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
@@ -291,7 +294,7 @@ function createRealGroupAccount(groupName: string, accountName: string, supporte
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    concurrencyLimit: 4,
+    concurrencyLimit: 1,
     supportedModels: [supportedModel]
   }, access)
   assert.deepEqual(account.supportedModels, [supportedModel])
@@ -305,6 +308,16 @@ async function callGatewayCompletion(
   testCase: QualityCase,
   sessionId: string
 ): Promise<CompletionResult> {
+  return callWithCompletionRetries((attempt) => callGatewayCompletionOnce(baseUrl, localApiKey, model, testCase, `${sessionId}-attempt-${attempt}`))
+}
+
+async function callGatewayCompletionOnce(
+  baseUrl: string,
+  localApiKey: string,
+  model: string,
+  testCase: QualityCase,
+  requestId: string
+): Promise<CompletionResult> {
   const startedAt = Date.now()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), requestTimeoutMs)
@@ -315,8 +328,8 @@ async function callGatewayCompletion(
       headers: {
         authorization: `Bearer ${localApiKey}`,
         'content-type': 'application/json',
-        'x-session-id': sessionId,
-        'x-client-request-id': `${sessionId}-${testCase.id}`
+        'x-session-id': requestId,
+        'x-client-request-id': `${requestId}-${testCase.id}`
       },
       body: JSON.stringify({
         model,
@@ -398,7 +411,9 @@ async function runTargetCompletions(input: {
     }
   }
   const hybridResult = await callGatewayCompletion(input.baseUrl, input.hybridApiKey, 'hybrid-client-router', input.testCase, `quality-hybrid-${input.index}`)
+  await wait(requestIntervalMs)
   const gptResult = await callDirectModelCompletion(gptModel, input.testCase)
+  await wait(requestIntervalMs)
   const opusResult = await callDirectModelCompletion(opusModel, input.testCase)
   return {
     hybrid: hybridResult,
@@ -417,11 +432,7 @@ async function judgeCase(
       judgeSingleAnswer(testCase, results.gpt55),
       judgeSingleAnswer(testCase, results.opus)
     ])
-    : [
-      await judgeSingleAnswer(testCase, results.hybrid),
-      await judgeSingleAnswer(testCase, results.gpt55),
-      await judgeSingleAnswer(testCase, results.opus)
-    ]
+    : await judgeAnswersSerially(testCase, results)
   const failedJudges = [hybridJudgement, gptJudgement, opusJudgement]
     .filter((item) => !item.ok && item.raw)
     .map((item) => item.raw)
@@ -477,23 +488,55 @@ async function judgeSingleAnswer(testCase: QualityCase, result: CompletionResult
   }
 }
 
+async function judgeAnswersSerially(
+  testCase: QualityCase,
+  results: Record<TargetKey, CompletionResult>
+): Promise<[
+  Awaited<ReturnType<typeof judgeSingleAnswer>>,
+  Awaited<ReturnType<typeof judgeSingleAnswer>>,
+  Awaited<ReturnType<typeof judgeSingleAnswer>>
+]> {
+  const hybridJudgement = await judgeSingleAnswer(testCase, results.hybrid)
+  await wait(requestIntervalMs)
+  const gptJudgement = await judgeSingleAnswer(testCase, results.gpt55)
+  await wait(requestIntervalMs)
+  const opusJudgement = await judgeSingleAnswer(testCase, results.opus)
+  return [hybridJudgement, gptJudgement, opusJudgement]
+}
+
 async function callUpstreamChatCompletion(payload: Record<string, unknown>): Promise<CompletionResult> {
+  return callWithCompletionRetries(() => callUpstreamChatCompletionOnce(payload))
+}
+
+async function callWithCompletionRetries(callOnce: (attempt: number) => Promise<CompletionResult>): Promise<CompletionResult> {
+  const startedAt = Date.now()
+  const retryErrors: string[] = []
   let lastResult: CompletionResult | undefined
-  for (let attempt = 0; attempt <= upstreamRetryCount; attempt += 1) {
-    if (attempt > 0) {
-      await wait(Math.min(2_000 * attempt, 5_000))
-    }
-    const result = await callUpstreamChatCompletionOnce(payload)
-    if (result.ok) return result
+  for (let attempt = 1; attempt <= upstreamRetryCount + 1; attempt += 1) {
+    const result = await callOnce(attempt)
     lastResult = result
-    if (!isRetryableUpstreamResult(result)) return result
+    if (result.ok || !isRetryableUpstreamResult(result) || attempt > upstreamRetryCount) {
+      return {
+        ...result,
+        attempts: attempt,
+        durationMs: Date.now() - startedAt,
+        retryErrors: retryErrors.length ? retryErrors : undefined
+      }
+    }
+    retryErrors.push(completionRetrySummary(result))
+    await wait(upstreamRetryDelayMs)
   }
-  return lastResult ?? {
-    content: '',
-    durationMs: 0,
-    error: 'upstream retry exhausted',
-    ok: false,
-    status: 0
+  return {
+    ...(lastResult ?? {
+      content: '',
+      durationMs: 0,
+      error: 'upstream retry exhausted',
+      ok: false,
+      status: 0
+    }),
+    attempts: upstreamRetryCount + 1,
+    durationMs: Date.now() - startedAt,
+    retryErrors: retryErrors.length ? retryErrors : undefined
   }
 }
 
@@ -543,6 +586,11 @@ function isRetryableUpstreamResult(result: CompletionResult): boolean {
   }
   const error = result.error ?? ''
   return error.includes('bad_response_body') || error.includes('corrupted upstream response')
+}
+
+function completionRetrySummary(result: CompletionResult): string {
+  const error = result.error ? result.error.replace(/\s+/g, ' ').slice(0, 180) : 'empty error'
+  return `status=${result.status} ${error}`
 }
 
 function buildTaskPrompt(testCase: QualityCase): string {
@@ -704,6 +752,14 @@ function buildSummary(input: {
     baseUrl: sanitizeBaseUrl(realBaseUrl),
     cases: input.selectedCases.map((item) => ({ id: item.id, title: item.title, category: item.category })),
     caseCount: input.selectedCases.length,
+    retryPolicy: {
+      retryableFailuresAreStabilityNoise: true,
+      maxRetries: upstreamRetryCount,
+      maxAttempts: upstreamRetryCount + 1,
+      retryDelayMs: upstreamRetryDelayMs,
+      requestIntervalMs,
+      qualityMetricsScope: 'only_successful_target_answers'
+    },
     judgeModel,
     baselineModels: {
       hybridClientModel: 'hybrid-client-router',
@@ -712,6 +768,8 @@ function buildSummary(input: {
     },
     routeModels: levelRoutes.map((route) => `${route.minLevel}-${route.maxLevel}:${route.targetModel}`),
     requestSuccessRates: requestSuccessRateByTarget(input.comparisons),
+    qualityEvaluatedCounts: qualityEvaluatedCountByTarget(input.comparisons),
+    stabilityFailureCounts: stabilityFailureCountByTarget(input.comparisons),
     passRates,
     averageScores,
     hybridUsageModelCounts,
@@ -727,6 +785,7 @@ function buildSummary(input: {
       judge: Number((input.selectedCases.length * judgeUnitCost).toFixed(6))
     },
     failedRequests: failedRequestItems,
+    stabilityFailures: failedRequestItems,
     failedJudges: input.comparisons
       .filter((item) => !item.judgeOk)
       .map((item) => ({ caseId: item.caseId, title: item.title, judgeRaw: item.judgeRaw }))
@@ -743,6 +802,11 @@ function buildSummary(input: {
         hybrid: item.results.hybrid.model,
         gpt55: item.results.gpt55.model,
         opus: item.results.opus.model
+      },
+      attempts: {
+        hybrid: item.results.hybrid.attempts,
+        gpt55: item.results.gpt55.attempts,
+        opus: item.results.opus.attempts
       }
     }))
   }
@@ -772,7 +836,7 @@ function requestSuccessRateByTarget(items: CaseComparisonResult[]): Record<Targe
 }
 
 function usageCountsForApiKey(apiKeyId: string): UsageCountRow[] {
-  return databaseModule.getDatasetDatabase()
+  return databaseModule.getUsageCatalogDatabase()
     .prepare(`
       SELECT traffic_source, model, success, COUNT(*) AS count, SUM(cost_usd) AS cost_usd
       FROM usage_record_shard_entries
@@ -800,21 +864,51 @@ function usageCount(rows: UsageCountRow[], trafficSource: string): number {
 }
 
 function passRateByTarget(items: CaseComparisonResult[]): Record<TargetKey, number> {
-  const denominator = Math.max(1, items.length)
+  const denominators = qualityEvaluatedCountByTarget(items)
   return {
-    hybrid: roundRate(items.filter((item) => item.scores.hybrid.pass).length / denominator),
-    gpt55: roundRate(items.filter((item) => item.scores.gpt55.pass).length / denominator),
-    opus: roundRate(items.filter((item) => item.scores.opus.pass).length / denominator)
+    hybrid: rateForSuccessfulAnswers(items, 'hybrid', denominators.hybrid),
+    gpt55: rateForSuccessfulAnswers(items, 'gpt55', denominators.gpt55),
+    opus: rateForSuccessfulAnswers(items, 'opus', denominators.opus)
   }
 }
 
 function averageScoreByTarget(items: CaseComparisonResult[]): Record<TargetKey, number> {
-  const denominator = Math.max(1, items.length)
+  const denominators = qualityEvaluatedCountByTarget(items)
   return {
-    hybrid: roundScore(items.reduce((sum, item) => sum + item.scores.hybrid.totalScore, 0) / denominator),
-    gpt55: roundScore(items.reduce((sum, item) => sum + item.scores.gpt55.totalScore, 0) / denominator),
-    opus: roundScore(items.reduce((sum, item) => sum + item.scores.opus.totalScore, 0) / denominator)
+    hybrid: averageScoreForSuccessfulAnswers(items, 'hybrid', denominators.hybrid),
+    gpt55: averageScoreForSuccessfulAnswers(items, 'gpt55', denominators.gpt55),
+    opus: averageScoreForSuccessfulAnswers(items, 'opus', denominators.opus)
   }
+}
+
+function qualityEvaluatedCountByTarget(items: CaseComparisonResult[]): Record<TargetKey, number> {
+  return {
+    hybrid: items.filter((item) => item.results.hybrid.ok).length,
+    gpt55: items.filter((item) => item.results.gpt55.ok).length,
+    opus: items.filter((item) => item.results.opus.ok).length
+  }
+}
+
+function stabilityFailureCountByTarget(items: CaseComparisonResult[]): Record<TargetKey, number> {
+  return {
+    hybrid: items.filter((item) => !item.results.hybrid.ok).length,
+    gpt55: items.filter((item) => !item.results.gpt55.ok).length,
+    opus: items.filter((item) => !item.results.opus.ok).length
+  }
+}
+
+function rateForSuccessfulAnswers(items: CaseComparisonResult[], target: TargetKey, denominator: number): number {
+  if (denominator <= 0) return 0
+  return roundRate(items.filter((item) => item.results[target].ok && item.scores[target].pass).length / denominator)
+}
+
+function averageScoreForSuccessfulAnswers(items: CaseComparisonResult[], target: TargetKey, denominator: number): number {
+  if (denominator <= 0) return 0
+  return roundScore(
+    items
+      .filter((item) => item.results[target].ok)
+      .reduce((sum, item) => sum + item.scores[target].totalScore, 0) / denominator
+  )
 }
 
 function responseModelCounts(items: CaseComparisonResult[], target: TargetKey): Record<string, number> {
@@ -862,7 +956,14 @@ function failedRequests(items: CaseComparisonResult[]): Array<Record<string, unk
     for (const target of ['hybrid', 'gpt55', 'opus'] as TargetKey[]) {
       const result = item.results[target]
       if (!result.ok) {
-        output.push({ caseId: item.caseId, target, status: result.status, error: result.error })
+        output.push({
+          attempts: result.attempts,
+          caseId: item.caseId,
+          error: result.error,
+          retryErrors: result.retryErrors,
+          status: result.status,
+          target
+        })
       }
     }
   }
@@ -1118,7 +1219,7 @@ function qualityCases(): QualityCase[] {
     id: 'quality-003',
     title: 'Vue API Key 编辑弹窗改造',
     category: 'frontend_form',
-    prompt: '为 Vue 3 + Ant Design Vue 的 API Key 编辑弹窗增加“混合路由”配置。用户可以选择评分分组、评分模型、1-10 等级区间、目标模型和缓存亲和参数。请给出组件状态、校验规则和交互方案。',
+    prompt: '为 Vue 3 + Ant Design Vue 的 API Key 编辑弹窗增加“混合路由”配置。用户可以选择评分模型、1-10 等级区间、目标模型和缓存亲和参数；模型只能来自模型目录下拉。请给出组件状态、校验规则和交互方案。',
     acceptanceCriteria: [
       '区分 normal 和 hybrid 两种模式',
       '等级区间必须覆盖 1-10 且不能重叠',
@@ -1305,6 +1406,58 @@ function qualityCases(): QualityCase[] {
       '前端状态、加载、空态和错误态明确',
       '说明 TopN 和趋势图数据结构',
       '包含端到端验收用例'
+    ]
+  },
+  {
+    id: 'quality-017',
+    title: 'SQLite 数据结构调整方案',
+    category: 'data_migration',
+    prompt: '当前 API Key 表需要新增 hybrid_quality_inspection_json 字段，并调整 usage 记录来源枚举。项目不做运行时代码兼容旧结构。请设计当前 schema 调整、离线同步边界、repository 校验和回归测试。',
+    acceptanceCriteria: [
+      '说明当前 schema 字段和默认值',
+      '明确不在运行时代码做旧结构兼容',
+      '给出 repository 写入和读取校验',
+      '说明 usage trafficSource 枚举扩展影响',
+      '包含离线同步或部署前检查建议'
+    ]
+  },
+  {
+    id: 'quality-018',
+    title: '前端筛选状态回归',
+    category: 'frontend_state',
+    prompt: '一个使用记录页面新增 trafficSource=hybrid_quality_scoring 后，用户反馈筛选项能选但刷新页面后状态丢失。请设计定位和修复方案，覆盖类型定义、URL/query 状态、表格标签和移动端卡片。',
+    acceptanceCriteria: [
+      '检查 domain 类型和筛选工具栏类型',
+      '检查页面状态序列化和恢复',
+      '检查标签文案和颜色映射',
+      '覆盖桌面表格和移动端卡片',
+      '给出前端回归测试点'
+    ]
+  },
+  {
+    id: 'quality-019',
+    title: '发布失败回滚预案',
+    category: 'deploy_ops',
+    prompt: '设计一次轻量 Node + Vue 项目发布失败回滚预案。场景：新版本引入混合路由配置后，部分 API Key 保存失败。要求给出发布前检查、灰度验证、回滚触发条件和数据处理边界。',
+    acceptanceCriteria: [
+      '包含发布前 schema 和环境检查',
+      '包含灰度 API Key 保存和真实请求验证',
+      '明确回滚触发条件和日志定位',
+      '说明新增字段数据不在运行时代码回滚中双写',
+      '包含用户影响和告警口径'
+    ]
+  },
+  {
+    id: 'quality-020',
+    title: '长上下文缓存收益分析',
+    category: 'cache_cost',
+    prompt: '一个会话连续 12 次请求，前 2 次规划很长，后 10 次是按计划执行。模型切换可能破坏 KV/prompt cache。请设计混合路由如何结合评分、缓存亲和、cacheReadTokens、inputTokens 和模型价格判断是否切换。',
+    acceptanceCriteria: [
+      '区分任务难度评分和缓存收益判断',
+      '说明长上下文高 cache read 时提高切换门槛',
+      '说明低风险短请求可以更积极降档',
+      '给出成本估算公式或伪代码',
+      '包含边界测试和审计字段'
     ]
   }
   ]

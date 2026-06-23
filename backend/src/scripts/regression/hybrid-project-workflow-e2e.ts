@@ -103,9 +103,9 @@ const realBaseUrl = envText('JUHE_REAL_HYBRID_PROJECT_BASE_URL', [
 const repoUrl = envText('JUHE_REAL_HYBRID_PROJECT_REPO_URL') || 'https://github.com/codescandy/dash-ui-react-vitejs-typescript.git'
 const taskLimit = Math.min(workflowTasks().length, Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_TASKS') ?? 4))
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_REQUEST_TIMEOUT_MS') ?? 240_000
-const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_REQUEST_INTERVAL_MS') ?? 800
-const upstreamRetryCount = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRIES') ?? 2
-const upstreamRetryDelayMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRY_DELAY_MS') ?? 2_500
+const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_REQUEST_INTERVAL_MS') ?? 6_500
+const upstreamRetryCount = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRIES') ?? 20
+const upstreamRetryDelayMs = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_UPSTREAM_RETRY_DELAY_MS') ?? 5_000
 const repositoryCloneRetries = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_CLONE_RETRIES') ?? 3
 const outputMaxTokens = positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_OUTPUT_MAX_TOKENS') ?? 4_000
 const scoringCacheTtlSeconds = Math.min(
@@ -114,6 +114,10 @@ const scoringCacheTtlSeconds = Math.min(
 )
 const outputPath = envText('JUHE_REAL_HYBRID_PROJECT_OUTPUT_PATH')
 const runBuildValidation = booleanEnv('JUHE_REAL_HYBRID_PROJECT_RUN_BUILD') ?? false
+const allowGeneratedFixture = booleanEnv('JUHE_REAL_HYBRID_PROJECT_ALLOW_GENERATED_FIXTURE') ?? false
+const projectProfile = allowGeneratedFixture || repoUrl === 'local:generated'
+  ? 'Generated React + Vite + TypeScript admin dashboard fixture, src > 10k lines'
+  : 'React + Vite + TypeScript admin dashboard, src ~= 22k lines'
 const selectedStrategies = workflowStrategies()
 const hybridRouteEvents: HybridRouteEvent[] = []
 const hybridRouteDiagnosticsChannel = channel('juhe-ai:hybrid-route-decision')
@@ -171,6 +175,7 @@ const allowedOutputFiles = new Set([
 const tempRoot = resolve(tmpdir(), `juhe-ai-hybrid-project-workflow-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-project-workflow.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'hybrid-project-workflow-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -241,7 +246,6 @@ try {
         status: 'active'
       })),
       hybridRoutingConfig: {
-        scoringGroupId: scoring.groupId,
         scoringModel,
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
@@ -255,7 +259,6 @@ try {
         downgradeConsecutiveLowCount: 2,
         qualityInspection: qualityInspectionEnabled ? {
           enabled: true,
-          scoringGroupId: qualityScoring.groupId,
           scoringModel: qualityScoringModel,
           triggerMode: 'risk_based',
           minTriggerLevel: qualityInspectionMinLevel,
@@ -357,7 +360,7 @@ function createRealGroupAccount(groupName: string, accountName: string, supporte
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    concurrencyLimit: 2,
+    concurrencyLimit: 1,
     supportedModels: [supportedModel]
   }, access)
   assert.deepEqual(account.supportedModels, [supportedModel])
@@ -485,6 +488,10 @@ async function runWorkflow(input: {
 }
 
 function cloneRepository(targetPath: string): void {
+  if (repoUrl === 'local:generated') {
+    createGeneratedWorkflowProject(targetPath)
+    return
+  }
   let lastOutput = ''
   for (let attempt = 1; attempt <= repositoryCloneRetries + 1; attempt += 1) {
     const result = spawnSync('git', ['clone', '--depth', '1', repoUrl, targetPath], {
@@ -498,7 +505,137 @@ function cloneRepository(targetPath: string): void {
       continue
     }
   }
+  if (allowGeneratedFixture) {
+    createGeneratedWorkflowProject(targetPath)
+    return
+  }
   throw new Error(`克隆 GitHub 项目失败：${sanitizeErrorSnippet(lastOutput)}`)
+}
+
+function createGeneratedWorkflowProject(targetPath: string): void {
+  rmSync(targetPath, { recursive: true, force: true })
+  mkdirSync(targetPath, { recursive: true })
+  writeFixtureFile(targetPath, 'package.json', JSON.stringify({
+    scripts: { build: 'vite build' },
+    dependencies: {
+      '@vitejs/plugin-react': '^latest',
+      vite: '^latest',
+      typescript: '^latest',
+      react: '^latest',
+      'react-dom': '^latest',
+      'react-bootstrap': '^latest'
+    },
+    devDependencies: {}
+  }, null, 2))
+  writeFixtureFile(targetPath, 'src/types.ts', [
+    'export type DashboardStatus = "active" | "paused" | "warning";',
+    'export interface DashboardMetric {',
+    '  id: string;',
+    '  label: string;',
+    '  value: number;',
+    '  status: DashboardStatus;',
+    '}',
+    '',
+    'export interface DashboardRouteItem {',
+    '  title: string;',
+    '  link: string;',
+    '  children?: DashboardRouteItem[];',
+    '}'
+  ].join('\n'))
+  writeFixtureFile(targetPath, 'src/data/dashboard/ProjectsStatsData.tsx', [
+    'import type { DashboardMetric } from "../../types";',
+    '',
+    'export const projectsStats: DashboardMetric[] = [',
+    '  { id: "revenue", label: "Revenue", value: 128, status: "active" },',
+    '  { id: "tickets", label: "Tickets", value: 42, status: "warning" },',
+    '  { id: "deployments", label: "Deployments", value: 17, status: "active" }',
+    '];'
+  ].join('\n'))
+  writeFixtureFile(targetPath, 'src/pages/dashboard/Index.tsx', [
+    'import { Card, Col, Container, Row } from "react-bootstrap";',
+    'import { projectsStats } from "../../data/dashboard/ProjectsStatsData";',
+    '',
+    'export default function DashboardIndex() {',
+    '  return (',
+    '    <Container fluid>',
+    '      <Row>',
+    '        {projectsStats.map((item) => (',
+    '          <Col md={4} key={item.id}>',
+    '            <Card><Card.Body><Card.Title>{item.label}</Card.Title><strong>{item.value}</strong></Card.Body></Card>',
+    '          </Col>',
+    '        ))}',
+    '      </Row>',
+    '    </Container>',
+    '  );',
+    '}'
+  ].join('\n'))
+  writeFixtureFile(targetPath, 'src/pages/dashboard/pages/Settings.tsx', [
+    'import { Card, Container } from "react-bootstrap";',
+    '',
+    'export default function Settings() {',
+    '  return <Container fluid><Card><Card.Body>Settings</Card.Body></Card></Container>;',
+    '}'
+  ].join('\n'))
+  writeFixtureFile(targetPath, 'src/App.tsx', [
+    'import DashboardIndex from "./pages/dashboard/Index";',
+    'import Settings from "./pages/dashboard/pages/Settings";',
+    '',
+    'const routes = [',
+    '  { path: "/", element: <DashboardIndex /> },',
+    '  { path: "/pages/settings", element: <Settings /> },',
+    '  { path: "/pages/profile", element: <Settings /> },',
+    '  { path: "/pages/billing", element: <Settings /> },',
+    '  { path: "/pages/pricing", element: <Settings /> },',
+    '  { path: "/pages/api-demo", element: <Settings /> }',
+    '];',
+    '',
+    'export default routes;'
+  ].join('\n'))
+  writeFixtureFile(targetPath, 'src/routes/DashboardRoutes.ts', [
+    'import type { DashboardRouteItem } from "../types";',
+    '',
+    'const DashboardRoutes: DashboardRouteItem[] = [',
+    '  { title: "Dashboard", link: "/" },',
+    '  {',
+    '    title: "Pages",',
+    '    link: "/pages",',
+    '    children: [',
+    '      { title: "Profile", link: "/pages/profile" },',
+    '      { title: "Settings", link: "/pages/settings" },',
+    '      { title: "Billing", link: "/pages/billing" },',
+    '      { title: "Pricing", link: "/pages/pricing" },',
+    '      { title: "Api Demo", link: "/pages/api-demo" },',
+    '      { title: "404 Error", link: "/pages/404" }',
+    '    ]',
+    '  }',
+    '];',
+    '',
+    'export default DashboardRoutes;'
+  ].join('\n'))
+  for (let index = 0; index < 180; index += 1) {
+    writeFixtureFile(targetPath, `src/generated/GeneratedPanel${String(index).padStart(3, '0')}.tsx`, generatedPanelSource(index))
+  }
+}
+
+function writeFixtureFile(worktree: string, relativePath: string, content: string): void {
+  const target = join(worktree, relativePath)
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, `${content.trim()}\n`, 'utf8')
+}
+
+function generatedPanelSource(index: number): string {
+  const rows = Array.from({ length: 64 }, (_, row) =>
+    `  { id: "panel-${index}-${row}", label: "Metric ${index}-${row}", value: ${index * 100 + row}, trend: ${row % 2 === 0 ? '"up"' : '"down"'} }`
+  )
+  return [
+    `export const generatedPanel${index}Rows = [`,
+    rows.join(',\n'),
+    '];',
+    '',
+    `export function generatedPanel${index}Summary() {`,
+    `  return generatedPanel${index}Rows.reduce((sum, item) => sum + item.value, 0);`,
+    '}'
+  ].join('\n')
 }
 
 async function callForStrategy(input: {
@@ -708,7 +845,7 @@ function planningMessages(context: string, tasks: WorkflowTask[]): Array<{ role:
     {
       role: 'user',
       content: [
-        'GitHub 项目：codescandy/dash-ui-react-vitejs-typescript，React + Vite + TypeScript 后台模板，src 约 2.2 万行。',
+        `项目：${repoUrl === 'local:generated' ? '本地生成 React + Vite + TypeScript 后台项目夹具' : 'codescandy/dash-ui-react-vitejs-typescript，React + Vite + TypeScript 后台模板'}，${projectProfile}。`,
         '目标：连续完成“运营中心”功能，保持现有 Dashboard、Pages 和 Bootstrap 风格。',
         '',
         '项目关键上下文：',
@@ -1021,8 +1158,15 @@ function buildSummary(input: {
     ok: input.runs.every((run) => run.ok),
     baseUrl: sanitizeBaseUrl(realBaseUrl),
     repoUrl,
-    repoProfile: 'React + Vite + TypeScript admin dashboard, src ~= 22k lines',
+    repoProfile: projectProfile,
     runBuildValidation,
+    retryPolicy: {
+      retryableFailuresAreStabilityNoise: true,
+      maxRetries: upstreamRetryCount,
+      maxAttempts: upstreamRetryCount + 1,
+      retryDelayMs: upstreamRetryDelayMs,
+      requestIntervalMs
+    },
     tasks: input.tasks.map((task) => ({ id: task.id, title: task.title, expectedFiles: task.expectedFiles })),
     strategies: input.runs.map((run) => ({
       strategy: run.strategy,
@@ -1133,7 +1277,7 @@ function callSummary(call: AgentCallResult): Record<string, unknown> {
 }
 
 function usageCountsForApiKey(apiKeyId: string): UsageCountRow[] {
-  return databaseModule.getDatasetDatabase()
+  return databaseModule.getUsageCatalogDatabase()
     .prepare(`
       SELECT traffic_source, model, success, COUNT(*) AS count, SUM(cost_usd) AS cost_usd
       FROM usage_record_shard_entries

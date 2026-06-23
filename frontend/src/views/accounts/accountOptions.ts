@@ -7,8 +7,10 @@ import {
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
   ANTHROPIC_PROVIDER_CODE,
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
@@ -98,7 +100,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
-  defaultTestModel: 'claude-haiku-4-5',
+  defaultTestModel: 'claude-fable-5',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   protocolProfiles: [
@@ -110,7 +112,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
       protocolCode: ANTHROPIC_PROTOCOL_CODE,
       protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
       baseUrl: 'https://api.anthropic.com/v1',
-      defaultTestModel: 'claude-haiku-4-5',
+      defaultTestModel: 'claude-fable-5',
       accountTypes: ['api_key'],
       capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
       endpointFamilies: [
@@ -133,7 +135,7 @@ export const DEEPSEEK_PROVIDER: ProviderDefinition = {
   baseUrl: 'https://api.deepseek.com',
   defaultTestModel: 'deepseek-v4-flash',
   accountTypes: ['api_key'],
-  capabilities: ['chat', 'passthrough'],
+  capabilities: ['chat', 'messages', 'passthrough'],
   protocolProfiles: [
     {
       id: DEEPSEEK_OPENAI_V1_PROFILE_ID,
@@ -145,9 +147,25 @@ export const DEEPSEEK_PROVIDER: ProviderDefinition = {
       baseUrl: 'https://api.deepseek.com',
       defaultTestModel: 'deepseek-v4-flash',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'passthrough'],
+      capabilities: ['chat', 'messages', 'passthrough'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
+      ]
+    },
+    {
+      id: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      name: 'DeepSeek / Anthropic v1',
+      enabled: true,
+      protocolCode: ANTHROPIC_PROTOCOL_CODE,
+      protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      defaultTestModel: 'deepseek-v4-flash',
+      accountTypes: ['api_key'],
+      capabilities: ['messages', 'models', 'passthrough'],
+      endpointFamilies: [
+        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' },
+        { code: ANTHROPIC_MODELS_FAMILY, name: 'Models' }
       ]
     }
   ]
@@ -162,9 +180,9 @@ export const GLM_PROVIDER: ProviderDefinition = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-  defaultTestModel: 'glm-5.2-free',
+  defaultTestModel: 'glm-5.2',
   accountTypes: ['api_key'],
-  capabilities: ['chat', 'passthrough'],
+  capabilities: ['chat', 'messages', 'passthrough'],
   protocolProfiles: [
     {
       id: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
@@ -174,9 +192,9 @@ export const GLM_PROVIDER: ProviderDefinition = {
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-      defaultTestModel: 'glm-5.2-free',
+      defaultTestModel: 'glm-5.2',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'passthrough'],
+      capabilities: ['chat', 'messages', 'passthrough'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
       ]
@@ -194,6 +212,22 @@ export const GLM_PROVIDER: ProviderDefinition = {
       capabilities: ['chat', 'passthrough'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
+      ]
+    },
+    {
+      id: GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+      providerCode: GLM_PROVIDER_CODE,
+      name: '智谱 GLM Coding / Anthropic v1',
+      enabled: true,
+      protocolCode: ANTHROPIC_PROTOCOL_CODE,
+      protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+      baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+      defaultTestModel: 'glm-5.2',
+      accountTypes: ['api_key'],
+      capabilities: ['messages', 'models', 'passthrough'],
+      endpointFamilies: [
+        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' },
+        { code: ANTHROPIC_MODELS_FAMILY, name: 'Models' }
       ]
     }
   ]

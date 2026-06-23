@@ -4,11 +4,25 @@ export interface GatewayModelAccountFilterResult {
   accounts: UpstreamAccount[]
   skippedCount: number
   limitedAccountCount: number
+  unrestrictedAccountCount: number
   directMatchedCount: number
   mappingMatchedCount: number
   requestedModel?: string
+  modelPriority: GatewayAccountModelPriority
   reason?: 'missing_model' | 'unsupported_model'
 }
+
+export interface GatewayAccountModelPriority {
+  requestedModel?: string
+  rankByAccountId: ReadonlyMap<string, number>
+}
+
+export const gatewayAccountModelPriorityRank = {
+  direct: 0,
+  mapping: 1,
+  unrestricted: 2,
+  unsupported: 3
+} as const
 
 export function filterGatewayAccountsByRequestedModel(
   accounts: UpstreamAccount[],
@@ -17,48 +31,58 @@ export function filterGatewayAccountsByRequestedModel(
   const model = requestedModel?.trim()
   let skippedCount = 0
   let limitedAccountCount = 0
+  let unrestrictedAccountCount = 0
   let directMatchedCount = 0
   let mappingMatchedCount = 0
-  const filtered: UpstreamAccount[] = []
+  const directMatchedAccounts: UpstreamAccount[] = []
+  const unrestrictedAccounts: UpstreamAccount[] = []
+  const rankByAccountId = new Map<string, number>()
 
   for (const account of accounts) {
     const supportedModels = account.supportedModels ?? []
     if (!supportedModels.length) {
-      filtered.push(account)
+      unrestrictedAccountCount += 1
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unrestricted)
+      unrestrictedAccounts.push(account)
       continue
     }
     limitedAccountCount += 1
-    const match = resolveGatewayAccountModelMatch(account, model, supportedModels)
+    const match = resolveGatewayAccountModelMatch(model, supportedModels)
     if (match === 'direct') {
       directMatchedCount += 1
-      filtered.push(account)
-      continue
-    }
-    if (match === 'mapping') {
-      mappingMatchedCount += 1
-      filtered.push(account)
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.direct)
+      directMatchedAccounts.push(account)
       continue
     }
     skippedCount += 1
+    rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unsupported)
   }
+  const filtered = [
+    ...directMatchedAccounts,
+    ...unrestrictedAccounts
+  ]
 
   return {
     accounts: filtered,
     skippedCount,
     limitedAccountCount,
+    unrestrictedAccountCount,
     directMatchedCount,
     mappingMatchedCount,
     requestedModel: model || undefined,
+    modelPriority: {
+      requestedModel: model || undefined,
+      rankByAccountId
+    },
     reason: skippedCount > 0 && filtered.length === 0
       ? model ? 'unsupported_model' : 'missing_model'
       : undefined
   }
 }
 
-type GatewayAccountModelMatch = 'direct' | 'mapping' | undefined
+type GatewayAccountModelMatch = 'direct' | undefined
 
 function resolveGatewayAccountModelMatch(
-  account: UpstreamAccount,
   requestedModel: string | undefined,
   supportedModels: string[]
 ): GatewayAccountModelMatch {
@@ -66,13 +90,7 @@ function resolveGatewayAccountModelMatch(
   if (supportedModels.includes(requestedModel)) {
     return 'direct'
   }
-  const mapping = (account.modelMappings ?? []).find((item) =>
-    item.enabled !== false
-    && item.sourceModel === requestedModel
-    && item.upstreamModel !== item.sourceModel
-  )
-  if (!mapping) return undefined
-  return supportedModels.includes(mapping.upstreamModel) ? 'mapping' : undefined
+  return undefined
 }
 
 export function gatewayModelFilterFailureMessage(result: GatewayModelAccountFilterResult): string {
@@ -80,4 +98,22 @@ export function gatewayModelFilterFailureMessage(result: GatewayModelAccountFilt
     return '请求缺少 model，当前分组内可用账户均配置了模型限制，无法调度'
   }
   return `当前分组无账户支持请求模型：${result.requestedModel ?? '未知模型'}`
+}
+
+export function compareGatewayAccountModelPriority(
+  left: Pick<UpstreamAccount, 'id'>,
+  right: Pick<UpstreamAccount, 'id'>,
+  priority?: GatewayAccountModelPriority
+): number {
+  return gatewayAccountModelPriority(left, priority) - gatewayAccountModelPriority(right, priority)
+}
+
+export function gatewayAccountModelPriority(
+  account: Pick<UpstreamAccount, 'id'>,
+  priority?: GatewayAccountModelPriority
+): number {
+  if (!priority) {
+    return gatewayAccountModelPriorityRank.direct
+  }
+  return priority.rankByAccountId.get(account.id) ?? gatewayAccountModelPriorityRank.unsupported
 }

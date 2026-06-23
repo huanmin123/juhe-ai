@@ -10,6 +10,10 @@ import {
   ANTHROPIC_PROVIDER_CODE,
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   isAnthropicProtocolProfile
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
@@ -38,12 +42,24 @@ export const anthropicProviderDriver: ProviderDriver = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   usageSemantic: 'anthropic',
-  profileIds: [ANTHROPIC_ANTHROPIC_V1_PROFILE_ID],
+  profileIds: [
+    ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+    GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+  ],
   supportsProfile(profile) {
     const profileId = profile?.providerProtocolProfileId ?? profile?.id
-    return profile?.providerCode === ANTHROPIC_PROVIDER_CODE
-      && isAnthropicProtocolProfile(profile)
+    if (!isAnthropicProtocolProfile(profile)) return false
+    return (
+      profile?.providerCode === ANTHROPIC_PROVIDER_CODE
       && profileId === ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
+    ) || (
+      profile?.providerCode === DEEPSEEK_PROVIDER_CODE
+      && profileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
+    ) || (
+      profile?.providerCode === GLM_PROVIDER_CODE
+      && profileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID
+    )
   },
   resolveUsageModel(account, requestedModel) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
@@ -61,7 +77,7 @@ export const anthropicProviderDriver: ProviderDriver = {
       throw new Error('Anthropic 当前仅支持 API Key 账户')
     }
     const headers = copySafeUpstreamRequestHeaders(req.headers)
-    headers.set('x-api-key', account.apiKey)
+    applyAnthropicUpstreamAuthHeaders(headers, account)
     headers.set('anthropic-version', anthropicVersionHeader(req))
     const betaHeader = anthropicBetaHeader(req)
     if (betaHeader) {
@@ -95,9 +111,18 @@ export const anthropicProviderDriver: ProviderDriver = {
       providerCode: account.providerCode,
       accountType: account.type,
       protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion
+      protocolVersion: account.protocolVersion,
+      providerProtocolProfileId: account.providerProtocolProfileId
     })
   }
+}
+
+function applyAnthropicUpstreamAuthHeaders(headers: Headers, account: DispatchAccountSecret): void {
+  if (account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) {
+    headers.set('authorization', `Bearer ${account.apiKey}`)
+    return
+  }
+  headers.set('x-api-key', account.apiKey)
 }
 
 function anthropicVersionHeader(req: Request): string {

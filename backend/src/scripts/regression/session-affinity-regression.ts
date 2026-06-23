@@ -14,6 +14,7 @@ import {
 } from '../../modules/gateway/runtime/session-affinity.service.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { GatewayAccountModelPriority } from '../../modules/gateway/dispatch/model-filter.js'
 
 async function main(): Promise<void> {
   testSessionAffinityMigrationUsesReverseIndex()
@@ -39,6 +40,12 @@ async function main(): Promise<void> {
   testTrafficMigrationPreferencePromotesHighConcurrencyFallbackTarget()
   testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusy()
   testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusyWithoutFastFirst()
+  testModelPriorityBlocksSessionAffinityPromotion()
+  testModelPriorityLimitsTrafficMigrationPreference()
+  testHighConcurrencyHonorsModelPriorityBeforeBusinessRank()
+  testHighConcurrencyKeepsHardBusyModelMatchedAccountBehindAvailableFallback()
+  testHighConcurrencyFallsBackToSuperPriorityWhenModelRankTied()
+  testHighConcurrencyUsesQualityWithinSameModelAndBusinessTier()
   testHighConcurrencyUsesLeastLoadedWithinSameTier()
   testHighConcurrencyBreaksAffinityAtSoftLimit()
   testHighConcurrencyKeepsAffinityBelowSoftLimitWhenLoadTied()
@@ -456,6 +463,160 @@ function testTrafficMigrationPreferenceDoesNotBypassHighConcurrencyHardBusyWitho
   )
 }
 
+function testModelPriorityBlocksSessionAffinityPromotion(): void {
+  const sessionKey = 'session-affinity-regression:model-priority-affinity'
+  rememberOpenAIAccountForSession(sessionKey, 'sticky-unrestricted')
+  const accounts = [
+    createAccount('direct-model-match', { priority: 0, supportedModels: ['gpt-5.5'] }),
+    createAccount('sticky-unrestricted', { priority: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, sessionKey, {
+      modelPriority: modelPriority({
+        'direct-model-match': 0,
+        'sticky-unrestricted': 2
+      })
+    }).map((account) => account.id),
+    ['direct-model-match', 'sticky-unrestricted'],
+    '会话亲和不能把未限制模型账号提升到显式支持模型账号前面'
+  )
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testModelPriorityLimitsTrafficMigrationPreference(): void {
+  const scope = { systemAccountId: 'migration-pref-system-model-priority', groupId: 'migration-pref-group-model-priority' }
+  rememberOpenAIAccountTrafficMigrationPreference('source-down-model-priority', 'target-unrestricted-model-priority', scope)
+  const accounts = [
+    createAccount('direct-model-priority-peer', { priority: 50, supportedModels: ['gpt-5.5'] }),
+    createAccount('target-unrestricted-model-priority', { priority: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      trafficMigrationScope: scope,
+      modelPriority: modelPriority({
+        'direct-model-priority-peer': 0,
+        'target-unrestricted-model-priority': 2
+      })
+    }).map((account) => account.id),
+    ['direct-model-priority-peer', 'target-unrestricted-model-priority'],
+    '手动迁移目标不能越过更确定支持请求模型的账号'
+  )
+}
+
+function testHighConcurrencyHonorsModelPriorityBeforeBusinessRank(): void {
+  const accounts = [
+    createAccount('unrestricted-super-idle', {
+      priority: 0,
+      superPriorityEnabled: true,
+      currentConcurrency: 0
+    }),
+    createAccount('direct-model-busy-low-priority', {
+      priority: 100,
+      currentConcurrency: 4,
+      supportedModels: ['gpt-5.5']
+    })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      modelPriority: modelPriority({
+        'unrestricted-super-idle': 2,
+        'direct-model-busy-low-priority': 0
+      })
+    }).map((account) => account.id),
+    ['direct-model-busy-low-priority', 'unrestricted-super-idle'],
+    '高并发分组应先选择显式支持模型账号，再进入超级优先、priority 和负载排序'
+  )
+}
+
+function testHighConcurrencyKeepsHardBusyModelMatchedAccountBehindAvailableFallback(): void {
+  const accounts = [
+    createAccount('direct-model-hard-busy', {
+      priority: 100,
+      currentConcurrency: 20,
+      concurrencyLimit: 20,
+      supportedModels: ['gpt-5.5']
+    }),
+    createAccount('unrestricted-available', {
+      priority: 0,
+      currentConcurrency: 0,
+      concurrencyLimit: 20
+    })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      modelPriority: modelPriority({
+        'direct-model-hard-busy': 0,
+        'unrestricted-available': 2
+      })
+    }).map((account) => account.id),
+    ['unrestricted-available', 'direct-model-hard-busy'],
+    '显式支持模型账号硬并发满时，仍应让可用的未限制账号承接'
+  )
+}
+
+function testHighConcurrencyFallsBackToSuperPriorityWhenModelRankTied(): void {
+  const accounts = [
+    createAccount('unrestricted-normal-better-priority', {
+      priority: 0,
+      currentConcurrency: 0
+    }),
+    createAccount('unrestricted-super-worse-priority', {
+      priority: 100,
+      superPriorityEnabled: true,
+      currentConcurrency: 0
+    })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      modelPriority: modelPriority({
+        'unrestricted-normal-better-priority': 2,
+        'unrestricted-super-worse-priority': 2
+      })
+    }).map((account) => account.id),
+    ['unrestricted-super-worse-priority', 'unrestricted-normal-better-priority'],
+    '没有模型确定性差异时，高并发分组应回落到超级优先等业务排序'
+  )
+}
+
+function testHighConcurrencyUsesQualityWithinSameModelAndBusinessTier(): void {
+  const accounts = [
+    createAccount('direct-model-slower-quality', {
+      priority: 0,
+      superPriorityEnabled: true,
+      currentConcurrency: 0,
+      qualityScore: 500,
+      supportedModels: ['gpt-5.5']
+    }),
+    createAccount('direct-model-faster-quality', {
+      priority: 0,
+      superPriorityEnabled: true,
+      currentConcurrency: 0,
+      qualityScore: 100,
+      supportedModels: ['gpt-5.5']
+    })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      modelPriority: modelPriority({
+        'direct-model-slower-quality': 0,
+        'direct-model-faster-quality': 0
+      })
+    }).map((account) => account.id),
+    ['direct-model-faster-quality', 'direct-model-slower-quality'],
+    '多个显式命中模型且业务排序一致时，高并发分组应优先选择质量分更低的账号'
+  )
+}
+
 function testHighConcurrencyUsesLeastLoadedWithinSameTier(): void {
   const accounts = [
     createAccount('busy-primary', { priority: 0, currentConcurrency: 4 }),
@@ -580,6 +741,7 @@ function createAccount(
     type?: 'api_key' | 'oauth'
     currentConcurrency?: number
     concurrencyLimit?: number
+    supportedModels?: string[]
   }
 ): OpenAIAccountSecret {
   return {
@@ -596,7 +758,7 @@ function createAccount(
     name: id,
     type: options.type ?? 'api_key',
     status: 'active',
-    supportedModels: [],
+    supportedModels: options.supportedModels ?? [],
     concurrencyLimit: options.concurrencyLimit ?? 20,
     currentConcurrency: options.currentConcurrency ?? 0,
     priority: options.priority,
@@ -622,6 +784,13 @@ function createSessionRequest(promptCacheKey: string): Request {
       return headers[name.toLowerCase()]
     }
   } as Request
+}
+
+function modelPriority(ranks: Record<string, number>): GatewayAccountModelPriority {
+  return {
+    requestedModel: 'gpt-5.5',
+    rankByAccountId: new Map(Object.entries(ranks))
+  }
 }
 
 await main()

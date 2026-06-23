@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks'
+
 import {
   accountTestTaskCancelMessage,
   cancelExpiredAccountTestSessions,
@@ -66,6 +68,13 @@ import {
   saveCodexContextResponseStateIndex
 } from '../../storage/codex-context-state.repository.js'
 import {
+  cleanupExpiredCodexContextStatesWithWriterPool,
+  readCodexContextCompactStateWithWriterPool,
+  readCodexContextResponseStateChainWithWriterPool,
+  saveCodexContextCompactStateIndexWithWriterPool,
+  saveCodexContextResponseStateIndexWithWriterPool
+} from '../../storage/codex-context-state-writer-pool.js'
+import {
   deleteGroupAccountStatsDirtyRowsLocal,
   markAllGroupAccountStatsDirty,
   updateGroupAccountStatsAllCursorLocal,
@@ -102,13 +111,32 @@ let pendingRequestCount = 0
 let lastRequestAt: string | undefined
 let lastError: string | undefined
 let dbServiceHttpEndpoint: { host: string; port: number } | undefined
+let dbServiceQueueRuntimeProvider: (() => DbServiceQueueRuntimeMetrics) | undefined
+let lastExecMs = 0
+let maxExecMs = 0
+let slowOpCount = 0
+let lastSlowOpType: string | undefined
+let lastSlowOpMs: number | undefined
+let lastSlowOpAt: string | undefined
 const internalDbServiceAccountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
+const slowDbServiceOperationMs = 500
+
+export interface DbServiceQueueRuntimeMetrics {
+  queuedRequestCount: number
+  queuedHighRequestCount: number
+  queuedNormalRequestCount: number
+  queuedLowRequestCount: number
+  oldestQueuedMs: number
+  lastQueueWaitMs: number
+  maxQueueWaitMs: number
+}
 
 export async function handleDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
   pendingRequestCount += 1
   lastRequestAt = new Date().toISOString()
+  const startedAt = performance.now()
   try {
-    const result = handleDbServiceOperationSync(operation) as DbServiceOperationResult<T>
+    const result = await handleDbServiceOperationDispatch(operation) as DbServiceOperationResult<T>
     handledRequestCount += 1
     lastError = undefined
     return result
@@ -117,11 +145,44 @@ export async function handleDbServiceOperation<T extends DbServiceOperation>(ope
     lastError = error instanceof Error ? error.message : String(error)
     throw error
   } finally {
+    recordDbServiceOperationDuration(operation.type, performance.now() - startedAt)
     pendingRequestCount = Math.max(0, pendingRequestCount - 1)
   }
 }
 
+async function handleDbServiceOperationDispatch(operation: DbServiceOperation): Promise<unknown> {
+  switch (operation.type) {
+    case 'save_codex_context_response_state':
+      return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
+    case 'save_codex_context_compact_state':
+      return await saveCodexContextCompactStateIndexWithWriterPool(operation.input)
+    case 'read_codex_context_response_chain':
+      return await readCodexContextResponseStateChainWithWriterPool({
+        responseId: operation.responseId,
+        boundary: operation.boundary,
+        maxDepth: operation.maxDepth,
+        now: operation.now,
+        refreshExpiresAt: operation.refreshExpiresAt
+      })
+    case 'read_codex_context_compact_state':
+      return await readCodexContextCompactStateWithWriterPool({
+        compactId: operation.compactId,
+        boundary: operation.boundary,
+        now: operation.now,
+        refreshExpiresAt: operation.refreshExpiresAt
+      })
+    case 'cleanup_expired_codex_context_states':
+      return await cleanupExpiredCodexContextStatesWithWriterPool({
+        expiredBefore: operation.expiredBefore,
+        limit: operation.limit
+      })
+    default:
+      return handleDbServiceOperationSync(operation)
+  }
+}
+
 export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRuntimeSnapshot {
+  const queueRuntime = dbServiceQueueRuntimeProvider?.()
   return {
     pid,
     ready: true,
@@ -130,6 +191,19 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     httpPort: dbServiceHttpEndpoint?.port,
     eventLoopLagMs: currentProcessEventLoopLagMs(),
     pendingRequestCount,
+    queuedRequestCount: queueRuntime?.queuedRequestCount,
+    queuedHighRequestCount: queueRuntime?.queuedHighRequestCount,
+    queuedNormalRequestCount: queueRuntime?.queuedNormalRequestCount,
+    queuedLowRequestCount: queueRuntime?.queuedLowRequestCount,
+    oldestQueuedMs: queueRuntime?.oldestQueuedMs,
+    lastQueueWaitMs: queueRuntime?.lastQueueWaitMs,
+    maxQueueWaitMs: queueRuntime?.maxQueueWaitMs,
+    lastExecMs,
+    maxExecMs,
+    slowOpCount,
+    lastSlowOpType,
+    lastSlowOpMs,
+    lastSlowOpAt,
     handledRequestCount,
     failedRequestCount,
     lastRequestAt,
@@ -139,6 +213,23 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
 
 export function setDbServiceHttpEndpoint(endpoint: { host: string; port: number }): void {
   dbServiceHttpEndpoint = endpoint
+}
+
+export function setDbServiceQueueRuntimeProvider(provider: () => DbServiceQueueRuntimeMetrics): void {
+  dbServiceQueueRuntimeProvider = provider
+}
+
+function recordDbServiceOperationDuration(operationType: string, durationMs: number): void {
+  const rounded = Math.round(durationMs)
+  lastExecMs = rounded
+  maxExecMs = Math.max(maxExecMs, rounded)
+  if (rounded < slowDbServiceOperationMs) {
+    return
+  }
+  slowOpCount += 1
+  lastSlowOpType = operationType
+  lastSlowOpMs = rounded
+  lastSlowOpAt = new Date().toISOString()
 }
 
 function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
@@ -152,9 +243,13 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'resolve_group_usage_access':
       return resolveGroupUsageAccessMetadata(operation.groupId, operation.systemAccountId)
     case 'list_openai_accounts_for_group':
-      return listOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId)
+      return listOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId, {
+        requestedModel: operation.requestedModel
+      })
     case 'list_openai_accounts_for_group_result':
-      return listOpenAIAccountsForGroupResult(operation.groupId, operation.systemAccountId)
+      return listOpenAIAccountsForGroupResult(operation.groupId, operation.systemAccountId, {
+        requestedModel: operation.requestedModel
+      })
     case 'read_gateway_runtime':
       return readGatewayRuntime(operation)
     case 'list_provider_model_catalog':

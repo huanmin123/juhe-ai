@@ -10,10 +10,12 @@ import { sqliteBusyTimeoutMs } from '../../storage/sqlite-config.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-sqlite-busy-timeout-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
-runtimeConfig.codexContextDatabasePath = join(tempRoot, 'codex-context', 'state.sqlite3')
+runtimeConfig.codexContextStateShardRoot = join(tempRoot, 'codex-context', 'state-shards')
+runtimeConfig.codexContextStateShardCount = 4
 runtimeConfig.secret = 'sqlite-busy-timeout-boundary-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -29,8 +31,15 @@ const [databaseModule, usageRecordShards] = await Promise.all([
 try {
   assert(sqliteBusyTimeoutMs >= 1000 && sqliteBusyTimeoutMs <= 5000, `SQLite busy_timeout 应保持在 1-5 秒内，当前为 ${sqliteBusyTimeoutMs}ms`)
   assert.equal(readBusyTimeout(databaseModule.getBusinessDatabase()), sqliteBusyTimeoutMs, '业务库 busy_timeout 应使用统一锁等待配置')
-  assert.equal(readBusyTimeout(databaseModule.getCodexContextStateDatabase()), sqliteBusyTimeoutMs, 'Codex Responses 上下文索引库 busy_timeout 应使用统一锁等待配置')
+  for (const shardIndex of databaseModule.codexContextStateShardIndexes()) {
+    assert.equal(
+      readBusyTimeout(databaseModule.getCodexContextStateShardDatabase(shardIndex)),
+      sqliteBusyTimeoutMs,
+      `Codex Responses 上下文索引库分片 ${shardIndex} busy_timeout 应使用统一锁等待配置`
+    )
+  }
   assert.equal(readBusyTimeout(databaseModule.getDatasetDatabase()), sqliteBusyTimeoutMs, '数据集目录库 busy_timeout 应使用统一锁等待配置')
+  assert.equal(readBusyTimeout(databaseModule.getUsageCatalogDatabase()), sqliteBusyTimeoutMs, '使用记录目录库 busy_timeout 应使用统一锁等待配置')
   assert.equal(readBusyTimeout(databaseModule.getStatsDatabase()), sqliteBusyTimeoutMs, '统计库 busy_timeout 应使用统一锁等待配置')
 
   const shardLocation = usageRecordShards.usageRecordShardLocationForRecord('usage_20260101_s00_boundary', '2026-01-01T00:00:00.000Z')

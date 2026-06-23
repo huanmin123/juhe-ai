@@ -255,10 +255,13 @@ export function deleteCustomProviderModel(id: string): boolean {
 export function customProviderModelAccountBindingSummary(input: {
   providerCode: string
   model: string
+  scope: CustomProviderModelScope
+  systemAccountId?: string
 }): CustomProviderModelAccountBindingSummary {
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
-  const supportedModelAccountCount = countDistinctBoundAccounts(`
+  const accountOwnerScope = accountBindingOwnerScope(input.scope, input.systemAccountId)
+  const supportedModelSql = `
     SELECT account_supported_models.account_id
     FROM account_supported_models
     INNER JOIN accounts
@@ -266,58 +269,57 @@ export function customProviderModelAccountBindingSummary(input: {
       AND accounts.deleted_at IS NULL
     WHERE account_supported_models.provider_code = ?
       AND lower(account_supported_models.model) = lower(?)
-  `, providerCode, model)
-  const mappingSourceAccountCount = countDistinctBoundAccounts(`
+      ${accountOwnerScope.sql}
+  `
+  const supportedModelParams: SQLInputValue[] = [providerCode, model, ...accountOwnerScope.params]
+  const mappingSourceSql = `
     SELECT account_model_mappings.account_id
     FROM account_model_mappings
     INNER JOIN accounts
       ON accounts.id = account_model_mappings.account_id
       AND accounts.deleted_at IS NULL
-    WHERE account_model_mappings.provider_code = ?
-      AND lower(account_model_mappings.source_model) = lower(?)
-  `, providerCode, model)
-  const mappingUpstreamAccountCount = countDistinctBoundAccounts(`
+    WHERE lower(account_model_mappings.source_model) = lower(?)
+      ${accountOwnerScope.sql}
+  `
+  const mappingSourceParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
+  const mappingUpstreamSql = `
     SELECT account_model_mappings.account_id
     FROM account_model_mappings
     INNER JOIN accounts
       ON accounts.id = account_model_mappings.account_id
       AND accounts.deleted_at IS NULL
-    WHERE account_model_mappings.provider_code = ?
-      AND lower(account_model_mappings.upstream_model) = lower(?)
-  `, providerCode, model)
+    WHERE lower(account_model_mappings.upstream_model) = lower(?)
+      ${accountOwnerScope.sql}
+  `
+  const mappingUpstreamParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
+  const supportedModelAccountCount = countDistinctBoundAccounts(supportedModelSql, ...supportedModelParams)
+  const mappingSourceAccountCount = countDistinctBoundAccounts(mappingSourceSql, ...mappingSourceParams)
+  const mappingUpstreamAccountCount = countDistinctBoundAccounts(mappingUpstreamSql, ...mappingUpstreamParams)
   const totalAccountCount = countDistinctBoundAccounts(`
     SELECT account_id FROM (
-      SELECT account_supported_models.account_id AS account_id
-      FROM account_supported_models
-      INNER JOIN accounts
-        ON accounts.id = account_supported_models.account_id
-        AND accounts.deleted_at IS NULL
-      WHERE account_supported_models.provider_code = ?
-        AND lower(account_supported_models.model) = lower(?)
+      ${supportedModelSql}
       UNION
-      SELECT account_model_mappings.account_id AS account_id
-      FROM account_model_mappings
-      INNER JOIN accounts
-        ON accounts.id = account_model_mappings.account_id
-        AND accounts.deleted_at IS NULL
-      WHERE account_model_mappings.provider_code = ?
-        AND lower(account_model_mappings.source_model) = lower(?)
+      ${mappingSourceSql}
       UNION
-      SELECT account_model_mappings.account_id AS account_id
-      FROM account_model_mappings
-      INNER JOIN accounts
-        ON accounts.id = account_model_mappings.account_id
-        AND accounts.deleted_at IS NULL
-      WHERE account_model_mappings.provider_code = ?
-        AND lower(account_model_mappings.upstream_model) = lower(?)
+      ${mappingUpstreamSql}
     )
-  `, providerCode, model, providerCode, model, providerCode, model)
+  `, ...supportedModelParams, ...mappingSourceParams, ...mappingUpstreamParams)
 
   return {
     supportedModelAccountCount,
     mappingSourceAccountCount,
     mappingUpstreamAccountCount,
     totalAccountCount
+  }
+}
+
+function accountBindingOwnerScope(scope: CustomProviderModelScope, systemAccountId?: string): { sql: string; params: SQLInputValue[] } {
+  if (scope !== 'personal') {
+    return { sql: '', params: [] }
+  }
+  return {
+    sql: 'AND accounts.system_account_id = ?',
+    params: [requiredText(systemAccountId, '个人模型必须归属系统账户')]
   }
 }
 
@@ -337,7 +339,7 @@ function findCustomProviderModelByScope(
   return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
 }
 
-function countDistinctBoundAccounts(sql: string, ...params: string[]): number {
+function countDistinctBoundAccounts(sql: string, ...params: SQLInputValue[]): number {
   const row = getBusinessDatabase()
     .prepare(`SELECT COUNT(DISTINCT account_id) AS count FROM (${sql})`)
     .get(...params) as { count?: number } | undefined

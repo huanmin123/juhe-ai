@@ -277,7 +277,7 @@ function normalizeBaseUrl(value: string): string {
 }
 
 function modelsFromEnv(value: string | undefined): string[] {
-  const models = (value || 'glm-5.2-free,glm-5.2,glm-5-turbo')
+  const models = (value || 'glm-5.2,glm-5-turbo,glm-4.7-flash')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)

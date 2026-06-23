@@ -334,6 +334,13 @@ const deepSeekV4ProCost = estimateProviderCostUsd({
 })
 assert.equal(deepSeekV4ProCost, 0.00034945, 'DeepSeek V4 Pro 成本应按 cache hit 与 cache miss 拆分')
 const deepSeekModelPricingList = listProviderModelPricing(DEEPSEEK_PROVIDER_CODE)
+assert.deepEqual(deepSeekModelPricingList.map((item) => item.model), [
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
+  'deepseek-ai-v4-flash',
+  'deepseek-ai-v4-pro',
+  ...(new Date().toISOString().slice(0, 10) < '2026-07-24' ? ['deepseek-chat', 'deepseek-reasoner'] : [])
+], 'DeepSeek 价格目录应按官方当前优先模型到历史兼容名排序')
 const deepSeekPricingById = new Map(deepSeekModelPricingList.map((item) => [item.model, item]))
 for (const id of ['deepseek-v4-flash', 'deepseek-ai-v4-flash', 'deepseek-v4-pro', 'deepseek-ai-v4-pro']) {
   assert(deepSeekPricingById.has(id), `DeepSeek 模型价格目录应包含 ${id}`)
@@ -359,30 +366,137 @@ const glm52Cost = estimateProviderCostUsd({
 })
 assert.equal(glm52Cost, 0.001384, 'GLM-5.2 成本应按 cache hit 与 cache miss 拆分')
 const glmModelPricingList = listProviderModelPricing(GLM_PROVIDER_CODE)
+assert.deepEqual(glmModelPricingList.map((item) => item.model), [
+  'glm-5.2',
+  'glm-5.1',
+  'glm-5',
+  'glm-5-turbo',
+  'glm-4.7',
+  'glm-4.7-flashx',
+  'glm-4.7-flash',
+  'glm-4.6',
+  'glm-4.5',
+  'glm-4.5-x',
+  'glm-4.5-air',
+  'glm-4.5-airx',
+  'glm-4.5-flash',
+  'glm-4-32b-0414-128k',
+  'glm-4-long',
+  'glm-4-flashx-250414',
+  'glm-4-flash-250414',
+  'glm-5.2-free'
+], 'GLM 价格目录应按官方当前模型从新到旧排序，隐藏历史估算项排最后')
 const glmPricingById = new Map(glmModelPricingList.map((item) => [item.model, item]))
-for (const id of ['glm-5.2-free', 'glm-5.2', 'glm-5-turbo']) {
+for (const id of [
+  'glm-5.2',
+  'glm-5.1',
+  'glm-5',
+  'glm-5-turbo',
+  'glm-4.7',
+  'glm-4.7-flashx',
+  'glm-4.7-flash',
+  'glm-4.6',
+  'glm-4.5',
+  'glm-4.5-x',
+  'glm-4.5-air',
+  'glm-4.5-airx',
+  'glm-4.5-flash',
+  'glm-4-32b-0414-128k',
+  'glm-4-long',
+  'glm-4-flashx-250414',
+  'glm-4-flash-250414',
+  'glm-5.2-free'
+]) {
   assert(glmPricingById.has(id), `GLM 模型价格目录应包含 ${id}`)
   assert.deepEqual(glmPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
 }
+assert.equal(glmPricingById.get('glm-5.2-free')?.catalogVisible, false, '非官方 glm-5.2-free 不应进入可见模型目录')
 assert.equal(glmPricingById.get('glm-5.2-free')?.inputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-5.2-free')?.outputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-5.2')?.inputUsdPer1M, 1.4)
 assert.equal(glmPricingById.get('glm-5.2')?.cachedInputUsdPer1M, 0.26)
 assert.equal(glmPricingById.get('glm-5.2')?.outputUsdPer1M, 4.4)
+assert.equal(glmPricingById.get('glm-5.1')?.inputUsdPer1M, 1.4)
+assert.equal(glmPricingById.get('glm-5.1')?.cachedInputUsdPer1M, 0.26)
+assert.equal(glmPricingById.get('glm-5.1')?.outputUsdPer1M, 4.4)
+assert.equal(glmPricingById.get('glm-5')?.inputUsdPer1M, 1.0)
+assert.equal(glmPricingById.get('glm-5')?.cachedInputUsdPer1M, 0.2)
+assert.equal(glmPricingById.get('glm-5')?.outputUsdPer1M, 3.2)
 assert.equal(glmPricingById.get('glm-5-turbo')?.inputUsdPer1M, 1.2)
 assert.equal(glmPricingById.get('glm-5-turbo')?.cachedInputUsdPer1M, 0.24)
 assert.equal(glmPricingById.get('glm-5-turbo')?.outputUsdPer1M, 4)
+assert.equal(glmPricingById.get('glm-4.7')?.inputUsdPer1M, 0.6)
+assert.equal(glmPricingById.get('glm-4.7')?.cachedInputUsdPer1M, 0.11)
+assert.equal(glmPricingById.get('glm-4.7')?.outputUsdPer1M, 2.2)
+assert.equal(glmPricingById.get('glm-4.7-flashx')?.inputUsdPer1M, 0.07)
+assert.equal(glmPricingById.get('glm-4.7-flashx')?.cachedInputUsdPer1M, 0.01)
+assert.equal(glmPricingById.get('glm-4.7-flashx')?.outputUsdPer1M, 0.4)
+assert.equal(glmPricingById.get('glm-4.7-flash')?.inputUsdPer1M, 0)
+assert.equal(glmPricingById.get('glm-4.7-flash')?.outputUsdPer1M, 0)
+assert.equal(glmPricingById.get('glm-4.5-x')?.inputUsdPer1M, 2.2)
+assert.equal(glmPricingById.get('glm-4.5-x')?.cachedInputUsdPer1M, 0.45)
+assert.equal(glmPricingById.get('glm-4.5-x')?.outputUsdPer1M, 8.9)
+assert.equal(glmPricingById.get('glm-4.5-air')?.inputUsdPer1M, 0.2)
+assert.equal(glmPricingById.get('glm-4.5-air')?.cachedInputUsdPer1M, 0.03)
+assert.equal(glmPricingById.get('glm-4.5-air')?.outputUsdPer1M, 1.1)
+assert.equal(glmPricingById.get('glm-4.5-airx')?.inputUsdPer1M, 1.1)
+assert.equal(glmPricingById.get('glm-4.5-airx')?.cachedInputUsdPer1M, 0.22)
+assert.equal(glmPricingById.get('glm-4.5-airx')?.outputUsdPer1M, 4.5)
+assert.equal(glmPricingById.get('glm-4.5-flash')?.inputUsdPer1M, 0)
+assert.equal(glmPricingById.get('glm-4.5-flash')?.outputUsdPer1M, 0)
+assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.inputUsdPer1M, 0.1)
+assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.outputUsdPer1M, 0.1)
+assert.equal(glmPricingById.get('glm-4-long')?.inputUsdPer1M, 0.14)
+assert.equal(glmPricingById.get('glm-4-long')?.outputUsdPer1M, 0.14)
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5.2-20260620')?.model, 'glm-5.2')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5-turbo-20260620')?.model, 'glm-5-turbo')
+assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4.7-flashx-20260620')?.model, 'glm-4.7-flashx')
+assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4-flashx-250414-20260620')?.model, 'glm-4-flashx-250414')
 
 const openAIModelPricingList = listProviderModelPricing(GPT_VENDOR_CODE)
 const genericOpenAIModelPricingList = listProviderModelPricing(OPENAI_COMPATIBLE_PROVIDER_CODE)
 assert.equal(genericOpenAIModelPricingList.length, openAIModelPricingList.length, 'openai 通用供应商应继承 OpenAI-compatible 内置模型目录')
 assert.equal(genericOpenAIModelPricingList[0]?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '通用供应商模型目录应保留 openai providerCode')
 assert.equal(openAIModelPricingList[0]?.providerCode, GPT_VENDOR_CODE, 'GPT 子供应商模型目录应保留 gpt providerCode')
+assert.deepEqual(openAIModelPricingList.slice(0, 8).map((item) => item.model), [
+  'gpt-5.5',
+  'gpt-5.5-2026-04-23',
+  'gpt-5.5-pro',
+  'gpt-5.5-pro-2026-04-23',
+  'gpt-image-2',
+  'gpt-image-2-2026-04-21',
+  'gpt-5.4-mini',
+  'gpt-5.4-mini-2026-03-17'
+], 'GPT/OpenAI 价格目录首屏应按官方当前模型从新到旧排序')
 const anthropicModelPricingList = listProviderModelPricing(ANTHROPIC_PROVIDER_CODE)
 assert(anthropicModelPricingList.length > 0, 'Anthropic 供应商应暴露 Anthropic 内置模型价格目录')
 assert.equal(anthropicModelPricingList[0]?.providerCode, ANTHROPIC_PROVIDER_CODE, 'Anthropic 模型目录应保留 anthropic providerCode')
+assert.deepEqual(anthropicModelPricingList.slice(0, 25).map((item) => item.model), [
+  'claude-fable-5',
+  'claude-mythos-5',
+  ...(new Date().toISOString().slice(0, 10) < '2026-06-30' ? ['claude-mythos-preview'] : []),
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-opus-4-6-thinking',
+  'claude-opus-4-5',
+  'claude-opus-4-5-20251101',
+  ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : []),
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6-thinking',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-5-20250929',
+  'claude-haiku-4-5',
+  'claude-haiku-4-5-20251001',
+  'best',
+  'fable',
+  'opus',
+  'opus[1m]',
+  'opusplan',
+  'sonnet',
+  'sonnet[1m]',
+  'haiku'
+].slice(0, 25), 'Anthropic 价格目录应按官方当前模型从新到旧排序，隐藏兼容模型排在可见模型后')
 const anthropicPricingById = new Map(anthropicModelPricingList.map((item) => [item.model, item]))
 for (const id of [
   'best',
@@ -406,6 +520,9 @@ for (const id of [
   'claude-opus-4-6-thinking',
   'claude-sonnet-4-6',
   'claude-sonnet-4-6-thinking',
+  'claude-opus-4-5',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5',
   'claude-sonnet-4-5-20250929',
   'claude-haiku-4-5-20251001',
   'claude-opus-4-5-20251101'

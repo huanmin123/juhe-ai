@@ -93,6 +93,23 @@ export interface RuntimeLogQueueHealthItem {
   rejectedCount: number | null
   flushFailureCount: number | null
   flushLastError?: string
+  oldestQueuedMs: number | null
+  lastFlushMs: number | null
+  maxFlushMs: number | null
+  slowFlushCount: number | null
+  lastSlowFlushAt?: string
+  writerPoolEnabled: boolean | null
+  writerPoolWorkerCount: number | null
+  writerPoolQueueLength: number | null
+  writerPoolActiveJobs: number | null
+  writerPoolHandledJobs: number | null
+  writerPoolFailedJobs: number | null
+  writerPoolRejectedJobs: number | null
+  writerPoolOldestQueuedMs: number | null
+  writerPoolMaxQueueWaitMs: number | null
+  writerPoolMaxRunMs: number | null
+  pendingWriteRequestCount: number | null
+  oldestPendingWriteMs: number | null
 }
 
 export interface RuntimeLogQueueHealth {
@@ -110,6 +127,9 @@ export interface RuntimeLogQueueHealth {
     flushFailureCount: number
     queuedCount: number
     queuedBytes: number
+    pendingWriteRequestCount: number
+    writerPoolQueuedCount: number
+    writerPoolActiveJobs: number
   }
   workerQueues: RuntimeLogQueueHealthItem[]
   serverIpcQueues: RuntimeLogQueueHealthItem[]
@@ -139,8 +159,23 @@ export interface RuntimeLogFacets {
     pid?: number
     ready: boolean | null
     pendingRequestCount: number | null
+    pendingDatasetWriteRequestCount?: number
+    oldestDatasetWriteRequestMs?: number
     timedOutRequestCount: number | null
     failedRequestCount: number | null
+    queuedRequestCount?: number
+    queuedHighRequestCount?: number
+    queuedNormalRequestCount?: number
+    queuedLowRequestCount?: number
+    oldestQueuedMs?: number
+    lastQueueWaitMs?: number
+    maxQueueWaitMs?: number
+    lastExecMs?: number
+    maxExecMs?: number
+    slowOpCount?: number
+    lastSlowOpType?: string
+    lastSlowOpMs?: number
+    lastSlowOpAt?: string
     unavailableCircuitOpenUntil?: string
     httpHost?: string
     httpPort?: number

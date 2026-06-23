@@ -183,6 +183,8 @@ export function removeCustomProviderModel(id: string): boolean {
 export function customProviderModelBindings(input: {
   providerCode: string
   model: string
+  scope: CustomProviderModelScope
+  systemAccountId?: string
 }): CustomProviderModelAccountBindingSummary {
   return customProviderModelAccountBindingSummary(input)
 }
@@ -461,6 +463,9 @@ function catalogPriority(item: ProviderModelCatalogItem): number {
 }
 
 export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem, right: ProviderModelCatalogItem): number {
+  const catalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
+  if (catalogOrder !== 0) return catalogOrder
+
   const leftReleaseDate = sortableCatalogReleaseDate(left)
   const rightReleaseDate = sortableCatalogReleaseDate(right)
   if (leftReleaseDate && rightReleaseDate && leftReleaseDate !== rightReleaseDate) {
@@ -472,6 +477,13 @@ export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem,
   const modelOrder = left.model.localeCompare(right.model, 'en')
   if (modelOrder !== 0) return modelOrder
   return (left.id ?? '').localeCompare(right.id ?? '', 'en')
+}
+
+function compareSharedCatalogOrder(left?: number, right?: number): number {
+  if (left !== undefined && right !== undefined && left !== right) {
+    return left - right
+  }
+  return 0
 }
 
 function modelCatalogSourceProviderCodes(providerCode: string): string[] {

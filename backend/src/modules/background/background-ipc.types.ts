@@ -38,6 +38,21 @@ export interface BackgroundWorkerQueueRuntime {
   droppedOversizeCount?: number
   retainedOverflowWarningCount?: number
   flushFailureCount?: number
+  oldestQueuedMs?: number
+  lastFlushMs?: number
+  maxFlushMs?: number
+  slowFlushCount?: number
+  lastSlowFlushAt?: string
+  writerPoolEnabled?: boolean
+  writerPoolWorkerCount?: number
+  writerPoolQueueLength?: number
+  writerPoolActiveJobs?: number
+  writerPoolHandledJobs?: number
+  writerPoolFailedJobs?: number
+  writerPoolRejectedJobs?: number
+  writerPoolOldestQueuedMs?: number
+  writerPoolMaxQueueWaitMs?: number
+  writerPoolMaxRunMs?: number
   successHotRetentionHours?: number
   successRetentionDays?: number
   failureRetentionDays?: number
@@ -99,6 +114,8 @@ export interface BackgroundWorkerRoleState {
   pendingMessageCount?: number
   pendingMessageBytes?: number
   pendingQueues?: BackgroundWorkerIpcQueuesRuntime
+  pendingWriteRequestCount?: number
+  oldestPendingWriteMs?: number
   pendingSnapshotRequestCount: number
   timedOutSnapshotRequestCount: number
   rejectedSnapshotRequestCount: number

@@ -53,6 +53,7 @@ export interface ProviderModelPricing {
   systemAccountId?: string
   pricingModel?: string
   mode?: string
+  catalogOrder?: number
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number

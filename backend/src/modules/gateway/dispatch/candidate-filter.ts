@@ -7,6 +7,7 @@ import {
 } from './account-capability-filter.js'
 import {
   filterGatewayAccountsByRequestedModel,
+  type GatewayAccountModelPriority,
   gatewayModelFilterFailureMessage
 } from './model-filter.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
@@ -23,7 +24,7 @@ export interface RequestCandidateFallbackResult {
 }
 
 export type RequestCandidateFilterResult =
-  | { outcome: 'accounts'; accounts: UpstreamAccount[] }
+  | { outcome: 'accounts'; accounts: UpstreamAccount[]; modelPriority: GatewayAccountModelPriority }
   | { outcome: 'fallback'; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
 
@@ -41,15 +42,21 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   clientIp?: string
   endpoint: string
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
+  loadModelAwareCandidateAccounts?: (requestedModel: string) => Promise<UpstreamAccount[] | undefined>
 }): Promise<RequestCandidateFilterResult> {
-  if (input.rawCandidateAccounts.length === 0) {
+  const requestedModel = requestModel(input.req)
+  let rawCandidateAccounts = input.rawCandidateAccounts
+  if (rawCandidateAccounts.length === 0 && requestedModel && input.loadModelAwareCandidateAccounts) {
+    rawCandidateAccounts = await input.loadModelAwareCandidateAccounts(requestedModel) ?? rawCandidateAccounts
+  }
+  if (rawCandidateAccounts.length === 0) {
     const fallback = await input.attemptFallback('no_candidate_accounts')
     if (fallback.attempted) {
       return { outcome: 'fallback', context: fallback.context }
     }
   }
 
-  const capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, input.rawCandidateAccounts, {
+  let capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, rawCandidateAccounts, {
     requestClientCompatibility: input.clientStrategy.requestClientCompatibility
   })
   if (capabilityFilter.skippedCount > 0) {
@@ -63,7 +70,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       }
     })
   }
-  if (input.rawCandidateAccounts.length > 0 && capabilityFilter.accounts.length === 0) {
+  if (rawCandidateAccounts.length > 0 && capabilityFilter.accounts.length === 0) {
     const reason = capabilityFilter.reason ?? 'request_capability_mismatch'
     const fallback = await input.attemptFallback(reason)
     if (fallback.attempted) {
@@ -102,7 +109,34 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestModel(input.req))
+  let modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel)
+  if (shouldReloadModelAwareCandidates(requestedModel, modelFilter, input.loadModelAwareCandidateAccounts)) {
+    const modelAwareRawAccounts = await input.loadModelAwareCandidateAccounts!(requestedModel!)
+    if (modelAwareRawAccounts?.length) {
+      const modelAwareCapabilityFilter = filterGatewayAccountsByRequestCapability(input.req, modelAwareRawAccounts, {
+        requestClientCompatibility: input.clientStrategy.requestClientCompatibility
+      })
+      const modelAwareModelFilter = filterGatewayAccountsByRequestedModel(modelAwareCapabilityFilter.accounts, requestedModel)
+      if (
+        modelAwareModelFilter.directMatchedCount > 0
+        || modelAwareModelFilter.mappingMatchedCount > 0
+        || (modelFilter.accounts.length === 0 && modelAwareModelFilter.accounts.length > 0)
+      ) {
+        capabilityFilter = modelAwareCapabilityFilter
+        modelFilter = modelAwareModelFilter
+        input.auditCapture.addGatewayMetadata({
+          label: 'account_model_candidate_window',
+          metadata: {
+            requestedModel: modelAwareModelFilter.requestedModel,
+            directMatchedCount: modelAwareModelFilter.directMatchedCount,
+            mappingMatchedCount: modelAwareModelFilter.mappingMatchedCount,
+            unrestrictedAccountCount: modelAwareModelFilter.unrestrictedAccountCount,
+            remainingCount: modelAwareModelFilter.accounts.length
+          }
+        })
+      }
+    }
+  }
   if (modelFilter.skippedCount > 0 || modelFilter.mappingMatchedCount > 0) {
     input.auditCapture.addGatewayMetadata({
       label: 'account_model_filter',
@@ -110,6 +144,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
         requestedModel: modelFilter.requestedModel,
         skippedCount: modelFilter.skippedCount,
         limitedAccountCount: modelFilter.limitedAccountCount,
+        unrestrictedAccountCount: modelFilter.unrestrictedAccountCount,
         directMatchedCount: modelFilter.directMatchedCount,
         mappingMatchedCount: modelFilter.mappingMatchedCount,
         remainingCount: modelFilter.accounts.length,
@@ -153,7 +188,29 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  return { outcome: 'accounts', accounts: modelFilter.accounts }
+  return {
+    outcome: 'accounts',
+    accounts: modelFilter.accounts,
+    modelPriority: modelFilter.modelPriority
+  }
+}
+
+function shouldReloadModelAwareCandidates(
+  requestedModel: string | undefined,
+  modelFilter: {
+    limitedAccountCount: number
+    directMatchedCount: number
+    mappingMatchedCount: number
+  },
+  loader: ((requestedModel: string) => Promise<UpstreamAccount[] | undefined>) | undefined
+): boolean {
+  return Boolean(
+    requestedModel
+    && loader
+    && modelFilter.limitedAccountCount > 0
+    && modelFilter.directMatchedCount === 0
+    && modelFilter.mappingMatchedCount === 0
+  )
 }
 
 function requestCapabilityMismatchMessage(reason: string): string {

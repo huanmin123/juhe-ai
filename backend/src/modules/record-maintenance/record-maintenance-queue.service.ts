@@ -12,7 +12,7 @@ import {
   cleanupProcessedUsageRecordsBeforeWithResult,
   type NonBusinessDataHardCleanupResult
 } from '../../storage/data-retention.repository.js'
-import { newId, nowIso } from '../../storage/database.js'
+import { newId, nowIso, usageCatalogDatabasePath } from '../../storage/database.js'
 import {
   createBackgroundTaskRun,
   cleanupDeletedAccountRelatedRecordDataAsync,
@@ -421,6 +421,7 @@ function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJo
       JUHE_AI_WORKER_ROLE: 'temporary-maintenance-worker',
       JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath,
       JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath,
+      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: usageCatalogDatabasePath(),
       JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath,
       JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot
     },

@@ -510,10 +510,6 @@ function encodeInlineCodexCompactionSummary(summary: string): string {
   return `${codexInlineCompactionSummaryPrefix}${payload}`
 }
 
-export function encodeCodexCompactionSummary(summary: string): string {
-  return encodeInlineCodexCompactionSummary(summary)
-}
-
 export function getCodexResponsesChatBridgeRequestState(req: Request): CodexResponsesChatBridgeRequestState | undefined {
   return (req as Request & { [requestStateSymbol]?: CodexResponsesChatBridgeRequestState })[requestStateSymbol]
 }
@@ -878,7 +874,10 @@ function resolveStoragePath(storageKey: string): string {
 }
 
 function safePathSegment(input: string): string {
-  return input.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 160) || randomUUID()
+  const normalized = input.trim()
+  const readablePrefix = normalized.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 96) || 'session'
+  const digest = createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 24)
+  return `${readablePrefix}-${digest}`
 }
 
 function expiresAtFrom(now: Date): string {

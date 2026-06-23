@@ -85,7 +85,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
       return accountTestResultWithTotalDuration(result, startedAt)
     }
     if (attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length) {
-      logger.info({
+      logger.debug({
         event: 'account_diagnostic_test_retry_scheduled',
         accountId: account.id,
         accountName: account.name,

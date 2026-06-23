@@ -345,7 +345,7 @@ export function buildProcessMemoryOption(trend: SystemMetricsOverview['processEv
     },
     yAxis: {
       type: 'value',
-      name: 'RSS',
+      name: 'RSS 峰值',
       axisLabel: { formatter: (value: number) => formatBytesMiB(value), color: '#64748b' },
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },

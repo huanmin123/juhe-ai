@@ -137,6 +137,7 @@ export async function resolveHybridGatewayRoute(input: {
       scoringAccountId: scoring.scoringAccountId,
       scoringErrorCode: scoring.errorCode,
       scoringErrorMessage: scoring.errorMessage,
+      scoringFactors: scoring.factors,
       scoringReason: scoring.reason,
       targetModel: candidateRoute.targetModel,
       targetGroupId: target.groupId,
@@ -184,6 +185,7 @@ export async function resolveHybridGatewayRoute(input: {
     scoringCacheHit: scoring.cacheHit === true,
     scoringErrorCode: scoring.errorCode,
     scoringErrorMessage: scoring.errorMessage,
+    scoringFactors: scoring.factors,
     scoringReason: scoring.reason,
     targetModel: route.targetModel
   })

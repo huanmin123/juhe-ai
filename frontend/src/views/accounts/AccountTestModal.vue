@@ -218,7 +218,7 @@ const runButtonText = computed(() => {
 const currentProviderName = computed(() => props.account ? providerLabel(props.account) : '')
 const clientCompatibilityOptions: Array<{ label: string; value: AccountTestClientCompatibility }> = [
   { label: '跟随账号能力', value: 'account_default' },
-  { label: 'OpenAI 标准请求', value: 'openai_standard' },
+  { label: 'OpenAI-compatible 请求', value: 'openai_standard' },
   { label: 'Codex Responses 请求', value: 'codex_responses' }
 ]
 const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')

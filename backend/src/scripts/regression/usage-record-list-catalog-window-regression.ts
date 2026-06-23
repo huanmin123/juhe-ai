@@ -10,6 +10,7 @@ import { logger } from '../../shared/logger.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-list-catalog-window-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.usageShardCount = 8
@@ -70,7 +71,7 @@ try {
   }
   assert(usageRecordShards.listUsageRecordShardLocations().length > 1, '回归需要多 usage shard 样本')
 
-  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const datasetDatabase = databaseModule.getUsageCatalogDatabase()
   const originalDatasetPrepare = datasetDatabase.prepare.bind(datasetDatabase) as typeof datasetDatabase.prepare
   const listCalls: Array<{ sql: string; params: unknown[] }> = []
   datasetDatabase.prepare = ((sql: string) => {
@@ -137,7 +138,7 @@ try {
     .join('\n')
   assert(planDetails.includes('idx_usage_record_shard_entries_created_sort'), `catalog created_at 排序应使用目标索引，实际计划：${planDetails}`)
 
-  console.log('使用记录列表 catalog 窗口回归通过：请求列表只读取固定 entry 窗口，再按当前页 ID 补取 shard 明细')
+  console.log('使用记录列表 catalog 窗口回归通过：请求列表只读取独立 usage catalog 的固定 entry 窗口，再按当前页 ID 补取 shard 明细')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

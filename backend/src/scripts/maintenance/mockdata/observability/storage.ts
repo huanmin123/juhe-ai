@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../../../../config/runtime.js'
-import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from '../../../../storage/database.js'
+import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, statsDatabasePath, usageCatalogDatabasePath } from '../../../../storage/database.js'
 import {
   dayMs,
   idPrefix,
@@ -28,6 +28,7 @@ export function createStorageMockdata(_created: CreatedMockdata, options: Mockda
   `)
   const businessDatabase = getBusinessDatabase()
   const datasetDatabase = getDatasetDatabase()
+  const usageCatalogDatabase = getUsageCatalogDatabase()
   const businessTables = [
     'accounts',
     'account_supported_models',
@@ -48,11 +49,13 @@ export function createStorageMockdata(_created: CreatedMockdata, options: Mockda
     'announcements',
     'announcement_reads'
   ] as const
-  const datasetTables = [
+  const usageCatalogTables = [
     'usage_record_shards',
     'usage_record_shard_entries',
     'usage_record_account_shards',
-    'usage_record_api_key_shards',
+    'usage_record_api_key_shards'
+  ] as const
+  const datasetTables = [
     'audit_logs',
     'audit_log_attempts',
     'audit_payload_refs',
@@ -98,6 +101,7 @@ export function createStorageMockdata(_created: CreatedMockdata, options: Mockda
   ] as const
   const databaseTargets = [
     { role: 'business', path: runtimeConfig.databasePath, baseBytes: 80_000_000, growthBytes: 1_200_000, tableCount: 20, indexCount: 38 },
+    { role: 'usage-catalog', path: usageCatalogDatabasePath(), baseBytes: 120_000_000, growthBytes: 4_500_000, tableCount: 4, indexCount: 29 },
     { role: 'dataset', path: datasetDatabasePath(), baseBytes: 220_000_000, growthBytes: 7_000_000, tableCount: 24, indexCount: 48 },
     { role: 'stats', path: statsDatabasePath(), baseBytes: 90_000_000, growthBytes: 1_500_000, tableCount: 36, indexCount: 62 }
   ] as const
@@ -135,6 +139,11 @@ export function createStorageMockdata(_created: CreatedMockdata, options: Mockda
         const baseRows = tableRowCount(datasetDatabase, tableName)
         const rows = baseRows + dayIndex * 12
         insertTable.run(...tableStorageValues('dataset', tableName, dayIndex, sampledAt, rows, 80_000 + rows * 1100))
+      }
+      for (const tableName of usageCatalogTables) {
+        const baseRows = tableRowCount(usageCatalogDatabase, tableName)
+        const rows = baseRows + dayIndex * 12
+        insertTable.run(...tableStorageValues('usage-catalog', tableName, dayIndex, sampledAt, rows, 80_000 + rows * 1100))
       }
       for (const tableName of statsTables) {
         const baseRows = tableRowCount(database, tableName)

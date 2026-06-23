@@ -18,6 +18,23 @@ export interface BackgroundQueueHealthItem {
   rejectedCount: number | null
   flushFailureCount: number | null
   flushLastError?: string
+  oldestQueuedMs: number | null
+  lastFlushMs: number | null
+  maxFlushMs: number | null
+  slowFlushCount: number | null
+  lastSlowFlushAt?: string
+  writerPoolEnabled: boolean | null
+  writerPoolWorkerCount: number | null
+  writerPoolQueueLength: number | null
+  writerPoolActiveJobs: number | null
+  writerPoolHandledJobs: number | null
+  writerPoolFailedJobs: number | null
+  writerPoolRejectedJobs: number | null
+  writerPoolOldestQueuedMs: number | null
+  writerPoolMaxQueueWaitMs: number | null
+  writerPoolMaxRunMs: number | null
+  pendingWriteRequestCount: number | null
+  oldestPendingWriteMs: number | null
 }
 
 export interface BackgroundQueueHealthSnapshot {
@@ -35,6 +52,9 @@ export interface BackgroundQueueHealthSnapshot {
     flushFailureCount: number
     queuedCount: number
     queuedBytes: number
+    pendingWriteRequestCount: number
+    writerPoolQueuedCount: number
+    writerPoolActiveJobs: number
   }
   workerQueues: BackgroundQueueHealthItem[]
   serverIpcQueues: BackgroundQueueHealthItem[]
@@ -108,7 +128,8 @@ export function buildBackgroundQueueHealthSnapshot(
       ingestWorkerSnapshot,
       statsWorkerSnapshot,
       workerRole: spec.workerRole
-    })
+    }),
+    roleState: rolePendingWriteStateForQueue(spec, serverRuntime)
   }))
   const ipcQueues = ipcQueueSpecs.map((spec) => buildQueueHealthItem({
     key: spec.key,
@@ -142,6 +163,19 @@ export function buildBackgroundQueueHealthSnapshot(
   }
 }
 
+function rolePendingWriteStateForQueue(
+  spec: WorkerQueueSpec,
+  serverRuntime: DbServiceServerRuntimeSnapshot | undefined
+): { pendingWriteRequestCount?: number; oldestPendingWriteMs?: number } | undefined {
+  if (spec.workerRole === 'ingest-worker' && spec.key === 'usageRecords') {
+    return serverRuntime?.ingestWorker
+  }
+  if (spec.workerRole === 'stats-worker' && spec.key === 'recordMaintenanceStats') {
+    return serverRuntime?.statsWorker
+  }
+  return undefined
+}
+
 function workerQueueSnapshot(
   snapshotKey: WorkerQueueSpec['snapshotKey'],
   input: {
@@ -163,6 +197,10 @@ function buildQueueHealthItem(input: {
   label: string
   source: 'worker_local' | 'server_ipc'
   snapshot?: DbServiceRuntimeQueueSnapshot
+  roleState?: {
+    pendingWriteRequestCount?: number
+    oldestPendingWriteMs?: number
+  }
 }): BackgroundQueueHealthItem {
   const snapshot = input.snapshot
   if (!snapshot) {
@@ -180,7 +218,23 @@ function buildQueueHealthItem(input: {
       droppedSuccessCount: null,
       droppedFailureCount: null,
       rejectedCount: null,
-      flushFailureCount: null
+      flushFailureCount: null,
+      oldestQueuedMs: null,
+      lastFlushMs: null,
+      maxFlushMs: null,
+      slowFlushCount: null,
+      writerPoolEnabled: null,
+      writerPoolWorkerCount: null,
+      writerPoolQueueLength: null,
+      writerPoolActiveJobs: null,
+      writerPoolHandledJobs: null,
+      writerPoolFailedJobs: null,
+      writerPoolRejectedJobs: null,
+      writerPoolOldestQueuedMs: null,
+      writerPoolMaxQueueWaitMs: null,
+      writerPoolMaxRunMs: null,
+      pendingWriteRequestCount: null,
+      oldestPendingWriteMs: null
     }
   }
 
@@ -192,10 +246,29 @@ function buildQueueHealthItem(input: {
   const flushLastError = typeof snapshot.flushLastError === 'string' && snapshot.flushLastError.trim()
     ? snapshot.flushLastError
     : undefined
+  const oldestQueuedMs = nullableNumber(snapshot.oldestQueuedMs)
+  const lastFlushMs = nullableNumber(snapshot.lastFlushMs)
+  const maxFlushMs = nullableNumber(snapshot.maxFlushMs)
+  const slowFlushCount = nullableNumber(snapshot.slowFlushCount)
+  const lastSlowFlushAt = typeof snapshot.lastSlowFlushAt === 'string' && snapshot.lastSlowFlushAt.trim()
+    ? snapshot.lastSlowFlushAt
+    : undefined
+  const writerPoolEnabled = typeof snapshot.writerPoolEnabled === 'boolean' ? snapshot.writerPoolEnabled : null
+  const writerPoolQueueLength = nullableNumber(snapshot.writerPoolQueueLength)
+  const writerPoolActiveJobs = nullableNumber(snapshot.writerPoolActiveJobs)
+  const writerPoolFailedJobs = nullableNumber(snapshot.writerPoolFailedJobs)
+  const writerPoolRejectedJobs = nullableNumber(snapshot.writerPoolRejectedJobs)
+  const writerPoolOldestQueuedMs = nullableNumber(snapshot.writerPoolOldestQueuedMs)
+  const pendingWriteRequestCount = nullableNumber(input.roleState?.pendingWriteRequestCount)
+  const oldestPendingWriteMs = nullableNumber(input.roleState?.oldestPendingWriteMs)
   const reasons: string[] = []
   if ((droppedCount ?? 0) > 0) reasons.push('queue_dropped')
   if ((rejectedCount ?? 0) > 0) reasons.push('ipc_rejected')
   if ((flushFailureCount ?? 0) > 0 || flushLastError) reasons.push('queue_flush_failed')
+  if ((slowFlushCount ?? 0) > 0) reasons.push('queue_slow_flush')
+  if ((writerPoolFailedJobs ?? 0) > 0 || (writerPoolRejectedJobs ?? 0) > 0) reasons.push('writer_pool_degraded')
+  if (isQueueBacklogged(writerPoolQueueLength, 0) || (writerPoolOldestQueuedMs ?? 0) >= 5000) reasons.push('writer_pool_backlogged')
+  if ((pendingWriteRequestCount ?? 0) > 0 && (oldestPendingWriteMs ?? 0) >= 5000) reasons.push('pending_write_backlogged')
   if (isQueueBacklogged(queueLength, queueBytes)) reasons.push('queue_backlogged')
 
   return {
@@ -213,7 +286,24 @@ function buildQueueHealthItem(input: {
     droppedFailureCount: nullableNumber(snapshot.droppedFailureCount),
     rejectedCount,
     flushFailureCount,
-    flushLastError
+    flushLastError,
+    oldestQueuedMs,
+    lastFlushMs,
+    maxFlushMs,
+    slowFlushCount,
+    lastSlowFlushAt,
+    writerPoolEnabled,
+    writerPoolWorkerCount: nullableNumber(snapshot.writerPoolWorkerCount),
+    writerPoolQueueLength,
+    writerPoolActiveJobs,
+    writerPoolHandledJobs: nullableNumber(snapshot.writerPoolHandledJobs),
+    writerPoolFailedJobs,
+    writerPoolRejectedJobs,
+    writerPoolOldestQueuedMs,
+    writerPoolMaxQueueWaitMs: nullableNumber(snapshot.writerPoolMaxQueueWaitMs),
+    writerPoolMaxRunMs: nullableNumber(snapshot.writerPoolMaxRunMs),
+    pendingWriteRequestCount,
+    oldestPendingWriteMs
   }
 }
 
@@ -222,10 +312,16 @@ function itemQueueHealthStatus(reasons: string[]): BackgroundQueueHealthStatus {
     reasons.includes('queue_dropped')
     || reasons.includes('ipc_rejected')
     || reasons.includes('queue_flush_failed')
+    || reasons.includes('queue_slow_flush')
+    || reasons.includes('writer_pool_degraded')
   ) {
     return 'degraded'
   }
-  if (reasons.includes('queue_backlogged')) {
+  if (
+    reasons.includes('queue_backlogged')
+    || reasons.includes('writer_pool_backlogged')
+    || reasons.includes('pending_write_backlogged')
+  ) {
     return 'backlogged'
   }
   return 'normal'
@@ -257,6 +353,9 @@ function summarizeQueueHealthItems(items: BackgroundQueueHealthItem[]): Backgrou
     summary.flushFailureCount += item.flushFailureCount ?? 0
     summary.queuedCount += item.queueLength ?? 0
     summary.queuedBytes += item.queueBytes ?? 0
+    summary.pendingWriteRequestCount += item.pendingWriteRequestCount ?? 0
+    summary.writerPoolQueuedCount += item.writerPoolQueueLength ?? 0
+    summary.writerPoolActiveJobs += item.writerPoolActiveJobs ?? 0
     return summary
   }, {
     degradedCount: 0,
@@ -266,7 +365,10 @@ function summarizeQueueHealthItems(items: BackgroundQueueHealthItem[]): Backgrou
     rejectedCount: 0,
     flushFailureCount: 0,
     queuedCount: 0,
-    queuedBytes: 0
+    queuedBytes: 0,
+    pendingWriteRequestCount: 0,
+    writerPoolQueuedCount: 0,
+    writerPoolActiveJobs: 0
   })
 }
 

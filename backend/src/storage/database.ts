@@ -2,20 +2,21 @@ import { mkdirSync } from 'node:fs'
 import { dirname, normalize, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { isProductionRuntime, runtimeConfig } from '../config/runtime.js'
+import { defaultDatasetDatabasePath, defaultUsageCatalogDatabasePath, isProductionRuntime, runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { applyBusinessSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
+import { applyBusinessSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, applyUsageCatalogSchema, seedDefaults } from './schema.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 import { closeUsageRecordShardDatabases } from './usage-record-shards.js'
 
 let businessDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
+let usageCatalogDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
 const codexContextStateShardDatabases = new Map<number, DatabaseSync>()
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
 
-export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'stats' | 'codex-context-state'
+export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer'
 
 export interface SqliteDatabaseRuntimeInfo {
@@ -54,6 +55,16 @@ export function getDatasetDatabase(): DatabaseSync {
   return datasetDatabase
 }
 
+export function getUsageCatalogDatabase(): DatabaseSync {
+  assertDistinctStoragePaths()
+  const databasePath = usageCatalogDatabasePath()
+  if (usageCatalogDatabase) {
+    return usageCatalogDatabase
+  }
+  usageCatalogDatabase = openUsageCatalogDatabase(databasePath)
+  return usageCatalogDatabase
+}
+
 export function getStatsDatabase(): DatabaseSync {
   assertDistinctStoragePaths()
   const databasePath = statsDatabasePath()
@@ -80,18 +91,30 @@ export function closeStorageDatabases(): void {
   closeUsageRecordShardDatabases()
   closeDatabaseHandle(businessDatabase)
   closeDatabaseHandle(datasetDatabase)
+  closeDatabaseHandle(usageCatalogDatabase)
   closeDatabaseHandle(statsDatabase)
   for (const database of codexContextStateShardDatabases.values()) {
     closeDatabaseHandle(database)
   }
   businessDatabase = undefined
   datasetDatabase = undefined
+  usageCatalogDatabase = undefined
   statsDatabase = undefined
   codexContextStateShardDatabases.clear()
 }
 
 export function datasetDatabasePath(): string {
   return runtimeConfig.datasetDatabasePath
+}
+
+export function usageCatalogDatabasePath(): string {
+  if (
+    normalize(runtimeConfig.usageCatalogDatabasePath) === normalize(defaultUsageCatalogDatabasePath)
+    && normalize(runtimeConfig.datasetDatabasePath) !== normalize(defaultDatasetDatabasePath)
+  ) {
+    return resolve(dirname(runtimeConfig.datasetDatabasePath), 'usage-catalog.sqlite3')
+  }
+  return runtimeConfig.usageCatalogDatabasePath
 }
 
 export function statsDatabasePath(): string {
@@ -131,6 +154,16 @@ function openDatasetDatabase(databasePath: string): DatabaseSync {
   configureDatabase(database, 'dataset')
   if (shouldApplyMainDatabaseSchema('dataset')) {
     applyDatasetSchema(database)
+  }
+  return database
+}
+
+function openUsageCatalogDatabase(databasePath: string): DatabaseSync {
+  mkdirSync(dirname(databasePath), { recursive: true })
+  const database = new DatabaseSync(databasePath)
+  configureDatabase(database, 'usage-catalog')
+  if (shouldApplyMainDatabaseSchema('usage-catalog')) {
+    applyUsageCatalogSchema(database)
   }
   return database
 }
@@ -221,6 +254,7 @@ function assertDistinctStoragePaths(): void {
   const targets = [
     { role: '业务库', path: runtimeConfig.databasePath },
     { role: '数据集目录库', path: datasetDatabasePath() },
+    { role: '使用记录目录库', path: usageCatalogDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() },
     ...codexContextStateShardIndexes().map((shardIndex) => ({
       role: `Codex Responses 上下文索引库分片 ${shardIndex}`,
@@ -232,7 +266,7 @@ function assertDistinctStoragePaths(): void {
     const key = normalize(target.path).toLowerCase()
     const existingRole = seen.get(key)
     if (existingRole) {
-      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
+      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
     }
     seen.set(key, target.role)
   }
@@ -246,7 +280,7 @@ export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): 
   if (kind === 'business' || kind === 'codex-context-state') {
     return 'db-service'
   }
-  if (kind === 'dataset') {
+  if (kind === 'dataset' || kind === 'usage-catalog') {
     return 'ingest-worker'
   }
   return 'stats-writer'
@@ -256,7 +290,7 @@ export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKin
   if (kind === 'business' || kind === 'codex-context-state') {
     return runtimeConfig.processRole === 'db-service'
   }
-  if (kind === 'dataset') {
+  if (kind === 'dataset' || kind === 'usage-catalog') {
     return runtimeConfig.processRole === 'worker'
       && runtimeConfig.workerRole === 'ingest-worker'
   }
@@ -280,9 +314,11 @@ export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDat
     ? runtimeConfig.databasePath
     : kind === 'dataset'
       ? datasetDatabasePath()
-      : kind === 'stats'
-        ? statsDatabasePath()
-        : codexContextStateShardRootPath()
+      : kind === 'usage-catalog'
+        ? usageCatalogDatabasePath()
+        : kind === 'stats'
+          ? statsDatabasePath()
+          : codexContextStateShardRootPath()
   return {
     kind,
     path,

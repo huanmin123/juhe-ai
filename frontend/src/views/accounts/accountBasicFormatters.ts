@@ -1,5 +1,8 @@
 import { serverDateTimeTimestamp } from '@/shared/formatters'
 import {
+  DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   isDeepSeekProviderCode,
@@ -40,7 +43,7 @@ export function accountTypeText(type: AccountType) {
 
 export function accountClientCompatibilityText(value?: AccountClientCompatibility): string {
   if (value === 'codex_responses') return 'Codex Responses'
-  return 'OpenAI 标准'
+  return 'OpenAI-compatible'
 }
 
 export function accountTypeTitle(providerName: string, type: AccountType) {
@@ -52,10 +55,13 @@ export function accountTypeTitle(providerName: string, type: AccountType) {
 export function accountTypeDescription(providerCode: string, type: AccountType, providerProtocolProfileId?: string) {
   if (isGptVendorCode(providerCode) && type === 'oauth') return '适合 GPT / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
   if (isGptVendorCode(providerCode) && type === 'api_key') return '适合 GPT 官方或 OpenAI v1 兼容透传，可配置 Base URL。'
-  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '适合智谱通用 GLM API Key；默认只启用 Chat JSON/SSE，不承接 Responses。'
+  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '适合智谱通用 GLM API Key；默认只启用对话补全 (JSON/Streaming)，不承接 Responses API。'
   if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return '适合 GLM Coding Plan Key；使用 Coding 专用 Base URL，可在客户端兼容中显式选择 Codex Responses 桥接。'
+  if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return '适合 GLM Coding Plan Key 直连 Claude Code；使用 Anthropic v1 Messages 协议，不承接 Codex Responses 桥接。'
   if (isGlmProviderCode(providerCode) && type === 'api_key') return '适合智谱 GLM API Key；通用 API 与 Coding Plan 需要选择对应接入档案。'
-  if (isDeepSeekProviderCode(providerCode) && type === 'api_key') return '适合 DeepSeek OpenAI-compatible Chat Completions 直连；默认只启用 Chat JSON/SSE。'
+  if (isDeepSeekProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return '适合 DeepSeek API Key 直连 Claude Code；使用 Anthropic v1 Messages 协议，默认只启用 Messages (JSON/Streaming)。'
+  if (isDeepSeekProviderCode(providerCode) && type === 'api_key' && (!providerProtocolProfileId || providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID)) return '适合 DeepSeek OpenAI-compatible Chat Completion 直连；默认只启用 Chat Completion (JSON/Streaming)。'
+  if (isDeepSeekProviderCode(providerCode) && type === 'api_key') return '适合 DeepSeek API Key；OpenAI-compatible 与 Claude Code 需要选择对应接入档案。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 

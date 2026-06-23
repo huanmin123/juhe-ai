@@ -21,6 +21,8 @@ const runtimeLogShutdownFlushMaxBatches = 1
 const runtimeLogMaxRawJsonChars = 128 * 1024
 const runtimeLogQueueMaxItems = 5_000
 const runtimeLogQueueMaxBytes = 32 * 1024 * 1024
+const runtimeLogQueueSampleDropItemHighWater = Math.floor(runtimeLogQueueMaxItems * 0.8)
+const runtimeLogQueueSampleDropByteHighWater = Math.floor(runtimeLogQueueMaxBytes * 0.8)
 
 interface QueuedRuntimeLog {
   input: RuntimeLogIndexInput
@@ -35,6 +37,7 @@ let flushing = false
 let droppedRuntimeLogCount = 0
 let droppedRuntimeLogOverflowCount = 0
 let droppedRuntimeLogOversizeCount = 0
+let droppedRuntimeLogSampledCount = 0
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
@@ -58,6 +61,7 @@ export interface RuntimeLogIndexRuntime {
   droppedCount: number
   droppedOverflowCount: number
   droppedOversizeCount: number
+  droppedSampledCount: number
   flushLastSuccessAt?: string
   flushLastError?: string
   retentionDays: number
@@ -87,6 +91,10 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogL
   }
   if (queued.bytes > runtimeLogQueueMaxBytes) {
     recordRuntimeLogDrop(queued, 'oversize')
+    return
+  }
+  if (shouldSampleDropRuntimeLog(queued)) {
+    recordRuntimeLogDrop(queued, 'sampled')
     return
   }
   if (pendingRuntimeLogs.length >= runtimeLogQueueMaxItems || pendingRuntimeLogBytes + queued.bytes > runtimeLogQueueMaxBytes) {
@@ -165,6 +173,7 @@ export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
     droppedCount: droppedRuntimeLogCount,
     droppedOverflowCount: droppedRuntimeLogOverflowCount,
     droppedOversizeCount: droppedRuntimeLogOversizeCount,
+    droppedSampledCount: droppedRuntimeLogSampledCount,
     flushLastSuccessAt,
     flushLastError,
     retentionDays: runtimeLogIndexRetentionDays
@@ -192,6 +201,7 @@ export function clearRuntimeLogIndexQueueForTest(): void {
   droppedRuntimeLogCount = 0
   droppedRuntimeLogOverflowCount = 0
   droppedRuntimeLogOversizeCount = 0
+  droppedRuntimeLogSampledCount = 0
   flushLastSuccessAt = undefined
   flushLastError = undefined
   shutdownHooksInstalled = false
@@ -402,12 +412,27 @@ function sumQueuedRuntimeLogBytes(items: QueuedRuntimeLog[]): number {
   return items.reduce((sum, item) => sum + item.bytes, 0)
 }
 
-function recordRuntimeLogDrop(item: QueuedRuntimeLog, reason: 'overflow' | 'oversize'): void {
+function shouldSampleDropRuntimeLog(item: QueuedRuntimeLog): boolean {
+  if (!isLowPriorityRuntimeLogLevel(item.input.level)) {
+    return false
+  }
+  return pendingRuntimeLogs.length >= runtimeLogQueueSampleDropItemHighWater
+    || pendingRuntimeLogBytes + item.bytes >= runtimeLogQueueSampleDropByteHighWater
+}
+
+function isLowPriorityRuntimeLogLevel(level: RuntimeLogLevel | string): boolean {
+  const normalized = String(level || '').toLowerCase()
+  return normalized === 'trace' || normalized === 'debug' || normalized === 'info'
+}
+
+function recordRuntimeLogDrop(item: QueuedRuntimeLog, reason: 'overflow' | 'oversize' | 'sampled'): void {
   droppedRuntimeLogCount += 1
   if (reason === 'overflow') {
     droppedRuntimeLogOverflowCount += 1
-  } else {
+  } else if (reason === 'oversize') {
     droppedRuntimeLogOversizeCount += 1
+  } else {
+    droppedRuntimeLogSampledCount += 1
   }
   if (droppedRuntimeLogCount > 10 && droppedRuntimeLogCount % 100 !== 0) {
     return

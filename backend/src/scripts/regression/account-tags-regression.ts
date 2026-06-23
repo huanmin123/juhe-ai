@@ -227,7 +227,7 @@ try {
   assert.equal(invalidEndpointModePreview.canImport, false, '接口能力组合非法时导入预览应阻止导入')
   assert.match(
     invalidEndpointModePreview.accounts[0]?.messages.join('\n') ?? '',
-    /Codex Responses 兼容能力必须启用 Responses SSE/,
+    /Codex Responses 兼容能力必须启用 Responses API \(Streaming\)/,
     '导入预览应返回接口能力组合错误'
   )
 

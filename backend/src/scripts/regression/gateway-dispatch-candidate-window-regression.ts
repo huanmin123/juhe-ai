@@ -6,6 +6,10 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import type { EligibleOpenAIGroupAccountSelection, OpenAIGroupAccountSelectionRow } from '../../storage/openai-account-selector.types.js'
+
+type OrderGatewayDispatchCandidateRowsForDispatch =
+  typeof import('../../storage/gateway-dispatch-candidate-window.repository.js')['orderGatewayDispatchCandidateRowsForDispatch']
 
 const dispatchCandidateLimit = 256
 const dispatchCandidateScanLimit = dispatchCandidateLimit * 2
@@ -20,12 +24,15 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, candidateWindowRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/gateway-dispatch-candidate-window.repository.js')
 ])
 
 try {
+  assertCandidateWindowQualityTieBreak(candidateWindowRepository.orderGatewayDispatchCandidateRowsForDispatch)
+
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({
     name: '调度候选窗口回归分组',
@@ -108,6 +115,8 @@ try {
   database
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
     .run('2999-01-01T00:00:00.000Z', cooledAccount.id)
+
+  assertModelAwareCandidateWindowCanPullLateDeterministicAccount(repositories, access)
 
   const candidatePlans = explainDispatchCandidateWindowQueries(group.id, access.systemAccountId)
   assert(candidatePlans.length === 1, '调度候选应使用一条已状态化的候选窗口查询')
@@ -252,6 +261,131 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertCandidateWindowQualityTieBreak(
+  orderRows: OrderGatewayDispatchCandidateRowsForDispatch
+): void {
+  const orderedIds = orderRows([
+    candidateWindowRow('same-bucket-slow', { priority: 0, superPriorityEnabled: true, qualityScore: 500 }),
+    candidateWindowRow('fallback-fast', { priority: 0, fallbackEnabled: true, qualityScore: 1 }),
+    candidateWindowRow('same-bucket-fast', { priority: 0, superPriorityEnabled: true, qualityScore: 100 }),
+    candidateWindowRow('better-priority-slower', { priority: -1, superPriorityEnabled: true, qualityScore: 900 }),
+    candidateWindowRow('same-bucket-no-quality', { priority: 0, superPriorityEnabled: true }),
+    candidateWindowRow('normal-fast', { priority: 0, qualityScore: 1 })
+  ]).map((item) => item.row.id)
+
+  assert.deepEqual(
+    orderedIds,
+    [
+      'better-priority-slower',
+      'same-bucket-fast',
+      'same-bucket-slow',
+      'same-bucket-no-quality',
+      'normal-fast',
+      'fallback-fast'
+    ],
+    '调度候选窗口应仅在同一 fallback/super/priority 桶内按质量分优先，不能让质量分越过业务优先级'
+  )
+}
+
+function candidateWindowRow(
+  id: string,
+  options: {
+    priority: number
+    superPriorityEnabled?: boolean
+    fallbackEnabled?: boolean
+    qualityScore?: number
+  }
+): EligibleOpenAIGroupAccountSelection {
+  const row: OpenAIGroupAccountSelectionRow = {
+    account_id: id,
+    binding_system_account_id: 'sys_admin',
+    group_id: 'candidate-window-regression',
+    account_authorization_id: null,
+    local_priority: options.priority,
+    local_super_priority_enabled: options.superPriorityEnabled ? 1 : 0,
+    local_fallback_enabled: options.fallbackEnabled ? 1 : 0,
+    id,
+    system_account_id: 'sys_admin',
+    provider_code: 'gpt',
+    provider_protocol_profile_id: 'gpt-openai-v1',
+    protocol_code: 'openai',
+    protocol_version: 'v1',
+    name: id,
+    type: 'api_key',
+    status: 'active',
+    schedulable: 1,
+    concurrency_limit: 20,
+    priority: options.priority,
+    super_priority_enabled: options.superPriorityEnabled ? 1 : 0,
+    fallback_enabled: options.fallbackEnabled ? 1 : 0,
+    client_compatibility: 'openai_standard',
+    credentials_encrypted: '{}',
+    proxy_profile_id: null,
+    cooldown_until: null,
+    last_error_message: null,
+    stream_failure_count: 0,
+    stream_failure_window_started_at: null,
+    availability_schedule_active: 1,
+    account_expires_at: null,
+    last_successful_test_model: null,
+    quality_score: options.qualityScore ?? null,
+    quality_state: null,
+    quality_ewma_first_token_ms: null
+  }
+  return {
+    row,
+    accountAccess: {
+      accountAccessType: 'owner',
+      accountOwnerSystemAccountId: 'sys_admin'
+    }
+  }
+}
+
+function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
+  repositories: typeof import('../../storage/repositories.js'),
+  access: { systemAccountId: string; role: 'admin' }
+): void {
+  const group = repositories.createGroup({
+    name: '模型感知候选窗口回归分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  for (let index = 0; index < dispatchCandidateScanLimit + 8; index += 1) {
+    repositories.createAccount({
+      providerCode: 'gpt',
+      name: `模型窗口不匹配账号 ${String(index).padStart(3, '0')}`,
+      type: 'api_key',
+      credentials: {
+        api_key: `sk-model-window-unsupported-${index}`,
+        base_url: 'https://api.openai.com/v1'
+      },
+      status: 'active',
+      groupId: group.id,
+      priority: index,
+      supportedModels: ['gpt-5.4']
+    }, access)
+  }
+  const deterministicAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '模型窗口显式命中账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-model-window-deterministic',
+      base_url: 'https://api.openai.com/v1'
+    },
+    status: 'active',
+    groupId: group.id,
+    priority: dispatchCandidateScanLimit + 99,
+    supportedModels: ['gpt-5.5']
+  }, access)
+
+  const result = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
+    requestedModel: 'gpt-5.5'
+  })
+
+  assert.equal(result.accounts[0]?.id, deterministicAccount.id, '请求带模型时，显式支持该模型的账号即使排在普通候选窗口之后也应被拉入候选首位')
 }
 
 function explainDispatchCandidateWindowQueries(groupId: string, systemAccountId: string): string[] {

@@ -1,5 +1,5 @@
 import { aggregateUsageStatsBatch, refreshUsageRankSnapshotsInStages } from '../../storage/usage-stats.repository.js'
-import { datasetDatabasePath, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../storage/database.js'
+import { datasetDatabasePath, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
 
 interface RebuildUsageStatsOptions {
   batchSize: number
@@ -15,6 +15,7 @@ async function main(): Promise<void> {
   }
 
   getDatasetDatabase()
+  getUsageCatalogDatabase()
   const database = getStatsDatabase()
   const startedAt = Date.now()
   resetUsageStatsCache(database)
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
     : ''
   console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，批次 ${batches}，耗时 ${durationMs}ms${capped}`)
   console.log(`数据集目录库：${datasetDatabasePath()}`)
+  console.log(`使用记录目录库：${usageCatalogDatabasePath()}`)
   console.log(`统计结果库：${statsDatabasePath()}`)
 }
 

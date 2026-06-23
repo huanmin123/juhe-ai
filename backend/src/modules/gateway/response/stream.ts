@@ -315,7 +315,7 @@ export async function pipeUpstreamStream(
     if (closeIteratorAfterEnd) {
       void closeAsyncIterator(iterator)
     }
-    streamLogger.info({
+    streamLogger.debug({
       event: 'gateway_stream_finished_success_after_terminal',
       elapsedMs: Date.now() - startedAt,
       chunkCount: chunkIndex,
@@ -334,7 +334,7 @@ export async function pipeUpstreamStream(
   }
   res.once('close', closeIterator)
 
-  streamLogger.info({
+  streamLogger.debug({
     event: 'gateway_stream_pipe_started',
     streamCircuitBreakerEnabled: settings.streamCircuitBreakerEnabled,
     streamRequestTimeoutSeconds: settings.streamRequestTimeoutSeconds,
@@ -509,7 +509,7 @@ export async function pipeUpstreamStream(
       const now = Date.now()
       if (now - lastProgressLogAt >= streamProgressLogIntervalMs) {
         lastProgressLogAt = now
-        streamLogger.info({
+        streamLogger.debug({
           event: 'gateway_stream_progress',
           elapsedMs: now - startedAt,
           chunkIndex,

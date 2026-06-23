@@ -60,9 +60,9 @@ const successLines = accountTestSingleOutputLines({
 })
 assertLineIncludes(successLines, '开始测试账号：API Key 测试账户', '单账号输出应展示账户名')
 assertLineIncludes(successLines, '供应商：OpenAI', '单账号输出应展示供应商')
-assertLineIncludes(successLines, '测试请求形态：跟随账号能力（OpenAI 标准）', 'API Key 默认请求形态应展示跟随账号能力')
+assertLineIncludes(successLines, '测试请求形态：跟随账号能力（OpenAI-compatible）', 'API Key 默认请求形态应展示跟随账号能力')
 assertLineIncludes(successLines, 'traceId：trace_test_display', '成功输出应展示 traceId')
-assertLineIncludes(successLines, '实际请求形态：OpenAI 标准请求', '成功输出应展示实际请求形态')
+assertLineIncludes(successLines, '实际请求形态：OpenAI-compatible 请求', '成功输出应展示实际请求形态')
 assertLineIncludes(successLines, 'pong', '成功输出应展示返回内容')
 assertLineIncludes(successLines, '✓ 测试完成！  总耗时：1.2s，首 token：0.32s', '成功输出应展示总耗时和首 token')
 
@@ -88,18 +88,18 @@ assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗�
 const anthropicRunningLines = accountTestSingleOutputLines({
   account: anthropicAccount,
   clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Anthropic 原生请求',
+  fixedOAuthCompatibilityText: 'Anthropic API 请求',
   model: 'claude-opus-4-8',
   providerLabel: () => 'Anthropic',
   running: true
 })
-assertLineIncludes(anthropicRunningLines, '测试请求形态：Anthropic 原生', 'Anthropic 运行输出不应展示 OpenAI 客户端兼容能力')
-assertLineExcludes(anthropicRunningLines, '测试请求形态：跟随账号能力（OpenAI 标准）', 'Anthropic 运行输出不得回落到 OpenAI 标准文案')
+assertLineIncludes(anthropicRunningLines, '测试请求形态：Anthropic API', 'Anthropic 运行输出不应展示 OpenAI 客户端兼容能力')
+assertLineExcludes(anthropicRunningLines, '测试请求形态：跟随账号能力（OpenAI-compatible）', 'Anthropic 运行输出不得回落到 OpenAI-compatible 文案')
 
 const anthropicSuccessLines = accountTestSingleOutputLines({
   account: anthropicAccount,
   clientCompatibility: 'account_default',
-  fixedOAuthCompatibilityText: 'Anthropic 原生请求',
+  fixedOAuthCompatibilityText: 'Anthropic API 请求',
   model: 'claude-opus-4-8',
   providerLabel: () => 'Anthropic',
   result: resultFixture(anthropicAccount, {
@@ -112,8 +112,8 @@ const anthropicSuccessLines = accountTestSingleOutputLines({
   }),
   running: false
 })
-assertLineIncludes(anthropicSuccessLines, '实际请求形态：Anthropic 原生请求', 'Anthropic 成功输出应展示实际请求形态')
-assertLineExcludes(anthropicSuccessLines, '实际请求形态：OpenAI 标准请求', 'Anthropic 成功输出不得展示 OpenAI 实际请求形态')
+assertLineIncludes(anthropicSuccessLines, '实际请求形态：Anthropic API 请求', 'Anthropic 成功输出应展示实际请求形态')
+assertLineExcludes(anthropicSuccessLines, '实际请求形态：OpenAI-compatible 请求', 'Anthropic 成功输出不得展示 OpenAI-compatible 实际请求形态')
 
 const failedAccount = accountFixture({
   id: 'account_test_display_failed',

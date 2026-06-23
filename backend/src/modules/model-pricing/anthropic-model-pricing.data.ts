@@ -1,6 +1,10 @@
+// Curated from official Anthropic model, pricing, and deprecation docs on 2026-06-22.
+// Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
+
 export const anthropicModelPricingData = [
   {
     model: 'best',
+    catalog_order: 210,
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
     cache_creation_input_token_cost: 12.5 / 1_000_000,
@@ -14,6 +18,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'fable',
+    catalog_order: 220,
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
     cache_creation_input_token_cost: 12.5 / 1_000_000,
@@ -27,6 +32,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'opus',
+    catalog_order: 230,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -40,6 +46,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'opus[1m]',
+    catalog_order: 240,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -53,6 +60,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'opusplan',
+    catalog_order: 250,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -66,6 +74,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'sonnet',
+    catalog_order: 260,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -78,6 +87,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'sonnet[1m]',
+    catalog_order: 270,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -90,6 +100,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'haiku',
+    catalog_order: 280,
     input_cost_per_token: 1 / 1_000_000,
     output_cost_per_token: 5 / 1_000_000,
     cache_creation_input_token_cost: 1.25 / 1_000_000,
@@ -101,6 +112,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-fable-5',
+    catalog_order: 10,
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
     cache_creation_input_token_cost: 12.5 / 1_000_000,
@@ -114,6 +126,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-mythos-5',
+    catalog_order: 20,
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
     cache_creation_input_token_cost: 12.5 / 1_000_000,
@@ -127,6 +140,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-mythos-preview',
+    catalog_order: 30,
     shutdown_date: '2026-06-30',
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
@@ -141,6 +155,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-8',
+    catalog_order: 40,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -154,6 +169,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-7',
+    catalog_order: 50,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -167,6 +183,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-6',
+    catalog_order: 60,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -180,6 +197,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-6-thinking',
+    catalog_order: 70,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -193,6 +211,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'antigravity-claude-opus-4-6-thinking',
+    catalog_order: 900,
     catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -207,6 +226,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'antigravity/claude-opus-4-6-thinking',
+    catalog_order: 901,
     catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -221,6 +241,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google/antigravity-claude-opus-4-6-thinking',
+    catalog_order: 902,
     catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -235,6 +256,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google-antigravity/claude-opus-4-6-thinking',
+    catalog_order: 903,
     catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -249,6 +271,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google-antigravity:claude-opus-4-6-thinking',
+    catalog_order: 904,
     catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -263,6 +286,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-6-antigravity',
+    catalog_order: 905,
     catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -277,6 +301,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-5',
+    catalog_order: 80,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -288,6 +313,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-5-20251101',
+    catalog_order: 90,
     release_date: '2025-11-01',
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
@@ -300,6 +326,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-1',
+    catalog_order: 100,
     release_date: '2025-08-05',
     shutdown_date: '2026-08-05',
     input_cost_per_token: 15 / 1_000_000,
@@ -315,6 +342,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-opus-4-1-20250805',
+    catalog_order: 110,
     release_date: '2025-08-05',
     shutdown_date: '2026-08-05',
     input_cost_per_token: 15 / 1_000_000,
@@ -330,6 +358,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-sonnet-4-6',
+    catalog_order: 120,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -342,6 +371,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-sonnet-4-6-antigravity',
+    catalog_order: 920,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -356,6 +386,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'antigravity-claude-sonnet-4-6',
+    catalog_order: 921,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -370,6 +401,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'antigravity/claude-sonnet-4-6',
+    catalog_order: 922,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -384,6 +416,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google/antigravity-claude-sonnet-4-6',
+    catalog_order: 923,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -398,6 +431,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google-antigravity/claude-sonnet-4-6',
+    catalog_order: 924,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -412,6 +446,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google-antigravity:claude-sonnet-4-6',
+    catalog_order: 925,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -426,6 +461,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-sonnet-4-6-thinking',
+    catalog_order: 130,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -439,6 +475,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'antigravity-claude-sonnet-4-6-thinking',
+    catalog_order: 930,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -453,6 +490,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'antigravity/claude-sonnet-4-6-thinking',
+    catalog_order: 931,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -467,6 +505,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google/antigravity-claude-sonnet-4-6-thinking',
+    catalog_order: 932,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -481,6 +520,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google-antigravity/claude-sonnet-4-6-thinking',
+    catalog_order: 933,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -495,6 +535,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'google-antigravity:claude-sonnet-4-6-thinking',
+    catalog_order: 934,
     catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -509,6 +550,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-sonnet-4-5',
+    catalog_order: 140,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -520,6 +562,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-sonnet-4-5-20250929',
+    catalog_order: 150,
     release_date: '2025-09-29',
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
@@ -532,6 +575,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-haiku-4-5',
+    catalog_order: 160,
     input_cost_per_token: 1 / 1_000_000,
     output_cost_per_token: 5 / 1_000_000,
     cache_creation_input_token_cost: 1.25 / 1_000_000,
@@ -543,6 +587,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-haiku-4-5-20251001',
+    catalog_order: 170,
     release_date: '2025-10-01',
     input_cost_per_token: 1 / 1_000_000,
     output_cost_per_token: 5 / 1_000_000,
@@ -555,6 +600,7 @@ export const anthropicModelPricingData = [
   },
   {
     model: 'claude-fake-5',
+    catalog_order: 999,
     catalog_visible: false,
     input_cost_per_token: 1 / 1_000_000,
     output_cost_per_token: 5 / 1_000_000,

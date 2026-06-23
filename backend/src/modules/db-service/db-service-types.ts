@@ -84,6 +84,19 @@ export interface DbServiceRuntimeSnapshot {
   httpPort?: number
   eventLoopLagMs?: number
   pendingRequestCount: number
+  queuedRequestCount?: number
+  queuedHighRequestCount?: number
+  queuedNormalRequestCount?: number
+  queuedLowRequestCount?: number
+  oldestQueuedMs?: number
+  lastQueueWaitMs?: number
+  maxQueueWaitMs?: number
+  lastExecMs?: number
+  maxExecMs?: number
+  slowOpCount?: number
+  lastSlowOpType?: string
+  lastSlowOpMs?: number
+  lastSlowOpAt?: string
   handledRequestCount: number
   failedRequestCount: number
   lastRequestAt?: string
@@ -99,6 +112,8 @@ export interface DbServiceServerRuntimeSnapshot {
     pendingMessageCount: number
     pendingMessageBytes?: number
     pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
+    pendingWriteRequestCount?: number
+    oldestPendingWriteMs?: number
     pendingSnapshotRequestCount?: number
     timedOutSnapshotRequestCount?: number
     rejectedSnapshotRequestCount?: number
@@ -191,6 +206,8 @@ export interface DbServiceServerRuntimeSnapshot {
     pendingMessageCount?: number
     pendingMessageBytes?: number
     pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
+    pendingWriteRequestCount?: number
+    oldestPendingWriteMs?: number
     pendingSnapshotRequestCount?: number
     timedOutSnapshotRequestCount?: number
     rejectedSnapshotRequestCount?: number
@@ -225,6 +242,8 @@ export interface DbServiceServerRuntimeSnapshot {
   statsWorker?: {
     pid?: number
     ready: boolean
+    pendingWriteRequestCount?: number
+    oldestPendingWriteMs?: number
     pendingSnapshotRequestCount?: number
     timedOutSnapshotRequestCount?: number
     rejectedSnapshotRequestCount?: number
@@ -376,9 +395,24 @@ export interface DbServiceServerRuntimeSnapshot {
     pid?: number
     ready: boolean
     pendingRequestCount: number
+    pendingDatasetWriteRequestCount?: number
+    oldestDatasetWriteRequestMs?: number
     timedOutRequestCount: number
     rejectedRequestCount?: number
     failedRequestCount: number
+    queuedRequestCount?: number
+    queuedHighRequestCount?: number
+    queuedNormalRequestCount?: number
+    queuedLowRequestCount?: number
+    oldestQueuedMs?: number
+    lastQueueWaitMs?: number
+    maxQueueWaitMs?: number
+    lastExecMs?: number
+    maxExecMs?: number
+    slowOpCount?: number
+    lastSlowOpType?: string
+    lastSlowOpMs?: number
+    lastSlowOpAt?: string
     pendingProcessEventLoopRequestCount?: number
     timedOutProcessEventLoopRequestCount?: number
     failedProcessEventLoopRequestCount?: number
@@ -409,6 +443,21 @@ export interface DbServiceRuntimeQueueSnapshot {
   droppedOversizeCount?: number
   retainedOverflowWarningCount?: number
   flushFailureCount?: number
+  oldestQueuedMs?: number
+  lastFlushMs?: number
+  maxFlushMs?: number
+  slowFlushCount?: number
+  lastSlowFlushAt?: string
+  writerPoolEnabled?: boolean
+  writerPoolWorkerCount?: number
+  writerPoolQueueLength?: number
+  writerPoolActiveJobs?: number
+  writerPoolHandledJobs?: number
+  writerPoolFailedJobs?: number
+  writerPoolRejectedJobs?: number
+  writerPoolOldestQueuedMs?: number
+  writerPoolMaxQueueWaitMs?: number
+  writerPoolMaxRunMs?: number
   [key: string]: unknown
 }
 
@@ -445,11 +494,13 @@ export type DbServiceOperation =
     type: 'list_openai_accounts_for_group'
     groupId: string
     systemAccountId: string
+    requestedModel?: string
   }
   | {
     type: 'list_openai_accounts_for_group_result'
     groupId: string
     systemAccountId: string
+    requestedModel?: string
   }
   | {
     type: 'read_gateway_runtime'

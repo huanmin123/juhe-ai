@@ -3,7 +3,7 @@ import { stat as statFile } from 'node:fs/promises'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { datasetDatabasePath, nowIso, statsDatabasePath } from '../../storage/database.js'
+import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
 import { getSettings } from '../../storage/repositories.js'
 import {
   latestUsageStatsLagSeconds,
@@ -347,7 +347,7 @@ function settingsNumber(key: string, min: number, max: number): number {
 
 async function databaseFileBytes(): Promise<number | undefined> {
   try {
-    const databasePaths = new Set([runtimeConfig.databasePath, datasetDatabasePath(), statsDatabasePath()])
+    const databasePaths = new Set([runtimeConfig.databasePath, datasetDatabasePath(), usageCatalogDatabasePath(), statsDatabasePath()])
     let totalBytes = 0
     for (const databasePath of databasePaths) {
       totalBytes += await fileSize(databasePath)

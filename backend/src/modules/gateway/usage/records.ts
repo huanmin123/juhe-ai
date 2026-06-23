@@ -33,7 +33,7 @@ import { recordGatewayAccountApiKeySuccess } from '../runtime/account-api-key-ef
 import {
   defaultGatewayUsageProviderCode,
   resolveGatewayUsageModel,
-  usageSemanticForProviderCode
+  usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 
@@ -66,6 +66,8 @@ export interface GatewayUsageContext {
 export interface GatewayFailureUsageContext extends GatewayUsageContext {
   providerCode?: string
   providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   groupOwnerSystemAccountId?: string
   groupAccessType?: GroupUsageAccessMetadata['groupAccessType']
   groupAuthorizationId?: string
@@ -88,10 +90,12 @@ export function accountUsageMetadata(account: UpstreamAccount): UsageAccessField
   }
 }
 
-export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'providerProtocolProfileId' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<GatewayFailureUsageContext, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
   return {
     providerCode: groupAccess.providerCode,
     providerProtocolProfileId: groupAccess.providerProtocolProfileId,
+    protocolCode: groupAccess.protocolCode,
+    protocolVersion: groupAccess.protocolVersion,
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
     groupAccessType: groupAccess.groupAccessType,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
@@ -150,7 +154,7 @@ export function recordFailedUpstreamAttempt(
     endpoint: usageContext.endpoint,
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
-    usageSemantic: usageSemanticForProviderCode(account.providerCode),
+    usageSemantic: usageSemanticForProfile(account),
     model,
     upstreamModel: modelAccounting.upstreamModel,
     pricingModel: modelAccounting.pricingModel,
@@ -214,7 +218,7 @@ export function recordCompletedUpstreamAttempt(
     endpoint: input.endpoint,
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.account.providerProtocolProfileId,
-    usageSemantic: usageSemanticForProviderCode(input.account.providerCode),
+    usageSemantic: usageSemanticForProfile(input.account),
     model,
     upstreamModel: modelAccounting.upstreamModel,
     pricingModel: modelAccounting.pricingModel,
@@ -302,7 +306,7 @@ export function recordHybridScoringAttempt(input: {
     endpoint: input.endpoint,
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.account.providerProtocolProfileId,
-    usageSemantic: usageSemanticForProviderCode(input.account.providerCode),
+    usageSemantic: usageSemanticForProfile(input.account),
     model: input.scoringModel,
     upstreamModel: modelAccounting.upstreamModel,
     pricingModel: modelAccounting.pricingModel,
@@ -428,7 +432,12 @@ export function recordGatewayFailure(
     endpoint: usageContext.endpoint,
     providerCode,
     providerProtocolProfileId,
-    usageSemantic: usageSemanticForProviderCode(providerCode),
+    usageSemantic: usageSemanticForProfile({
+      providerCode,
+      providerProtocolProfileId,
+      protocolCode: usageContext.protocolCode,
+      protocolVersion: usageContext.protocolVersion
+    }),
     model: requestModel(req),
     stream: requestStream(req),
     statusCode: input.statusCode,

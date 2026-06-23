@@ -13,6 +13,7 @@ import {
   emptyGatewayDispatchCandidateDiagnostics,
   gatewayDispatchCandidateQualityFreshAfterIso,
   listGatewayDispatchCandidateRows,
+  listGatewayDispatchModelCandidateRows,
   loadFreshGatewayDispatchCandidateQualityRows,
   orderGatewayDispatchCandidateRowsForDispatch
 } from './gateway-dispatch-candidate-window.repository.js'
@@ -188,7 +189,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 export function listOpenAIAccountsForGroup(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
 }
@@ -207,7 +208,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
 export function listOpenAIAccountsForGroupResult(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string } = {}
 ): OpenAIAccountsForGroupResult {
   const database = getBusinessDatabase()
   const now = nowIso()
@@ -219,7 +220,15 @@ export function listOpenAIAccountsForGroupResult(
       diagnostics: emptyGatewayDispatchCandidateDiagnostics()
     }
   }
-  const groupAccountRows = listGatewayDispatchCandidateRows(database, groupId, groupAccess, now)
+  const modelCandidateRows = options.requestedModel?.trim()
+    ? listGatewayDispatchModelCandidateRows(database, groupId, groupAccess, now, options.requestedModel)
+    : undefined
+  const groupAccountRows = modelCandidateRows
+    ? mergeOpenAIGroupAccountRowsForDispatch(
+      modelCandidateRows.rows,
+      listGatewayDispatchCandidateRows(database, groupId, groupAccess, now)
+    )
+    : listGatewayDispatchCandidateRows(database, groupId, groupAccess, now)
   const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
   const eligibleRows = groupAccountRows
     .map((row) => ({
@@ -232,7 +241,9 @@ export function listOpenAIAccountsForGroupResult(
   applyGatewayDispatchCandidateQualityRows(eligibleRows, qualityByAccountId)
 
   const accounts: OpenAIAccountSecret[] = []
-  const orderedEligibleRows = orderGatewayDispatchCandidateRowsForDispatch(eligibleRows)
+  const orderedEligibleRows = orderGatewayDispatchCandidateRowsForDispatch(eligibleRows, {
+    modelRankByAccountId: modelCandidateRows?.modelRankByAccountId
+  })
   let hydrationBatchCount = 0
   let hydrationDroppedCount = 0
   for (let offset = 0; offset < orderedEligibleRows.length && accounts.length < gatewayDispatchAccountCandidateLimit; offset += gatewayDispatchAccountCandidateLimit) {
@@ -271,6 +282,23 @@ export function listOpenAIAccountsForGroupResult(
       scanLimitReached: groupAccountRows.length >= gatewayDispatchAccountCandidateScanLimit
     }
   }
+}
+
+function mergeOpenAIGroupAccountRowsForDispatch(
+  preferredRows: OpenAIGroupAccountSelectionRow[],
+  fallbackRows: OpenAIGroupAccountSelectionRow[]
+): OpenAIGroupAccountSelectionRow[] {
+  const seenAccountIds = new Set<string>()
+  const rows: OpenAIGroupAccountSelectionRow[] = []
+  for (const row of [...preferredRows, ...fallbackRows]) {
+    const accountId = row.account_id || row.id
+    if (seenAccountIds.has(accountId)) {
+      continue
+    }
+    seenAccountIds.add(accountId)
+    rows.push(row)
+  }
+  return rows
 }
 
 function openAIAccountResourceAccountId(row: OpenAIAccountRow): string {
@@ -460,7 +488,8 @@ function normalizeGatewayEndpointModesForRuntime(
       providerCode: input.providerCode,
       accountType: input.accountType,
       protocolCode: input.protocolCode,
-      protocolVersion: input.protocolVersion
+      protocolVersion: input.protocolVersion,
+      providerProtocolProfileId: input.providerProtocolProfileId
     })
   }
   return normalizeOpenAIEndpointModesForRuntime(value, {

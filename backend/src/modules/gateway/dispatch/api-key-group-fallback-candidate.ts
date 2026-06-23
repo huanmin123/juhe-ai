@@ -76,7 +76,9 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     if (!groupAccess) {
       continue
     }
-    const accounts = (await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId))
+    const accounts = (await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId, {
+      requestedModel
+    }))
       .filter((account) => !excludedAccountIds.has(account.id))
     if (!accounts.length) {
       continue

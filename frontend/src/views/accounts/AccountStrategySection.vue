@@ -26,7 +26,7 @@
             allow-clear
             :disabled="authorizedEditing"
             option-filter-prop="label"
-            :options="modelOptions"
+            :options="mappingDownstreamModelOptions"
             placeholder="下游模型"
             show-search
           />
@@ -36,7 +36,7 @@
             allow-clear
             :disabled="authorizedEditing"
             option-filter-prop="label"
-            :options="mappingTargetModelOptions"
+            :options="mappingSourceModelOptions"
             placeholder="上游模型"
             show-search
           />
@@ -116,13 +116,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
-import { accountEndpointModeOptions } from './accountEndpointModes'
+import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import {
   accountClientCompatibilityCapabilities,
   clientCompatibilityCapabilityLabel,
@@ -136,7 +136,7 @@ const props = defineProps<{
   form: AccountFormModel
   isOAuthForm: boolean
   isManagementView: boolean
-  mappingTargetModelOptions: Array<{ label: string; value: string }>
+  mappingSourceModelOptions: Array<{ label: string; value: string }>
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
   proxyOptions: SelectOption[]
@@ -167,7 +167,25 @@ const clientCompatibilitySelectOptions = computed(() => clientCompatibilityCapab
 
 const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
-  return accountEndpointModeOptions.filter((option) => allowedModes.has(option.value))
+  return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
+})
+const supportedModelValueSet = computed(() => new Set(props.form.supportedModels
+  .map((model) => model.trim().toLowerCase())
+  .filter(Boolean)))
+const mappingDownstreamModelOptions = computed(() => {
+  const supportedModels = supportedModelValueSet.value
+  if (!supportedModels.size) return props.mappingSourceModelOptions
+  return props.mappingSourceModelOptions.filter((option) => supportedModels.has(option.value.trim().toLowerCase()))
+})
+
+watch(supportedModelValueSet, (supportedModels) => {
+  if (!supportedModels.size) return
+  for (const mapping of props.form.modelMappings) {
+    const sourceModel = mapping.sourceModel.trim().toLowerCase()
+    if (sourceModel && !supportedModels.has(sourceModel)) {
+      mapping.sourceModel = ''
+    }
+  }
 })
 
 function addModelMapping(): void {
@@ -250,9 +268,19 @@ function activeProfileId(): string | undefined {
 
 .endpoint-mode-grid {
   display: grid;
-  grid-template-columns: repeat(4, max-content);
-  gap: 8px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
   align-items: center;
+}
+
+.endpoint-mode-grid :deep(.ant-checkbox-wrapper) {
+  min-width: 0;
+  white-space: normal;
+}
+
+.endpoint-mode-grid :deep(.ant-checkbox + span) {
+  min-width: 0;
+  line-height: 1.5;
 }
 
 .compatibility-capability-list {
@@ -301,14 +329,8 @@ function activeProfileId(): string | undefined {
 
 @media (max-width: 576px) {
   .endpoint-mode-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px 16px;
-  }
-}
-
-@media (max-width: 400px) {
-  .endpoint-mode-grid {
     grid-template-columns: 1fr;
+    gap: 8px 16px;
   }
 }
 </style>

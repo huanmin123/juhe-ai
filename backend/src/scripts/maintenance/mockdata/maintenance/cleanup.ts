@@ -1,4 +1,4 @@
-import { getBusinessDatabase, getDatasetDatabase } from '../../../../storage/database.js'
+import { getBusinessDatabase, getUsageCatalogDatabase } from '../../../../storage/database.js'
 import { cleanupUnreferencedAuditPayloadBlobs } from '../../../../storage/repositories.js'
 import {
   deleteUsageRecordShardEntries,
@@ -160,7 +160,7 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
 
 function cleanupUsageRecordShardMockdata(): void {
   const mockUsageIds = selectIds(
-    getDatasetDatabase(),
+    getUsageCatalogDatabase(),
     'SELECT usage_id AS id FROM usage_record_shard_entries WHERE usage_id LIKE ?',
     `${idPrefix}%`
   )

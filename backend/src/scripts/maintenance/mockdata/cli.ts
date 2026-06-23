@@ -5,7 +5,7 @@ import type {
 } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccessScope } from '../../../storage/access-scope.js'
-import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../../storage/database.js'
+import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../../storage/database.js'
 import * as repositories from '../../../storage/repositories.js'
 import { mockdataSummaryPath, writeSummary } from './summary.js'
 import {
@@ -66,6 +66,7 @@ function main(): void {
   const startedAt = Date.now()
   const businessDatabase = getBusinessDatabase()
   const datasetDatabase = getDatasetDatabase()
+  getUsageCatalogDatabase()
   const statsDatabase = getStatsDatabase()
   const admin = findAdminAccount()
   const adminAccess: AccessScope = { systemAccountId: admin.id, role: 'admin', systemAccountFilterId: admin.id }
@@ -108,6 +109,7 @@ function main(): void {
   console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，公开接口日志 ${publicApiLogs} 条，审计 ${Math.ceil(usageRecords.length / 4)} 条，模型检测 ${modelCheckCounts.runs} 次，耗时 ${Date.now() - startedAt}ms`)
   console.log(`业务库：${runtimeConfig.databasePath}`)
   console.log(`数据集目录库：${datasetDatabasePath()}`)
+  console.log(`使用记录目录库：${usageCatalogDatabasePath()}`)
   console.log(`统计结果库：${statsDatabasePath()}`)
   console.log(`摘要文件：${mockdataSummaryPath()}`)
 }

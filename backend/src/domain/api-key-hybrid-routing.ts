@@ -15,6 +15,7 @@ export const DEFAULT_HYBRID_SCORING_CACHE_TTL_SECONDS = 300
 export const DEFAULT_HYBRID_AFFINITY_TTL_SECONDS = 900
 export const DEFAULT_HYBRID_SWITCH_MIN_LEVEL_DELTA = 2
 export const DEFAULT_HYBRID_DOWNGRADE_CONSECUTIVE_LOW_COUNT = 2
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_ENABLED = true
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE: ApiKeyHybridQualityInspectionConfig['triggerMode'] = 'risk_based'
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL = 7
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 1
@@ -45,7 +46,7 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     throw new Error('混合路由配置不能为空')
   }
   const record = value as Record<string, unknown>
-  const scoringGroupId = normalizedNonEmptyString(record.scoringGroupId, '混合路由评分分组不能为空')
+  const scoringGroupId = normalizeOptionalString(record.scoringGroupId)
   const scoringModel = normalizedNonEmptyString(record.scoringModel, '混合路由评分模型不能为空')
   const scoringContextMode = normalizeScoringContextMode(record.scoringContextMode)
   const qualityPreference = normalizeQualityPreference(record.qualityPreference)
@@ -63,25 +64,21 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     10,
     '混合路由评分失败默认等级必须是 1-10'
   )
-  const scoringCacheEnabled = record.scoringCacheEnabled === undefined
-    ? DEFAULT_HYBRID_SCORING_CACHE_ENABLED
-    : normalizeBoolean(record.scoringCacheEnabled, '混合路由评分缓存开关必须是布尔值')
+  const scoringCacheEnabled = DEFAULT_HYBRID_SCORING_CACHE_ENABLED
   const scoringCacheTtlSeconds = normalizeIntegerRange(
     record.scoringCacheTtlSeconds,
     DEFAULT_HYBRID_SCORING_CACHE_TTL_SECONDS,
-    0,
+    1,
     3600,
-    '混合路由评分缓存 TTL 必须是 0-3600 秒'
+    '混合路由评分缓存 TTL 必须是 1-3600 秒'
   )
-  const cacheAffinityEnabled = record.cacheAffinityEnabled === undefined
-    ? true
-    : normalizeBoolean(record.cacheAffinityEnabled, '混合路由缓存亲和开关必须是布尔值')
+  const cacheAffinityEnabled = true
   const affinityTtlSeconds = normalizeIntegerRange(
     record.affinityTtlSeconds,
     DEFAULT_HYBRID_AFFINITY_TTL_SECONDS,
-    0,
+    1,
     86400,
-    '混合路由缓存亲和 TTL 必须是 0-86400 秒'
+    '混合路由缓存亲和 TTL 必须是 1-86400 秒'
   )
   const switchMinLevelDelta = normalizeIntegerRange(
     record.switchMinLevelDelta,
@@ -98,9 +95,11 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     '混合路由降级确认次数必须是 1-20'
   )
   const levelRoutes = normalizeLevelRoutes(record.levelRoutes)
-  const qualityInspection = normalizeQualityInspectionConfig(record.qualityInspection)
+  const qualityInspection = normalizeQualityInspectionConfig(record.qualityInspection, {
+    scoringModel
+  })
   return {
-    scoringGroupId,
+    ...(scoringGroupId ? { scoringGroupId } : {}),
     scoringModel,
     scoringContextMode,
     qualityPreference,
@@ -156,26 +155,35 @@ function normalizeQualityPreference(value: unknown): ApiKeyHybridRoutingConfig['
   throw new Error('混合路由质量偏好无效')
 }
 
-function normalizeQualityInspectionConfig(value: unknown): ApiKeyHybridQualityInspectionConfig | undefined {
-  if (value === undefined || value === null || value === '') return undefined
+function normalizeQualityInspectionConfig(
+  value: unknown,
+  defaults: { scoringModel: string }
+): ApiKeyHybridQualityInspectionConfig | undefined {
+  if (value === undefined || value === null || value === '') {
+    return {
+      enabled: DEFAULT_HYBRID_QUALITY_INSPECTION_ENABLED,
+      scoringModel: defaults.scoringModel,
+      triggerMode: DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE,
+      minTriggerLevel: DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL,
+      maxRetries: DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES,
+      failureAction: DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION
+    }
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('混合路由质量评分配置无效')
   }
   const record = value as Record<string, unknown>
   const enabled = record.enabled === undefined
-    ? false
+    ? DEFAULT_HYBRID_QUALITY_INSPECTION_ENABLED
     : normalizeBoolean(record.enabled, '混合路由质量评分开关必须是布尔值')
   const scoringGroupId = normalizeOptionalString(record.scoringGroupId)
-  const scoringModel = normalizeOptionalString(record.scoringModel)
-  if (enabled && !scoringGroupId) {
-    throw new Error('混合路由质量评分分组不能为空')
-  }
+  const scoringModel = normalizeOptionalString(record.scoringModel) ?? defaults.scoringModel
   if (enabled && !scoringModel) {
     throw new Error('混合路由质量评分模型不能为空')
   }
   return {
     enabled,
-    scoringGroupId: scoringGroupId ?? '',
+    ...(scoringGroupId ? { scoringGroupId } : {}),
     scoringModel: scoringModel ?? '',
     triggerMode: normalizeQualityInspectionTriggerMode(record.triggerMode),
     minTriggerLevel: normalizeIntegerRange(

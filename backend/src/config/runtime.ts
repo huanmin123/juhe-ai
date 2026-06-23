@@ -28,11 +28,18 @@ export interface RuntimeConfig {
   dbServiceHttpPort: number
   databasePath: string
   datasetDatabasePath: string
+  usageCatalogDatabasePath: string
   statsDatabasePath: string
   usageShardRoot: string
   codexContextRoot: string
   codexContextStateShardRoot: string
   codexContextStateShardCount: number
+  codexContextStateWriterPoolEnabled: boolean
+  codexContextStateWriterPoolSize: number
+  codexContextStateWriterQueueMaxItems: number
+  usageRecordWriterPoolEnabled: boolean
+  usageRecordWriterPoolSize: number
+  usageRecordWriterQueueMaxItems: number
   usageShardCount: number
   secret: string
   oauthProxyUrl?: string
@@ -75,6 +82,7 @@ export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
+export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
@@ -93,11 +101,18 @@ export const runtimeConfig: RuntimeConfig = {
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
+  usageCatalogDatabasePath: pathConfig('JUHE_AI_USAGE_CATALOG_DATABASE_PATH', defaultUsageCatalogDatabasePath),
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
   codexContextRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_ROOT', defaultCodexContextRoot),
   codexContextStateShardRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', defaultCodexContextStateShardRoot),
   codexContextStateShardCount: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 16, 1, 256),
+  codexContextStateWriterPoolEnabled: booleanConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED', !isScriptEntryRuntime()),
+  codexContextStateWriterPoolSize: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_SIZE', 0, 0, 64),
+  codexContextStateWriterQueueMaxItems: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
+  usageRecordWriterPoolEnabled: booleanConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED', false),
+  usageRecordWriterPoolSize: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE', 0, 0, 64),
+  usageRecordWriterQueueMaxItems: numberConfig('JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS', 5000, 1, 100000),
   usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
   secret: secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret),
   httpSecurity: httpSecurityConfig(),
@@ -207,6 +222,13 @@ function numberConfig(name: string, fallback: number, min: number, max: number):
 function pathConfig(name: string, fallback: string): string {
   const value = stringConfig(name, fallback)
   return isAbsolute(value) ? value : resolve(backendRoot, value)
+}
+
+function isScriptEntryRuntime(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  const normalized = entry.replace(/\\/g, '/').toLowerCase()
+  return normalized.includes('/src/scripts/') || normalized.includes('/dist/scripts/')
 }
 
 function httpSecurityConfig(): RuntimeConfig['httpSecurity'] {

@@ -3,11 +3,17 @@ import type { Server } from 'node:http'
 import { runtimeConfig } from './config/runtime.js'
 import { dbServiceOperationPriority, type DbServiceOperationPriority } from './modules/db-service/db-service-request-priority.js'
 import { handleDbServiceParentRuntimeMessage } from './modules/db-service/db-service-ipc.js'
-import { handleDbServiceOperation, setDbServiceHttpEndpoint } from './modules/db-service/db-service-handlers.js'
+import {
+  handleDbServiceOperation,
+  setDbServiceHttpEndpoint,
+  setDbServiceQueueRuntimeProvider,
+  type DbServiceQueueRuntimeMetrics
+} from './modules/db-service/db-service-handlers.js'
 import type { DbServiceParentMessage } from './modules/db-service/db-service-types.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
-import { datasetDatabasePath, statsDatabasePath } from './storage/database.js'
+import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
+import { datasetDatabasePath, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
@@ -29,19 +35,22 @@ interface DbServiceHttpEndpoint {
   port: number
 }
 
-const queuedDbServiceRequests: Record<DbServiceOperationPriority, DbServiceRequestParentMessage[]> = {
+const queuedDbServiceRequests: Record<DbServiceOperationPriority, QueuedDbServiceRequest[]> = {
   high: [],
   normal: [],
   low: []
 }
 let dbServiceRequestQueueDraining = false
 let dbServiceRequestQueueDrainScheduled = false
+let lastQueueWaitMs = 0
+let maxQueueWaitMs = 0
 
 async function startDbService(): Promise<void> {
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
   startLogMaintenance()
   setRuntimeLogLineSink(() => {})
+  setDbServiceQueueRuntimeProvider(buildDbServiceQueueRuntimeMetrics)
 
   const httpEndpoint = await startDbServiceHttpServer()
   setDbServiceHttpEndpoint({ host: httpEndpoint.host, port: httpEndpoint.port })
@@ -63,6 +72,7 @@ async function startDbService(): Promise<void> {
     processRole: runtimeConfig.processRole,
     databasePath: runtimeConfig.databasePath,
     datasetDatabasePath: datasetDatabasePath(),
+    usageCatalogDatabasePath: usageCatalogDatabasePath(),
     statsDatabasePath: statsDatabasePath(),
     httpHost: httpEndpoint.host,
     httpPort: httpEndpoint.port
@@ -83,7 +93,11 @@ async function handleParentMessage(message: unknown): Promise<void> {
 
 function enqueueDbServiceRequest(message: DbServiceRequestParentMessage): void {
   const priority = dbServiceOperationPriority(message.operation)
-  queuedDbServiceRequests[priority].push(message)
+  queuedDbServiceRequests[priority].push({
+    message,
+    priority,
+    enqueuedAt: Date.now()
+  })
   scheduleDbServiceRequestQueueDrain()
 }
 
@@ -104,11 +118,16 @@ async function drainDbServiceRequestQueue(): Promise<void> {
   dbServiceRequestQueueDrainScheduled = false
   dbServiceRequestQueueDraining = true
   try {
-    let message = shiftNextDbServiceRequest()
-    while (message) {
-      await respondToDbServiceRequest(message)
+    let queued = shiftNextDbServiceRequest()
+    while (queued) {
+      recordDbServiceQueueWait(queued)
+      if (shouldDispatchDbServiceRequestConcurrently(queued.message)) {
+        void respondToDbServiceRequest(queued.message)
+      } else {
+        await respondToDbServiceRequest(queued.message)
+      }
       await yieldDbServiceRequestQueue()
-      message = shiftNextDbServiceRequest()
+      queued = shiftNextDbServiceRequest()
     }
   } finally {
     dbServiceRequestQueueDraining = false
@@ -118,7 +137,7 @@ async function drainDbServiceRequestQueue(): Promise<void> {
   }
 }
 
-function shiftNextDbServiceRequest(): DbServiceRequestParentMessage | undefined {
+function shiftNextDbServiceRequest(): QueuedDbServiceRequest | undefined {
   return queuedDbServiceRequests.high.shift()
     ?? queuedDbServiceRequests.normal.shift()
     ?? queuedDbServiceRequests.low.shift()
@@ -128,6 +147,10 @@ function hasQueuedDbServiceRequests(): boolean {
   return queuedDbServiceRequests.high.length > 0
     || queuedDbServiceRequests.normal.length > 0
     || queuedDbServiceRequests.low.length > 0
+}
+
+function shouldDispatchDbServiceRequestConcurrently(message: DbServiceRequestParentMessage): boolean {
+  return isCodexContextStateWriterPoolOperation(message.operation)
 }
 
 async function yieldDbServiceRequestQueue(): Promise<void> {
@@ -179,6 +202,45 @@ function sendDbServiceMessage(message: Record<string, unknown>): void {
 }
 
 type DbServiceRequestParentMessage = Extract<DbServiceParentMessage, { type: 'db_service_request' }>
+
+interface QueuedDbServiceRequest {
+  message: DbServiceRequestParentMessage
+  priority: DbServiceOperationPriority
+  enqueuedAt: number
+}
+
+function recordDbServiceQueueWait(request: QueuedDbServiceRequest): void {
+  const waitMs = Math.max(0, Date.now() - request.enqueuedAt)
+  lastQueueWaitMs = waitMs
+  maxQueueWaitMs = Math.max(maxQueueWaitMs, waitMs)
+}
+
+function buildDbServiceQueueRuntimeMetrics(): DbServiceQueueRuntimeMetrics {
+  const queuedHighRequestCount = queuedDbServiceRequests.high.length
+  const queuedNormalRequestCount = queuedDbServiceRequests.normal.length
+  const queuedLowRequestCount = queuedDbServiceRequests.low.length
+  return {
+    queuedRequestCount: queuedHighRequestCount + queuedNormalRequestCount + queuedLowRequestCount,
+    queuedHighRequestCount,
+    queuedNormalRequestCount,
+    queuedLowRequestCount,
+    oldestQueuedMs: oldestQueuedDbServiceRequestMs(),
+    lastQueueWaitMs,
+    maxQueueWaitMs
+  }
+}
+
+function oldestQueuedDbServiceRequestMs(): number {
+  let oldestAt = 0
+  for (const queue of Object.values(queuedDbServiceRequests)) {
+    for (const request of queue) {
+      if (oldestAt === 0 || request.enqueuedAt < oldestAt) {
+        oldestAt = request.enqueuedAt
+      }
+    }
+  }
+  return oldestAt === 0 ? 0 : Math.max(0, Date.now() - oldestAt)
+}
 
 function isDbServiceParentMessage(message: unknown): message is DbServiceRequestParentMessage {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {

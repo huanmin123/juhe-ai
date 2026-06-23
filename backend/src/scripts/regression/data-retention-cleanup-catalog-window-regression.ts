@@ -11,6 +11,7 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-data-retention-cleanup-catalog-${Dat
 const shardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = shardRoot
 runtimeConfig.secret = 'data-retention-cleanup-catalog-secret'
@@ -61,7 +62,7 @@ try {
   assert.equal(usageShardCatalogEntryCount(), catalogCountBeforeOrphanCleanup - orphanCandidateIds.length, '已处理候选即使 shard 行缺失也应删除 catalog 目录项，避免反复进入清理窗口')
   assert.equal(usageShardCatalogEntryCountForIds(orphanCandidateIds), 0, '本批 orphan catalog ID 不应在后续清理中重复出现')
 
-  console.log('使用记录保留清理 catalog 窗口回归通过：预览基于目录库候选窗口，不再打开全部 usage shard')
+  console.log('使用记录保留清理 catalog 窗口回归通过：预览基于独立 usage catalog 候选窗口，不再打开全部 usage shard')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
@@ -71,7 +72,7 @@ try {
 }
 
 function captureUsageShardRegistryReads(): Array<{ sql: string; rowCount: number; params: unknown[] }> {
-  const database = databaseModule.getDatasetDatabase()
+  const database = databaseModule.getUsageCatalogDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const calls: Array<{ sql: string; rowCount: number; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
@@ -121,7 +122,7 @@ function captureUsageShardCursorReads(): Array<{ sql: string; rowCount: number; 
 }
 
 function listCleanupCandidateUsageIds(cutoffCreatedAt: string, limit: number): string[] {
-  return databaseModule.getDatasetDatabase()
+  return databaseModule.getUsageCatalogDatabase()
     .prepare(`
       SELECT ue.usage_id
       FROM usage_record_shard_entries ue
@@ -137,7 +138,7 @@ function listCleanupCandidateUsageIds(cutoffCreatedAt: string, limit: number): s
 }
 
 function usageShardCatalogEntryCount(): number {
-  const row = databaseModule.getDatasetDatabase()
+  const row = databaseModule.getUsageCatalogDatabase()
     .prepare('SELECT COUNT(*) AS total FROM usage_record_shard_entries')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
@@ -146,7 +147,7 @@ function usageShardCatalogEntryCount(): number {
 function usageShardCatalogEntryCountForIds(ids: string[]): number {
   if (!ids.length) return 0
   const placeholders = ids.map(() => '?').join(', ')
-  const row = databaseModule.getDatasetDatabase()
+  const row = databaseModule.getUsageCatalogDatabase()
     .prepare(`SELECT COUNT(*) AS total FROM usage_record_shard_entries WHERE usage_id IN (${placeholders})`)
     .get(...ids) as { total?: number } | undefined
   return Number(row?.total ?? 0)
@@ -170,7 +171,7 @@ function restoreUsageShardCleanupCursors(shardKey: string, cursorId: string): vo
 }
 
 function seedShardsWithCatalogEntries(count: number): void {
-  const datasetDatabase = databaseModule.getDatasetDatabase()
+  const datasetDatabase = databaseModule.getUsageCatalogDatabase()
   const statsDatabase = databaseModule.getStatsDatabase()
   const now = '2024-01-02T00:00:00.000Z'
   const shardStatement = datasetDatabase.prepare(`
@@ -202,7 +203,7 @@ function seedShardsWithCatalogEntries(count: number): void {
 }
 
 function assertCatalogCleanupQueryUsesCreatedSortIndex(): void {
-  const details = databaseModule.getDatasetDatabase()
+  const details = databaseModule.getUsageCatalogDatabase()
     .prepare(`
       EXPLAIN QUERY PLAN
       SELECT ue.usage_id, ue.created_at, s.shard_key, s.bucket_date, s.shard_id, s.file_path

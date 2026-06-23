@@ -43,6 +43,7 @@ import {
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage/record-queue.service.js'
+import { closeUsageRecordWriterPool } from './storage/usage-record-writer-pool.js'
 import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
 import { getAccountApiKeyCooldownRetestQueueSnapshot } from './modules/background/account-api-key-cooldown-retest.service.js'
 import { getAccountHealthCheckQueueSnapshot } from './modules/background/account-health-check.service.js'
@@ -55,7 +56,7 @@ import {
   getManualAccountTestQueueSnapshot,
   startAccountTestTaskQueue
 } from './modules/accounts/account-test-task-queue.service.js'
-import { datasetDatabasePath, getDatasetDatabase, statsDatabasePath } from './storage/database.js'
+import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
@@ -79,6 +80,7 @@ startProcessEventLoopMonitor()
 installWorkerSignalShutdownHooks()
 if (isIngestWorker()) {
   getDatasetDatabase()
+  getUsageCatalogDatabase()
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
   installOperationLogQueueShutdownHooks()
@@ -196,6 +198,7 @@ logger.info({
   workerRole: runtimeConfig.workerRole,
   databasePath: runtimeConfig.databasePath,
   datasetDatabasePath: datasetDatabasePath(),
+  usageCatalogDatabasePath: usageCatalogDatabasePath(),
   statsDatabasePath: statsDatabasePath()
 }, workerStartedMessage())
 
@@ -294,6 +297,21 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     droppedOversizeCount: typeof input.droppedOversizeCount === 'number' ? input.droppedOversizeCount : undefined,
     retainedOverflowWarningCount: typeof input.retainedOverflowWarningCount === 'number' ? input.retainedOverflowWarningCount : undefined,
     flushFailureCount: typeof input.flushFailureCount === 'number' ? input.flushFailureCount : undefined,
+    oldestQueuedMs: typeof input.oldestQueuedMs === 'number' ? input.oldestQueuedMs : undefined,
+    lastFlushMs: typeof input.lastFlushMs === 'number' ? input.lastFlushMs : undefined,
+    maxFlushMs: typeof input.maxFlushMs === 'number' ? input.maxFlushMs : undefined,
+    slowFlushCount: typeof input.slowFlushCount === 'number' ? input.slowFlushCount : undefined,
+    lastSlowFlushAt: typeof input.lastSlowFlushAt === 'string' ? input.lastSlowFlushAt : undefined,
+    writerPoolEnabled: typeof input.writerPoolEnabled === 'boolean' ? input.writerPoolEnabled : undefined,
+    writerPoolWorkerCount: typeof input.writerPoolWorkerCount === 'number' ? input.writerPoolWorkerCount : undefined,
+    writerPoolQueueLength: typeof input.writerPoolQueueLength === 'number' ? input.writerPoolQueueLength : undefined,
+    writerPoolActiveJobs: typeof input.writerPoolActiveJobs === 'number' ? input.writerPoolActiveJobs : undefined,
+    writerPoolHandledJobs: typeof input.writerPoolHandledJobs === 'number' ? input.writerPoolHandledJobs : undefined,
+    writerPoolFailedJobs: typeof input.writerPoolFailedJobs === 'number' ? input.writerPoolFailedJobs : undefined,
+    writerPoolRejectedJobs: typeof input.writerPoolRejectedJobs === 'number' ? input.writerPoolRejectedJobs : undefined,
+    writerPoolOldestQueuedMs: typeof input.writerPoolOldestQueuedMs === 'number' ? input.writerPoolOldestQueuedMs : undefined,
+    writerPoolMaxQueueWaitMs: typeof input.writerPoolMaxQueueWaitMs === 'number' ? input.writerPoolMaxQueueWaitMs : undefined,
+    writerPoolMaxRunMs: typeof input.writerPoolMaxRunMs === 'number' ? input.writerPoolMaxRunMs : undefined,
     successHotRetentionHours: typeof input.successHotRetentionHours === 'number' ? input.successHotRetentionHours : undefined,
     successRetentionDays: typeof input.successRetentionDays === 'number' ? input.successRetentionDays : undefined,
     failureRetentionDays: typeof input.failureRetentionDays === 'number' ? input.failureRetentionDays : undefined,
@@ -357,7 +375,8 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     return
   }
   if (isIngestWorker()) {
-    flushUsageRecordQueueForShutdown()
+    await flushUsageRecordQueueForShutdown()
+    await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
     flushRuntimeLogIndexQueueForShutdown()

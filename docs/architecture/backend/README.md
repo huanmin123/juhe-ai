@@ -149,7 +149,7 @@ flowchart LR
 ### 6.1 存储原则
 
 - SQLite 是当前唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
-- 运行时必须明确区分业务库、统计数据集域和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志、运行日志索引、模型检测和 shard 元数据，新写入的使用记录保存到 usage shard 文件；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
+- 运行时必须明确区分业务库、统计数据集域和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志、运行日志索引和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
 - 多进程写入必须按 SQLite 文件级单写者治理。WAL 和 `busy_timeout` 只能吸收短冲突，不能允许多个 worker 长期并发写同一个数据库文件。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
@@ -236,7 +236,7 @@ erDiagram
 - 预上线阶段的 `backend/src/storage/schema.ts` 作为 schema 入口，`backend/src/storage/schema/` 下的拆分文件只描述当前完整结构：表、索引、默认约束和外键。
 - 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全；schema 文件只描述当前完整结构，启动路径不做字段探测、列补丁或结构升级模拟。
 - 不把升级标记、临时表改名、一次性业务数据同步或长期数据分支写入运行时代码；需要清洗既有数据时，使用直接 SQL、临时离线脚本或重建库处理。
-- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再按当前 schema 通过直接 SQL、临时离线脚本或重建库处理数据；数据集目录库、usage shard 和统计结果库默认不纳入业务备份，真实灾备快照才需要停机一并备份。
+- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再按当前 schema 通过直接 SQL、临时离线脚本或重建库处理数据；数据集目录库、使用记录目录库、usage shard 和统计结果库默认不纳入业务备份，真实灾备快照才需要停机一并备份。
 - 需要保留少量本地数据时，按当前模型导出、清洗、导入，不在源码里模拟多个数据版本。
 - 确需处理用户既有数据时，优先生成一次性离线修复方案，处理完即丢弃，不写进主代码。
 

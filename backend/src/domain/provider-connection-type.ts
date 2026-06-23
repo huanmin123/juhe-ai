@@ -1,4 +1,5 @@
 import {
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   isGlmProviderCode,
@@ -7,6 +8,7 @@ import {
 
 export const GLM_GENERAL_CONNECTION_TYPE = 'general_api_key'
 export const GLM_CODING_CONNECTION_TYPE = 'coding_api_key'
+export const GLM_CODING_ANTHROPIC_CONNECTION_TYPE = 'coding_anthropic_api_key'
 
 export function providerProtocolProfileIdForConnectionType(input: {
   providerCode?: unknown
@@ -17,6 +19,7 @@ export function providerProtocolProfileIdForConnectionType(input: {
   if (!isGlmProviderCode(input.providerCode)) return undefined
   if (connectionType === GLM_GENERAL_CONNECTION_TYPE) return GLM_GENERAL_OPENAI_V1_PROFILE_ID
   if (connectionType === GLM_CODING_CONNECTION_TYPE) return GLM_CODING_OPENAI_V1_PROFILE_ID
+  if (connectionType === GLM_CODING_ANTHROPIC_CONNECTION_TYPE) return GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   throw new Error(`智谱 GLM 接入类型不支持：${connectionType}`)
 }
 
@@ -30,6 +33,7 @@ export function connectionTypeForProviderProtocolProfile(input: {
     : ''
   if (profileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return GLM_GENERAL_CONNECTION_TYPE
   if (profileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return GLM_CODING_CONNECTION_TYPE
+  if (profileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return GLM_CODING_ANTHROPIC_CONNECTION_TYPE
   return undefined
 }
 
@@ -59,4 +63,5 @@ export function isProviderConnectionTypeRequired(input: {
     : ''
   return profileId !== GLM_GENERAL_OPENAI_V1_PROFILE_ID
     && profileId !== GLM_CODING_OPENAI_V1_PROFILE_ID
+    && profileId !== GLM_CODING_ANTHROPIC_V1_PROFILE_ID
 }

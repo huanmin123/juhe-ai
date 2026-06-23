@@ -7,6 +7,10 @@ import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, effectiveImageLaneCon
 import type { GroupSchedulingPolicy, GroupType } from '../../../domain/types.js'
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
+import {
+  compareGatewayAccountModelPriority,
+  type GatewayAccountModelPriority
+} from '../dispatch/model-filter.js'
 
 interface SessionBinding {
   accountId: string
@@ -68,6 +72,7 @@ export interface OpenAIGatewaySessionAffinityScope {
 export interface OpenAIAccountDispatchOrderingOptions {
   groupType?: GroupType
   schedulingPolicy?: GroupSchedulingPolicy
+  modelPriority?: GatewayAccountModelPriority
   trafficMigrationScope?: Partial<OpenAIGatewaySessionAffinityScope>
 }
 
@@ -94,27 +99,30 @@ export function orderOpenAIAccountsBySessionAffinity(
   sessionAffinityKey?: string,
   options: OpenAIAccountDispatchOrderingOptions = {}
 ): OpenAIAccountSecret[] {
-  const trafficMigrationPreference = trafficMigrationPreferenceForAccounts(accounts, options.trafficMigrationScope)
+  const modelOrderedAccounts = orderOpenAIAccountsByModelPriority(accounts, options.modelPriority)
+  const trafficMigrationPreference = trafficMigrationPreferenceForAccounts(modelOrderedAccounts, options.trafficMigrationScope)
   const sessionTrafficMigrationTargetAccountId = trafficMigrationPreference
     ? undefined
-    : sessionTrafficMigrationTargetForAccounts(accounts, sessionAffinityKey)
+    : sessionTrafficMigrationTargetForAccounts(modelOrderedAccounts, sessionAffinityKey)
   const trafficMigrationTargetAccountId = trafficMigrationPreference?.targetAccountId ?? sessionTrafficMigrationTargetAccountId
   const preferenceOrderedAccounts = orderOpenAIAccountsByTrafficMigrationPreference(
-    accounts,
-    trafficMigrationTargetAccountId
+    modelOrderedAccounts,
+    trafficMigrationTargetAccountId,
+    options.modelPriority
   )
   if (options.groupType === 'high_concurrency') {
     return orderOpenAIHighConcurrencyAccounts(
       preferenceOrderedAccounts,
       sessionAffinityKey,
       options.schedulingPolicy,
-      trafficMigrationTargetAccountId
+      trafficMigrationTargetAccountId,
+      options.modelPriority
     )
   }
   if (trafficMigrationTargetAccountId) {
     return preferenceOrderedAccounts
   }
-  return orderOpenAIPersonalAccountsBySessionAffinity(preferenceOrderedAccounts, sessionAffinityKey)
+  return orderOpenAIPersonalAccountsBySessionAffinity(preferenceOrderedAccounts, sessionAffinityKey, options.modelPriority)
 }
 
 export function areOpenAIHighConcurrencyAccountsHardBusy(accounts: OpenAIAccountSecret[], options: OpenAIAccountDispatchOrderingOptions = {}): boolean {
@@ -149,7 +157,8 @@ export function areOpenAIHighConcurrencyAccountsBusyForLane(
 
 function orderOpenAIPersonalAccountsBySessionAffinity(
   accounts: OpenAIAccountSecret[],
-  sessionAffinityKey?: string
+  sessionAffinityKey?: string,
+  modelPriority?: GatewayAccountModelPriority
 ): OpenAIAccountSecret[] {
   if (accounts.some((account) => account.superPriorityEnabled)) {
     return accounts
@@ -168,7 +177,7 @@ function orderOpenAIPersonalAccountsBySessionAffinity(
   const boundAccount = accounts[boundIndex]
   let targetIndex = boundIndex
   for (let index = boundIndex - 1; index >= 0; index -= 1) {
-    if (!canSessionAffinityPromoteOver(boundAccount, accounts[index])) {
+    if (!canSessionAffinityPromoteOver(boundAccount, accounts[index], modelPriority)) {
       break
     }
     targetIndex = index
@@ -188,7 +197,8 @@ function orderOpenAIHighConcurrencyAccounts(
   accounts: OpenAIAccountSecret[],
   sessionAffinityKey: string | undefined,
   policyInput: GroupSchedulingPolicy | undefined,
-  trafficMigrationTargetAccountId?: string
+  trafficMigrationTargetAccountId?: string,
+  modelPriority?: GatewayAccountModelPriority
 ): OpenAIAccountSecret[] {
   if (accounts.length < 2) {
     return accounts
@@ -197,7 +207,7 @@ function orderOpenAIHighConcurrencyAccounts(
   if (policy.fastFirstEnabled === false) {
     return trafficMigrationTargetAccountId
       ? orderOpenAIHighConcurrencyHardBusyLast(accounts)
-      : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey)
+      : orderOpenAIPersonalAccountsBySessionAffinity(accounts, sessionAffinityKey, modelPriority)
   }
   const binding = sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
   const inFlightStats = loadAccountInFlightStatsByIds(accounts.map((account) => account.id), {
@@ -235,7 +245,7 @@ function orderOpenAIHighConcurrencyAccounts(
   })
   const primarySoftAvailable = candidates.some((candidate) => !candidate.account.fallbackEnabled && !candidate.hardBusy && !candidate.softBusy)
   return [...candidates]
-    .sort((left, right) => compareHighConcurrencyCandidates(left, right, policy, primarySoftAvailable))
+    .sort((left, right) => compareHighConcurrencyCandidates(left, right, policy, primarySoftAvailable, modelPriority))
     .map((candidate) => candidate.account)
 }
 
@@ -261,9 +271,12 @@ function compareHighConcurrencyCandidates(
   left: HighConcurrencyCandidate,
   right: HighConcurrencyCandidate,
   policy: GroupSchedulingPolicy,
-  primarySoftAvailable: boolean
+  primarySoftAvailable: boolean,
+  modelPriority?: GatewayAccountModelPriority
 ): number {
   if (left.hardBusy !== right.hardBusy) return left.hardBusy ? 1 : -1
+  const modelPriorityDelta = compareGatewayAccountModelPriority(left.account, right.account, modelPriority)
+  if (modelPriorityDelta !== 0) return modelPriorityDelta
   if (left.trafficMigrationPreferred !== right.trafficMigrationPreferred) {
     return left.trafficMigrationPreferred ? -1 : 1
   }
@@ -508,7 +521,8 @@ function sessionTrafficMigrationTargetForAccounts(
 
 function orderOpenAIAccountsByTrafficMigrationPreference(
   accounts: OpenAIAccountSecret[],
-  targetAccountId?: string
+  targetAccountId?: string,
+  modelPriority?: GatewayAccountModelPriority
 ): OpenAIAccountSecret[] {
   if (!targetAccountId || accounts.length < 2) {
     return accounts
@@ -518,9 +532,20 @@ function orderOpenAIAccountsByTrafficMigrationPreference(
     return accounts
   }
   const targetAccount = accounts[originalTargetIndex]
+  let targetIndex = originalTargetIndex
+  for (let index = originalTargetIndex - 1; index >= 0; index -= 1) {
+    if (compareGatewayAccountModelPriority(targetAccount, accounts[index], modelPriority) > 0) {
+      break
+    }
+    targetIndex = index
+  }
+  if (targetIndex === originalTargetIndex) {
+    return accounts
+  }
   return [
+    ...accounts.slice(0, targetIndex),
     targetAccount,
-    ...accounts.slice(0, originalTargetIndex),
+    ...accounts.slice(targetIndex, originalTargetIndex),
     ...accounts.slice(originalTargetIndex + 1)
   ]
 }
@@ -589,7 +614,18 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function canSessionAffinityPromoteOver(boundAccount: OpenAIAccountSecret, currentAccount: OpenAIAccountSecret): boolean {
+function canSessionAffinityPromoteOver(
+  boundAccount: OpenAIAccountSecret,
+  currentAccount: OpenAIAccountSecret,
+  modelPriority?: GatewayAccountModelPriority
+): boolean {
+  const modelPriorityDelta = compareGatewayAccountModelPriority(boundAccount, currentAccount, modelPriority)
+  if (modelPriorityDelta > 0) {
+    return false
+  }
+  if (modelPriorityDelta < 0) {
+    return true
+  }
   if (boundAccount.superPriorityEnabled !== currentAccount.superPriorityEnabled) {
     return false
   }
@@ -624,6 +660,16 @@ function compareAccountQualityRank(left: OpenAIAccountSecret, right: OpenAIAccou
 
 function accountQualityRank(account: OpenAIAccountSecret): number {
   return typeof account.qualityScore === 'number' ? account.qualityScore : Number.POSITIVE_INFINITY
+}
+
+function orderOpenAIAccountsByModelPriority(
+  accounts: OpenAIAccountSecret[],
+  modelPriority?: GatewayAccountModelPriority
+): OpenAIAccountSecret[] {
+  if (!modelPriority || accounts.length < 2) {
+    return accounts
+  }
+  return [...accounts].sort((left, right) => compareGatewayAccountModelPriority(left, right, modelPriority))
 }
 
 const sessionHeaderNames = [

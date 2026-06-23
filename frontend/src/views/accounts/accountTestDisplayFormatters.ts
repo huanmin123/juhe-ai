@@ -102,7 +102,7 @@ export function accountTestSelectedCompatibilityText(input: {
   fixedOAuthCompatibilityText: string
 }): string {
   if (accountProviderProtocolKind(input.account) === 'anthropic_v1') {
-    return 'Anthropic 原生'
+    return 'Anthropic API'
   }
   if (input.account.type === 'oauth') {
     return input.fixedOAuthCompatibilityText
@@ -326,7 +326,7 @@ export function accountTestBatchItemMessage(item: AccountBatchTestItem): string 
 
 function accountTestActualProtocolLine(account: AccountSummary, result: AccountTestResult): AccountTestOutputLine {
   if (accountProviderProtocolKind(account) === 'anthropic_v1') {
-    return { text: '实际请求形态：Anthropic 原生请求', tone: 'muted' }
+    return { text: '实际请求形态：Anthropic API 请求', tone: 'muted' }
   }
   return {
     text: `实际请求形态：${accountClientCompatibilityRequestText(result.testClientCompatibility ?? result.clientCompatibility ?? account.clientCompatibility)}`,
@@ -335,7 +335,7 @@ function accountTestActualProtocolLine(account: AccountSummary, result: AccountT
 }
 
 function accountClientCompatibilityRequestText(value: AccountClientCompatibility): string {
-  return value === 'codex_responses' ? 'Codex Responses 请求' : 'OpenAI 标准请求'
+  return value === 'codex_responses' ? 'Codex Responses 请求' : 'OpenAI-compatible 请求'
 }
 
 export function accountTestBatchItemJson(item: AccountBatchTestItem): string {

@@ -70,6 +70,7 @@ const modelUnitCosts = new Map<string, number>([
 const tempRoot = resolve(tmpdir(), `juhe-ai-hybrid-real-gateway-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-real-gateway-e2e.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'hybrid-real-gateway-e2e-secret'
 runtimeConfig.log.consoleEnabled = false
@@ -156,7 +157,6 @@ try {
         status: 'active'
       })),
       hybridRoutingConfig: {
-        scoringGroupId: scoring.groupId,
         scoringModel,
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
@@ -409,7 +409,7 @@ async function runRealCase(input: {
 }
 
 function usageCountsForApiKey(apiKeyId: string): UsageCountRow[] {
-  return databaseModule.getDatasetDatabase()
+  return databaseModule.getUsageCatalogDatabase()
     .prepare(`
       SELECT traffic_source, model, success, COUNT(*) AS count, SUM(cost_usd) AS cost_usd
       FROM usage_record_shard_entries

@@ -2,10 +2,10 @@ import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, statsDatabasePath } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, newId, nowIso, rollbackDatabaseTransaction, statsDatabasePath, usageCatalogDatabasePath } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
-export type MonitoredDatabaseRole = 'business' | 'dataset' | 'stats'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats'
 
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
@@ -123,7 +123,7 @@ interface LatestDatabaseSnapshotRow {
 
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
-const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
+const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats']
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -278,6 +278,7 @@ function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
     { role: 'dataset', path: datasetDatabasePath(), database: getDatasetDatabase() },
+    { role: 'usage-catalog', path: usageCatalogDatabasePath(), database: getUsageCatalogDatabase() },
     { role: 'stats', path: statsDatabasePath(), database: getStatsDatabase() }
   ]
 }

@@ -125,8 +125,8 @@ usage 策略：
 
 - 原生 Responses / OpenAI OAuth Codex 路径：可以按账号能力承接 `POST /responses/compact` 和 Codex Remote Compaction V2 的 `compaction_trigger`。网关不生成 compact 内容，只透传请求，并在返回侧做 Codex compact 契约检查。
 - Codex compact 契约检查：识别 `/responses/compact` 或带 `compaction_trigger` 的 Codex `/responses` 请求后，SSE 返回必须在完成时恰好包含 1 个 Codex 可反序列化的 `compaction` / `compaction_summary` item，且 `encrypted_content` 必须是字符串；否则在写给客户端前拦截并触发服务端换号或返回 Codex 可重试失败。
-- Chat-only bridge 当前实现：由网关托管 `previous_response_id` 对应的 Responses input/output 增量状态；状态关系索引写入 `JUHE_AI_CODEX_CONTEXT_DATABASE_PATH` 指向的 Codex Responses 上下文索引库，完整上下文 payload 写入 `JUHE_AI_CODEX_CONTEXT_ROOT`，不进入业务库。compact 时先还原完整上下文，再在当前分组和当前供应商内调度非流式 Chat Completions 摘要请求，返回 `type=compaction_summary`、`encrypted_content=juhecmp.v1.<base64url-json-summary>` 的网关自有 envelope。后续请求带回该 item 时，bridge 会解包为 Chat system summary。
-- Chat-only bridge 后续增强：把 inline summary envelope 升级为 compact snapshot 索引，保存 `compact_id`、摘要、最近未压缩历史和校验签名；这仍然是网关自有 compact，不等价于上游原生 Responses compact。
+- Chat-only bridge 当前实现：由网关托管 `previous_response_id` 对应的 Responses input/output 增量状态；状态关系索引写入 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的 Codex Responses 上下文索引 shard，完整上下文 payload 按 session/hour 追加到 `JUHE_AI_CODEX_CONTEXT_ROOT` 下的 gzip segment，不进入业务库。compact 时先还原完整上下文，再在当前分组和当前供应商内调度非流式 Chat Completions 摘要请求，保存 compact snapshot，并返回 `type=compaction_summary`、`encrypted_content=juhecmp.v2.<compact_id>.<digest>` 的网关自有 envelope。后续请求带回该 item 时，bridge 校验边界、TTL 和 digest 后读取 snapshot，再恢复为 Chat system summary。
+- Chat-only compact snapshot 仍然是网关自有 compact，不等价于上游原生 Responses compact；它只能在本网关、同 API Key / 分组 / 供应商档案边界内恢复。
 - 供应商自有压缩能力：如果供应商提供非 Responses 的 Chat 侧 `/compact` 或等价摘要接口，可以作为 Chat-only gateway compact 的摘要来源，但返回结果仍要落到网关 compact snapshot；通用兜底必须走 Chat Completions，即 OpenAI-compatible 语义下的 `/v1/chat/completions`，不能把已转换为 Chat 的压缩请求继续发给上游 `/v1/responses/compact`。只有供应商明确提供可被后续原生 `/responses` 直接消费的 compact output，才属于原生 Responses compact。
 
 ### `previous_response_id` 目标处理
@@ -148,7 +148,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 通用摘要请求固定使用 Chat Completions endpoint family；上游不能收到 `/responses/compact`。
 - 内部摘要请求必须设置 `disableCompact = true`，避免递归 compact。
 
-摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。当前实现使用普通非流式 Chat Completions，并校验返回摘要必须是非空文本。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关解包恢复为 Chat summary。
+摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。当前实现使用普通非流式 Chat Completions，并校验返回摘要必须是非空文本。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关按 compact id 读取 snapshot 并恢复为 Chat summary。
 
 ## 已验证结论
 
@@ -165,7 +165,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 首版只支持流式 Codex 请求，不承接非流式 `/v1/responses`。
 - 当前不支持 Responses namespace tools、web_search、custom tool、MCP tool、tool search、local shell call、image generation 和 computer use。
 - `previous_response_id` 当前只在 Chat-only bridge 的本网关 file-backed 状态层内有效；跨网关、跨 API Key、跨分组、跨供应商或 7 天未使用过期后都会受控失败。
-- Gateway summary compact 当前是 inline summary envelope，还不是完整 compact snapshot；它只能恢复为 Chat summary，不能宣称为原生 Responses opaque compact。
+- Gateway summary compact 当前已使用本网关 compact snapshot；它只能恢复为 Chat summary，不能宣称为原生 Responses opaque compact，也不能跨网关、跨 API Key、跨分组或跨供应商使用。
 - 当前只把 `reasoning_content` 映射成 reasoning summary；不支持 encrypted reasoning 的生成，也不承诺和原生 OpenAI reasoning state 等价。
 - 如果模型频繁只输出 reasoning 而没有 `content`，Codex bridge 会只有 reasoning item、没有普通 assistant 文本；需要用模型参数、提示词或供应商策略处理。
 - input image 只做 data URL / URL 到 Chat `image_url` content part 的结构转换；没有覆盖 Codex App 图片视图、image generation output item 或非视觉模型的受控降级。
@@ -175,6 +175,5 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 把 bridge 标记写入审计摘要，便于排障区分下游 `/responses` 和上游 `/chat/completions`。
 - 补充 bridge 标记的结构化审计字段和后台探针筛选条件，避免只靠路径和日志文本判断是否走了桥接。
 - 补充 Codex bridge 的真实 CLI 工具调用场景，覆盖真实 Codex CLI 产生 `function_call_output` 后的下一轮请求。
-- 补充 compact snapshot 索引，实现 `juhecmp.v1.<compact_id>.<signature>`，保存结构化摘要、最近未压缩历史和校验信息。
-- 为 gateway summary compact 增加更严格的结构化摘要 schema 校验、内部请求 purpose 标记和完整用量记录。
+- 为 gateway summary compact 增加更严格的结构化摘要 schema 校验、最近未压缩历史保留、内部请求 purpose 标记和完整用量记录。
 - 增加 Chat JSON -> Responses JSON 的非流式桥接，前提是有明确客户端需求和真实验证。

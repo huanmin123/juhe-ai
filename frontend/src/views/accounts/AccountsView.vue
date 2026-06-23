@@ -161,9 +161,9 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
-      :mapping-target-model-options="mappingTargetModelOptions"
+      :mapping-source-model-options="mappingSourceModelOptions"
       :model-options="providerModelOptions"
-      :models-loading="providerModelsLoading"
+      :models-loading="strategyModelsLoading"
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
@@ -459,7 +459,7 @@ const {
   isApiKeyForm,
   isOAuthForm,
   isOpenAIOAuthForm,
-  mappingTargetModelOptions,
+  mappingSourceModelOptions,
   modalConfirmLoading,
   modalOkButtonProps,
   modalOpen,
@@ -470,7 +470,7 @@ const {
   openEdit,
   providerName,
   providerModelOptions,
-  providerModelsLoading,
+  strategyModelsLoading,
   saveAccount,
   selectAccountTypeChoice,
   selectedAccountTypeTitle,

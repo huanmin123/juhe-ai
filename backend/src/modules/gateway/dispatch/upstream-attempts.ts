@@ -51,7 +51,7 @@ export async function performUpstreamRequestAttempt(
   const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
 
-  getRequestLogger().info({
+  getRequestLogger().debug({
     event: 'gateway_upstream_request_started',
     accountId: account.id,
     accountType: account.type,
@@ -77,7 +77,7 @@ export async function performUpstreamRequestAttempt(
     signal
   })
 
-  getRequestLogger().info({
+  getRequestLogger().debug({
     event: 'gateway_upstream_response_received',
     accountId: account.id,
     accountType: account.type,

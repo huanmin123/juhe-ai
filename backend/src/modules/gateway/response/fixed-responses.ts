@@ -11,7 +11,7 @@ import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { enqueueUsageRecord } from '../usage/record-queue.service.js'
 import {
   defaultGatewayUsageProviderCode,
-  usageSemanticForProviderCode
+  usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
 
 interface OpenAIModelsResponseUsageContext {
@@ -27,6 +27,9 @@ interface OpenAIModelsResponseUsageContext {
   groupAuthorizationSourceType?: GroupUsageAccessMetadata['groupAuthorizationSourceType']
   groupAuthorizationSourceTeamId?: string
   providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   endpoint: string
 }
 
@@ -86,7 +89,12 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
   enqueueUsageRecord({
     ...usageContext,
     providerCode,
-    usageSemantic: usageSemanticForProviderCode(providerCode),
+    usageSemantic: usageSemanticForProfile({
+      providerCode,
+      providerProtocolProfileId: usageContext.providerProtocolProfileId,
+      protocolCode: usageContext.protocolCode,
+      protocolVersion: usageContext.protocolVersion
+    }),
     stream: false,
     statusCode: 200,
     success: true,

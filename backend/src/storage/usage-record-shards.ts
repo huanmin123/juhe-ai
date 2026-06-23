@@ -1,10 +1,10 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 
 import { defaultUsageShardRoot, runtimeConfig } from '../config/runtime.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, nowIso, rollbackDatabaseTransaction, sqliteWriterBoundaryStrictModeEnabled } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getUsageCatalogDatabase, nowIso, rollbackDatabaseTransaction, sqliteWriterBoundaryStrictModeEnabled, usageCatalogDatabasePath } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 import { checkpointSqliteWal, type SqliteWalCheckpointResult } from './sqlite-maintenance.js'
@@ -58,6 +58,20 @@ export interface UsageRecordShardEntryInput {
   createdAt: string
 }
 
+export interface UsageRecordShardWriteRow {
+  id: string
+  params: SQLInputValue[]
+  accountId?: string
+  accountLastUsedAt?: string
+  accountHealthSuccessAt?: string
+}
+
+export interface UsageRecordShardWriteResult {
+  insertedRows: number
+  accountLastUsedAt: Array<{ accountId: string; lastUsedAt: string }>
+  accountHealthSuccessAt: Array<{ accountId: string; successAt: string }>
+}
+
 interface UsageRecordShardEntryScope {
   usageId: string
   shardKey: string
@@ -69,6 +83,19 @@ interface UsageRecordShardEntryScope {
 const usageRecordShardSchemaVersion = 2
 const usageRecordShardWindowMaxDays = 31
 const shardDatabases = new Map<string, DatabaseSync>()
+const registeredUsageRecordShardKeys = new Set<string>()
+const usageRecordInsertSql = `
+  INSERT INTO usage_records (
+    id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream,
+    status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
+    request_snapshot_json, response_snapshot_json,
+    account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
+    account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
+    group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
+    created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO NOTHING
+`
 
 export function usageRecordShardCount(): number {
   return Math.max(1, Math.trunc(runtimeConfig.usageShardCount))
@@ -76,7 +103,7 @@ export function usageRecordShardCount(): number {
 
 export function usageRecordShardRoot(): string {
   if (isDefaultUsageShardRoot(runtimeConfig.usageShardRoot)) {
-    return resolve(dirname(runtimeConfig.datasetDatabasePath), 'usage-shards')
+    return resolve(dirname(usageCatalogDatabasePath()), 'usage-shards')
   }
   return resolve(runtimeConfig.usageShardRoot)
 }
@@ -104,7 +131,7 @@ export function findRegisteredUsageRecordShardLocation(shardKey: string): UsageR
   return findRegisteredUsageRecordShardLocationByKey(shardKey)
 }
 
-export function getUsageRecordShardDatabase(location: UsageRecordShardLocation): DatabaseSync {
+export function getUsageRecordShardDatabase(location: UsageRecordShardLocation, options: { registerLocation?: boolean } = {}): DatabaseSync {
   const cached = shardDatabases.get(location.filePath)
   if (cached) {
     return cached
@@ -116,7 +143,7 @@ export function getUsageRecordShardDatabase(location: UsageRecordShardLocation):
     applyUsageRecordShardSchema(database)
   }
   shardDatabases.set(location.filePath, database)
-  if (shouldApplyUsageRecordShardSchema()) {
+  if (shouldApplyUsageRecordShardSchema() && options.registerLocation !== false) {
     registerUsageRecordShardLocation(location)
   }
   return database
@@ -134,6 +161,7 @@ export function closeUsageRecordShardDatabases(): void {
     }
   }
   shardDatabases.clear()
+  registeredUsageRecordShardKeys.clear()
 }
 
 export function checkpointOpenUsageRecordShardDatabases(): SqliteWalCheckpointResult[] {
@@ -150,7 +178,7 @@ export function checkpointOpenUsageRecordShardDatabases(): SqliteWalCheckpointRe
 export async function cleanupEmptyUsageRecordShardFilesBefore(cutoffAt: string, limit = 1000): Promise<EmptyUsageRecordShardFileCleanupResult> {
   const cutoffDate = bucketDateFromBucketDateKey(bucketDateKeyFromIso(cutoffAt))
   const batchLimit = Math.max(1, Math.trunc(limit))
-  const rows = getDatasetDatabase()
+  const rows = getUsageCatalogDatabase()
     .prepare(`
       SELECT s.shard_key, s.bucket_date, s.shard_id, s.file_path
       FROM usage_record_shards s
@@ -183,9 +211,12 @@ export async function cleanupEmptyUsageRecordShardFilesBefore(cutoffAt: string, 
   let usageRecordShards = 0
   const shardKeys = locations.map((location) => location.shardKey)
   for (const chunk of chunkValues(shardKeys, 900)) {
-    usageRecordShards += Number(getDatasetDatabase()
+    usageRecordShards += Number(getUsageCatalogDatabase()
       .prepare(`DELETE FROM usage_record_shards WHERE shard_key IN (${sqlPlaceholders(chunk.length)})`)
       .run(...chunk).changes ?? 0)
+    for (const shardKey of chunk) {
+      registeredUsageRecordShardKeys.delete(shardKey)
+    }
   }
 
   return {
@@ -207,7 +238,7 @@ export function listUsageRecordShardLocations(window: UsageRecordShardQueryWindo
 export function listUsageRecordShardLocationsPage(input: { offset?: number; limit: number }): UsageRecordShardLocationPage {
   const limit = Math.max(1, Math.trunc(input.limit))
   const offset = Math.max(0, Math.trunc(input.offset ?? 0))
-  const database = getDatasetDatabase()
+  const database = getUsageCatalogDatabase()
   const totalRow = database
     .prepare("SELECT COUNT(*) AS total FROM usage_record_shards WHERE status = 'active'")
     .get() as { total?: number } | undefined
@@ -307,7 +338,7 @@ function listRegisteredUsageRecordShardLocations(input: {
     : normalizedOffset === undefined
       ? [normalizedLimit]
       : [normalizedLimit, normalizedOffset]
-  const rows = getDatasetDatabase()
+  const rows = getUsageCatalogDatabase()
     .prepare(`
       SELECT shard_key, bucket_date, shard_id, file_path
       FROM usage_record_shards
@@ -316,9 +347,11 @@ function listRegisteredUsageRecordShardLocations(input: {
       ${limitClause}
     `)
     .all(...params, ...limitParams) as Array<{ shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string }>
-  return rows
+  const locations = rows
     .map(usageRecordShardLocationFromRegistryRow)
     .filter((location): location is UsageRecordShardLocation => Boolean(location))
+  rememberUsageRecordShardLocations(locations)
+  return locations
 }
 
 function listUsageRecordShardLocationsByScopeCatalog(input: {
@@ -328,7 +361,7 @@ function listUsageRecordShardLocationsByScopeCatalog(input: {
   limit: number
 }): UsageRecordShardLocationWindow {
   const normalizedLimit = Math.max(1, Math.trunc(input.limit))
-  const rows = getDatasetDatabase()
+  const rows = getUsageCatalogDatabase()
     .prepare(`
       SELECT s.shard_key, s.bucket_date, s.shard_id, s.file_path
       FROM ${input.tableName} c
@@ -343,6 +376,7 @@ function listUsageRecordShardLocationsByScopeCatalog(input: {
     .slice(0, normalizedLimit)
     .map(usageRecordShardLocationFromRegistryRow)
     .filter((location): location is UsageRecordShardLocation => Boolean(location))
+  rememberUsageRecordShardLocations(locations)
   return {
     locations,
     hasMore: rows.length > normalizedLimit
@@ -367,8 +401,35 @@ function usageRecordShardLocationFromRegistryRow(row: {
 }
 
 function registerUsageRecordShardLocation(location: UsageRecordShardLocation): void {
+  if (registeredUsageRecordShardKeys.has(location.shardKey)) {
+    return
+  }
   const timestamp = nowIso()
-  getDatasetDatabase()
+  registerUsageRecordShardLocationInDatabase(getUsageCatalogDatabase(), location, timestamp)
+  registeredUsageRecordShardKeys.add(location.shardKey)
+}
+
+export function registerUsageRecordShardLocations(locations: UsageRecordShardLocation[]): void {
+  const uniqueLocations = uniqueUsageRecordShardLocations(locations)
+    .filter((location) => !registeredUsageRecordShardKeys.has(location.shardKey))
+  if (uniqueLocations.length === 0) return
+  const timestamp = nowIso()
+  const database = getUsageCatalogDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const location of uniqueLocations) {
+      registerUsageRecordShardLocationInDatabase(database, location, timestamp)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+    rememberUsageRecordShardLocations(uniqueLocations)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function registerUsageRecordShardLocationInDatabase(database: DatabaseSync, location: UsageRecordShardLocation, timestamp: string): void {
+  database
     .prepare(`
       INSERT INTO usage_record_shards (
         shard_key, bucket_date, shard_id, file_path, schema_version, status,
@@ -407,13 +468,20 @@ export function queryUsageRecordShardById<T extends Record<string, unknown>>(
   params: SQLInputValue[] = [],
   createdAt?: string
 ): T | undefined {
-  const location = registeredUsageRecordShardLocationForLookup(id, createdAt) ?? findUsageRecordShardLocationByUsageId(id)
-  if (!location) {
+  const directLocation = usageRecordShardLocationForLookup(id, createdAt)
+  if (directLocation) {
+    const row = queryUsageRecordShardAtLocation<T>(directLocation, selectSql, params)
+    if (row) {
+      return row
+    }
+  }
+  const fallbackLocation = directLocation
+    ? findRegisteredUsageRecordShardLocationByKey(directLocation.shardKey)
+    : findUsageRecordShardLocationByUsageId(id)
+  if (!fallbackLocation) {
     return undefined
   }
-  return getUsageRecordShardDatabase(location)
-    .prepare(selectSql)
-    .get(...params) as T | undefined
+  return queryUsageRecordShardAtLocation<T>(fallbackLocation, selectSql, params)
 }
 
 export function updateUsageRecordCacheReadCost(input: {
@@ -424,19 +492,24 @@ export function updateUsageRecordCacheReadCost(input: {
 }): void {
   const location = input.sourceShardKey
     ? findRegisteredUsageRecordShardLocationByKey(input.sourceShardKey)
-    : registeredUsageRecordShardLocationForLookup(input.id, input.createdAt) ?? findUsageRecordShardLocationByUsageId(input.id)
+    : usageRecordShardLocationForLookup(input.id, input.createdAt) ?? findUsageRecordShardLocationByUsageId(input.id)
   if (!location) {
     return
   }
-  getUsageRecordShardDatabase(location)
+  const database = usageRecordShardDatabaseIfOpenOrExists(location)
+  if (!database) {
+    return
+  }
+  database
     .prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?')
     .run(input.cacheReadCostUsd, input.id)
 }
 
-export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInput[]): void {
-  if (entries.length === 0) return
+export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInput[], options: { locations?: UsageRecordShardLocation[] } = {}): void {
+  const uniqueEntries = uniqueUsageRecordShardEntries(entries)
+  if (uniqueEntries.length === 0) return
   const timestamp = nowIso()
-  const database = getDatasetDatabase()
+  const database = getUsageCatalogDatabase()
   const statement = database.prepare(`
     INSERT INTO usage_record_shard_entries (
       usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source,
@@ -460,10 +533,34 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
       cost_usd = excluded.cost_usd,
       created_at = excluded.created_at,
       indexed_at = excluded.indexed_at
+    WHERE usage_record_shard_entries.shard_key IS NOT excluded.shard_key
+      OR usage_record_shard_entries.system_account_id IS NOT excluded.system_account_id
+      OR usage_record_shard_entries.trace_id IS NOT excluded.trace_id
+      OR usage_record_shard_entries.api_key_id IS NOT excluded.api_key_id
+      OR usage_record_shard_entries.account_id IS NOT excluded.account_id
+      OR usage_record_shard_entries.group_id IS NOT excluded.group_id
+      OR usage_record_shard_entries.model IS NOT excluded.model
+      OR usage_record_shard_entries.traffic_source IS NOT excluded.traffic_source
+      OR usage_record_shard_entries.success IS NOT excluded.success
+      OR usage_record_shard_entries.status_code IS NOT excluded.status_code
+      OR usage_record_shard_entries.client_ip IS NOT excluded.client_ip
+      OR usage_record_shard_entries.first_token_ms IS NOT excluded.first_token_ms
+      OR usage_record_shard_entries.duration_ms IS NOT excluded.duration_ms
+      OR usage_record_shard_entries.cost_usd IS NOT excluded.cost_usd
+      OR usage_record_shard_entries.created_at IS NOT excluded.created_at
   `)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    for (const entry of entries) {
+    const locations = uniqueUsageRecordShardLocations([
+      ...(options.locations ?? []),
+      ...uniqueEntries
+        .map((entry) => usageRecordShardLocationFromKey(entry.shardKey))
+        .filter((location): location is UsageRecordShardLocation => Boolean(location))
+    ]).filter((location) => !registeredUsageRecordShardKeys.has(location.shardKey))
+    for (const location of locations) {
+      registerUsageRecordShardLocationInDatabase(database, location, timestamp)
+    }
+    for (const entry of uniqueEntries) {
       statement.run(
         entry.id,
         entry.shardKey,
@@ -484,8 +581,9 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
         timestamp
       )
     }
-    upsertUsageRecordScopeShardCatalog(entries)
+    upsertUsageRecordScopeShardCatalog(database, uniqueEntries)
     commitDatabaseTransaction(database, transactionStarted)
+    rememberUsageRecordShardLocations(locations)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
@@ -495,7 +593,7 @@ export function recordUsageRecordShardEntries(entries: UsageRecordShardEntryInpu
 export function deleteUsageRecordShardEntries(ids: string[]): number {
   const normalizedIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
   if (normalizedIds.length === 0) return 0
-  const database = getDatasetDatabase()
+  const database = getUsageCatalogDatabase()
   let deletedRows = 0
   for (const chunk of chunkValues(normalizedIds, 900)) {
     const scopes = listUsageRecordShardEntryScopes(database, chunk)
@@ -507,17 +605,24 @@ export function deleteUsageRecordShardEntries(ids: string[]): number {
   return deletedRows
 }
 
-function upsertUsageRecordScopeShardCatalog(entries: UsageRecordShardEntryInput[]): void {
-  const database = getDatasetDatabase()
-  const accountRows = new Map<string, { accountId: string; shardKey: string; createdAt: string }>()
-  const apiKeyRows = new Map<string, { apiKeyId: string; systemAccountId: string; shardKey: string; createdAt: string }>()
+function upsertUsageRecordScopeShardCatalog(database: DatabaseSync, entries: UsageRecordShardEntryInput[]): void {
+  const accountRows = new Map<string, { accountId: string; shardKey: string; firstCreatedAt: string; lastSeenAt: string }>()
+  const apiKeyRows = new Map<string, { apiKeyId: string; systemAccountId: string; shardKey: string; firstCreatedAt: string; lastSeenAt: string }>()
   for (const entry of entries) {
     const accountId = entry.accountId?.trim()
     if (accountId) {
       const key = `${accountId}\u0000${entry.shardKey}`
       const existing = accountRows.get(key)
-      if (!existing || entry.createdAt < existing.createdAt) {
-        accountRows.set(key, { accountId, shardKey: entry.shardKey, createdAt: entry.createdAt })
+      if (existing) {
+        if (entry.createdAt < existing.firstCreatedAt) existing.firstCreatedAt = entry.createdAt
+        if (entry.createdAt > existing.lastSeenAt) existing.lastSeenAt = entry.createdAt
+      } else {
+        accountRows.set(key, {
+          accountId,
+          shardKey: entry.shardKey,
+          firstCreatedAt: entry.createdAt,
+          lastSeenAt: entry.createdAt
+        })
       }
     }
     const apiKeyId = entry.apiKeyId?.trim()
@@ -525,8 +630,17 @@ function upsertUsageRecordScopeShardCatalog(entries: UsageRecordShardEntryInput[
     if (apiKeyId && systemAccountId) {
       const key = `${apiKeyId}\u0000${systemAccountId}\u0000${entry.shardKey}`
       const existing = apiKeyRows.get(key)
-      if (!existing || entry.createdAt < existing.createdAt) {
-        apiKeyRows.set(key, { apiKeyId, systemAccountId, shardKey: entry.shardKey, createdAt: entry.createdAt })
+      if (existing) {
+        if (entry.createdAt < existing.firstCreatedAt) existing.firstCreatedAt = entry.createdAt
+        if (entry.createdAt > existing.lastSeenAt) existing.lastSeenAt = entry.createdAt
+      } else {
+        apiKeyRows.set(key, {
+          apiKeyId,
+          systemAccountId,
+          shardKey: entry.shardKey,
+          firstCreatedAt: entry.createdAt,
+          lastSeenAt: entry.createdAt
+        })
       }
     }
   }
@@ -543,9 +657,11 @@ function upsertUsageRecordScopeShardCatalog(entries: UsageRecordShardEntryInput[
         WHEN excluded.last_seen_at > usage_record_account_shards.last_seen_at THEN excluded.last_seen_at
         ELSE usage_record_account_shards.last_seen_at
       END
+    WHERE excluded.first_created_at < usage_record_account_shards.first_created_at
+      OR excluded.last_seen_at > usage_record_account_shards.last_seen_at
   `)
   for (const row of accountRows.values()) {
-    accountStatement.run(row.accountId, row.shardKey, row.createdAt, row.createdAt)
+    accountStatement.run(row.accountId, row.shardKey, row.firstCreatedAt, row.lastSeenAt)
   }
 
   const apiKeyStatement = database.prepare(`
@@ -560,10 +676,93 @@ function upsertUsageRecordScopeShardCatalog(entries: UsageRecordShardEntryInput[
         WHEN excluded.last_seen_at > usage_record_api_key_shards.last_seen_at THEN excluded.last_seen_at
         ELSE usage_record_api_key_shards.last_seen_at
       END
+    WHERE excluded.first_created_at < usage_record_api_key_shards.first_created_at
+      OR excluded.last_seen_at > usage_record_api_key_shards.last_seen_at
   `)
   for (const row of apiKeyRows.values()) {
-    apiKeyStatement.run(row.apiKeyId, row.systemAccountId, row.shardKey, row.createdAt, row.createdAt)
+    apiKeyStatement.run(row.apiKeyId, row.systemAccountId, row.shardKey, row.firstCreatedAt, row.lastSeenAt)
   }
+}
+
+export function writeUsageRecordShardRows(
+  location: UsageRecordShardLocation,
+  rows: UsageRecordShardWriteRow[],
+  options: { registerLocation?: boolean } = {}
+): UsageRecordShardWriteResult {
+  if (rows.length === 0) {
+    return { insertedRows: 0, accountLastUsedAt: [], accountHealthSuccessAt: [] }
+  }
+  const database = getUsageRecordShardDatabase(location, options)
+  const insertStatement = database.prepare(usageRecordInsertSql)
+  const transactionStarted = beginDatabaseTransaction(database)
+  const accountLastUsedAt = new Map<string, string>()
+  const accountHealthSuccessAt = new Map<string, string>()
+  let insertedRows = 0
+  try {
+    for (const row of rows) {
+      const result = insertStatement.run(...row.params)
+      if (Number(result.changes ?? 0) > 0) {
+        insertedRows += 1
+      }
+      collectUsageRecordWriteSideEffects(accountLastUsedAt, accountHealthSuccessAt, row)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+    return {
+      insertedRows,
+      accountLastUsedAt: [...accountLastUsedAt.entries()].map(([accountId, lastUsedAt]) => ({ accountId, lastUsedAt })),
+      accountHealthSuccessAt: [...accountHealthSuccessAt.entries()].map(([accountId, successAt]) => ({ accountId, successAt }))
+    }
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function collectUsageRecordWriteSideEffects(
+  accountLastUsedAt: Map<string, string>,
+  accountHealthSuccessAt: Map<string, string>,
+  row: UsageRecordShardWriteRow
+): void {
+  if (!row.accountId) {
+    return
+  }
+  if (row.accountLastUsedAt) {
+    mergeMaxIsoValue(accountLastUsedAt, row.accountId, row.accountLastUsedAt)
+  }
+  if (row.accountHealthSuccessAt) {
+    mergeMaxIsoValue(accountHealthSuccessAt, row.accountId, row.accountHealthSuccessAt)
+  }
+}
+
+function mergeMaxIsoValue(target: Map<string, string>, key: string, value: string): void {
+  const previous = target.get(key)
+  if (!previous || value > previous) {
+    target.set(key, value)
+  }
+}
+
+function uniqueUsageRecordShardLocations(locations: UsageRecordShardLocation[]): UsageRecordShardLocation[] {
+  const unique = new Map<string, UsageRecordShardLocation>()
+  for (const location of locations) {
+    unique.set(location.shardKey, location)
+  }
+  return [...unique.values()]
+}
+
+function rememberUsageRecordShardLocations(locations: UsageRecordShardLocation[]): void {
+  for (const location of locations) {
+    registeredUsageRecordShardKeys.add(location.shardKey)
+  }
+}
+
+function uniqueUsageRecordShardEntries(entries: UsageRecordShardEntryInput[]): UsageRecordShardEntryInput[] {
+  const unique = new Map<string, UsageRecordShardEntryInput>()
+  for (const entry of entries) {
+    const id = entry.id.trim()
+    if (!id) continue
+    unique.set(id, entry)
+  }
+  return [...unique.values()]
 }
 
 function listUsageRecordShardEntryScopes(database: DatabaseSync, ids: string[]): UsageRecordShardEntryScope[] {
@@ -648,7 +847,37 @@ function cleanupUsageRecordScopeShardCatalog(database: DatabaseSync, scopes: Usa
 }
 
 export function usageRecordShardExistsForId(id: string, createdAt?: string): boolean {
-  return Boolean(registeredUsageRecordShardLocationForLookup(id, createdAt))
+  const location = usageRecordShardLocationForLookup(id, createdAt)
+  if (!location) {
+    return false
+  }
+  return Boolean(usageRecordShardDatabaseIfOpenOrExists(location) ?? findRegisteredUsageRecordShardLocationByKey(location.shardKey))
+}
+
+function queryUsageRecordShardAtLocation<T extends Record<string, unknown>>(
+  location: UsageRecordShardLocation,
+  selectSql: string,
+  params: SQLInputValue[]
+): T | undefined {
+  const database = usageRecordShardDatabaseIfOpenOrExists(location)
+  if (!database) {
+    return undefined
+  }
+  return database
+    .prepare(selectSql)
+    .get(...params) as T | undefined
+}
+
+function usageRecordShardDatabaseIfOpenOrExists(location: UsageRecordShardLocation): DatabaseSync | undefined {
+  const cached = shardDatabases.get(location.filePath)
+  if (cached) {
+    return cached
+  }
+  const target = usageShardFilePath(location.filePath)
+  if (!existsSync(target)) {
+    return undefined
+  }
+  return getUsageRecordShardDatabase(location, { registerLocation: false })
 }
 
 function usageRecordShardLocation(bucketDateKey: string, shardIdInput: number): UsageRecordShardLocation {
@@ -714,20 +943,15 @@ function usageRecordShardLocationForLookup(id: string, createdAt?: string): Usag
   return usageRecordShardLocationForRecord(id, createdAt)
 }
 
-function registeredUsageRecordShardLocationForLookup(id: string, createdAt?: string): UsageRecordShardLocation | undefined {
-  const location = usageRecordShardLocationForLookup(id, createdAt)
-  return location ? findRegisteredUsageRecordShardLocationByKey(location.shardKey) : undefined
-}
-
 function findUsageRecordShardLocationByUsageId(id: string): UsageRecordShardLocation | undefined {
-  const row = getDatasetDatabase()
+  const row = getUsageCatalogDatabase()
     .prepare('SELECT shard_key FROM usage_record_shard_entries WHERE usage_id = ? LIMIT 1')
     .get(id) as { shard_key?: string } | undefined
   return row?.shard_key ? findRegisteredUsageRecordShardLocationByKey(row.shard_key) : undefined
 }
 
 function findRegisteredUsageRecordShardLocationByKey(shardKey: string): UsageRecordShardLocation | undefined {
-  const row = getDatasetDatabase()
+  const row = getUsageCatalogDatabase()
     .prepare(`
       SELECT shard_key, bucket_date, shard_id, file_path
       FROM usage_record_shards
@@ -736,7 +960,11 @@ function findRegisteredUsageRecordShardLocationByKey(shardKey: string): UsageRec
       LIMIT 1
     `)
     .get(shardKey.trim()) as { shard_key?: string; bucket_date?: string; shard_id?: number; file_path?: string } | undefined
-  return row ? usageRecordShardLocationFromRegistryRow(row) : undefined
+  const location = row ? usageRecordShardLocationFromRegistryRow(row) : undefined
+  if (location) {
+    registeredUsageRecordShardKeys.add(location.shardKey)
+  }
+  return location
 }
 
 function stableShardId(value: string): number {

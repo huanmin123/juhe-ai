@@ -5,13 +5,10 @@ import type { Request } from 'express'
 import {
   clampHybridLevel
 } from '../../../domain/api-key-hybrid-routing.js'
-import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import type { ApiKeyHybridRoutingConfig } from '../../../domain/types.js'
 import { tryAcquireAccountConcurrency } from '../../../shared/account-concurrency.js'
 import { createAppCache } from '../../../shared/cache.js'
 import type { GatewayApiKeyRow, OpenAIAccountSecret } from '../../../storage/repositories.js'
-import { filterGatewayAccountsByRequestCapability } from '../dispatch/account-capability-filter.js'
-import { filterGatewayAccountsByRequestedModel } from '../dispatch/model-filter.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
 import {
   getGatewayRequestBodyState,
@@ -20,8 +17,9 @@ import {
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
 import {
-  listCachedOpenAIAccountsForGroupAsync
-} from '../runtime/runtime-cache.service.js'
+  orderGatewayApiKeyGroupBindingsForDispatch
+} from '../routing/api-key-group-route-selector.service.js'
+import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
 import { requestUpstream } from '../upstream/request.js'
 import {
   buildGatewayUpstreamRequestParts,
@@ -33,18 +31,21 @@ import { emptyUsage } from '../usage/types.js'
 export interface HybridScoringResult {
   level: number
   confidence?: number
+  factors?: string[]
   reason?: string
   defaulted: boolean
   cacheHit?: boolean
   errorCode?: string
   errorMessage?: string
   scoringAccountId?: string
+  scoringGroupId?: string
   statusCode?: number
 }
 
 interface HybridScoringCacheEntry {
   level: number
   confidence?: number
+  factors?: string[]
   reason?: string
 }
 
@@ -72,6 +73,7 @@ export async function scoreHybridGatewayRequest(input: {
 }): Promise<HybridScoringResult> {
   const startedAt = Date.now()
   let account: OpenAIAccountSecret | undefined
+  let scoringGroupId: string | undefined
   let statusCode: number | undefined
   try {
     const body = await parseHybridRequestBody(input.req, input.config.scoringTimeoutMs, input.signal)
@@ -88,22 +90,25 @@ export async function scoreHybridGatewayRequest(input: {
       return {
         level: cached.level,
         confidence: cached.confidence,
+        factors: cached.factors,
         reason: cached.reason,
         defaulted: false,
         cacheHit: true
       }
     }
-    const scoringBody = buildHybridScoringRequestBody(input.config.scoringModel, context, input.config.qualityPreference)
+    const scoringBody = buildHybridScoringRequestBody(input.config.scoringModel, context)
     const scoringReq = createHybridScoringGatewayRequest(scoringBody)
-    account = await selectHybridScoringAccount({
-      groupId: input.config.scoringGroupId,
-      systemAccountId: input.apiKeyRecord.system_account_id,
+    const scoringSelection = await selectHybridScoringAccount({
+      apiKeyRecord: input.apiKeyRecord,
       scoringModel: input.config.scoringModel,
       scoringReq
     })
-    if (!account) {
-      return defaultScoringResult(input.config, 'no_scoring_account', '混合路由评分分组没有可用评分账户')
+    if (!scoringSelection) {
+      return defaultScoringResult(input.config, 'no_scoring_account', '混合路由绑定分组池没有可用评分账户')
     }
+    account = scoringSelection.account
+    const selectedScoringGroupId = scoringSelection.groupId
+    scoringGroupId = selectedScoringGroupId
     const slot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
     if (!slot.acquired) {
       return defaultScoringResult(input.config, 'scoring_account_busy', '混合路由评分账户并发已满')
@@ -117,7 +122,7 @@ export async function scoreHybridGatewayRequest(input: {
       const requestParts = await buildGatewayUpstreamRequestParts(scoringReq, account, {
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: input.config.scoringGroupId
+        groupId: selectedScoringGroupId
       }, input.signal, {
         requestClientCompatibility: 'openai_standard'
       })
@@ -139,7 +144,7 @@ export async function scoreHybridGatewayRequest(input: {
           clientIp: input.clientIp,
           systemAccountId: input.apiKeyRecord.system_account_id,
           apiKeyId: input.apiKeyRecord.id,
-          groupId: input.config.scoringGroupId,
+          groupId: selectedScoringGroupId,
           account,
           endpoint: `${input.endpoint}#hybrid-scoring`,
           statusCode: response.status,
@@ -158,10 +163,12 @@ export async function scoreHybridGatewayRequest(input: {
       const scoringResult: HybridScoringResult = {
         level: clampHybridLevel(parsed.level),
         confidence: parsed.confidence,
+        factors: parsed.factors,
         reason: parsed.reason,
         defaulted: false,
         cacheHit: false,
         scoringAccountId: account.id,
+        scoringGroupId: selectedScoringGroupId,
         statusCode: response.status
       }
       rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
@@ -170,7 +177,7 @@ export async function scoreHybridGatewayRequest(input: {
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: input.config.scoringGroupId,
+        groupId: selectedScoringGroupId,
         account,
         endpoint: `${input.endpoint}#hybrid-scoring`,
         statusCode: response.status,
@@ -186,13 +193,13 @@ export async function scoreHybridGatewayRequest(input: {
       slot.release()
     }
   } catch (error) {
-    if (account) {
+    if (account && scoringGroupId) {
       recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: input.config.scoringGroupId,
+        groupId: scoringGroupId,
         account,
         endpoint: `${input.endpoint}#hybrid-scoring`,
         statusCode,
@@ -219,23 +226,19 @@ export function clearHybridScoringCacheForTest(): void {
 }
 
 async function selectHybridScoringAccount(input: {
-  groupId: string
-  systemAccountId: string
+  apiKeyRecord: GatewayApiKeyRow
   scoringModel: string
   scoringReq: Request
-}): Promise<OpenAIAccountSecret | undefined> {
-  const accounts = (await listCachedOpenAIAccountsForGroupAsync(input.groupId, input.systemAccountId))
-    .filter((account) =>
-      account.status === 'active'
-      && account.proxyProfileUnavailable !== true
-      && Boolean(account.apiKey)
-      && Boolean(account.baseUrl)
-      && isOpenAIProtocolProfile(account)
-    )
-  const capabilityFilter = filterGatewayAccountsByRequestCapability(input.scoringReq, accounts, {
+}): Promise<{ account: OpenAIAccountSecret; groupId: string } | undefined> {
+  const selection = await selectGatewayModelTargetGroup({
+    req: input.scoringReq,
+    apiKeyRecord: input.apiKeyRecord,
+    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
+    targetModel: input.scoringModel,
     requestClientCompatibility: 'openai_standard'
   })
-  return filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, input.scoringModel).accounts[0]
+  const account = selection?.accounts[0]
+  return selection && account ? { account, groupId: selection.groupId } : undefined
 }
 
 async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
@@ -265,25 +268,40 @@ async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: 
 
 function buildHybridScoringRequestBody(
   model: string,
-  context: string,
-  qualityPreference: ApiKeyHybridRoutingConfig['qualityPreference']
+  context: string
 ): Record<string, unknown> {
   return {
     model,
     stream: false,
     temperature: 0,
-    max_tokens: 160,
+    max_tokens: 240,
     messages: [
       {
         role: 'system',
         content: [
-          '你是网关请求分级器，只做成本路由评分。',
-          '必须根据当前请求的真实目标、完整上下文、约束数量、失败代价、所需可靠性、输出可验证性、可逆性和返工成本动态评分。',
-          '不要按固定关键词、固定业务领域或固定任务名称机械分级；同一类任务可能因为上下文、风险、约束和质量要求不同而落入不同等级。',
-          '如果请求明确包含上一次执行失败、验证失败、缺文件、输出协议不合格或修复要求，要把真实返工风险纳入评分；但不能因为出现“修复”等字样机械给高等级。',
-          qualityPreferenceInstruction(qualityPreference),
-          '1 表示最低成本模型也足够，10 表示必须使用可用的最强模型；只输出你对本次请求的相对等级。',
-          '只输出 JSON：{"level":数字,"confidence":0到1,"reason":"一句话"}。'
+          '你是网关请求难度评分器，只负责给当前请求打一个 1 到 10 的绝对难度等级，用于后续成本路由。',
+          '你只评估本次请求本身的难度、质量风险和返工成本，评分必须是客观判断。',
+          '不要考虑任何模型名称、模型价格、供应商、用户配置的档位范围或最终会路由到哪个模型。',
+          '不要考虑省钱偏好、质量偏好或任何用户路由策略；这些只属于路由层，不属于难度评分。',
+          '不要假设 1 到 10 会被如何分组；档位范围由用户另行配置，与你无关。',
+          '不要按固定关键词、业务领域、技术栈、文件名、任务名称或题型机械分级；同一类请求可能因为上下文、风险、约束和质量要求不同而得到完全不同的等级。',
+          '评分尺度：1 表示极低难度，目标明确、上下文很少、影响局部、几乎无依赖、失败容易发现且容易修正。',
+          '评分尺度：5 表示中等难度，有多个约束或一定上下文，需要结构化处理、保持局部一致性，失败会带来一定返工。',
+          '评分尺度：10 表示最高难度，上下文复杂、多模块或多轮依赖强，需要高可靠推理或最终质量把关，失败代价很高。',
+          '不要为了覆盖完整空间而强行拉高或拉低；但当请求风险明显不同，应敢于使用更高或更低等级。',
+          '评分时综合判断：目标明确度、上下文跨度、依赖范围、约束数量、约束相互影响、跨文件或跨步骤一致性、严格输出格式、规划或架构判断、复杂推理、风险权衡、失败可发现性、可回滚性和是否会污染后续步骤。',
+          '如果上下文显示被截断、信息缺失或关键依赖不可见，应把不确定性和潜在返工风险计入评分。',
+          '上下文少只代表上下文处理成本低，不等于请求本身一定低难度；如果本次请求需要多步精确推理、优化选择、证明、组合约束、边界条件处理或严格正确性，应按真实推理难度提高等级。',
+          '可验证性只降低发现错误的成本，不等于降低完成难度；如果错误会导致结果不可用、需要重新生成或污染后续调用，仍应计入返工成本。',
+          '等级不是固定题型或固定范围映射；只能根据当前请求实际暴露的信息动态判断。直接作答、局部执行、状态变化、候选权衡、系统化比较、性能要求、质量要求、跨上下文一致性和失败代价都只是影响因素，不是硬编码规则。',
+          '如果请求产物会被后续系统、测试、用户流程、业务决策或其他调用直接使用，要把可运行性、边界条件、异常路径、性能约束、输入不变性、协议语义、可维护性和后续修复成本纳入整体判断；只有当失败会影响后续流程、造成错误传播、需要较大返工或难以局部修复时，才显著提高等级。',
+          '如果请求明确包含上一次失败、验收失败、缺文件、输出协议不合格或修复要求，要把真实返工风险纳入评分；但不能因为出现“修复”等字样机械给高等级。',
+          '如果已有清晰计划且本次只是低风险局部执行，可以降低等级；但如果本次执行本身仍有复杂推理、严格质量要求或高返工风险，不应仅因已有计划而降级。',
+          '如果是累计接入、修复失败、跨文件一致性、最终验收或高返工成本，应提高等级。',
+          '只输出你对本次请求的绝对难度等级。',
+          'level 必须是 1 到 10 的整数；confidence 表示你对本次评分的把握；reason 必须说明本次请求的具体依据，不要写泛泛的任务类别。',
+          'factors 必须是 1 到 5 个短标签，只写本次评分最关键的因素，例如上下文跨度、约束耦合、严格格式、多步推理、性能要求、后续污染、返工成本、最终验收等；不要写模型名或价格。',
+          '只输出 JSON：{"level":数字,"confidence":0到1,"reason":"一句话","factors":["短标签"]}。'
         ].join('\n')
       },
       {
@@ -317,16 +335,6 @@ function createHybridScoringGatewayRequest(body: Record<string, unknown>): Reque
       return headers[name.toLowerCase()]
     }
   } as unknown as Request
-}
-
-function qualityPreferenceInstruction(preference: ApiKeyHybridRoutingConfig['qualityPreference']): string {
-  if (preference === 'cost_first') {
-    return '当前 API Key 偏好省钱：当失败风险、返工成本和质量不确定性都较低时，可以更积极选择较低等级；仍必须按本次真实上下文动态判断。'
-  }
-  if (preference === 'quality_first') {
-    return '当前 API Key 偏好质量：当请求存在明显不确定性、隐性依赖或失败后返工成本较高时，应更保守地提高等级；仍必须按本次真实上下文动态判断。'
-  }
-  return '当前 API Key 偏好均衡：在成本和完成质量之间保持中性判断，按本次真实上下文动态给出等级。'
 }
 
 function buildHybridScoringContext(req: Request, body: Record<string, unknown> | undefined): string {
@@ -503,6 +511,7 @@ function rememberHybridScoringCacheResult(
   hybridScoringCache.set(key, {
     level: result.level,
     confidence: result.confidence,
+    factors: result.factors,
     reason: result.reason
   }, { ttlMs })
 }
@@ -527,7 +536,7 @@ async function readScoringResponseBody(body: AsyncIterable<Uint8Array> | null): 
   return Buffer.concat(chunks)
 }
 
-function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; reason?: string } {
+function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {
   const response = JSON.parse(body.toString('utf8')) as {
     choices?: Array<{ message?: { content?: unknown } }>
   }
@@ -550,8 +559,18 @@ function parseHybridScoringResponse(body: Buffer): { level: number; confidence?:
   return {
     level,
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : undefined,
+    factors: parseHybridScoringFactors(parsed.factors),
     reason: typeof parsed.reason === 'string' ? parsed.reason : undefined
   }
+}
+
+function parseHybridScoringFactors(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const factors = value
+    .map((item) => typeof item === 'string' ? item.trim() : '')
+    .filter(Boolean)
+    .map((item) => item.slice(0, 40))
+  return factors.length ? [...new Set(factors)].slice(0, 5) : undefined
 }
 
 function extractJsonObjectText(text: string): string | undefined {

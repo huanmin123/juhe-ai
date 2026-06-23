@@ -3,10 +3,11 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySecret, findApiKeySummary, listApiKeysPage, refreshApiKeySecret, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
-import { getRequestAccessScope } from '../auth/request-context.js'
+import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySecret, findApiKeySummary, listApiKeysPage, listProviders, refreshApiKeySecret, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
+import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from './api-key-availability-schedule.schema.js'
 import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
@@ -26,16 +27,16 @@ const apiKeyMutationSchema = z.object({
   routeMode: z.enum(['normal', 'hybrid']).optional(),
   groupRouteStrategy: z.string().optional().refine((value) => value === undefined || value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin', '分组路由策略无效'),
   hybridRoutingConfig: z.object({
-    scoringGroupId: z.string().trim().min(1, '评分分组不能为空'),
+    scoringGroupId: z.string().trim().optional(),
     scoringModel: z.string().trim().min(1, '评分模型不能为空'),
     scoringContextMode: z.literal('full_request').optional(),
     qualityPreference: z.enum(['cost_first', 'balanced', 'quality_first']).optional(),
     scoringTimeoutMs: z.number().int().min(1000).max(60000).optional(),
     failureDefaultLevel: z.number().int().min(1).max(10).optional(),
     scoringCacheEnabled: z.boolean().optional(),
-    scoringCacheTtlSeconds: z.number().int().min(0).max(3600).optional(),
+    scoringCacheTtlSeconds: z.number().int().min(1).max(3600).optional(),
     cacheAffinityEnabled: z.boolean().optional(),
-    affinityTtlSeconds: z.number().int().min(0).max(86400).optional(),
+    affinityTtlSeconds: z.number().int().min(1).max(86400).optional(),
     switchMinLevelDelta: z.number().int().min(0).max(9).optional(),
     downgradeConsecutiveLowCount: z.number().int().min(1).max(20).optional(),
     levelRoutes: z.array(z.object({
@@ -151,6 +152,59 @@ function apiKeyStatusQueryValue(value: unknown): ApiKeyListOptions['status'] {
   return text === 'active' || text === 'disabled' || text === 'all' ? text : undefined
 }
 
+function validateHybridRoutingCatalogModels(value: unknown, access: RequestAccessScope | undefined): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const config = value as Record<string, unknown>
+  const catalogModels = availableHybridRoutingModelSet(access)
+  const scoringModelMessage = validateCatalogModel(config.scoringModel, catalogModels, '评分模型')
+  if (scoringModelMessage) return scoringModelMessage
+
+  const qualityInspection = config.qualityInspection
+  if (qualityInspection && typeof qualityInspection === 'object' && !Array.isArray(qualityInspection)) {
+    const qualityConfig = qualityInspection as Record<string, unknown>
+    if (qualityConfig.enabled !== false) {
+      const qualityScoringModel = typeof qualityConfig.scoringModel === 'string' && qualityConfig.scoringModel.trim()
+        ? qualityConfig.scoringModel
+        : config.scoringModel
+      const qualityModelMessage = validateCatalogModel(qualityScoringModel, catalogModels, '质量评分模型')
+      if (qualityModelMessage) return qualityModelMessage
+    }
+  }
+
+  if (Array.isArray(config.levelRoutes)) {
+    for (let index = 0; index < config.levelRoutes.length; index += 1) {
+      const route = config.levelRoutes[index]
+      if (!route || typeof route !== 'object' || Array.isArray(route)) continue
+      const record = route as Record<string, unknown>
+      if (record.enabled === false) continue
+      const routeMessage = validateCatalogModel(record.targetModel, catalogModels, `第 ${index + 1} 个等级区间目标模型`)
+      if (routeMessage) return routeMessage
+    }
+  }
+  return undefined
+}
+
+function validateCatalogModel(value: unknown, catalogModels: Set<string>, label: string): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const model = value.trim()
+  return catalogModels.has(model.toLowerCase()) ? undefined : `${label}不存在于模型目录：${model}`
+}
+
+function availableHybridRoutingModelSet(access: RequestAccessScope | undefined): Set<string> {
+  const context = getRequestAuthContext()
+  const systemAccountId = access?.systemAccountFilterId?.trim() || access?.systemAccountId || context?.systemAccountId
+  const models = listProviders()
+    .filter((provider) => provider.enabled)
+    .flatMap((provider) => listProviderModelCatalog({
+      providerCode: provider.code,
+      systemAccountId,
+      includeUnpriced: true
+    }))
+    .map((item) => item.model.trim().toLowerCase())
+    .filter(Boolean)
+  return new Set(models)
+}
+
 apiKeysRouter.post('/', mutationGuard({
   operationKey: 'api_keys.create',
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
@@ -168,6 +222,11 @@ apiKeysRouter.post('/', mutationGuard({
   const parsed = apiKeyCreateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
+    return
+  }
+  const modelValidationMessage = validateHybridRoutingCatalogModels(parsed.data.hybridRoutingConfig, requestAccess)
+  if (modelValidationMessage) {
+    res.status(400).json(badRequest(modelValidationMessage))
     return
   }
   try {
@@ -218,6 +277,11 @@ apiKeysRouter.patch('/:id', (req, res) => {
   const parsed = apiKeyUpdateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
+    return
+  }
+  const modelValidationMessage = validateHybridRoutingCatalogModels(parsed.data.hybridRoutingConfig, requestAccess)
+  if (modelValidationMessage) {
+    res.status(400).json(badRequest(modelValidationMessage))
     return
   }
   try {

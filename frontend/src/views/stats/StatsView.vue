@@ -131,7 +131,7 @@
     <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24">
         <StatsChartCard
-          :title="`进程内存占用趋势（${currentWindowLabel}）`"
+          :title="`进程 RSS 峰值趋势（${currentWindowLabel}）`"
           :loading="systemInitialLoading"
           :has-data="hasProcessMemoryTrend"
           :empty-description="processMemoryTrendEmptyDescription"

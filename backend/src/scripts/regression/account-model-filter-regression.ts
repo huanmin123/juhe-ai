@@ -3,20 +3,27 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
+import type { Request, Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  OPENAI_COMPATIBLE_PROVIDER_CODE
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
+  OPENAI_PROTOCOL_CODE,
+  OPENAI_PROTOCOL_VERSION
 } from '../../domain/provider-protocol.js'
 import {
   filterGatewayAccountsByRequestedModel,
   gatewayModelFilterFailureMessage
 } from '../../modules/gateway/dispatch/model-filter.js'
+import { filterOpenAIGatewayRequestCandidateAccounts } from '../../modules/gateway/dispatch/candidate-filter.js'
 import { logger } from '../../shared/logger.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import type { AccountModelMapping } from '../../domain/types.js'
+import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
+import type { OpenAIGatewayClientStrategyContext } from '../../modules/gateway/client-profiles/strategy.js'
 
 function account(id: string, supportedModels?: string[], modelMappings?: AccountModelMapping[]): UpstreamAccount {
   return {
@@ -26,6 +33,11 @@ function account(id: string, supportedModels?: string[], modelMappings?: Account
     modelMappings,
     type: 'api_key',
     status: 'active',
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
+    clientCompatibility: 'openai_standard',
     apiKey: 'sk-model-filter',
     baseUrl: 'https://api.openai.com/v1',
     credentials: {},
@@ -58,9 +70,24 @@ const mappedToUnsupportedUpstream = account('mapped-to-unsupported-upstream', ['
 const matched = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted, gpt54Only], 'gpt-5.5')
 assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only', 'unrestricted'])
 assert.equal(matched.skippedCount, 1)
+assert.equal(matched.unrestrictedAccountCount, 1)
 assert.equal(matched.directMatchedCount, 1)
 assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
+
+const prioritized = filterGatewayAccountsByRequestedModel([unrestricted, mappedByUpstream, gpt55Only], 'gpt-5.5')
+assert.deepEqual(
+  prioritized.accounts.map((item) => item.id),
+  ['gpt55-only', 'unrestricted'],
+  '模型过滤应只保留请求模型直接命中的限制账户，再保留不限制模型账户'
+)
+assert.equal(prioritized.skippedCount, 1)
+assert.equal(prioritized.directMatchedCount, 1)
+assert.equal(prioritized.mappingMatchedCount, 0)
+assert.equal(prioritized.unrestrictedAccountCount, 1)
+assert.equal(prioritized.modelPriority.rankByAccountId.get('gpt55-only'), 0)
+assert.equal(prioritized.modelPriority.rankByAccountId.get('mapped-by-upstream'), 3)
+assert.equal(prioritized.modelPriority.rankByAccountId.get('unrestricted'), 2)
 
 const mapped = filterGatewayAccountsByRequestedModel([
   mappedByUpstream,
@@ -68,11 +95,11 @@ const mapped = filterGatewayAccountsByRequestedModel([
   mappedToUnsupportedUpstream,
   gpt54Only
 ], 'gpt-5.5')
-assert.deepEqual(mapped.accounts.map((item) => item.id), ['mapped-by-upstream'])
-assert.equal(mapped.skippedCount, 3)
+assert.deepEqual(mapped.accounts.map((item) => item.id), [])
+assert.equal(mapped.skippedCount, 4)
 assert.equal(mapped.directMatchedCount, 0)
-assert.equal(mapped.mappingMatchedCount, 1)
-assert.equal(mapped.reason, undefined)
+assert.equal(mapped.mappingMatchedCount, 0)
+assert.equal(mapped.reason, 'unsupported_model')
 
 const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted], undefined)
 assert.deepEqual(missingModel.accounts.map((item) => item.id), ['unrestricted'])
@@ -91,6 +118,7 @@ assert.deepEqual(unsupported.accounts, [])
 assert.equal(unsupported.reason, 'unsupported_model')
 assert.match(gatewayModelFilterFailureMessage(unsupported), /claude-opus-4-6/)
 
+await assertCandidateFilterLoadsModelAwareCandidates()
 await assertStorageRoundTrip()
 
 console.log('account model filter regression passed')
@@ -202,6 +230,43 @@ async function assertStorageRoundTrip(): Promise<void> {
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+async function assertCandidateFilterLoadsModelAwareCandidates(): Promise<void> {
+  let loaderCalls = 0
+  const result = await filterOpenAIGatewayRequestCandidateAccounts({
+    req: {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      originalUrl: '/v1/chat/completions',
+      body: { model: 'gpt-5.5' }
+    } as Request,
+    res: {} as Response,
+    auditCapture: {
+      addGatewayMetadata() {}
+    } as unknown as AuditCaptureContext,
+    usageContext: {} as never,
+    startedAt: Date.now(),
+    rawCandidateAccounts: [gpt54Only],
+    clientStrategy: {
+      requestClientCompatibility: 'openai_standard'
+    } as OpenAIGatewayClientStrategyContext,
+    systemAccountId: 'sys_model_filter',
+    groupId: 'group_model_filter',
+    endpoint: 'POST /v1/chat/completions',
+    attemptFallback: async () => ({ attempted: false }),
+    loadModelAwareCandidateAccounts: async (requestedModel) => {
+      loaderCalls += 1
+      assert.equal(requestedModel, 'gpt-5.5')
+      return [gpt55Only, gpt54Only]
+    }
+  })
+
+  assert.equal(loaderCalls, 1, '候选窗口内只有不匹配限制账号时，应按请求模型补读模型感知候选')
+  assert.equal(result.outcome, 'accounts')
+  if (result.outcome === 'accounts') {
+    assert.deepEqual(result.accounts.map((item) => item.id), ['gpt55-only'])
   }
 }
 

@@ -109,11 +109,18 @@ try {
   for (let index = 0; index < 5000; index += 1) {
     runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(index), { sourceKey: `worker-local-rtlog-${index}` })
   }
-  assert.equal(runtimeLogIndexQueue.getRuntimeLogIndexRuntime().queueLength, 5000, '运行日志索引 worker 本地队列应达到硬上限')
-  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(5000), { sourceKey: 'worker-local-rtlog-overflow' })
+  const sampledRuntimeLog = runtimeLogIndexQueue.getRuntimeLogIndexRuntime()
+  assert.equal(sampledRuntimeLog.queueLength, 4000, '低优先级运行日志索引队列应在高水位开始采样保护')
+  assert.equal(sampledRuntimeLog.droppedSampledCount, 1000, '低优先级运行日志索引高水位后应记录采样丢弃')
+  runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
+  for (let index = 0; index < 5000; index += 1) {
+    runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(index, 40), { sourceKey: `worker-local-rtlog-warn-${index}` })
+  }
+  assert.equal(runtimeLogIndexQueue.getRuntimeLogIndexRuntime().queueLength, 5000, '高优先级运行日志索引 worker 本地队列应达到硬上限')
+  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(5000, 40), { sourceKey: 'worker-local-rtlog-overflow' })
   const runtimeLogAfterOverflow = runtimeLogIndexQueue.getRuntimeLogIndexRuntime()
-  assert.equal(runtimeLogAfterOverflow.queueLength, 5000, '运行日志索引 worker 本地队列满后不应继续增长')
-  assert.equal(runtimeLogAfterOverflow.droppedOverflowCount, 1, '运行日志索引 worker 本地队列满后应记录溢出丢弃')
+  assert.equal(runtimeLogAfterOverflow.queueLength, 5000, '高优先级运行日志索引 worker 本地队列满后不应继续增长')
+  assert.equal(runtimeLogAfterOverflow.droppedOverflowCount, 1, '高优先级运行日志索引 worker 本地队列满后应记录溢出丢弃')
   runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
 
   console.log('worker 本地队列回归通过：使用记录、操作日志、ingest 数据维护、审计、公开接口日志和运行日志索引队列均有硬上限，非 owner worker 不能本地维护写库')
@@ -219,10 +226,10 @@ function buildPublicApiLog(index: number) {
   }
 }
 
-function runtimeLogLine(index: number): string {
+function runtimeLogLine(index: number, level = 30): string {
   return JSON.stringify({
     time: '2000-01-01T00:00:00.000Z',
-    level: 30,
+    level,
     event: 'worker_local_queue_limit',
     msg: `worker 本地队列上限回归 ${index}`
   })

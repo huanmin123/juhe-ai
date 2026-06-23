@@ -2,20 +2,20 @@
 
 ## 范围
 
-本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key 与 GLM Coding Plan Key 两套 OpenAI Chat Completions 档案；GLM Coding Plan Key 可通过账户客户端兼容显式启用本地 Codex Responses 到 Chat Completions 桥接。运行事实以本文和当前实现为准。
+本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；其中 GLM Coding Plan Key 可通过账户客户端兼容显式启用本地 Codex Responses 到 Chat Completions 桥接，而 Anthropic v1 档案面向 Claude Code / Anthropic 客户端画像。运行事实以本文和当前实现为准。
 
 官方资料显示，智谱当前面向本项目最相关的接入形态有三类：
 
 - 通用 GLM API：支持 OpenAI API 兼容调用，OpenAI SDK 只需要替换 API Key 和 `base_url`，默认地址为 `https://open.bigmodel.cn/api/paas/v4/`。参考 [OpenAI API 兼容](https://docs.bigmodel.cn/cn/guide/develop/openai/introduction) 和 [HTTP API](https://docs.bigmodel.cn/cn/guide/develop/http/introduction)。
 - GLM Coding Plan 的 OpenAI Chat Completions 端点：官方文档明确给出 `OpenAI Chat Completions` 协议端点 `https://open.bigmodel.cn/api/coding/paas/v4`，用于支持 OpenAI Compatible 的编程工具。参考 [GLM Coding Plan 接入工具](https://docs.bigmodel.cn/cn/coding-plan/tool/others)。
-- GLM Coding Plan 的 Anthropic Messages 端点：官方文档给出 `Anthropic Messages` 协议端点 `https://open.bigmodel.cn/api/anthropic`。该端点不是 OpenAI v1，如果接入必须新增 Anthropic 协议档案和 adapter，不混入 OpenAI v1 档案。
+- GLM Coding Plan 的 Anthropic Messages 端点：官方文档给出 `Anthropic Messages` 协议端点 `https://open.bigmodel.cn/api/anthropic`。该端点已落地为独立 Anthropic v1 协议档案，不混入 OpenAI v1 档案。
 
 结论：
 
-- 智谱支持 OpenAI 兼容协议，但当前可核验的上游直连接口仍限定为 OpenAI Chat Completions；没有把 GLM 账户声明为原生 OpenAI Responses 上游。
+- 智谱支持 OpenAI 兼容协议；当前可核验的上游直连接口包含 OpenAI Chat Completions 和 Anthropic v1 Messages，但 OpenAI Responses 仍不作为 GLM 原生上游能力声明。
 - Codex 客户端必须使用 Responses 协议时，当前只在 GLM Coding Plan 档案上启用本地 `Codex Responses -> Chat Completions` 桥接；通用 GLM API 不启用该桥接。
-- 通用 GLM API 和 GLM Coding Plan 都用 API Key 鉴权，不是 OAuth；创建账户时应像 GPT 一样先区分接入类型，但底层 `accounts.type` 仍保存为 `api_key`。
-- 通用 GLM API 和 GLM Coding Plan 必须使用不同 `provider_protocol_profile_id`，不能只靠同一个 `glm` 供应商和不同 `base_url` 混用，否则分组、额度、模型目录、账号测试和排障都会混在一起。
+- 通用 GLM API、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 都用 API Key 鉴权，不是 OAuth；创建账户时应像 GPT 一样先区分接入类型，但底层 `accounts.type` 仍保存为 `api_key`。
+- 通用 GLM API、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 必须使用不同 `provider_protocol_profile_id`，不能只靠同一个 `glm` 供应商和不同 `base_url` 混用，否则分组、额度、模型目录、账号测试和排障都会混在一起。
 
 ## 供应商与协议档案
 
@@ -33,27 +33,29 @@ type ProviderCode = 'glm'
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `profile_glm_general_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/paas/v4/` | 通用 GLM API Key | 固定 `openai_standard` | `chat_json`、`chat_sse` | 不启用 |
 | `profile_glm_coding_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/coding/paas/v4` | GLM Coding Plan Key | 可选 `openai_standard` / `codex_responses` | `chat_json`、`chat_sse` | 仅 `codex_responses` 启用 Codex Responses -> Chat SSE |
+| `profile_glm_coding_anthropic_v1` | `glm` | `anthropic/v1` | `https://open.bigmodel.cn/api/anthropic` | GLM Coding Claude Code Key | Anthropic API / Claude Code | `messages_json`、`messages_sse` | 不启用 |
 
-两套档案的账户真实能力都只声明 `chat_completions` 端点族。不要默认写入 `responses_json` 或 `responses_sse`，除非官方后续明确提供 OpenAI Responses 兼容接口并完成真实验证。GLM Coding 的 Codex bridge 是本地协议转换能力，调度时要求账户支持 `chat_sse`，不把账号永久伪装成原生 Responses 上游。
+OpenAI Chat 两套档案的账户真实能力都只声明 `chat_completions` 端点族。Anthropic v1 档案只声明 Messages / Models，不默认写入 `message_token_counting`。不要默认写入 `responses_json` 或 `responses_sse`，除非官方后续明确提供 OpenAI Responses 兼容接口并完成真实验证。GLM Coding 的 Codex bridge 是本地协议转换能力，调度时要求账户支持 `chat_sse`，不把账号永久伪装成原生 Responses 上游。
 
 存储实现必须允许同一供应商在同一协议版本下存在多条协议档案。当前如果 `provider_protocol_profiles` 仍用 `UNIQUE(provider_code, protocol_code, protocol_version)` 作为唯一约束，GLM 两条 `glm + openai/v1` 档案会互相冲突；落地前应改为以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 后按 `provider_code + connection_type` 做业务唯一约束。分组名称唯一、默认分组唯一和账户加入分组校验继续按 `provider_protocol_profile_id` 维度执行。
 
-后续如果接入 `https://open.bigmodel.cn/api/anthropic`：
+`https://open.bigmodel.cn/api/anthropic` 已接入为独立 Anthropic v1 档案：
 
-- 必须新增 `protocolCode=anthropic`、对应协议版本、`messages` 端点族和 Anthropic adapter。
-- 不能把 Anthropic Messages 请求塞进 OpenAI v1 Chat Completions 档案。
-- 不能通过网关临时把 OpenAI Chat Completions 自动翻译为 Anthropic Messages，除非单独立项、定义字段映射、流式事件、错误语义和验证矩阵。
+- 已新增 `protocolCode=anthropic`、对应协议版本、`messages` 端点族和 Anthropic adapter。
+- Anthropic Messages 请求不再塞进 OpenAI v1 Chat Completions 档案。
+- 网关仍不把 OpenAI Chat Completions 自动翻译为 Anthropic Messages；两个档案是并列协议入口，而不是互相隐式翻译。
 
 ## 创建账户类型
 
 前端创建流程仍按“供应商 -> 接入类型 -> 凭据与调度配置”展开。
 
-选择 `智谱 GLM` 后展示两个接入类型：
+选择 `智谱 GLM` 后展示三个接入类型：
 
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 客户端兼容 | 凭据字段 | 默认测试模型 |
 | --- | --- | --- | --- | --- | --- |
-| 通用 GLM API Key | `api_key` | `profile_glm_general_openai_v1` | 固定 OpenAI 标准 | `api_key`、`base_url` | `glm-5.2-free` |
+| 通用 GLM API Key | `api_key` | `profile_glm_general_openai_v1` | 固定 OpenAI 标准 | `api_key`、`base_url` | `glm-5.2` |
 | GLM Coding Plan Key | `api_key` | `profile_glm_coding_openai_v1` | OpenAI 标准 / Codex Responses 可选 | `api_key`、`base_url` | `glm-5.2` |
+| GLM Coding Claude Code Key | `api_key` | `profile_glm_coding_anthropic_v1` | Anthropic API / Claude Code | `api_key`、`base_url` | `glm-5.2` |
 
 这里的“接入类型”是产品表单概念，不是新增 OAuth 类型。后端保存时仍加密保存 `credentials.api_key`，并通过 `provider_protocol_profile_id` 区分通用 GLM API 与 GLM Coding Plan。
 
@@ -62,11 +64,13 @@ type ProviderCode = 'glm'
 - 新建 GLM 账户默认写入 `pending_test`，测试通过后才允许正常调度。
 - `base_url` 默认按所选接入类型填充，允许用户修改为同协议的代理地址或专属部署地址，但必须继续通过 SSRF 防护和 OpenAI-compatible base URL 校验。
 - `credentials.supported_endpoint_modes` 省略时，GLM 两种接入类型都默认 `['chat_json', 'chat_sse']`。
-- `client_compatibility` 是账户级显式开关：通用 GLM 固定 `openai_standard`；GLM Coding 默认 `openai_standard`，只有选择 `codex_responses` 才承接 Codex bridge。
+- `profile_glm_coding_anthropic_v1` 的 `credentials.supported_endpoint_modes` 省略时默认 `['messages_json', 'messages_sse']`，不默认启用 `message_token_counting`。
+- `client_compatibility` 是账户级显式开关：通用 GLM 固定 `openai_standard`；GLM Coding OpenAI 档案默认 `openai_standard`，只有选择 `codex_responses` 才承接 Codex bridge；GLM Coding Anthropic 档案面向 Anthropic API / Claude Code 画像，不使用 `codex_responses`。
 - 管理 API、导入协议和公开外部账号推送应接收 `connectionType = general_api_key | coding_api_key`，由后端统一解析为 `provider_protocol_profile_id`。如果同时提交 `providerProtocolProfileId`，必须和 `connectionType` 指向同一档案，否则拒绝。
 - 已保存 GLM 账户不建议在编辑时切换通用 / Coding 接入类型；如果后续允许切换，必须要求账户未绑定分组、无授权实例或完成独立清理计划，不能在已有调度和统计归属上原地改档案。
 - GLM 账户不显示 GPT OAuth 字段，不显示 Refresh Token、Access Token 或 ChatGPT Account ID。
-- 通用 GLM 账户只具备 OpenAI 标准 Chat 请求能力。GLM Coding 账户只有在客户端兼容选择 `codex_responses` 时，才通过本地 Codex bridge 承接 Codex Responses 请求；选择 `openai_standard` 时明确不支持 Codex。这不是 GPT API Key 的原生 Responses 能力，也不开放完整 Responses API。
+- 通用 GLM 账户只具备 OpenAI 标准 Chat 请求能力。GLM Coding OpenAI 账户只有在客户端兼容选择 `codex_responses` 时，才通过本地 Codex bridge 承接 Codex Responses 请求；选择 `openai_standard` 时明确不支持 Codex。这不是 GPT API Key 的原生 Responses 能力，也不开放完整 Responses API。
+- GLM Coding Anthropic 账户只具备 Anthropic v1 Messages 请求能力，不承接 Codex Responses。
 - Coding Plan Key 与平台其他 API Key 不通用；如果用户把通用 API Key 填到 Coding Plan 档案，可能无法使用 Coding 套餐额度，应通过表单提示和测试结果提示区分。
 
 ## 网关请求边界
@@ -152,10 +156,27 @@ GLM Chat Completions 返回应优先按 OpenAI v1 Chat 语义解析：
 
 GLM 模型目录必须单独维护在 `glm` 供应商下，不要混进 GPT 价格文件。
 
-初始目录建议按两个接入类型区分可见范围：
+当前 GLM Chat 档案目录按官方文本模型维护；视觉、图像、视频、音频模型不混入这两个只声明 Chat Completions 的档案。当前可见文本模型包括，列表顺序同时作为账户测试和模型下拉框的默认优先顺序，按当前官方模型从新到旧维护：
 
-- 通用 GLM API：以智谱开放平台模型文档和价格页为准，优先收录当前官方可调用、可计价的 GLM 文本 / 编码模型。
-- GLM Coding Plan：以 Coding Plan 套餐权益和接入工具文档为准，初始重点覆盖 `glm-5.2`、`glm-5-turbo`、`glm-4.7`、`glm-4.5-air`。官方文档说明调用历史模型 `glm-5.1` / `glm-5` 会自动切换到 `glm-5.2`，本地目录应谨慎处理旧别名，避免把它们误当成独立计价模型。
+- `glm-5.2`
+- `glm-5.1`
+- `glm-5`
+- `glm-5-turbo`
+- `glm-4.7`
+- `glm-4.7-flashx`
+- `glm-4.7-flash`
+- `glm-4.6`
+- `glm-4.5`
+- `glm-4.5-x`
+- `glm-4.5-air`
+- `glm-4.5-airx`
+- `glm-4.5-flash`
+- `glm-4-32b-0414-128k`
+- `glm-4-long`
+- `glm-4-flashx-250414`
+- `glm-4-flash-250414`
+
+`glm-5.2-free` 未出现在本次复核的官方模型和价格页里，代码仅作为历史第三方上游估算项保留，不进入可见模型目录，也不再作为通用 GLM 默认测试模型。
 
 模型目录字段要求：
 
@@ -163,7 +184,7 @@ GLM 模型目录必须单独维护在 `glm` 供应商下，不要混进 GPT 价�
 - `model` 使用智谱官方模型 ID，小写和连字符按官方写法保留。
 - `supportedApiProtocols` 当前填 `chat_completions`。
 - `contextWindowTokens` 以官方模型页或 Coding Plan 工具文档为准；例如 Coding Plan 文档提示 `glm-5.2` 可按 `1000000` 上下文配置，其他模型常见为 `200000`，实际落库前仍需以官方模型页复核。
-- `releaseDate` 用官方发布日期或官方文档可确认的上线日期，不确定时留空，不为了排序编造。
+- `releaseDate` 用官方发布日期或官方文档可确认的上线日期，不确定时留空，不为了排序编造；同一代或日期不确定的模型使用内置目录顺序字段保持下拉框从新到旧。
 - 价格只采信智谱官方价格页或官方模型页；第三方价格库和社区表格只能作为线索。
 
 智谱开源模型，例如 `GLM-4.5`、`GLM-5` 仓库和 Hugging Face / ModelScope 权重，可以作为自托管、vLLM、SGLang 或 Transformers 接入参考，但不等于智谱云 API 的模型 ID、上下文窗口或价格。自托管 GLM 如果通过 OpenAI-compatible vLLM / SGLang 暴露，应作为自定义 OpenAI-compatible 上游或独立自托管供应商处理，不直接套用智谱云价格。
@@ -185,7 +206,7 @@ GLM 账户测试必须复用真实网关链路：
 
 - OpenAI 标准测试路径使用 `/v1/chat/completions`。
 - GLM Coding 账户如果 `client_compatibility = codex_responses`，测试路径使用 `/v1/responses` 进入本地 bridge；下游请求带 Codex turn metadata，上游实际仍是 `/chat/completions`。
-- 默认测试模型按档案读取：通用 GLM API 使用 `glm-5.2-free`，GLM Coding Plan 使用 `glm-5.2`。
+- 默认测试模型按档案读取：通用 GLM API 使用 `glm-5.2`，GLM Coding Plan 使用 `glm-5.2`。
 - OpenAI 标准测试请求不发送 Responses 字段，例如 `input`、`instructions`、`max_output_tokens`、`store` 或 Codex 专属 metadata；Codex bridge 测试只发送最小 Responses SSE 请求。
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。
 - Coding Plan 测试会消耗套餐资源，应保持最小 prompt、低输出上限和明确的用户提示，不做批量额度探测。
@@ -216,7 +237,7 @@ GLM 账户测试必须复用真实网关链路：
 | 授权与分组 | GLM 通用账户只能加入通用 GLM 档案分组，Coding 账户只能加入 Coding 档案分组；授权实例继承来源账户档案和上游凭据事实。 | 授权实例、分组绑定或 API Key 多分组路由如果只校验供应商，会把不同额度体系混在同一号池。 |
 | 前端体验 | 账户创建页、编辑页、批量导入说明、模型选择、测试连接、错误提示、状态标签和日志筛选都要显示中文，并明确区分“通用 GLM API Key”和“GLM Coding Plan Key”。 | 用户把 Key 填错档案时，如果前端只显示“API Key”，无法定位是 Key 无效还是接入类型选错。 |
 | Mock 与验证 | Mock AI 回归脚本和真实烟测需要覆盖两套 GLM 档案、Chat JSON/SSE、Codex bridge、错误响应、无 usage 流式、错档案 Key、分组硬边界和统计落库。 | 只测保存账户会漏掉网关调度、协议转换、切号、恢复、usage 和统计链路的集成问题。 |
-| Anthropic 端点 | Coding Plan 的 Anthropic Messages 端点暂不纳入第一版；若要接入，先新增 `profile_glm_coding_anthropic_v1` 和 Anthropic 协议验证矩阵。 | 该端点官方工具文档给出入口，但公开 schema、header、usage 和 stream 细节仍需实测；不能混进 OpenAI Chat 档案。 |
+| Anthropic 端点 | Coding Plan 的 Anthropic Messages 端点已纳入独立 `profile_glm_coding_anthropic_v1`，只启用 Messages JSON/SSE。 | 该端点不能混进 OpenAI Chat 档案；公开 schema、header、usage 和 stream 细节仍需按 mock / 真实上游持续验收。 |
 | 套餐规则 | Coding Plan 官方定位为指定开发工具和产品环境使用；中转暴露给通用业务调用前需要确认使用边界。 | 错把 Coding Plan 当普通 GLM API 池对外共享，可能不符合套餐规则或触发公平使用限制。 |
 
 ## 导入导出协议
@@ -251,13 +272,16 @@ GLM 账户测试必须复用真实网关链路：
 - [x] 新增 `glm` 供应商种子、供应商常量和 profile family。
 - [x] 调整 `provider_protocol_profiles` 唯一约束，允许同一 `glm + openai/v1` 下存在通用和 Coding 两套档案。
 - [x] 新增 `profile_glm_general_openai_v1` 和 `profile_glm_coding_openai_v1`。
-- [x] 新增两个默认 GLM 分组。
+- [x] 新增 `profile_glm_coding_anthropic_v1` 和默认 GLM Coding Claude Code 分组。
+- [x] 新增三个默认 GLM 分组。
 - [x] 新增 GLM provider driver、credential driver、模型价格 / 目录 driver 和前端 provider capability。
-- [x] 前端账户创建在选择 `智谱 GLM` 后展示“通用 GLM API Key”和“GLM Coding Plan Key”。
+- [x] 前端账户创建在选择 `智谱 GLM` 后展示“通用 GLM API Key”、“GLM Coding Plan Key”和“GLM Coding Claude Code Key”。
 - [x] 后端账户创建、编辑、导入、导出和公开推送接口按 `connectionType` 或等价字段解析 GLM 协议档案，并保证导出导入 round-trip。
 - [x] GLM 默认 `supported_endpoint_modes` 只启用 Chat JSON/SSE。
+- [x] GLM Coding Anthropic 默认 `supported_endpoint_modes` 只启用 Messages JSON/SSE。
 - [x] GLM Coding 的 Codex bridge 由账户 `client_compatibility=codex_responses` 显式启用；选择 OpenAI 标准时明确不承接 Codex。
 - [x] GLM 上游 URL 构造专门覆盖 `/api/paas/v4` 和 `/api/coding/paas/v4`，不会自动追加 `/v1`。
+- [x] GLM Anthropic v1 档案复用共享 Anthropic adapter，但保持独立供应商 / 分组 / 统计语义。
 - [x] 抽出通用 `Codex Responses -> Chat Completions` bridge，并在 GLM Coding 档案上启用。
 - [x] GLM Coding Codex bridge 覆盖 Responses 请求转 Chat 请求、Chat SSE 转 Responses SSE、function tool 透传、Chat tool_calls 转 Codex function_call item 和 `reasoning_content` 不泄露到普通文本。
 - [x] 账号测试、手动诊断、健康检测和冷却复测默认走 Chat Completions。
@@ -284,7 +308,7 @@ GLM 账户测试必须复用真实网关链路：
 - 创建 GLM Coding Plan Key 账户，保存后落到 `profile_glm_coding_openai_v1`。
 - 两类账户默认 `supported_endpoint_modes` 均为 `chat_json/chat_sse`；通用 GLM 不参与 `/v1/responses` 调度，GLM Coding 只有在账户客户端兼容选择 Codex Responses 时才通过 bridge 承接流式 Responses。
 - 两类账户分别绑定同档案分组，跨档案绑定被拒绝。
-- OpenAI 标准账户测试使用 `/v1/chat/completions`；GLM Coding Codex 账户测试使用 `/v1/responses` 进入 bridge；通用 GLM API 默认模型为 `glm-5.2-free`，GLM Coding Plan 默认模型为 `glm-5.2`。
+- OpenAI 标准账户测试使用 `/v1/chat/completions`；GLM Coding Codex 账户测试使用 `/v1/responses` 进入 bridge；通用 GLM API 默认模型为 `glm-5.2`，GLM Coding Plan 默认模型为 `glm-5.2`。
 - 网关请求通用 GLM API 时命中 `https://open.bigmodel.cn/api/paas/v4/chat/completions`。
 - 网关请求 GLM Coding Plan 时命中 `https://open.bigmodel.cn/api/coding/paas/v4/chat/completions`。
 - Codex 客户端请求 GLM Coding `/v1/responses` 时，本地改写到 GLM Coding `/chat/completions`，下游返回 Codex 可消费的 Responses SSE。

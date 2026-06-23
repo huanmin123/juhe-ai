@@ -44,7 +44,9 @@ export async function selectGatewayModelTargetGroup(input: {
     if (!groupAccess) {
       continue
     }
-    const accounts = await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.apiKeyRecord.system_account_id)
+    const accounts = await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.apiKeyRecord.system_account_id, {
+      requestedModel: input.targetModel
+    })
     if (!accounts.length) {
       continue
     }

@@ -8,7 +8,8 @@ import {
   persistAuditPayloadBlob,
   prepareAuditPayloadBlobStatements,
   writeAuditPayloadBlobFileForPlan,
-  type AuditPayloadBlobPersistencePlan
+  type AuditPayloadBlobPersistencePlan,
+  type PreparedAuditPayloadBlob
 } from './audit-log-payload-blobs.js'
 import {
   planAuditPayloadBlobPersistenceForBatch,
@@ -22,6 +23,25 @@ import type {
   AuditLogInput
 } from './audit-log-types.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+
+const auditPayloadBlobWriteConcurrency = 4
+
+interface PreparedAuditLogForWrite {
+  input: AuditLogInput
+  id: string
+  createdAt: string
+  attemptIds: Map<string, string>
+  preparedAttempts: Array<AuditLogAttemptInput & { id: string }>
+  payloads: PreparedAuditPayload[]
+  rawPayloadBytes: number
+  compressedPayloadBytes: number
+  compressionSavedBytes: number
+}
+
+interface AuditPayloadBlobWriteTask {
+  blob: PreparedAuditPayloadBlob | undefined
+  plan: AuditPayloadBlobPersistencePlan | undefined
+}
 
 export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
 export {
@@ -232,17 +252,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
   const database = getDatasetDatabase()
   const existingLogIds = loadExistingAuditLogIds(database, inputs)
   const seenLogIds = new Set<string>()
-  const preparedLogs: Array<{
-    input: AuditLogInput
-    id: string
-    createdAt: string
-    attemptIds: Map<string, string>
-    preparedAttempts: Array<AuditLogAttemptInput & { id: string }>
-    payloads: PreparedAuditPayload[]
-    rawPayloadBytes: number
-    compressedPayloadBytes: number
-    compressionSavedBytes: number
-  }> = []
+  const preparedLogs: PreparedAuditLogForWrite[] = []
 
   for (const input of inputs) {
     const id = input.id ?? newId('audit')
@@ -286,18 +296,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
 
   const plannedStorageKeys = new Set<string>()
   try {
-    for (const prepared of preparedLogs) {
-      for (const payload of prepared.payloads) {
-        await writeAuditPayloadBlobFileForPlan(payload.headersBlob, payload.headersBlobPlan)
-        if (payload.headersBlobPlan?.shouldWriteFile && payload.headersBlobPlan.storageKey) {
-          plannedStorageKeys.add(payload.headersBlobPlan.storageKey)
-        }
-        await writeAuditPayloadBlobFileForPlan(payload.bodyBlob, payload.bodyBlobPlan)
-        if (payload.bodyBlobPlan?.shouldWriteFile && payload.bodyBlobPlan.storageKey) {
-          plannedStorageKeys.add(payload.bodyBlobPlan.storageKey)
-        }
-      }
-    }
+    await writeAuditPayloadBlobFilesForPreparedLogs(preparedLogs, plannedStorageKeys)
   } catch (error) {
     await cleanupCreatedAuditBlobFilesAsync([...plannedStorageKeys])
     throw error
@@ -440,6 +439,41 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
     }
     await cleanupCreatedAuditBlobFilesAsync(createdStorageKeys)
     throw error
+  }
+}
+
+async function writeAuditPayloadBlobFilesForPreparedLogs(
+  preparedLogs: PreparedAuditLogForWrite[],
+  plannedStorageKeys: Set<string>
+): Promise<void> {
+  const tasks: AuditPayloadBlobWriteTask[] = []
+  for (const prepared of preparedLogs) {
+    for (const payload of prepared.payloads) {
+      tasks.push({ blob: payload.headersBlob, plan: payload.headersBlobPlan })
+      tasks.push({ blob: payload.bodyBlob, plan: payload.bodyBlobPlan })
+    }
+  }
+  let cursor = 0
+  let firstError: unknown
+  const workerCount = Math.min(auditPayloadBlobWriteConcurrency, Math.max(1, tasks.length))
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < tasks.length) {
+      const task = tasks[cursor]
+      cursor += 1
+      if (!task) continue
+      try {
+        await writeAuditPayloadBlobFileForPlan(task.blob, task.plan)
+        if (task.plan?.shouldWriteFile && task.plan.storageKey) {
+          plannedStorageKeys.add(task.plan.storageKey)
+        }
+      } catch (error) {
+        firstError ??= error
+      }
+    }
+  })
+  await Promise.all(workers)
+  if (firstError) {
+    throw firstError
   }
 }
 

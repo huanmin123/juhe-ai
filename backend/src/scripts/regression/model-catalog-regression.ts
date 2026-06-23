@@ -165,6 +165,72 @@ try {
   assert(deepSeekModels.has('deepseek-v4-pro'), 'DeepSeek 模型目录应包含官方 V4 Pro')
   assert(deepSeekModels.has('deepseek-ai-v4-flash'), 'DeepSeek 模型目录应包含上游 deepseek-ai V4 Flash 别名')
   assert(deepSeekModels.has('deepseek-ai-v4-pro'), 'DeepSeek 模型目录应包含上游 deepseek-ai V4 Pro 别名')
+  if (new Date().toISOString().slice(0, 10) < '2026-07-24') {
+    assert(deepSeekModels.has('deepseek-chat'), 'DeepSeek 模型目录在 deepseek-chat 退役前应包含官方历史兼容名')
+    assert(deepSeekModels.has('deepseek-reasoner'), 'DeepSeek 模型目录在 deepseek-reasoner 退役前应包含官方历史兼容名')
+  }
+  assert.deepEqual(
+    deepSeekCatalog.map((item) => item.model),
+    [
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-ai-v4-flash',
+      'deepseek-ai-v4-pro',
+      ...(new Date().toISOString().slice(0, 10) < '2026-07-24' ? ['deepseek-chat', 'deepseek-reasoner'] : [])
+    ],
+    'DeepSeek 模型目录应按当前官方优先模型到历史兼容名排序'
+  )
+
+  const glmCatalog = catalogService.listProviderModelCatalog({
+    providerCode: 'glm',
+    systemAccountId: 'sys_admin'
+  })
+  const glmModels = new Set(glmCatalog.map((item) => item.model))
+  for (const id of [
+    'glm-5.2',
+    'glm-5.1',
+    'glm-5',
+    'glm-5-turbo',
+    'glm-4.7',
+    'glm-4.7-flashx',
+    'glm-4.7-flash',
+    'glm-4.6',
+    'glm-4.5',
+    'glm-4.5-x',
+    'glm-4.5-air',
+    'glm-4.5-airx',
+    'glm-4.5-flash',
+    'glm-4-32b-0414-128k',
+    'glm-4-long',
+    'glm-4-flashx-250414',
+    'glm-4-flash-250414'
+  ]) {
+    assert(glmModels.has(id), `GLM 模型目录应包含官方文本模型 ${id}`)
+  }
+  assert.equal(glmModels.has('glm-5.2-free'), false, 'GLM 可见模型目录不应包含非官方 glm-5.2-free')
+  assert.deepEqual(
+    glmCatalog.map((item) => item.model),
+    [
+      'glm-5.2',
+      'glm-5.1',
+      'glm-5',
+      'glm-5-turbo',
+      'glm-4.7',
+      'glm-4.7-flashx',
+      'glm-4.7-flash',
+      'glm-4.6',
+      'glm-4.5',
+      'glm-4.5-x',
+      'glm-4.5-air',
+      'glm-4.5-airx',
+      'glm-4.5-flash',
+      'glm-4-32b-0414-128k',
+      'glm-4-long',
+      'glm-4-flashx-250414',
+      'glm-4-flash-250414'
+    ],
+    'GLM 模型目录应按官方当前模型从新到旧排序'
+  )
 
   const managementCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
@@ -201,6 +267,7 @@ try {
     'claude-sonnet-4-6',
     'claude-sonnet-4-6-thinking',
     'claude-haiku-4-5',
+    'claude-sonnet-4-5',
     'claude-opus-4-5'
   ]) {
     assert(anthropicModels.has(id), `Anthropic 模型目录应包含当前有效 Claude / Claude Code 兼容模型 ${id}`)
@@ -245,6 +312,36 @@ try {
   ]) {
     assert.equal(anthropicModels.has(id), false, `${id} 不应进入 Anthropic 模型目录`)
   }
+  assert.deepEqual(
+    anthropicCatalog.map((item) => item.model),
+    [
+      'claude-fable-5',
+      'claude-mythos-5',
+      ...(new Date().toISOString().slice(0, 10) < '2026-06-30' ? ['claude-mythos-preview'] : []),
+      'claude-opus-4-8',
+      'claude-opus-4-7',
+      'claude-opus-4-6',
+      'claude-opus-4-6-thinking',
+      'claude-opus-4-5',
+      'claude-opus-4-5-20251101',
+      ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : []),
+      'claude-sonnet-4-6',
+      'claude-sonnet-4-6-thinking',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-5-20250929',
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'best',
+      'fable',
+      'opus',
+      'opus[1m]',
+      'opusplan',
+      'sonnet',
+      'sonnet[1m]',
+      'haiku'
+    ],
+    'Anthropic 模型目录应按官方当前模型从新到旧排序，Claude Code 别名排在官方模型后'
+  )
 
   const response = catalogService.buildOpenAIModelsResponseFromCatalog(publicCatalog)
   assert.equal(response.object, 'list', '/v1/models 顶层 object 必须是 list')

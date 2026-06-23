@@ -2,6 +2,7 @@ import type { AccountModelMapping } from '../domain/types.js'
 import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import { normalizeAccountModelMappingsInput } from './account-model-mappings.repository.js'
 import { normalizeAccountSupportedModelsInput } from './account-supported-models.repository.js'
+import { listProviders } from './provider.repository.js'
 
 export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
   const models = normalizeAccountSupportedModelsInput(value)
@@ -18,25 +19,51 @@ export function normalizeAccountSupportedModelsForProvider(value: unknown, provi
   return models
 }
 
-export function normalizeAccountModelMappingsForProvider(value: unknown, providerCode: string, systemAccountId: string): AccountModelMapping[] | undefined {
+export function normalizeAccountModelMappingsForProvider(value: unknown, _providerCode: string, systemAccountId: string): AccountModelMapping[] | undefined {
   const mappings = normalizeAccountModelMappingsInput(value)
   if (!mappings?.length) return mappings
 
-  const requestableModels = new Set(listProviderModelCatalog({
-    providerCode,
-    systemAccountId
-  }).map((item) => item.model))
+  const requestableModels = allRequestableProviderModels(systemAccountId)
   const invalidSourceModels = mappings
     .map((mapping) => mapping.sourceModel)
     .filter((model) => !requestableModels.has(model))
   if (invalidSourceModels.length > 0) {
-    throw new Error(`映射下游模型不在可请求模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
+    throw new Error(`映射下游模型不在全局可请求模型目录中：${invalidSourceModels.slice(0, 5).join('、')}`)
   }
   const invalidUpstreamModels = mappings
     .map((mapping) => mapping.upstreamModel)
     .filter((model) => !requestableModels.has(model))
   if (invalidUpstreamModels.length > 0) {
-    throw new Error(`映射上游模型不在可请求模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+    throw new Error(`映射上游模型不在全局可请求模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
   }
   return mappings
+}
+
+export function assertAccountModelMappingSourcesAllowedBySupportedModels(
+  mappings: AccountModelMapping[],
+  supportedModels: string[]
+): void {
+  const supportedModelSet = new Set(supportedModels.map((model) => model.trim().toLowerCase()).filter(Boolean))
+  if (!supportedModelSet.size || !mappings.length) return
+
+  const invalidSourceModels = mappings
+    .map((mapping) => mapping.sourceModel)
+    .filter((model) => !supportedModelSet.has(model.trim().toLowerCase()))
+  if (invalidSourceModels.length > 0) {
+    throw new Error(`账户已配置支持模型时，映射下游模型只能选择支持模型：${invalidSourceModels.slice(0, 5).join('、')}`)
+  }
+}
+
+function allRequestableProviderModels(systemAccountId: string): Set<string> {
+  const models = new Set<string>()
+  for (const provider of listProviders()) {
+    if (!provider.enabled) continue
+    for (const item of listProviderModelCatalog({
+      providerCode: provider.code,
+      systemAccountId
+    })) {
+      models.add(item.model)
+    }
+  }
+  return models
 }

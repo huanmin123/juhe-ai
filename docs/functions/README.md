@@ -76,8 +76,8 @@
 - 新增或调整同一 API Key 账户内多个上游 Key 的轮询 / 权重、Key 级故障隔离、Key 冷却探测、Key 池派生可用性或 Key 状态展示时，优先更新 [OpenAI 账号接入](OpenAI账号接入.md) 和 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)；如果影响切号、屏蔽、后台恢复或错误兜底，再同步 [网关错误处理完整链路](网关错误处理完整链路.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。
 - 新增或调整 Anthropic 官方直连、Anthropic API Key 账户类型、Anthropic OAuth / Claude Code token 真实验证结论、Claude Code 客户端画像、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 Codex `/v1/responses` 到 OpenAI-compatible Chat Completions 的协议转换、Chat SSE 到 Responses SSE 事件映射、工具调用映射、reasoning 字段处理或供应商桥接启用条件时，优先更新 [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)，再按影响同步具体供应商接入文档。
-- 新增或调整智谱 GLM 通用 API、GLM Coding Plan、GLM OpenAI 兼容档案、GLM Codex bridge、GLM 模型目录、GLM 价格口径或 GLM 账户测试时，优先更新 [智谱 GLM 账号接入](智谱GLM账号接入.md)、[Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
-- 新增或调整 DeepSeek OpenAI-compatible、DeepSeek 协议档案、DeepSeek 特殊参数、DeepSeek 模型目录、DeepSeek 价格口径或 DeepSeek 账户测试时，优先更新 [DeepSeek 账号接入](DeepSeek账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
+- 新增或调整智谱 GLM 通用 API、GLM Coding Plan、GLM OpenAI 兼容档案、GLM Anthropic / Claude Code 兼容档案、GLM Codex bridge、GLM 模型目录、GLM 价格口径或 GLM 账户测试时，优先更新 [智谱 GLM 账号接入](智谱GLM账号接入.md)、[Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
+- 新增或调整 DeepSeek OpenAI-compatible、DeepSeek Anthropic / Claude Code 兼容档案、DeepSeek 协议档案、DeepSeek 特殊参数、DeepSeek 模型目录、DeepSeek 价格口径或 DeepSeek 账户测试时，优先更新 [DeepSeek 账号接入](DeepSeek账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整正常账户周期健康检测、长期空闲账户探活、健康检测字段、后台检测队列、健康检测前端展示或与真实成功流量的健康信号关系时，优先更新 [账号健康检测设计](账号健康检测设计.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[网关异常重试与兜底策略](网关异常重试与兜底策略.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
 - 新增或调整管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，优先更新 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
 - 新增或调整面向第三方后端调用的受保护来源系统鉴权、来源 token、外部接口前缀或 demo 接口时，优先更新 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，再同步 [接口契约与权限矩阵](接口契约与权限矩阵.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [安全与日志策略](安全与日志策略.md)。
@@ -97,7 +97,7 @@
 - 新增或调整 AI 账户首 token、总耗时趋势、活跃账户默认展示、临时指定账户或性能监控接口时，优先更新 [AI 性能监控设计](AI性能监控设计.md)。
 - 新增或调整用量统计维度、性能指标、消耗指标、统计聚合表、周 / 月桶、额度读取口径或统计查询策略时，优先更新 [统计指标与分层聚合设计](统计指标与分层聚合设计.md)。
 - 新增或调整 IP 注册表、IP 维度预聚合、IP 管理页面、IP 封禁 / 解封、封禁命中记录或面向外部来源的 IP 聚合事实接口时，优先更新 [IP 统计与封禁设计](IP统计与封禁设计.md)，再同步 [接口契约与权限矩阵](接口契约与权限矩阵.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [统计指标与分层聚合设计](统计指标与分层聚合设计.md)。
-- 新增或调整统计数据集域、数据集目录库、usage shard、统计结果库、三库存储边界、统计跨库水位、统计重建或统计数据迁移时，优先更新 [统计数据集与结果库拆分设计](统计数据集与结果库拆分设计.md)。
+- 新增或调整统计数据集域、数据集目录库、使用记录目录库、usage shard、统计结果库、主库存储边界、统计跨库水位、统计重建或统计数据迁移时，优先更新 [统计数据集与结果库拆分设计](统计数据集与结果库拆分设计.md)。
 - 新增或调整 `usage_records` 分片、数据集 shard、分片 writer、per-shard 统计游标、分片清理或分片迁移时，优先更新 [数据集库分片写入设计](数据集库分片写入设计.md)。
 - 新增或调整多 worker 争抢同一 SQLite 文件写锁、写 owner、writer queue、typed write command、priority、blocked reason 或单写者运行态指标时，优先更新 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)，再按影响同步 [SQLite 存储说明](SQLite存储说明.md)、[后台任务使用说明](../architecture/backend/后台任务使用说明.md) 和 [后台 Worker 多角色拆分设计](../architecture/backend/后台Worker多角色拆分设计.md)。
 - 新增或调整表大小、行数、数据库文件空间、增长趋势、采样任务或表监控页面时，优先更新 [表数据监控设计](表数据监控设计.md)。
