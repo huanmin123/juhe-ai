@@ -49,6 +49,10 @@ export function getAccountQualityFailurePrecheckQueueSnapshot() {
   return accountQualityFailurePrecheckQueue.snapshot()
 }
 
+export function setAccountQualityFailurePrecheckQueueConcurrency(concurrency: number): void {
+  accountQualityFailurePrecheckQueue.setConcurrency(concurrency)
+}
+
 async function runAccountQualityFailurePrecheckQueueItem(
   item: AccountQualityFailurePrecheckQueueItem,
   context: { attemptIndex: number; retryNumber: number }

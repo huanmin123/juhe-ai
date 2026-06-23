@@ -60,12 +60,16 @@ import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 
 const statsAggregationBatchPauseMs = 25
+const usageStatsAggregationOnlineBatchSizeCap = 500
+const usageStatsAggregationMaxRunMsCap = 60_000
 
 export type BackgroundStatsWriteOperation =
   | {
     type: 'aggregate_usage_stats'
     batchSize: number
     maxBatches: number
+    maxRunMs: number
+    safeCreatedBefore?: string
   }
   | {
     type: 'aggregate_client_ip_stats'
@@ -139,7 +143,7 @@ export type BackgroundStatsWriteOperation =
   }
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
-  T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean } :
+  T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number } :
   T extends { type: 'aggregate_client_ip_stats' } ? { processed: number; policies: ActiveClientIpPolicy[] } :
   T extends { type: 'refresh_group_account_stats' } ? { refreshed: true } :
   T extends { type: 'refresh_account_quality' } ? AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] } :
@@ -175,7 +179,7 @@ export async function requestStatsWriter<T extends BackgroundStatsWriteOperation
 export async function handleStatsWriteOperation(operation: BackgroundStatsWriteOperation): Promise<unknown> {
   switch (operation.type) {
     case 'aggregate_usage_stats':
-      return await aggregateUsageStats(operation.batchSize, operation.maxBatches)
+      return await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)
     case 'aggregate_client_ip_stats':
       return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)
     case 'refresh_group_account_stats':
@@ -233,23 +237,37 @@ function currentProcessOwnsStatsWriter(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'stats-worker'
 }
 
-async function aggregateUsageStats(batchSize: number, maxBatches: number): Promise<{ processed: number; quotaSnapshotSent: boolean }> {
+async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRunMs: number, safeCreatedBefore?: string): Promise<{ processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number }> {
+  const startedAtMs = Date.now()
   let processed = 0
-  const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
+  let stoppedByTimeBudget = false
+  const normalizedBatchSize = Math.min(
+    boundedPositiveInteger(batchSize, 1, 10000),
+    usageStatsAggregationOnlineBatchSizeCap
+  )
   const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
+  const normalizedMaxRunMs = boundedPositiveInteger(maxRunMs, 1, usageStatsAggregationMaxRunMsCap)
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
-    const batchProcessed = aggregateUsageStatsBatch(normalizedBatchSize)
+    if (Date.now() - startedAtMs >= normalizedMaxRunMs) {
+      stoppedByTimeBudget = true
+      break
+    }
+    const batchProcessed = aggregateUsageStatsBatch(normalizedBatchSize, safeCreatedBefore)
     processed += batchProcessed
     if (batchProcessed < normalizedBatchSize) break
+    if (Date.now() - startedAtMs >= normalizedMaxRunMs) {
+      stoppedByTimeBudget = true
+      break
+    }
     await yieldToEventLoop()
     await pauseBetweenStatsAggregationBatches()
   }
   if (processed > 0) {
     refreshUsageQuotaHourlyWindowsCache()
     sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())
-    return { processed, quotaSnapshotSent: true }
+    return { processed, quotaSnapshotSent: true, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
   }
-  return { processed, quotaSnapshotSent: false }
+  return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
 }
 
 async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number; policies: ActiveClientIpPolicy[] }> {

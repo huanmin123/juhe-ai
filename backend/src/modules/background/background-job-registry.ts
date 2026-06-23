@@ -15,14 +15,9 @@ export type BackgroundJobKind =
 export type BackgroundJobLifecycle = 'persistent' | 'temporary' | 'hybrid'
 
 export type BackgroundWorkerRole =
-  | 'metrics-worker'
   | 'ingest-worker'
-  | 'usage-ingest-worker'
-  | 'log-worker'
   | 'stats-worker'
-  | 'snapshot-worker'
-  | 'probe-worker'
-  | 'maintenance-worker'
+  | 'ops-worker'
   | 'temporary-maintenance-worker'
   | 'worker-control'
 

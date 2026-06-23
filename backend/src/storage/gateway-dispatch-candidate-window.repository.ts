@@ -207,7 +207,8 @@ export function listGatewayDispatchModelCandidateRows(
   groupId: string,
   groupAccess: GroupUsageAccessMetadata,
   now: string,
-  requestedModel: string
+  requestedModel: string,
+  requestedEndpointFamily?: 'chat_completions' | 'responses'
 ): GatewayDispatchModelCandidateRowsResult {
   const model = requestedModel.trim()
   if (!model) {
@@ -288,14 +289,25 @@ export function listGatewayDispatchModelCandidateRows(
               WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
                 AND model_mappings.provider_code = eligible_rows.model_resource_provider_code
                 AND model_mappings.source_model = ?
+                AND model_mappings.source_endpoint_family = ?
                 AND model_mappings.enabled = 1
-                AND model_mappings.upstream_model <> model_mappings.source_model
-                AND EXISTS (
-                  SELECT 1
-                  FROM account_supported_models mapped_supported
-                  WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
-                    AND mapped_supported.provider_code = eligible_rows.model_resource_provider_code
-                    AND mapped_supported.model = model_mappings.upstream_model
+                AND (
+                  model_mappings.upstream_model <> model_mappings.source_model
+                  OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
+                )
+                AND (
+                  NOT EXISTS (
+                    SELECT 1
+                    FROM account_supported_models limited_supported
+                    WHERE limited_supported.account_id = eligible_rows.model_resource_account_id
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM account_supported_models mapped_supported
+                    WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
+                      AND mapped_supported.provider_code = eligible_rows.model_resource_provider_code
+                      AND mapped_supported.model = model_mappings.upstream_model
+                  )
                 )
             ) THEN 1
             WHEN NOT EXISTS (
@@ -331,6 +343,7 @@ export function listGatewayDispatchModelCandidateRows(
       now,
       model,
       model,
+      requestedEndpointFamily ?? null,
       gatewayDispatchAccountCandidateScanLimit
     ) as unknown as Array<OpenAIGroupAccountSelectionRow & { model_rank?: number }>
   const modelRankByAccountId = new Map<string, number>()

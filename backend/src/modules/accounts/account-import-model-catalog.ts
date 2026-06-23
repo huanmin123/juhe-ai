@@ -1,6 +1,6 @@
 import { type AccountModelMapping, type ProviderDefinition } from '../../domain/types.js'
 import {
-  assertAccountModelMappingSourcesAllowedBySupportedModels,
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
   normalizeAccountSupportedModelsForProvider
 } from '../../storage/repositories.js'
@@ -13,6 +13,7 @@ export interface AccountImportModelCatalogContext {
 
 export interface AccountImportModelCatalogAccount {
   providerCode: string
+  providerProtocolProfileId?: string
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   messages: string[]
@@ -34,9 +35,10 @@ export function validateAccountModelCatalogFields(
     account.modelMappings = normalizeAccountModelMappingsForProvider(
       account.modelMappings,
       account.providerCode,
-      context.targetSystemAccountId
+      context.targetSystemAccountId,
+      context.providerByCode.get(account.providerCode)?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId)
     )
-    assertAccountModelMappingSourcesAllowedBySupportedModels(account.modelMappings ?? [], account.supportedModels ?? [])
+    assertAccountModelMappingUpstreamsAllowedBySupportedModels(account.modelMappings ?? [], account.supportedModels ?? [])
   } catch (error) {
     account.messages.push(errorMessage(error))
   }

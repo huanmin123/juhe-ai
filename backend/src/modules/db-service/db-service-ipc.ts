@@ -921,87 +921,22 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     import('../../shared/account-concurrency.js')
   ])
   const [
-    workerSnapshot,
-    metricsWorkerSnapshot,
     ingestWorkerSnapshot,
     statsWorkerSnapshot,
-    snapshotWorkerSnapshot,
-    probeWorkerSnapshot,
-    maintenanceWorkerSnapshot
+    opsWorkerSnapshot
   ] = await Promise.all([
-    backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestMetricsWorkerSnapshot(1000).catch(() => undefined),
     backgroundIpc.requestIngestWorkerSnapshot(1000).catch(() => undefined),
     backgroundIpc.requestStatsWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestSnapshotWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestProbeWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestMaintenanceWorkerSnapshot(1000).catch(() => undefined)
+    backgroundIpc.requestOpsWorkerSnapshot(1000).catch(() => undefined)
   ])
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
-  const metricsWorkerState = workerState.metricsWorker
   const ingestWorkerState = workerState.ingestWorker
   const statsWorkerState = workerState.statsWorker
-  const snapshotWorkerState = workerState.snapshotWorker
-  const probeWorkerState = workerState.probeWorker
-  const maintenanceWorkerState = workerState.maintenanceWorker
+  const opsWorkerState = workerState.opsWorker
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
-    worker: {
-      pid: workerSnapshot?.pid ?? workerState.pid,
-      ready: workerSnapshot?.ready ?? workerState.ready,
-      pendingMessageCount: workerState.pendingMessageCount,
-      pendingMessageBytes: workerState.pendingMessageBytes,
-      pendingQueues: backgroundPendingQueuesSnapshot(workerState.pendingQueues),
-      pendingSnapshotRequestCount: workerState.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: workerState.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: workerState.rejectedSnapshotRequestCount,
-      pendingProcessEventLoopRequestCount: workerState.pendingProcessEventLoopRequestCount,
-      timedOutProcessEventLoopRequestCount: workerState.timedOutProcessEventLoopRequestCount,
-      failedProcessEventLoopRequestCount: workerState.failedProcessEventLoopRequestCount,
-      snapshot: workerSnapshot
-        ? {
-          pid: workerSnapshot.pid,
-          ready: workerSnapshot.ready,
-          workerRole: workerSnapshot.workerRole,
-          jobs: workerSnapshot.jobs.map((job) => ({ ...job })),
-          usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
-          operationLogQueue: { ...workerSnapshot.operationLogQueue },
-          publicApiLogQueue: { ...workerSnapshot.publicApiLogQueue },
-          recordMaintenanceQueue: { ...workerSnapshot.recordMaintenanceQueue },
-          auditLogQueue: { ...workerSnapshot.auditLogQueue },
-          runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue },
-          accountHealthCheckQueue: workerSnapshot.accountHealthCheckQueue
-            ? { ...workerSnapshot.accountHealthCheckQueue }
-            : undefined,
-          cooldownAccountRetestQueue: workerSnapshot.cooldownAccountRetestQueue
-            ? { ...workerSnapshot.cooldownAccountRetestQueue }
-            : undefined,
-          accountApiKeyCooldownRetestQueue: workerSnapshot.accountApiKeyCooldownRetestQueue
-            ? { ...workerSnapshot.accountApiKeyCooldownRetestQueue }
-            : undefined,
-          manualAccountTestQueue: workerSnapshot.manualAccountTestQueue
-            ? { ...workerSnapshot.manualAccountTestQueue }
-            : undefined
-        }
-        : undefined
-    },
-    metricsWorker: {
-      pid: metricsWorkerSnapshot?.pid ?? metricsWorkerState?.pid,
-      ready: metricsWorkerSnapshot?.ready ?? metricsWorkerState?.ready ?? false,
-      pendingSnapshotRequestCount: metricsWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: metricsWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: metricsWorkerState?.rejectedSnapshotRequestCount,
-      snapshot: metricsWorkerSnapshot
-        ? {
-          pid: metricsWorkerSnapshot.pid,
-          ready: metricsWorkerSnapshot.ready,
-          workerRole: metricsWorkerSnapshot.workerRole,
-          jobs: metricsWorkerSnapshot.jobs.map((job) => ({ ...job }))
-        }
-        : undefined
-    },
     ingestWorker: {
       pid: ingestWorkerSnapshot?.pid ?? ingestWorkerState?.pid,
       ready: ingestWorkerSnapshot?.ready ?? ingestWorkerState?.ready ?? false,
@@ -1044,78 +979,45 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           ready: statsWorkerSnapshot.ready,
           workerRole: statsWorkerSnapshot.workerRole,
           jobs: statsWorkerSnapshot.jobs.map((job) => ({ ...job })),
-          recordMaintenanceQueue: { ...statsWorkerSnapshot.recordMaintenanceQueue }
-        }
-        : undefined
-    },
-    snapshotWorker: {
-      pid: snapshotWorkerSnapshot?.pid ?? snapshotWorkerState?.pid,
-      ready: snapshotWorkerSnapshot?.ready ?? snapshotWorkerState?.ready ?? false,
-      pendingSnapshotRequestCount: snapshotWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: snapshotWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: snapshotWorkerState?.rejectedSnapshotRequestCount,
-      snapshot: snapshotWorkerSnapshot
-        ? {
-          pid: snapshotWorkerSnapshot.pid,
-          ready: snapshotWorkerSnapshot.ready,
-          workerRole: snapshotWorkerSnapshot.workerRole,
-          jobs: snapshotWorkerSnapshot.jobs.map((job) => ({ ...job }))
-        }
-        : undefined
-    },
-    probeWorker: {
-      pid: probeWorkerSnapshot?.pid ?? probeWorkerState?.pid,
-      ready: probeWorkerSnapshot?.ready ?? probeWorkerState?.ready ?? false,
-      pendingMessageCount: probeWorkerState?.pendingMessageCount,
-      pendingMessageBytes: probeWorkerState?.pendingMessageBytes,
-      pendingQueues: probeWorkerState?.pendingQueues
-        ? backgroundPendingQueuesSnapshot(probeWorkerState.pendingQueues)
-        : undefined,
-      pendingSnapshotRequestCount: probeWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: probeWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: probeWorkerState?.rejectedSnapshotRequestCount,
-      snapshot: probeWorkerSnapshot
-        ? {
-          pid: probeWorkerSnapshot.pid,
-          ready: probeWorkerSnapshot.ready,
-          workerRole: probeWorkerSnapshot.workerRole,
-          jobs: probeWorkerSnapshot.jobs.map((job) => ({ ...job })),
-          accountHealthCheckQueue: probeWorkerSnapshot.accountHealthCheckQueue
-            ? { ...probeWorkerSnapshot.accountHealthCheckQueue }
-            : undefined,
-          cooldownAccountRetestQueue: probeWorkerSnapshot.cooldownAccountRetestQueue
-            ? { ...probeWorkerSnapshot.cooldownAccountRetestQueue }
-            : undefined,
-          accountApiKeyCooldownRetestQueue: probeWorkerSnapshot.accountApiKeyCooldownRetestQueue
-            ? { ...probeWorkerSnapshot.accountApiKeyCooldownRetestQueue }
-            : undefined,
-          accountQualityFailurePrecheckQueue: probeWorkerSnapshot.accountQualityFailurePrecheckQueue
-            ? { ...probeWorkerSnapshot.accountQualityFailurePrecheckQueue }
-            : undefined,
-          manualAccountTestQueue: probeWorkerSnapshot.manualAccountTestQueue
-            ? { ...probeWorkerSnapshot.manualAccountTestQueue }
+          recordMaintenanceQueue: { ...statsWorkerSnapshot.recordMaintenanceQueue },
+          accountQualityFailurePrecheckQueue: statsWorkerSnapshot.accountQualityFailurePrecheckQueue
+            ? { ...statsWorkerSnapshot.accountQualityFailurePrecheckQueue }
             : undefined
         }
         : undefined
     },
-    maintenanceWorker: {
-      pid: maintenanceWorkerSnapshot?.pid ?? maintenanceWorkerState?.pid,
-      ready: maintenanceWorkerSnapshot?.ready ?? maintenanceWorkerState?.ready ?? false,
-      pendingMessageCount: maintenanceWorkerState?.pendingMessageCount,
-      pendingMessageBytes: maintenanceWorkerState?.pendingMessageBytes,
-      pendingQueues: maintenanceWorkerState?.pendingQueues
-        ? backgroundPendingQueuesSnapshot(maintenanceWorkerState.pendingQueues)
+    opsWorker: {
+      pid: opsWorkerSnapshot?.pid ?? opsWorkerState?.pid,
+      ready: opsWorkerSnapshot?.ready ?? opsWorkerState?.ready ?? false,
+      pendingMessageCount: opsWorkerState?.pendingMessageCount,
+      pendingMessageBytes: opsWorkerState?.pendingMessageBytes,
+      pendingQueues: opsWorkerState?.pendingQueues
+        ? backgroundPendingQueuesSnapshot(opsWorkerState.pendingQueues)
         : undefined,
-      pendingSnapshotRequestCount: maintenanceWorkerState?.pendingSnapshotRequestCount,
-      timedOutSnapshotRequestCount: maintenanceWorkerState?.timedOutSnapshotRequestCount,
-      rejectedSnapshotRequestCount: maintenanceWorkerState?.rejectedSnapshotRequestCount,
-      snapshot: maintenanceWorkerSnapshot
+      pendingSnapshotRequestCount: opsWorkerState?.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: opsWorkerState?.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: opsWorkerState?.rejectedSnapshotRequestCount,
+      snapshot: opsWorkerSnapshot
         ? {
-          pid: maintenanceWorkerSnapshot.pid,
-          ready: maintenanceWorkerSnapshot.ready,
-          workerRole: maintenanceWorkerSnapshot.workerRole,
-          jobs: maintenanceWorkerSnapshot.jobs.map((job) => ({ ...job })),
-          recordMaintenanceQueue: { ...maintenanceWorkerSnapshot.recordMaintenanceQueue }
+          pid: opsWorkerSnapshot.pid,
+          ready: opsWorkerSnapshot.ready,
+          workerRole: opsWorkerSnapshot.workerRole,
+          jobs: opsWorkerSnapshot.jobs.map((job) => ({ ...job })),
+          accountHealthCheckQueue: opsWorkerSnapshot.accountHealthCheckQueue
+            ? { ...opsWorkerSnapshot.accountHealthCheckQueue }
+            : undefined,
+          cooldownAccountRetestQueue: opsWorkerSnapshot.cooldownAccountRetestQueue
+            ? { ...opsWorkerSnapshot.cooldownAccountRetestQueue }
+            : undefined,
+          accountApiKeyCooldownRetestQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue
+            ? { ...opsWorkerSnapshot.accountApiKeyCooldownRetestQueue }
+            : undefined,
+          accountQualityFailurePrecheckQueue: opsWorkerSnapshot.accountQualityFailurePrecheckQueue
+            ? { ...opsWorkerSnapshot.accountQualityFailurePrecheckQueue }
+            : undefined,
+          manualAccountTestQueue: opsWorkerSnapshot.manualAccountTestQueue
+            ? { ...opsWorkerSnapshot.manualAccountTestQueue }
+            : undefined
         }
         : undefined
     },

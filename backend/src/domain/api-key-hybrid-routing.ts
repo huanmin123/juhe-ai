@@ -17,9 +17,9 @@ export const DEFAULT_HYBRID_SWITCH_MIN_LEVEL_DELTA = 2
 export const DEFAULT_HYBRID_DOWNGRADE_CONSECUTIVE_LOW_COUNT = 2
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_ENABLED = true
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE: ApiKeyHybridQualityInspectionConfig['triggerMode'] = 'risk_based'
-export const DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL = 7
-export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 1
-export const DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION: ApiKeyHybridQualityInspectionConfig['failureAction'] = 'upgrade_next_level'
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_TRIGGER_LEVEL = 6
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 2
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION: ApiKeyHybridQualityInspectionConfig['failureAction'] = 'repair_then_upgrade'
 
 export function normalizeApiKeyRouteMode(value: unknown): ApiKeyRouteMode {
   if (value === undefined || value === null || value === '') return DEFAULT_API_KEY_ROUTE_MODE
@@ -62,7 +62,7 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     DEFAULT_HYBRID_FAILURE_DEFAULT_LEVEL,
     1,
     10,
-    '混合路由评分失败默认等级必须是 1-10'
+    '混合路由评分失败参考等级必须是 1-10'
   )
   const scoringCacheEnabled = DEFAULT_HYBRID_SCORING_CACHE_ENABLED
   const scoringCacheTtlSeconds = normalizeIntegerRange(
@@ -164,7 +164,7 @@ function normalizeQualityInspectionConfig(
       enabled: DEFAULT_HYBRID_QUALITY_INSPECTION_ENABLED,
       scoringModel: defaults.scoringModel,
       triggerMode: DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE,
-      minTriggerLevel: DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL,
+      maxTriggerLevel: DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_TRIGGER_LEVEL,
       maxRetries: DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES,
       failureAction: DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION
     }
@@ -186,12 +186,12 @@ function normalizeQualityInspectionConfig(
     ...(scoringGroupId ? { scoringGroupId } : {}),
     scoringModel: scoringModel ?? '',
     triggerMode: normalizeQualityInspectionTriggerMode(record.triggerMode),
-    minTriggerLevel: normalizeIntegerRange(
-      record.minTriggerLevel,
-      DEFAULT_HYBRID_QUALITY_INSPECTION_MIN_TRIGGER_LEVEL,
+    maxTriggerLevel: normalizeIntegerRange(
+      record.maxTriggerLevel,
+      DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_TRIGGER_LEVEL,
       1,
       10,
-      '混合路由质量评分最低触发等级必须是 1-10'
+      '混合路由质量评分最高触发等级必须是 1-10'
     ),
     maxRetries: normalizeIntegerRange(
       record.maxRetries,
@@ -212,7 +212,7 @@ function normalizeQualityInspectionTriggerMode(value: unknown): ApiKeyHybridQual
 
 function normalizeQualityInspectionFailureAction(value: unknown): ApiKeyHybridQualityInspectionConfig['failureAction'] {
   if (value === undefined || value === null || value === '') return DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION
-  if (value === 'upgrade_next_level' || value === 'retry_same_model' || value === 'return_error') return value
+  if (value === 'repair_then_upgrade' || value === 'upgrade_next_level' || value === 'retry_same_model' || value === 'return_error') return value
   throw new Error('混合路由质量评分失败动作无效')
 }
 

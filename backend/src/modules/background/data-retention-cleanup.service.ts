@@ -173,7 +173,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
         checkpointDatasetAndUsageDatabasesAfterDelete()
       }
     }
-    if (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'maintenance-worker') {
+    if (runtimeConfig.workerRole === 'ingest-worker') {
       await cleanupRetentionInBatches(result, () => requestStatsWriter({
         type: 'cleanup_usage_stats_retention',
         input: usageStatsRetentionInput(now, retention, timezone, batchSize)

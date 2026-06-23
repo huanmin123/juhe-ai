@@ -251,7 +251,7 @@ function assertSourceGuards(): void {
   assert.match(schemaSource, /idx_account_quality_dirty_accounts_updated/, '账号质量 dirty 表应有更新时间窗口索引')
   assert.match(accountQualityWriterSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
   assert.match(failurePrecheckSource, /findAccountForTest\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
-  assert.match(failurePrecheckSource, /markAccountTestTemporaryUnavailable/, '频繁失败确认落库应复用账户测试临时不可调用语义')
+  assert.match(failurePrecheckSource, /requestBackgroundWorkerDbService\(\{\s*type:\s*'mark_account_test_temporary_unavailable'/, '频繁失败确认落库应通过 DB service 复用账户测试临时不可调用语义')
   assert.match(failurePrecheckSource, /trafficSource:\s*'cooldown_retest'/, '频繁失败确认探针不应写入普通网关质量样本')
   assert.match(source, /loadQualityAccountMetadataByIds/, '账号质量刷新应按样本或固定候选账号批量补业务元数据')
   assert.match(source, /ORDER BY updated_at ASC, account_id ASC\s+LIMIT \?/, '账号质量缓存清理和 stale 推进必须按固定批次')

@@ -119,7 +119,10 @@ export function buildBackgroundQueueHealthSnapshot(
 ): BackgroundQueueHealthSnapshot {
   const ingestWorkerSnapshot = serverRuntime?.ingestWorker?.snapshot
   const statsWorkerSnapshot = serverRuntime?.statsWorker?.snapshot
-  const serverIpcQueues = serverRuntime?.worker?.pendingQueues
+  const serverIpcQueues = mergeServerIpcQueues(
+    serverRuntime?.ingestWorker?.pendingQueues,
+    serverRuntime?.opsWorker?.pendingQueues
+  )
   const workerQueues = workerQueueSpecs.map((spec) => buildQueueHealthItem({
     key: spec.key,
     label: spec.label,
@@ -190,6 +193,37 @@ function workerQueueSnapshot(
       : undefined
   }
   return input.ingestWorkerSnapshot?.[snapshotKey]
+}
+
+function mergeServerIpcQueues(
+  ...inputs: Array<Record<string, DbServiceRuntimeQueueSnapshot> | undefined>
+): Record<string, DbServiceRuntimeQueueSnapshot> | undefined {
+  const availableInputs = inputs.filter((input): input is Record<string, DbServiceRuntimeQueueSnapshot> => Boolean(input))
+  if (availableInputs.length === 0) return undefined
+  const output: Record<string, DbServiceRuntimeQueueSnapshot> = {}
+  for (const spec of ipcQueueSpecs) {
+    output[spec.snapshotKey] = mergeQueueSnapshots(availableInputs.map((input) => input[spec.snapshotKey]))
+  }
+  return output
+}
+
+function mergeQueueSnapshots(snapshots: Array<DbServiceRuntimeQueueSnapshot | undefined>): DbServiceRuntimeQueueSnapshot {
+  return {
+    queueLength: sumSnapshotNumbers(snapshots, 'queueLength'),
+    queueBytes: sumSnapshotNumbers(snapshots, 'queueBytes'),
+    droppedCount: sumSnapshotNumbers(snapshots, 'droppedCount'),
+    rejectedCount: sumSnapshotNumbers(snapshots, 'rejectedCount')
+  }
+}
+
+function sumSnapshotNumbers(
+  snapshots: Array<DbServiceRuntimeQueueSnapshot | undefined>,
+  key: keyof DbServiceRuntimeQueueSnapshot
+): number {
+  return snapshots.reduce((total, snapshot) => {
+    const value = snapshot?.[key]
+    return typeof value === 'number' && Number.isFinite(value) ? total + value : total
+  }, 0)
 }
 
 function buildQueueHealthItem(input: {

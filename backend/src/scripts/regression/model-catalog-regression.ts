@@ -140,9 +140,9 @@ try {
   assertCatalogReleaseDateDescending(openAICompatibleCatalog, 'OpenAI 兼容聚合模型目录')
   assert(openAICompatibleCatalog.some((item) => item.model === 'gpt-regression-global' && item.providerCode === 'gpt'), 'OpenAI 兼容模型目录应聚合 GPT 的 OpenAI v1 模型')
   assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-global' && item.providerCode === 'openai'), 'OpenAI 兼容模型目录应保留自身模型')
-  assert.equal(openAICompatibleCatalog.some((item) => item.providerCode === 'deepseek'), false, 'OpenAI 兼容模型目录不应混入 DeepSeek 独立供应商模型')
-  assert.equal(openAICompatibleCatalog.some((item) => item.providerCode === 'glm'), false, 'OpenAI 兼容模型目录不应混入 GLM 独立供应商模型')
-  assert.equal(openAICompatibleCatalog[0]?.model, 'openai-regression-global', '模型目录应按发布时间倒序展示最新模型')
+  assert(openAICompatibleCatalog.some((item) => item.providerCode === 'deepseek'), 'OpenAI 兼容模型目录应聚合 DeepSeek OpenAI 协议模型')
+  assert(openAICompatibleCatalog.some((item) => item.providerCode === 'glm'), 'OpenAI 兼容模型目录应聚合 GLM OpenAI 协议模型')
+  assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-global'), '通用 OpenAI-compatible 自身模型不要求排在其他 OpenAI 协议供应商模型之前')
 
   const dedupedProviderModelOptions = dedupeProviderModelOptions([
     { providerCode: 'gpt', model: 'shared-model' },
@@ -710,9 +710,15 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       status: 'active',
       credentials: { api_key: 'sk-model-catalog-bound', base_url: 'https://api.openai.com/v1' },
       groupId: userAGroup.id,
-      supportedModels: [userAModel.model],
+      supportedModels: [userAModel.model, userAUpstreamTarget.model],
       modelMappings: [
-        { sourceModel: userAModel.model, upstreamModel: userAUpstreamTarget.model, enabled: true }
+        {
+          sourceModel: userAModel.model,
+          sourceEndpointFamily: 'chat_completions',
+          upstreamModel: userAUpstreamTarget.model,
+          upstreamEndpointFamily: 'chat_completions',
+          enabled: true
+        }
       ]
     }, userAAccess)
     await assertHttpStatus(

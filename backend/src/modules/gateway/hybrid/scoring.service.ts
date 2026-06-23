@@ -34,6 +34,7 @@ export interface HybridScoringResult {
   factors?: string[]
   reason?: string
   defaulted: boolean
+  failed?: boolean
   cacheHit?: boolean
   errorCode?: string
   errorMessage?: string
@@ -104,14 +105,14 @@ export async function scoreHybridGatewayRequest(input: {
       scoringReq
     })
     if (!scoringSelection) {
-      return defaultScoringResult(input.config, 'no_scoring_account', '混合路由绑定分组池没有可用评分账户')
+      return failedScoringResult(input.config, 'no_scoring_account', '混合路由绑定分组池没有可用评分账户')
     }
     account = scoringSelection.account
     const selectedScoringGroupId = scoringSelection.groupId
     scoringGroupId = selectedScoringGroupId
     const slot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
     if (!slot.acquired) {
-      return defaultScoringResult(input.config, 'scoring_account_busy', '混合路由评分账户并发已满')
+      return failedScoringResult(input.config, 'scoring_account_busy', '混合路由评分账户并发已满', account.id)
     }
     try {
       const upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, scoringReq)
@@ -157,9 +158,33 @@ export async function scoreHybridGatewayRequest(input: {
           requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
           responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) }
         })
-        return defaultScoringResult(input.config, 'hybrid_scoring_http_error', `评分模型返回 HTTP ${response.status}`, account.id, response.status)
+        return failedScoringResult(input.config, 'hybrid_scoring_http_error', `评分模型返回 HTTP ${response.status}`, account.id, response.status)
       }
-      const parsed = parseHybridScoringResponse(responseBody)
+      let parsed: { level: number; confidence?: number; factors?: string[]; reason?: string }
+      try {
+        parsed = parseHybridScoringResponse(responseBody)
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        recordHybridScoringAttempt({
+          traceId: input.traceId,
+          clientIp: input.clientIp,
+          systemAccountId: input.apiKeyRecord.system_account_id,
+          apiKeyId: input.apiKeyRecord.id,
+          groupId: selectedScoringGroupId,
+          account,
+          endpoint: `${input.endpoint}#hybrid-scoring`,
+          statusCode: response.status,
+          success: false,
+          startedAt,
+          scoringModel: input.config.scoringModel,
+          usage,
+          errorCode: 'hybrid_scoring_failed',
+          errorMessage,
+          requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+          responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) }
+        })
+        return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, account.id, response.status)
+      }
       const scoringResult: HybridScoringResult = {
         level: clampHybridLevel(parsed.level),
         confidence: parsed.confidence,
@@ -211,7 +236,7 @@ export async function scoreHybridGatewayRequest(input: {
         errorMessage: error instanceof Error ? error.message : String(error)
       })
     }
-    return defaultScoringResult(
+    return failedScoringResult(
       input.config,
       'hybrid_scoring_failed',
       error instanceof Error ? error.message : String(error),
@@ -588,7 +613,7 @@ function responseBodySnippet(body: Buffer): string {
   return body.toString('utf8', 0, Math.min(body.byteLength, 2048))
 }
 
-function defaultScoringResult(
+function failedScoringResult(
   config: ApiKeyHybridRoutingConfig,
   errorCode: string,
   errorMessage: string,
@@ -597,7 +622,8 @@ function defaultScoringResult(
 ): HybridScoringResult {
   return {
     level: config.failureDefaultLevel,
-    defaulted: true,
+    defaulted: false,
+    failed: true,
     errorCode,
     errorMessage,
     scoringAccountId,

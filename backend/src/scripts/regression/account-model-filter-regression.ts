@@ -58,13 +58,13 @@ const unrestricted = account('unrestricted', [])
 const gpt55Only = account('gpt55-only', ['gpt-5.5'])
 const gpt54Only = account('gpt54-only', ['gpt-5.4'])
 const mappedByUpstream = account('mapped-by-upstream', ['gpt-5.5-private'], [
-  { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-private', enabled: true }
+  { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'chat_completions', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: true }
 ])
 const disabledMappedByUpstream = account('disabled-mapped-by-upstream', ['gpt-5.5-private'], [
-  { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-private', enabled: false }
+  { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'chat_completions', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: false }
 ])
 const mappedToUnsupportedUpstream = account('mapped-to-unsupported-upstream', ['gpt-5.4'], [
-  { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-private', enabled: true }
+  { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'chat_completions', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: true }
 ])
 
 const matched = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted, gpt54Only], 'gpt-5.5')
@@ -75,18 +75,18 @@ assert.equal(matched.directMatchedCount, 1)
 assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
 
-const prioritized = filterGatewayAccountsByRequestedModel([unrestricted, mappedByUpstream, gpt55Only], 'gpt-5.5')
+const prioritized = filterGatewayAccountsByRequestedModel([unrestricted, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
 assert.deepEqual(
   prioritized.accounts.map((item) => item.id),
-  ['gpt55-only', 'unrestricted'],
-  '模型过滤应只保留请求模型直接命中的限制账户，再保留不限制模型账户'
+  ['gpt55-only', 'mapped-by-upstream', 'unrestricted'],
+  '模型过滤应保留直接命中账户、映射命中账户和不限制模型账户'
 )
-assert.equal(prioritized.skippedCount, 1)
+assert.equal(prioritized.skippedCount, 0)
 assert.equal(prioritized.directMatchedCount, 1)
-assert.equal(prioritized.mappingMatchedCount, 0)
+assert.equal(prioritized.mappingMatchedCount, 1)
 assert.equal(prioritized.unrestrictedAccountCount, 1)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('gpt55-only'), 0)
-assert.equal(prioritized.modelPriority.rankByAccountId.get('mapped-by-upstream'), 3)
+assert.equal(prioritized.modelPriority.rankByAccountId.get('mapped-by-upstream'), 1)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('unrestricted'), 2)
 
 const mapped = filterGatewayAccountsByRequestedModel([
@@ -94,12 +94,12 @@ const mapped = filterGatewayAccountsByRequestedModel([
   disabledMappedByUpstream,
   mappedToUnsupportedUpstream,
   gpt54Only
-], 'gpt-5.5')
-assert.deepEqual(mapped.accounts.map((item) => item.id), [])
-assert.equal(mapped.skippedCount, 4)
+], 'gpt-5.5', 'chat_completions')
+assert.deepEqual(mapped.accounts.map((item) => item.id), ['mapped-by-upstream'])
+assert.equal(mapped.skippedCount, 3)
 assert.equal(mapped.directMatchedCount, 0)
-assert.equal(mapped.mappingMatchedCount, 0)
-assert.equal(mapped.reason, 'unsupported_model')
+assert.equal(mapped.mappingMatchedCount, 1)
+assert.equal(mapped.reason, undefined)
 
 const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted], undefined)
 assert.deepEqual(missingModel.accounts.map((item) => item.id), ['unrestricted'])

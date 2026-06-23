@@ -189,7 +189,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 export function listOpenAIAccountsForGroup(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
 }
@@ -208,7 +208,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
 export function listOpenAIAccountsForGroupResult(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' } = {}
 ): OpenAIAccountsForGroupResult {
   const database = getBusinessDatabase()
   const now = nowIso()
@@ -221,7 +221,7 @@ export function listOpenAIAccountsForGroupResult(
     }
   }
   const modelCandidateRows = options.requestedModel?.trim()
-    ? listGatewayDispatchModelCandidateRows(database, groupId, groupAccess, now, options.requestedModel)
+    ? listGatewayDispatchModelCandidateRows(database, groupId, groupAccess, now, options.requestedModel, options.requestedEndpointFamily)
     : undefined
   const groupAccountRows = modelCandidateRows
     ? mergeOpenAIGroupAccountRowsForDispatch(

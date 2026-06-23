@@ -74,13 +74,13 @@ try {
   assert.equal(mergedSnapshotRuntime.queueLength, 1, '同账号同来源用量快照维护任务应在 worker 本地队列内合并')
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
 
-  runtimeConfig.workerRole = 'maintenance-worker'
+  runtimeConfig.workerRole = 'ops-worker'
   const nonOwnerDroppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
   const nonOwnerResult = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildRecordMaintenanceJob('maintenance_non_owner'))
-  assert.equal(nonOwnerResult.queued, false, 'maintenance-worker 不能本地写数据维护队列')
-  assert.equal(nonOwnerResult.droppedReason, 'worker_ipc_unavailable', 'maintenance-worker 无父 IPC 时应按投递不可用拒绝')
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'maintenance-worker 不应产生本地数据维护积压')
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, nonOwnerDroppedBefore + 1, 'maintenance-worker 本地写保护应记录投递失败')
+  assert.equal(nonOwnerResult.queued, false, 'ops-worker 不能本地写数据维护队列')
+  assert.equal(nonOwnerResult.droppedReason, 'worker_ipc_unavailable', 'ops-worker 无父 IPC 时应按投递不可用拒绝')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'ops-worker 不应产生本地数据维护积压')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, nonOwnerDroppedBefore + 1, 'ops-worker 本地写保护应记录投递失败')
 
   runtimeConfig.workerRole = 'ingest-worker'
   auditLogQueue.clearAuditLogQueueForTest()

@@ -26,6 +26,7 @@ const codexResponsesChatBridgeLocalValidationUrl = 'codex-responses-chat-bridge:
 
 interface CodexResponsesChatBridgeRequestOptions {
   enabled: boolean
+  explicitMappingBridge?: boolean
   requestClientCompatibility?: ClientCompatibilityCapability
 }
 
@@ -99,7 +100,7 @@ export function isCodexResponsesChatBridgeRequest(
   options: CodexResponsesChatBridgeRequestOptions
 ): boolean {
   return options.enabled
-    && options.requestClientCompatibility === 'codex_responses'
+    && (options.explicitMappingBridge === true || options.requestClientCompatibility === 'codex_responses')
     && requestStream(req)
     && isOpenAIResponsesPostRequest(req)
 }

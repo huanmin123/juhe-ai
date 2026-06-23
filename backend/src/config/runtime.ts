@@ -70,12 +70,9 @@ export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' |
 export type ProcessRole = 'server' | 'worker' | 'db-service'
 export type WorkerRuntimeRole =
   | 'worker'
-  | 'metrics-worker'
   | 'ingest-worker'
   | 'stats-worker'
-  | 'snapshot-worker'
-  | 'probe-worker'
-  | 'maintenance-worker'
+  | 'ops-worker'
   | 'temporary-maintenance-worker'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -201,12 +198,9 @@ function processRoleConfig(name: string, fallback: ProcessRole): ProcessRole {
 
 function workerRoleConfig(name: string, fallback: WorkerRuntimeRole): WorkerRuntimeRole {
   const value = stringConfig(name, '').toLowerCase()
-  if (value === 'metrics-worker') return 'metrics-worker'
   if (value === 'ingest-worker') return 'ingest-worker'
   if (value === 'stats-worker') return 'stats-worker'
-  if (value === 'snapshot-worker') return 'snapshot-worker'
-  if (value === 'probe-worker') return 'probe-worker'
-  if (value === 'maintenance-worker') return 'maintenance-worker'
+  if (value === 'ops-worker') return 'ops-worker'
   if (value === 'temporary-maintenance-worker') return 'temporary-maintenance-worker'
   return fallback
 }

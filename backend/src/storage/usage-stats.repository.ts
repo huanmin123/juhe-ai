@@ -61,19 +61,20 @@ export {
 } from './group-account-stats-cache.repository.js'
 export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 
-const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
+export const usageStatsCursorSafetyDelaySeconds = 15
+const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = usageStatsCursorSafetyDelaySeconds
 const USAGE_STATS_MAX_SHARDS_PER_BATCH = 16
 const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
 let usageStatsShardScanOffset = 0
 
-export function aggregateUsageStatsBatch(limit = 2000): number {
+export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride?: string): number {
   const database = getStatsDatabase()
   const batchLimit = Math.max(1, limit)
   const shardLocationsWindow = usageStatsShardLocationsForBatch(batchLimit)
   const shardLocations = shardLocationsWindow.locations
-  const safeCreatedBefore = usageStatsSafeCreatedBefore()
+  const safeCreatedBefore = safeCreatedBeforeOverride?.trim() || usageStatsSafeCreatedBefore()
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   let processedRows = 0
   try {

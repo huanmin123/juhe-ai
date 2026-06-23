@@ -7,6 +7,7 @@ import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePat
 import { getSettings } from '../../storage/repositories.js'
 import {
   latestUsageStatsLagSeconds,
+  usageStatsCursorSafetyDelaySeconds,
   type UsageRankSnapshotStageName
 } from '../../storage/usage-stats.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
@@ -15,6 +16,7 @@ import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.servi
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { requestBackgroundWorkerDbService, requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples } from './background-ipc.js'
+import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
 import {
@@ -38,12 +40,17 @@ let usageStatsAggregationRunning = false
 let clientIpStatsAggregationRunning = false
 let usageRankSnapshotsRefreshRunning = false
 let missingRemoteProcessEventLoopSampleWarningCount = 0
+interface UsageStatsAggregationSafety {
+  safeCreatedBefore: string
+}
+
 const dailyIntervalMs = 24 * 60 * 60 * 1000
 const secondMs = 1000
 const minuteMs = 60 * secondMs
 const clientIpStatsAggregationBatchSizeCap = 1000
 const clientIpStatsAggregationMaxBatchesCap = 10
 const clientIpStatsAggregationMaxRunMs = 5000
+const usageStatsAggregationMaxRunMs = 4500
 const usageRankSnapshotSlowStageMs = 1000
 const usageRankSnapshotCoreStageNames: UsageRankSnapshotStageName[] = [
   'account_last7d_request_rank',
@@ -64,8 +71,6 @@ export function startBackgroundJobs(): void {
   started = true
 
   switch (runtimeConfig.workerRole) {
-    case 'metrics-worker':
-      return
     case 'ingest-worker':
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
@@ -88,20 +93,16 @@ export function startBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-scope-range-windows-refresh'), usageScopeRangeWindowStageNames) })
       scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: 30 * minuteMs, initialDelayMs: 5 * minuteMs + 50 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('authorization-usage-range-windows-refresh'), authorizationUsageRangeWindowStageNames) })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation, yieldToEventLoop }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation: ensureUsageRecordsSafeForStatsAggregation, yieldToEventLoop }) })
       scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
-    case 'snapshot-worker':
-      return
-    case 'probe-worker':
+    case 'ops-worker':
       scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
       scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
-      return
-    case 'maintenance-worker':
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, task: runAccountAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
@@ -120,15 +121,17 @@ async function runUsageStatsAggregation(): Promise<void> {
   if (usageStatsAggregationRunning) return
   usageStatsAggregationRunning = true
   try {
-    await ensureUsageRecordsIngestedBeforeStatsAggregation()
+    const safety = await usageStatsAggregationSafety()
     await yieldToEventLoop()
     const batchSize = settingsNumber('statsAggregationBatchSize', 100, 10000)
     const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100)
     await requestStatsWriter({
       type: 'aggregate_usage_stats',
       batchSize,
-      maxBatches
-    }, Math.max(10_000, maxBatches * 5_000))
+      maxBatches,
+      maxRunMs: usageStatsAggregationMaxRunMs,
+      safeCreatedBefore: safety.safeCreatedBefore
+    }, Math.max(10_000, usageStatsAggregationMaxRunMs + 5_000))
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
     throw error
@@ -141,7 +144,7 @@ async function runClientIpStatsAggregation(): Promise<void> {
   if (clientIpStatsAggregationRunning) return
   clientIpStatsAggregationRunning = true
   try {
-    await ensureUsageRecordsIngestedBeforeStatsAggregation()
+    await ensureUsageRecordsSafeForStatsAggregation()
     await yieldToEventLoop()
     const batchSize = Math.min(settingsNumber('statsAggregationBatchSize', 100, 10000), clientIpStatsAggregationBatchSizeCap)
     const maxBatches = Math.min(settingsNumber('statsAggregationMaxBatchesPerRun', 1, 100), clientIpStatsAggregationMaxBatchesCap)
@@ -159,20 +162,45 @@ async function runClientIpStatsAggregation(): Promise<void> {
   }
 }
 
-async function ensureUsageRecordsIngestedBeforeStatsAggregation(): Promise<void> {
+async function ensureUsageRecordsSafeForStatsAggregation(): Promise<void> {
+  await usageStatsAggregationSafety()
+}
+
+async function usageStatsAggregationSafety(): Promise<UsageStatsAggregationSafety> {
   const status = await requestIngestWorkerDrainStatus(1000)
-  const serverPendingCount = status?.pendingQueues.usageRecords.queueLength ?? 0
-  const workerPendingCount = status?.snapshot?.usageRecordQueue.queueLength ?? 0
   const flushFailureCount = status?.snapshot?.usageRecordQueue.flushFailureCount ?? 0
   if (!status?.ready || !status.snapshot) {
     throw new Error('ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录')
   }
-  if (serverPendingCount > 0 || workerPendingCount > 0) {
-    throw new Error(`使用记录 ingest 队列仍有 ${serverPendingCount + workerPendingCount} 条未落库，本轮跳过统计聚合，避免统计游标越过排队记录`)
-  }
+  const defaultSafeCreatedBefore = defaultUsageStatsSafeCreatedBeforeIso()
   if (flushFailureCount > 0) {
     throw new Error(`使用记录 ingest 队列已有 ${flushFailureCount} 次写入失败，本轮跳过统计聚合，等待写入队列恢复`)
   }
+  const stalePendingCreatedAt = oldestPendingUsageRecordCreatedAt(status)
+  if (stalePendingCreatedAt && stalePendingCreatedAt <= defaultSafeCreatedBefore) {
+    throw new Error(`使用记录 ingest 队列存在 createdAt=${stalePendingCreatedAt} 的超龄未落库记录，本轮跳过统计聚合，等待 ${usageStatsCursorSafetyDelaySeconds} 秒安全延迟内的写入队列恢复`)
+  }
+  return {
+    safeCreatedBefore: defaultSafeCreatedBefore
+  }
+}
+
+function oldestPendingUsageRecordCreatedAt(status: BackgroundWorkerIngestDrainStatus): string | undefined {
+  return oldestIso(
+    status.pendingQueues.usageRecords.oldestCreatedAt,
+    status.snapshot?.usageRecordQueue.oldestCreatedAt
+  )
+}
+
+function oldestIso(left?: string, right?: string): string | undefined {
+  if (!left) return right
+  if (!right) return left
+  return left <= right ? left : right
+}
+
+function defaultUsageStatsSafeCreatedBeforeIso(): string {
+  const safetyMs = usageStatsCursorSafetyDelaySeconds * 1000
+  return new Date(Date.now() - safetyMs).toISOString()
 }
 
 async function runGroupAccountStatsRefresh(): Promise<void> {

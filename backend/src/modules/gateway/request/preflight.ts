@@ -623,7 +623,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     loadModelAwareCandidateAccounts: options.candidateAccounts
       ? undefined
-      : (model) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model }),
+      : (model, sourceEndpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model, requestedEndpointFamily: sourceEndpointFamily }),
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,

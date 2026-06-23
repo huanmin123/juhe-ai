@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 import { DatabaseSync } from 'node:sqlite'
 
+import { applyBusinessSchema, seedDefaults } from '../../storage/schema.js'
+
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const serverEntryMode = process.env.JUHE_AI_WORKER_TOPOLOGY_ENTRY === 'dist' ? 'dist' : 'source'
 const tempRoot = mkdtempSync(resolve(tmpdir(), 'juhe-ai-worker-topology-'))
@@ -16,6 +18,7 @@ const statsDatabasePath = resolve(dataRoot, 'stats.sqlite3')
 
 mkdirSync(dataRoot, { recursive: true })
 mkdirSync(logRoot, { recursive: true })
+initializeBusinessDatabase(resolve(dataRoot, 'business.sqlite3'))
 
 const port = await freePort()
 const child = startBackendServer(port)
@@ -32,11 +35,11 @@ try {
   await waitForHealth(`http://127.0.0.1:${port}/__aisys__/health`, child)
   await waitForHealth(`http://127.0.0.1:${port}/__aisys__/api/health`, child)
 
-  const { workerChildren, dbServiceChildren } = await waitForChildProcessTopology(child, 7, 1)
-  assert.equal(workerChildren.length, 7, `server 必须拉起默认 worker、metrics-worker、ingest-worker、stats-worker、snapshot-worker、probe-worker 和 maintenance-worker 七个子进程，实际 worker 子进程数：${workerChildren.length}`)
+  const { workerChildren, dbServiceChildren } = await waitForChildProcessTopology(child, 3, 1)
+  assert.equal(workerChildren.length, 3, `server 必须拉起 ingest-worker、stats-worker 和 ops-worker 三个子进程，实际 worker 子进程数：${workerChildren.length}`)
   assert.equal(dbServiceChildren.length, 1, `server 必须拉起一个 db-service 子进程，实际 db-service 子进程数：${dbServiceChildren.length}`)
 
-  const rows = await waitForProcessEventLoopRoles(statsDatabasePath, ['server', 'worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'db-service'])
+  const rows = await waitForProcessEventLoopRoles(statsDatabasePath, ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'])
   console.log(`后台 worker 拓扑 smoke 通过：entry=${serverEntryMode} serverPid=${child.pid} workerChildren=${workerChildren.length} dbServiceChildren=${dbServiceChildren.length} roles=${rows.map((row) => `${row.processRole}:${row.count}`).join(',')}`)
 } finally {
   await stopProcessTree(child)
@@ -67,6 +70,16 @@ function startBackendServer(port: number): ChildProcess {
     },
     stdio: ['ignore', 'pipe', 'pipe']
   })
+}
+
+function initializeBusinessDatabase(databasePath: string): void {
+  const database = new DatabaseSync(databasePath)
+  try {
+    applyBusinessSchema(database)
+    seedDefaults(database)
+  } finally {
+    database.close()
+  }
 }
 
 async function waitForChildProcessTopology(

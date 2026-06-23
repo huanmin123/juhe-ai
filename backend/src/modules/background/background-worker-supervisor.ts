@@ -14,13 +14,9 @@ interface SupervisedWorkerState {
 }
 
 const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = [
-  'worker',
-  'metrics-worker',
   'ingest-worker',
   'stats-worker',
-  'snapshot-worker',
-  'probe-worker',
-  'maintenance-worker'
+  'ops-worker'
 ]
 const supervisedWorkers = new Map<BackgroundWorkerProcessRole, SupervisedWorkerState>(
   supervisedWorkerRoles.map((role) => [role, { restartAttempts: 0 }])
@@ -243,11 +239,8 @@ function supervisedWorkerState(role: BackgroundWorkerProcessRole): SupervisedWor
 }
 
 function backgroundWorkerRoleMessage(role: BackgroundWorkerProcessRole, action: string): string {
-  if (role === 'metrics-worker') return `后台 metrics-worker ${action}`
   if (role === 'ingest-worker') return `后台 ingest-worker ${action}`
   if (role === 'stats-worker') return `后台 stats-worker ${action}`
-  if (role === 'snapshot-worker') return `后台 snapshot-worker ${action}`
-  if (role === 'probe-worker') return `后台 probe-worker ${action}`
-  if (role === 'maintenance-worker') return `后台 maintenance-worker ${action}`
+  if (role === 'ops-worker') return `后台 ops-worker ${action}`
   return `后台 worker ${action}`
 }

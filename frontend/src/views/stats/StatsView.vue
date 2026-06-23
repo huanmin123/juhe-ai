@@ -260,13 +260,9 @@ const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJo
 const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
 const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
   !systemMetrics.value.runtimeSnapshotAvailable
-  || !systemMetrics.value.workerSnapshotAvailable
-  || systemMetrics.value.metricsWorkerSnapshotAvailable === false
   || systemMetrics.value.ingestWorkerSnapshotAvailable === false
   || systemMetrics.value.statsWorkerSnapshotAvailable === false
-  || systemMetrics.value.snapshotWorkerSnapshotAvailable === false
-  || systemMetrics.value.probeWorkerSnapshotAvailable === false
-  || systemMetrics.value.maintenanceWorkerSnapshotAvailable === false
+  || systemMetrics.value.opsWorkerSnapshotAvailable === false
   || !systemMetrics.value.backgroundJobsAvailable
 )))
 const systemRuntimeAlertDescription = computed(() => {
@@ -276,13 +272,9 @@ const systemRuntimeAlertDescription = computed(() => {
   if (!metrics.runtimeSnapshotAvailable) {
     reasons.push('服务运行态不可用')
   } else {
-    if (!metrics.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
-    if (metrics.metricsWorkerSnapshotAvailable === false) reasons.push('监控 worker 快照不可用')
     if (metrics.ingestWorkerSnapshotAvailable === false) reasons.push('写入 worker 快照不可用')
     if (metrics.statsWorkerSnapshotAvailable === false) reasons.push('统计 worker 快照不可用')
-    if (metrics.snapshotWorkerSnapshotAvailable === false) reasons.push('快照 worker 快照不可用')
-    if (metrics.probeWorkerSnapshotAvailable === false) reasons.push('探测 worker 快照不可用')
-    if (metrics.maintenanceWorkerSnapshotAvailable === false) reasons.push('维护 worker 快照不可用')
+    if (metrics.opsWorkerSnapshotAvailable === false) reasons.push('运维 worker 快照不可用')
     if (!metrics.backgroundJobsAvailable) reasons.push('后台任务状态不可用')
   }
   return `${reasons.join('；') || '运行态状态未知'}。`
@@ -694,6 +686,5 @@ watch(() => backgroundJobRows.value.length, (total) => {
 
 }
 </style>
-
 
 

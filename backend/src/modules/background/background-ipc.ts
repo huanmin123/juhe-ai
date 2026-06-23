@@ -70,24 +70,15 @@ export type {
 let workerProcess: ChildProcess | undefined
 let workerReady = false
 let workerPid: number | undefined
-let metricsWorkerProcess: ChildProcess | undefined
-let metricsWorkerReady = false
-let metricsWorkerPid: number | undefined
 let ingestWorkerProcess: ChildProcess | undefined
 let ingestWorkerReady = false
 let ingestWorkerPid: number | undefined
 let statsWorkerProcess: ChildProcess | undefined
 let statsWorkerReady = false
 let statsWorkerPid: number | undefined
-let snapshotWorkerProcess: ChildProcess | undefined
-let snapshotWorkerReady = false
-let snapshotWorkerPid: number | undefined
-let probeWorkerProcess: ChildProcess | undefined
-let probeWorkerReady = false
-let probeWorkerPid: number | undefined
-let maintenanceWorkerProcess: ChildProcess | undefined
-let maintenanceWorkerReady = false
-let maintenanceWorkerPid: number | undefined
+let opsWorkerProcess: ChildProcess | undefined
+let opsWorkerReady = false
+let opsWorkerPid: number | undefined
 const usageRecordMessageQueueMaxMessages = 10_000
 const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
 const regularWorkerMessageQueueMaxMessages = 5_000
@@ -96,26 +87,21 @@ const ingestUsageBurstBeforeRegular = 8
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const ingestUsageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
 const ingestRegularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
-const probeWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
-const maintenanceWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
+const opsWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let regularWorkerMessageQueueBytes = 0
 let ingestUsageRecordMessageQueueBytes = 0
 let ingestRegularWorkerMessageQueueBytes = 0
-let probeWorkerMessageQueueBytes = 0
-let maintenanceWorkerMessageQueueBytes = 0
+let opsWorkerMessageQueueBytes = 0
 let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
 let sendingIngestMessage = false
 let sendingIngestWorkerMessage: BackgroundWorkerMessage | undefined
 let consecutiveIngestUsageMessages = 0
-let sendingProbeMessage = false
-let sendingProbeWorkerMessage: BackgroundWorkerMessage | undefined
-let sendingMaintenanceMessage = false
-let sendingMaintenanceWorkerMessage: BackgroundWorkerMessage | undefined
+let sendingOpsMessage = false
+let sendingOpsWorkerMessage: BackgroundWorkerMessage | undefined
 const pendingQueueRuntime = emptyIpcQueuesRuntime()
 const ingestPendingQueueRuntime = emptyIpcQueuesRuntime()
-const probePendingQueueRuntime = emptyIpcQueuesRuntime()
-const maintenancePendingQueueRuntime = emptyIpcQueuesRuntime()
+const opsPendingQueueRuntime = emptyIpcQueuesRuntime()
 let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
@@ -123,12 +109,9 @@ let pendingStatsWriteRequests = new Map<string, PendingStatsWriteRequest>()
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let backgroundWorkerReadyHandler: (() => void) | undefined
-let metricsWorkerReadyHandler: (() => void) | undefined
 let ingestWorkerReadyHandler: (() => void) | undefined
 let statsWorkerReadyHandler: (() => void) | undefined
-let snapshotWorkerReadyHandler: (() => void) | undefined
-let probeWorkerReadyHandler: (() => void) | undefined
-let maintenanceWorkerReadyHandler: (() => void) | undefined
+let opsWorkerReadyHandler: (() => void) | undefined
 
 if (runtimeConfig.processRole === 'worker') {
   process.on('message', handleParentMessage)
@@ -139,10 +122,6 @@ if (runtimeConfig.processRole === 'worker') {
 
 export function attachBackgroundWorkerProcess(child: ChildProcess, options: { role?: BackgroundWorkerProcessRole; onReady?: () => void } = {}): void {
   const role = options.role ?? 'worker'
-  if (role === 'metrics-worker') {
-    attachMetricsWorkerProcess(child, options)
-    return
-  }
   if (role === 'ingest-worker') {
     attachIngestWorkerProcess(child, options)
     return
@@ -151,16 +130,8 @@ export function attachBackgroundWorkerProcess(child: ChildProcess, options: { ro
     attachStatsWorkerProcess(child, options)
     return
   }
-  if (role === 'snapshot-worker') {
-    attachSnapshotWorkerProcess(child, options)
-    return
-  }
-  if (role === 'probe-worker') {
-    attachProbeWorkerProcess(child, options)
-    return
-  }
-  if (role === 'maintenance-worker') {
-    attachMaintenanceWorkerProcess(child, options)
+  if (role === 'ops-worker') {
+    attachOpsWorkerProcess(child, options)
     return
   }
 
@@ -186,24 +157,6 @@ export function attachBackgroundWorkerProcess(child: ChildProcess, options: { ro
   })
 
   flushWorkerMessageQueue()
-}
-
-function attachMetricsWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
-  metricsWorkerProcess = child
-  metricsWorkerPid = child.pid ?? undefined
-  metricsWorkerReady = false
-  metricsWorkerReadyHandler = options.onReady
-
-  child.removeAllListeners('message')
-  child.on('message', (message: unknown) => handleWorkerMessage(message, 'metrics-worker', child))
-  child.once('exit', () => {
-    if (metricsWorkerProcess === child) {
-      metricsWorkerProcess = undefined
-      metricsWorkerReady = false
-      metricsWorkerPid = undefined
-      failMetricsPendingRequests()
-    }
-  })
 }
 
 function attachIngestWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
@@ -250,72 +203,29 @@ function attachStatsWorkerProcess(child: ChildProcess, options: { onReady?: () =
   })
 }
 
-function attachSnapshotWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
-  snapshotWorkerProcess = child
-  snapshotWorkerPid = child.pid ?? undefined
-  snapshotWorkerReady = false
-  snapshotWorkerReadyHandler = options.onReady
+function attachOpsWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
+  opsWorkerProcess = child
+  opsWorkerPid = child.pid ?? undefined
+  opsWorkerReady = false
+  opsWorkerReadyHandler = options.onReady
 
   child.removeAllListeners('message')
-  child.on('message', (message: unknown) => handleWorkerMessage(message, 'snapshot-worker', child))
+  child.on('message', (message: unknown) => handleWorkerMessage(message, 'ops-worker', child))
   child.once('exit', () => {
-    if (snapshotWorkerProcess === child) {
-      snapshotWorkerProcess = undefined
-      snapshotWorkerReady = false
-      snapshotWorkerPid = undefined
-      failSnapshotPendingRequests()
-    }
-  })
-}
-
-function attachProbeWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
-  probeWorkerProcess = child
-  probeWorkerPid = child.pid ?? undefined
-  probeWorkerReady = false
-  probeWorkerReadyHandler = options.onReady
-
-  child.removeAllListeners('message')
-  child.on('message', (message: unknown) => handleWorkerMessage(message, 'probe-worker', child))
-  child.once('exit', () => {
-    if (probeWorkerProcess === child) {
-      probeWorkerProcess = undefined
-      probeWorkerReady = false
-      probeWorkerPid = undefined
-      sendingProbeMessage = false
-      if (sendingProbeWorkerMessage) {
-        requeueProbeWorkerMessageFirst(sendingProbeWorkerMessage)
-        sendingProbeWorkerMessage = undefined
+    if (opsWorkerProcess === child) {
+      opsWorkerProcess = undefined
+      opsWorkerReady = false
+      opsWorkerPid = undefined
+      sendingOpsMessage = false
+      if (sendingOpsWorkerMessage) {
+        requeueOpsWorkerMessageFirst(sendingOpsWorkerMessage)
+        sendingOpsWorkerMessage = undefined
       }
-      failProbePendingRequests()
+      failOpsPendingRequests()
     }
   })
 
-  flushProbeWorkerMessageQueue()
-}
-
-function attachMaintenanceWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
-  maintenanceWorkerProcess = child
-  maintenanceWorkerPid = child.pid ?? undefined
-  maintenanceWorkerReady = false
-  maintenanceWorkerReadyHandler = options.onReady
-
-  child.removeAllListeners('message')
-  child.on('message', (message: unknown) => handleWorkerMessage(message, 'maintenance-worker', child))
-  child.once('exit', () => {
-    if (maintenanceWorkerProcess === child) {
-      maintenanceWorkerProcess = undefined
-      maintenanceWorkerReady = false
-      maintenanceWorkerPid = undefined
-      sendingMaintenanceMessage = false
-      if (sendingMaintenanceWorkerMessage) {
-        requeueMaintenanceWorkerMessageFirst(sendingMaintenanceWorkerMessage)
-        sendingMaintenanceWorkerMessage = undefined
-      }
-      failMaintenancePendingRequests()
-    }
-  })
-
-  flushMaintenanceWorkerMessageQueue()
+  flushOpsWorkerMessageQueue()
 }
 
 export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
@@ -495,15 +405,6 @@ function sendBackgroundWorkerMessageToWorker(message: BackgroundWorkerMessage): 
   return sendBackgroundWorkerMessage(message)
 }
 
-export async function requestMetricsWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestDirectWorkerSnapshot('metrics-worker', {
-    child: metricsWorkerProcess,
-    markIpcBroken: (error, child) => markMetricsWorkerIpcBroken(error, child),
-    ready: metricsWorkerReady,
-    timeoutMs
-  })
-}
-
 export async function requestIngestWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
   return await requestDirectWorkerSnapshot('ingest-worker', {
     child: ingestWorkerProcess,
@@ -522,29 +423,11 @@ export async function requestStatsWorkerSnapshot(timeoutMs = 5000): Promise<Back
   })
 }
 
-export async function requestSnapshotWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestSnapshotRoleWorkerSnapshot('snapshot-worker', {
-    child: snapshotWorkerProcess,
-    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('snapshot-worker', error, child),
-    ready: snapshotWorkerReady,
-    timeoutMs
-  })
-}
-
-export async function requestProbeWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestSnapshotRoleWorkerSnapshot('probe-worker', {
-    child: probeWorkerProcess,
-    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('probe-worker', error, child),
-    ready: probeWorkerReady,
-    timeoutMs
-  })
-}
-
-export async function requestMaintenanceWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
-  return await requestSnapshotRoleWorkerSnapshot('maintenance-worker', {
-    child: maintenanceWorkerProcess,
-    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('maintenance-worker', error, child),
-    ready: maintenanceWorkerReady,
+export async function requestOpsWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
+  return await requestSnapshotRoleWorkerSnapshot('ops-worker', {
+    child: opsWorkerProcess,
+    markIpcBroken: (error, child) => markRoleWorkerIpcBroken('ops-worker', error, child),
+    ready: opsWorkerReady,
     timeoutMs
   })
 }
@@ -660,12 +543,9 @@ async function requestChildProcessEventLoopSamples(
 
 export function getBackgroundWorkerState(): BackgroundWorkerState {
   const workerSnapshotStats = snapshotRequestStats('worker')
-  const metricsSnapshotStats = snapshotRequestStats('metrics-worker')
   const ingestSnapshotStats = snapshotRequestStats('ingest-worker')
   const statsSnapshotStats = snapshotRequestStats('stats-worker')
-  const snapshotWorkerSnapshotStats = snapshotRequestStats('snapshot-worker')
-  const probeSnapshotStats = snapshotRequestStats('probe-worker')
-  const maintenanceSnapshotStats = snapshotRequestStats('maintenance-worker')
+  const opsSnapshotStats = snapshotRequestStats('ops-worker')
   return buildBackgroundWorkerStateSnapshot({
     pid: workerPid,
     ready: workerReady,
@@ -674,15 +554,13 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
       regularWorker: regularWorkerMessageQueue.length,
       ingestUsageRecord: ingestUsageRecordMessageQueue.length,
       ingestRegularWorker: ingestRegularWorkerMessageQueue.length,
-      probeWorker: probeWorkerMessageQueue.length,
-      maintenanceWorker: maintenanceWorkerMessageQueue.length
+      opsWorker: opsWorkerMessageQueue.length
     },
     pendingMessageBytes: {
       regularWorker: regularWorkerMessageQueueBytes,
       ingestUsageRecord: ingestUsageRecordMessageQueueBytes,
       ingestRegularWorker: ingestRegularWorkerMessageQueueBytes,
-      probeWorker: probeWorkerMessageQueueBytes,
-      maintenanceWorker: maintenanceWorkerMessageQueueBytes
+      opsWorker: opsWorkerMessageQueueBytes
     },
     pendingQueues: buildAggregatePendingQueuesRuntime(),
     pendingSnapshotRequestCount: workerSnapshotStats.pendingSnapshotRequestCount,
@@ -692,14 +570,6 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
     timedOutProcessEventLoopRequestCount,
     failedProcessEventLoopRequestCount,
     roles: {
-      metricsWorker: {
-        pid: metricsWorkerPid,
-        ready: metricsWorkerReady,
-        lastSnapshot: metricsSnapshotStats.lastSnapshot,
-        pendingSnapshotRequestCount: metricsSnapshotStats.pendingSnapshotRequestCount,
-        timedOutSnapshotRequestCount: metricsSnapshotStats.timedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: metricsSnapshotStats.rejectedSnapshotRequestCount
-      },
       ingestWorker: {
         pid: ingestWorkerPid,
         ready: ingestWorkerReady,
@@ -723,35 +593,16 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
         timedOutSnapshotRequestCount: statsSnapshotStats.timedOutSnapshotRequestCount,
         rejectedSnapshotRequestCount: statsSnapshotStats.rejectedSnapshotRequestCount
       },
-      snapshotWorker: {
-        pid: snapshotWorkerPid,
-        ready: snapshotWorkerReady,
-        lastSnapshot: snapshotWorkerSnapshotStats.lastSnapshot,
-        pendingSnapshotRequestCount: snapshotWorkerSnapshotStats.pendingSnapshotRequestCount,
-        timedOutSnapshotRequestCount: snapshotWorkerSnapshotStats.timedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: snapshotWorkerSnapshotStats.rejectedSnapshotRequestCount
-      },
-      probeWorker: {
-        pid: probeWorkerPid,
-        ready: probeWorkerReady,
-        lastSnapshot: probeSnapshotStats.lastSnapshot,
-        pendingMessageCount: probeWorkerMessageQueue.length,
-        pendingMessageBytes: probeWorkerMessageQueueBytes,
-        pendingQueues: buildProbePendingQueuesRuntime(),
-        pendingSnapshotRequestCount: probeSnapshotStats.pendingSnapshotRequestCount,
-        timedOutSnapshotRequestCount: probeSnapshotStats.timedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: probeSnapshotStats.rejectedSnapshotRequestCount
-      },
-      maintenanceWorker: {
-        pid: maintenanceWorkerPid,
-        ready: maintenanceWorkerReady,
-        lastSnapshot: maintenanceSnapshotStats.lastSnapshot,
-        pendingMessageCount: maintenanceWorkerMessageQueue.length,
-        pendingMessageBytes: maintenanceWorkerMessageQueueBytes,
-        pendingQueues: buildMaintenancePendingQueuesRuntime(),
-        pendingSnapshotRequestCount: maintenanceSnapshotStats.pendingSnapshotRequestCount,
-        timedOutSnapshotRequestCount: maintenanceSnapshotStats.timedOutSnapshotRequestCount,
-        rejectedSnapshotRequestCount: maintenanceSnapshotStats.rejectedSnapshotRequestCount
+      opsWorker: {
+        pid: opsWorkerPid,
+        ready: opsWorkerReady,
+        lastSnapshot: opsSnapshotStats.lastSnapshot,
+        pendingMessageCount: opsWorkerMessageQueue.length,
+        pendingMessageBytes: opsWorkerMessageQueueBytes,
+        pendingQueues: buildOpsPendingQueuesRuntime(),
+        pendingSnapshotRequestCount: opsSnapshotStats.pendingSnapshotRequestCount,
+        timedOutSnapshotRequestCount: opsSnapshotStats.timedOutSnapshotRequestCount,
+        rejectedSnapshotRequestCount: opsSnapshotStats.rejectedSnapshotRequestCount
       }
     }
   })
@@ -1091,12 +942,9 @@ function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
       ingestRegularWorkerMessageQueue.push(message)
       ingestRegularWorkerMessageQueueBytes += messageBytes
     }
-  } else if (targetRole === 'probe-worker') {
-    probeWorkerMessageQueue.push(message)
-    probeWorkerMessageQueueBytes += messageBytes
-  } else if (targetRole === 'maintenance-worker') {
-    maintenanceWorkerMessageQueue.push(message)
-    maintenanceWorkerMessageQueueBytes += messageBytes
+  } else if (targetRole === 'ops-worker') {
+    opsWorkerMessageQueue.push(message)
+    opsWorkerMessageQueueBytes += messageBytes
   } else {
     regularWorkerMessageQueue.push(message)
     regularWorkerMessageQueueBytes += messageBytes
@@ -1225,11 +1073,8 @@ function regularQueueCapacityRuntimeForMessage(
         }
       : ingestHighPriorityRegularQueueRuntime()
   }
-  if (targetRole === 'probe-worker') {
-    return { queueLength: probeWorkerMessageQueue.length, queueBytes: probeWorkerMessageQueueBytes }
-  }
-  if (targetRole === 'maintenance-worker') {
-    return { queueLength: maintenanceWorkerMessageQueue.length, queueBytes: maintenanceWorkerMessageQueueBytes }
+  if (targetRole === 'ops-worker') {
+    return { queueLength: opsWorkerMessageQueue.length, queueBytes: opsWorkerMessageQueueBytes }
   }
   return { queueLength: regularWorkerMessageQueue.length, queueBytes: regularWorkerMessageQueueBytes }
 }
@@ -1251,12 +1096,8 @@ function flushTargetWorkerMessageQueue(role: BackgroundWorkerQueueTargetRole): v
     flushIngestWorkerMessageQueue()
     return
   }
-  if (role === 'probe-worker') {
-    flushProbeWorkerMessageQueue()
-    return
-  }
-  if (role === 'maintenance-worker') {
-    flushMaintenanceWorkerMessageQueue()
+  if (role === 'ops-worker') {
+    flushOpsWorkerMessageQueue()
     return
   }
   flushWorkerMessageQueue()
@@ -1348,83 +1189,43 @@ function flushIngestWorkerMessageQueue(): void {
   }
 }
 
-function flushProbeWorkerMessageQueue(): void {
-  const child = probeWorkerProcess
-  if (sendingProbeMessage || !child || !probeWorkerReady) {
+function flushOpsWorkerMessageQueue(): void {
+  const child = opsWorkerProcess
+  if (sendingOpsMessage || !child || !opsWorkerReady) {
     return
   }
 
-  const message = shiftProbeWorkerMessage()
+  const message = shiftOpsWorkerMessage()
   if (!message) {
     return
   }
 
-  sendingProbeMessage = true
-  sendingProbeWorkerMessage = message
+  sendingOpsMessage = true
+  sendingOpsWorkerMessage = message
   try {
     child.send(message, (error) => {
-      const stillSendingThisMessage = sendingProbeWorkerMessage === message
+      const stillSendingThisMessage = sendingOpsWorkerMessage === message
       if (stillSendingThisMessage) {
-        sendingProbeMessage = false
-        sendingProbeWorkerMessage = undefined
+        sendingOpsMessage = false
+        sendingOpsWorkerMessage = undefined
       }
       if (error) {
         if (stillSendingThisMessage) {
-          requeueProbeWorkerMessageFirst(message)
+          requeueOpsWorkerMessageFirst(message)
         }
-        markRoleWorkerIpcBroken('probe-worker', error, child)
+        markRoleWorkerIpcBroken('ops-worker', error, child)
         return
       }
       if (stillSendingThisMessage) {
-        flushProbeWorkerMessageQueue()
+        flushOpsWorkerMessageQueue()
       }
     })
   } catch (error) {
-    sendingProbeMessage = false
-    sendingProbeWorkerMessage = undefined
-    requeueProbeWorkerMessageFirst(message)
-    markRoleWorkerIpcBroken('probe-worker', error, child)
-    process.stderr.write(`[background-worker] 向 probe-worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
-  }
-}
-
-function flushMaintenanceWorkerMessageQueue(): void {
-  const child = maintenanceWorkerProcess
-  if (sendingMaintenanceMessage || !child || !maintenanceWorkerReady) {
-    return
-  }
-
-  const message = shiftMaintenanceWorkerMessage()
-  if (!message) {
-    return
-  }
-
-  sendingMaintenanceMessage = true
-  sendingMaintenanceWorkerMessage = message
-  try {
-    child.send(message, (error) => {
-      const stillSendingThisMessage = sendingMaintenanceWorkerMessage === message
-      if (stillSendingThisMessage) {
-        sendingMaintenanceMessage = false
-        sendingMaintenanceWorkerMessage = undefined
-      }
-      if (error) {
-        if (stillSendingThisMessage) {
-          requeueMaintenanceWorkerMessageFirst(message)
-        }
-        markRoleWorkerIpcBroken('maintenance-worker', error, child)
-        return
-      }
-      if (stillSendingThisMessage) {
-        flushMaintenanceWorkerMessageQueue()
-      }
-    })
-  } catch (error) {
-    sendingMaintenanceMessage = false
-    sendingMaintenanceWorkerMessage = undefined
-    requeueMaintenanceWorkerMessageFirst(message)
-    markRoleWorkerIpcBroken('maintenance-worker', error, child)
-    process.stderr.write(`[background-worker] 向 maintenance-worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
+    sendingOpsMessage = false
+    sendingOpsWorkerMessage = undefined
+    requeueOpsWorkerMessageFirst(message)
+    markRoleWorkerIpcBroken('ops-worker', error, child)
+    process.stderr.write(`[background-worker] 向 ops-worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
   }
 }
 
@@ -1489,24 +1290,13 @@ function shiftIngestRegularWorkerMessage(): BackgroundWorkerMessage | undefined 
   return ingestRegularWorkerMessageQueue.shift()
 }
 
-function shiftProbeWorkerMessage(): BackgroundWorkerMessage | undefined {
-  const message = probeWorkerMessageQueue.shift()
+function shiftOpsWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const message = opsWorkerMessageQueue.shift()
   if (message) {
     const queueKey = ipcQueueKeyForMessage(message)
     const messageBytes = estimateWorkerMessageBytes(message)
-    probeWorkerMessageQueueBytes = Math.max(0, probeWorkerMessageQueueBytes - messageBytes)
-    removePendingQueueRuntimeMessage('probe-worker', queueKey, messageBytes)
-  }
-  return message
-}
-
-function shiftMaintenanceWorkerMessage(): BackgroundWorkerMessage | undefined {
-  const message = maintenanceWorkerMessageQueue.shift()
-  if (message) {
-    const queueKey = ipcQueueKeyForMessage(message)
-    const messageBytes = estimateWorkerMessageBytes(message)
-    maintenanceWorkerMessageQueueBytes = Math.max(0, maintenanceWorkerMessageQueueBytes - messageBytes)
-    removePendingQueueRuntimeMessage('maintenance-worker', queueKey, messageBytes)
+    opsWorkerMessageQueueBytes = Math.max(0, opsWorkerMessageQueueBytes - messageBytes)
+    removePendingQueueRuntimeMessage('ops-worker', queueKey, messageBytes)
   }
   return message
 }
@@ -1532,39 +1322,48 @@ function requeueIngestWorkerMessageFirst(message: BackgroundWorkerMessage): void
   addPendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
 }
 
-function requeueProbeWorkerMessageFirst(message: BackgroundWorkerMessage): void {
+function requeueOpsWorkerMessageFirst(message: BackgroundWorkerMessage): void {
   const messageBytes = estimateWorkerMessageBytes(message)
   const queueKey = ipcQueueKeyForMessage(message)
-  probeWorkerMessageQueue.unshift(message)
-  probeWorkerMessageQueueBytes += messageBytes
-  addPendingQueueRuntimeMessage('probe-worker', queueKey, messageBytes)
-}
-
-function requeueMaintenanceWorkerMessageFirst(message: BackgroundWorkerMessage): void {
-  const messageBytes = estimateWorkerMessageBytes(message)
-  const queueKey = ipcQueueKeyForMessage(message)
-  maintenanceWorkerMessageQueue.unshift(message)
-  maintenanceWorkerMessageQueueBytes += messageBytes
-  addPendingQueueRuntimeMessage('maintenance-worker', queueKey, messageBytes)
+  opsWorkerMessageQueue.unshift(message)
+  opsWorkerMessageQueueBytes += messageBytes
+  addPendingQueueRuntimeMessage('ops-worker', queueKey, messageBytes)
 }
 
 function buildIngestPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
-  return clonePendingQueueRuntime(ingestPendingQueueRuntime)
+  const runtime = clonePendingQueueRuntime(ingestPendingQueueRuntime)
+  const oldestCreatedAt = oldestIngestUsageRecordMessageCreatedAt()
+  if (oldestCreatedAt) {
+    runtime.usageRecords.oldestCreatedAt = oldestCreatedAt
+  }
+  return runtime
 }
 
-function buildProbePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
-  return clonePendingQueueRuntime(probePendingQueueRuntime)
-}
-
-function buildMaintenancePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
-  return clonePendingQueueRuntime(maintenancePendingQueueRuntime)
+function buildOpsPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
+  return clonePendingQueueRuntime(opsPendingQueueRuntime)
 }
 
 function buildAggregatePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
   return mergePendingQueuesRuntime(
-    mergePendingQueuesRuntime(pendingQueueRuntime, ingestPendingQueueRuntime),
-    mergePendingQueuesRuntime(probePendingQueueRuntime, maintenancePendingQueueRuntime)
+    pendingQueueRuntime,
+    mergePendingQueuesRuntime(ingestPendingQueueRuntime, opsPendingQueueRuntime)
   )
+}
+
+function oldestIngestUsageRecordMessageCreatedAt(): string | undefined {
+  let oldest: string | undefined
+  for (let index = 0; index < ingestUsageRecordMessageQueue.length; index += 1) {
+    const message = ingestUsageRecordMessageQueue.at(index)
+    if (!message) continue
+    for (const item of message.items) {
+      const createdAt = item.createdAt?.trim()
+      if (!createdAt) continue
+      if (!oldest || createdAt < oldest) {
+        oldest = createdAt
+      }
+    }
+  }
+  return oldest
 }
 
 function addPendingQueueRuntimeMessage(targetRole: BackgroundWorkerQueueTargetRole, key: IpcQueueKey, bytes: number): void {
@@ -1581,25 +1380,18 @@ function removePendingQueueRuntimeMessage(targetRole: BackgroundWorkerQueueTarge
 
 function pendingQueueRuntimeForTarget(targetRole: BackgroundWorkerQueueTargetRole): BackgroundWorkerIpcQueuesRuntime {
   if (targetRole === 'ingest-worker') return ingestPendingQueueRuntime
-  if (targetRole === 'probe-worker') return probePendingQueueRuntime
-  if (targetRole === 'maintenance-worker') return maintenancePendingQueueRuntime
+  if (targetRole === 'ops-worker') return opsPendingQueueRuntime
   return pendingQueueRuntime
 }
 
 function processForRole(role: BackgroundWorkerProcessRole): ChildProcess | undefined {
   switch (role) {
-    case 'metrics-worker':
-      return metricsWorkerProcess
     case 'ingest-worker':
       return ingestWorkerProcess
     case 'stats-worker':
       return statsWorkerProcess
-    case 'snapshot-worker':
-      return snapshotWorkerProcess
-    case 'probe-worker':
-      return probeWorkerProcess
-    case 'maintenance-worker':
-      return maintenanceWorkerProcess
+    case 'ops-worker':
+      return opsWorkerProcess
     default:
       return workerProcess
   }
@@ -1607,18 +1399,12 @@ function processForRole(role: BackgroundWorkerProcessRole): ChildProcess | undef
 
 function readyForRole(role: BackgroundWorkerProcessRole): boolean {
   switch (role) {
-    case 'metrics-worker':
-      return metricsWorkerReady
     case 'ingest-worker':
       return ingestWorkerReady
     case 'stats-worker':
       return statsWorkerReady
-    case 'snapshot-worker':
-      return snapshotWorkerReady
-    case 'probe-worker':
-      return probeWorkerReady
-    case 'maintenance-worker':
-      return maintenanceWorkerReady
+    case 'ops-worker':
+      return opsWorkerReady
     default:
       return workerReady
   }
@@ -1629,14 +1415,8 @@ function setReadyForRole(role: BackgroundWorkerProcessRole, ready: boolean): voi
     case 'stats-worker':
       statsWorkerReady = ready
       break
-    case 'snapshot-worker':
-      snapshotWorkerReady = ready
-      break
-    case 'probe-worker':
-      probeWorkerReady = ready
-      break
-    case 'maintenance-worker':
-      maintenanceWorkerReady = ready
+    case 'ops-worker':
+      opsWorkerReady = ready
       break
     default:
       break
@@ -1648,14 +1428,8 @@ function setPidForRole(role: BackgroundWorkerProcessRole, pid: number | undefine
     case 'stats-worker':
       statsWorkerPid = pid ?? statsWorkerPid
       break
-    case 'snapshot-worker':
-      snapshotWorkerPid = pid ?? snapshotWorkerPid
-      break
-    case 'probe-worker':
-      probeWorkerPid = pid ?? probeWorkerPid
-      break
-    case 'maintenance-worker':
-      maintenanceWorkerPid = pid ?? maintenanceWorkerPid
+    case 'ops-worker':
+      opsWorkerPid = pid ?? opsWorkerPid
       break
     default:
       break
@@ -1663,12 +1437,6 @@ function setPidForRole(role: BackgroundWorkerProcessRole, pid: number | undefine
 }
 
 function markWorkerReady(role: BackgroundWorkerProcessRole, record: Partial<BackgroundWorkerMessage> & Record<string, unknown>): void {
-  if (role === 'metrics-worker') {
-    metricsWorkerReady = true
-    metricsWorkerPid = workerPidFromReadyRecord(record, metricsWorkerPid)
-    metricsWorkerReadyHandler?.()
-    return
-  }
   if (role === 'ingest-worker') {
     ingestWorkerReady = true
     ingestWorkerPid = workerPidFromReadyRecord(record, ingestWorkerPid)
@@ -1682,24 +1450,11 @@ function markWorkerReady(role: BackgroundWorkerProcessRole, record: Partial<Back
     statsWorkerReadyHandler?.()
     return
   }
-  if (role === 'snapshot-worker') {
-    snapshotWorkerReady = true
-    snapshotWorkerPid = workerPidFromReadyRecord(record, snapshotWorkerPid)
-    snapshotWorkerReadyHandler?.()
-    return
-  }
-  if (role === 'probe-worker') {
-    probeWorkerReady = true
-    probeWorkerPid = workerPidFromReadyRecord(record, probeWorkerPid)
-    probeWorkerReadyHandler?.()
-    flushProbeWorkerMessageQueue()
-    return
-  }
-  if (role === 'maintenance-worker') {
-    maintenanceWorkerReady = true
-    maintenanceWorkerPid = workerPidFromReadyRecord(record, maintenanceWorkerPid)
-    maintenanceWorkerReadyHandler?.()
-    flushMaintenanceWorkerMessageQueue()
+  if (role === 'ops-worker') {
+    opsWorkerReady = true
+    opsWorkerPid = workerPidFromReadyRecord(record, opsWorkerPid)
+    opsWorkerReadyHandler?.()
+    flushOpsWorkerMessageQueue()
     return
   }
 
@@ -1722,10 +1477,6 @@ function failPendingRequests(): void {
   failPendingProcessEventLoopRequests()
 }
 
-function failMetricsPendingRequests(): void {
-  failWorkerSnapshotPendingRequests('metrics-worker')
-}
-
 function failIngestPendingRequests(): void {
   failWorkerSnapshotPendingRequests('ingest-worker')
   failDatasetPendingRequests()
@@ -1743,16 +1494,8 @@ function failDatasetPendingRequests(): void {
   }
 }
 
-function failSnapshotPendingRequests(): void {
-  failWorkerSnapshotPendingRequests('snapshot-worker')
-}
-
-function failProbePendingRequests(): void {
-  failWorkerSnapshotPendingRequests('probe-worker')
-}
-
-function failMaintenancePendingRequests(): void {
-  failWorkerSnapshotPendingRequests('maintenance-worker')
+function failOpsPendingRequests(): void {
+  failWorkerSnapshotPendingRequests('ops-worker')
 }
 
 function failPendingProcessEventLoopRequests(): void {
@@ -1775,16 +1518,6 @@ function markWorkerIpcBroken(error: unknown, child = workerProcess): void {
     failPendingRequests()
   }
   terminateBrokenWorkerIpc('worker', error, child)
-}
-
-function markMetricsWorkerIpcBroken(error: unknown, child = metricsWorkerProcess): void {
-  const isCurrentChild = child === undefined || metricsWorkerProcess === child
-  if (isCurrentChild) {
-    metricsWorkerReady = false
-    metricsWorkerPid = workerPidFromBrokenChild(child, metricsWorkerPid)
-    failMetricsPendingRequests()
-  }
-  terminateBrokenWorkerIpc('metrics-worker', error, child)
 }
 
 function markIngestWorkerIpcBroken(error: unknown, child = ingestWorkerProcess): void {
@@ -1813,20 +1546,13 @@ function markRoleWorkerIpcBroken(
 
 function roleForChild(child: ChildProcess | undefined): BackgroundWorkerProcessRole {
   return roleForBackgroundWorkerChild(child, {
-    metricsWorkerProcess,
     ingestWorkerProcess,
     statsWorkerProcess,
-    snapshotWorkerProcess,
-    probeWorkerProcess,
-    maintenanceWorkerProcess
+    opsWorkerProcess
   })
 }
 
 function markIpcBrokenForChild(role: BackgroundWorkerProcessRole, error: unknown, child: ChildProcess | undefined): void {
-  if (role === 'metrics-worker') {
-    markMetricsWorkerIpcBroken(error, child)
-    return
-  }
   if (role === 'ingest-worker') {
     markIngestWorkerIpcBroken(error, child)
     return

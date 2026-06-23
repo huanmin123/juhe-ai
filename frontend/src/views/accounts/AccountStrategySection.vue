@@ -26,9 +26,16 @@
             allow-clear
             :disabled="authorizedEditing"
             option-filter-prop="label"
-            :options="mappingDownstreamModelOptions"
+            :options="mappingSourceModelOptions"
             placeholder="下游模型"
             show-search
+          />
+          <a-select
+            v-model:value="mapping.sourceEndpointFamily"
+            :disabled="authorizedEditing"
+            :options="endpointFamilyOptions"
+            class="model-mapping-endpoint"
+            placeholder="下游协议"
           />
           <SwapRightOutlined class="model-mapping-arrow" />
           <a-select
@@ -36,9 +43,16 @@
             allow-clear
             :disabled="authorizedEditing"
             option-filter-prop="label"
-            :options="mappingSourceModelOptions"
+            :options="mappingUpstreamModelOptions"
             placeholder="上游模型"
             show-search
+          />
+          <a-select
+            v-model:value="mapping.upstreamEndpointFamily"
+            :disabled="authorizedEditing"
+            :options="upstreamEndpointFamilyOptions(mapping.sourceEndpointFamily)"
+            class="model-mapping-endpoint"
+            placeholder="上游协议"
           />
           <a-switch v-model:checked="mapping.enabled" :disabled="authorizedEditing" />
           <a-tooltip title="删除映射">
@@ -137,6 +151,7 @@ const props = defineProps<{
   isOAuthForm: boolean
   isManagementView: boolean
   mappingSourceModelOptions: Array<{ label: string; value: string }>
+  mappingUpstreamModelOptions: Array<{ label: string; value: string }>
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
   proxyOptions: SelectOption[]
@@ -169,29 +184,32 @@ const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
 })
-const supportedModelValueSet = computed(() => new Set(props.form.supportedModels
-  .map((model) => model.trim().toLowerCase())
-  .filter(Boolean)))
-const mappingDownstreamModelOptions = computed(() => {
-  const supportedModels = supportedModelValueSet.value
-  if (!supportedModels.size) return props.mappingSourceModelOptions
-  return props.mappingSourceModelOptions.filter((option) => supportedModels.has(option.value.trim().toLowerCase()))
-})
+const endpointFamilyOptions = [
+  { label: 'Chat Completions', value: 'chat_completions' },
+  { label: 'Responses', value: 'responses' }
+] as const
 
-watch(supportedModelValueSet, (supportedModels) => {
-  if (!supportedModels.size) return
+watch(() => props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'), () => {
   for (const mapping of props.form.modelMappings) {
-    const sourceModel = mapping.sourceModel.trim().toLowerCase()
-    if (sourceModel && !supportedModels.has(sourceModel)) {
-      mapping.sourceModel = ''
+    if (mapping.sourceEndpointFamily === 'chat_completions' && mapping.upstreamEndpointFamily === 'responses') {
+      mapping.upstreamEndpointFamily = 'chat_completions'
     }
   }
 })
 
+function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
+  return endpointFamilyOptions.map((option) => ({
+    ...option,
+    disabled: sourceEndpointFamily === 'chat_completions' && option.value === 'responses'
+  }))
+}
+
 function addModelMapping(): void {
   props.form.modelMappings.push({
     sourceModel: '',
+    sourceEndpointFamily: 'chat_completions',
     upstreamModel: '',
+    upstreamEndpointFamily: 'chat_completions',
     enabled: true
   })
 }
@@ -293,9 +311,13 @@ function activeProfileId(): string | undefined {
 
 .model-mapping-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr) auto 32px;
+  grid-template-columns: minmax(180px, 1fr) 150px 18px minmax(180px, 1fr) 150px auto 32px;
   gap: 8px;
   align-items: center;
+}
+
+.model-mapping-endpoint {
+  width: 100%;
 }
 
 .model-mapping-arrow {
@@ -318,7 +340,11 @@ function activeProfileId(): string | undefined {
   }
 
   .model-mapping-row {
-    grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(132px, 180px);
+  }
+
+  .model-mapping-arrow {
+    display: none;
   }
 
   .model-mapping-row :deep(.ant-switch),

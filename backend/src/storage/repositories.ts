@@ -13,12 +13,12 @@ import { normalizeAccountListOptions, type AccountListOptions } from './account-
 import { maxAccountNameLength, replaceAccountNameSearchTerms } from './account-name-search.repository.js'
 import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
 import {
-  assertAccountModelMappingSourcesAllowedBySupportedModels,
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
   normalizeAccountSupportedModelsForProvider
 } from './account-model-normalization.js'
 export {
-  assertAccountModelMappingSourcesAllowedBySupportedModels,
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
   normalizeAccountSupportedModelsForProvider
 } from './account-model-normalization.js'
@@ -944,8 +944,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
-  const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId) ?? []
-  assertAccountModelMappingSourcesAllowedBySupportedModels(modelMappings, supportedModels)
+  const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId, providerProfile) ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
@@ -1171,9 +1171,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     : current.supportedModels ?? []
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const nextModelMappings = hasModelMappingsInput
-    ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId) ?? []
+    ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId, current) ?? []
     : current.modelMappings ?? []
-  assertAccountModelMappingSourcesAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
   const hasTagsInput = hasOwnInput(input, 'tags')
   const nextTagNames = hasTagsInput
     ? normalizeAccountTagNamesInput(input.tags) ?? []

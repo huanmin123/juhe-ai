@@ -85,14 +85,14 @@ const brokenSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(50)
 assert.equal(brokenSnapshot, undefined, 'worker IPC 发送失败断开时不能返回留存 lastSnapshot')
 brokenWorker.exit()
 
-const maintenanceWorker = attachReadyWorker(42001, 'maintenance-worker')
-const maintenanceSnapshot = await backgroundIpc.requestMaintenanceWorkerSnapshot(50)
-assert.equal(maintenanceSnapshot?.pid, maintenanceWorker.pid, 'maintenance-worker 正常 IPC 回包应返回当前 snapshot')
-assert.equal(backgroundIpc.getBackgroundWorkerState().maintenanceWorker?.lastSnapshot?.pid, maintenanceWorker.pid, 'maintenance-worker 正常回包可以更新 lastSnapshot')
-maintenanceWorker.exit()
-const missingMaintenanceSnapshot = await backgroundIpc.requestMaintenanceWorkerSnapshot(50)
-assert.equal(missingMaintenanceSnapshot, undefined, 'maintenance-worker 不存在时不能把 lastSnapshot 当作当前 snapshot 返回')
-assert.equal(backgroundIpc.getBackgroundWorkerState().maintenanceWorker?.lastSnapshot?.pid, maintenanceWorker.pid, 'maintenance-worker lastSnapshot 可留存但不能作为当前请求结果')
+const opsWorker = attachReadyWorker(42001, 'ops-worker')
+const opsSnapshot = await backgroundIpc.requestOpsWorkerSnapshot(50)
+assert.equal(opsSnapshot?.pid, opsWorker.pid, 'ops-worker 正常 IPC 回包应返回当前 snapshot')
+assert.equal(backgroundIpc.getBackgroundWorkerState().opsWorker?.lastSnapshot?.pid, opsWorker.pid, 'ops-worker 正常回包可以更新 lastSnapshot')
+opsWorker.exit()
+const missingOpsSnapshot = await backgroundIpc.requestOpsWorkerSnapshot(50)
+assert.equal(missingOpsSnapshot, undefined, 'ops-worker 不存在时不能把 lastSnapshot 当作当前 snapshot 返回')
+assert.equal(backgroundIpc.getBackgroundWorkerState().opsWorker?.lastSnapshot?.pid, opsWorker.pid, 'ops-worker lastSnapshot 可留存但不能作为当前请求结果')
 
 let acceptedFillCount = 0
 for (let index = 0; index < 6000; index += 1) {

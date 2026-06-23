@@ -61,8 +61,8 @@ export const anthropicProviderDriver: ProviderDriver = {
       && profileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID
     )
   },
-  resolveUsageModel(account, requestedModel) {
-    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
+  resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
+    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
     return {
       upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
       modelMappingApplied: Boolean(modelMapping),
@@ -89,7 +89,7 @@ export const anthropicProviderDriver: ProviderDriver = {
     if (!headers.get('accept')) {
       headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
     }
-    const modelMapping = resolveOpenAIAccountModelMapping(account, requestModel(req))
+    const modelMapping = resolveOpenAIAccountModelMapping(account, requestModel(req), undefined)
     return {
       headers,
       body: modelMapping

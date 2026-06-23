@@ -90,9 +90,7 @@ if (isIngestWorker()) {
   installRecordMaintenanceQueueShutdownHooks()
   setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
   startRuntimeLogFileImport()
-} else if (isMaintenanceWorker()) {
-  installRecordMaintenanceQueueShutdownHooks()
-} else if (isProbeWorker()) {
+} else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
 startBackgroundJobs()
@@ -103,19 +101,13 @@ process.on('message', (message: unknown) => {
   if (!isWorkerIncomingMessage(message)) {
     return
   }
-  if (isMetricsWorker() && !isWorkerControlMessage(message)) {
-    return
-  }
   if (isIngestWorker() && !isIngestWorkerMessage(message)) {
     return
   }
-  if (isProbeWorker() && !isProbeWorkerMessage(message)) {
+  if (isOpsWorker() && !isOpsWorkerMessage(message)) {
     return
   }
-  if (isMaintenanceWorker() && !isMaintenanceWorkerMessage(message)) {
-    return
-  }
-  if ((isDefaultWorker() || isStatsWorker() || isSnapshotWorker()) && !isWorkerControlMessage(message)) {
+  if (isStatsWorker() && !isWorkerControlMessage(message)) {
     return
   }
 
@@ -205,14 +197,11 @@ logger.info({
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
   const auditRuntime = getAuditLogQueueRuntime()
   const runtimeLogRuntime = getRuntimeLogIndexRuntime()
-  const workerRole = runtimeConfig.workerRole === 'temporary-maintenance-worker'
-    ? 'worker'
-    : runtimeConfig.workerRole
   return {
     pid: process.pid,
     ready: true,
     processRole: 'worker',
-    workerRole,
+    workerRole: currentBackgroundWorkerRole(),
     jobs: getBackgroundJobRuntimeSnapshots(),
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
     operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
@@ -243,6 +232,15 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     accountQualityFailurePrecheckQueue: getAccountQualityFailurePrecheckQueueSnapshot(),
     manualAccountTestQueue: getManualAccountTestQueueSnapshot()
   }
+}
+
+function currentBackgroundWorkerRole(): BackgroundWorkerRuntimeSnapshot['workerRole'] {
+  if (runtimeConfig.workerRole === 'ingest-worker'
+    || runtimeConfig.workerRole === 'stats-worker'
+    || runtimeConfig.workerRole === 'ops-worker') {
+    return runtimeConfig.workerRole
+  }
+  return 'worker'
 }
 
 async function respondToStatsWriteRequest(requestId: string, operation: unknown): Promise<void> {
@@ -371,25 +369,16 @@ async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
 }
 
 async function flushWorkerQueuesForShutdown(): Promise<void> {
-  if (isMetricsWorker()) {
-    return
-  }
   if (isIngestWorker()) {
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
     flushRuntimeLogIndexQueueForShutdown()
+    await flushRecordMaintenanceQueueForShutdown()
     await flushAuditLogQueueForShutdown()
     return
   }
-  if (isMaintenanceWorker()) {
-    await flushRecordMaintenanceQueueForShutdown()
-  }
-}
-
-function isMetricsWorker(): boolean {
-  return runtimeConfig.workerRole === 'metrics-worker'
 }
 
 function isIngestWorker(): boolean {
@@ -400,20 +389,8 @@ function isStatsWorker(): boolean {
   return runtimeConfig.workerRole === 'stats-worker'
 }
 
-function isSnapshotWorker(): boolean {
-  return runtimeConfig.workerRole === 'snapshot-worker'
-}
-
-function isProbeWorker(): boolean {
-  return runtimeConfig.workerRole === 'probe-worker'
-}
-
-function isMaintenanceWorker(): boolean {
-  return runtimeConfig.workerRole === 'maintenance-worker'
-}
-
-function isDefaultWorker(): boolean {
-  return runtimeConfig.workerRole === 'worker'
+function isOpsWorker(): boolean {
+  return runtimeConfig.workerRole === 'ops-worker'
 }
 
 function isWorkerControlMessage(message: WorkerIncomingMessage): boolean {
@@ -433,24 +410,16 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_runtime_log_line'
 }
 
-function isProbeWorkerMessage(message: WorkerIncomingMessage): boolean {
+function isOpsWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
     || message.type === 'background_worker_account_test_tasks'
     || message.type === 'background_worker_account_test_cancel'
 }
 
-function isMaintenanceWorkerMessage(message: WorkerIncomingMessage): boolean {
-  return isWorkerControlMessage(message)
-    || message.type === 'background_worker_record_maintenance'
-}
-
 function workerStartedMessage(): string {
-  if (isMetricsWorker()) return '后台 metrics-worker 已启动'
   if (isIngestWorker()) return '后台 ingest-worker 已启动'
   if (isStatsWorker()) return '后台 stats-worker 已启动'
-  if (isSnapshotWorker()) return '后台 snapshot-worker 已启动'
-  if (isProbeWorker()) return '后台 probe-worker 已启动'
-  if (isMaintenanceWorker()) return '后台 maintenance-worker 已启动'
+  if (isOpsWorker()) return '后台 ops-worker 已启动'
   return '后台 worker 已启动'
 }
 

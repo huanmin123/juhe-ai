@@ -1,7 +1,7 @@
 import type { BackgroundWorkerMessage, BackgroundWorkerProcessRole } from './background-ipc.types.js'
 
-export type BackgroundWorkerQueueTargetRole = 'worker' | 'ingest-worker' | 'probe-worker' | 'maintenance-worker'
-export type BackgroundWorkerSnapshotRole = Extract<BackgroundWorkerProcessRole, 'stats-worker' | 'snapshot-worker' | 'probe-worker' | 'maintenance-worker'>
+export type BackgroundWorkerQueueTargetRole = 'worker' | 'ingest-worker' | 'ops-worker'
+export type BackgroundWorkerSnapshotRole = Extract<BackgroundWorkerProcessRole, 'stats-worker' | 'ops-worker'>
 
 export function workerMessageTargetRole(message: BackgroundWorkerMessage): BackgroundWorkerQueueTargetRole {
   switch (message.type) {
@@ -13,7 +13,7 @@ export function workerMessageTargetRole(message: BackgroundWorkerMessage): Backg
       return 'ingest-worker'
     case 'background_worker_account_test_tasks':
     case 'background_worker_account_test_cancel':
-      return 'probe-worker'
+      return 'ops-worker'
     case 'background_worker_record_maintenance':
     case 'background_worker_dataset_write_request':
       return 'ingest-worker'
@@ -23,9 +23,9 @@ export function workerMessageTargetRole(message: BackgroundWorkerMessage): Backg
 }
 
 export function isSnapshotRoleWorker(role: BackgroundWorkerProcessRole): role is BackgroundWorkerSnapshotRole {
-  return role === 'stats-worker' || role === 'snapshot-worker' || role === 'probe-worker' || role === 'maintenance-worker'
+  return role === 'stats-worker' || role === 'ops-worker'
 }
 
 export function processEventLoopWorkerRoles(): BackgroundWorkerProcessRole[] {
-  return ['worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker']
+  return ['ingest-worker', 'stats-worker', 'ops-worker']
 }

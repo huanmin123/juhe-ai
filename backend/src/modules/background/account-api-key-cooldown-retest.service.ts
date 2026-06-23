@@ -47,6 +47,10 @@ export function getAccountApiKeyCooldownRetestQueueSnapshot() {
   return accountApiKeyCooldownRetestQueue.snapshot()
 }
 
+export function setAccountApiKeyCooldownRetestQueueConcurrency(concurrency: number): void {
+  accountApiKeyCooldownRetestQueue.setConcurrency(concurrency)
+}
+
 async function runAccountApiKeyCooldownRetestQueueItem(
   item: AccountApiKeyCooldownRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }

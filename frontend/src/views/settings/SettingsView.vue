@@ -94,7 +94,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="单轮账号数" extra="默认 20；probe-worker 每轮只拉取到期账号，避免一次性全量扫描和集中打上游。">
+              <a-form-item label="单轮账号数" extra="默认 20；运维 worker 每轮只拉取到期账号，避免一次性全量扫描和集中打上游。">
                 <a-input-number v-model:value="systemForm.accountHealthCheckBatchSize" :min="1" :max="100" style="width: 100%" />
               </a-form-item>
             </div>

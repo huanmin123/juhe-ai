@@ -244,11 +244,13 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return resolveGroupUsageAccessMetadata(operation.groupId, operation.systemAccountId)
     case 'list_openai_accounts_for_group':
       return listOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId, {
-        requestedModel: operation.requestedModel
+        requestedModel: operation.requestedModel,
+        requestedEndpointFamily: operation.requestedEndpointFamily
       })
     case 'list_openai_accounts_for_group_result':
       return listOpenAIAccountsForGroupResult(operation.groupId, operation.systemAccountId, {
-        requestedModel: operation.requestedModel
+        requestedModel: operation.requestedModel,
+        requestedEndpointFamily: operation.requestedEndpointFamily
       })
     case 'read_gateway_runtime':
       return readGatewayRuntime(operation)

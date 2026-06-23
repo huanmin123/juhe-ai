@@ -157,7 +157,7 @@ export interface AccountDraftTestAccountPayload {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
-  modelMappings: Array<{ sourceModel: string; upstreamModel: string; enabled: boolean }>
+  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses'; enabled: boolean }>
   proxyProfileId?: string | null
   groupId: string
   accountExpiresAt?: string | null

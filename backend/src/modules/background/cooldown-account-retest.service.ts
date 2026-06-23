@@ -51,6 +51,10 @@ export function getCooldownAccountRetestQueueSnapshot() {
   return cooldownAccountRetestQueue.snapshot()
 }
 
+export function setCooldownAccountRetestQueueConcurrency(concurrency: number): void {
+  cooldownAccountRetestQueue.setConcurrency(concurrency)
+}
+
 async function runCooldownAccountRetestQueueItem(
   item: CooldownAccountRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }

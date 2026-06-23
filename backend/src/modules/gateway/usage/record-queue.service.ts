@@ -264,6 +264,7 @@ async function waitForActiveUsageRecordFlush(): Promise<void> {
 export function getUsageRecordQueueRuntime(): {
   queueLength: number
   queueBytes: number
+  oldestCreatedAt?: string
   droppedCount: number
   retainedOverflowWarningCount: number
   droppedOverflowCount: number
@@ -289,6 +290,7 @@ export function getUsageRecordQueueRuntime(): {
   return {
     queueLength: pendingUsageRecords.length,
     queueBytes: pendingUsageRecordBytes,
+    oldestCreatedAt: oldestUsageRecordCreatedAt(),
     droppedCount: droppedDispatchCount + droppedOverflowCount + droppedOversizeCount,
     retainedOverflowWarningCount,
     droppedOverflowCount,
@@ -635,6 +637,18 @@ function recordUsageRecordFlushDuration(durationMs: number): void {
 function oldestUsageRecordQueuedMs(): number {
   const first = pendingUsageRecords[0]
   return first ? Math.max(0, Date.now() - first.enqueuedAt) : 0
+}
+
+function oldestUsageRecordCreatedAt(): string | undefined {
+  let oldest: string | undefined
+  for (const item of pendingUsageRecords) {
+    const createdAt = item.input.createdAt?.trim()
+    if (!createdAt) continue
+    if (!oldest || createdAt < oldest) {
+      oldest = createdAt
+    }
+  }
+  return oldest
 }
 
 function recordUsageRecordLocalDrop(item: QueuedUsageRecord, reason: 'overflow' | 'oversize'): void {

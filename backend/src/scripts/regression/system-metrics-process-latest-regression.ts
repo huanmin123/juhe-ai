@@ -56,12 +56,6 @@ try {
     eventLoopLagMs: 31
   })
   usageStatsRepository.insertProcessEventLoopSample({
-    processRole: 'metrics-worker',
-    processPid: 4001,
-    sampledAt: '2026-01-01T00:00:02.000Z',
-    eventLoopLagMs: 7
-  })
-  usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'ingest-worker',
     processPid: 5001,
     sampledAt: '2026-01-01T00:00:03.000Z',
@@ -74,37 +68,11 @@ try {
     eventLoopLagMs: 10
   })
   usageStatsRepository.insertProcessEventLoopSample({
-    processRole: 'snapshot-worker',
+    processRole: 'ops-worker',
     processPid: 5201,
     sampledAt: '2026-01-01T00:00:05.000Z',
     eventLoopLagMs: 12
   })
-  usageStatsRepository.insertProcessEventLoopSample({
-    processRole: 'probe-worker',
-    processPid: 5301,
-    sampledAt: '2026-01-01T00:00:06.000Z',
-    eventLoopLagMs: 14
-  })
-  usageStatsRepository.insertProcessEventLoopSample({
-    processRole: 'maintenance-worker',
-    processPid: 5401,
-    sampledAt: '2026-01-01T00:00:07.000Z',
-    eventLoopLagMs: 16
-  })
-  usageStatsRepository.insertProcessEventLoopSample({
-    processRole: 'temporary-maintenance-worker',
-    processPid: 6001,
-    sampledAt: '2026-01-01T00:00:08.000Z',
-    eventLoopLagMs: 13
-  })
-  for (let index = 0; index < 125; index += 1) {
-    usageStatsRepository.insertProcessEventLoopSample({
-      processRole: 'worker',
-      processPid: 2000 + index,
-      sampledAt: new Date(Date.UTC(2026, 0, 1, 0, 1, index)).toISOString(),
-      eventLoopLagMs: 20 + index
-    })
-  }
 
   const overview = usageStatsRepository.getSystemMetricsOverview({
     startDate: '2026-01-01',
@@ -113,31 +81,20 @@ try {
     maxDays: 31
   })
   const latestStatusByRole = new Map(overview.processEventLoopLatestStatus.map((row) => [row.processRole, row]))
-  assert.deepEqual([...latestStatusByRole.keys()], ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'], '最新进程样本可用性应固定覆盖所有角色')
+  assert.deepEqual([...latestStatusByRole.keys()], ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'], '最新进程样本可用性应固定覆盖当前进程角色')
   assert.equal(latestStatusByRole.get('server')?.sampleAvailable, true, 'server 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 最新样本不应被 worker 连续样本挤掉')
+  assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 最新样本应按自身角色读取')
   assert.equal(latestStatusByRole.get('server')?.processRssBytes, 1100, 'server 最新样本应带进程 RSS 内存')
   assert.equal(latestStatusByRole.get('server')?.processHeapUsedBytes, 510, 'server 最新样本应带进程 heap used')
   assert.equal(latestStatusByRole.get('server')?.processHeapTotalBytes, 900, 'server 最新样本应带进程 heap total')
-  assert.equal(latestStatusByRole.get('worker')?.sampleAvailable, true, 'worker 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('worker')?.processPid, 2124, 'worker 可用性行应带最新 PID')
-  assert.equal(latestStatusByRole.get('metrics-worker')?.sampleAvailable, true, 'metrics-worker 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('metrics-worker')?.eventLoopLagMs, 7, 'metrics-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('ingest-worker')?.sampleAvailable, true, 'ingest-worker 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('ingest-worker')?.eventLoopLagMs, 9, 'ingest-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('stats-worker')?.sampleAvailable, true, 'stats-worker 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('stats-worker')?.eventLoopLagMs, 10, 'stats-worker 应返回自身最新样本')
-  assert.equal(latestStatusByRole.get('snapshot-worker')?.sampleAvailable, true, 'snapshot-worker 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('snapshot-worker')?.eventLoopLagMs, 12, 'snapshot-worker 应返回自身最新样本')
-  assert.equal(latestStatusByRole.get('probe-worker')?.sampleAvailable, true, 'probe-worker 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('probe-worker')?.eventLoopLagMs, 14, 'probe-worker 应返回自身最新样本')
-  assert.equal(latestStatusByRole.get('maintenance-worker')?.sampleAvailable, true, 'maintenance-worker 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('maintenance-worker')?.eventLoopLagMs, 16, 'maintenance-worker 应返回自身最新样本')
-  assert.equal(latestStatusByRole.get('temporary-maintenance-worker')?.sampleAvailable, true, 'temporary-maintenance-worker 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('temporary-maintenance-worker')?.eventLoopLagMs, 13, 'temporary-maintenance-worker 应返回自身最新样本')
+  assert.equal(latestStatusByRole.get('ops-worker')?.sampleAvailable, true, 'ops-worker 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('ops-worker')?.eventLoopLagMs, 12, 'ops-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本不应被 worker 连续样本挤掉')
-  assert.equal(latestStatusByRole.get('worker')?.eventLoopLagMs, 144, 'worker 应返回自身最新样本')
+  assert.equal(latestStatusByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本应按自身角色读取')
   assert.deepEqual(overview.backgroundJobs, [], 'repository 层系统指标应提供空后台任务数组，路由层再补运行时快照')
 
   const recentMinute = new Date(Date.now() - 60_000)
@@ -168,13 +125,6 @@ try {
     processHeapUsedBytes: 50 * 1024 * 1024,
     processHeapTotalBytes: 90 * 1024 * 1024
   })
-  const workerPeakAt = new Date(recentMinute.getTime() + 10_000).toISOString()
-  usageStatsRepository.insertProcessEventLoopSample({
-    processRole: 'worker',
-    processPid: 2200,
-    sampledAt: workerPeakAt,
-    eventLoopLagMs: 42
-  })
   usageStatsRepository.refreshUsageRankSnapshots()
   const todayRange = usageStatsRepository.normalizeDefaultUsageStatsRange()
   const minuteOverview = usageStatsRepository.getSystemMetricsOverview(todayRange)
@@ -182,15 +132,9 @@ try {
   assert.equal(peakStatusByRole.get('server')?.sampleAvailable, true, 'server 最近 24 小时内有采样时应标记峰值可用')
   assert.equal(peakStatusByRole.get('server')?.eventLoopLagMs, 20, 'server 峰值应取最近 24 小时最大延迟，忽略窗口外高值')
   assert.equal(peakStatusByRole.get('server')?.sampledAt, serverPeakAt, 'server 峰值状态应返回最大值对应采样时间')
-  assert.equal(peakStatusByRole.get('worker')?.eventLoopLagMs, 42, 'worker 峰值应独立按进程角色计算')
-  assert.equal(peakStatusByRole.get('worker')?.sampledAt, workerPeakAt, 'worker 峰值状态应返回对应采样时间')
-  assert.equal(peakStatusByRole.get('metrics-worker')?.sampleAvailable, false, 'metrics-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
   assert.equal(peakStatusByRole.get('ingest-worker')?.sampleAvailable, false, 'ingest-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
   assert.equal(peakStatusByRole.get('stats-worker')?.sampleAvailable, false, 'stats-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
-  assert.equal(peakStatusByRole.get('snapshot-worker')?.sampleAvailable, false, 'snapshot-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
-  assert.equal(peakStatusByRole.get('probe-worker')?.sampleAvailable, false, 'probe-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
-  assert.equal(peakStatusByRole.get('maintenance-worker')?.sampleAvailable, false, 'maintenance-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
-  assert.equal(peakStatusByRole.get('temporary-maintenance-worker')?.sampleAvailable, false, 'temporary-maintenance-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
+  assert.equal(peakStatusByRole.get('ops-worker')?.sampleAvailable, false, 'ops-worker 无最近 24 小时采样时不应使用过期样本伪装峰值')
   assert.equal(peakStatusByRole.get('db-service')?.sampleAvailable, false, 'db-service 无最近 24 小时采样时不应使用过期样本伪装峰值')
   const serverMinuteBucket = minuteOverview.processEventLoopTrend.find((row) => row.processRole === 'server' && row.sampleCount === 2)
   assert(serverMinuteBucket, '进程事件循环趋势应读取后台窗口缓存')
@@ -213,14 +157,9 @@ try {
 function expectedUnavailableProcessStatus() {
   return [
     'server',
-    'worker',
-    'metrics-worker',
     'ingest-worker',
     'stats-worker',
-    'snapshot-worker',
-    'probe-worker',
-    'maintenance-worker',
-    'temporary-maintenance-worker',
+    'ops-worker',
     'db-service'
   ].map((processRole) => ({
     processRole,

@@ -266,7 +266,7 @@ erDiagram
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
 - 涉及多 worker、worker 角色、job registry、任务租约、热点隔离或进程拓扑调整时，先按 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md) 执行；worker 数量不设固定上限，但必须有明确隔离域、队列上限、租约边界和健康指标。
 - 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
-- 当前后台任务按角色隔离：系统指标采样固定在 `metrics-worker`；使用记录 / 审计 / 操作日志 / 公开接口日志 / 运行日志索引写入固定在 `ingest-worker`；使用记录增量聚合、IP 聚合和分组账户统计缓存固定在 `stats-worker`；TopN、概览、范围窗口、授权窗口和系统趋势窗口固定在 `snapshot-worker`；OpenAI OAuth Access Token 保活、账号质量、账号测试、冷却复测和代理检测固定在 `probe-worker`；授权到期扫描、表空间监控、维护重试和统一表数据保留期清理固定在 `maintenance-worker`。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
+- 当前后台任务按三类常驻 worker 隔离：使用记录 / 审计 / 操作日志 / 公开接口日志 / 运行日志索引写入和 dataset / usage shard 维护固定在 `ingest-worker`；系统指标采样、使用记录增量聚合、IP 聚合、分组账户统计缓存、TopN、概览、范围窗口、授权窗口、系统趋势窗口、账号质量和表空间监控固定在 `stats-worker`；OpenAI OAuth Access Token 保活、账号测试、冷却复测、代理检测、可用时段同步、授权到期扫描和删除清理协调固定在 `ops-worker`。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
 - 请求链路产生的审计、运行日志索引、操作日志或使用记录批量写入数据如需异步处理，应通过有界 IPC 或等价轻量通道投递到 `ingest-worker`；队列上限和丢弃策略不能反向阻塞网关请求。
 - 原始审计日志队列是 best-effort 队列，不要求系统重启后恢复；队列溢出和进程重启允许丢失待落库审计记录，但必须不阻塞网关请求。

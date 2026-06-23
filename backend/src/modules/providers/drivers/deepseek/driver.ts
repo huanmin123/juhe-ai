@@ -20,6 +20,8 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isOpenAIResponsesToChatCompletionsModelMapping,
+  openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
@@ -31,15 +33,8 @@ import {
 } from '../../../gateway/upstream/request.js'
 import {
   buildCodexResponsesChatBridgeBody,
-  codexResponsesChatBridgeLocalValidationUpstreamUrl,
   codexResponsesChatBridgeRequiredEndpointMode,
-  codexResponsesChatBridgeUpstreamPath,
-  isCodexResponsesChatBridgeCandidateRequest,
-  isCodexResponsesChatBridgeRequest,
-  isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest,
-  isCodexResponsesChatBridgeUnsupportedCompactRequest,
   prepareCodexResponsesChatBridgeHeaders,
-  rejectUnsupportedCodexResponsesChatBridgeCompactRequest,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
@@ -71,8 +66,8 @@ export const deepSeekProviderDriver: ProviderDriver = {
       && isOpenAIProtocolProfile(profile)
       && profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
   },
-  resolveUsageModel(account, requestedModel) {
-    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
+  resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
+    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
     return {
       upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
       modelMappingApplied: Boolean(modelMapping),
@@ -87,10 +82,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    if (isDeepSeekCodexResponsesBridgeUnsupportedCompactRequest(req, account, context?.requestClientCompatibility)) {
-      rejectUnsupportedCodexResponsesChatBridgeCompactRequest()
-    }
-    if (isDeepSeekCodexResponsesBridgeRequest(req, account, context?.requestClientCompatibility)) {
+    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
       return {
@@ -119,7 +111,8 @@ export const deepSeekProviderDriver: ProviderDriver = {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     return transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
       defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
-      enabled: isDeepSeekCodexResponsesBridgeEnabled(account),
+      enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
+      explicitMappingBridge: true,
       idPrefix: 'deepseek_bridge',
       model: modelMapping?.upstreamModel,
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
@@ -129,18 +122,8 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
-    if (isDeepSeekCodexResponsesBridgeUnsupportedCompactRequest(req, account, context?.requestClientCompatibility)) {
-      return accountSupportsOpenAIEndpointMode({
-        mode: codexResponsesChatBridgeRequiredEndpointMode(),
-        supportedEndpointModes: account.supportedEndpointModes,
-        credentials: account.credentials,
-        providerCode: account.providerCode,
-        providerProtocolProfileId: account.providerProtocolProfileId,
-        accountType: account.type,
-        clientCompatibility: account.clientCompatibility
-      })
-    }
-    if (isDeepSeekCodexResponsesBridgeRequest(req, account, context?.requestClientCompatibility)) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
         supportedEndpointModes: account.supportedEndpointModes,
@@ -172,12 +155,9 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
   if (req.method.toUpperCase() !== 'POST') {
     return []
   }
-  if (isDeepSeekCodexResponsesBridgeCandidateRequest(req, account)) {
-    const bridgePath = codexResponsesChatBridgeUpstreamPath(req)
-    return bridgePath ? [buildUpstreamUrl(account.baseUrl, bridgePath)] : []
-  }
-  if (isDeepSeekCodexResponsesBridgeUnsupportedCompactCandidateRequest(req, account)) {
-    return [codexResponsesChatBridgeLocalValidationUpstreamUrl()]
+  const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+  if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+    return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
   }
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
@@ -186,44 +166,4 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
     return []
   }
   return [buildUpstreamUrl(account.baseUrl, `${normalizedPath}${query}`)]
-}
-
-function isDeepSeekCodexResponsesBridgeRequest(
-  req: Request,
-  account: { clientCompatibility?: string; providerProtocolProfileId?: string },
-  requestClientCompatibility?: 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
-): boolean {
-  return isCodexResponsesChatBridgeRequest(req, {
-    enabled: isDeepSeekCodexResponsesBridgeEnabled(account),
-    requestClientCompatibility
-  })
-}
-
-function isDeepSeekCodexResponsesBridgeCandidateRequest(
-  req: Request,
-  account: { clientCompatibility?: string; providerProtocolProfileId?: string }
-): boolean {
-  return isCodexResponsesChatBridgeCandidateRequest(req, isDeepSeekCodexResponsesBridgeEnabled(account))
-}
-
-function isDeepSeekCodexResponsesBridgeUnsupportedCompactRequest(
-  req: Request,
-  account: { clientCompatibility?: string; providerProtocolProfileId?: string },
-  requestClientCompatibility?: 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
-): boolean {
-  return isCodexResponsesChatBridgeUnsupportedCompactRequest(req, {
-    enabled: isDeepSeekCodexResponsesBridgeEnabled(account),
-    requestClientCompatibility
-  })
-}
-
-function isDeepSeekCodexResponsesBridgeUnsupportedCompactCandidateRequest(
-  req: Request,
-  account: { clientCompatibility?: string; providerProtocolProfileId?: string }
-): boolean {
-  return isCodexResponsesChatBridgeUnsupportedCompactCandidateRequest(req, isDeepSeekCodexResponsesBridgeEnabled(account))
-}
-
-function isDeepSeekCodexResponsesBridgeEnabled(account: { clientCompatibility?: string; providerProtocolProfileId?: string }): boolean {
-  return account.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID && account.clientCompatibility === 'codex_responses'
 }

@@ -272,5 +272,5 @@ function assertAuditHotCleanupIsScheduledEveryMinute(): void {
     '审计热窗口清理任务必须按分钟级频率执行，不能只挂在 daily 保留清理里'
   )
   assert(registrySource.includes("jobName: 'audit-hot-retention-cleanup'"), '后台任务注册表必须声明审计热窗口清理任务')
-  assert(registrySource.includes("defaultRole: 'maintenance-worker'"), '审计热窗口清理任务必须归属 maintenance-worker')
+  assert(registrySource.includes("defaultRole: 'ingest-worker'"), '审计热窗口清理任务必须归属 ingest-worker')
 }

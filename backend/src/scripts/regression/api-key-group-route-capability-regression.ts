@@ -1197,8 +1197,10 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
     supportedModels: ['deepseek-ai-v4-flash'],
     modelMappings: [
       {
-        sourceModel: 'deepseek-v4-flash',
+        sourceModel: 'gpt-5.5',
+        sourceEndpointFamily: 'chat_completions',
         upstreamModel: 'deepseek-ai-v4-flash',
+        upstreamEndpointFamily: 'chat_completions',
         enabled: true
       }
     ]
@@ -1218,7 +1220,7 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
 
   const beforeCount = upstreamRequests.length
   const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-normal-cross-provider-model')
-  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'deepseek-v4-flash', traceId)
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
   assert.equal(response.status, 200, `普通 Key 跨供应商模型路由应切 DeepSeek 并成功，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.equal(newRequests.length, 1, '普通 Key 跨供应商模型路由切换后只应请求一次目标供应商上游')
@@ -1237,9 +1239,10 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
   assert.equal(auditLog?.groupId, deepSeekGroup.id, '普通 Key 跨供应商模型路由审计主记录必须归属 DeepSeek 分组')
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
   assert(metadataPayloads.some((metadata) => metadata.label === 'normal_model_route'
-    && metadata.metadata?.requestedModel === 'deepseek-v4-flash'
+    && metadata.metadata?.requestedModel === 'gpt-5.5'
     && metadata.metadata?.fromGroupId === gptGroup.id
     && metadata.metadata?.toGroupId === deepSeekGroup.id
+    && metadata.metadata?.routeSource === 'account_mapping'
     && metadata.metadata?.matchedProviderCode === 'deepseek'), '审计 metadata 应记录普通 Key 根据请求模型从 GPT 分组切到 DeepSeek 分组')
 }
 
@@ -1809,7 +1812,7 @@ function usageRecordsByTraceId(traceId: string): UsageRecordSummary[] {
 function markUsageRecordReadyForStats(record: UsageRecordSummary | undefined): void {
   assert(record, '使用记录应存在，才能推进统计聚合窗口')
   const location = usageRecordShards.usageRecordShardLocationForRecord(record.id, record.createdAt)
-  const createdAt = new Date(Date.now() - 10_000).toISOString()
+  const createdAt = new Date(Date.now() - 20_000).toISOString()
   usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare('UPDATE usage_records SET created_at = ? WHERE id = ?')
     .run(createdAt, record.id)

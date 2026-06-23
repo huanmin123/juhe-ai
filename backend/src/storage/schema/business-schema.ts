@@ -342,11 +342,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
       source_model TEXT NOT NULL,
+      source_endpoint_family TEXT NOT NULL,
       upstream_model TEXT NOT NULL,
+      upstream_endpoint_family TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, source_model),
+      PRIMARY KEY (account_id, source_model, source_endpoint_family),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
@@ -731,8 +733,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
-    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, account_id);
-    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, source_endpoint_family, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, upstream_endpoint_family, account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique_lower ON account_tags(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_account_tags_owner_name_lookup ON account_tags(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_owner_tag ON account_tag_bindings(system_account_id, tag_id, account_id);

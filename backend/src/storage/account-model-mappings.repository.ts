@@ -1,11 +1,17 @@
-import type { AccountModelMapping } from '../domain/types.js'
+import type { AccountModelMapping, AccountModelMappingEndpointFamily } from '../domain/types.js'
+import {
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_RESPONSES_FAMILY
+} from '../domain/provider-protocol.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 interface AccountModelMappingRow {
   account_id: string
   source_model: string
+  source_endpoint_family: AccountModelMappingEndpointFamily
   upstream_model: string
+  upstream_endpoint_family: AccountModelMappingEndpointFamily
   enabled: number
 }
 
@@ -23,17 +29,23 @@ export function normalizeAccountModelMappingsInput(value: unknown): AccountModel
     }
     const record = item as Record<string, unknown>
     const sourceModel = stringModelValue(record.sourceModel, '下游模型')
+    const sourceEndpointFamily = endpointFamilyValue(record.sourceEndpointFamily, '下游协议')
     const upstreamModel = stringModelValue(record.upstreamModel, '上游模型')
-    if (sourceModel === upstreamModel) {
+    const upstreamEndpointFamily = endpointFamilyValue(record.upstreamEndpointFamily, '上游协议')
+    assertSupportedEndpointFamilyConversion(sourceEndpointFamily, upstreamEndpointFamily)
+    if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
     }
-    if (seenSources.has(sourceModel)) {
-      throw new Error(`同一个下游模型只能配置一条映射：${sourceModel}`)
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    if (seenSources.has(sourceKey)) {
+      throw new Error(`同一个下游模型和协议只能配置一条映射：${sourceModel} / ${endpointFamilyLabel(sourceEndpointFamily)}`)
     }
-    seenSources.add(sourceModel)
+    seenSources.add(sourceKey)
     output.push({
       sourceModel,
+      sourceEndpointFamily,
       upstreamModel,
+      upstreamEndpointFamily,
       enabled: record.enabled !== false
     })
   }
@@ -49,8 +61,8 @@ export function replaceAccountModelMappings(accountId: string, providerCode: str
 
   const insert = database.prepare(`
     INSERT INTO account_model_mappings (
-      account_id, provider_code, source_model, upstream_model, enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const timestamp = nowIso()
   for (const mapping of normalizedMappings) {
@@ -58,7 +70,9 @@ export function replaceAccountModelMappings(accountId: string, providerCode: str
       accountId,
       providerCode,
       mapping.sourceModel,
+      mapping.sourceEndpointFamily,
       mapping.upstreamModel,
+      mapping.upstreamEndpointFamily,
       mapping.enabled ? 1 : 0,
       timestamp,
       timestamp
@@ -75,10 +89,10 @@ export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string,
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`
-        SELECT account_id, source_model, upstream_model, enabled
+        SELECT account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
         FROM account_model_mappings
         WHERE account_id IN (${sqlPlaceholders(chunk.length)})
-        ORDER BY account_id ASC, source_model ASC
+        ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC
       `)
       .all(...chunk) as unknown as AccountModelMappingRow[])
   }
@@ -87,7 +101,9 @@ export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string,
   for (const row of rows) {
     const mapping: AccountModelMapping = {
       sourceModel: row.source_model,
+      sourceEndpointFamily: row.source_endpoint_family,
       upstreamModel: row.upstream_model,
+      upstreamEndpointFamily: row.upstream_endpoint_family,
       enabled: row.enabled === 1
     }
     const mappings = output.get(row.account_id)
@@ -98,6 +114,26 @@ export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string,
     }
   }
   return output
+}
+
+function endpointFamilyValue(value: unknown, label: string): AccountModelMappingEndpointFamily {
+  if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY) {
+    return value
+  }
+  throw new Error(`${label}必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)} 或 ${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}`)
+}
+
+function assertSupportedEndpointFamilyConversion(
+  sourceEndpointFamily: AccountModelMappingEndpointFamily,
+  upstreamEndpointFamily: AccountModelMappingEndpointFamily
+): void {
+  if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    throw new Error('暂不支持 Chat Completions 转 Responses')
+  }
+}
+
+function endpointFamilyLabel(value: AccountModelMappingEndpointFamily): string {
+  return value === OPENAI_RESPONSES_FAMILY ? 'Responses' : 'Chat Completions'
 }
 
 export function loadModelMappingsForAccount(accountId: string): AccountModelMapping[] {

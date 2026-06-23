@@ -14,6 +14,7 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
+import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { recordClientIpRequestErrorSample } from '../request/local-request-errors.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
@@ -42,12 +43,13 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   clientIp?: string
   endpoint: string
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
-  loadModelAwareCandidateAccounts?: (requestedModel: string) => Promise<UpstreamAccount[] | undefined>
+  loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof openAIRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
 }): Promise<RequestCandidateFilterResult> {
   const requestedModel = requestModel(input.req)
+  const sourceEndpointFamily = openAIRequestEndpointFamily(input.req)
   let rawCandidateAccounts = input.rawCandidateAccounts
   if (rawCandidateAccounts.length === 0 && requestedModel && input.loadModelAwareCandidateAccounts) {
-    rawCandidateAccounts = await input.loadModelAwareCandidateAccounts(requestedModel) ?? rawCandidateAccounts
+    rawCandidateAccounts = await input.loadModelAwareCandidateAccounts(requestedModel, sourceEndpointFamily) ?? rawCandidateAccounts
   }
   if (rawCandidateAccounts.length === 0) {
     const fallback = await input.attemptFallback('no_candidate_accounts')
@@ -109,14 +111,14 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  let modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel)
+  let modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel, sourceEndpointFamily)
   if (shouldReloadModelAwareCandidates(requestedModel, modelFilter, input.loadModelAwareCandidateAccounts)) {
-    const modelAwareRawAccounts = await input.loadModelAwareCandidateAccounts!(requestedModel!)
+    const modelAwareRawAccounts = await input.loadModelAwareCandidateAccounts!(requestedModel!, sourceEndpointFamily)
     if (modelAwareRawAccounts?.length) {
       const modelAwareCapabilityFilter = filterGatewayAccountsByRequestCapability(input.req, modelAwareRawAccounts, {
         requestClientCompatibility: input.clientStrategy.requestClientCompatibility
       })
-      const modelAwareModelFilter = filterGatewayAccountsByRequestedModel(modelAwareCapabilityFilter.accounts, requestedModel)
+      const modelAwareModelFilter = filterGatewayAccountsByRequestedModel(modelAwareCapabilityFilter.accounts, requestedModel, sourceEndpointFamily)
       if (
         modelAwareModelFilter.directMatchedCount > 0
         || modelAwareModelFilter.mappingMatchedCount > 0
@@ -128,6 +130,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
           label: 'account_model_candidate_window',
           metadata: {
             requestedModel: modelAwareModelFilter.requestedModel,
+            sourceEndpointFamily: modelAwareModelFilter.sourceEndpointFamily,
             directMatchedCount: modelAwareModelFilter.directMatchedCount,
             mappingMatchedCount: modelAwareModelFilter.mappingMatchedCount,
             unrestrictedAccountCount: modelAwareModelFilter.unrestrictedAccountCount,
@@ -142,6 +145,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       label: 'account_model_filter',
       metadata: {
         requestedModel: modelFilter.requestedModel,
+        sourceEndpointFamily: modelFilter.sourceEndpointFamily,
         skippedCount: modelFilter.skippedCount,
         limitedAccountCount: modelFilter.limitedAccountCount,
         unrestrictedAccountCount: modelFilter.unrestrictedAccountCount,
@@ -202,7 +206,7 @@ function shouldReloadModelAwareCandidates(
     directMatchedCount: number
     mappingMatchedCount: number
   },
-  loader: ((requestedModel: string) => Promise<UpstreamAccount[] | undefined>) | undefined
+  loader: ((requestedModel: string, sourceEndpointFamily?: ReturnType<typeof openAIRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>) | undefined
 ): boolean {
   return Boolean(
     requestedModel

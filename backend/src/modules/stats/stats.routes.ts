@@ -239,39 +239,37 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   }
   const overview = getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))
   const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
-  const workerSnapshot = runtime?.worker?.snapshot
-  const metricsWorkerSnapshot = runtime?.metricsWorker?.snapshot
   const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
   const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
-  const snapshotWorkerSnapshot = runtime?.snapshotWorker?.snapshot
-  const probeWorkerSnapshot = runtime?.probeWorker?.snapshot
-  const maintenanceWorkerSnapshot = runtime?.maintenanceWorker?.snapshot
+  const opsWorkerSnapshot = runtime?.opsWorker?.snapshot
+  const accountQualityFailurePrecheckSnapshot = opsWorkerSnapshot?.accountQualityFailurePrecheckQueue
+    ?? statsWorkerSnapshot?.accountQualityFailurePrecheckQueue
   const backgroundQueueRows = [
-    retryQueueBackgroundJobRow('manual-account-test-queue', probeWorkerSnapshot?.workerRole, probeWorkerSnapshot?.manualAccountTestQueue),
-    retryQueueBackgroundJobRow('account-quality-failure-precheck-queue', probeWorkerSnapshot?.workerRole, probeWorkerSnapshot?.accountQualityFailurePrecheckQueue),
+    retryQueueBackgroundJobRow('manual-account-test-queue', opsWorkerSnapshot?.workerRole, opsWorkerSnapshot?.manualAccountTestQueue),
+    retryQueueBackgroundJobRow(
+      'account-quality-failure-precheck-queue',
+      accountQualityFailurePrecheckSnapshot ? (opsWorkerSnapshot?.workerRole ?? statsWorkerSnapshot?.workerRole) : undefined,
+      accountQualityFailurePrecheckSnapshot
+    ),
     localQueueBackgroundJobRow('record-maintenance-ingest-queue', ingestWorkerSnapshot?.workerRole, ingestWorkerSnapshot?.recordMaintenanceQueue),
     localQueueBackgroundJobRow('record-maintenance-stats-queue', statsWorkerSnapshot?.workerRole, statsWorkerSnapshot?.recordMaintenanceQueue)
   ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
   const backgroundJobGroups = [
-    backgroundJobsFromSnapshot(workerSnapshot),
-    backgroundJobsFromSnapshot(metricsWorkerSnapshot),
     backgroundJobsFromSnapshot(ingestWorkerSnapshot),
     backgroundJobsFromSnapshot(statsWorkerSnapshot),
-    backgroundJobsFromSnapshot(snapshotWorkerSnapshot),
-    probeWorkerSnapshot?.jobs?.map((job) => {
-      const roleAwareJob = { ...job, workerRole: probeWorkerSnapshot.workerRole }
-      if (job.name === 'account-health-check' && probeWorkerSnapshot.accountHealthCheckQueue) {
-        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountHealthCheckQueue }
+    opsWorkerSnapshot?.jobs?.map((job) => {
+      const roleAwareJob = { ...job, workerRole: opsWorkerSnapshot.workerRole }
+      if (job.name === 'account-health-check' && opsWorkerSnapshot.accountHealthCheckQueue) {
+        return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.accountHealthCheckQueue }
       }
-      if (job.name === 'cooldown-account-retest' && probeWorkerSnapshot.cooldownAccountRetestQueue) {
-        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.cooldownAccountRetestQueue }
+      if (job.name === 'cooldown-account-retest' && opsWorkerSnapshot.cooldownAccountRetestQueue) {
+        return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.cooldownAccountRetestQueue }
       }
-      if (job.name === 'account-api-key-cooldown-retest' && probeWorkerSnapshot.accountApiKeyCooldownRetestQueue) {
-        return { ...roleAwareJob, retryQueue: probeWorkerSnapshot.accountApiKeyCooldownRetestQueue }
+      if (job.name === 'account-api-key-cooldown-retest' && opsWorkerSnapshot.accountApiKeyCooldownRetestQueue) {
+        return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue }
       }
       return roleAwareJob
     }),
-    backgroundJobsFromSnapshot(maintenanceWorkerSnapshot),
     backgroundQueueRows.length > 0 ? backgroundQueueRows : undefined
   ]
   const backgroundJobs = backgroundJobGroups.some(Array.isArray)
@@ -280,20 +278,9 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   res.json(ok({
     ...overview,
     runtimeSnapshotAvailable: Boolean(runtime),
-    workerSnapshotAvailable: Boolean(workerSnapshot),
-    metricsWorkerSnapshotAvailable: Boolean(metricsWorkerSnapshot),
     ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
     statsWorkerSnapshotAvailable: Boolean(statsWorkerSnapshot),
-    snapshotWorkerSnapshotAvailable: Boolean(snapshotWorkerSnapshot),
-    probeWorkerSnapshotAvailable: Boolean(probeWorkerSnapshot),
-    maintenanceWorkerSnapshotAvailable: Boolean(maintenanceWorkerSnapshot),
-    metricsWorker: runtime?.metricsWorker
-      ? {
-        pid: runtime.metricsWorker.pid ?? null,
-        ready: runtime.metricsWorker.ready,
-        snapshotAvailable: Boolean(metricsWorkerSnapshot)
-      }
-      : null,
+    opsWorkerSnapshotAvailable: Boolean(opsWorkerSnapshot),
     ingestWorker: runtime?.ingestWorker
       ? {
         pid: runtime.ingestWorker.pid ?? null,
@@ -308,25 +295,11 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
         snapshotAvailable: Boolean(statsWorkerSnapshot)
       }
       : null,
-    snapshotWorker: runtime?.snapshotWorker
+    opsWorker: runtime?.opsWorker
       ? {
-        pid: runtime.snapshotWorker.pid ?? null,
-        ready: runtime.snapshotWorker.ready,
-        snapshotAvailable: Boolean(snapshotWorkerSnapshot)
-      }
-      : null,
-    probeWorker: runtime?.probeWorker
-      ? {
-        pid: runtime.probeWorker.pid ?? null,
-        ready: runtime.probeWorker.ready,
-        snapshotAvailable: Boolean(probeWorkerSnapshot)
-      }
-      : null,
-    maintenanceWorker: runtime?.maintenanceWorker
-      ? {
-        pid: runtime.maintenanceWorker.pid ?? null,
-        ready: runtime.maintenanceWorker.ready,
-        snapshotAvailable: Boolean(maintenanceWorkerSnapshot)
+        pid: runtime.opsWorker.pid ?? null,
+        ready: runtime.opsWorker.ready,
+        snapshotAvailable: Boolean(opsWorkerSnapshot)
       }
       : null,
     backgroundJobsAvailable: Array.isArray(backgroundJobs),

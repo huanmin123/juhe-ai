@@ -891,6 +891,7 @@ async function inspectBufferedHybridQualityResponse(input: {
     apiKeyRecord: hybridRoute.apiKeyRecord,
     config: hybridRoute.config,
     scoring: hybridRoute.scoring,
+    targetRoute: hybridRoute.route,
     targetModel: hybridRoute.targetModel,
     responseBodyText: input.responseBodyText,
     traceId: input.usageContext.traceId,

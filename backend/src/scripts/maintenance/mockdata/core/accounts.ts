@@ -203,8 +203,20 @@ export function createAccounts(
     clientCompatibility: 'openai_standard',
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
     modelMappings: [
-      { sourceModel: 'mockdata-global-long-context', upstreamModel: 'gpt-5.4-mini', enabled: true },
-      { sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.4', enabled: false }
+      {
+        sourceModel: 'mockdata-global-long-context',
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel: 'gpt-5.4-mini',
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      },
+      {
+        sourceModel: 'gpt-5.5',
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel: 'gpt-5.4',
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: false
+      }
     ],
     tags: ['标准兼容', '模型映射', 'Mockdata'],
     concurrencyLimit: 30,

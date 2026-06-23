@@ -36,6 +36,7 @@ import {
   usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
+import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -119,7 +120,7 @@ export function recordFailedUpstreamAttempt(
 ): void {
   const model = requestModel(req)
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
-  const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId)
+  const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId, openAIRequestEndpointFamily(req))
   const errorPayload = input.bodyText && input.headers instanceof Headers
     ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
     : {}
@@ -205,7 +206,7 @@ export function recordCompletedUpstreamAttempt(
   }
   const model = requestModel(req)
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
-  const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId)
+  const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, openAIRequestEndpointFamily(req))
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
@@ -293,7 +294,7 @@ export function recordHybridScoringAttempt(input: {
   trafficSource?: Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
 }): void {
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
-  const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId)
+  const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId, 'chat_completions')
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource ?? 'hybrid_scoring',
@@ -467,14 +468,15 @@ function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | 
 function accountUsageModelAccounting(
   account: UpstreamAccount,
   requestedModel: string | undefined,
-  catalogSystemAccountId: string
+  catalogSystemAccountId: string,
+  sourceEndpointFamily: ReturnType<typeof openAIRequestEndpointFamily>
 ): {
   upstreamModel?: string
   pricingModel?: string
   modelMappingApplied: boolean
   modelMappingSource?: string
 } {
-  const resolved = resolveGatewayUsageModel(account, requestedModel)
+  const resolved = resolveGatewayUsageModel(account, requestedModel, sourceEndpointFamily)
   const upstreamModel = resolved.upstreamModel ?? requestedModel
   return {
     upstreamModel,

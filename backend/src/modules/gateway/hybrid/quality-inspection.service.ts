@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 
 import type {
+  ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionConfig,
   ApiKeyHybridRoutingConfig
 } from '../../../domain/types.js'
@@ -36,6 +37,7 @@ export type HybridQualityRetryRecommendation =
   | 'retry_same_model'
   | 'upgrade_next_level'
   | 'return_error'
+export type HybridQualityAction = HybridQualityRetryRecommendation | 'repair_then_upgrade'
 
 export interface HybridQualityScoreResult {
   pass: boolean
@@ -51,7 +53,7 @@ export interface HybridQualityInspectionOutcome {
   triggerReason: string
   pass: boolean
   result?: HybridQualityScoreResult
-  actualAction?: HybridQualityRetryRecommendation
+  actualAction?: HybridQualityAction
   qualityAccountId?: string
   statusCode?: number
   errorCode?: string
@@ -67,6 +69,7 @@ export async function inspectHybridGatewayQuality(input: {
   apiKeyRecord: GatewayApiKeyRow
   config: ApiKeyHybridRoutingConfig
   scoring: HybridScoringResult
+  targetRoute: ApiKeyHybridLevelRoute
   targetModel: string
   responseBodyText: string
   traceId: string
@@ -79,6 +82,7 @@ export async function inspectHybridGatewayQuality(input: {
     req: input.req,
     config: input.config,
     scoring: input.scoring,
+    targetRoute: input.targetRoute,
     responseBodyText: input.responseBodyText
   })
   if (!qualityConfig?.enabled || !trigger.triggered) {
@@ -172,7 +176,37 @@ export async function inspectHybridGatewayQuality(input: {
           response.status
         )
       }
-      const parsed = parseHybridQualityResponse(responseBody)
+      let parsed: HybridQualityScoreResult
+      try {
+        parsed = parseHybridQualityResponse(responseBody)
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        recordHybridScoringAttempt({
+          traceId: input.traceId,
+          clientIp: input.clientIp,
+          systemAccountId: input.apiKeyRecord.system_account_id,
+          apiKeyId: input.apiKeyRecord.id,
+          groupId: selectedQualityGroupId,
+          account,
+          endpoint: `${input.endpoint}#hybrid-quality-scoring`,
+          statusCode: response.status,
+          success: false,
+          startedAt,
+          scoringModel: qualityConfig.scoringModel,
+          usage,
+          errorCode: 'hybrid_quality_scoring_failed',
+          errorMessage,
+          requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+          responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) },
+          trafficSource: 'hybrid_quality_scoring'
+        })
+        return qualityInspectionUnavailable(
+          'hybrid_quality_scoring_failed',
+          errorMessage,
+          account.id,
+          response.status
+        )
+      }
       const actualAction = resolveHybridQualityAction(parsed, qualityConfig)
       recordHybridScoringAttempt({
         traceId: input.traceId,
@@ -236,6 +270,7 @@ export function shouldTriggerHybridQualityInspection(input: {
   req: Request
   config: ApiKeyHybridRoutingConfig
   scoring: HybridScoringResult
+  targetRoute: ApiKeyHybridLevelRoute
   responseBodyText: string
 }): { triggered: boolean; reason: string } {
   const qualityConfig = input.config.qualityInspection
@@ -253,25 +288,26 @@ export function shouldTriggerHybridQualityInspection(input: {
   if (input.config.qualityPreference === 'quality_first') {
     return { triggered: true, reason: 'quality_first_preference' }
   }
-  if (input.scoring.level >= qualityConfig.minTriggerLevel) {
-    return { triggered: true, reason: 'score_level_threshold' }
-  }
-  if ((input.scoring.confidence ?? 1) < 0.55) {
-    return { triggered: true, reason: 'low_scoring_confidence' }
-  }
   if (hasStrictOutputRequirement(input.req)) {
     return { triggered: true, reason: 'strict_output_requirement' }
   }
   if (!input.responseBodyText.trim()) {
     return { triggered: true, reason: 'empty_response_body' }
   }
+  if (isLowOrMidTargetRoute(input.targetRoute, qualityConfig.maxTriggerLevel)) {
+    return { triggered: true, reason: 'low_or_mid_route_level' }
+  }
   return { triggered: false, reason: 'low_risk_request' }
+}
+
+function isLowOrMidTargetRoute(route: ApiKeyHybridLevelRoute, maxTriggerLevel: number): boolean {
+  return route.minLevel <= maxTriggerLevel
 }
 
 function resolveHybridQualityAction(
   result: HybridQualityScoreResult,
   config: ApiKeyHybridQualityInspectionConfig
-): HybridQualityRetryRecommendation {
+): HybridQualityAction {
   if (result.pass) return 'accept'
   if (result.failureType === 'unsafe_or_policy') return 'return_error'
   if (result.retryRecommendation === 'return_error') return 'return_error'
@@ -583,7 +619,14 @@ function qualityInspectionUnavailable(
   return {
     triggered: true,
     triggerReason: 'quality_scoring_unavailable',
-    pass: true,
+    pass: false,
+    result: {
+      pass: false,
+      score: 0,
+      reason: errorMessage,
+      retryRecommendation: 'return_error'
+    },
+    actualAction: 'return_error',
     qualityAccountId,
     statusCode,
     errorCode,

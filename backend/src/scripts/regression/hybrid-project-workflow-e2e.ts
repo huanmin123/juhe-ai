@@ -140,8 +140,8 @@ const opusModel = envText('JUHE_REAL_HYBRID_PROJECT_OPUS_MODEL') || mainModel
 const scoringUnitCost = numberEnv('JUHE_REAL_HYBRID_PROJECT_SCORING_UNIT_COST') ?? 0.002
 const qualityInspectionEnabled = booleanEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_ENABLED') ?? false
 const qualityScoringModel = envText('JUHE_REAL_HYBRID_PROJECT_QUALITY_MODEL') || scoringModel
-const qualityInspectionMinLevel = Math.min(10, Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_MIN_LEVEL') ?? 7))
-const qualityInspectionMaxRetries = Math.min(2, Math.max(0, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_MAX_RETRIES') ?? 1))
+const qualityInspectionMaxLevel = Math.min(10, Math.max(1, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_MAX_LEVEL') ?? 6))
+const qualityInspectionMaxRetries = Math.min(2, Math.max(0, positiveIntegerEnv('JUHE_REAL_HYBRID_PROJECT_QUALITY_MAX_RETRIES') ?? 2))
 
 const modelUnitCosts = new Map<string, number>([
   [flashModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_1_2') ?? modelCostDefault(flashModel)],
@@ -261,9 +261,9 @@ try {
           enabled: true,
           scoringModel: qualityScoringModel,
           triggerMode: 'risk_based',
-          minTriggerLevel: qualityInspectionMinLevel,
+          maxTriggerLevel: qualityInspectionMaxLevel,
           maxRetries: qualityInspectionMaxRetries,
-          failureAction: 'upgrade_next_level'
+          failureAction: 'repair_then_upgrade'
         } : undefined,
         levelRoutes
       } satisfies ApiKeyHybridRoutingConfig,

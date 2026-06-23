@@ -7,6 +7,7 @@
     "check:runtime": "tsx src/scripts/preflight/check-node-sqlite.ts",
     "dev": "tsx src/scripts/preflight/check-node-sqlite.ts && tsx watch --exclude \"logs/**\" --exclude \"data/**\" --exclude \"dist/**\" src/server.ts",
     "mockdata": "tsx src/scripts/maintenance/mockdata.ts",
+    "test:worker-real-load": "tsx src/scripts/performance/worker-real-load-test.ts",
     "maintenance:rebuild-account-name-search": "tsx src/scripts/maintenance/rebuild-account-name-search-terms.ts",
     "external-source:demo-token": "tsx src/scripts/maintenance/create-external-source-demo-token.ts",
     "test:smoke": "tsx src/scripts/smoke/smoke-test.ts",
@@ -242,6 +243,7 @@
     "test:model-check-user-authorized-resource": "tsx src/scripts/regression/model-check-user-authorized-resource-regression.ts",
     "test:query-values": "tsx src/scripts/regression/query-values-regression.ts",
     "test:retry-queue-linear-scan": "tsx src/scripts/regression/retry-queue-linear-scan-regression.ts",
+    "test:retry-queue-concurrency-limit": "tsx src/scripts/regression/retry-queue-concurrency-limit-regression.ts",
     "test:record-maintenance-index-guard": "tsx src/scripts/regression/record-maintenance-index-guard-regression.ts",
     "test:runtime-config-env-override": "tsx src/scripts/regression/runtime-config-env-override-regression.ts",
     "test:settings-query-boundary": "tsx src/scripts/regression/settings-query-boundary-regression.ts",
@@ -284,6 +286,7 @@
     "express": "^4.21.2",
     "https-proxy-agent": "^9.0.0",
     "lru-cache": "^11.3.5",
+    "p-limit": "^7.3.0",
     "pino": "^10.3.1",
     "socks-proxy-agent": "^10.0.0",
     "zod": "^3.24.0"

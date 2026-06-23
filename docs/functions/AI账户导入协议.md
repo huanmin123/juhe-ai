@@ -232,7 +232,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表。 |
-| `modelMappings` | 否 | 模型映射列表，条目包含 `sourceModel`、`upstreamModel`、`enabled`。 |
+| `modelMappings` | 否 | 模型映射列表，条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
 | `availabilitySchedule` | 否 | 时间计划；启用时必须包含 `enabled: true`、`mode: "allow_windows"` 和 `windows`。 |
@@ -246,8 +246,10 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
 - 通用 OpenAI-compatible 上游如需承接 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
+- 需要把 OpenAI Responses 请求转到 Chat Completions 上游时，在 `modelMappings` 中显式配置 `sourceEndpointFamily: "responses"` 和 `upstreamEndpointFamily: "chat_completions"`；不支持 `chat_completions` 转 `responses`。
 - `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内大小写重复标签会去重。
-- `modelMappings` 的 sourceModel 是下游请求模型，必须在目标账户所有者可见的全供应商可请求模型目录中；如果账户配置了 `supportedModels`，sourceModel 还必须在 `supportedModels` 内。upstreamModel 是该账户实际转发模型，使用目标账户所有者可见的全供应商可请求模型目录，不按当前账户供应商或 `supportedModels` 收窄。
+- `modelMappings` 的 `sourceModel` 是客户端请求模型，必须来自目标账户所有者可见的 OpenAI 协议模型池；`upstreamModel` 是该账户实际转发模型，专用供应商必须来自当前供应商模型目录，通用 OpenAI-compatible 账号可来自 OpenAI 协议模型池。
+- `supportedModels` 非空时限制的是映射右侧 `upstreamModel`，不是左侧 `sourceModel`。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
 - `pending_test` 表示账户需要在本系统手动测试通过后才参与调度；这是新建和导入账户的推荐默认状态。
 

@@ -20,11 +20,14 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isOpenAIResponsesToChatCompletionsModelMapping,
+  openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import {
   buildOpenAICodexUpstreamUrls,
+  buildUpstreamUrl,
   buildUpstreamUrls
 } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 import {
@@ -32,6 +35,13 @@ import {
   buildUpstreamRequestBody,
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
+import { requestModel } from '../../../gateway/request/metadata.js'
+import {
+  buildCodexResponsesChatBridgeBody,
+  codexResponsesChatBridgeRequiredEndpointMode,
+  prepareCodexResponsesChatBridgeHeaders,
+  transformCodexResponsesChatBridgeUpstreamResponse
+} from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 import { prepareGptAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
 
@@ -55,8 +65,8 @@ export const gptProviderDriver: ProviderDriver = {
       && isOpenAIProtocolProfile(profile)
       && profileId === GPT_OPENAI_V1_PROFILE_ID
   },
-  resolveUsageModel(account, requestedModel) {
-    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel)
+  resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
+    const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
     return {
       upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
       modelMappingApplied: Boolean(modelMapping),
@@ -70,6 +80,10 @@ export const gptProviderDriver: ProviderDriver = {
     if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE)) {
       return []
     }
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+      return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
+    }
     if (account.type === 'oauth') {
       return buildOpenAICodexUpstreamUrls(req)
     }
@@ -77,6 +91,17 @@ export const gptProviderDriver: ProviderDriver = {
   },
   async buildUpstreamRequestParts(req, account, identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareCodexResponsesChatBridgeHeaders(headers)
+      return {
+        headers,
+        body: await buildCodexResponsesChatBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
     if (account.type === 'oauth') {
       return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
         modelOverride: modelMapping?.upstreamModel
@@ -95,8 +120,33 @@ export const gptProviderDriver: ProviderDriver = {
       body: compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
     }
   },
+  transformUpstreamResponse(req, account, response, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    return transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
+      defaultModel: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex',
+      enabled: account.type !== 'oauth' && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
+      explicitMappingBridge: true,
+      idPrefix: 'openai_bridge',
+      model: modelMapping?.upstreamModel,
+      previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
+      onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
+      requestClientCompatibility: context?.requestClientCompatibility
+    })
+  },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: codexResponsesChatBridgeRequiredEndpointMode(),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
     if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
       return false
     }

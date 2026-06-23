@@ -200,18 +200,9 @@ export interface SystemMetricsOverview {
     processHeapTotalBytesMax?: number
   }>
   runtimeSnapshotAvailable: boolean
-  workerSnapshotAvailable: boolean
-  metricsWorkerSnapshotAvailable?: boolean
   ingestWorkerSnapshotAvailable?: boolean
   statsWorkerSnapshotAvailable?: boolean
-  snapshotWorkerSnapshotAvailable?: boolean
-  probeWorkerSnapshotAvailable?: boolean
-  maintenanceWorkerSnapshotAvailable?: boolean
-  metricsWorker?: {
-    pid: number | null
-    ready: boolean
-    snapshotAvailable: boolean
-  } | null
+  opsWorkerSnapshotAvailable?: boolean
   ingestWorker?: {
     pid: number | null
     ready: boolean
@@ -222,17 +213,7 @@ export interface SystemMetricsOverview {
     ready: boolean
     snapshotAvailable: boolean
   } | null
-  snapshotWorker?: {
-    pid: number | null
-    ready: boolean
-    snapshotAvailable: boolean
-  } | null
-  probeWorker?: {
-    pid: number | null
-    ready: boolean
-    snapshotAvailable: boolean
-  } | null
-  maintenanceWorker?: {
+  opsWorker?: {
     pid: number | null
     ready: boolean
     snapshotAvailable: boolean

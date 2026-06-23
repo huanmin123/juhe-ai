@@ -77,8 +77,8 @@
           </a-descriptions-item>
           <a-descriptions-item label="模型映射" :span="2">
             <div v-if="readonlyModelMappings.length" class="readonly-model-mappings">
-              <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.upstreamModel}`">
-                {{ item.sourceModel }} -> {{ item.upstreamModel }}{{ item.enabled === false ? '（停用）' : '' }}
+              <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.sourceEndpointFamily}:${item.upstreamModel}:${item.upstreamEndpointFamily}`">
+                {{ item.sourceModel }} / {{ endpointFamilyText(item.sourceEndpointFamily) }} -> {{ item.upstreamModel }} / {{ endpointFamilyText(item.upstreamEndpointFamily) }}{{ item.enabled === false ? '（停用）' : '' }}
               </a-tag>
             </div>
             <span v-else>-</span>
@@ -105,6 +105,7 @@
               :is-management-view="isManagementView"
               :is-o-auth-form="isOAuthForm"
               :mapping-source-model-options="mappingSourceModelOptions"
+              :mapping-upstream-model-options="mappingUpstreamModelOptions"
               :model-options="modelOptions"
               :models-loading="modelsLoading"
               :proxy-options="proxyOptions"
@@ -248,6 +249,13 @@ const sourceAccountStatusText = computed(() => {
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
+const mappingUpstreamModelOptions = computed(() => (
+  props.form.providerCode === 'openai' ? props.mappingSourceModelOptions : props.modelOptions
+))
+
+function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): string {
+  return value === 'responses' ? 'Responses' : 'Chat Completions'
+}
 const confirmButtonProps = computed(() => ({
   ...props.okButtonProps,
   disabled: Boolean(props.okButtonProps.disabled) || props.testLoading

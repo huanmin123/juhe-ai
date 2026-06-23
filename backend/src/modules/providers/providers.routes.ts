@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { isAdminRole } from '../../domain/types.js'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProviders } from '../../storage/repositories.js'
+import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import {
@@ -35,9 +36,10 @@ providersRouter.get('/models/options', (req, res) => {
   const context = getRequestAuthContext()
   const access = getRequestAccessScope(req.query.systemAccountId)
   const systemAccountId = modelCatalogSystemAccountId(access) ?? context?.systemAccountId
+  const providerCodes = providerModelOptionProviderCodes(req.query.protocol)
   const options = dedupeProviderModelOptions(
     listProviders()
-      .filter((provider) => provider.enabled)
+      .filter((provider) => provider.enabled && providerCodes.has(provider.code))
       .flatMap((provider) => listProviderModelCatalog({
         providerCode: provider.code,
         systemAccountId,
@@ -49,6 +51,13 @@ providersRouter.get('/models/options', (req, res) => {
   )
   res.json(ok(options))
 })
+
+function providerModelOptionProviderCodes(protocol: unknown): Set<string> {
+  if (protocol === 'openai') {
+    return new Set(listOpenAIProtocolProviderCodes())
+  }
+  return new Set(listProviders().filter((provider) => provider.enabled).map((provider) => provider.code))
+}
 
 providersRouter.get('/:code/models', (req, res) => {
   const context = getRequestAuthContext()

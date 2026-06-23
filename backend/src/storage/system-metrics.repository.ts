@@ -19,14 +19,9 @@ import {
 
 const PROCESS_EVENT_LOOP_ROLES: ProcessEventLoopRole[] = [
   'server',
-  'worker',
-  'metrics-worker',
   'ingest-worker',
   'stats-worker',
-  'snapshot-worker',
-  'probe-worker',
-  'maintenance-worker',
-  'temporary-maintenance-worker',
+  'ops-worker',
   'db-service'
 ]
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -309,7 +304,7 @@ function aggregateProcessEventLoopRows(rows: Array<Record<string, unknown>>, buc
   const buckets = new Map<string, Record<string, unknown>>()
   for (const row of rows) {
     const processRole = String(row.process_role ?? '')
-    if (!processRole) continue
+    if (!processRoleFromValue(processRole)) continue
     const statHour = trendBucketKey(String(row.stat_hour ?? ''), bucketHours)
     const bucketKey = `${statHour}:${processRole}`
     const bucket = buckets.get(bucketKey) ?? { stat_hour: statHour, process_role: processRole, sample_count: 0, event_loop_lag_ms_sum: 0, event_loop_lag_ms_count: 0 }
@@ -406,7 +401,9 @@ function loadProcessEventLoopTrendWindowRows(database: DatabaseSync, range: Acco
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC, process_role ASC
   `).all(rangeWindowKey(range), range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
-  return rows.map(mapProcessEventLoopHourly)
+  return rows
+    .filter((row) => Boolean(processRoleFromValue(row.process_role)))
+    .map(mapProcessEventLoopHourly)
 }
 
 function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {

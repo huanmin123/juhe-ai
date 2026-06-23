@@ -6,12 +6,30 @@ import {
 import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestStatsWriter } from './background-stats-writer.js'
-import { enqueueAccountApiKeyCooldownRetest, getAccountApiKeyCooldownRetestQueueSnapshot } from './account-api-key-cooldown-retest.service.js'
-import { enqueueAccountHealthCheck, getAccountHealthCheckQueueSnapshot } from './account-health-check.service.js'
-import { enqueueAccountQualityFailurePrecheck, getAccountQualityFailurePrecheckQueueSnapshot } from './account-quality-failure-precheck.service.js'
-import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
+import {
+  enqueueAccountApiKeyCooldownRetest,
+  getAccountApiKeyCooldownRetestQueueSnapshot,
+  setAccountApiKeyCooldownRetestQueueConcurrency
+} from './account-api-key-cooldown-retest.service.js'
+import {
+  enqueueAccountHealthCheck,
+  getAccountHealthCheckQueueSnapshot,
+  setAccountHealthCheckQueueConcurrency
+} from './account-health-check.service.js'
+import {
+  enqueueAccountQualityFailurePrecheck,
+  getAccountQualityFailurePrecheckQueueSnapshot,
+  setAccountQualityFailurePrecheckQueueConcurrency
+} from './account-quality-failure-precheck.service.js'
+import {
+  enqueueCooldownAccountRetest,
+  getCooldownAccountRetestQueueSnapshot,
+  setCooldownAccountRetestQueueConcurrency
+} from './cooldown-account-retest.service.js'
 
 const accountQualityFailurePrecheckBatchSize = 10
+const maxOpsExternalIoConcurrency = 10
+const maxOpsFullDiagnosticConcurrency = 3
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
 
@@ -36,6 +54,8 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
       failureCandidateLimit: accountQualityFailurePrecheckBatchSize
     })
     const failureCandidates = realtimeResult.failureCandidates
+    const queueConcurrency = boundedOpsQueueConcurrency(accountQualityFailurePrecheckBatchSize, maxOpsFullDiagnosticConcurrency)
+    setAccountQualityFailurePrecheckQueueConcurrency(queueConcurrency)
     let failurePrecheckEnqueuedCount = 0
     let failurePrecheckSkippedQueuedCount = 0
     for (const candidate of failureCandidates) {
@@ -55,6 +75,7 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
         failureCandidateCount: failureCandidates.length,
         failurePrecheckEnqueuedCount,
         failurePrecheckSkippedQueuedCount,
+        failurePrecheckQueueConcurrency: queueConcurrency,
         failurePrecheckQueuePendingCount: queue.pendingCount,
         failurePrecheckQueueRunningCount: queue.runningCount,
         failurePrecheckQueueNextRunAt: queue.nextRunAt
@@ -68,6 +89,8 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
 
 export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise<void> {
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
+  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  setCooldownAccountRetestQueueConcurrency(queueConcurrency)
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
@@ -89,6 +112,7 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
       candidateCount: candidates.length,
       enqueuedCount,
       skippedQueuedCount,
+      retryQueueConcurrency: queueConcurrency,
       retryQueuePendingCount: queue.pendingCount,
       retryQueueRunningCount: queue.runningCount,
       retryQueueNextRunAt: queue.nextRunAt,
@@ -99,6 +123,8 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
 
 export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
   const batchSize = deps.settingsNumber('accountHealthCheckBatchSize', 1, 100)
+  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  setAccountHealthCheckQueueConcurrency(queueConcurrency)
   const intervalHours = deps.settingsNumber('accountHealthCheckIntervalHours', 1, 168)
   const jitterMinutes = deps.settingsNumber('accountHealthCheckJitterMinutes', 0, 1440)
   const failureThreshold = deps.settingsNumber('accountHealthCheckFailureThreshold', 1, 10)
@@ -126,6 +152,7 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
       candidateCount: candidates.length,
       enqueuedCount,
       skippedQueuedCount,
+      healthCheckQueueConcurrency: queueConcurrency,
       healthCheckQueuePendingCount: queue.pendingCount,
       healthCheckQueueRunningCount: queue.runningCount,
       healthCheckQueueNextRunAt: queue.nextRunAt,
@@ -136,6 +163,8 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
 
 export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): Promise<void> {
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
+  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  setAccountApiKeyCooldownRetestQueueConcurrency(queueConcurrency)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const candidates = listAccountApiKeyRuntimeStatesDueForProbe(batchSize)
   const startedAtMs = Date.now()
@@ -155,10 +184,17 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
       candidateCount: candidates.length,
       enqueuedCount,
       skippedQueuedCount,
+      retryQueueConcurrency: queueConcurrency,
       retryQueuePendingCount: queue.pendingCount,
       retryQueueRunningCount: queue.runningCount,
       retryQueueNextRunAt: queue.nextRunAt,
       elapsedMs: Date.now() - startedAtMs
     }, '账户内 API Key 复测候选已加入异步队列')
   }
+}
+
+function boundedOpsQueueConcurrency(batchSize: number, maxConcurrency = maxOpsExternalIoConcurrency): number {
+  const normalizedBatchSize = Number.isFinite(batchSize) ? Math.trunc(batchSize) : 1
+  const normalizedMaxConcurrency = Number.isFinite(maxConcurrency) ? Math.trunc(maxConcurrency) : maxOpsExternalIoConcurrency
+  return Math.max(1, Math.min(normalizedBatchSize, normalizedMaxConcurrency))
 }

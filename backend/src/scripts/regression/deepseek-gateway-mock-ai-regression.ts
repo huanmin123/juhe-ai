@@ -112,7 +112,9 @@ try {
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
+          sourceEndpointFamily: 'chat_completions',
           upstreamModel: 'deepseek-ai-v4-pro',
+          upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
       ]
@@ -178,7 +180,9 @@ try {
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
+          sourceEndpointFamily: 'chat_completions',
           upstreamModel: 'deepseek-ai-v4-pro',
+          upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
       ]
@@ -200,7 +204,9 @@ try {
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
+          sourceEndpointFamily: 'chat_completions',
           upstreamModel: 'deepseek-ai-v4-pro',
+          upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
       ]
@@ -250,11 +256,13 @@ try {
       status: 'active',
       schedulable: true,
       clientCompatibility: 'codex_responses',
-      supportedModels: ['deepseek-v4-flash'],
+      supportedModels: ['deepseek-ai-v4-flash'],
       modelMappings: [
         {
           sourceModel: 'deepseek-v4-flash',
+          sourceEndpointFamily: 'responses',
           upstreamModel: 'deepseek-ai-v4-flash',
+          upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
       ]
@@ -313,7 +321,7 @@ try {
     await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexBridgeRequiresCodexClient(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
     assertDeepSeekSemanticParsing()
 
@@ -1052,7 +1060,7 @@ async function requestDeepSeekCodexBridgeFailure(baseUrl: string, localApiKey: s
   return text
 }
 
-async function assertDeepSeekCodexBridgeRequiresCodexClient(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -1063,14 +1071,16 @@ async function assertDeepSeekCodexBridgeRequiresCodexClient(baseUrl: string, loc
     },
     body: JSON.stringify({
       model: 'deepseek-v4-flash',
-      input: 'codex bridge should require codex turn metadata',
+      input: 'standard responses explicit mapping bridge',
       stream: true,
       store: false
     })
   })
   const text = await response.text()
-  assert.notEqual(response.status, 200, `DeepSeek Codex bridge 不应承接缺少 Codex turn metadata 的 Responses 请求，实际返回成功：${text}`)
-  assert.equal(upstreamHits.length, 0, 'DeepSeek Codex bridge 拒绝非 Codex Responses 请求时不应命中上游')
+  assert.equal(response.status, 200, `DeepSeek 显式协议映射应允许标准 OpenAI Responses 流式桥接，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, 1, 'DeepSeek 显式协议映射应命中一次 Chat Completions 上游')
+  assert.equal(upstreamHits[0]?.path, '/v1/chat/completions')
+  assert.match(upstreamHits[0]?.bodyText ?? '', /standard responses explicit mapping bridge/)
 }
 
 async function assertDeepSeekRejectsNonChatRoutes(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1209,7 +1219,7 @@ function assertDeepSeekCodexDispatchCapability(groupId: string, accountId: strin
     path: '/v1/responses',
     originalUrl: '/v1/responses?trace=driver-check',
     headers: { 'content-type': 'application/json' },
-    body: { stream: true }
+    body: { model: 'deepseek-v4-flash', stream: true }
   } as unknown as express.Request
   assert.deepEqual(
     buildGatewayUpstreamUrlsForAccount(dispatchAccount, codexResponsesRequest),
@@ -1223,8 +1233,8 @@ function assertDeepSeekCodexDispatchCapability(groupId: string, accountId: strin
   )
   assert.equal(
     accountSupportsGatewayRequest(codexResponsesRequest, dispatchAccount, { requestClientCompatibility: 'openai_standard' }),
-    false,
-    'DeepSeek Codex bridge 账号不应支持普通 OpenAI Responses 请求'
+    true,
+    'DeepSeek 显式协议映射不应再依赖 Codex 客户端兼容才支持 Responses -> Chat bridge'
   )
 }
 

@@ -25,12 +25,9 @@ export interface SnapshotRequestStats {
 }
 
 const workerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
-const metricsWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
 const ingestWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
 const statsWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
-const snapshotWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
-const probeWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
-const maintenanceWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
+const opsWorkerSnapshotRequests: SnapshotRequestState = createSnapshotRequestState()
 
 export async function requestQueuedWorkerSnapshot(input: {
   queueWorkerMessage: (message: BackgroundWorkerMessage) => boolean
@@ -60,7 +57,7 @@ export async function requestQueuedWorkerSnapshot(input: {
 }
 
 export async function requestDirectWorkerSnapshot(
-  role: Extract<BackgroundWorkerProcessRole, 'metrics-worker' | 'ingest-worker'>,
+  role: Extract<BackgroundWorkerProcessRole, 'ingest-worker'>,
   input: {
     child?: ChildProcess
     markIpcBroken: (error: unknown, child: ChildProcess) => void
@@ -93,7 +90,7 @@ export async function requestDirectWorkerSnapshot(
 }
 
 export async function requestRoleWorkerSnapshot(
-  role: Extract<BackgroundWorkerProcessRole, 'stats-worker' | 'snapshot-worker' | 'probe-worker' | 'maintenance-worker'>,
+  role: Extract<BackgroundWorkerProcessRole, 'stats-worker' | 'ops-worker'>,
   input: {
     child?: ChildProcess
     markIpcBroken: (error: unknown, child: ChildProcess) => void
@@ -194,18 +191,12 @@ function sendSnapshotRequestToChild(input: {
 
 function snapshotRequestStateForRole(role: BackgroundWorkerProcessRole): SnapshotRequestState {
   switch (role) {
-    case 'metrics-worker':
-      return metricsWorkerSnapshotRequests
     case 'ingest-worker':
       return ingestWorkerSnapshotRequests
     case 'stats-worker':
       return statsWorkerSnapshotRequests
-    case 'snapshot-worker':
-      return snapshotWorkerSnapshotRequests
-    case 'probe-worker':
-      return probeWorkerSnapshotRequests
-    case 'maintenance-worker':
-      return maintenanceWorkerSnapshotRequests
+    case 'ops-worker':
+      return opsWorkerSnapshotRequests
     default:
       return workerSnapshotRequests
   }

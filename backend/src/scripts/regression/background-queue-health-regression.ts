@@ -78,7 +78,7 @@ function testDegradedRuntime(): void {
   runtime.ingestWorker!.snapshot!.usageRecordQueue.writerPoolActiveJobs = 2
   runtime.ingestWorker!.pendingWriteRequestCount = 2
   runtime.ingestWorker!.oldestPendingWriteMs = 6000
-  runtime.worker!.pendingQueues!.usageRecords.rejectedCount = 3
+  runtime.ingestWorker!.pendingQueues!.usageRecords.rejectedCount = 3
 
   const health = buildBackgroundQueueHealthSnapshot(runtime)
   const usageQueue = health.workerQueues.find((queue) => queue.key === 'usageRecords')
@@ -114,66 +114,6 @@ function testDegradedRuntime(): void {
 
 function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
   return {
-    worker: {
-      pid: 1001,
-      ready: true,
-      pendingMessageCount: 1,
-      pendingMessageBytes: 1024,
-      pendingQueues: {
-        usageRecords: queue({ queueLength: 1, queueBytes: 1024 }),
-        auditLogs: queue(),
-        operationLogs: queue(),
-        publicApiLogs: queue(),
-        recordMaintenance: queue(),
-        runtimeLogLines: queue(),
-        statusRequests: queue(),
-        processEventLoopRequests: queue(),
-        processEventLoopResponses: queue(),
-        gatewayRuntimeCacheInvalidations: queue(),
-        other: queue()
-      },
-      snapshot: {
-        pid: 1002,
-        ready: true,
-        workerRole: 'worker',
-        jobs: [],
-        usageRecordQueue: queue(),
-        auditLogQueue: queue(),
-        operationLogQueue: queue(),
-        publicApiLogQueue: queue(),
-        recordMaintenanceQueue: queue(),
-        runtimeLogIndexQueue: {
-          ...queue(),
-          retentionDays: 30
-        }
-      }
-    },
-    maintenanceWorker: {
-      pid: 1005,
-      ready: true,
-      pendingMessageCount: 0,
-      pendingMessageBytes: 0,
-      pendingQueues: {
-        usageRecords: queue(),
-        auditLogs: queue(),
-        operationLogs: queue(),
-        publicApiLogs: queue(),
-        recordMaintenance: queue(),
-        runtimeLogLines: queue(),
-        statusRequests: queue(),
-        processEventLoopRequests: queue(),
-        processEventLoopResponses: queue(),
-        gatewayRuntimeCacheInvalidations: queue(),
-        other: queue()
-      },
-      snapshot: {
-        pid: 1006,
-        ready: true,
-        workerRole: 'maintenance-worker',
-        jobs: [],
-        recordMaintenanceQueue: queue()
-      }
-    },
     ingestWorker: {
       pid: 1003,
       ready: true,
@@ -182,7 +122,7 @@ function buildRuntimeSnapshot(): DbServiceServerRuntimeSnapshot {
       pendingWriteRequestCount: 0,
       oldestPendingWriteMs: 0,
       pendingQueues: {
-        usageRecords: queue(),
+        usageRecords: queue({ queueLength: 1, queueBytes: 1024 }),
         auditLogs: queue(),
         operationLogs: queue(),
         publicApiLogs: queue(),

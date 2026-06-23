@@ -16,7 +16,7 @@ import type {
 import type { GatewayApiKeyGroupBindingRow } from '../../../storage/gateway-api-key.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 
-export type NormalGatewayModelRouteSource = 'catalog_provider'
+export type NormalGatewayModelRouteSource = 'account_mapping' | 'catalog_provider'
 
 export interface SelectedNormalGatewayModelRouteResult {
   outcome: 'selected'
@@ -75,6 +75,35 @@ export async function resolveNormalGatewayModelRoute(
   const bindings = activeGatewayApiKeyGroupBindings(apiKeyRecord)
   if (!bindings.length) {
     return { outcome: 'skipped', reason: 'empty_binding', requestedModel }
+  }
+
+  const mappingTarget = await selectGatewayModelTargetGroup({
+    req,
+    apiKeyRecord,
+    bindings,
+    targetModel: requestedModel,
+    requestClientCompatibility,
+    acceptCandidate: (candidate) => candidate.modelFilter.mappingMatchedCount > 0
+  })
+  if (mappingTarget) {
+    const selectedProfileBindings = bindings
+      .filter(candidate => candidate.provider_protocol_profile_id === mappingTarget.binding.provider_protocol_profile_id)
+      .map(copyGroupBinding)
+    return {
+      outcome: 'selected',
+      apiKeyRecord: {
+        ...apiKeyRecord,
+        selected_group_id: mappingTarget.groupId,
+        group_bindings: selectedProfileBindings
+      },
+      groupId: mappingTarget.groupId,
+      groupAccess: mappingTarget.groupAccess,
+      accounts: mappingTarget.accounts,
+      responseInspectionPolicies: mappingTarget.responseInspectionPolicies,
+      requestedModel,
+      routeSource: 'account_mapping',
+      matchedProviderCode: mappingTarget.groupAccess.providerCode
+    }
   }
 
   const catalogRoute = await resolveCatalogProviderRoute({

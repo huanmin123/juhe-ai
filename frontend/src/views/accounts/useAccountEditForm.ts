@@ -107,9 +107,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     loadModelOptions: loadAllProviderModelOptions,
     selectOptions: mappingSourceModelOptions
   } = useProviderModelSelectOptions({
+    protocol: 'openai',
     scopeParams: allProviderModelScopeParams,
     onLoadError: (error) => {
-      message.error(options.extractApiErrorMessage(error, '加载全局模型目录失败'))
+      message.error(options.extractApiErrorMessage(error, '加载 OpenAI 协议模型池失败'))
     }
   })
   const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value)

@@ -4,13 +4,9 @@ import { runtimeConfig, type ProcessRole } from '../config/runtime.js'
 
 export type ProcessEventLoopRole =
   | ProcessRole
-  | 'metrics-worker'
   | 'ingest-worker'
   | 'stats-worker'
-  | 'snapshot-worker'
-  | 'probe-worker'
-  | 'maintenance-worker'
-  | 'temporary-maintenance-worker'
+  | 'ops-worker'
 
 export interface ProcessEventLoopSample {
   processRole: ProcessEventLoopRole
@@ -66,13 +62,9 @@ function currentProcessEventLoopRole(): ProcessEventLoopRole {
     return runtimeConfig.processRole
   }
   if (
-    runtimeConfig.workerRole === 'metrics-worker'
-    || runtimeConfig.workerRole === 'ingest-worker'
+    runtimeConfig.workerRole === 'ingest-worker'
     || runtimeConfig.workerRole === 'stats-worker'
-    || runtimeConfig.workerRole === 'snapshot-worker'
-    || runtimeConfig.workerRole === 'probe-worker'
-    || runtimeConfig.workerRole === 'maintenance-worker'
-    || runtimeConfig.workerRole === 'temporary-maintenance-worker'
+    || runtimeConfig.workerRole === 'ops-worker'
   ) {
     return runtimeConfig.workerRole
   }

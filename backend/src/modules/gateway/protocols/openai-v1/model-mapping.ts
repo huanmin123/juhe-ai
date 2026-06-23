@@ -1,6 +1,13 @@
 import type { Request } from 'express'
 
-import type { AccountModelMapping } from '../../../../domain/types.js'
+import type { AccountModelMapping, AccountModelMappingEndpointFamily } from '../../../../domain/types.js'
+import {
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_RESPONSES_FAMILY
+} from '../../../../domain/provider-protocol.js'
+import {
+  openAIEndpointFamilyFromPath
+} from '../../../../domain/openai-endpoint-modes.js'
 import {
   getGatewayRequestBodyState,
   gatewayJsonBodyInlineParseMaxBytes,
@@ -12,6 +19,7 @@ import {
 } from '../../request/json-parser.js'
 import { requestModel } from '../../request/metadata.js'
 import { OpenAIOAuthCodexAdapterError } from '../../adapters/gpt-codex/oauth-adapter.js'
+import { splitPathAndQuery } from './route-helpers.js'
 
 export interface OpenAIModelMappingRuntimeAccount {
   modelMappings?: AccountModelMapping[]
@@ -19,20 +27,29 @@ export interface OpenAIModelMappingRuntimeAccount {
 
 export interface ResolvedOpenAIModelMapping {
   sourceModel: string
+  sourceEndpointFamily: AccountModelMappingEndpointFamily
   upstreamModel: string
+  upstreamEndpointFamily: AccountModelMappingEndpointFamily
 }
 
 export function resolveOpenAIAccountModelMapping(
   account: OpenAIModelMappingRuntimeAccount | undefined,
-  requestedModel: string | undefined
+  requestedModel: string | undefined,
+  sourceEndpointFamily: AccountModelMappingEndpointFamily | undefined
 ): ResolvedOpenAIModelMapping | undefined {
   const model = requestedModel?.trim()
-  if (!model) return undefined
-  const mapping = (account?.modelMappings ?? []).find((item) => item.enabled !== false && item.sourceModel === model)
-  if (!mapping || mapping.upstreamModel === mapping.sourceModel) return undefined
+  if (!model || !sourceEndpointFamily) return undefined
+  const mapping = (account?.modelMappings ?? []).find((item) => (
+    item.enabled !== false
+    && item.sourceModel === model
+    && item.sourceEndpointFamily === sourceEndpointFamily
+  ))
+  if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined
   return {
     sourceModel: mapping.sourceModel,
-    upstreamModel: mapping.upstreamModel
+    sourceEndpointFamily: mapping.sourceEndpointFamily,
+    upstreamModel: mapping.upstreamModel,
+    upstreamEndpointFamily: mapping.upstreamEndpointFamily
   }
 }
 
@@ -40,7 +57,27 @@ export function resolveOpenAIRequestModelMapping(
   req: Request,
   account: OpenAIModelMappingRuntimeAccount | undefined
 ): ResolvedOpenAIModelMapping | undefined {
-  return resolveOpenAIAccountModelMapping(account, requestModel(req))
+  return resolveOpenAIAccountModelMapping(account, requestModel(req), openAIRequestEndpointFamily(req))
+}
+
+export function openAIRequestEndpointFamily(req: Request): AccountModelMappingEndpointFamily | undefined {
+  const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
+  return openAIEndpointFamilyFromPath(endpoint)
+}
+
+export function isOpenAIResponsesToChatCompletionsModelMapping(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): boolean {
+  return mapping?.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+}
+
+export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: ResolvedOpenAIModelMapping): string {
+  if (!isOpenAIResponsesToChatCompletionsModelMapping(mapping)) {
+    return req.originalUrl || req.path || '/'
+  }
+  const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
+  return `/chat/completions${query}`
 }
 
 export async function buildOpenAIModelMappedJsonBody(

@@ -17,6 +17,7 @@ import {
   filterGatewayAccountsByRequestedModel
 } from './model-filter.js'
 import { requestModel } from '../request/metadata.js'
+import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -65,6 +66,7 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       : bindings.slice(currentIndex + 1)
     : bindings.filter((binding) => binding.group_id !== input.groupId)
   const requestedModel = requestModel(input.req)
+  const sourceEndpointFamily = openAIRequestEndpointFamily(input.req)
   const excludedAccountIds = new Set(input.excludedAccountIds ?? [])
   const seenGroupIds = new Set<string>()
   for (const binding of candidateBindings) {
@@ -77,7 +79,8 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       continue
     }
     const accounts = (await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId, {
-      requestedModel
+      requestedModel,
+      requestedEndpointFamily: sourceEndpointFamily
     }))
       .filter((account) => !excludedAccountIds.has(account.id))
     if (!accounts.length) {
@@ -89,7 +92,7 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     if (!capabilityFilter.accounts.length) {
       continue
     }
-    const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel)
+    const modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel, sourceEndpointFamily)
     if (!modelFilter.accounts.length) {
       continue
     }

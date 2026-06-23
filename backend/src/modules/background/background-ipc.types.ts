@@ -18,16 +18,14 @@ import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
 
 export type BackgroundWorkerProcessRole =
   | 'worker'
-  | 'metrics-worker'
   | 'ingest-worker'
   | 'stats-worker'
-  | 'snapshot-worker'
-  | 'probe-worker'
-  | 'maintenance-worker'
+  | 'ops-worker'
 
 export interface BackgroundWorkerQueueRuntime {
   queueLength: number
   queueBytes?: number
+  oldestCreatedAt?: string
   flushLastSuccessAt?: string
   flushLastError?: string
   completedCount?: number
@@ -177,12 +175,9 @@ export interface PendingProcessEventLoopRequest {
 export interface BackgroundWorkerState {
   pid?: number
   ready: boolean
-  metricsWorker?: BackgroundWorkerRoleState
   ingestWorker?: BackgroundWorkerRoleState
   statsWorker?: BackgroundWorkerRoleState
-  snapshotWorker?: BackgroundWorkerRoleState
-  probeWorker?: BackgroundWorkerRoleState
-  maintenanceWorker?: BackgroundWorkerRoleState
+  opsWorker?: BackgroundWorkerRoleState
   lastSnapshot?: BackgroundWorkerRuntimeSnapshot
   pendingMessageCount: number
   pendingMessageBytes: number

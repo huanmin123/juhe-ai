@@ -78,7 +78,7 @@ try {
   databaseModule.closeStorageDatabases()
 
   runtimeConfig.processRole = 'worker'
-  runtimeConfig.workerRole = 'maintenance-worker'
+  runtimeConfig.workerRole = 'ops-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)

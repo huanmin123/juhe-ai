@@ -3,12 +3,9 @@ import type { ChildProcess } from 'node:child_process'
 import type { BackgroundWorkerProcessRole } from './background-ipc.types.js'
 
 export interface BackgroundWorkerChildProcessSet {
-  metricsWorkerProcess?: ChildProcess
   ingestWorkerProcess?: ChildProcess
   statsWorkerProcess?: ChildProcess
-  snapshotWorkerProcess?: ChildProcess
-  probeWorkerProcess?: ChildProcess
-  maintenanceWorkerProcess?: ChildProcess
+  opsWorkerProcess?: ChildProcess
 }
 
 export function workerPidFromReadyRecord(record: Record<string, unknown>, currentPid: number | undefined): number | undefined {
@@ -23,12 +20,9 @@ export function roleForBackgroundWorkerChild(
   child: ChildProcess | undefined,
   processes: BackgroundWorkerChildProcessSet
 ): BackgroundWorkerProcessRole {
-  if (child === processes.metricsWorkerProcess) return 'metrics-worker'
   if (child === processes.ingestWorkerProcess) return 'ingest-worker'
   if (child === processes.statsWorkerProcess) return 'stats-worker'
-  if (child === processes.snapshotWorkerProcess) return 'snapshot-worker'
-  if (child === processes.probeWorkerProcess) return 'probe-worker'
-  if (child === processes.maintenanceWorkerProcess) return 'maintenance-worker'
+  if (child === processes.opsWorkerProcess) return 'ops-worker'
   return 'worker'
 }
 

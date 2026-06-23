@@ -173,7 +173,9 @@ export interface GroupAccountStats {
 
 export interface AccountModelMapping {
   sourceModel: string
+  sourceEndpointFamily: 'chat_completions' | 'responses'
   upstreamModel: string
+  upstreamEndpointFamily: 'chat_completions' | 'responses'
   enabled: boolean
 }
 

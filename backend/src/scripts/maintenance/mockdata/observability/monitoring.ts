@@ -33,7 +33,7 @@ export function createMonitoringMockdata(options: MockdataOptions): void {
       process_external_bytes, process_array_buffers_bytes, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  const roles = ['server', 'worker', 'metrics-worker', 'ingest-worker', 'stats-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker', 'temporary-maintenance-worker', 'db-service'] as const
+  const roles = ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'] as const
   let metricIndex = 0
   database.exec('BEGIN')
   try {

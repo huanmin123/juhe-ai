@@ -11,6 +11,7 @@ export interface ProviderModelSelectOption {
 
 interface UseProviderModelSelectOptionsOptions {
   scopeParams?: ComputedRef<ListParams | undefined>
+  protocol?: 'openai'
   onLoadError?: (error: unknown) => void
 }
 
@@ -53,7 +54,10 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     loadFailed.value = false
     loadingPromise = (async () => {
       try {
-        providerModelOptions.value = await api.providers.modelOptions(options.scopeParams?.value)
+        providerModelOptions.value = await api.providers.modelOptions({
+          ...options.scopeParams?.value,
+          protocol: options.protocol
+        })
         loadedScopeKey = scopeKey
       } catch (error) {
         console.error(error)
@@ -76,7 +80,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   }
 
   function modelOptionsScopeKey(): string {
-    return options.scopeParams?.value?.systemAccountId ?? ''
+    return `${options.scopeParams?.value?.systemAccountId ?? ''}:${options.protocol ?? 'all'}`
   }
 
   return {

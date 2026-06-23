@@ -103,9 +103,16 @@ export function mergePendingQueuesRuntime(
     output[key] = {
       queueLength: left[key].queueLength + right[key].queueLength,
       queueBytes: (left[key].queueBytes ?? 0) + (right[key].queueBytes ?? 0),
+      oldestCreatedAt: oldestCreatedAt(left[key].oldestCreatedAt, right[key].oldestCreatedAt),
       droppedCount: (left[key].droppedCount ?? 0) + (right[key].droppedCount ?? 0),
       rejectedCount: (left[key].rejectedCount ?? 0) + (right[key].rejectedCount ?? 0)
     }
   }
   return output
+}
+
+function oldestCreatedAt(left?: string, right?: string): string | undefined {
+  if (!left) return right
+  if (!right) return left
+  return left <= right ? left : right
 }

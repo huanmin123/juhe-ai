@@ -1,3 +1,5 @@
+import pLimit from 'p-limit'
+
 import {
   retryDelayMs,
   shouldRetryPolicyAttempt,
@@ -64,6 +66,7 @@ interface RetryQueueItem<T> {
 export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T> {
   const items = new Map<string, RetryQueueItem<T>>()
   let concurrency = normalizedConcurrency(options.concurrency)
+  const limit = pLimit(concurrency)
   let timer: NodeJS.Timeout | undefined
   let timerDueAtMs: number | undefined
 
@@ -107,7 +110,7 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
         break
       }
       item.running = true
-      void runItem(item)
+      void limit(runItem, item)
     }
     scheduleNext()
   }
@@ -240,6 +243,7 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     },
     setConcurrency: (nextConcurrency) => {
       concurrency = normalizedConcurrency(nextConcurrency)
+      limit.concurrency = concurrency
       scheduleNext()
     },
     snapshot: () => {

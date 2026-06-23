@@ -1,11 +1,6 @@
 import { createAppCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-concurrency.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import {
-  isAccountApiKeyPoolIsolationEnabled,
-  selectAccountRuntimeApiKeyEntry
-} from '../../../storage/account-api-key-rotation.js'
-import { localAccountApiKeyRuntimeStatesForDispatch } from './account-api-key-failure-guard.service.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
@@ -64,6 +59,7 @@ interface ProviderModelRouteIndexCacheEntry {
 
 interface CachedOpenAIAccountsForGroupOptions {
   requestedModel?: string
+  requestedEndpointFamily?: 'chat_completions' | 'responses'
 }
 
 export type ProviderModelRouteResolution =
@@ -195,13 +191,14 @@ export function listCachedOpenAIAccountsForGroup(
   options: CachedOpenAIAccountsForGroupOptions = {}
 ): OpenAIAccountSecret[] {
   assertLocalGatewayDatabaseAccess('listCachedOpenAIAccountsForGroup')
-  const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel)
+  const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel, options.requestedEndpointFamily)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
     return cloneOpenAIAccountsWithCurrentConcurrency(cached.accounts)
   }
   const value = listOpenAIAccountsForGroupResult(groupId, systemAccountId, {
-    requestedModel: options.requestedModel
+    requestedModel: options.requestedModel,
+    requestedEndpointFamily: options.requestedEndpointFamily
   })
   const accounts = value.accounts.map(cloneStaticOpenAIAccountSecret)
   openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
@@ -218,11 +215,11 @@ export async function listCachedOpenAIAccountsForGroupAsync(
   if (runtimeConfig.processRole !== 'server') {
     return listCachedOpenAIAccountsForGroup(groupId, systemAccountId, options)
   }
-  const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel)
+  const cacheKey = gatewayOpenAIAccountsCacheKey(groupId, systemAccountId, options.requestedModel, options.requestedEndpointFamily)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
     if (!isGatewayRuntimeCacheEntryFresh(cached)) {
-      refreshOpenAIAccountsForGroupInBackground(groupId, systemAccountId, cacheKey, options.requestedModel)
+      refreshOpenAIAccountsForGroupInBackground(groupId, systemAccountId, cacheKey, options.requestedModel, options.requestedEndpointFamily)
     }
     return cloneOpenAIAccountsWithCurrentConcurrency(cached.accounts)
   }
@@ -230,7 +227,8 @@ export async function listCachedOpenAIAccountsForGroupAsync(
     type: 'list_openai_accounts_for_group_result',
     groupId,
     systemAccountId,
-    requestedModel: options.requestedModel
+    requestedModel: options.requestedModel,
+    requestedEndpointFamily: options.requestedEndpointFamily
   })
   const accounts = result.accounts.map(cloneStaticOpenAIAccountSecret)
   openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(accounts), {
@@ -397,10 +395,15 @@ function gatewayCacheKey(groupId: string, systemAccountId: string): string {
   return `${groupId}:${systemAccountId}`
 }
 
-function gatewayOpenAIAccountsCacheKey(groupId: string, systemAccountId: string, requestedModel?: string): string {
+function gatewayOpenAIAccountsCacheKey(
+  groupId: string,
+  systemAccountId: string,
+  requestedModel?: string,
+  requestedEndpointFamily?: string
+): string {
   const modelKey = normalizeProviderModelRouteKey(requestedModel)
   return modelKey
-    ? `${gatewayCacheKey(groupId, systemAccountId)}:model:${modelKey}`
+    ? `${gatewayCacheKey(groupId, systemAccountId)}:model:${modelKey}:endpoint:${requestedEndpointFamily ?? 'any'}`
     : gatewayCacheKey(groupId, systemAccountId)
 }
 
@@ -573,42 +576,7 @@ function cloneOpenAIAccountSecretForDispatch(account: OpenAIAccountSecret): Open
   if (!isOpenAIAccountRuntimeUsableAt(account)) {
     return undefined
   }
-  const cloned = cloneStaticOpenAIAccountSecret(account)
-  if (cloned.type === 'api_key') {
-    const accountId = cloned.credentialSourceAccountId ?? cloned.id
-    const credentials = {
-      ...cloned.credentials,
-      api_key: cloned.apiKey,
-      ...(cloned.apiKeys?.length ? { api_keys: cloned.apiKeys } : {})
-    }
-    const runtimeStates = [
-      ...(cloned.apiKeyRuntimeStates ?? []),
-      ...localAccountApiKeyRuntimeStatesForDispatch(accountId)
-    ]
-    const selected = selectAccountRuntimeApiKeyEntry({
-      accountId,
-      credentials,
-      runtimeStates
-    })
-    const apiKeyPoolIsolationEnabled = isAccountApiKeyPoolIsolationEnabled({
-      providerCode: cloned.providerCode,
-      protocolCode: cloned.protocolCode,
-      protocolVersion: cloned.protocolVersion,
-      type: cloned.type,
-      credentials
-    })
-    if (!selected && apiKeyPoolIsolationEnabled) {
-      return undefined
-    }
-    if (selected) {
-      cloned.apiKey = selected.key
-      if (apiKeyPoolIsolationEnabled) {
-        cloned.selectedApiKeyFingerprint = selected.fingerprint
-        cloned.selectedApiKeyIndex = selected.index
-      }
-    }
-  }
-  return cloned
+  return cloneStaticOpenAIAccountSecret(account)
 }
 
 function sanitizedGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime, now = Date.now()): DbServiceGatewayRuntime {
@@ -881,14 +849,15 @@ function refreshOpenAIAccountsForGroupInBackground(
   groupId: string,
   systemAccountId: string,
   cacheKey: string,
-  requestedModel?: string
+  requestedModel?: string,
+  requestedEndpointFamily?: 'chat_completions' | 'responses'
 ): void {
   if (pendingOpenAIAccountsRefreshes.has(cacheKey)) {
     return
   }
   const refresh = (runtimeConfig.processRole === 'server'
-    ? requestDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId, requestedModel })
-    : Promise.resolve(listOpenAIAccountsForGroupResult(groupId, systemAccountId, { requestedModel })))
+    ? requestDbService({ type: 'list_openai_accounts_for_group_result', groupId, systemAccountId, requestedModel, requestedEndpointFamily })
+    : Promise.resolve(listOpenAIAccountsForGroupResult(groupId, systemAccountId, { requestedModel, requestedEndpointFamily })))
     .then((result) => {
       openAIAccountsCache.set(cacheKey, openAIAccountsCacheEntry(result.accounts.map(cloneStaticOpenAIAccountSecret)), {
         ttlMs: openAIAccountsRetainTtlMs

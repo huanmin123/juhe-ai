@@ -731,7 +731,7 @@ function accountTestSessionCancelReason(row: AccountTestSessionRow): string | un
 }
 
 function accountTestQueuedWaitExpiredMessage(maxQueuedMs: number): string {
-  return `后台测试队列等待超过 ${formatAccountTestQueuedWait(maxQueuedMs)}，任务已自动收口；请检查 probe-worker 或降低批量并发`
+  return `后台测试队列等待超过 ${formatAccountTestQueuedWait(maxQueuedMs)}，任务已自动收口；请检查运维 worker 或降低批量并发`
 }
 
 function formatAccountTestQueuedWait(maxQueuedMs: number): string {
@@ -872,14 +872,19 @@ function accountModelMappingsValue(value: unknown): AccountSummary['modelMapping
     }
     const record = item as Record<string, unknown>
     const sourceModel = normalizedOptionalText(record.sourceModel)
+    const sourceEndpointFamily = accountModelMappingEndpointFamilyValue(record.sourceEndpointFamily)
     const upstreamModel = normalizedOptionalText(record.upstreamModel)
-    if (!sourceModel || !upstreamModel || sourceModel === upstreamModel || seenSources.has(sourceModel)) {
+    const upstreamEndpointFamily = accountModelMappingEndpointFamilyValue(record.upstreamEndpointFamily)
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel?.toLowerCase() ?? ''}`
+    if (!sourceModel || !sourceEndpointFamily || !upstreamModel || !upstreamEndpointFamily || (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) || seenSources.has(sourceKey)) {
       continue
     }
-    seenSources.add(sourceModel)
+    seenSources.add(sourceKey)
     output.push({
       sourceModel,
+      sourceEndpointFamily,
       upstreamModel,
+      upstreamEndpointFamily,
       enabled: record.enabled !== false
     })
     if (output.length >= 500) {
@@ -887,6 +892,10 @@ function accountModelMappingsValue(value: unknown): AccountSummary['modelMapping
     }
   }
   return output.length ? output : undefined
+}
+
+function accountModelMappingEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | undefined {
+  return value === 'chat_completions' || value === 'responses' ? value : undefined
 }
 
 function availabilityScheduleValue(value: unknown): AccountAvailabilitySchedule | undefined {

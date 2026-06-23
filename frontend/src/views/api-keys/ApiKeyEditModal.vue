@@ -92,7 +92,7 @@
           <a-form-item label="评分超时">
             <a-input-number v-model:value="form.hybridRoutingConfig.scoringTimeoutMs" :min="1000" :max="60000" :step="1000" addon-after="ms" />
           </a-form-item>
-          <a-form-item label="失败默认等级">
+          <a-form-item label="失败参考等级">
             <a-input-number v-model:value="form.hybridRoutingConfig.failureDefaultLevel" :min="1" :max="10" />
           </a-form-item>
           <a-form-item label="评分缓存 TTL">
@@ -126,8 +126,8 @@
           <a-form-item label="触发模式">
             <a-select v-model:value="form.hybridRoutingConfig.qualityInspection.triggerMode" :options="hybridQualityInspectionTriggerOptions" />
           </a-form-item>
-          <a-form-item label="最低触发等级">
-            <a-input-number v-model:value="form.hybridRoutingConfig.qualityInspection.minTriggerLevel" :min="1" :max="10" />
+          <a-form-item label="最高复审等级">
+            <a-input-number v-model:value="form.hybridRoutingConfig.qualityInspection.maxTriggerLevel" :min="1" :max="10" />
           </a-form-item>
           <a-form-item label="最大重试次数">
             <a-input-number v-model:value="form.hybridRoutingConfig.qualityInspection.maxRetries" :min="0" :max="2" />
@@ -277,6 +277,7 @@ const hybridQualityInspectionTriggerOptions = [
   { label: '所有混合请求', value: 'always_for_hybrid' }
 ] satisfies Array<{ label: string; value: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>['triggerMode'] }>
 const hybridQualityInspectionFailureOptions = [
+  { label: '先修复再升档', value: 'repair_then_upgrade' },
   { label: '升级下一档', value: 'upgrade_next_level' },
   { label: '同模型重试', value: 'retry_same_model' },
   { label: '返回错误', value: 'return_error' }
@@ -549,9 +550,9 @@ function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig>
       enabled: qualityInspection?.enabled ?? true,
       scoringModel: qualityInspection?.scoringModel ?? input.scoringModel ?? 'gpt-5.4-mini',
       triggerMode: qualityInspection?.triggerMode ?? 'risk_based',
-      minTriggerLevel: qualityInspection?.minTriggerLevel ?? 7,
-      maxRetries: qualityInspection?.maxRetries ?? 1,
-      failureAction: qualityInspection?.failureAction ?? 'upgrade_next_level'
+      maxTriggerLevel: qualityInspection?.maxTriggerLevel ?? 6,
+      maxRetries: qualityInspection?.maxRetries ?? 2,
+      failureAction: qualityInspection?.failureAction ?? 'repair_then_upgrade'
     }
   }
 }
@@ -567,7 +568,7 @@ function hybridRoutingConfigPayload(): ApiKeyHybridRoutingConfig | undefined | f
     return false
   }
   const scoringTimeoutMs = normalizeIntegerField(form.hybridRoutingConfig.scoringTimeoutMs, 1000, 60000, '评分超时')
-  const failureDefaultLevel = normalizeIntegerField(form.hybridRoutingConfig.failureDefaultLevel, 1, 10, '失败默认等级')
+  const failureDefaultLevel = normalizeIntegerField(form.hybridRoutingConfig.failureDefaultLevel, 1, 10, '失败参考等级')
   const scoringCacheTtlSeconds = normalizeIntegerField(form.hybridRoutingConfig.scoringCacheTtlSeconds, 1, 3600, '评分缓存 TTL')
   const affinityTtlSeconds = normalizeIntegerField(form.hybridRoutingConfig.affinityTtlSeconds, 1, 86400, '缓存亲和 TTL')
   const switchMinLevelDelta = normalizeIntegerField(form.hybridRoutingConfig.switchMinLevelDelta, 0, 9, '切换最小等级差')
@@ -620,14 +621,14 @@ function normalizedHybridQualityInspection(): ApiKeyHybridRoutingConfig['quality
   if (!validateExistingHybridModel(scoringModel, '质量评分模型')) {
     return false
   }
-  const minTriggerLevel = normalizeIntegerField(qualityInspection.minTriggerLevel, 1, 10, '质量评分最低触发等级')
+  const maxTriggerLevel = normalizeIntegerField(qualityInspection.maxTriggerLevel, 1, 10, '质量评分最高复审等级')
   const maxRetries = normalizeIntegerField(qualityInspection.maxRetries, 0, 2, '质量评分最大重试次数')
-  if (minTriggerLevel === false || maxRetries === false) return false
+  if (maxTriggerLevel === false || maxRetries === false) return false
   return {
     enabled: true,
     scoringModel,
     triggerMode: qualityInspection.triggerMode,
-    minTriggerLevel,
+    maxTriggerLevel,
     maxRetries,
     failureAction: qualityInspection.failureAction
   }

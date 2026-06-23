@@ -99,6 +99,24 @@ export async function resolveHybridGatewayRoute(input: {
     endpoint: input.endpoint,
     signal: input.signal
   })
+  if (scoring.failed) {
+    const reason = scoring.errorCode ?? 'hybrid_scoring_failed'
+    hybridRouteDiagnosticsChannel.publish({
+      traceId: input.traceId,
+      apiKeyId: input.apiKeyRecord.id,
+      sessionId: input.req.get?.('x-session-id'),
+      clientRequestId: input.req.get?.('x-client-request-id'),
+      endpoint: input.endpoint,
+      outcome: 'failed',
+      reason,
+      scoringDefaulted: scoring.defaulted,
+      scoringCacheHit: scoring.cacheHit === true,
+      scoringAccountId: scoring.scoringAccountId,
+      scoringErrorCode: scoring.errorCode,
+      scoringErrorMessage: scoring.errorMessage
+    })
+    return { outcome: 'failed', reason, scoring }
+  }
   const initialRoute = targetHybridLevelRouteForLevel(config, scoring.level)
   if (!initialRoute) {
     return { outcome: 'failed', reason: 'hybrid_level_route_missing', scoring }

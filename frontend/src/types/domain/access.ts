@@ -23,7 +23,7 @@ export type ApiKeyGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'we
 export type ApiKeyRouteMode = 'normal' | 'hybrid'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
-export type ApiKeyHybridQualityInspectionFailureAction = 'upgrade_next_level' | 'retry_same_model' | 'return_error'
+export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
 export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
 export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
 
@@ -39,7 +39,7 @@ export interface ApiKeyHybridQualityInspectionConfig {
   scoringGroupId?: string
   scoringModel: string
   triggerMode: ApiKeyHybridQualityInspectionTriggerMode
-  minTriggerLevel: number
+  maxTriggerLevel: number
   maxRetries: number
   failureAction: ApiKeyHybridQualityInspectionFailureAction
 }

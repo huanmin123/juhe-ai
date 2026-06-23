@@ -39,6 +39,7 @@ interface HybridMockCase {
 }
 
 const scoringModel = 'glm-5.2-flash'
+const unavailableQualityModel = 'quality-model-unavailable'
 const deepseekModel = 'deepseek-ai-v4-flash'
 const glmModel = 'glm-5.2'
 const gptModel = 'gpt-5.5'
@@ -137,8 +138,7 @@ try {
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       upstreamApiKey: 'sk-hybrid-deepseek',
       baseUrl: upstreamBaseUrl,
-      supportedModel: deepseekModel,
-      clientCompatibility: 'codex_responses'
+      supportedModel: deepseekModel
     })
     const glm = createHybridGroupAccount({
       groupName: 'Hybrid Mock GLM 中低价分组',
@@ -227,15 +227,50 @@ try {
           enabled: true,
           scoringModel,
           triggerMode: 'always_for_hybrid',
-          minTriggerLevel: 1,
-          maxRetries: 1,
-          failureAction: 'upgrade_next_level'
+          maxTriggerLevel: 6,
+          maxRetries: 2,
+          failureAction: 'repair_then_upgrade'
         },
         levelRoutes
       } satisfies ApiKeyHybridRoutingConfig,
       status: 'active'
     }, access)
     assert(qualityApiKey.key, '混合质量评分回归 API Key 未返回明文密钥')
+    const qualityUnavailableApiKey = repositories.createApiKeyRecord({
+      name: 'Hybrid Mock 质量评分不可用 Key',
+      routeMode: 'hybrid',
+      groupRouteStrategy: 'priority_failover',
+      groupBindings: [scoring, glm].map((item, index) => ({
+        groupId: item.groupId,
+        priority: index + 1,
+        weight: 1,
+        status: 'active'
+      })),
+      hybridRoutingConfig: {
+        scoringModel,
+        scoringContextMode: 'full_request',
+        qualityPreference: 'balanced',
+        scoringTimeoutMs: 10_000,
+        failureDefaultLevel,
+        scoringCacheEnabled: true,
+        scoringCacheTtlSeconds: 300,
+        cacheAffinityEnabled: true,
+        affinityTtlSeconds: 900,
+        switchMinLevelDelta: 2,
+        downgradeConsecutiveLowCount: 2,
+        qualityInspection: {
+          enabled: true,
+          scoringModel: unavailableQualityModel,
+          triggerMode: 'always_for_hybrid',
+          maxTriggerLevel: 6,
+          maxRetries: 2,
+          failureAction: 'repair_then_upgrade'
+        },
+        levelRoutes
+      } satisfies ApiKeyHybridRoutingConfig,
+      status: 'active'
+    }, access)
+    assert(qualityUnavailableApiKey.key, '混合质量评分不可用回归 API Key 未返回明文密钥')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -247,24 +282,20 @@ try {
         localApiKey: apiKey.key,
         marker: item.marker,
         expectedModel: item.expectedModel,
+        expectedQualityScoringHits: item.level <= 6 ? 1 : 0,
         sessionId: `basic-${item.marker}`
       })
     }
 
-    await assertHybridCodexResponsesRequest({
-      baseUrl,
-      localApiKey: apiKey.key,
-      marker: 'HYBRID_LEVEL_2_CODEX_RESPONSES',
-      expectedModel: deepseekModel,
-      sessionId: 'codex-responses-bridge'
-    })
-
-    await assertHybridRequest({
+    await assertHybridGatewayFailure({
       baseUrl,
       localApiKey: apiKey.key,
       marker: 'HYBRID_SCORE_INVALID',
-      expectedModel: gptModel,
-      sessionId: 'invalid-scoring'
+      sessionId: 'invalid-scoring',
+      expectedStatus: 502,
+      expectedErrorCode: 'hybrid_scoring_failed',
+      expectedScoringHits: 1,
+      expectedTargetHits: 0
     })
 
     await assertHybridRequest({
@@ -272,6 +303,7 @@ try {
       localApiKey: apiKey.key,
       marker: 'HYBRID_LEVEL_8_COMPLEX',
       expectedModel: gptModel,
+      expectedQualityScoringHits: 0,
       sessionId: 'affinity-small-delta'
     })
     await assertHybridRequest({
@@ -279,6 +311,7 @@ try {
       localApiKey: apiKey.key,
       marker: 'HYBRID_LEVEL_6_MEDIUM',
       expectedModel: gptModel,
+      expectedQualityScoringHits: 0,
       sessionId: 'affinity-small-delta'
     })
 
@@ -287,6 +320,7 @@ try {
       localApiKey: apiKey.key,
       marker: 'HYBRID_LEVEL_10_FRONTIER',
       expectedModel: opusModel,
+      expectedQualityScoringHits: 0,
       sessionId: 'affinity-downgrade-confirm'
     })
     await assertHybridRequest({
@@ -294,6 +328,7 @@ try {
       localApiKey: apiKey.key,
       marker: 'HYBRID_LEVEL_2_SIMPLE',
       expectedModel: opusModel,
+      expectedQualityScoringHits: 0,
       sessionId: 'affinity-downgrade-confirm'
     })
     await assertHybridRequest({
@@ -301,6 +336,7 @@ try {
       localApiKey: apiKey.key,
       marker: 'HYBRID_LEVEL_2_SIMPLE_REPEAT',
       expectedModel: deepseekModel,
+      expectedQualityScoringHits: 1,
       sessionId: 'affinity-downgrade-confirm'
     })
 
@@ -319,25 +355,42 @@ try {
         localApiKey: apiKey.key,
         marker: `${item.marker}_BULK_${index}`,
         expectedModel: item.expectedModel,
+        expectedQualityScoringHits: item.level <= 6 ? 1 : 0,
         sessionId: `bulk-${index}`
       })
     }
 
     usageRecordQueue.flushAllUsageRecordQueue()
     const scoringUsageCount = scoringUsageRecordCount()
-    const expectedRequests = basicCases.length + 1 + 1 + 2 + 3 + 2 + bulkExperimentCount
+    const expectedRequests = basicCases.length + 1 + 2 + 3 + 2 + bulkExperimentCount
     const expectedScoringUsageCount = expectedRequests - 1
     assert(scoringUsageCount >= expectedScoringUsageCount, `评分使用记录数量不足，期望至少 ${expectedScoringUsageCount}，实际 ${scoringUsageCount}`)
     assertHybridScoringLargeBodyGuard()
+    await assertHybridQualityRepairRequest({
+      baseUrl,
+      localApiKey: qualityApiKey.key,
+      marker: 'HYBRID_LEVEL_5_QUALITY_REPAIR',
+      sessionId: 'quality-repair'
+    })
     await assertHybridQualityUpgradeRequest({
       baseUrl,
       localApiKey: qualityApiKey.key,
       marker: 'HYBRID_LEVEL_5_QUALITY_FAIL',
       sessionId: 'quality-upgrade'
     })
+    await assertHybridGatewayFailure({
+      baseUrl,
+      localApiKey: qualityUnavailableApiKey.key,
+      marker: 'HYBRID_LEVEL_5_QUALITY_FAIL',
+      sessionId: 'quality-unavailable',
+      expectedStatus: 503,
+      expectedErrorCode: 'no_quality_scoring_account',
+      expectedScoringHits: 1,
+      expectedTargetHits: 1
+    })
     usageRecordQueue.flushAllUsageRecordQueue()
     const qualityScoringUsageCount = qualityScoringUsageRecordCount()
-    assert(qualityScoringUsageCount >= 2, `质量评分使用记录数量不足，期望至少 2，实际 ${qualityScoringUsageCount}`)
+    assert(qualityScoringUsageCount >= 5, `质量评分使用记录数量不足，期望至少 5，实际 ${qualityScoringUsageCount}`)
 
     console.log(JSON.stringify({
       ok: true,
@@ -365,6 +418,7 @@ try {
 
 function registerHybridCustomModels(): void {
   saveHybridCustomModel(GLM_PROVIDER_CODE, scoringModel, 0.001, 0.001)
+  saveHybridCustomModel(GLM_PROVIDER_CODE, unavailableQualityModel, 0.001, 0.001)
   saveHybridCustomModel(GLM_PROVIDER_CODE, glmModel, 0.01, 0.01)
   saveHybridCustomModel(GPT_VENDOR_CODE, gptModel, 0.02, 0.02)
   saveHybridCustomModel(OPENAI_COMPATIBLE_PROVIDER_CODE, opusModel, 0.05, 0.05)
@@ -430,55 +484,10 @@ function createHybridGroupAccount(input: {
   return { accountId: account.id, groupId: group.id }
 }
 
-async function assertHybridCodexResponsesRequest(input: {
-  baseUrl: string
-  expectedModel: string
-  localApiKey: string
-  marker: string
-  sessionId: string
-}): Promise<void> {
-  const start = upstreamHits.length
-  const response = await fetch(`${input.baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${input.localApiKey}`,
-      accept: 'text/event-stream',
-      'content-type': 'application/json',
-      'x-session-id': input.sessionId,
-      'x-codex-turn-metadata': JSON.stringify({
-        turn_id: `turn_${input.sessionId}`,
-        session_id: `session_${input.sessionId}`,
-        thread_id: `thread_${input.sessionId}`
-      })
-    },
-    body: JSON.stringify({
-      model: 'client-request-model',
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: input.marker }]
-        }
-      ],
-      stream: true
-    })
-  })
-  const text = await response.text()
-  assert.equal(response.status, 200, `Codex Responses 混合路由请求应成功，实际 HTTP ${response.status}: ${text}`)
-  const hits = upstreamHits.slice(start)
-  const scoringHits = hits.filter((hit) => hit.model === scoringModel)
-  const targetHits = hits.filter((hit) => hit.model !== scoringModel)
-  assert.equal(scoringHits.length, 1, `Codex Responses 混合请求应恰好调用一次评分模型，实际 ${scoringHits.length}`)
-  assert.equal(targetHits.length, 1, `Codex Responses 混合请求应恰好调用一次目标模型，实际 ${targetHits.length}`)
-  assert.equal(targetHits[0]!.model, input.expectedModel, 'Codex Responses 混合路由应落到支持 bridge 的目标模型')
-  assert.equal(targetHits[0]!.path, '/v1/chat/completions', 'DeepSeek Codex bridge 应把下游 Responses 转成上游 Chat Completions')
-  assert(text.includes(`target:${input.expectedModel}:${input.marker}`), `Codex Responses bridge 最终响应应包含目标输出：${text}`)
-  assert(text.includes('response.completed'), `Codex Responses bridge 应返回 Responses SSE 事件：${text}`)
-}
-
 async function assertHybridRequest(input: {
   baseUrl: string
   expectedModel: string
+  expectedQualityScoringHits?: number
   localApiKey: string
   marker: string
   sessionId: string
@@ -507,15 +516,58 @@ async function assertHybridRequest(input: {
   const hits = upstreamHits.slice(start)
   const routeScoringHits = hits.filter(isRouteScoringHit)
   const qualityScoringHits = hits.filter(isQualityScoringHit)
-  const targetHits = hits.filter((hit) => hit.model !== scoringModel)
+  const targetHits = hits.filter(isTargetHit)
   assert.equal(routeScoringHits.length, 1, `每次混合请求应恰好调用一次入口评分模型，实际 ${routeScoringHits.length}`)
-  assert(qualityScoringHits.length <= 1, `风险触发质量评分时每次混合请求最多调用一次质量评分模型，实际 ${qualityScoringHits.length}`)
+  if (input.expectedQualityScoringHits !== undefined) {
+    assert.equal(qualityScoringHits.length, input.expectedQualityScoringHits, `混合请求质量评分触发次数错误，实际 ${qualityScoringHits.length}`)
+  } else {
+    assert(qualityScoringHits.length <= 1, `风险触发质量评分时每次混合请求最多调用一次质量评分模型，实际 ${qualityScoringHits.length}`)
+  }
   assert.equal(targetHits.length, 1, `每次混合请求应恰好调用一次目标模型，实际 ${targetHits.length}`)
   assert.equal(routeScoringHits[0]!.path, '/chat/completions', 'GLM 评分账号 baseUrl 不带 /v1 时不应被硬拼成 /v1/chat/completions')
   const targetHit = targetHits[0]!
   assert.equal(targetHit.model, input.expectedModel, `目标模型路由错误：${input.marker}`)
   assert(routeScoringHits[0]!.bodyText.includes(input.marker), '评分上下文应包含原始请求内容')
   return targetHit
+}
+
+async function assertHybridGatewayFailure(input: {
+  baseUrl: string
+  localApiKey: string
+  marker: string
+  sessionId: string
+  expectedStatus: number
+  expectedErrorCode: string
+  expectedScoringHits: number
+  expectedTargetHits: number
+}): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${input.baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      'x-session-id': input.sessionId
+    },
+    body: JSON.stringify({
+      model: 'client-request-model',
+      messages: [
+        { role: 'system', content: 'hybrid mock regression' },
+        { role: 'user', content: input.marker }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, input.expectedStatus, `混合路由失败请求应返回 HTTP ${input.expectedStatus}，实际 HTTP ${response.status}: ${text}`)
+  assert(text.includes(input.expectedErrorCode), `混合路由失败响应应包含错误码 ${input.expectedErrorCode}：${text}`)
+  const hits = upstreamHits.slice(start)
+  const routeScoringHits = hits.filter(isRouteScoringHit)
+  const qualityScoringHits = hits.filter(isQualityScoringHit)
+  const targetHits = hits.filter(isTargetHit)
+  assert.equal(routeScoringHits.length, input.expectedScoringHits, `混合路由失败请求的评分模型调用次数错误，实际 ${routeScoringHits.length}`)
+  assert.equal(qualityScoringHits.length, 0, `失败请求不应调用质量评分模型，实际 ${qualityScoringHits.length}`)
+  assert.equal(targetHits.length, input.expectedTargetHits, `混合路由失败请求的目标模型调用次数错误，实际 ${targetHits.length}`)
 }
 
 async function assertHybridQualityUpgradeRequest(input: {
@@ -548,12 +600,53 @@ async function assertHybridQualityUpgradeRequest(input: {
   const hits = upstreamHits.slice(start)
   const routeScoringHits = hits.filter(isRouteScoringHit)
   const qualityScoringHits = hits.filter(isQualityScoringHit)
-  const targetHits = hits.filter((hit) => hit.model !== scoringModel)
+  const targetHits = hits.filter(isTargetHit)
   assert.equal(routeScoringHits.length, 1, `质量升级请求应只做一次入口评分，实际 ${routeScoringHits.length}`)
-  assert.equal(qualityScoringHits.length, 2, `质量升级请求应做失败和通过两次质量评分，实际 ${qualityScoringHits.length}`)
-  assert.equal(targetHits.length, 2, `质量升级请求应产生原模型和升级模型两次目标请求，实际 ${targetHits.length}`)
+  assert.equal(qualityScoringHits.length, 3, `质量升级请求应做原模型失败、同档修复失败和升级通过三次质量评分，实际 ${qualityScoringHits.length}`)
+  assert.equal(targetHits.length, 3, `质量升级请求应产生原模型、同档修复和升级模型三次目标请求，实际 ${targetHits.length}`)
   assert.equal(targetHits[0]!.model, glmModel, '质量失败前应先落到 4-6 档 GLM')
-  assert.equal(targetHits[1]!.model, gptModel, '质量失败后应升级到下一档 GPT')
+  assert.equal(targetHits[1]!.model, glmModel, '第一次质量失败后应先同档修复 GLM')
+  assert(targetHits[1]!.bodyText.includes('上一次回答没有通过混合路由质量评分'), '同档修复请求应携带质量评分反馈')
+  assert.equal(targetHits[2]!.model, gptModel, '同档修复仍失败后应升级到下一档 GPT')
+}
+
+async function assertHybridQualityRepairRequest(input: {
+  baseUrl: string
+  localApiKey: string
+  marker: string
+  sessionId: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${input.baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      'x-session-id': input.sessionId
+    },
+    body: JSON.stringify({
+      model: 'client-request-model',
+      messages: [
+        { role: 'system', content: 'hybrid quality repair mock regression' },
+        { role: 'user', content: input.marker }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `质量评分同档修复请求应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> }
+  assert.equal(body.choices?.[0]?.message?.content, `target:${glmModel}:${input.marker}`)
+  const hits = upstreamHits.slice(start)
+  const routeScoringHits = hits.filter(isRouteScoringHit)
+  const qualityScoringHits = hits.filter(isQualityScoringHit)
+  const targetHits = hits.filter(isTargetHit)
+  assert.equal(routeScoringHits.length, 1, `质量同档修复请求应只做一次入口评分，实际 ${routeScoringHits.length}`)
+  assert.equal(qualityScoringHits.length, 2, `质量同档修复请求应做失败和修复通过两次质量评分，实际 ${qualityScoringHits.length}`)
+  assert.equal(targetHits.length, 2, `质量同档修复请求应产生原模型和同档修复两次目标请求，实际 ${targetHits.length}`)
+  assert.equal(targetHits[0]!.model, glmModel, '质量失败前应先落到 4-6 档 GLM')
+  assert.equal(targetHits[1]!.model, glmModel, '质量失败后应先同档修复 GLM')
+  assert(targetHits[1]!.bodyText.includes('上一次回答没有通过混合路由质量评分'), '同档修复请求应携带质量评分反馈')
 }
 
 async function assertHybridScoringCacheRequest(input: {
@@ -589,7 +682,7 @@ async function assertHybridScoringCacheRequest(input: {
   }
   const hits = upstreamHits.slice(start)
   const routeScoringHits = hits.filter(isRouteScoringHit)
-  const targetHits = hits.filter((hit) => hit.model !== scoringModel)
+  const targetHits = hits.filter(isTargetHit)
   assert.equal(routeScoringHits.length, 1, `完全相同请求即使追踪 ID 不同，短 TTL 内也应只调用一次入口评分模型，实际 ${routeScoringHits.length}`)
   assert.equal(targetHits.length, 2, `评分缓存只应省评分调用，目标请求仍应执行两次，实际 ${targetHits.length}`)
   assert(targetHits.every((hit) => hit.model === input.expectedModel), '评分缓存命中后目标模型应保持一致')
@@ -601,6 +694,10 @@ function isRouteScoringHit(hit: HybridMockHit): boolean {
 
 function isQualityScoringHit(hit: HybridMockHit): boolean {
   return hit.model === scoringModel && hit.bodyText.includes('响应质量评分器')
+}
+
+function isTargetHit(hit: HybridMockHit): boolean {
+  return !isRouteScoringHit(hit) && !isQualityScoringHit(hit)
 }
 
 function scoringUsageRecordCount(): number {
@@ -735,14 +832,19 @@ function scoringResponseBody(bodyText: string): Record<string, unknown> {
 }
 
 function qualityResponseBody(bodyText: string): Record<string, unknown> {
-  const shouldFail = bodyText.includes('HYBRID_LEVEL_5_QUALITY_FAIL') && bodyText.includes(`target:${glmModel}`)
+  const isGlmResponse = bodyText.includes(`target:${glmModel}`)
+  const repairInstructionPresent = bodyText.includes('上一次回答没有通过混合路由质量评分')
+  const shouldFail = isGlmResponse && (
+    bodyText.includes('HYBRID_LEVEL_5_QUALITY_FAIL')
+    || (bodyText.includes('HYBRID_LEVEL_5_QUALITY_REPAIR') && !repairInstructionPresent)
+  )
   return openAIChatResponse(JSON.stringify({
     pass: !shouldFail,
     score: shouldFail ? 35 : 92,
     confidence: 0.98,
     failureType: shouldFail ? 'missing_required_output' : undefined,
-    reason: shouldFail ? 'mock-quality-upgrade' : 'mock-quality-pass',
-    retryRecommendation: shouldFail ? 'upgrade_next_level' : 'accept'
+    reason: shouldFail ? 'mock-quality-repair-required' : 'mock-quality-pass',
+    retryRecommendation: shouldFail ? 'retry_same_model' : 'accept'
   }), {
     prompt_tokens: 15,
     completion_tokens: 6,

@@ -1,4 +1,6 @@
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
+import type { AccountModelMappingEndpointFamily } from '../../../domain/types.js'
+import { resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 
 export interface GatewayModelAccountFilterResult {
   accounts: UpstreamAccount[]
@@ -8,12 +10,14 @@ export interface GatewayModelAccountFilterResult {
   directMatchedCount: number
   mappingMatchedCount: number
   requestedModel?: string
+  sourceEndpointFamily?: AccountModelMappingEndpointFamily
   modelPriority: GatewayAccountModelPriority
   reason?: 'missing_model' | 'unsupported_model'
 }
 
 export interface GatewayAccountModelPriority {
   requestedModel?: string
+  sourceEndpointFamily?: AccountModelMappingEndpointFamily
   rankByAccountId: ReadonlyMap<string, number>
 }
 
@@ -26,7 +30,8 @@ export const gatewayAccountModelPriorityRank = {
 
 export function filterGatewayAccountsByRequestedModel(
   accounts: UpstreamAccount[],
-  requestedModel?: string
+  requestedModel?: string,
+  sourceEndpointFamily?: AccountModelMappingEndpointFamily
 ): GatewayModelAccountFilterResult {
   const model = requestedModel?.trim()
   let skippedCount = 0
@@ -35,11 +40,24 @@ export function filterGatewayAccountsByRequestedModel(
   let directMatchedCount = 0
   let mappingMatchedCount = 0
   const directMatchedAccounts: UpstreamAccount[] = []
+  const mappingMatchedAccounts: UpstreamAccount[] = []
   const unrestrictedAccounts: UpstreamAccount[] = []
   const rankByAccountId = new Map<string, number>()
 
   for (const account of accounts) {
     const supportedModels = account.supportedModels ?? []
+    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
+    if (mapping && isMappingAllowedBySupportedModels(mapping.upstreamModel, supportedModels)) {
+      if (supportedModels.length) {
+        limitedAccountCount += 1
+      } else {
+        unrestrictedAccountCount += 1
+      }
+      mappingMatchedCount += 1
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.mapping)
+      mappingMatchedAccounts.push(account)
+      continue
+    }
     if (!supportedModels.length) {
       unrestrictedAccountCount += 1
       rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unrestricted)
@@ -59,6 +77,7 @@ export function filterGatewayAccountsByRequestedModel(
   }
   const filtered = [
     ...directMatchedAccounts,
+    ...mappingMatchedAccounts,
     ...unrestrictedAccounts
   ]
 
@@ -70,14 +89,21 @@ export function filterGatewayAccountsByRequestedModel(
     directMatchedCount,
     mappingMatchedCount,
     requestedModel: model || undefined,
+    sourceEndpointFamily,
     modelPriority: {
       requestedModel: model || undefined,
+      sourceEndpointFamily,
       rankByAccountId
     },
     reason: skippedCount > 0 && filtered.length === 0
       ? model ? 'unsupported_model' : 'missing_model'
       : undefined
   }
+}
+
+function isMappingAllowedBySupportedModels(upstreamModel: string, supportedModels: string[]): boolean {
+  if (!supportedModels.length) return true
+  return supportedModels.some((model) => model === upstreamModel)
 }
 
 type GatewayAccountModelMatch = 'direct' | undefined

@@ -51,6 +51,10 @@ export function getAccountHealthCheckQueueSnapshot() {
   return accountHealthCheckQueue.snapshot()
 }
 
+export function setAccountHealthCheckQueueConcurrency(concurrency: number): void {
+  accountHealthCheckQueue.setConcurrency(concurrency)
+}
+
 async function runAccountHealthCheckQueueItem(
   item: AccountHealthCheckQueueItem,
   context: { attemptIndex: number; retryNumber: number }

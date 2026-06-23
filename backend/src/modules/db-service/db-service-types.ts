@@ -106,100 +106,6 @@ export interface DbServiceRuntimeSnapshot {
 export interface DbServiceServerRuntimeSnapshot {
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
-  worker?: {
-    pid?: number
-    ready: boolean
-    pendingMessageCount: number
-    pendingMessageBytes?: number
-    pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
-    pendingWriteRequestCount?: number
-    oldestPendingWriteMs?: number
-    pendingSnapshotRequestCount?: number
-    timedOutSnapshotRequestCount?: number
-    rejectedSnapshotRequestCount?: number
-    pendingProcessEventLoopRequestCount?: number
-    timedOutProcessEventLoopRequestCount?: number
-    failedProcessEventLoopRequestCount?: number
-    snapshot?: {
-      pid: number
-      ready: boolean
-      workerRole?: string
-      jobs?: Array<{
-        name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        skippedCount: number
-      }>
-      usageRecordQueue: DbServiceRuntimeQueueSnapshot
-      operationLogQueue: DbServiceRuntimeQueueSnapshot
-      publicApiLogQueue: DbServiceRuntimeQueueSnapshot
-      recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
-      auditLogQueue: DbServiceRuntimeQueueSnapshot
-      runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
-      accountHealthCheckQueue?: {
-        name: string
-        pendingCount: number
-        runningCount: number
-        nextRunAt?: string
-      }
-      cooldownAccountRetestQueue?: {
-        name: string
-        pendingCount: number
-        runningCount: number
-        nextRunAt?: string
-      }
-      accountApiKeyCooldownRetestQueue?: {
-        name: string
-        pendingCount: number
-        runningCount: number
-        nextRunAt?: string
-      }
-      manualAccountTestQueue?: {
-        name: string
-        pendingCount: number
-        runningCount: number
-        nextRunAt?: string
-      }
-    }
-  }
-  metricsWorker?: {
-    pid?: number
-    ready: boolean
-    pendingSnapshotRequestCount?: number
-    timedOutSnapshotRequestCount?: number
-    rejectedSnapshotRequestCount?: number
-    snapshot?: {
-      pid: number
-      ready: boolean
-      workerRole?: string
-      jobs?: Array<{
-        name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        skippedCount: number
-      }>
-    }
-  }
   ingestWorker?: {
     pid?: number
     ready: boolean
@@ -268,37 +174,15 @@ export interface DbServiceServerRuntimeSnapshot {
         skippedCount: number
       }>
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
-    }
-  }
-  snapshotWorker?: {
-    pid?: number
-    ready: boolean
-    pendingSnapshotRequestCount?: number
-    timedOutSnapshotRequestCount?: number
-    rejectedSnapshotRequestCount?: number
-    snapshot?: {
-      pid: number
-      ready: boolean
-      workerRole?: string
-      jobs?: Array<{
+      accountQualityFailurePrecheckQueue?: {
         name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        skippedCount: number
-      }>
+        pendingCount: number
+        runningCount: number
+        nextRunAt?: string
+      }
     }
   }
-  probeWorker?: {
+  opsWorker?: {
     pid?: number
     ready: boolean
     pendingMessageCount?: number
@@ -357,38 +241,6 @@ export interface DbServiceServerRuntimeSnapshot {
         runningCount: number
         nextRunAt?: string
       }
-    }
-  }
-  maintenanceWorker?: {
-    pid?: number
-    ready: boolean
-    pendingMessageCount?: number
-    pendingMessageBytes?: number
-    pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
-    pendingSnapshotRequestCount?: number
-    timedOutSnapshotRequestCount?: number
-    rejectedSnapshotRequestCount?: number
-    snapshot?: {
-      pid: number
-      ready: boolean
-      workerRole?: string
-      jobs?: Array<{
-        name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        skippedCount: number
-      }>
-      recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
     }
   }
   dbService?: {
@@ -495,12 +347,14 @@ export type DbServiceOperation =
     groupId: string
     systemAccountId: string
     requestedModel?: string
+    requestedEndpointFamily?: 'chat_completions' | 'responses'
   }
   | {
     type: 'list_openai_accounts_for_group_result'
     groupId: string
     systemAccountId: string
     requestedModel?: string
+    requestedEndpointFamily?: 'chat_completions' | 'responses'
   }
   | {
     type: 'read_gateway_runtime'

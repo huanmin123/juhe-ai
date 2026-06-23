@@ -17,7 +17,7 @@ import {
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
-import { DEEPSEEK_PROVIDER_CODE, GLM_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
+import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
@@ -463,8 +463,11 @@ function catalogPriority(item: ProviderModelCatalogItem): number {
 }
 
 export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem, right: ProviderModelCatalogItem): number {
-  const catalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
-  if (catalogOrder !== 0) return catalogOrder
+  const sameProvider = normalizeProviderToken(left.providerCode) === normalizeProviderToken(right.providerCode)
+  if (sameProvider) {
+    const sameProviderCatalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
+    if (sameProviderCatalogOrder !== 0) return sameProviderCatalogOrder
+  }
 
   const leftReleaseDate = sortableCatalogReleaseDate(left)
   const rightReleaseDate = sortableCatalogReleaseDate(right)
@@ -473,6 +476,11 @@ export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem,
   }
   if (leftReleaseDate && !rightReleaseDate) return -1
   if (!leftReleaseDate && rightReleaseDate) return 1
+
+  if (!sameProvider) {
+    const crossProviderCatalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
+    if (crossProviderCatalogOrder !== 0) return crossProviderCatalogOrder
+  }
 
   const modelOrder = left.model.localeCompare(right.model, 'en')
   if (modelOrder !== 0) return modelOrder
@@ -494,11 +502,7 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
     .map((code) => normalizeProviderToken(code))
     .filter((code): code is string => Boolean(code))
-  const childCodes = openAIProtocolProviderCodes.filter((code) => (
-    code !== normalizedProviderCode
-    && code !== DEEPSEEK_PROVIDER_CODE
-    && code !== GLM_PROVIDER_CODE
-  ))
+  const childCodes = openAIProtocolProviderCodes.filter((code) => code !== normalizedProviderCode)
   return [...new Set([...childCodes, normalizedProviderCode])]
 }
 

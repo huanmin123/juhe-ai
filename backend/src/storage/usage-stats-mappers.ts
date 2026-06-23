@@ -111,18 +111,12 @@ export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemM
 function processRoleFromUnknown(value: unknown): ProcessEventLoopRole {
   if (
     value === 'server'
-    || value === 'worker'
-    || value === 'metrics-worker'
     || value === 'ingest-worker'
     || value === 'stats-worker'
-    || value === 'snapshot-worker'
-    || value === 'probe-worker'
-    || value === 'maintenance-worker'
-    || value === 'temporary-maintenance-worker'
+    || value === 'ops-worker'
     || value === 'db-service'
   ) {
     return value
   }
   throw new Error(`非法进程角色：${String(value)}`)
 }
-

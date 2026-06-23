@@ -19,6 +19,7 @@ import {
   buildPreparedUpstreamRequestParts,
   handleUnavailableProxyProfile,
   prepareUpstreamAccount,
+  selectAccountApiKeyForDispatch,
   skipAccountForFailedProxyDispatch
 } from './account-preparation.js'
 import {
@@ -206,6 +207,20 @@ export async function fetchFirstAvailableUpstream(
           if (upstreamUrls.length === 0) {
             continue
           }
+          const selectedAccount = selectAccountApiKeyForDispatch(account)
+          if (!selectedAccount) {
+            lastAttempt = accountApiKeyPoolUnavailableAttempt(account)
+            failedAccountIds.add(account.id)
+            auditCapture.addGatewayMetadata({
+              label: 'account_api_key_pool_unavailable_dispatch_skip',
+              metadata: {
+                accountId: account.id,
+                accountName: account.name
+              }
+            })
+            continue
+          }
+          account = selectedAccount
           const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal, {
             requestClientCompatibility
           })
@@ -224,7 +239,7 @@ export async function fetchFirstAvailableUpstream(
             usageContext,
             auditCapture,
             auditAttemptId: '',
-            account: originalAccount,
+            account,
             upstreamUrl: 'account:preparation',
             attemptStartedAt: preparationStartedAt,
             attemptIndex: 0,
@@ -239,7 +254,7 @@ export async function fetchFirstAvailableUpstream(
             accountStateMutationEnabled
           })
           lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
-          failedAccountIds.add(originalAccount.id)
+          failedAccountIds.add(account.id)
           continue
         }
         for (const upstreamUrl of upstreamUrls) {
@@ -463,6 +478,19 @@ function locallySuppressedAttempt(account: UpstreamAccount, nextRetryAfterMs?: n
     accountName: account.name,
     upstreamUrl: 'account:locally_suppressed',
     message: `账号处于本地短期屏蔽${suffix}`
+  }
+}
+
+function accountApiKeyPoolUnavailableAttempt(account: UpstreamAccount): UpstreamAttempt {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl: 'account:api_key_pool_unavailable',
+    message: '账户 API Key 池暂无可用 Key'
   }
 }
 

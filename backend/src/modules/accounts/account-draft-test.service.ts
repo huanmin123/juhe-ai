@@ -14,7 +14,7 @@ import {
 } from '../../storage/account-test-tasks.repository.js'
 import { newId } from '../../storage/database.js'
 import {
-  assertAccountModelMappingSourcesAllowedBySupportedModels,
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   findGroupSummary,
   listProviders,
   normalizeAccountCredentialsForWrite,
@@ -307,8 +307,13 @@ function accountCreateActivationFingerprintSnapshot(input: {
   })
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
   const supportedModels = normalizedTextList(account.supportedModels)
-  const modelMappings = normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId) ?? []
-  assertAccountModelMappingSourcesAllowedBySupportedModels(modelMappings, supportedModels)
+  const modelMappings = normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId, {
+    providerCode: account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  }) ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     ownerSystemAccountId: input.ownerSystemAccountId,
     groupId: account.groupId,
@@ -427,8 +432,13 @@ function draftTestAccountSummary(input: {
 }): AccountSummary {
   const usage = emptyAccountUsageSummary()
   const supportedModels = normalizedTextList(input.account.supportedModels)
-  const modelMappings = normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId) ?? []
-  assertAccountModelMappingSourcesAllowedBySupportedModels(modelMappings, supportedModels)
+  const modelMappings = normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId, {
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion
+  }) ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     id: input.id ?? newId('acctdraft'),
     systemAccountId: input.ownerSystemAccountId,
@@ -498,9 +508,15 @@ function normalizedTextList(value: string[] | undefined): string[] {
 function normalizeDraftAccountModelMappings(
   value: unknown,
   providerCode: string,
-  ownerSystemAccountId: string
+  ownerSystemAccountId: string,
+  providerProfile: {
+    providerCode?: string
+    providerProtocolProfileId?: string
+    protocolCode?: string
+    protocolVersion?: string
+  }
 ): AccountSummary['modelMappings'] {
-  return normalizeAccountModelMappingsForProvider(value ?? [], providerCode, ownerSystemAccountId) ?? []
+  return normalizeAccountModelMappingsForProvider(value ?? [], providerCode, ownerSystemAccountId, providerProfile) ?? []
 }
 
 function optionalText(value: unknown): string | undefined {

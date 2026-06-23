@@ -9,17 +9,13 @@ export interface BackgroundWorkerStateSnapshotTotals {
   regularWorker: number
   ingestUsageRecord: number
   ingestRegularWorker: number
-  probeWorker: number
-  maintenanceWorker: number
+  opsWorker: number
 }
 
 export interface BackgroundWorkerStateSnapshotRoles {
-  metricsWorker: BackgroundWorkerRoleStateInput
   ingestWorker: BackgroundWorkerRoleStateInput
   statsWorker: BackgroundWorkerRoleStateInput
-  snapshotWorker: BackgroundWorkerRoleStateInput
-  probeWorker: BackgroundWorkerRoleStateInput
-  maintenanceWorker: BackgroundWorkerRoleStateInput
+  opsWorker: BackgroundWorkerRoleStateInput
 }
 
 export interface BackgroundWorkerStateSnapshotInput {
@@ -42,12 +38,9 @@ export function buildBackgroundWorkerStateSnapshot(input: BackgroundWorkerStateS
   return {
     pid: input.pid,
     ready: input.ready,
-    metricsWorker: buildBackgroundWorkerRoleState(input.roles.metricsWorker),
     ingestWorker: buildBackgroundWorkerRoleState(input.roles.ingestWorker),
     statsWorker: buildBackgroundWorkerRoleState(input.roles.statsWorker),
-    snapshotWorker: buildBackgroundWorkerRoleState(input.roles.snapshotWorker),
-    probeWorker: buildBackgroundWorkerRoleState(input.roles.probeWorker),
-    maintenanceWorker: buildBackgroundWorkerRoleState(input.roles.maintenanceWorker),
+    opsWorker: buildBackgroundWorkerRoleState(input.roles.opsWorker),
     lastSnapshot: input.lastSnapshot,
     pendingMessageCount: totalBackgroundWorkerStateSnapshotValues(input.pendingMessageCounts),
     pendingMessageBytes: totalBackgroundWorkerStateSnapshotValues(input.pendingMessageBytes),
@@ -65,6 +58,5 @@ function totalBackgroundWorkerStateSnapshotValues(values: BackgroundWorkerStateS
   return values.regularWorker
     + values.ingestUsageRecord
     + values.ingestRegularWorker
-    + values.probeWorker
-    + values.maintenanceWorker
+    + values.opsWorker
 }

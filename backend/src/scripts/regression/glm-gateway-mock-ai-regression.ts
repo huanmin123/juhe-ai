@@ -104,6 +104,16 @@ try {
       clientCompatibility: 'codex_responses',
       groupName: 'GLM Mock Coding 分组',
       localApiKeyName: 'GLM Mock Coding Key',
+      supportedModels: ['glm-5.2'],
+      modelMappings: [
+        {
+          sourceModel: 'glm-5.2',
+          sourceEndpointFamily: 'responses',
+          upstreamModel: 'glm-5.2',
+          upstreamEndpointFamily: 'chat_completions',
+          enabled: true
+        }
+      ],
       providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
       upstreamApiKey: 'sk-glm-coding-upstream'
     })
@@ -263,6 +273,14 @@ function createGlmScenario(input: {
   groupName: string
   clientCompatibility?: 'openai_standard' | 'codex_responses'
   localApiKeyName: string
+  supportedModels?: string[]
+  modelMappings?: Array<{
+    sourceModel: string
+    sourceEndpointFamily: 'chat_completions' | 'responses'
+    upstreamModel: string
+    upstreamEndpointFamily: 'chat_completions' | 'responses'
+    enabled: boolean
+  }>
   providerProtocolProfileId: string
   upstreamApiKey: string
 }): { accountId: string; groupId: string; localApiKey: string } {
@@ -282,6 +300,8 @@ function createGlmScenario(input: {
       base_url: input.baseUrl
     },
     clientCompatibility: input.clientCompatibility,
+    supportedModels: input.supportedModels,
+    modelMappings: input.modelMappings,
     groupId: group.id,
     status: 'active',
     priority: 0,

@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountModelMapping } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountModelMapping, AccountModelMappingEndpointFamily } from '../../domain/types.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
@@ -219,22 +219,27 @@ export function optionalModelMappingsField(record: Record<string, unknown>, key:
     }
     const itemRecord = item as Record<string, unknown>
     const sourceModel = optionalModelMappingText(itemRecord.sourceModel)
+    const sourceEndpointFamily = optionalModelMappingEndpointFamily(itemRecord.sourceEndpointFamily)
     const upstreamModel = optionalModelMappingText(itemRecord.upstreamModel)
-    if (!sourceModel || !upstreamModel) {
-      messages.push(`${label}条目必须包含 sourceModel 和 upstreamModel`)
+    const upstreamEndpointFamily = optionalModelMappingEndpointFamily(itemRecord.upstreamEndpointFamily)
+    if (!sourceModel || !sourceEndpointFamily || !upstreamModel || !upstreamEndpointFamily) {
+      messages.push(`${label}条目必须包含 sourceModel、sourceEndpointFamily、upstreamModel 和 upstreamEndpointFamily`)
       return undefined
     }
-    if (sourceModel === upstreamModel) {
+    if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
     }
-    if (seenSources.has(sourceModel)) {
-      messages.push(`${label}不能重复配置同一个 sourceModel：${sourceModel}`)
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    if (seenSources.has(sourceKey)) {
+      messages.push(`${label}不能重复配置同一个 sourceModel 和 sourceEndpointFamily：${sourceModel} / ${sourceEndpointFamily}`)
       return undefined
     }
-    seenSources.add(sourceModel)
+    seenSources.add(sourceKey)
     output.push({
       sourceModel,
+      sourceEndpointFamily,
       upstreamModel,
+      upstreamEndpointFamily,
       enabled: itemRecord.enabled !== false
     })
   }
@@ -245,6 +250,13 @@ export function optionalModelMappingText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
   return text || undefined
+}
+
+export function optionalModelMappingEndpointFamily(value: unknown): AccountModelMappingEndpointFamily | undefined {
+  if (value === 'chat_completions' || value === 'responses') {
+    return value
+  }
+  return undefined
 }
 
 export function optionalDateTimeField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string | undefined {

@@ -251,13 +251,18 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
     const upstreamModel = item.upstreamModel.trim()
-    if (!sourceModel || !upstreamModel || sourceModel === upstreamModel || seenSources.has(sourceModel)) {
+    const sourceEndpointFamily = item.sourceEndpointFamily
+    const upstreamEndpointFamily = item.upstreamEndpointFamily
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    if (!sourceModel || !upstreamModel || (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) || seenSources.has(sourceKey)) {
       continue
     }
-    seenSources.add(sourceModel)
+    seenSources.add(sourceKey)
     output.push({
       sourceModel,
+      sourceEndpointFamily,
       upstreamModel,
+      upstreamEndpointFamily,
       enabled: item.enabled !== false
     })
   }
@@ -269,19 +274,29 @@ function validateAccountModelMappings(value: AccountFormModel['modelMappings']):
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
     const upstreamModel = item.upstreamModel.trim()
+    const sourceEndpointFamily = item.sourceEndpointFamily
+    const upstreamEndpointFamily = item.upstreamEndpointFamily
     if (!sourceModel && !upstreamModel) {
       continue
     }
     if (!sourceModel || !upstreamModel) {
       return '模型映射需要同时选择下游模型和上游模型'
     }
-    if (sourceModel === upstreamModel) {
-      return '模型映射的下游模型和上游模型不能相同'
+    if (sourceEndpointFamily === 'chat_completions' && upstreamEndpointFamily === 'responses') {
+      return '暂不支持 Chat Completions 转 Responses'
     }
-    if (seenSources.has(sourceModel)) {
-      return `下游模型 ${sourceModel} 已重复配置映射`
+    if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
+      return '模型映射的下游模型和上游模型不能完全相同'
     }
-    seenSources.add(sourceModel)
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    if (seenSources.has(sourceKey)) {
+      return `下游模型 ${sourceModel} / ${endpointFamilyText(sourceEndpointFamily)} 已重复配置映射`
+    }
+    seenSources.add(sourceKey)
   }
   return undefined
+}
+
+function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): string {
+  return value === 'responses' ? 'Responses' : 'Chat Completions'
 }

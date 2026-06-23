@@ -18,11 +18,16 @@ import type { ProviderGatewayRequestContext } from '../../providers/drivers/_sha
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
 import {
+  isAccountApiKeyPoolIsolationEnabled,
+  selectAccountRuntimeApiKeyEntry
+} from '../../../storage/account-api-key-rotation.js'
+import {
   recordFailedUpstreamAttempt,
   type GatewayUsageContext
 } from '../usage/records.js'
 import { recordGatewayProxyFailure } from '../runtime/proxy-health.service.js'
 import { requestEndpoint } from '../request/metadata.js'
+import { localAccountApiKeyRuntimeStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -125,6 +130,47 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
   return await prepareGatewayUpstreamAccount(account, signal)
 }
 
+export function selectAccountApiKeyForDispatch(account: UpstreamAccount): UpstreamAccount | undefined {
+  if (account.type !== 'api_key') {
+    return account
+  }
+
+  const accountId = account.credentialSourceAccountId ?? account.id
+  const credentials = accountApiKeySelectionCredentials(account)
+  const selected = selectAccountRuntimeApiKeyEntry({
+    accountId,
+    credentials,
+    runtimeStates: [
+      ...(account.apiKeyRuntimeStates ?? []),
+      ...localAccountApiKeyRuntimeStatesForDispatch(accountId)
+    ]
+  })
+  const apiKeyPoolIsolationEnabled = isAccountApiKeyPoolIsolationEnabled({
+    providerCode: account.providerCode,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    type: account.type,
+    credentials
+  })
+  if (!selected && apiKeyPoolIsolationEnabled) {
+    return undefined
+  }
+  if (!selected) {
+    return account
+  }
+
+  return {
+    ...account,
+    apiKey: selected.key,
+    selectedApiKeyFingerprint: apiKeyPoolIsolationEnabled ? selected.fingerprint : undefined,
+    selectedApiKeyIndex: apiKeyPoolIsolationEnabled ? selected.index : undefined,
+    credentials: {
+      ...account.credentials,
+      api_key: selected.key
+    }
+  }
+}
+
 export async function buildPreparedUpstreamRequestParts(
   req: Request,
   account: UpstreamAccount,
@@ -156,5 +202,13 @@ export async function buildPreparedUpstreamRequestParts(
       })
     }
     throw error
+  }
+}
+
+function accountApiKeySelectionCredentials(account: UpstreamAccount): Record<string, unknown> {
+  return {
+    ...account.credentials,
+    api_key: account.apiKey,
+    ...(account.apiKeys?.length ? { api_keys: account.apiKeys } : {})
   }
 }

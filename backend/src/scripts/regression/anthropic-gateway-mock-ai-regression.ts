@@ -135,7 +135,7 @@ try {
     await assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl, upstreamBaseUrl)
     await assertAnthropicModels(baseUrl, apiKey.key)
-    await assertAnthropicModelMapping(baseUrl, upstreamBaseUrl)
+    assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl)
     await assertAnthropicApiKeyPoolIsolation(baseUrl, upstreamBaseUrl)
     await assertAnthropicResponseInspectionSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertAnthropicJsonErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
@@ -664,7 +664,7 @@ async function assertAnthropicModels(baseUrl: string, localApiKey: string): Prom
   assert.equal(upstreamHits.length, 0, 'Anthropic /v1/models 应由本地模型目录响应，不应打到上游 mock')
 }
 
-async function assertAnthropicModelMapping(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+function assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl: string): void {
   const sourceModel = 'claude-haiku-4-5'
   const upstreamModel = 'claude-haiku-4-5-20251001'
   const group = repositories.createGroup({
@@ -672,7 +672,7 @@ async function assertAnthropicModelMapping(baseUrl: string, upstreamBaseUrl: str
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  assert.throws(() => repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic 模型映射回归账户',
     type: 'api_key',
@@ -683,26 +683,18 @@ async function assertAnthropicModelMapping(baseUrl: string, upstreamBaseUrl: str
     },
     supportedModels: [upstreamModel],
     modelMappings: [
-      { sourceModel, upstreamModel, enabled: true }
+      {
+        sourceModel,
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }
     ],
     groupId: group.id,
     status: 'active',
     schedulable: true
-  }, access)
-  const apiKey = repositories.createApiKeyRecord({
-    name: 'Anthropic 模型映射回归 Key',
-    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-    status: 'active'
-  }, access)
-  assert(apiKey.key, 'Anthropic 模型映射回归 API Key 未返回明文密钥')
-
-  upstreamHits.length = 0
-  const result = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic model mapping', sourceModel)
-  assert.equal(result.status, 200, `Anthropic 模型映射请求应成功，实际 HTTP ${result.status}: ${result.text}`)
-  assert.equal(upstreamHits.length, 1, 'Anthropic 模型映射请求应命中一次 mock 上游')
-  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { model?: string; messages?: unknown[] }
-  assert.equal(upstreamBody.model, upstreamModel, 'Anthropic 上游请求体顶层 model 应被改写为映射后的上游模型')
-  assert(Array.isArray(upstreamBody.messages), 'Anthropic 模型映射不应丢失 messages 字段')
+  }, access), /当前供应商协议不支持 OpenAI 模型映射/, 'Anthropic Messages 账号不应允许配置 OpenAI 协议模型映射')
 }
 
 async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseUrl: string): Promise<void> {

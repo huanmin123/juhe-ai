@@ -54,6 +54,16 @@ const upstreamModel = 'gpt-mapping-regression-upstream-personal'
 const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
 const unavailableSourceModel = 'gpt-mapping-regression-draft-source'
 
+function responsesMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'responses',
+    upstreamModel,
+    upstreamEndpointFamily: 'responses',
+    enabled
+  }
+}
+
 try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
@@ -123,30 +133,35 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    supportedModels: [sourceModel],
+    supportedModels: [upstreamModel, replacementUpstreamModel],
     modelMappings: [
-      { sourceModel, upstreamModel, enabled: true }
+      responsesMapping(sourceModel, upstreamModel)
     ],
     groupId: group.id
   }, ownerAccess)
 
   assert.deepEqual(account.modelMappings, [
-    { sourceModel, upstreamModel, enabled: true }
+    responsesMapping(sourceModel, upstreamModel)
   ], '创建账户应返回模型映射')
   assert.deepEqual(loadStoredMappings(account.id), [
-    { sourceModel, upstreamModel, enabled: true }
+    responsesMapping(sourceModel, upstreamModel)
   ], '创建账户应写入模型映射关系表')
 
   const runtimeAccount = repositories.listOpenAIAccountsForGroup(group.id, ownerAccess.systemAccountId)
     .find((item) => item.id === account.id)
   assert(runtimeAccount, '网关运行时账号快照应包含映射账户')
   assert.deepEqual(runtimeAccount.modelMappings, [
-    { sourceModel, upstreamModel, enabled: true }
+    responsesMapping(sourceModel, upstreamModel)
   ], '网关运行时账号快照应带上模型映射')
 
   const originalRequest = jsonRequest({ model: sourceModel, input: 'ping', stream: false, extra: { keep: true } })
-  const mapping = resolveOpenAIAccountModelMapping(runtimeAccount, requestModel(originalRequest))
-  assert.deepEqual(mapping, { sourceModel, upstreamModel }, '选中账号后应按下游模型命中账号映射')
+  const mapping = resolveOpenAIAccountModelMapping(runtimeAccount, requestModel(originalRequest), 'responses')
+  assert.deepEqual(mapping, {
+    sourceModel,
+    sourceEndpointFamily: 'responses',
+    upstreamModel,
+    upstreamEndpointFamily: 'responses'
+  }, '选中账号后应按下游模型和协议命中账号映射')
   const mappedBody = JSON.parse((await buildOpenAIModelMappedJsonBody(originalRequest, upstreamModel)).toString('utf8')) as Record<string, unknown>
   assert.equal(mappedBody.model, upstreamModel, '上游请求体顶层 model 应改写为上游模型')
   assert.deepEqual(mappedBody.extra, { keep: true }, '模型映射不应丢弃未知字段')
@@ -159,65 +174,63 @@ try {
 
   const updated = repositories.updateAccount(account.id, {
     modelMappings: [
-      { sourceModel, upstreamModel: replacementUpstreamModel, enabled: false }
+      responsesMapping(sourceModel, replacementUpstreamModel, false)
     ]
   }, ownerAccess)
   assert.deepEqual(updated?.modelMappings, [
-    { sourceModel, upstreamModel: replacementUpstreamModel, enabled: false }
+    responsesMapping(sourceModel, replacementUpstreamModel, false)
   ], '更新账户应替换模型映射')
   assert.deepEqual(loadStoredMappings(account.id), [
-    { sourceModel, upstreamModel: replacementUpstreamModel, enabled: false }
+    responsesMapping(sourceModel, replacementUpstreamModel, false)
   ], '更新账户应替换模型映射关系表')
 
   const renamed = repositories.updateAccount(account.id, { name: '账号模型映射回归账户-改名' }, ownerAccess)
   assert.deepEqual(renamed?.modelMappings, [
-    { sourceModel, upstreamModel: replacementUpstreamModel, enabled: false }
+    responsesMapping(sourceModel, replacementUpstreamModel, false)
   ], '未提交 modelMappings 时不应清空已有映射')
 
-  const crossProviderUpstreamUpdated = repositories.updateAccount(account.id, {
+  assert.throws(() => repositories.updateAccount(account.id, {
     modelMappings: [
-      { sourceModel, upstreamModel: crossProviderUpstreamModel, enabled: true }
+      responsesMapping(sourceModel, crossProviderUpstreamModel)
     ]
-  }, ownerAccess)
-  assert.deepEqual(crossProviderUpstreamUpdated?.modelMappings, [
-    { sourceModel, upstreamModel: crossProviderUpstreamModel, enabled: true }
-  ], '映射上游模型应允许来自全供应商模型目录')
+  }, ownerAccess), /映射上游模型不在当前账号可用模型池中/, '定制供应商映射上游模型必须来自当前供应商模型池')
   const crossProviderUpstreamBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderUpstreamModel,
     scope: 'global'
   })
-  assert.equal(crossProviderUpstreamBindings.mappingUpstreamAccountCount, 1, '跨供应商上游映射应计入绑定统计')
+  assert.equal(crossProviderUpstreamBindings.mappingUpstreamAccountCount, 0, '被供应商边界拒绝的上游映射不应计入绑定统计')
 
-  assert.throws(() => {
-    repositories.updateAccount(account.id, {
-      modelMappings: [
-        { sourceModel: crossProviderSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
-      ]
-    }, ownerAccess)
-  }, /账户已配置支持模型时，映射下游模型只能选择支持模型/, '映射下游模型不在支持模型中时应拒绝保存')
+  const crossProviderSourceUpdated = repositories.updateAccount(account.id, {
+    modelMappings: [
+      responsesMapping(crossProviderSourceModel, replacementUpstreamModel)
+    ]
+  }, ownerAccess)
+  assert.deepEqual(crossProviderSourceUpdated?.modelMappings, [
+    responsesMapping(crossProviderSourceModel, replacementUpstreamModel)
+  ], '映射下游模型允许来自 OpenAI 协议客户端模型池')
   const crossProviderSourceBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderSourceModel,
     scope: 'global'
   })
-  assert.equal(crossProviderSourceBindings.mappingSourceAccountCount, 0, '被支持模型限制拒绝的下游映射不应计入绑定统计')
+  assert.equal(crossProviderSourceBindings.mappingSourceAccountCount, 1, '跨供应商下游映射应计入 source 绑定统计')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
       modelMappings: [
-        { sourceModel: unavailableSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
+        responsesMapping(unavailableSourceModel, replacementUpstreamModel)
       ]
     }, ownerAccess)
-  }, /映射下游模型不在全局可请求模型目录中/, '草稿模型不能作为下游映射源')
+  }, /映射下游模型不在 OpenAI 协议客户端模型池中/, '草稿模型不能作为下游映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
       modelMappings: [
-        { sourceModel, upstreamModel: 'gpt-mapping-regression-missing', enabled: true }
+        responsesMapping(sourceModel, 'gpt-mapping-regression-missing')
       ]
     }, ownerAccess)
-  }, /映射上游模型不在全局可请求模型目录中/, '映射上游模型必须存在于全局可请求模型目录')
+  }, /映射上游模型不在当前账号可用模型池中/, '映射上游模型必须存在于当前账号可用模型池')
   assertImportPreviewRejectsInvalidMapping(group.id)
 
   console.log('account model mapping regression passed')
@@ -247,23 +260,25 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
           base_url: 'https://api.openai.com/v1'
         },
         modelMappings: [
-          { sourceModel: unavailableSourceModel, upstreamModel: replacementUpstreamModel, enabled: true }
+          responsesMapping(unavailableSourceModel, replacementUpstreamModel)
         ]
       }
     ]
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在全局可请求模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在 OpenAI 协议客户端模型池中')), '导入预览应在预览阶段暴露模型映射目录错误')
 }
 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {
   return (databaseModule.getBusinessDatabase()
-    .prepare('SELECT source_model, upstream_model, enabled FROM account_model_mappings WHERE account_id = ? ORDER BY source_model ASC')
-    .all(accountId) as unknown as Array<{ source_model: string; upstream_model: string; enabled: number }>)
+    .prepare('SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled FROM account_model_mappings WHERE account_id = ? ORDER BY source_model ASC, source_endpoint_family ASC')
+    .all(accountId) as unknown as Array<{ source_model: string; source_endpoint_family: 'chat_completions' | 'responses'; upstream_model: string; upstream_endpoint_family: 'chat_completions' | 'responses'; enabled: number }>)
     .map((row) => ({
       sourceModel: row.source_model,
+      sourceEndpointFamily: row.source_endpoint_family,
       upstreamModel: row.upstream_model,
+      upstreamEndpointFamily: row.upstream_endpoint_family,
       enabled: row.enabled === 1
     }))
 }
@@ -346,7 +361,7 @@ async function assertInvalidMappingBodyDoesNotSwitchAccount(groupId: string): Pr
         base_url: `http://127.0.0.1:${address.port}/v1`
       },
       status: 'active',
-      supportedModels: [sourceModel],
+      supportedModels: [replacementUpstreamModel],
       groupId
     }, ownerAccess)
     assert(repositories.setAccountGroup(fallback.id, groupId, ownerAccess), '后备账户应能绑定到模型映射回归分组')
@@ -398,8 +413,8 @@ function invalidJsonGatewayRequest(model: string): Request {
   const rawBody = Buffer.from('{ invalid json', 'utf8')
   const request = new MemoryGatewayRequest({
     method: 'POST',
-    originalUrl: '/v1/chat/completions',
-    path: '/v1/chat/completions',
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
     headers: {
       accept: 'application/json',
       'content-type': 'application/json',
