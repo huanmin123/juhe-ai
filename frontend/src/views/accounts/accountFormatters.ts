@@ -91,6 +91,7 @@ export function accountStatusColor(account: AccountSummary) {
   if (isAccountPackageExpiredStatus(account)) return 'red'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
+  if (runtimeStatus === 'degraded') return 'gold'
   if (runtimeStatus === 'precheck_pending') return 'blue'
   if (runtimeStatus === 'local_suppressed') return 'gold'
   if (runtimeStatus === 'half_open') return 'blue'
@@ -112,6 +113,7 @@ export function accountStatusText(account: AccountSummary) {
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
+  if (runtimeStatus === 'degraded') return '调度降级'
   if (runtimeStatus === 'precheck_pending') return '待探针确认'
   if (runtimeStatus === 'local_suppressed') return '短暂避让'
   if (runtimeStatus === 'half_open') return '半开探测'
@@ -531,6 +533,10 @@ function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string
   if (runtime.localFailureCount) {
     lines.push(`短暂避让轮次：第 ${formatNumber(runtime.localFailureCount)} 轮`)
   }
+  if (runtime.status === 'degraded') {
+    lines.push('只影响调度排序：有普通候选时不会优先选择该账号，普通候选不足时才会兜底尝试')
+    lines.push('兜底尝试完整成功后会自动解除调度降级')
+  }
   if (runtime.reason) {
     lines.push(`原因：${runtime.reason}`)
   }
@@ -541,6 +547,7 @@ function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string
 }
 
 function runtimeAvailabilityText(status: NonNullable<AccountSummary['runtimeAvailability']>['status']): string {
+  if (status === 'degraded') return '调度降级'
   if (status === 'precheck_pending') return '待探针确认'
   if (status === 'local_suppressed') return '短暂避让'
   if (status === 'half_open') return '半开探测'

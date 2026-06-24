@@ -255,13 +255,8 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="失败触发次数" tooltip="同一账号在统计窗口内累计到这个失败次数后，进入临时不可调用。">
-                <a-input-number v-model:value="systemForm.streamFailureThresholdCount" :min="1" :max="100" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="失败统计窗口（分钟）" tooltip="只统计这个时间窗口内的流式失败；超过窗口后重新计数。">
-                <a-input-number v-model:value="systemForm.streamFailureThresholdWindowMinutes" :min="1" :max="1440" style="width: 100%" />
+              <a-form-item label="客户端总等待时长（秒）" tooltip="限制同一次客户端连接在服务端隐藏切号和重试期间的总等待时间；超过后停止继续隐藏重试并返回失败，避免客户端长期收不到内容后断开。">
+                <a-input-number v-model:value="systemForm.streamClientTotalWaitTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
           </div>

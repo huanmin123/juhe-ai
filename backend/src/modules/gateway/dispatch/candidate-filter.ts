@@ -14,7 +14,7 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
-import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { recordClientIpRequestErrorSample } from '../request/local-request-errors.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
@@ -44,10 +44,10 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   endpoint: string
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
   recoverUnavailableCandidateAccounts?: () => Promise<UpstreamAccount[] | undefined>
-  loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof openAIRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
+  loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof gatewayRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
 }): Promise<RequestCandidateFilterResult> {
   const requestedModel = requestModel(input.req)
-  const sourceEndpointFamily = openAIRequestEndpointFamily(input.req)
+  const sourceEndpointFamily = gatewayRequestEndpointFamily(input.req)
   let rawCandidateAccounts = input.rawCandidateAccounts
   if (rawCandidateAccounts.length === 0 && requestedModel && input.loadModelAwareCandidateAccounts) {
     rawCandidateAccounts = await input.loadModelAwareCandidateAccounts(requestedModel, sourceEndpointFamily) ?? rawCandidateAccounts
@@ -208,7 +208,7 @@ function shouldReloadModelAwareCandidates(
     directMatchedCount: number
     mappingMatchedCount: number
   },
-  loader: ((requestedModel: string, sourceEndpointFamily?: ReturnType<typeof openAIRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>) | undefined
+  loader: ((requestedModel: string, sourceEndpointFamily?: ReturnType<typeof gatewayRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>) | undefined
 ): boolean {
   return Boolean(
     requestedModel

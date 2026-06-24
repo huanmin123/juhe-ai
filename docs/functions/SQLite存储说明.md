@@ -843,7 +843,7 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 - `group_accounts.account_id` 指向当前使用方自己的可调度账户行；自有账户指向自有 `accounts` 行，授权账户指向被授权用户名下的授权实例账户行。`system_account_id` 表示这条分组绑定属于哪个使用方，本地分组绑定不改变原资源归属。
 - `group_accounts.account_authorization_id`：当被授权用户把授权实例账户加入自己分组时记录对应用户级统一授权 ID；为空表示自有账户。
 - `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled`：当前使用方当前分组绑定的调度事实。被授权人调整排序、超级优先或降级备用时只更新这条绑定，不修改授权实例全局账号字段、来源账户或其他被授权人的绑定。
-- 授权实例运行态以授权实例 `accounts` 行为准；冷却、最近错误和流式失败窗口不落在 `group_accounts` 本地绑定字段上。
+- 授权实例持久状态以授权实例 `accounts` 行为准；冷却、最近错误和流失败诊断窗口不落在 `group_accounts` 本地绑定字段上，真实网关的调度降级和事前确认运行态只保存在当前 Web 进程内。
 - 来源 AI 账户删除时，来源账户和对应授权实例账户都只做逻辑删除并立即隐藏；对应 `resource_authorization_grants` 和 `resource_authorizations` 必须标记为 `revoked`，历史统计和用量在逻辑删除阶段继续保留原授权 ID；默认授权列表不再把它作为生效授权展示。超过 1 个月后，物理清理任务再删除授权实例、授权记录、绑定关系、历史记录和统计窗口。
 - `api_keys` 不保存主号池字段；API Key 的分组路由事实只来自 `api_key_group_bindings`。
 - `api_keys.availability_schedule_json` 保存 API Key 时间计划；为空表示不设置计划，API Key 完全按 `api_keys.status` 手动启停。启用计划后，创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active` 派生字段，并计算下一次计划边界写入 `api_keys.availability_schedule_next_check_at`；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。跨天窗口的日期范围和例外日期都按窗口开始日期解释，结束日期当天启动的窗口可延续到次日凌晨；多个窗口重叠时按当前整体允许状态写派生字段，避免较短窗口结束时错误停用。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的 API Key，每轮最多 500 个，并通过 `availability_schedule_next_check_at + id` 部分索引定位；网关只读取落库后的人工状态和派生计划状态，不在请求链路解析计划 JSON。
@@ -949,10 +949,11 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试之间的等待间隔；冷却恢复复测会显式覆盖为不做同账号重试。
 - `temporaryUnschedulableRetryAttempts = 3`：普通上游请求异常或非 `2xx` 响应切号前，同账号原地确认重试次数；冷却恢复复测会显式覆盖为不做同账号重试。
 - 本地短暂避让不落库、不使用 `defaultTemporaryUnschedulableMinutes`，固定按 `3s -> 5s -> 10s` 进程内阶梯执行；每阶到期后只允许一个真实请求半开探测，半开租约跟随请求并发生命周期释放，固定租约时间只用于无在途并发时回收孤儿租约；三阶半开仍失败后进入事前确认。真实网关流量中的代理 profile 已知不可用也只推进这套运行态阶梯，确认失败且账号并发归零前不写持久临时不可调用。
-- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败先进入运行态屏障，确认失败且当前账号并发归零后才写持久账号状态。
-- `streamRequestTimeoutSeconds = 180`：上游首包等待上限；非流式和流式在响应头前、非流式在 `2xx` 响应首字节前超过该时间时按上游请求异常切换后续账号；流式拿到 `2xx + SSE` 后，超过该时间没有收到任何上游 chunk 时补发失败事件并结束本次 SSE。
-- `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
-- `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：历史流失败计数参数；真实网关流式失败已改为单次失败即写账号状态。
+- `streamCircuitBreakerEnabled = true`：流式超时检测默认开启；真实网关流式失败先进入运行态调度降级和短暂避让，确认失败且当前账号并发归零后才写持久账号状态。
+- `streamRequestTimeoutSeconds = 120`：上游首包等待上限；非流式和流式在响应头前、非流式在 `2xx` 响应首字节前超过该时间时按上游请求异常切换后续账号；流式拿到 `2xx + SSE` 后，超过该时间没有收到任何上游 chunk 时补发失败事件并结束本次 SSE。
+- `streamIdleTimeoutSeconds = 30`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
+- `streamClientTotalWaitTimeoutSeconds = 270`：同一次客户端连接在服务端隐藏切号 / 重试期间的总等待上限；超过后停止继续隐藏重试并返回失败，避免客户端长期收不到内容后自行断开。
+- `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 5`：历史流失败诊断计数参数；真实网关流式失败不再依赖该阈值或窗口写账号状态。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
 - `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合配置上限；常驻 stats-worker 在线聚合会再把 usage 单批实际处理量限制为 1000 条，并给每轮调度设置 4.5 秒运行预算。增量聚合在批内先按 scope、时间桶、模型、延迟桶和账号质量分钟桶预聚合，再写入 SQLite，避免高并发下对同一批记录逐条重复 upsert。连续批次之间让出事件循环，并在继续下一批前固定等待 25ms；持续写入时统计游标保留 15 秒安全延迟，用来吸收 usage 队列落库和 IPC 传递的短暂延迟，不再要求 usage 队列完全为空，避免高吞吐场景因队列短暂非空而长期饥饿；若 pending usage 中存在超过 15 秒仍未落库的记录，本轮统计会跳过，避免游标越过未落库记录。额度小时窗口随本任务刷新，排行和概览窗口快照由独立 worker 任务刷新。更大的批量只适合作为离线重建或人工追赶历史积压时的独立脚本参数，不能让常驻 worker 长时间占用统计库写事务。
 - `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。

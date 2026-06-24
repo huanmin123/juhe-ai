@@ -220,7 +220,7 @@ export function listGatewayDispatchModelCandidateRows(
   groupAccess: GroupUsageAccessMetadata,
   now: string,
   requestedModel: string,
-  requestedEndpointFamily?: 'chat_completions' | 'responses',
+  requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages',
   options: GatewayDispatchCandidateWindowOptions = {}
 ): GatewayDispatchModelCandidateRowsResult {
   const model = requestedModel.trim()

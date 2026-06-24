@@ -1,5 +1,10 @@
 import type { AccountType, ProviderCode, ProviderDefinition, ProviderProtocolProfileDefinition, ProtocolEndpointFamilyDefinition } from '../domain/types.js'
-import { OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../domain/provider-protocol.js'
+import {
+  ANTHROPIC_PROTOCOL_CODE,
+  ANTHROPIC_PROTOCOL_VERSION,
+  OPENAI_PROTOCOL_CODE,
+  OPENAI_PROTOCOL_VERSION
+} from '../domain/provider-protocol.js'
 import { getBusinessDatabase } from './database.js'
 import { parseJsonArray } from './value-utils.js'
 
@@ -59,6 +64,14 @@ export function listProviders(): ProviderDefinition[] {
 }
 
 export function listOpenAIProtocolProviderCodes(): ProviderCode[] {
+  return listProtocolProviderCodes(OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION)
+}
+
+export function listAnthropicProtocolProviderCodes(): ProviderCode[] {
+  return listProtocolProviderCodes(ANTHROPIC_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_VERSION)
+}
+
+function listProtocolProviderCodes(protocolCode: string, protocolVersion: string): ProviderCode[] {
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT code
@@ -71,7 +84,7 @@ export function listOpenAIProtocolProviderCodes(): ProviderCode[] {
       ORDER BY code ASC
       LIMIT ?
     `)
-    .all(OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION, maxProviderDefinitions) as unknown as Array<{ code: ProviderCode }>
+    .all(protocolCode, protocolVersion, maxProviderDefinitions) as unknown as Array<{ code: ProviderCode }>
   return rows.map((row) => row.code)
 }
 

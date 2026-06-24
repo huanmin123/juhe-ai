@@ -32,7 +32,7 @@
               allow-clear
               :disabled="authorizedEditing"
               option-filter-prop="label"
-              :options="mappingSourceModelOptions"
+              :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
               placeholder="下游模型"
               show-search
             />
@@ -145,6 +145,7 @@ import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
+import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
@@ -162,6 +163,7 @@ const props = defineProps<{
   form: AccountFormModel
   isOAuthForm: boolean
   isManagementView: boolean
+  mappingAnthropicSourceModelOptions: Array<{ label: string; value: string }>
   mappingSourceModelOptions: Array<{ label: string; value: string }>
   mappingUpstreamModelOptions: Array<{ label: string; value: string }>
   modelOptions: Array<{ label: string; value: string }>
@@ -201,29 +203,81 @@ const endpointFamilyOptions = [
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' }
 ] as const
-const sourceEndpointFamilyOptions = endpointFamilyOptions.filter((option) => option.value !== 'messages')
+const sourceEndpointFamilyOptions = computed(() => endpointFamilyOptions.map((option) => ({
+  ...option,
+  disabled: option.value === 'messages' && !canSelectMessagesSource()
+})))
 const nativeResponsesUpstreamAvailable = computed(() => props.form.supportedEndpointModes.some((mode) => responsesEndpointModes.includes(mode)))
+const openAIUpstreamProfile = computed(() => isOpenAIProtocolProfile(props.selectedProtocolProfile))
+const anthropicUpstreamProfile = computed(() => isAnthropicProtocolProfile(props.selectedProtocolProfile))
 
 watch(() => [
   props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'),
+  props.selectedProtocolProfile?.protocolCode ?? '',
+  props.selectedProtocolProfile?.protocolVersion ?? '',
   props.form.supportedEndpointModes.join(',')
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
-    if (mapping.upstreamEndpointFamily === 'responses' && !canSelectResponsesUpstream()) {
-      mapping.upstreamEndpointFamily = 'chat_completions'
+    if (mapping.sourceEndpointFamily === 'messages' && !canSelectMessagesSource()) {
+      mapping.sourceEndpointFamily = 'chat_completions'
+    }
+    if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) {
+      mapping.upstreamEndpointFamily = defaultUpstreamEndpointFamilyForSource(mapping.sourceEndpointFamily)
     }
   }
 })
 
-function upstreamEndpointFamilyOptions(_sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
+function mappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
+  return sourceEndpointFamily === 'messages'
+    ? props.mappingAnthropicSourceModelOptions
+    : props.mappingSourceModelOptions
+}
+
+function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
   return endpointFamilyOptions.map((option) => ({
     ...option,
-    disabled: option.value === 'responses' && !canSelectResponsesUpstream()
+    disabled: upstreamEndpointFamilyDisabled(sourceEndpointFamily, option.value)
   }))
 }
 
 function canSelectResponsesUpstream(): boolean {
-  return nativeResponsesUpstreamAvailable.value
+  return openAIUpstreamProfile.value && nativeResponsesUpstreamAvailable.value
+}
+
+function canSelectMessagesSource(): boolean {
+  return openAIUpstreamProfile.value
+}
+
+function canSelectMessagesUpstream(): boolean {
+  return anthropicUpstreamProfile.value
+}
+
+function upstreamEndpointFamilyDisabled(
+  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
+  upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']
+): boolean {
+  if (sourceEndpointFamily === 'messages') {
+    return !canSelectMessagesSource() || upstreamEndpointFamily !== 'chat_completions'
+  }
+  if (upstreamEndpointFamily === 'messages') {
+    return !canSelectMessagesUpstream()
+  }
+  if (upstreamEndpointFamily === 'responses') {
+    return !canSelectResponsesUpstream()
+  }
+  return !openAIUpstreamProfile.value
+}
+
+function defaultUpstreamEndpointFamilyForSource(
+  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
+): AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'] {
+  if (sourceEndpointFamily === 'messages' && canSelectMessagesSource()) {
+    return 'chat_completions'
+  }
+  if (canSelectMessagesUpstream()) {
+    return 'messages'
+  }
+  return 'chat_completions'
 }
 
 function addModelMapping(): void {

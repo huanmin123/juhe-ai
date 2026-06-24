@@ -39,14 +39,14 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   groupId: string
   groupAccess: GroupUsageAccessMetadata
   requestClientCompatibility: ClientCompatibilityCapability
-  rawCandidateAccounts: readonly UpstreamAccount[]
+  dispatchAccounts: readonly UpstreamAccount[]
   activeGatewaySettings: GatewaySettings
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
   signal?: AbortSignal
 }): Promise<'continued' | 'completed'> {
-  if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.requestClientCompatibility, input.rawCandidateAccounts)) {
+  if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.requestClientCompatibility, input.dispatchAccounts)) {
     return 'continued'
   }
   const body = await parseGatewayJsonObject(input.req, input.signal)
@@ -79,7 +79,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   try {
     upstreamResult = await fetchFirstAvailableUpstream(
       syntheticReq,
-      [...input.rawCandidateAccounts],
+      [...input.dispatchAccounts],
       input.activeGatewaySettings,
       input.usageContext,
       input.auditCapture,

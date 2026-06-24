@@ -166,13 +166,13 @@ export function handleStreamFailure(
   }
   if (!context.outputReceived) {
     getRequestLogger().warn({
-      event: 'gateway_stream_failure_account_side_effect_enqueued',
+      event: 'gateway_stream_failure_account_runtime_handled',
       accountId: account.id,
       accountName: account.name,
       errorCode,
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
-    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态屏障' : '流式失败已写入账号运行态处理队列')
+    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态调度降级' : '流式失败已进入账号运行态处理')
   }
 }
 

@@ -14,7 +14,7 @@ import {
 } from '../domain/provider-protocol.js'
 import { normalizeAccountModelMappingsInput } from './account-model-mappings.repository.js'
 import { normalizeAccountSupportedModelsInput } from './account-supported-models.repository.js'
-import { isOpenAIProtocolProviderCode, listOpenAIProtocolProviderCodes } from './provider.repository.js'
+import { isOpenAIProtocolProviderCode, listAnthropicProtocolProviderCodes, listOpenAIProtocolProviderCodes } from './provider.repository.js'
 
 export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
   const models = normalizeAccountSupportedModelsInput(value)
@@ -53,6 +53,15 @@ export function normalizeAccountModelMappingsForProvider(
     throw new Error('当前供应商协议不支持模型映射')
   }
   for (const mapping of mappings) {
+    if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+      if (mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+        throw new Error('Anthropic Messages 下游协议当前只支持显式桥接到 Chat Completions 上游')
+      }
+      if (!openAIProfile) {
+        throw new Error('Anthropic Messages 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上')
+      }
+      continue
+    }
     if (mapping.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && !anthropicProfile) {
       throw new Error('只有 Anthropic Messages 协议档案可以把上游协议配置为 Messages')
     }
@@ -64,12 +73,11 @@ export function normalizeAccountModelMappingsForProvider(
     }
   }
 
-  const sourceModels = openAIProtocolModelPool(systemAccountId)
   const invalidSourceModels = mappings
+    .filter((mapping) => !sourceModelPoolForMapping(mapping, systemAccountId).has(mapping.sourceModel))
     .map((mapping) => mapping.sourceModel)
-    .filter((model) => !sourceModels.has(model))
   if (invalidSourceModels.length > 0) {
-    throw new Error(`映射下游模型不在 OpenAI 协议客户端模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
+    throw new Error(`映射下游模型不在对应协议客户端模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
   }
   const upstreamModels = upstreamModelPoolForAccount(providerCode, systemAccountId, normalizedProfile)
   const invalidUpstreamModels = mappings
@@ -110,6 +118,26 @@ export function openAIProtocolModelPool(systemAccountId: string): Set<string> {
   return models
 }
 
+export function anthropicProtocolModelPool(systemAccountId: string): Set<string> {
+  const models = new Set<string>()
+  for (const providerCode of listAnthropicProtocolProviderCodes()) {
+    for (const item of listProviderModelCatalog({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })) {
+      models.add(item.model)
+    }
+  }
+  return models
+}
+
+function sourceModelPoolForMapping(mapping: AccountModelMapping, systemAccountId: string): Set<string> {
+  return mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+    ? anthropicProtocolModelPool(systemAccountId)
+    : openAIProtocolModelPool(systemAccountId)
+}
+
 function upstreamModelPoolForAccount(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Set<string> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (normalizedProviderCode === OPENAI_COMPATIBLE_PROVIDER_CODE) {
@@ -133,7 +161,11 @@ function upstreamModelPoolForAccount(providerCode: string, systemAccountId: stri
 
 export function assertAccountModelMappingEndpointFamilies(mappings: AccountModelMapping[]): void {
   for (const mapping of mappings) {
-    if (mapping.sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && mapping.sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) {
+    if (
+      mapping.sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY
+      && mapping.sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY
+      && mapping.sourceEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY
+    ) {
       throw new Error(`映射下游协议不支持：${mapping.sourceEndpointFamily}`)
     }
     if (
@@ -142,6 +174,9 @@ export function assertAccountModelMappingEndpointFamilies(mappings: AccountModel
       && mapping.upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY
     ) {
       throw new Error(`映射上游协议不支持：${mapping.upstreamEndpointFamily}`)
+    }
+    if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+      throw new Error('Anthropic Messages 下游协议当前只支持桥接到 Chat Completions 上游')
     }
   }
 }

@@ -189,7 +189,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 export function listOpenAIAccountsForGroup(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses'; includeUnavailable?: boolean } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'; includeUnavailable?: boolean } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
 }
@@ -199,7 +199,7 @@ export function listRecoverableUnavailableOpenAIAccountsForGroup(
   systemAccountId: string,
   options: {
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses'
+    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
     windowMs?: number
   } = {}
 ): OpenAIAccountSecret[] {
@@ -236,7 +236,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
 export function listOpenAIAccountsForGroupResult(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses'; includeUnavailable?: boolean } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'; includeUnavailable?: boolean } = {}
 ): OpenAIAccountsForGroupResult {
   const database = getBusinessDatabase()
   const now = nowIso()

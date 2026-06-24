@@ -3,9 +3,11 @@ import type { Request } from 'express'
 import type {
   AccountModelMapping,
   AccountModelMappingSourceEndpointFamily,
-  AccountModelMappingUpstreamEndpointFamily
+  AccountModelMappingUpstreamEndpointFamily,
+  GatewayRequestEndpointFamily
 } from '../../../../domain/types.js'
 import {
+  ANTHROPIC_MESSAGES_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
 } from '../../../../domain/provider-protocol.js'
@@ -61,12 +63,23 @@ export function resolveOpenAIRequestModelMapping(
   req: Request,
   account: OpenAIModelMappingRuntimeAccount | undefined
 ): ResolvedOpenAIModelMapping | undefined {
-  return resolveOpenAIAccountModelMapping(account, requestModel(req), openAIRequestEndpointFamily(req))
+  return resolveOpenAIAccountModelMapping(account, requestModel(req), gatewayRequestEndpointFamily(req))
 }
 
-export function openAIRequestEndpointFamily(req: Request): AccountModelMappingSourceEndpointFamily | undefined {
+export function gatewayRequestEndpointFamily(req: Request): GatewayRequestEndpointFamily | undefined {
+  return openAIRequestEndpointFamily(req) ?? anthropicMessagesRequestEndpointFamily(req)
+}
+
+export function openAIRequestEndpointFamily(req: Request): Extract<AccountModelMappingSourceEndpointFamily, 'chat_completions' | 'responses'> | undefined {
   const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
   return openAIEndpointFamilyFromPath(endpoint)
+}
+
+export function anthropicMessagesRequestEndpointFamily(req: Request): typeof ANTHROPIC_MESSAGES_FAMILY | undefined {
+  if (req.method.toUpperCase() !== 'POST') return undefined
+  const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
+  const normalizedPath = (endpoint.startsWith('/') ? endpoint : `/${endpoint}`).replace(/^\/v1(?=\/|$)/, '') || '/'
+  return normalizedPath === '/messages' ? ANTHROPIC_MESSAGES_FAMILY : undefined
 }
 
 export function isOpenAIResponsesToChatCompletionsModelMapping(
@@ -83,9 +96,19 @@ export function isOpenAIChatCompletionsToResponsesModelMapping(
     && mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY
 }
 
+export function isAnthropicMessagesToChatCompletionsModelMapping(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): boolean {
+  return mapping?.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+}
+
 export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: ResolvedOpenAIModelMapping): string {
   const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
   if (isOpenAIResponsesToChatCompletionsModelMapping(mapping)) {
+    return `/chat/completions${query}`
+  }
+  if (isAnthropicMessagesToChatCompletionsModelMapping(mapping)) {
     return `/chat/completions${query}`
   }
   if (isOpenAIChatCompletionsToResponsesModelMapping(mapping)) {

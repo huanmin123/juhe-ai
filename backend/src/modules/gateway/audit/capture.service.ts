@@ -26,7 +26,7 @@ import {
 import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
 import { resolveCatalogPricingModel } from '../../model-pricing/model-catalog.service.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
-import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -250,7 +250,7 @@ export class AuditCaptureContext {
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
     this.bindContext({ providerCode: input.account.providerCode })
-    this.bindContext(auditModelAccounting(input.account, requestModel(this.req), this.gatewayContext.systemAccountId, openAIRequestEndpointFamily(this.req)))
+    this.bindContext(auditModelAccounting(input.account, requestModel(this.req), this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(this.req)))
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {
@@ -472,7 +472,7 @@ function auditModelAccounting(
   account: OpenAIAccountSecret,
   requestedModel: string | undefined,
   fallbackSystemAccountId: string | undefined,
-  sourceEndpointFamily: ReturnType<typeof openAIRequestEndpointFamily>
+  sourceEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
 ): Pick<AuditGatewayContext, 'upstreamModel' | 'pricingModel' | 'modelMappingApplied' | 'modelMappingSource'> {
   const resolved = resolveGatewayUsageModel(account, requestedModel, sourceEndpointFamily)
   const upstreamModel = resolved.upstreamModel ?? requestedModel

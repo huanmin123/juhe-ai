@@ -83,7 +83,7 @@ import {
   waitForRecoverableUnavailableState
 } from '../runtime/recoverable-unavailable-wait.js'
 import { requestModel } from './metadata.js'
-import { openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
+import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -569,27 +569,6 @@ export async function prepareOpenAIGatewayDispatchContext(
       }
     })
   }
-  const codexBridgeCompactPreflight = await applyCodexResponsesChatBridgeCompactPreflight({
-    req,
-    res,
-    auditCapture,
-    usageContext,
-    startedAt,
-    systemAccountId,
-    apiKeyId,
-    groupId,
-    groupAccess,
-    requestClientCompatibility: clientStrategy.requestClientCompatibility,
-    rawCandidateAccounts,
-    activeGatewaySettings,
-    clientIpAccountAvoidanceTracker,
-    requestLane,
-    groupSchedulingPolicy: groupAccess.schedulingPolicy,
-    signal
-  })
-  if (codexBridgeCompactPreflight === 'completed') {
-    return undefined
-  }
   const codexBridgeStatePreflight = await applyCodexResponsesChatBridgeStatePreflight({
     req,
     res,
@@ -732,6 +711,29 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
+  const codexBridgeCompactPreflight = await applyCodexResponsesChatBridgeCompactPreflight({
+    req,
+    res,
+    auditCapture,
+    usageContext,
+    startedAt,
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    groupAccess,
+    requestClientCompatibility: clientStrategy.requestClientCompatibility,
+    dispatchAccounts: dispatchPreparation.accounts,
+    activeGatewaySettings,
+    clientIpAccountAvoidanceTracker,
+    requestLane,
+    groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    signal
+  })
+  if (codexBridgeCompactPreflight === 'completed') {
+    dispatchPreparation.releaseClientIpConcurrency()
+    return undefined
+  }
+
   return {
     activeGatewaySettings,
     usageContext,
@@ -768,7 +770,7 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
   signal?: AbortSignal
 }): Promise<UpstreamAccount[]> {
   const requestedModel = requestModel(input.req)
-  const requestedEndpointFamily = openAIRequestEndpointFamily(input.req)
+  const requestedEndpointFamily = gatewayRequestEndpointFamily(input.req)
   const loadActiveAccounts = () => listFreshOpenAIAccountsForGroupAsync(input.groupId, input.systemAccountId, {
     requestedModel,
     requestedEndpointFamily
@@ -832,7 +834,7 @@ function recoverableCandidateScopeKey(
   apiKeyId: string | undefined,
   groupId: string,
   requestedModel: string | undefined,
-  requestedEndpointFamily: ReturnType<typeof openAIRequestEndpointFamily>
+  requestedEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
 ): string {
   return [systemAccountId, apiKeyId ?? '', groupId, requestedModel ?? '', requestedEndpointFamily ?? ''].join(':')
 }
@@ -920,6 +922,7 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
     streamCircuitBreakerEnabled: override.streamCircuitBreakerEnabled ?? base.streamCircuitBreakerEnabled,
     streamRequestTimeoutSeconds: override.streamRequestTimeoutSeconds ?? base.streamRequestTimeoutSeconds,
     streamIdleTimeoutSeconds: override.streamIdleTimeoutSeconds ?? base.streamIdleTimeoutSeconds,
+    streamClientTotalWaitTimeoutSeconds: override.streamClientTotalWaitTimeoutSeconds ?? base.streamClientTotalWaitTimeoutSeconds,
     streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
     streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
   }

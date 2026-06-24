@@ -22,6 +22,15 @@ export interface LocalAccountSuppression {
   halfOpenLeaseId?: string
 }
 
+interface LocalAccountDegradation {
+  accountId: string
+  reason: string
+  sinceMs: number
+  firstFailureMs: number
+  lastFailureMs: number
+  failureCount: number
+}
+
 export interface GatewayAccountLocalSuppressionResult {
   runtimeKey: string
   action: 'suppressed' | 'precheck_required'
@@ -48,6 +57,14 @@ export interface LocalAccountSuppressionFilterResult<T> {
   nextRetryAfterMs?: number
 }
 
+export interface LocalAccountDegradationOrderResult<T> {
+  accounts: T[]
+  degradedCount: number
+  degradedAccountIds: string[]
+  applied: boolean
+  bypassedAllDegraded: boolean
+}
+
 export interface LocalAccountSuppressionFilterOptions {
   acquireHalfOpenLease?: boolean
 }
@@ -55,13 +72,39 @@ export interface LocalAccountSuppressionFilterOptions {
 type PrecheckRuntimeBlockingPredicate = (runtimeKey: string) => boolean
 
 export const localSuppressionMaxMs = 10 * 60_000
+export const localDegradationWindowMs = 5 * 60_000
 
 const localSuppressionDelayMs = [3_000, 5_000, 10_000] as const
 const localSuppressionHalfOpenLeaseMs = 180_000
 const localSuppressionIdleRetentionMs = 60_000
 
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
+const localAccountDegradations = new Map<string, LocalAccountDegradation>()
 let localHalfOpenLeaseSequence = 0
+
+export function degradeLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): AccountRuntimeAvailability {
+  const now = Date.now()
+  const current = localAccountDegradations.get(runtimeKey)
+  const withinWindow = current !== undefined && now - current.firstFailureMs <= localDegradationWindowMs
+  const degradation: LocalAccountDegradation = {
+    accountId,
+    reason,
+    sinceMs: current?.sinceMs ?? now,
+    firstFailureMs: withinWindow ? current.firstFailureMs : now,
+    lastFailureMs: now,
+    failureCount: withinWindow ? current.failureCount + 1 : 1
+  }
+  localAccountDegradations.set(runtimeKey, degradation)
+  logger.warn({
+    event: 'gateway_account_runtime_degraded',
+    accountId,
+    runtimeKey,
+    failureCount: degradation.failureCount,
+    observationWindowSeconds: Math.trunc(localDegradationWindowMs / 1000),
+    reason
+  }, '账号近期失败，已进入运行态调度降级，仅在普通候选不足时兜底尝试')
+  return localAccountDegradationAvailability(degradation)
+}
 
 export function suppressLocalAccountForGatewayFailure(runtimeKey: string, accountId: string, reason: string): GatewayAccountLocalSuppressionResult {
   const now = Date.now()
@@ -201,7 +244,68 @@ export function snapshotLocalAccountRuntimeAvailability(
       localFailureCount: suppression.localFailureCount
     }
   }
+  for (const [runtimeKey, degradation] of localAccountDegradations) {
+    if (snapshot[runtimeKey] || isPrecheckRuntimeBlocking(runtimeKey)) {
+      continue
+    }
+    snapshot[runtimeKey] = localAccountDegradationAvailability(degradation)
+  }
   return snapshot
+}
+
+export function orderLocalAccountDegradations<T extends SuppressibleGatewayAccount>(
+  accounts: T[]
+): LocalAccountDegradationOrderResult<T> {
+  if (accounts.length === 0) {
+    return {
+      accounts,
+      degradedCount: 0,
+      degradedAccountIds: [],
+      applied: false,
+      bypassedAllDegraded: false
+    }
+  }
+
+  const normalAccounts: T[] = []
+  const degradedAccounts: T[] = []
+  const degradedAccountIds: string[] = []
+  for (const account of accounts) {
+    const runtimeKey = gatewayAccountRuntimeKey(account)
+    if (localAccountDegradations.has(runtimeKey)) {
+      degradedAccounts.push(account)
+      degradedAccountIds.push(account.id)
+    } else {
+      normalAccounts.push(account)
+    }
+  }
+
+  if (degradedAccounts.length === 0) {
+    return {
+      accounts,
+      degradedCount: 0,
+      degradedAccountIds: [],
+      applied: false,
+      bypassedAllDegraded: false
+    }
+  }
+
+  if (normalAccounts.length === 0) {
+    return {
+      accounts,
+      degradedCount: degradedAccounts.length,
+      degradedAccountIds,
+      applied: false,
+      bypassedAllDegraded: true
+    }
+  }
+
+  return {
+    accounts: [...normalAccounts, ...degradedAccounts],
+    degradedCount: degradedAccounts.length,
+    degradedAccountIds,
+    applied: true,
+    bypassedAllDegraded: false
+  }
 }
 
 export function filterLocalAccountSuppressions<T extends SuppressibleGatewayAccount>(
@@ -249,8 +353,13 @@ export function clearLocalAccountSuppression(runtimeKey: string): boolean {
   return localAccountSuppressions.delete(runtimeKey)
 }
 
+export function clearLocalAccountDegradation(runtimeKey: string): boolean {
+  return localAccountDegradations.delete(runtimeKey)
+}
+
 export function clearLocalAccountSuppressionsForTest(): void {
   localAccountSuppressions.clear()
+  localAccountDegradations.clear()
 }
 
 export function cleanupExpiredLocalSuppressions(isPrecheckRuntimeBlocking: PrecheckRuntimeBlockingPredicate): void {
@@ -278,6 +387,10 @@ export function countVisibleLocalSuppressions(isPrecheckRuntimeBlocking: Prechec
     }
   }
   return count
+}
+
+export function countLocalAccountDegradations(): number {
+  return localAccountDegradations.size
 }
 
 function isLocalSuppressionVisible(
@@ -357,4 +470,13 @@ function localSuppressionVisibleUntilMs(suppression: LocalAccountSuppression, no
 
 function minRetryAtMs(current: number | undefined, candidate: number): number {
   return current === undefined ? candidate : Math.min(current, candidate)
+}
+
+function localAccountDegradationAvailability(degradation: LocalAccountDegradation): AccountRuntimeAvailability {
+  return {
+    status: 'degraded',
+    reason: degradation.reason,
+    since: new Date(degradation.sinceMs).toISOString(),
+    failureCount: degradation.failureCount
+  }
 }

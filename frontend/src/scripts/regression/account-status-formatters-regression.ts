@@ -36,6 +36,31 @@ assertStatus('运行态短暂避让', accountFixture({
     reason: 'mock runtime suppression'
   }
 }), '短暂避让', 'gold')
+const runtimeDegradedAccount = accountFixture({
+  effectiveAvailability: {
+    available: true,
+    status: 'runtime_degraded',
+    label: '调度降级',
+    color: 'gold',
+    blockerScope: 'runtime',
+    reason: 'mock runtime degraded'
+  },
+  runtimeAvailability: {
+    status: 'degraded',
+    reason: 'mock runtime degraded',
+    failureCount: 2
+  }
+})
+assertStatus('运行态调度降级', runtimeDegradedAccount, '调度降级', 'gold')
+assertEqual(
+  filterAccounts({ accounts: [runtimeDegradedAccount], filters: accountFilters(['active']), isManagementView: false }).length,
+  1,
+  '运行态调度降级仍应归入正常状态筛选'
+)
+assertTrue(
+  accountStatusTooltipLines(runtimeDegradedAccount).some((line) => line.includes('普通候选不足时才会兜底尝试')),
+  '运行态调度降级 tooltip 应说明只作为兜底候选'
+)
 assertStatus('运行态事前确认', accountFixture({
   effectiveAvailability: {
     available: false,
@@ -226,7 +251,7 @@ assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', '
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
 assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('可提前启用')), 'API Key 时间计划外 tooltip 应展示提前启用提示')
 
-console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态短暂避让、运行态事前确认、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
+console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态调度降级、运行态短暂避让、运行态事前确认、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)

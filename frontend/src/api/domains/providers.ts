@@ -10,10 +10,10 @@ import { createShortLivedRequestCache } from '@/shared/shortLivedRequestCache'
 import { http, unwrap } from '../http'
 
 const providerOptionsCache = createShortLivedRequestCache<ProviderDefinition[]>({ ttlMs: 30_000, maxEntries: 2 })
-const providerModelOptionsCache = createShortLivedRequestCache<ProviderModelOption[]>({ ttlMs: 30_000, maxEntries: 2 })
+const providerModelOptionsCache = createShortLivedRequestCache<ProviderModelOption[]>({ ttlMs: 30_000, maxEntries: 6 })
 
 export interface ProviderModelOptionsParams extends ListParams {
-  protocol?: 'openai'
+  protocol?: 'openai' | 'anthropic'
 }
 
 export const providersApi = {

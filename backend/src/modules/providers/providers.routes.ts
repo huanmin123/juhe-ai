@@ -4,7 +4,10 @@ import { z } from 'zod'
 import { isAdminRole } from '../../domain/types.js'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProviders } from '../../storage/repositories.js'
-import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
+import {
+  listAnthropicProtocolProviderCodes,
+  listOpenAIProtocolProviderCodes
+} from '../../storage/provider.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import {
@@ -53,8 +56,12 @@ providersRouter.get('/models/options', (req, res) => {
 })
 
 function providerModelOptionProviderCodes(protocol: unknown): Set<string> {
-  if (protocol === 'openai') {
+  const value = Array.isArray(protocol) ? protocol[0] : protocol
+  if (value === 'openai') {
     return new Set(listOpenAIProtocolProviderCodes())
+  }
+  if (value === 'anthropic') {
+    return new Set(listAnthropicProtocolProviderCodes())
   }
   return new Set(listProviders().filter((provider) => provider.enabled).map((provider) => provider.code))
 }

@@ -8,7 +8,8 @@ import {
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
 import {
-  filterLocallySuppressedGatewayAccounts
+  filterLocallySuppressedGatewayAccounts,
+  orderGatewayAccountsByRuntimeDegradation
 } from '../runtime/account-side-effects.service.js'
 import {
   filterGatewayAccountsByRequestCapability
@@ -17,7 +18,7 @@ import {
   filterGatewayAccountsByRequestedModel
 } from './model-filter.js'
 import { requestModel } from '../request/metadata.js'
-import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -66,7 +67,7 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       : bindings.slice(currentIndex + 1)
     : bindings.filter((binding) => binding.group_id !== input.groupId)
   const requestedModel = requestModel(input.req)
-  const sourceEndpointFamily = openAIRequestEndpointFamily(input.req)
+  const sourceEndpointFamily = gatewayRequestEndpointFamily(input.req)
   const excludedAccountIds = new Set(input.excludedAccountIds ?? [])
   const seenGroupIds = new Set<string>()
   for (const binding of candidateBindings) {
@@ -104,15 +105,21 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     if (!quotaAllowedAccounts.length) {
       continue
     }
+    const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(quotaAllowedAccounts)
+    if (input.reason === 'runtime_degraded' && runtimeDegradationOrder.bypassedAllDegraded) {
+      continue
+    }
+    const orderedQuotaAllowedAccounts = runtimeDegradationOrder.accounts
     if ((input.reason === 'high_concurrency_group_busy' || input.reason === 'group_capacity_busy')
-      && areGatewayAccountsCapacityBusyForLane(quotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
+      && areGatewayAccountsCapacityBusyForLane(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
       continue
     }
     if ((input.reason === 'local_account_suppressed'
+      || input.reason === 'runtime_degraded'
       || input.reason === 'upstream_accounts_exhausted'
       || input.reason === 'response_inspection_server_retry_exhausted'
       || input.reason === 'stream_server_retry_exhausted')
-      && filterLocallySuppressedGatewayAccounts(quotaAllowedAccounts).allSuppressed) {
+      && filterLocallySuppressedGatewayAccounts(orderedQuotaAllowedAccounts).allSuppressed) {
       continue
     }
     const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
@@ -121,7 +128,7 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     })
     return {
       groupId: binding.group_id,
-      accounts: quotaAllowedAccounts,
+      accounts: orderedQuotaAllowedAccounts,
       responseInspectionPolicies
     }
   }

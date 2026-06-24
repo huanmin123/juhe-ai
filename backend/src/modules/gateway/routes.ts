@@ -200,7 +200,6 @@ export async function handleOpenAIGatewayRequest(
   let releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
-  let maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
   let fallbackSwitchCount = 0
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
@@ -264,7 +263,6 @@ export async function handleOpenAIGatewayRequest(
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
-    maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
     return 'switched'
   }
   const switchToHybridQualityUpgrade = async (
@@ -348,7 +346,6 @@ export async function handleOpenAIGatewayRequest(
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
-    maxStreamServerRetryCount = streamServerRetryLimit(currentPreflight.accounts)
     return 'switched'
   }
 
@@ -686,34 +683,49 @@ export async function handleOpenAIGatewayRequest(
             return
           }
           streamServerRetryCount += 1
-          if (
-            handledResponse.excludeCurrentAccount
+          const policyRequestedAccountExclusion = handledResponse.excludeCurrentAccount
             || (handledResponse.responseInspection && shouldExcludeCurrentAccountForStreamRetry(handledResponse.responseInspection))
-          ) {
-            streamServerRetryExcludedAccountIds.add(account.id)
-          }
-          const effectiveMaxStreamServerRetryCount = handledResponse.excludeCurrentAccount
-            ? Math.max(1, accounts.length)
-            : maxStreamServerRetryCount
+            || false
+          streamServerRetryExcludedAccountIds.add(account.id)
           auditCapture.addGatewayMetadata({
             label: 'stream_server_retry_dispatch',
             metadata: {
               retryReason: handledResponse.retryReason,
               retryCount: streamServerRetryCount,
-              maxRetryCount: effectiveMaxStreamServerRetryCount,
+              candidateCount: accounts.length,
+              remainingCandidateCount: streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length,
+              clientTotalWaitTimeoutSeconds: activeGatewaySettings.streamClientTotalWaitTimeoutSeconds,
+              elapsedMs: Date.now() - startedAt,
               accountId: account.id,
               excludedAccountIds: [...streamServerRetryExcludedAccountIds],
               excludeCurrentAccount: handledResponse.excludeCurrentAccount,
+              currentRequestAccountExcluded: true,
+              policyRequestedAccountExclusion,
               policyId: handledResponse.responseInspection?.policyId,
               policyName: handledResponse.responseInspection?.policyName,
               accountSwitch: handledResponse.responseInspection?.accountSwitch,
               errorCode: handledResponse.errorCode
             }
           })
-          if (
-            streamServerRetryCount > effectiveMaxStreamServerRetryCount
-            || streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0
-          ) {
+          if (streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)) {
+            confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'stream_client_total_wait_timeout')
+            sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              retryReason: handledResponse.retryReason,
+              decision: handledResponse.responseInspection,
+              message: streamClientTotalWaitTimeoutMessage(activeGatewaySettings),
+              errorCode: handledResponse.errorCode,
+              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
+              accountId: account.id,
+              clientStrategy
+            })
+            return
+          }
+          if (streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0) {
             for (const accountId of streamServerRetryExcludedAccountIds) {
               exhaustedAccountIds.add(accountId)
             }
@@ -902,10 +914,6 @@ function attachClientIpSlotRelease(res: Response, preflight: OpenAIGatewayDispat
   return releaseClientIpSlot
 }
 
-function streamServerRetryLimit(accounts: UpstreamAccount[]): number {
-  return Math.max(1, Math.min(3, accounts.length))
-}
-
 function streamServerRetryFallbackReason(retryReason: StreamServerRetryReason): string {
   if (retryReason === 'response_inspection') {
     return 'response_inspection_server_retry_exhausted'
@@ -921,6 +929,18 @@ function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccoun
     return accounts
   }
   return accounts.filter((account) => !excludedAccountIds.has(account.id))
+}
+
+function streamClientTotalWaitTimedOut(settings: GatewaySettings, startedAt: number): boolean {
+  return Date.now() - startedAt >= streamClientTotalWaitTimeoutMs(settings)
+}
+
+function streamClientTotalWaitTimeoutMs(settings: GatewaySettings): number {
+  return Math.max(10, settings.streamClientTotalWaitTimeoutSeconds) * 1000
+}
+
+function streamClientTotalWaitTimeoutMessage(settings: GatewaySettings): string {
+  return `客户端总等待时长 ${Math.max(10, settings.streamClientTotalWaitTimeoutSeconds)} 秒已到达，停止服务端隐藏重试`
 }
 
 function shouldSendCodexDispatchExhaustedStreamRetry(

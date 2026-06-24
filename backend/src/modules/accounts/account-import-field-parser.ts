@@ -258,7 +258,7 @@ export function optionalModelMappingText(value: unknown): string | undefined {
 }
 
 export function optionalModelMappingSourceEndpointFamily(value: unknown): AccountModelMappingSourceEndpointFamily | undefined {
-  if (value === 'chat_completions' || value === 'responses') {
+  if (value === 'chat_completions' || value === 'responses' || value === 'messages') {
     return value
   }
   return undefined

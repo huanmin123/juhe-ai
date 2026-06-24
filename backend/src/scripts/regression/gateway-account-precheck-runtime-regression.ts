@@ -8,9 +8,11 @@ import { logger } from '../../shared/logger.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { GroupUsageAccessMetadata } from '../../storage/openai-account-selector.types.js'
 import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
+import type { OpenAIGatewayClientStrategyContext } from '../../modules/gateway/client-profiles/strategy.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-precheck-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -27,6 +29,7 @@ const [
   gatewaySideEffects,
   accountConcurrency,
   accountPreparation,
+  dispatchPreparation,
   databaseModule,
   usageRecordQueue,
   repositories,
@@ -35,6 +38,7 @@ const [
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../shared/account-concurrency.js'),
   import('../../modules/gateway/dispatch/account-preparation.js'),
+  import('../../modules/gateway/dispatch/preparation.js'),
   import('../../storage/database.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/repositories.js'),
@@ -48,16 +52,19 @@ const gatewaySettings: GatewaySettings = {
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
   streamCircuitBreakerEnabled: false,
-  streamRequestTimeoutSeconds: 180,
-  streamIdleTimeoutSeconds: 60,
+  streamRequestTimeoutSeconds: 120,
+  streamIdleTimeoutSeconds: 30,
+  streamClientTotalWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10
+  streamFailureThresholdWindowMinutes: 5
 }
 
 try {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   testPrecheckSummaryMapperBoundary()
   testLocalSuppressionStoreBoundary()
+  testRuntimeDegradationOrderingAndSuccessRecovery()
+  await testRuntimeDegradationDispatchPreparationFallback()
   testLocalSuppressionHalfOpenEscalation()
   testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
   await testRuntimePrecheckPendingAndSuccessRecovery()
@@ -142,6 +149,128 @@ function testLocalSuppressionStoreBoundary(): void {
   assert.match(storeSource, /export function filterLocalAccountSuppressions/)
   assert.match(storeSource, /export function snapshotLocalAccountRuntimeAvailability/)
   assert.match(storeSource, /getAccountCurrentConcurrency/)
+}
+
+function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
+  const primary = createRuntimeAccount('runtime-degraded-primary')
+  const backup = createRuntimeAccount('runtime-normal-backup')
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const degraded = gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟近期上游失败')
+  assert.equal(degraded.status, 'degraded', '运行态失败应先写入调度降级，而不是直接处罚账号')
+  assert.equal(degraded.failureCount, 1, '首次运行态降级应记录失败次数')
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[primary.id]?.status,
+    'degraded',
+    '调度降级应进入运行态快照供前端展示'
+  )
+
+  const ordered = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])
+  assert.equal(ordered.applied, true, '存在降级账号时应应用调度排序')
+  assert.equal(ordered.bypassedAllDegraded, false, '仍有正常账号时不应进入全降级兜底')
+  assert.deepEqual(
+    ordered.accounts.map((account) => account.id),
+    [backup.id, primary.id],
+    '正常候选应优先于运行态降级候选'
+  )
+  assert.deepEqual(ordered.degradedAccountIds, [primary.id], '降级排序结果应报告被降级账号')
+
+  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(backup, '模拟备选账号近期失败')
+  const allDegraded = gatewaySideEffects.orderGatewayAccountsByRuntimeDegradation([primary, backup])
+  assert.equal(allDegraded.applied, false, '全部账号降级时不应再重排候选')
+  assert.equal(allDegraded.bypassedAllDegraded, true, '全部候选均降级时应允许兜底选择')
+  assert.deepEqual(
+    allDegraded.accounts.map((account) => account.id),
+    [primary.id, backup.id],
+    '全部降级时应保持原顺序交给后续调度策略兜底'
+  )
+
+  gatewaySideEffects.enqueueGatewayAccountErrorHandlingSideEffect({
+    type: 'apply_account_error_handling',
+    account: primary,
+    input: { success: true }
+  })
+  const afterSuccess = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
+  assert.equal(afterSuccess[primary.id], undefined, '账号真实成功后应解除运行态调度降级')
+  assert.equal(afterSuccess[backup.id]?.status, 'degraded', '其他账号的运行态降级不应被误清理')
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+}
+
+async function testRuntimeDegradationDispatchPreparationFallback(): Promise<void> {
+  const primary = createRuntimeAccount('runtime-degraded-prepare-primary')
+  const backup = createRuntimeAccount('runtime-degraded-prepare-backup')
+  const metadataLabels: string[] = []
+
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(primary, '模拟主账号近期失败')
+  gatewaySideEffects.degradeGatewayAccountForRuntimeFailure(backup, '模拟备账号近期失败')
+
+  const fallbackReasons: string[] = []
+  const readyResult = await dispatchPreparation.prepareOpenAIGatewayDispatchAccounts({
+    req: buildRuntimeGatewayRequest(),
+    res: { writableEnded: false },
+    auditCapture: {
+      startAttempt: () => '',
+      completeAttempt: () => undefined,
+      addGatewayMetadata: (input: { label: string }) => {
+        metadataLabels.push(input.label)
+      }
+    },
+    usageContext: buildRuntimeGatewayUsageContext('trace-runtime-degraded-prepare-ready'),
+    startedAt: Date.now(),
+    candidateAccounts: [primary, backup],
+    modelPriority: { rankByAccountId: new Map() },
+    groupAccess: runtimePreparationGroupAccess(),
+    systemAccountId: 'sys_admin',
+    apiKeyId: 'key-runtime-degraded-prepare',
+    groupId: 'group-runtime-degraded-prepare',
+    clientIp: '127.0.0.1',
+    clientStrategy: {} as OpenAIGatewayClientStrategyContext,
+    requestLane: 'text',
+    attemptFallback: async (reason: string) => {
+      fallbackReasons.push(reason)
+      return { attempted: false }
+    }
+  } as unknown as Parameters<typeof dispatchPreparation.prepareOpenAIGatewayDispatchAccounts>[0])
+
+  assert.deepEqual(fallbackReasons, ['runtime_degraded'], '当前分组全降级时应以 runtime_degraded 原因尝试后备号池')
+  assert.equal(readyResult.outcome, 'ready', '没有可用后备号池时，全降级当前组仍应作为最后兜底继续调度')
+  if (readyResult.outcome === 'ready') {
+    assert.deepEqual(
+      readyResult.accounts.map((account) => account.id),
+      [primary.id, backup.id],
+      '全降级且没有后备号池时应保持当前候选顺序'
+    )
+    readyResult.releaseClientIpConcurrency()
+  }
+  assert(metadataLabels.includes('runtime_account_degradation'), '全降级调度准备应写入运行态降级审计 metadata')
+
+  const fallbackResult = await dispatchPreparation.prepareOpenAIGatewayDispatchAccounts({
+    req: buildRuntimeGatewayRequest(),
+    res: { writableEnded: false },
+    auditCapture: {
+      startAttempt: () => '',
+      completeAttempt: () => undefined,
+      addGatewayMetadata: () => undefined
+    },
+    usageContext: buildRuntimeGatewayUsageContext('trace-runtime-degraded-prepare-fallback'),
+    startedAt: Date.now(),
+    candidateAccounts: [primary, backup],
+    modelPriority: { rankByAccountId: new Map() },
+    groupAccess: runtimePreparationGroupAccess(),
+    systemAccountId: 'sys_admin',
+    apiKeyId: 'key-runtime-degraded-prepare',
+    groupId: 'group-runtime-degraded-prepare',
+    clientIp: '127.0.0.1',
+    clientStrategy: {} as OpenAIGatewayClientStrategyContext,
+    requestLane: 'text',
+    attemptFallback: async (reason: string) => {
+      assert.equal(reason, 'runtime_degraded', '全降级后备切换原因应保持 runtime_degraded')
+      return { attempted: true }
+    }
+  } as unknown as Parameters<typeof dispatchPreparation.prepareOpenAIGatewayDispatchAccounts>[0])
+  assert.equal(fallbackResult.outcome, 'fallback', '后备号池可用时，全降级当前组应切换到后备上下文')
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
 }
 
 async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
@@ -643,6 +772,18 @@ function buildRuntimeGatewayRequest(): Parameters<typeof accountPreparation.hand
     socket: { remoteAddress: '127.0.0.1' },
     ip: '127.0.0.1'
   } as Parameters<typeof accountPreparation.handleUnavailableProxyProfile>[0]
+}
+
+function runtimePreparationGroupAccess(): GroupUsageAccessMetadata {
+  return {
+    groupOwnerSystemAccountId: 'sys_admin',
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION,
+    groupAccessType: 'owner',
+    groupType: 'personal'
+  }
 }
 
 function buildRuntimeGatewayUsageContext(traceId: string): GatewayUsageContext {

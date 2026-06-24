@@ -115,6 +115,8 @@ assertMatch(accountImportProtocolMarkdown, /`modelMappings` 右侧 `upstreamEndp
 assertMatch(accountImportProtocolMarkdown, /Chat Completions 客户端访问 Responses-only 原生上游/, '协议 Markdown 应说明 Chat 到 Responses 原生上游桥接')
 assertMatch(accountImportProtocolMarkdown, /需要把 OpenAI Chat Completions 或 Responses 请求桥接到 Anthropic Messages 上游时，在 `modelMappings` 中显式配置 `upstreamEndpointFamily: "messages"`/, '协议 Markdown 应说明 OpenAI 到 Anthropic Messages 显式映射')
 assertMatch(accountImportProtocolMarkdown, /账户真实能力仍在 `credentials\.supported_endpoint_modes` 中填写 `messages_json`、`messages_sse`，不要为了桥接填 `responses_json` 或 `responses_sse`/, '协议 Markdown 应说明 Anthropic Messages bridge 保存真实上游能力')
+assertMatch(accountImportProtocolMarkdown, /需要把 Anthropic Messages 请求桥接到 Chat Completions 上游时，在 `modelMappings` 中显式配置 `sourceEndpointFamily: "messages"` 和 `upstreamEndpointFamily: "chat_completions"`/, '协议 Markdown 应说明 Anthropic Messages 到 Chat Completions 显式映射')
+assertMatch(accountImportProtocolMarkdown, /不要配置 `messages -> responses`，该方向不支持/, '协议 Markdown 应说明 Messages 到 Responses 不支持')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 与 GLM Coding Claude Code 使用 Anthropic v1 Messages 原生协议，`credentials\.supported_endpoint_modes` 填 `messages_json`、`messages_sse`，不要填 `message_token_counting`/, '协议 Markdown 应说明第三方 Claude Code 档案不支持 count_tokens')
 assertMatch(accountImportProtocolMarkdown, /supported_endpoint_modes/, '协议 Markdown 应说明接口能力限制字段')
 assertMatch(accountImportProtocolMarkdown, /不接受 `credentials\.anthropic_version` 或 `credentials\.anthropic_beta`/, '协议 Markdown 应明确 Anthropic header 不属于账号凭据')
@@ -124,6 +126,8 @@ assertMatch(formalProtocolMarkdown, /`modelMappings` 右侧 `upstreamEndpointFam
 assertMatch(formalProtocolMarkdown, /Chat Completions 客户端访问 Responses-only 原生上游/, '正式协议文档应说明 Chat 到 Responses 原生上游桥接')
 assertMatch(formalProtocolMarkdown, /需要把 OpenAI Chat Completions 或 Responses 请求桥接到 Anthropic Messages 上游时，在 `modelMappings` 中显式配置 `upstreamEndpointFamily: "messages"`/, '正式协议文档应说明 OpenAI 到 Anthropic Messages 显式映射')
 assertMatch(formalProtocolMarkdown, /账户真实能力仍在 `credentials\.supported_endpoint_modes` 中填写 `messages_json`、`messages_sse`，不要为了桥接填 `responses_json` 或 `responses_sse`/, '正式协议文档应说明 Anthropic Messages bridge 保存真实上游能力')
+assertMatch(formalProtocolMarkdown, /需要把 Anthropic Messages 请求桥接到 Chat Completions 上游时，在 `modelMappings` 中显式配置 `sourceEndpointFamily: "messages"` 和 `upstreamEndpointFamily: "chat_completions"`/, '正式协议文档应说明 Anthropic Messages 到 Chat Completions 显式映射')
+assertMatch(formalProtocolMarkdown, /不要配置 `messages -> responses`，该方向不支持/, '正式协议文档应说明 Messages 到 Responses 不支持')
 
 console.log('账户导入协议回归通过：模板 JSON、AI 提示词和协议 Markdown 保持一致')
 

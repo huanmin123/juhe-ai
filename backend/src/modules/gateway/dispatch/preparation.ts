@@ -8,7 +8,8 @@ import {
 } from '../quota/authorization-quota.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
-  filterLocallySuppressedGatewayAccounts
+  filterLocallySuppressedGatewayAccounts,
+  orderGatewayAccountsByRuntimeDegradation
 } from '../runtime/account-side-effects.service.js'
 import {
   orderOpenAIAccountsByClientIpAccountAvoidance
@@ -137,7 +138,41 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  const proxyHealthOrder = orderGatewayAccountsByUpstreamBucketHealth(localSuppressionFilter.accounts)
+  const runtimeDegradationOrder = orderGatewayAccountsByRuntimeDegradation(localSuppressionFilter.accounts)
+  if (runtimeDegradationOrder.applied || runtimeDegradationOrder.bypassedAllDegraded) {
+    logger.warn({
+      event: runtimeDegradationOrder.applied
+        ? 'gateway_runtime_degradation_order_applied'
+        : 'gateway_runtime_degradation_fallback_only',
+      applied: runtimeDegradationOrder.applied,
+      degradedCount: runtimeDegradationOrder.degradedCount,
+      degradedAccountIds: runtimeDegradationOrder.degradedAccountIds,
+      bypassedAllDegraded: runtimeDegradationOrder.bypassedAllDegraded,
+      groupId: input.groupId,
+      systemAccountId: input.systemAccountId,
+      apiKeyId: input.apiKeyId
+    }, runtimeDegradationOrder.applied
+      ? '账号运行态降级已应用到候选排序，降级账号仅作为兜底候选'
+      : '当前号池候选账号均为运行态降级，准备尝试后备号池')
+    input.auditCapture.addGatewayMetadata({
+      label: 'runtime_account_degradation',
+      metadata: {
+        applied: runtimeDegradationOrder.applied,
+        degradedCount: runtimeDegradationOrder.degradedCount,
+        degradedAccountIds: runtimeDegradationOrder.degradedAccountIds,
+        bypassedAllDegraded: runtimeDegradationOrder.bypassedAllDegraded
+      }
+    })
+  }
+
+  if (runtimeDegradationOrder.bypassedAllDegraded) {
+    const fallback = await input.attemptFallback('runtime_degraded')
+    if (fallback.attempted) {
+      return { outcome: 'fallback', context: fallback.context }
+    }
+  }
+
+  const proxyHealthOrder = orderGatewayAccountsByUpstreamBucketHealth(runtimeDegradationOrder.accounts)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied

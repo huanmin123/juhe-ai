@@ -113,7 +113,19 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       message.error(options.extractApiErrorMessage(error, '加载 OpenAI 协议模型池失败'))
     }
   })
-  const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value)
+  const {
+    loading: anthropicProviderModelsLoading,
+    loadModelOptions: loadAnthropicProviderModelOptions,
+    resetModelOptions: resetAnthropicProviderModelOptions,
+    selectOptions: mappingAnthropicSourceModelOptions
+  } = useProviderModelSelectOptions({
+    protocol: 'anthropic',
+    scopeParams: allProviderModelScopeParams,
+    onLoadError: (error) => {
+      message.error(options.extractApiErrorMessage(error, '加载 Anthropic 协议模型池失败'))
+    }
+  })
+  const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value || anthropicProviderModelsLoading.value)
   const {
     accountTagOptions,
     accountTagOptionsLoading,
@@ -213,6 +225,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     clearSuccessfulDraftActivationTest()
     Object.assign(form, defaultForm(providerCode, type))
     resetProviderModelOptions()
+    resetAnthropicProviderModelOptions()
     ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
@@ -269,6 +282,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadAccountTagOptions(options.accountScopeParams.value)
     void loadProviderModelOptions(form.providerCode)
     void loadAllProviderModelOptions()
+    void loadAnthropicProviderModelOptions()
     modalOpen.value = true
   }
 
@@ -292,6 +306,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderGroupOptions(providerCode, form.providerProtocolProfileId)
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
+    void loadAnthropicProviderModelOptions()
   }
 
   function selectAccountType(type: AccountType) {
@@ -327,6 +342,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderGroupOptions(providerCode, providerProtocolProfileId)
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
+    void loadAnthropicProviderModelOptions()
     ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
     authResult.value = undefined
   }
@@ -377,6 +393,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadAccountTagOptions(editScopeParams)
     void loadProviderModelOptions(sourceAccount.providerCode)
     void loadAllProviderModelOptions()
+    void loadAnthropicProviderModelOptions()
   }
 
   async function openClone(account: AccountSummary) {
@@ -429,6 +446,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadAccountTagOptions(cloneScopeParams)
     void loadProviderModelOptions(sourceAccount.providerCode)
     void loadAllProviderModelOptions()
+    void loadAnthropicProviderModelOptions()
   }
 
   async function loadProviderGroupOptions(providerCode: string, providerProtocolProfileId = form.providerProtocolProfileId): Promise<void> {
@@ -499,6 +517,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isApiKeyForm,
     isOAuthForm,
     isOpenAIOAuthForm,
+    mappingAnthropicSourceModelOptions,
     mappingSourceModelOptions,
     modalConfirmLoading,
     modalOkButtonProps,

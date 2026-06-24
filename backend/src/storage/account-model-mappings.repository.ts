@@ -123,10 +123,10 @@ export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string,
 }
 
 function sourceEndpointFamilyValue(value: unknown): AccountModelMappingSourceEndpointFamily {
-  if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY) {
+  if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY || value === ANTHROPIC_MESSAGES_FAMILY) {
     return value
   }
-  throw new Error(`下游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)} 或 ${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}`)
+  throw new Error(`下游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)} 或 ${endpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}`)
 }
 
 function upstreamEndpointFamilyValue(value: unknown): AccountModelMappingUpstreamEndpointFamily {
@@ -140,9 +140,18 @@ function assertSupportedEndpointFamilyConversion(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): void {
-  if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY) {
-    throw new Error(`暂不支持转发到 ${endpointFamilyLabel(upstreamEndpointFamily)}`)
+  if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+      throw new Error('Anthropic Messages 下游协议当前只支持显式桥接到 Chat Completions 上游')
+    }
+    return
   }
+  if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    if (upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY || upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+      return
+    }
+  }
+  throw new Error(`暂不支持 ${endpointFamilyLabel(sourceEndpointFamily)} 到 ${endpointFamilyLabel(upstreamEndpointFamily)} 的协议转换`)
 }
 
 function endpointFamilyLabel(value: AccountModelMappingEndpointFamily): string {

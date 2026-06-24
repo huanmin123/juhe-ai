@@ -1090,30 +1090,7 @@ export function recordAccountStreamFailure(input: {
     `)
     .run(count, windowStartedAt, input.reason || null, nowIsoValue, input.accountId)
 
-  const triggered = count >= Math.max(1, input.thresholdCount) && input.action !== 'none'
-  if (!triggered) {
-    return { count, triggered: false, account: findInternalAccountSummary(input.accountId) }
-  }
-
-  if (input.action === 'cooldown') {
-    markAccountTemporaryUnavailable(input.accountId, input.reason)
-  } else {
-    markAccountDisabledByFailure(input.accountId, input.reason)
-  }
-
-  getBusinessDatabase()
-    .prepare(`
-      UPDATE accounts
-      SET stream_failure_count = 0,
-          stream_failure_window_started_at = NULL,
-          updated_at = ?
-      WHERE id = ?
-        AND deleted_at IS NULL
-    `)
-    .run(nowIsoValue, input.accountId)
-  refreshGroupAccountStatsAfterWrite({ accountIds: [input.accountId], reason: 'stream_failure_threshold' })
-
-  return { count, triggered: true, account: findInternalAccountSummary(input.accountId) }
+  return { count, triggered: false, account: findInternalAccountSummary(input.accountId) }
 }
 
 export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAccountBindingRuntimeTarget & {

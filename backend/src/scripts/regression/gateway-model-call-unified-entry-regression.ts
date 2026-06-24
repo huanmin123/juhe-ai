@@ -30,6 +30,9 @@ const appSourceFiles = collectSourceFiles(existingPaths([
 ]))
 
 const findings: SourceFinding[] = []
+const gatewayPreflightSource = readFileSync(resolve(sourceRoot, 'modules/gateway/request/preflight.ts'), 'utf8')
+const codexCompactPreflightSource = readFileSync(resolve(sourceRoot, 'modules/gateway/codex-responses/compact-preflight.ts'), 'utf8')
+const imageGenerationExecutorSource = readFileSync(resolve(sourceRoot, 'modules/openai-compatible-images/image-generation-executor.ts'), 'utf8')
 
 assertOnlyAllowedCallSites({
   rule: '上游真实请求只能由公共 dispatch attempt 层触发',
@@ -64,11 +67,60 @@ assertOnlyAllowedCallSites({
   ]
 })
 
-assertNoMatches({
-  rule: '生产后端不允许直接 fetch 模型上游',
+assertOnlyAllowedCallSites({
+  rule: '公共账号调度准备只能由网关预检和已审计辅助调度服务调用',
   files: productionSourceFiles,
-  pattern: /\bfetch\s*\(/g
+  pattern: /\bprepareOpenAIGatewayDispatchAccounts\s*\(/g,
+  allowedFiles: [
+    'backend/src/modules/gateway/dispatch/preparation.ts',
+    'backend/src/modules/gateway/request/preflight.ts',
+    'backend/src/modules/gateway/hybrid/auxiliary-dispatch.service.ts'
+  ]
 })
+
+assertOnlyAllowedCallSites({
+  rule: '账号候选读取只能出现在公共预检、路由候选和运行时缓存层',
+  files: productionSourceFiles,
+  pattern: /\b(?:listCachedOpenAIAccountsForGroupAsync|listFreshOpenAIAccountsForGroupAsync|listRecoverableUnavailableOpenAIAccountsForGroupAsync)\s*\(/g,
+  allowedFiles: [
+    'backend/src/modules/gateway/runtime/runtime-cache.service.ts',
+    'backend/src/modules/gateway/request/preflight.ts',
+    'backend/src/modules/gateway/dispatch/api-key-group-fallback-candidate.ts',
+    'backend/src/modules/gateway/routing/model-target-group-selector.ts'
+  ]
+})
+
+assertSourceOrder({
+  rule: 'Codex compact 摘要请求必须在公共账号调度准备完成后执行',
+  file: 'backend/src/modules/gateway/request/preflight.ts',
+  source: gatewayPreflightSource,
+  before: 'prepareOpenAIGatewayDispatchAccounts({',
+  after: 'applyCodexResponsesChatBridgeCompactPreflight({'
+})
+assert.match(
+  gatewayPreflightSource,
+  /dispatchAccounts:\s*dispatchPreparation\.accounts/,
+  'Codex compact 摘要请求必须使用公共调度准备后的账号列表'
+)
+assert.doesNotMatch(
+  codexCompactPreflightSource,
+  /\brawCandidateAccounts\b/,
+  'Codex compact 摘要请求不能直接使用未准备的原始候选账号'
+)
+
+assertNoMatches({
+  rule: '生产后端不允许直接 fetch 模型上游；配置型图像工具 provider 是非账号调度例外',
+  files: productionSourceFiles,
+  pattern: /\bfetch\s*\(/g,
+  allowedFiles: [
+    'backend/src/modules/openai-compatible-images/image-generation-executor.ts'
+  ]
+})
+assert.doesNotMatch(
+  imageGenerationExecutorSource,
+  /\b(?:listCachedOpenAIAccountsForGroupAsync|prepareOpenAIGatewayDispatchContext|fetchFirstAvailableUpstream|requestUpstream)\b/,
+  '配置型图像工具 provider 不能引入账号调度或上游传输入口'
+)
 
 assertNoMatches({
   rule: '应用源码不允许直接使用模型 SDK 或 SDK 风格调用',
@@ -117,10 +169,37 @@ function assertOnlyAllowedCallSites(input: {
   }
 }
 
-function assertNoMatches(input: { rule: string; files: string[]; pattern: RegExp }): void {
+function assertNoMatches(input: {
+  rule: string
+  files: string[]
+  pattern: RegExp
+  allowedFiles?: string[]
+}): void {
+  const allowed = new Set((input.allowedFiles ?? []).map(normalizeAllowedRepoPath))
   for (const file of input.files) {
+    if (allowed.has(normalizeRepoPath(file))) continue
     collectMatches(file, input.pattern).forEach((match) => findings.push({ rule: input.rule, ...match }))
   }
+}
+
+function assertSourceOrder(input: {
+  rule: string
+  file: string
+  source: string
+  before: string
+  after: string
+}): void {
+  const beforeIndex = input.source.indexOf(input.before)
+  const afterIndex = input.source.indexOf(input.after)
+  if (beforeIndex >= 0 && afterIndex >= 0 && beforeIndex < afterIndex) {
+    return
+  }
+  findings.push({
+    rule: input.rule,
+    file: input.file,
+    line: 1,
+    text: `${input.before} must appear before ${input.after}`
+  })
 }
 
 function collectMatches(file: string, pattern: RegExp): Array<Omit<SourceFinding, 'rule'>> {

@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GLM_PROVIDER_CODE, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, GLM_PROVIDER_CODE, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import type { AccountModelMapping } from '../../domain/types.js'
 import {
   buildOpenAIModelMappedJsonBody,
@@ -51,6 +51,8 @@ const sourceModel = 'gpt-mapping-regression-source'
 const crossProviderSourceModel = 'glm-mapping-regression-source'
 const crossProviderUpstreamModel = 'glm-mapping-regression-upstream'
 const upstreamModel = 'gpt-mapping-regression-upstream-personal'
+const anthropicMessagesSourceModel = 'claude-mapping-regression-source'
+const chatCompletionsUpstreamModel = 'gpt-mapping-regression-chat-upstream'
 const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
 const unavailableSourceModel = 'gpt-mapping-regression-draft-source'
 
@@ -80,6 +82,36 @@ function chatToResponsesMapping(sourceModel: string, upstreamModel: string, enab
     sourceEndpointFamily: 'chat_completions',
     upstreamModel,
     upstreamEndpointFamily: 'responses',
+    enabled
+  }
+}
+
+function messagesToChatMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'messages',
+    upstreamModel,
+    upstreamEndpointFamily: 'chat_completions',
+    enabled
+  }
+}
+
+function messagesToResponsesMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'messages',
+    upstreamModel,
+    upstreamEndpointFamily: 'responses',
+    enabled
+  }
+}
+
+function messagesToMessagesMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'messages',
+    upstreamModel,
+    upstreamEndpointFamily: 'messages',
     enabled
   }
 }
@@ -120,6 +152,24 @@ try {
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 3,
     outputUsdPer1M: 9,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    model: anthropicMessagesSourceModel,
+    scope: 'global',
+    supportedApiProtocols: ['messages'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GPT_VENDOR_CODE,
+    model: chatCompletionsUpstreamModel,
+    scope: 'global',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
     actorSystemAccountId: ownerAccess.systemAccountId
   })
   saveCustomProviderModel({
@@ -188,6 +238,8 @@ try {
   assert.equal(requestModel(originalRequest), sourceModel, 'requestModel 仍应保持下游请求模型')
 
   assertNativeResponsesUpstreamRequiresEndpointModes()
+  assertAnthropicMessagesToChatMapping(group.id)
+  assertUnsupportedAnthropicMessagesMappingsRejected(group.id)
   await assertInvalidMappingBodyRejected()
   await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
   await assertUsageRecordFields(runtimeAccount, group.id)
@@ -243,7 +295,7 @@ try {
         responsesMapping(unavailableSourceModel, replacementUpstreamModel)
       ]
     }, ownerAccess)
-  }, /映射下游模型不在 OpenAI 协议客户端模型池中/, '草稿模型不能作为下游映射源')
+  }, /映射下游模型不在对应协议客户端模型池中/, '草稿模型不能作为下游映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -254,6 +306,7 @@ try {
   }, /映射上游模型不在当前账号可用模型池中/, '映射上游模型必须存在于当前账号可用模型池')
   assertImportPreviewRejectsInvalidMapping(group.id)
   assertImportPreviewRejectsNonNativeResponsesMapping(group.id)
+  assertImportPreviewRejectsUnsupportedMessagesMapping(group.id)
 
   console.log('account model mapping regression passed')
 } finally {
@@ -350,6 +403,100 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   ], 'Chat-only 账号仍允许显式 Responses 转 Chat Completions bridge')
 }
 
+function assertAnthropicMessagesToChatMapping(groupId: string): void {
+  const messagesBridgeAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'Messages 到 Chat 显式桥接账号',
+    type: 'api_key',
+    status: 'active',
+    clientCompatibility: 'openai_standard',
+    credentials: {
+      api_key: 'sk-account-model-mapping-messages-to-chat',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    supportedModels: [chatCompletionsUpstreamModel],
+    modelMappings: [
+      messagesToChatMapping(anthropicMessagesSourceModel, chatCompletionsUpstreamModel)
+    ],
+    groupId
+  }, ownerAccess)
+  assert.deepEqual(messagesBridgeAccount.modelMappings, [
+    messagesToChatMapping(anthropicMessagesSourceModel, chatCompletionsUpstreamModel)
+  ], 'OpenAI Chat 上游账号允许显式 Anthropic Messages 转 Chat Completions bridge')
+  assert.deepEqual(loadStoredMappings(messagesBridgeAccount.id), [
+    messagesToChatMapping(anthropicMessagesSourceModel, chatCompletionsUpstreamModel)
+  ], 'Messages 转 Chat 映射应写入模型映射关系表')
+
+  const runtimeAccount = repositories.listOpenAIAccountsForGroup(groupId, ownerAccess.systemAccountId, {
+    requestedModel: anthropicMessagesSourceModel,
+    requestedEndpointFamily: 'messages'
+  }).find((item) => item.id === messagesBridgeAccount.id)
+  assert(runtimeAccount, '模型感知候选窗口应能按 messages source endpoint family 找到映射账号')
+  const mapping = resolveOpenAIAccountModelMapping(runtimeAccount, anthropicMessagesSourceModel, 'messages')
+  assert.deepEqual(mapping, {
+    sourceModel: anthropicMessagesSourceModel,
+    sourceEndpointFamily: 'messages',
+    upstreamModel: chatCompletionsUpstreamModel,
+    upstreamEndpointFamily: 'chat_completions'
+  }, '运行时账号应能按 Anthropic Messages 下游协议命中 Chat Completions 上游映射')
+}
+
+function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): void {
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Messages 不能桥接到 Responses',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-mapping-messages-to-responses',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['responses_json']
+      },
+      supportedModels: [upstreamModel],
+      modelMappings: [
+        messagesToResponsesMapping(anthropicMessagesSourceModel, upstreamModel)
+      ],
+      groupId
+    }, ownerAccess)
+  }, /Anthropic Messages 下游协议当前只支持.*Chat Completions/, 'Messages 下游协议不能桥接到 Responses 上游')
+
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Messages 不能配置为 Messages 上游',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-mapping-messages-to-messages',
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: [upstreamModel],
+      modelMappings: [
+        messagesToMessagesMapping(anthropicMessagesSourceModel, anthropicMessagesSourceModel)
+      ],
+      groupId
+    }, ownerAccess)
+  }, /Anthropic Messages 下游协议当前只支持.*Chat Completions/, 'Messages 下游协议不能桥接到 Messages 上游')
+
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Messages source 必须来自 Anthropic 模型池',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-mapping-messages-source-pool',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        messagesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+      ],
+      groupId
+    }, ownerAccess)
+  }, /映射下游模型不在对应协议客户端模型池中/, 'Messages 下游模型必须来自 Anthropic 协议模型池')
+}
+
 function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   const result = previewAccountImport({
     type: 'juhe-ai-account-import',
@@ -373,7 +520,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在 OpenAI 协议客户端模型池中')), '导入预览应在预览阶段暴露模型映射目录错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在对应协议客户端模型池中')), '导入预览应在预览阶段暴露模型映射目录错误')
 }
 
 function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): void {
@@ -404,10 +551,38 @@ function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): v
   assert(result.accounts[0]?.messages.some((message) => message.includes('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')), '导入预览应暴露右侧 Responses 原生能力约束错误')
 }
 
+function assertImportPreviewRejectsUnsupportedMessagesMapping(groupId: string): void {
+  const result = previewAccountImport({
+    type: 'juhe-ai-account-import',
+    version: 1,
+    accounts: [
+      {
+        name: '账号模型映射非法 Messages 上游导入预览',
+        providerCode: GPT_VENDOR_CODE,
+        type: 'api_key',
+        clientCompatibility: 'openai_standard',
+        status: 'active',
+        groupId,
+        credentials: {
+          api_key: 'sk-account-model-mapping-import-messages-to-responses',
+          base_url: 'https://api.openai.com/v1',
+          supported_endpoint_modes: ['responses_json']
+        },
+        modelMappings: [
+          messagesToResponsesMapping(anthropicMessagesSourceModel, upstreamModel)
+        ]
+      }
+    ]
+  }, {}, ownerAccess)
+  assert.equal(result.canImport, false, 'Messages 到 Responses 非法映射导入预览不应允许确认导入')
+  assert.equal(result.accounts[0]?.action, 'failed', 'Messages 到 Responses 非法映射导入预览应标记账户失败')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('Anthropic Messages 下游协议当前只支持')), '导入预览应暴露 Messages 下游协议方向约束错误')
+}
+
 function loadStoredMappings(accountId: string): AccountModelMapping[] {
   return (databaseModule.getBusinessDatabase()
     .prepare('SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled FROM account_model_mappings WHERE account_id = ? ORDER BY source_model ASC, source_endpoint_family ASC')
-    .all(accountId) as unknown as Array<{ source_model: string; source_endpoint_family: 'chat_completions' | 'responses'; upstream_model: string; upstream_endpoint_family: 'chat_completions' | 'responses'; enabled: number }>)
+    .all(accountId) as unknown as Array<{ source_model: string; source_endpoint_family: 'chat_completions' | 'responses' | 'messages'; upstream_model: string; upstream_endpoint_family: 'chat_completions' | 'responses' | 'messages'; enabled: number }>)
     .map((row) => ({
       sourceModel: row.source_model,
       sourceEndpointFamily: row.source_endpoint_family,

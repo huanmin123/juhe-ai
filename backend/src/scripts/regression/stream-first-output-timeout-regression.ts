@@ -146,6 +146,7 @@ async function main(): Promise<void> {
     const missingTerminalServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '缺终止服务端切号')
     const failedEventServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '失败事件服务端切号')
     const preCommitFuzzServerRetryCredential = createTwoAccountScenarioCredential(upstreamBaseUrl, '预提交失败 fuzz 服务端切号')
+    const fourAccountServerRetryCredential = createMultiAccountScenarioCredential(upstreamBaseUrl, '超过三账号隐藏重试', 4)
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -331,6 +332,15 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     assertFailedUsageRecordErrorCode(failedEventServerRetryCredential.primaryAccount.id, 'server_is_overloaded')
     assertSuccessfulUsageRecord(failedEventServerRetryCredential.backupAccount.id, { inputTokens: 3, outputTokens: 1 })
+    const fourAccountServerRetryResult = await requestStreamScenario(baseUrl, fourAccountServerRetryCredential.apiKey.key, 'server-retry-fourth-account-then-success')
+    assert(fourAccountServerRetryResult.streamText.includes('resp_fourth_retry_success'), `隐藏重试不应限制为前三个账号，应继续切到第 4 个账号完成：${fourAccountServerRetryResult.streamText}`)
+    assert(fourAccountServerRetryResult.streamText.includes('response.completed'), `第 4 个账号救回应返回完成事件：${fourAccountServerRetryResult.streamText}`)
+    assert(!fourAccountServerRetryResult.streamText.includes('upstream_retryable_error'), `第 4 个账号救回时不应消耗客户端重试：${fourAccountServerRetryResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertUsageRecordCountAtLeast(fourAccountServerRetryCredential.accounts[0].id, false, 1)
+    assertUsageRecordCountAtLeast(fourAccountServerRetryCredential.accounts[1].id, false, 1)
+    assertUsageRecordCountAtLeast(fourAccountServerRetryCredential.accounts[2].id, false, 1)
+    assertSuccessfulUsageRecord(fourAccountServerRetryCredential.accounts[3].id, { inputTokens: 4, outputTokens: 1 })
 
     await assertPreCommitFuzzServerRetryScenarios(baseUrl, preCommitFuzzServerRetryCredential)
 
@@ -527,6 +537,36 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
   return { primaryAccount, backupAccount, apiKey }
 }
 
+function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: string, count: number): {
+  accounts: ReturnType<typeof repositories.createAccount>[]
+  apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
+} {
+  const access = scenarioCredentialAccess()
+  const group = repositories.createGroup({ name: `流式超时回归多账号分组-${label}`, providerCode: 'gpt', enabled: true }, access)
+  scenarioCredentialIndex += 1
+  const accounts = Array.from({ length: count }, (_, index) => repositories.createAccount({
+    providerCode: 'gpt',
+    name: `流式超时回归多账号-${label}-${index + 1}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-stream-timeout-regression-${scenarioCredentialIndex}-multi-${index + 1}`,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: index * 10,
+    clientCompatibility: 'codex_responses'
+  }, access))
+  const apiKey = apiKeyRepository.createApiKeyRecord({
+    name: `流式超时回归多账号 Key-${label}`,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '临时 API Key 未返回明文密钥')
+  return { accounts, apiKey }
+}
+
 function scenarioCredentialAccess(): { systemAccountId: string; role: 'user' } {
   if (!scenarioCredentialOwnerAccess) {
     const owner = repositories.createSystemAccount({
@@ -620,6 +660,22 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
         res.write('event: response.completed\n')
         res.write('data: {"type":"response.completed","response":{"id":"resp_failed_retry_backup","status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'server-retry-fourth-account-then-success') {
+        if (!upstreamAuthorization.includes('-multi-4')) {
+          res.write('event: response.failed\n')
+          res.write('data: {"type":"response.failed","response":{"id":"resp_fourth_retry_failed","status":"failed","error":{"code":"server_is_overloaded","message":"candidate overloaded"}}}\n\n')
+          res.end()
+          return
+        }
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created","response":{"id":"resp_fourth_retry_success","status":"in_progress"}}\n\n')
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_fourth_retry_success","status":"completed","usage":{"input_tokens":4,"output_tokens":1}}}\n\n')
         res.end()
         return
       }

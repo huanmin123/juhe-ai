@@ -288,6 +288,9 @@ function validateAccountModelMappings(
     if (upstreamEndpointFamily === 'responses' && !hasNativeResponsesEndpointMode(supportedEndpointModes)) {
       return '上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游'
     }
+    if (sourceEndpointFamily === 'messages' && upstreamEndpointFamily !== 'chat_completions') {
+      return 'Anthropic Messages 下游协议当前只支持桥接到 Chat Completions 上游'
+    }
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
@@ -301,6 +304,7 @@ function validateAccountModelMappings(
 }
 
 function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): string {
+  if (value === 'messages') return 'Messages'
   return value === 'responses' ? 'Responses' : 'Chat Completions'
 }
 

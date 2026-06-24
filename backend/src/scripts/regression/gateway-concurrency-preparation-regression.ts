@@ -41,10 +41,11 @@ const settings: GatewaySettings = {
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
   streamCircuitBreakerEnabled: false,
-  streamRequestTimeoutSeconds: 180,
-  streamIdleTimeoutSeconds: 60,
+  streamRequestTimeoutSeconds: 120,
+  streamIdleTimeoutSeconds: 30,
+  streamClientTotalWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10
+  streamFailureThresholdWindowMinutes: 5
 }
 
 const usageContext: GatewayUsageContext = {

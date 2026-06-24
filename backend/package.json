@@ -56,6 +56,8 @@
     "test:account-credential-duplicates": "tsx src/scripts/regression/account-credential-duplicates-regression.ts",
     "test:anthropic-gateway-mock-ai": "tsx src/scripts/regression/anthropic-gateway-mock-ai-regression.ts",
     "test:openai-anthropic-bridge-mock": "tsx src/scripts/regression/openai-anthropic-bridge-mock-regression.ts",
+    "test:anthropic-openai-chat-bridge-mock": "tsx src/scripts/regression/anthropic-openai-chat-bridge-mock-regression.ts",
+    "test:anthropic-openai-chat-gateway-mock": "tsx src/scripts/regression/anthropic-openai-chat-gateway-mock-regression.ts",
     "test:openai-anthropic-bridge-real": "tsx src/scripts/regression/openai-anthropic-bridge-real-e2e.ts",
     "test:third-party-anthropic-profiles": "tsx src/scripts/regression/third-party-anthropic-profiles-regression.ts",
     "test:cli-local-gateway": "tsx src/scripts/regression/cli-local-gateway-regression.ts",

@@ -339,7 +339,7 @@ export interface AccountOAuthUsageSnapshot {
   sevenDay?: AccountOAuthUsageWindow
 }
 
-export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
+export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
 export interface AccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
@@ -381,6 +381,7 @@ export type AccountEffectiveAvailabilityStatus =
   | 'instance_schedule_inactive'
   | 'binding_missing'
   | 'api_key_pool_unavailable'
+  | 'runtime_degraded'
   | 'runtime_local_suppressed'
   | 'runtime_half_open'
   | 'runtime_precheck_pending'
@@ -406,7 +407,8 @@ export interface AccountEffectiveAvailability {
   retryAt?: string
 }
 
-export type AccountModelMappingSourceEndpointFamily = 'chat_completions' | 'responses'
+export type GatewayRequestEndpointFamily = 'chat_completions' | 'responses' | 'messages'
+export type AccountModelMappingSourceEndpointFamily = GatewayRequestEndpointFamily
 export type AccountModelMappingUpstreamEndpointFamily = 'chat_completions' | 'responses' | 'messages'
 export type AccountModelMappingEndpointFamily = AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
 

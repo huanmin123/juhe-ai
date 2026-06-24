@@ -13,6 +13,7 @@ export interface SystemSettings {
   streamCircuitBreakerEnabled: boolean
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
+  streamClientTotalWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   operationLogEnabled: boolean

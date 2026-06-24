@@ -161,6 +161,7 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
+      :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
       :model-options="providerModelOptions"
       :models-loading="strategyModelsLoading"
@@ -459,6 +460,7 @@ const {
   isApiKeyForm,
   isOAuthForm,
   isOpenAIOAuthForm,
+  mappingAnthropicSourceModelOptions,
   mappingSourceModelOptions,
   modalConfirmLoading,
   modalOkButtonProps,

@@ -181,6 +181,17 @@ function runtimeAvailability(account: AccountEffectiveAvailabilityInput): Accoun
   if (!runtime || runtime.status === 'normal') return undefined
   if (account.status !== 'active') return undefined
   const status = runtime.status
+  if (status === 'degraded') {
+    return {
+      available: true,
+      status: 'runtime_degraded',
+      label: '调度降级',
+      color: 'gold',
+      blockerScope: 'runtime',
+      reason: runtime.reason || '当前账号近期失败，正常候选不足时才会兜底尝试',
+      retryAt: runtime.until
+    }
+  }
   if (status === 'precheck_pending') {
     return blocked('runtime_precheck_pending', '待探针确认', 'blue', 'runtime', runtime.reason || '当前网关正在执行事前探针确认', runtime.until)
   }

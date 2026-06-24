@@ -20,6 +20,7 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIChatCompletionsToResponsesModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
   openAIModelMappedUpstreamPathAndQuery,
@@ -37,6 +38,12 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
 import { requestModel } from '../../../gateway/request/metadata.js'
+import {
+  anthropicMessagesChatBridgeRequiredEndpointMode,
+  buildAnthropicMessagesChatBridgeBody,
+  prepareAnthropicMessagesChatBridgeHeaders,
+  transformAnthropicMessagesChatBridgeUpstreamResponse
+} from '../_shared/anthropic-openai-chat-bridge.js'
 import {
   buildCodexResponsesChatBridgeBody,
   codexResponsesChatBridgeRequiredEndpointMode,
@@ -83,11 +90,11 @@ export const gptProviderDriver: ProviderDriver = {
     return await prepareGptAccountBeforeDispatch(account, context.signal)
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
-    if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE)) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !(account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
       return []
     }
-    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    if (account.type !== 'oauth' && modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping))) {
+    if (account.type !== 'oauth' && modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
       return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
     }
     if (account.type === 'oauth') {
@@ -97,6 +104,17 @@ export const gptProviderDriver: ProviderDriver = {
   },
   async buildUpstreamRequestParts(req, account, identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareAnthropicMessagesChatBridgeHeaders(headers, req)
+      return {
+        headers,
+        body: await buildAnthropicMessagesChatBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
     if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
@@ -139,7 +157,11 @@ export const gptProviderDriver: ProviderDriver = {
   },
   transformUpstreamResponse(req, account, response, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    const responsesToChatResponse = transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
+    const anthropicMessagesResponse = transformAnthropicMessagesChatBridgeUpstreamResponse(req, response, {
+      enabled: account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex'
+    })
+    const responsesToChatResponse = transformCodexResponsesChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
       defaultModel: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex',
       enabled: account.type !== 'oauth' && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: true,
@@ -158,6 +180,17 @@ export const gptProviderDriver: ProviderDriver = {
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (account.type !== 'oauth' && modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: anthropicMessagesChatBridgeRequiredEndpointMode(isEffectiveOpenAIStreamRequest(req, account)),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
     if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),

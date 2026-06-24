@@ -42,7 +42,7 @@ function accountFilterStatuses(account: AccountSummary): Set<AccountStatus> {
 }
 
 function statusFilterForEffectiveAvailability(status: AccountEffectiveAvailabilityStatus): AccountStatus | undefined {
-  if (status === 'available') return 'active'
+  if (status === 'available' || status === 'runtime_degraded') return 'active'
   if (status === 'source_pending_test' || status === 'instance_pending_test') return 'pending_test'
   if (status === 'source_error' || status === 'instance_error') return 'error'
   if (

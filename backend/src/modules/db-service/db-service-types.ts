@@ -49,7 +49,7 @@ import type {
   OpenAICompatibleVectorStoreSearchResult
 } from '../../storage/openai-compatible-vector-stores.repository.js'
 
-export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
+export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
 export interface AccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
@@ -378,21 +378,21 @@ export type DbServiceOperation =
     groupId: string
     systemAccountId: string
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses'
+    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
   }
   | {
     type: 'list_openai_accounts_for_group_result'
     groupId: string
     systemAccountId: string
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses'
+    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
   }
   | {
     type: 'list_recoverable_unavailable_openai_accounts_for_group'
     groupId: string
     systemAccountId: string
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses'
+    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
     windowMs?: number
   }
   | {

@@ -17,11 +17,15 @@ import {
 import { accountSummaryFromGatewayPrecheckAccount } from './account-precheck-summary.mapper.js'
 import {
   clearLocalAccountSuppression,
+  clearLocalAccountDegradation,
   clearLocalAccountSuppressionsForTest,
   cleanupExpiredLocalSuppressions,
+  countLocalAccountDegradations,
   countVisibleLocalSuppressions,
+  degradeLocalAccountForGatewayFailure,
   filterLocalAccountSuppressions,
   localSuppressionMaxMs,
+  orderLocalAccountDegradations,
   releaseLocalAccountHalfOpenLease,
   snapshotLocalAccountRuntimeAvailability,
   suppressLocalAccount,
@@ -29,6 +33,7 @@ import {
   type GatewayAccountHalfOpenLease,
   type GatewayAccountLocalSuppressionResult,
   type LocalAccountSuppression,
+  type LocalAccountDegradationOrderResult,
   type LocalAccountSuppressionFilterOptions,
   type LocalAccountSuppressionFilterResult
 } from './account-local-suppression-store.js'
@@ -42,8 +47,7 @@ import {
 import {
   AccountSideEffectQueue,
   type AccountErrorHandlingOperation,
-  type AccountSideEffectOperation,
-  type StreamFailureOperation
+  type AccountSideEffectOperation
 } from './account-side-effect-queue.js'
 import {
   accountErrorHandlingOperationRuntimeKey,
@@ -56,6 +60,7 @@ export type { GatewayAccountRuntimeClearTarget, SuppressibleGatewayAccount } fro
 export type {
   GatewayAccountHalfOpenLease,
   GatewayAccountLocalSuppressionResult,
+  LocalAccountDegradationOrderResult,
   LocalAccountSuppressionFilterResult
 } from './account-local-suppression-store.js'
 
@@ -130,6 +135,7 @@ export interface GatewayAccountSideEffectState {
   droppedCount: number
   expiredCount: number
   localSuppressedAccountCount: number
+  degradedAccountCount: number
   precheckPendingAccountCount: number
   nextAttemptAt?: string
 }
@@ -185,16 +191,15 @@ export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountE
   enqueueAccountSideEffect(operation)
 }
 
-export function enqueueGatewayStreamFailureSideEffect(operation: StreamFailureOperation): void {
-  enqueueAccountSideEffect(operation)
-}
-
 export function suppressGatewayAccountLocally(
   account: SuppressibleGatewayAccount | string,
   _settings: GatewaySettings | undefined,
   reason = '上游账号请求失败'
 ): GatewayAccountLocalSuppressionResult {
-  return suppressLocalAccountForGatewayFailure(gatewayAccountRuntimeKey(account), gatewayAccountId(account), reason)
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  const accountId = gatewayAccountId(account)
+  degradeLocalAccountForGatewayFailure(runtimeKey, accountId, reason)
+  return suppressLocalAccountForGatewayFailure(runtimeKey, accountId, reason)
 }
 
 export function suppressGatewayAccountLocallyForSeconds(
@@ -429,9 +434,23 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     droppedCount,
     expiredCount,
     localSuppressedAccountCount: countVisibleLocalSuppressions(isPrecheckRuntimeBlocking),
+    degradedAccountCount: countLocalAccountDegradations(),
     precheckPendingAccountCount: precheckStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
   }
+}
+
+export function degradeGatewayAccountForRuntimeFailure(
+  account: SuppressibleGatewayAccount | string,
+  reason = '账号近期失败'
+): AccountRuntimeAvailability {
+  return degradeLocalAccountForGatewayFailure(gatewayAccountRuntimeKey(account), gatewayAccountId(account), reason)
+}
+
+export function orderGatewayAccountsByRuntimeDegradation<T extends SuppressibleGatewayAccount>(
+  accounts: T[]
+): LocalAccountDegradationOrderResult<T> {
+  return orderLocalAccountDegradations(accounts)
 }
 
 export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
@@ -634,20 +653,12 @@ async function drainSideEffectQueue(): Promise<void> {
 }
 
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
-  if (operation.type === 'apply_account_error_handling') {
-    const result = await requestDbService(operation)
-    if (result.changed) {
-      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
-      clearGatewayRuntimeCache()
-    } else if (operation.input.success && result.accountStatus === 'active') {
-      clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
-    }
-    return
-  }
   const result = await requestDbService(operation)
-  if (result.triggered) {
-    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.input.account ?? operation.input.accountId))
+  if (result.changed) {
+    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
     clearGatewayRuntimeCache()
+  } else if (operation.input.success && result.accountStatus === 'active') {
+    clearGatewayAccountRuntimeAvailabilityLocal(gatewayAccountRuntimeKey(operation.account))
   }
 }
 
@@ -673,6 +684,7 @@ function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean
   let cleared = false
   clearPrecheckConcurrencyDrainWait(accountId)
   cleared = clearLocalAccountSuppression(accountId) || cleared
+  cleared = clearLocalAccountDegradation(accountId) || cleared
   cleared = failureStorms.delete(accountId) || cleared
   cleared = precheckStates.delete(accountId) || cleared
   return cleared
@@ -701,9 +713,7 @@ function precheckSuppressionMs(): number {
 }
 
 function operationAccountId(operation: AccountSideEffectOperation): string {
-  return operation.type === 'apply_account_error_handling'
-    ? operation.account.id
-    : operation.input.accountId
+  return operation.account.id
 }
 
 function delay(ms: number): Promise<void> {

@@ -36,7 +36,7 @@ import {
   usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
-import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -120,7 +120,7 @@ export function recordFailedUpstreamAttempt(
 ): void {
   const model = requestModel(req)
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
-  const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId, openAIRequestEndpointFamily(req))
+  const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
   const errorPayload = input.bodyText && input.headers instanceof Headers
     ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
     : {}
@@ -206,7 +206,7 @@ export function recordCompletedUpstreamAttempt(
   }
   const model = requestModel(req)
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
-  const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, openAIRequestEndpointFamily(req))
+  const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
   enqueueUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
@@ -469,7 +469,7 @@ function accountUsageModelAccounting(
   account: UpstreamAccount,
   requestedModel: string | undefined,
   catalogSystemAccountId: string,
-  sourceEndpointFamily: ReturnType<typeof openAIRequestEndpointFamily>
+  sourceEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
 ): {
   upstreamModel?: string
   pricingModel?: string

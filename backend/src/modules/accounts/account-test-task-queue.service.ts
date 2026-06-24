@@ -981,10 +981,10 @@ function accountTestStatusLogChanges(before: AccountSummary, after: AccountSumma
     changes.push(safeChange('cooldownRetestLastStatusCode', '最近后台复测状态码', before.cooldownRetestLastStatusCode, after.cooldownRetestLastStatusCode))
   }
   if ((before.streamFailureCount ?? 0) !== (after.streamFailureCount ?? 0)) {
-    changes.push(safeChange('streamFailureCount', '流式失败次数', before.streamFailureCount ?? 0, after.streamFailureCount ?? 0))
+    changes.push(safeChange('streamFailureCount', '流失败诊断次数', before.streamFailureCount ?? 0, after.streamFailureCount ?? 0))
   }
   if ((before.streamFailureWindowStartedAt ?? null) !== (after.streamFailureWindowStartedAt ?? null)) {
-    changes.push(safeChange('streamFailureWindowStartedAt', '流式失败窗口开始时间', before.streamFailureWindowStartedAt, after.streamFailureWindowStartedAt))
+    changes.push(safeChange('streamFailureWindowStartedAt', '流失败诊断窗口开始时间', before.streamFailureWindowStartedAt, after.streamFailureWindowStartedAt))
   }
   return changes
 }

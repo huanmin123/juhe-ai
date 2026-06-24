@@ -74,6 +74,19 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
 }
 
 function sendAgentGuidanceResponse(res: Response, guidance: GatewayAgentGuidanceResponse): string {
+  if (guidance.protocol === 'messages') {
+    if (guidance.stream) {
+      const body = anthropicMessagesGuidanceSse(guidance)
+      res.status(200)
+      res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+      res.setHeader('cache-control', 'no-cache')
+      res.end(body)
+      return body
+    }
+    const body = anthropicMessagesGuidanceJson(guidance)
+    res.status(200).json(body)
+    return JSON.stringify(body)
+  }
   if (guidance.protocol === 'responses') {
     if (guidance.stream) {
       const body = responsesGuidanceSse(guidance)
@@ -98,6 +111,62 @@ function sendAgentGuidanceResponse(res: Response, guidance: GatewayAgentGuidance
   const body = chatGuidanceJson(guidance)
   res.status(200).json(body)
   return JSON.stringify(body)
+}
+
+function anthropicMessagesGuidanceJson(guidance: GatewayAgentGuidanceResponse): Record<string, unknown> {
+  const created = Math.floor(Date.now() / 1000)
+  return {
+    id: `msg_guidance_${created}`,
+    type: 'message',
+    role: 'assistant',
+    model: guidance.model,
+    content: [{ type: 'text', text: guidance.message }],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: zeroAnthropicMessagesUsage()
+  }
+}
+
+function anthropicMessagesGuidanceSse(guidance: GatewayAgentGuidanceResponse): string {
+  const created = Math.floor(Date.now() / 1000)
+  const id = `msg_guidance_${created}`
+  return [
+    anthropicSse('message_start', {
+      type: 'message_start',
+      message: {
+        id,
+        type: 'message',
+        role: 'assistant',
+        model: guidance.model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 }
+      }
+    }),
+    anthropicSse('content_block_start', {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' }
+    }),
+    anthropicSse('content_block_delta', {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: guidance.message }
+    }),
+    anthropicSse('content_block_stop', {
+      type: 'content_block_stop',
+      index: 0
+    }),
+    anthropicSse('message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 0 }
+    }),
+    anthropicSse('message_stop', {
+      type: 'message_stop'
+    })
+  ].join('')
 }
 
 function chatGuidanceJson(guidance: GatewayAgentGuidanceResponse): Record<string, unknown> {
@@ -271,6 +340,10 @@ function responsesSse(event: string, payload: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
 }
 
+function anthropicSse(event: string, payload: Record<string, unknown>): string {
+  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
+}
+
 function zeroChatUsage(): Record<string, unknown> {
   return {
     prompt_tokens: 0,
@@ -286,5 +359,12 @@ function zeroResponsesUsage(): Record<string, unknown> {
     total_tokens: 0,
     input_tokens_details: { cached_tokens: 0 },
     output_tokens_details: { reasoning_tokens: 0 }
+  }
+}
+
+function zeroAnthropicMessagesUsage(): Record<string, unknown> {
+  return {
+    input_tokens: 0,
+    output_tokens: 0
   }
 }

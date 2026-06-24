@@ -18,7 +18,7 @@ import {
   listCachedOpenAIAccountsForGroupAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
-import { openAIRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 
 export interface GatewayModelTargetGroupCandidate {
   binding: GatewayApiKeyGroupBindingRow
@@ -40,7 +40,7 @@ export async function selectGatewayModelTargetGroup(input: {
   requestClientCompatibility?: ClientCompatibilityCapability
   acceptCandidate?: (candidate: GatewayModelTargetGroupCandidate) => boolean
 }): Promise<GatewayModelTargetGroupSelection | undefined> {
-  const sourceEndpointFamily = openAIRequestEndpointFamily(input.req)
+  const sourceEndpointFamily = gatewayRequestEndpointFamily(input.req)
   for (const binding of uniqueGatewayGroupBindings(input.bindings)) {
     const groupAccess = await resolveCachedGroupUsageAccessMetadataAsync(binding.group_id, input.apiKeyRecord.system_account_id)
     if (!groupAccess) {

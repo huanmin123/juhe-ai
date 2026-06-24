@@ -24,7 +24,8 @@ export function diagnosticAccountTestGatewaySettingsOverride(
     temporaryUnschedulableRetryAttempts: 0,
     temporaryUnschedulableRetryIntervalSeconds: 0,
     streamRequestTimeoutSeconds: timeoutSeconds,
-    streamIdleTimeoutSeconds: timeoutSeconds
+    streamIdleTimeoutSeconds: timeoutSeconds,
+    streamClientTotalWaitTimeoutSeconds: timeoutSeconds
   }
 }
 

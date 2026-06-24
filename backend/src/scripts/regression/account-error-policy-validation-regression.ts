@@ -18,10 +18,11 @@ const settings: GatewaySettings = {
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
   streamCircuitBreakerEnabled: true,
-  streamRequestTimeoutSeconds: 180,
-  streamIdleTimeoutSeconds: 60,
+  streamRequestTimeoutSeconds: 120,
+  streamIdleTimeoutSeconds: 30,
+  streamClientTotalWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10
+  streamFailureThresholdWindowMinutes: 5
 }
 
 assert.equal(validateAccountErrorHandlingRules([tempRule({ name: '429', status_codes: [429] })]).valid, true)

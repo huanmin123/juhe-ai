@@ -27,6 +27,7 @@ import {
 } from './helpers.js'
 import {
   filterLocallySuppressedGatewayAccounts,
+  orderGatewayAccountsByRuntimeDegradation,
   type GatewayAccountHalfOpenLease
 } from '../runtime/account-side-effects.service.js'
 import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unavailable-wait.js'
@@ -105,7 +106,9 @@ export async function fetchFirstAvailableUpstream(
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
-  let dispatchAccounts = orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
+  let dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(
+    orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
+  ).accounts
   const compatibilityRecoveryState = createGatewayCompatibilityRecoveryState()
 
   while (dispatchAccounts.length > 0) {
@@ -446,7 +449,7 @@ export async function fetchFirstAvailableUpstream(
       signal
     })
     if (!wait.state.allSuppressed) {
-      dispatchAccounts = wait.state.accounts
+      dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(wait.state.accounts).accounts
       continue
     }
 

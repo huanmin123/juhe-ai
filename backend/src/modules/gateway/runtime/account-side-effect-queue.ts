@@ -1,8 +1,7 @@
 import type { DbServiceOperation } from '../../db-service/db-service-types.js'
 
 export type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
-export type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
-export type AccountSideEffectOperation = AccountErrorHandlingOperation | StreamFailureOperation
+export type AccountSideEffectOperation = AccountErrorHandlingOperation
 
 export interface QueuedAccountSideEffect {
   operation: AccountSideEffectOperation

@@ -109,6 +109,7 @@
               :form="form"
               :is-management-view="isManagementView"
               :is-o-auth-form="isOAuthForm"
+              :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
               :mapping-source-model-options="mappingSourceModelOptions"
               :mapping-upstream-model-options="mappingUpstreamModelOptions"
               :model-options="modelOptions"
@@ -213,6 +214,7 @@ const props = withDefaults(defineProps<{
   isManagementView: boolean
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
+  mappingAnthropicSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
   modelOptions: SelectOption[]
   modelsLoading: boolean

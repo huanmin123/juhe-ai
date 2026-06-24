@@ -20,6 +20,7 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
   openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
@@ -31,6 +32,13 @@ import {
   buildUpstreamRequestBody,
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
+import { requestModel } from '../../../gateway/request/metadata.js'
+import {
+  anthropicMessagesChatBridgeRequiredEndpointMode,
+  buildAnthropicMessagesChatBridgeBody,
+  prepareAnthropicMessagesChatBridgeHeaders,
+  transformAnthropicMessagesChatBridgeUpstreamResponse
+} from '../_shared/anthropic-openai-chat-bridge.js'
 import {
   buildCodexResponsesChatBridgeBody,
   codexResponsesChatBridgeRequiredEndpointMode,
@@ -76,13 +84,26 @@ export const deepSeekProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
-    if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE)) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return []
     }
     return buildDeepSeekOpenAIChatUpstreamUrls(account, req)
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareAnthropicMessagesChatBridgeHeaders(headers, req)
+      return {
+        headers,
+        body: await buildAnthropicMessagesChatBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          guidanceProviderName: 'DeepSeek',
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
     if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
@@ -112,7 +133,11 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   transformUpstreamResponse(req, account, response, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    return transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
+    const anthropicMessagesResponse = transformAnthropicMessagesChatBridgeUpstreamResponse(req, response, {
+      enabled: isAnthropicMessagesToChatCompletionsModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL
+    })
+    return transformCodexResponsesChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
       defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
       enabled: shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping),
       explicitMappingBridge: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
@@ -133,6 +158,17 @@ export const deepSeekProviderDriver: ProviderDriver = {
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: anthropicMessagesChatBridgeRequiredEndpointMode(isEffectiveOpenAIStreamRequest(req, account)),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
     if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
@@ -166,7 +202,7 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
     return []
   }
   const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-  if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+  if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
     return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
   }
   if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, 'codex_responses', modelMapping)) {

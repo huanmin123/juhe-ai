@@ -60,7 +60,7 @@ interface ProviderModelRouteIndexCacheEntry {
 
 interface CachedOpenAIAccountsForGroupOptions {
   requestedModel?: string
-  requestedEndpointFamily?: 'chat_completions' | 'responses'
+  requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
 }
 
 export type ProviderModelRouteResolution =
@@ -893,7 +893,7 @@ function refreshOpenAIAccountsForGroupInBackground(
   systemAccountId: string,
   cacheKey: string,
   requestedModel?: string,
-  requestedEndpointFamily?: 'chat_completions' | 'responses'
+  requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
 ): void {
   if (pendingOpenAIAccountsRefreshes.has(cacheKey)) {
     return

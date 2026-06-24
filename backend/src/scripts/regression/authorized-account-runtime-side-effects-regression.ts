@@ -38,10 +38,11 @@ const gatewaySettings: GatewaySettings = {
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
   streamCircuitBreakerEnabled: true,
-  streamRequestTimeoutSeconds: 180,
-  streamIdleTimeoutSeconds: 60,
+  streamRequestTimeoutSeconds: 120,
+  streamIdleTimeoutSeconds: 30,
+  streamClientTotalWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 1,
-  streamFailureThresholdWindowMinutes: 10
+  streamFailureThresholdWindowMinutes: 5
 }
 
 try {
@@ -112,15 +113,38 @@ try {
       accountId: streamGatewayAccount.id,
       account: streamGatewayAccount,
       thresholdCount: 1,
-      thresholdWindowMinutes: 10,
+      thresholdWindowMinutes: 5,
       action: 'cooldown',
       reason: '模拟授权副本流式失败'
     }
   }))
   assert.equal(streamResult.count, 1, '授权副本流式失败应累计到本地绑定窗口')
-  assert.equal(streamResult.triggered, true, '授权副本流式失败达到阈值后应触发本地冷却')
-  assertOwnerStillActive(streamAccount.sourceId, ownerAccess, '流式失败阈值不应修改归属人原账户')
-  assertAuthorizedInstanceStatus(streamAccount.instanceId, granteeAccess, 'temporary_unavailable', '流式失败阈值应只写入被授权实例状态')
+  assert.equal(streamResult.triggered, false, '历史流式失败计数不应再触发本地冷却')
+  assertOwnerStillActive(streamAccount.sourceId, ownerAccess, '历史流式失败计数不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(streamAccount.instanceId, granteeAccess, 'active', '历史流式失败计数不应改变被授权实例状态')
+
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET stream_failure_count = 1,
+          stream_failure_window_started_at = ?
+      WHERE id = ?
+    `)
+    .run(new Date(Date.now() - 6 * 60_000).toISOString(), streamGatewayAccount.id)
+  const expiredWindowStreamResult = await withDbServiceRole(() => requestDbService({
+    type: 'record_account_stream_failure',
+    input: {
+      accountId: streamGatewayAccount.id,
+      account: streamGatewayAccount,
+      thresholdCount: 1,
+      thresholdWindowMinutes: 5,
+      action: 'cooldown',
+      reason: '模拟授权副本流失败诊断窗口重置'
+    }
+  }))
+  assert.equal(expiredWindowStreamResult.count, 1, '超过 5 分钟诊断窗口后，流失败计数应从 1 重新开始')
+  assert.equal(expiredWindowStreamResult.triggered, false, '过期诊断窗口重置后仍不应触发账号冷却')
+  assertAuthorizedInstanceStatus(streamAccount.instanceId, granteeAccess, 'active', '过期诊断窗口重置不应改变被授权实例状态')
 
   console.log('授权账户运行时副作用隔离回归通过')
 } finally {

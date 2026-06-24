@@ -31,6 +31,7 @@ export interface GatewaySettings {
   streamCircuitBreakerEnabled: boolean
   streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
+  streamClientTotalWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
 }
@@ -79,6 +80,7 @@ export function readGatewaySettings(): GatewaySettings {
     streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, 'streamCircuitBreakerEnabled'),
     streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
     streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
+    streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
   }
