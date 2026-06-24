@@ -57,8 +57,15 @@ const programmingTaskKind = envText('JUHE_REAL_CODEX_PROGRAMMING_TASK_KIND') || 
 const programmingProjectRootOverride = envText('JUHE_REAL_CODEX_PROGRAMMING_PROJECT_ROOT')
 const programmingSandboxMode = envText('JUHE_REAL_CODEX_PROGRAMMING_SANDBOX') || 'workspace-write'
 const programmingDisableShellTool = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_DISABLE_SHELL_TOOL')
+const programmingChatCompatibleToolsOnly = envText('JUHE_REAL_CODEX_PROGRAMMING_CHAT_COMPATIBLE_TOOLS_ONLY') !== '0'
+const programmingMinimalInstructions = envText('JUHE_REAL_CODEX_PROGRAMMING_MINIMAL_INSTRUCTIONS') !== '0'
+const programmingApplyPatchOnlyTools = envText('JUHE_REAL_CODEX_PROGRAMMING_APPLY_PATCH_ONLY_TOOLS') !== '0'
+const programmingTextArtifactFallback = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_TEXT_ARTIFACT_FALLBACK')
 const programmingForceApplyPatchToolChoice = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_FORCE_APPLY_PATCH_TOOL_CHOICE')
 const programmingForceApplyPatchToolChoiceCount = positiveIntegerEnv('JUHE_REAL_CODEX_PROGRAMMING_FORCE_APPLY_PATCH_TOOL_CHOICE_COUNT') ?? 1
+const debugDumpIncomingRequestPath = envText('JUHE_REAL_CODEX_DEBUG_DUMP_INCOMING_REQUEST_PATH')
+const expectMarker = booleanEnv('JUHE_REAL_CODEX_EXPECT_MARKER')
+const expectGuidance = booleanEnv('JUHE_REAL_CODEX_EXPECT_GUIDANCE') || (!programmingTaskEnabled && !expectMarker)
 const marker = `CODEX_GPT_TO_GLM_OK_${Date.now()}`
 const hybridRouteEvents: Array<Record<string, unknown>> = []
 const hybridRouteDiagnosticsChannel = channel('juhe-ai:hybrid-route-decision')
@@ -126,12 +133,19 @@ try {
       : await runCodexCli(gatewayBaseUrl, apiKey.key)
     assert.equal(result.exitCode, 0, `Codex CLI 应成功退出：${summarizeCliFailure(result)}`)
     if (programmingProjectRoot) {
+      if (programmingTextArtifactFallback) {
+        materializeProgrammingTextArtifacts(result.stdout, programmingProjectRoot)
+      }
       const testResult = await runProjectTests(programmingProjectRoot)
       if (testResult.exitCode !== 0) {
         throw new Error(`Codex 编程任务完成后测试应通过；codex=${summarizeCliFailure(result)}；check=${summarizeCliFailure(testResult)}`)
       }
     } else {
-      assert.match(result.stdout, new RegExp(marker), `Codex CLI 输出应包含 marker：${sanitizeSecretText(result.stdout).slice(0, 2000)}`)
+      if (expectGuidance) {
+        assertGuidanceCliOutput(result.stdout)
+      } else {
+        assert.match(result.stdout, new RegExp(marker), `Codex CLI 输出应包含 marker：${sanitizeSecretText(result.stdout).slice(0, 2000)}`)
+      }
     }
 
     const responsesHits = gatewayIncomingHits.filter((hit) => hit.path.split('?', 1)[0].endsWith('/responses'))
@@ -147,13 +161,15 @@ try {
       .filter((record) => record.success === true && record.trafficSource === 'gateway')
       .map((record) => record.model)
       .filter((model): model is string => typeof model === 'string')
-    const expectedSuccessModels = hybridMode
-      ? new Set(hybridLevelRoutes().map((route) => route.targetModel))
-      : new Set([downstreamModel])
-    assert(
-      successfulGatewayModels.some((model) => expectedSuccessModels.has(model)),
-      `使用记录应保存成功模型，实际：${successfulGatewayModels.join(', ') || '无'}`
-    )
+    if (!expectGuidance) {
+      const expectedSuccessModels = hybridMode
+        ? new Set(hybridLevelRoutes().map((route) => route.targetModel))
+        : new Set([downstreamModel])
+      assert(
+        successfulGatewayModels.some((model) => expectedSuccessModels.has(model)),
+        `使用记录应保存成功模型，实际：${successfulGatewayModels.join(', ') || '无'}`
+      )
+    }
 
     console.log(JSON.stringify({
       ok: true,
@@ -185,7 +201,7 @@ try {
         statusCode: event.statusCode,
         affinityApplied: event.affinityApplied
       })) : undefined,
-      mode: programmingProjectRoot ? 'programming_task' : 'marker',
+      mode: programmingProjectRoot ? 'programming_task' : expectGuidance ? 'guidance' : 'marker',
       programmingTaskKind: programmingProjectRoot ? programmingTaskKind : undefined,
       marker: programmingProjectRoot ? undefined : marker,
       programmingProjectRoot,
@@ -257,7 +273,11 @@ function updateGatewayStreamTimeoutsForTest(): void {
 }
 
 function captureIncomingGatewayRequest(req: Request, _res: Response, next: NextFunction): void {
-  const body = maybeForceApplyPatchToolChoice(req, parseJsonObject(requestBodyText(req)))
+  let body = parseJsonObject(requestBodyText(req))
+  body = maybeForceTextArtifactNoTools(req, body)
+  body = maybeForceApplyPatchToolChoice(req, body)
+  body = maybeForceApplyPatchOnlyTools(req, body)
+  dumpIncomingGatewayRequestForDebug(body)
   gatewayIncomingHits.push({
     path: req.originalUrl || req.url,
     method: req.method,
@@ -273,6 +293,50 @@ function captureIncomingGatewayRequest(req: Request, _res: Response, next: NextF
     }
   })
   next()
+}
+
+function maybeForceTextArtifactNoTools(req: Request, body: Record<string, unknown>): Record<string, unknown> {
+  if (!programmingTaskEnabled || !programmingTextArtifactFallback) {
+    return body
+  }
+  if (!Array.isArray(body.tools) && body.tool_choice === undefined) {
+    return body
+  }
+  const nextBody = {
+    ...body,
+    tools: [],
+    tool_choice: 'none'
+  }
+  replaceGatewayJsonBody(req, nextBody)
+  return nextBody
+}
+
+function maybeForceApplyPatchOnlyTools(req: Request, body: Record<string, unknown>): Record<string, unknown> {
+  if (!programmingTaskEnabled || !programmingApplyPatchOnlyTools || !Array.isArray(body.tools)) {
+    return body
+  }
+  const tools = body.tools.filter((tool) => isResponseApplyPatchTool(tool))
+  if (tools.length === body.tools.length) return body
+  const nextBody = {
+    ...body,
+    tools,
+    tool_choice: isToolChoiceStillAvailable(body.tool_choice, tools) ? body.tool_choice : 'auto'
+  }
+  replaceGatewayJsonBody(req, nextBody)
+  return nextBody
+}
+
+function isToolChoiceStillAvailable(toolChoice: unknown, tools: unknown[]): boolean {
+  if (typeof toolChoice === 'string') return true
+  if (!toolChoice || typeof toolChoice !== 'object' || Array.isArray(toolChoice)) return false
+  const record = toolChoice as Record<string, unknown>
+  if (record.type !== 'custom' || record.name !== 'apply_patch') return false
+  return tools.some((tool) => isResponseApplyPatchTool(tool))
+}
+
+function dumpIncomingGatewayRequestForDebug(body: Record<string, unknown>): void {
+  if (!debugDumpIncomingRequestPath) return
+  writeFileSync(debugDumpIncomingRequestPath, `${JSON.stringify(body, null, 2)}\n`, 'utf8')
 }
 
 function maybeForceApplyPatchToolChoice(req: Request, body: Record<string, unknown>): Record<string, unknown> {
@@ -517,12 +581,64 @@ function runCodexCli(gatewayBaseUrl: string, localApiKey: string): Promise<CliRu
 function runCodexProgrammingCli(gatewayBaseUrl: string, localApiKey: string, projectRoot: string): Promise<CliRunResult> {
   const codexHome = join(tempRoot, 'codex-programming-home')
   mkdirSync(codexHome, { recursive: true })
+  const chatCompatibleToolArgs = programmingChatCompatibleToolsOnly
+    ? [
+        '--disable',
+        'apps',
+        '--disable',
+        'plugins',
+        '--disable',
+        'tool_suggest',
+        '--disable',
+        'remote_plugin',
+        '--disable',
+        'multi_agent',
+        '--disable',
+        'multi_agent_v2',
+        '--disable',
+        'enable_mcp_apps',
+        '--disable',
+        'standalone_web_search',
+        '--disable',
+        'image_generation',
+        '--disable',
+        'computer_use',
+        '--disable',
+        'browser_use',
+        '--disable',
+        'browser_use_external',
+        '--disable',
+        'in_app_browser',
+        '-c',
+        'tools.experimental_request_user_input.enabled=false',
+        '-c',
+        'include_apps_instructions=false',
+        '-c',
+        'skills.include_instructions=false',
+        '-c',
+        'skills.bundled.enabled=false',
+        '-c',
+        'include_permissions_instructions=false',
+        '-c',
+        'include_collaboration_mode_instructions=false',
+        '-c',
+        'web_search="disabled"'
+      ]
+    : []
+  const minimalInstructionArgs = programmingMinimalInstructions
+    ? [
+        '-c',
+        `instructions="${programmingMinimalInstructionsText()}"`
+      ]
+    : []
   return runCli({
     args: [
       'exec',
       '--json',
       '--ephemeral',
       '--ignore-user-config',
+      ...chatCompatibleToolArgs,
+      ...minimalInstructionArgs,
       ...(programmingDisableShellTool ? ['--disable', 'shell_tool'] : []),
       '--skip-git-repo-check',
       '-C',
@@ -563,6 +679,16 @@ function runCodexProgrammingCli(gatewayBaseUrl: string, localApiKey: string, pro
   })
 }
 
+function assertGuidanceCliOutput(stdout: string): void {
+  const sanitized = sanitizeSecretText(stdout)
+  assert.match(sanitized, /"type":"item\.completed"/, `Codex CLI guidance 应输出 completed item：${sanitized.slice(0, 2000)}`)
+  assert.match(sanitized, /能力未执行/, `Codex CLI guidance 应包含能力未执行说明：${sanitized.slice(0, 2000)}`)
+  assert.match(sanitized, /tool_search/, `Codex CLI guidance 应包含 tool_search：${sanitized.slice(0, 2000)}`)
+  assert.match(sanitized, /web_search/, `Codex CLI guidance 应包含 web_search：${sanitized.slice(0, 2000)}`)
+  assert.match(sanitized, /建议下一步/, `Codex CLI guidance 应包含下一步建议：${sanitized.slice(0, 2000)}`)
+  assert.doesNotMatch(sanitized, /turn\.failed|stream disconnected|response\.failed|unsupported_codex_native_tool/, `Codex CLI guidance 不应失败或暴露旧错误：${sanitized.slice(0, 2000)}`)
+}
+
 function providerFromEnv(): { providerCode: string; profileId: string; label: string } {
   const value = (envText('JUHE_REAL_CODEX_PROVIDER') || 'openai-compatible').toLowerCase()
   if (value === 'openai-compatible' || value === 'openai' || value === 'gpt') {
@@ -590,12 +716,20 @@ function providerFromEnv(): { providerCode: string; profileId: string; label: st
 }
 
 function seedProgrammingProject(): string {
-  const projectRoot = programmingProjectRootOverride ? resolve(programmingProjectRootOverride) : join(tempRoot, 'programming-task')
+  const projectRoot = programmingProjectRootOverride ? resolve(programmingProjectRootOverride) : defaultProgrammingProjectRoot()
   if (programmingProjectRootOverride && existsSync(projectRoot)) {
     throw new Error(`编程任务输出目录已存在，为避免覆盖请换一个新目录：${projectRoot}`)
   }
+  if (programmingTaskKind === 'tetris_html') return seedTetrisHtmlProject(projectRoot)
   if (programmingTaskKind === 'snake_html') return seedSnakeHtmlProject(projectRoot)
   return seedBalancedBracketProject(projectRoot)
+}
+
+function defaultProgrammingProjectRoot(): string {
+  if (programmingTaskKind === 'tetris_html') {
+    return resolve('D:\\Downloads\\temp', `codex-glm-tetris-${Date.now()}`)
+  }
+  return join(tempRoot, 'programming-task')
 }
 
 function seedBalancedBracketProject(projectRoot: string): string {
@@ -646,7 +780,54 @@ function seedSnakeHtmlProject(projectRoot: string): string {
   return projectRoot
 }
 
+function seedTetrisHtmlProject(projectRoot: string): string {
+  mkdirSync(projectRoot, { recursive: true })
+  writeFileSync(join(projectRoot, 'README.md'), [
+    '# 俄罗斯方块小游戏',
+    '',
+    '请使用纯 HTML、CSS 和 JavaScript 实现一个可直接打开的俄罗斯方块小游戏。',
+    '必须生成 index.html、styles.css、game.js 三个文件，不要使用外部依赖。',
+    ''
+  ].join('\n'), 'utf8')
+  return projectRoot
+}
+
 function programmingTaskPrompt(): string {
+  if (programmingTaskKind === 'tetris_html') {
+    if (programmingTextArtifactFallback) {
+      return [
+        '这是一个很小的前端编程任务。',
+        '当前上游不提供可靠工具调用能力，所以不要调用工具，也不要回复计划。',
+        '请直接生成一个可打开的俄罗斯方块小游戏的三个文件内容。',
+        '必须使用纯 HTML、CSS、JavaScript，不要依赖外部 CDN，不要安装依赖。',
+        '游戏需要包含：开始、暂停、重新开始、左右移动、软降、硬降、旋转、得分、等级、已消除行数、游戏结束提示。',
+        '实现完整的俄罗斯方块核心逻辑：7 种方块、棋盘网格、碰撞检测、方块锁定、消行、速度随等级提升。',
+        '需要支持键盘控制和移动端按钮控制，界面文案使用中文，样式完整。',
+        '只按下面格式输出，不要使用 Markdown 代码围栏，不要输出额外说明：',
+        '@@FILE:index.html',
+        '<完整 index.html 内容>',
+        '@@END_FILE',
+        '@@FILE:styles.css',
+        '<完整 styles.css 内容>',
+        '@@END_FILE',
+        '@@FILE:game.js',
+        '<完整 game.js 内容>',
+        '@@END_FILE'
+      ].join('\n')
+    }
+    return [
+      '这是一个很小的前端编程任务。',
+      '请在当前目录创建一个可直接用浏览器打开的俄罗斯方块小游戏。',
+      '不要只回复计划或说明；第一步必须创建或修改文件。',
+      '请优先使用 apply_patch 工具创建或修改文件，不要用 PowerShell here-string 或 Set-Content 写长 HTML、CSS、JavaScript 内容。',
+      '如果最终没有生成 index.html、styles.css、game.js 三个文件，任务就是失败。',
+      '必须使用纯 HTML、CSS、JavaScript，至少创建 index.html、styles.css、game.js 三个文件。',
+      '游戏需要包含：开始、暂停、重新开始、左右移动、软降、硬降、旋转、得分、等级、已消除行数、游戏结束提示。',
+      '实现完整的俄罗斯方块核心逻辑：7 种方块、棋盘网格、碰撞检测、方块锁定、消行、速度随等级提升。',
+      '需要支持键盘控制和移动端按钮控制，界面文案使用中文，样式完整，不要依赖外部 CDN，不要安装依赖。',
+      '完成后请运行 node --check game.js 做语法检查；如果失败请修复。'
+    ].join('\n')
+  }
   if (programmingTaskKind === 'snake_html') {
     return [
       '这是一个很小的前端编程任务。',
@@ -669,7 +850,15 @@ function programmingTaskPrompt(): string {
   ].join('\n')
 }
 
+function programmingMinimalInstructionsText(): string {
+  if (programmingTextArtifactFallback) {
+    return 'You are a coding agent. Return requested file artifacts as plain text in the exact delimiter format. Do not call tools. Keep non-file text out of the response.'
+  }
+  return 'You are a coding agent. Use apply_patch to create or edit files when needed. Run requested checks when available. Keep final output concise.'
+}
+
 function runProjectTests(projectRoot: string): Promise<CliRunResult> {
+  if (programmingTaskKind === 'tetris_html') return runTetrisHtmlProjectChecks(projectRoot)
   if (programmingTaskKind === 'snake_html') return runSnakeHtmlProjectChecks(projectRoot)
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, ['--test', 'test/isBalanced.test.js'], {
@@ -690,7 +879,80 @@ function runProjectTests(projectRoot: string): Promise<CliRunResult> {
   })
 }
 
+function materializeProgrammingTextArtifacts(stdout: string, projectRoot: string): void {
+  const text = latestCodexAgentMessageText(stdout)
+  const artifacts = parseDelimitedFileArtifacts(text)
+  const requiredFiles = ['index.html', 'styles.css', 'game.js']
+  const missing = requiredFiles.filter((file) => !artifacts.has(file))
+  if (missing.length > 0) {
+    throw new Error(`GLM 文本产物缺少文件块：${missing.join(', ')}；输出片段=${sanitizeSecretText(text).slice(0, 1200)}`)
+  }
+  mkdirSync(projectRoot, { recursive: true })
+  for (const file of requiredFiles) {
+    writeFileSync(join(projectRoot, file), `${artifacts.get(file) ?? ''}`.replace(/\s+$/u, '') + '\n', 'utf8')
+  }
+}
+
+function latestCodexAgentMessageText(stdout: string): string {
+  let latest = ''
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const event = parseJsonObject(trimmed)
+    const item = event.item
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as Record<string, unknown>
+    if (event.type === 'item.completed' && record.type === 'agent_message' && typeof record.text === 'string') {
+      latest = record.text
+    }
+  }
+  if (!latest) {
+    throw new Error(`未在 Codex CLI JSONL 输出中找到 agent_message：${sanitizeSecretText(stdout).slice(0, 1200)}`)
+  }
+  return latest
+}
+
+function parseDelimitedFileArtifacts(text: string): Map<string, string> {
+  const allowedFiles = new Set(['index.html', 'styles.css', 'game.js'])
+  const files = new Map<string, string>()
+  const pattern = /^@@FILE:([^\r\n]+)\r?\n([\s\S]*?)^@@END_FILE[ \t]*$/gm
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    const filename = match[1]?.trim()
+    if (!filename || !allowedFiles.has(filename)) continue
+    files.set(filename, match[2] ?? '')
+  }
+  return files
+}
+
 async function runSnakeHtmlProjectChecks(projectRoot: string): Promise<CliRunResult> {
+  return runHtmlGameProjectChecks(projectRoot, [
+    sourceMatches(/keydown|keyup|pointerdown|touchstart|click/i),
+    sourceMatches(/score|得分|分数/i),
+    sourceMatches(/restart|重新|reset/i),
+    sourceMatches(/@media|grid|flex|canvas|button/i)
+  ])
+}
+
+async function runTetrisHtmlProjectChecks(projectRoot: string): Promise<CliRunResult> {
+  return runHtmlGameProjectChecks(projectRoot, [
+    sourceMatches(/keydown|keyup|pointerdown|touchstart|click/i),
+    sourceMatches(/score|得分|分数/i),
+    sourceMatches(/start|pause|restart|reset|开始|暂停|重新/i),
+    sourceMatches(/rotate|旋转/i),
+    sourceMatches(/line|clear|消除/i),
+    sourceMatches(/collision|collide|lock|碰撞|锁定/i),
+    sourceMatches(/tetromino|piece|shape|[IOTSZJL]\s*[:=]/i),
+    sourceMatches(/game\s*over|结束/i),
+    sourceMatches(/@media|grid|flex|canvas|button/i)
+  ])
+}
+
+function sourceMatches(pattern: RegExp): (source: string) => boolean {
+  return (source) => pattern.test(source)
+}
+
+async function runHtmlGameProjectChecks(projectRoot: string, sourceChecks: Array<(source: string) => boolean>): Promise<CliRunResult> {
   const requiredFiles = ['index.html', 'styles.css', 'game.js']
   const missing = requiredFiles.filter((file) => !existsSync(join(projectRoot, file)))
   if (missing.length) {
@@ -708,15 +970,11 @@ async function runSnakeHtmlProjectChecks(projectRoot: string): Promise<CliRunRes
     html.includes('game.js'),
     /<canvas\b|class=["'][^"']*(board|game|grid)/i.test(html)
   ]
-  const sourceChecks = [
-    /keydown|keyup|pointerdown|touchstart|click/i.test(js),
-    /score|得分|分数/i.test(js + html),
-    /restart|重新|reset/i.test(js + html),
-    /@media|grid|flex|canvas|button/i.test(css + html)
-  ]
+  const source = `${js}\n${html}\n${css}`
+  const sourceCheckResults = sourceChecks.map((check) => check(source))
   const failedChecks = [
     ...htmlChecks.map((ok, index) => ok ? undefined : `HTML 检查 ${index + 1} 失败`),
-    ...sourceChecks.map((ok, index) => ok ? undefined : `源码检查 ${index + 1} 失败`)
+    ...sourceCheckResults.map((ok, index) => ok ? undefined : `源码检查 ${index + 1} 失败`)
   ].filter(Boolean)
   if (failedChecks.length) {
     return {

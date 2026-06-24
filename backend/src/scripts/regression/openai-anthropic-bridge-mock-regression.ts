@@ -23,6 +23,13 @@ interface UpstreamHit {
   body: Record<string, unknown>
 }
 
+interface ImageGenerationHit {
+  path: string
+  method: string
+  authorization: string
+  body: Record<string, unknown>
+}
+
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-anthropic-bridge-mock-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'openai-anthropic-bridge-mock.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
@@ -68,6 +75,9 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: UpstreamHit[] = []
+const imageGenerationHits: ImageGenerationHit[] = []
+const mockImageBase64 = Buffer.from('mock image generation result', 'utf8').toString('base64')
+const mockPartialImageBase64 = Buffer.from('mock partial image generation result', 'utf8').toString('base64')
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -87,11 +97,15 @@ try {
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
   let upstreamServer: http.Server | undefined
+  let imageGenerationServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
     upstreamServer = createAnthropicBridgeMockUpstream()
+    imageGenerationServer = createImageGenerationMockProvider()
     await listen(upstreamServer)
+    await listen(imageGenerationServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
+    const imageGenerationEndpoint = `http://127.0.0.1:${serverAddress(imageGenerationServer).port}/v1/images/generations`
 
     const group = repositories.createGroup({
       name: 'OpenAI 到 Anthropic 桥接 mock 分组',
@@ -174,6 +188,21 @@ try {
     await assertResponsesThinkingBridge(baseUrl, apiKey.key)
     await assertResponsesThinkingSseBridge(baseUrl, apiKey.key)
     await assertResponsesHostedToolUnsupported(baseUrl, apiKey.key)
+    await assertHostedToolRuntimeRejectMode(baseUrl, apiKey.key)
+    configureMockImageGenerationProvider(imageGenerationEndpoint)
+    await assertResponsesImageGenerationJsonBridge(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationSseBridge(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationPartialImageSseBridge(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationModerationBlockedBridge(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationUnsupportedEditGuidance(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationHistoryContextGuidance(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationProviderInvalidResponseBridge(baseUrl, apiKey.key)
+    configureMockImageGenerationProvider(imageGenerationEndpoint, { maxBodyBytes: 64 })
+    await assertResponsesImageGenerationProviderTooLargeBridge(baseUrl, apiKey.key)
+    configureMockImageGenerationProvider(imageGenerationEndpoint, { timeoutMs: 20 })
+    await assertResponsesImageGenerationProviderTimeoutBridge(baseUrl, apiKey.key)
+    configureMockImageGenerationProvider(imageGenerationEndpoint)
+    clearMockImageGenerationProvider()
     await assertResponsesImageFileIdNotFound(baseUrl, apiKey.key)
     await assertResponsesImageFileIdResolverBridge(baseUrl, apiKey.key)
     await assertResponsesFileIdResolverTextBridge(baseUrl, apiKey.key)
@@ -187,7 +216,9 @@ try {
 
     console.log('openai anthropic bridge mock regression passed')
   } finally {
+    clearMockImageGenerationProvider()
     await closeServer(appServer)
+    await closeServer(imageGenerationServer)
     await closeServer(upstreamServer)
   }
 } finally {
@@ -198,6 +229,23 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function configureMockImageGenerationProvider(endpoint: string, options: {
+  timeoutMs?: number
+  maxBodyBytes?: number
+} = {}): void {
+  runtimeConfig.imageGenerationProvider.endpoint = endpoint
+  runtimeConfig.imageGenerationProvider.apiKey = 'sk-image-generation-mock'
+  runtimeConfig.imageGenerationProvider.model = 'gpt-image-2-mock'
+  runtimeConfig.imageGenerationProvider.timeoutMs = options.timeoutMs ?? 30000
+  runtimeConfig.imageGenerationProvider.maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024
+}
+
+function clearMockImageGenerationProvider(): void {
+  runtimeConfig.imageGenerationProvider.endpoint = undefined
+  runtimeConfig.imageGenerationProvider.apiKey = undefined
+  runtimeConfig.imageGenerationProvider.model = 'gpt-image-2'
 }
 
 async function assertChatJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -887,10 +935,59 @@ async function assertResponsesHostedToolUnsupported(baseUrl: string, localApiKey
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `unsupported hosted tool 应返回本地 400，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /openai_anthropic_bridge_unsupported_hosted_tool/)
-  assert.match(text, /computer/)
+  assert.equal(response.status, 200, `unsupported hosted tool 应返回正常 guidance，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { output_text?: string; status?: string }
+  assert.equal(body.status, 'completed')
+  assert.match(body.output_text ?? '', /能力未执行：computer/)
+  assert.match(body.output_text ?? '', /建议下一步/)
+  assert.doesNotMatch(text, /openai_anthropic_bridge_unsupported_hosted_tool/)
   assert.equal(upstreamHits.length, 0, 'unsupported hosted tool 不应请求 Anthropic 上游')
+
+  const responsesCodeInterpreterResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses code_interpreter hosted tool unsupported',
+      tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+      tool_choice: { type: 'code_interpreter' },
+      stream: false
+    })
+  })
+  const responsesCodeInterpreterText = await responsesCodeInterpreterResponse.text()
+  assert.equal(responsesCodeInterpreterResponse.status, 200, `Responses code_interpreter 应返回正常 guidance，实际 HTTP ${responsesCodeInterpreterResponse.status}: ${responsesCodeInterpreterText}`)
+  const responsesCodeInterpreterBody = JSON.parse(responsesCodeInterpreterText) as { output_text?: string; status?: string }
+  assert.equal(responsesCodeInterpreterBody.status, 'completed')
+  assert.match(responsesCodeInterpreterBody.output_text ?? '', /能力未执行：code_interpreter/)
+  assert.match(responsesCodeInterpreterBody.output_text ?? '', /沙箱/)
+  assert.doesNotMatch(responsesCodeInterpreterText, /openai_anthropic_bridge_unsupported_hosted_tool/)
+  assert.equal(upstreamHits.length, 0, 'Responses code_interpreter guidance 不应请求 Anthropic 上游')
+
+  const responsesMcpResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses mcp hosted tool unsupported',
+      tools: [{ type: 'mcp', server_label: 'mock-mcp', server_url: 'https://example.invalid/mcp', require_approval: 'never' }],
+      tool_choice: { type: 'mcp' },
+      stream: false
+    })
+  })
+  const responsesMcpText = await responsesMcpResponse.text()
+  assert.equal(responsesMcpResponse.status, 200, `Responses MCP 应返回正常 guidance，实际 HTTP ${responsesMcpResponse.status}: ${responsesMcpText}`)
+  const responsesMcpBody = JSON.parse(responsesMcpText) as { output_text?: string; status?: string }
+  assert.equal(responsesMcpBody.status, 'completed')
+  assert.match(responsesMcpBody.output_text ?? '', /能力未执行：mcp/)
+  assert.match(responsesMcpBody.output_text ?? '', /MCP/)
+  assert.doesNotMatch(responsesMcpText, /openai_anthropic_bridge_unsupported_hosted_tool/)
+  assert.equal(upstreamHits.length, 0, 'Responses MCP guidance 不应请求 Anthropic 上游')
 
   const responsesWebSearchResponse = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -907,10 +1004,36 @@ async function assertResponsesHostedToolUnsupported(baseUrl: string, localApiKey
     })
   })
   const responsesWebSearchText = await responsesWebSearchResponse.text()
-  assert.equal(responsesWebSearchResponse.status, 400, `Responses web_search 应返回本地 400，实际 HTTP ${responsesWebSearchResponse.status}: ${responsesWebSearchText}`)
-  assert.match(responsesWebSearchText, /openai_anthropic_bridge_unsupported_hosted_tool/)
-  assert.match(responsesWebSearchText, /web_search/)
-  assert.equal(upstreamHits.length, 0, 'Responses web_search unsupported 不应请求 Anthropic 上游')
+  assert.equal(responsesWebSearchResponse.status, 200, `Responses web_search 应返回正常 guidance，实际 HTTP ${responsesWebSearchResponse.status}: ${responsesWebSearchText}`)
+  const responsesWebSearchBody = JSON.parse(responsesWebSearchText) as { output_text?: string; status?: string }
+  assert.equal(responsesWebSearchBody.status, 'completed')
+  assert.match(responsesWebSearchBody.output_text ?? '', /能力未执行：web_search/)
+  assert.match(responsesWebSearchBody.output_text ?? '', /本地客户端/)
+  assert.doesNotMatch(responsesWebSearchText, /openai_anthropic_bridge_unsupported_hosted_tool/)
+  assert.equal(upstreamHits.length, 0, 'Responses web_search guidance 不应请求 Anthropic 上游')
+
+  const responsesImageGenerationResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation hosted tool unsupported',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'low' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const responsesImageGenerationText = await responsesImageGenerationResponse.text()
+  assert.equal(responsesImageGenerationResponse.status, 200, `Responses image_generation 无 provider 应返回正常 guidance，实际 HTTP ${responsesImageGenerationResponse.status}: ${responsesImageGenerationText}`)
+  const responsesImageGenerationBody = JSON.parse(responsesImageGenerationText) as { output_text?: string; status?: string }
+  assert.equal(responsesImageGenerationBody.status, 'completed')
+  assert.match(responsesImageGenerationBody.output_text ?? '', /能力未执行：image_generation/)
+  assert.match(responsesImageGenerationBody.output_text ?? '', /图像生成 provider/)
+  assert.doesNotMatch(responsesImageGenerationText, /openai_anthropic_bridge_unsupported_hosted_tool/)
+  assert.equal(upstreamHits.length, 0, 'Responses image_generation guidance 不应请求 Anthropic 上游')
 
   const chatWebSearchResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -927,10 +1050,376 @@ async function assertResponsesHostedToolUnsupported(baseUrl: string, localApiKey
     })
   })
   const chatWebSearchText = await chatWebSearchResponse.text()
-  assert.equal(chatWebSearchResponse.status, 400, `Chat web_search 应返回本地 400，实际 HTTP ${chatWebSearchResponse.status}: ${chatWebSearchText}`)
-  assert.match(chatWebSearchText, /openai_anthropic_bridge_unsupported_hosted_tool/)
-  assert.match(chatWebSearchText, /web_search/)
-  assert.equal(upstreamHits.length, 0, 'Chat web_search unsupported 不应请求 Anthropic 上游')
+  assert.equal(chatWebSearchResponse.status, 200, `Chat web_search 应返回正常 guidance，实际 HTTP ${chatWebSearchResponse.status}: ${chatWebSearchText}`)
+  const chatWebSearchBody = JSON.parse(chatWebSearchText) as { choices?: Array<{ message?: { content?: string } }> }
+  const chatGuidance = chatWebSearchBody.choices?.[0]?.message?.content ?? ''
+  assert.match(chatGuidance, /能力未执行：web_search/)
+  assert.match(chatGuidance, /建议下一步/)
+  assert.doesNotMatch(chatWebSearchText, /openai_anthropic_bridge_unsupported_hosted_tool/)
+  assert.equal(upstreamHits.length, 0, 'Chat web_search guidance 不应请求 Anthropic 上游')
+
+  const chatCodeInterpreterResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat code_interpreter hosted tool unsupported' }],
+      tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+      tool_choice: 'required',
+      stream: false
+    })
+  })
+  const chatCodeInterpreterText = await chatCodeInterpreterResponse.text()
+  assert.equal(chatCodeInterpreterResponse.status, 200, `Chat code_interpreter 应返回正常 guidance，实际 HTTP ${chatCodeInterpreterResponse.status}: ${chatCodeInterpreterText}`)
+  const chatCodeInterpreterBody = JSON.parse(chatCodeInterpreterText) as { choices?: Array<{ message?: { content?: string } }> }
+  const chatCodeInterpreterGuidance = chatCodeInterpreterBody.choices?.[0]?.message?.content ?? ''
+  assert.match(chatCodeInterpreterGuidance, /能力未执行：code_interpreter/)
+  assert.match(chatCodeInterpreterGuidance, /沙箱/)
+  assert.doesNotMatch(chatCodeInterpreterText, /openai_anthropic_bridge_unsupported_hosted_tool/)
+  assert.equal(upstreamHits.length, 0, 'Chat code_interpreter guidance 不应请求 Anthropic 上游')
+}
+
+async function assertHostedToolRuntimeRejectMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.codeInterpreter
+  runtimeConfig.hostedToolRuntimes.codeInterpreter = 'reject'
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses code_interpreter hosted runtime reject',
+        tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+        tool_choice: { type: 'code_interpreter' },
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 400, `code_interpreter reject 模式应返回本地 400，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /openai_anthropic_bridge_hosted_tool_runtime_rejected/)
+    assert.match(text, /code_interpreter/)
+    assert.equal(upstreamHits.length, 0, 'code_interpreter reject 模式不应请求 Anthropic 上游')
+  } finally {
+    runtimeConfig.hostedToolRuntimes.codeInterpreter = previousMode
+  }
+}
+
+async function assertResponsesImageGenerationJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation json bridge',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'low', output_format: 'png' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses image_generation JSON 应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    output?: Array<{ type?: string; result?: string; revised_prompt?: string }>
+    output_text?: string
+    tools?: Array<{ type?: string }>
+  }
+  const imageItem = body.output?.find((item) => item.type === 'image_generation_call')
+  assert(imageItem, `Responses JSON 应返回 image_generation_call: ${text}`)
+  assert.equal(imageItem.result, mockImageBase64)
+  assert.match(imageItem.revised_prompt ?? '', /provider revised/)
+  assert.equal(body.output_text, '', 'image_generation 成功时不应把 revised prompt 当 output_text 暴露')
+  assert.equal(body.tools?.[0]?.type, 'image_generation')
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses image_generation json bridge')
+  assert.doesNotMatch(JSON.stringify(upstreamHits[0]?.body ?? {}), /"type":"image_generation"/, 'Anthropic 上游不应收到 OpenAI image_generation tool')
+  assert.equal(imageGenerationHits.length, 1, 'image_generation JSON 应调用一次本地图像 provider')
+  assert.equal(imageGenerationHits[0]?.path, '/v1/images/generations')
+  assert.equal(imageGenerationHits[0]?.authorization, 'Bearer sk-image-generation-mock')
+  assert.equal(imageGenerationHits[0]?.body.model, 'gpt-image-2-mock')
+  assert.equal(imageGenerationHits[0]?.body.size, '1024x1024')
+  assert.equal(imageGenerationHits[0]?.body.quality, 'low')
+  assert.equal(imageGenerationHits[0]?.body.output_format, 'png')
+  assert.match(String(imageGenerationHits[0]?.body.prompt ?? ''), /watercolor city skyline/)
+}
+
+async function assertResponsesImageGenerationSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation sse bridge',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'medium' }],
+      tool_choice: { type: 'image_generation' },
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses image_generation SSE 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.created/)
+  assert.match(text, /event: response\.output_item\.added/)
+  assert.match(text, /event: response\.image_generation_call\.completed/)
+  assert.match(text, /event: response\.completed/)
+  assert.match(text, /"type":"image_generation_call"/)
+  assert.match(text, new RegExp(mockImageBase64.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(text, /response\.output_text\.delta/, 'image_generation SSE 不应把 revised prompt 当文本增量输出')
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'responses image_generation sse bridge')
+  assert.equal(imageGenerationHits.length, 1, 'image_generation SSE 应调用一次本地图像 provider')
+  assert.equal(imageGenerationHits[0]?.body.quality, 'medium')
+  assert.match(String(imageGenerationHits[0]?.body.prompt ?? ''), /watercolor river at dawn/)
+}
+
+async function assertResponsesImageGenerationPartialImageSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation partial sse bridge',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'medium', output_format: 'png', partial_images: 2 }],
+      tool_choice: { type: 'image_generation' },
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses image_generation partial SSE 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.output_item\.added/)
+  assert.match(text, /event: response\.image_generation_call\.partial_image/)
+  assert.match(text, /"partial_image_index":0/)
+  assert(text.includes(mockPartialImageBase64), 'partial SSE 应透出 provider partial image base64')
+  assert.match(text, /event: response\.image_generation_call\.completed/)
+  assert(text.includes(mockImageBase64), 'partial SSE 最终 completed 应透出 provider final image base64')
+  assert.match(text, /event: response\.output_item\.done/)
+  assert.match(text, /event: response\.completed/)
+  assert.doesNotMatch(text, /response\.output_text\.delta/, 'partial image_generation SSE 不应把 revised prompt 当文本增量输出')
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'responses image_generation partial sse bridge')
+  assert.equal(imageGenerationHits.length, 1, 'image_generation partial SSE 应调用一次本地图像 provider')
+  assert.equal(imageGenerationHits[0]?.body.stream, true)
+  assert.equal(imageGenerationHits[0]?.body.partial_images, 2)
+  assert.equal(imageGenerationHits[0]?.body.output_format, 'png')
+  assert.match(String(imageGenerationHits[0]?.body.prompt ?? ''), /watercolor river at dawn/)
+}
+
+async function assertResponsesImageGenerationModerationBlockedBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation moderation bridge',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'low', moderation: 'auto' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses image_generation moderation blocked 应返回 Responses 失败对象，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    status?: string
+    error?: {
+      type?: string
+      code?: string
+      message?: string
+      moderation_details?: { moderation_stage?: string; categories?: string[] }
+    }
+    output?: Array<{ type?: string; result?: string }>
+  }
+  assert.equal(body.status, 'failed')
+  assert.equal(body.error?.type, 'image_generation_user_error')
+  assert.equal(body.error?.code, 'moderation_blocked')
+  assert.match(body.error?.message ?? '', /blocked by moderation/)
+  assert.equal(body.error?.moderation_details?.moderation_stage, 'input')
+  assert.deepEqual(body.error?.moderation_details?.categories, ['harassment'])
+  assert.equal(body.output?.length ?? 0, 0, 'moderation blocked 不应返回图片 output')
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses image_generation moderation bridge')
+  assert.equal(imageGenerationHits.length, 1, 'moderation blocked 应调用一次本地图像 provider 并透传其错误')
+  assert.match(String(imageGenerationHits[0]?.body.prompt ?? ''), /moderation blocked poster/)
+  assert.equal(imageGenerationHits[0]?.body.moderation, 'auto')
+}
+
+async function assertResponsesImageGenerationUnsupportedEditGuidance(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const editResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation edit unsupported',
+      tools: [{ type: 'image_generation', action: 'edit', size: '1024x1024' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const editText = await editResponse.text()
+  assert.equal(editResponse.status, 200, `Responses image_generation edit 应返回 guidance，实际 HTTP ${editResponse.status}: ${editText}`)
+  const editBody = JSON.parse(editText) as { output_text?: string; status?: string; metadata?: { gateway_guidance?: boolean } }
+  assert.equal(editBody.status, 'completed')
+  assert.equal(editBody.metadata?.gateway_guidance, true)
+  assert.match(editBody.output_text ?? '', /能力未执行：image_generation/)
+  assert.match(editBody.output_text ?? '', /图像生成 provider/)
+
+  const maskResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation mask unsupported',
+      tools: [{ type: 'image_generation', input_image_mask: { file_id: 'file_mask_1' }, size: '1024x1024' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const maskText = await maskResponse.text()
+  assert.equal(maskResponse.status, 200, `Responses image_generation mask 应返回 guidance，实际 HTTP ${maskResponse.status}: ${maskText}`)
+  const maskBody = JSON.parse(maskText) as { output_text?: string; status?: string; metadata?: { gateway_guidance?: boolean } }
+  assert.equal(maskBody.status, 'completed')
+  assert.equal(maskBody.metadata?.gateway_guidance, true)
+  assert.match(maskBody.output_text ?? '', /能力未执行：image_generation/)
+  assert.equal(upstreamHits.length, 0, 'unsupported image_generation edit/mask 不应请求 Anthropic 上游')
+  assert.equal(imageGenerationHits.length, 0, 'unsupported image_generation edit/mask 不应调用图像 provider')
+}
+
+async function assertResponsesImageGenerationHistoryContextGuidance(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'responses image_generation history reuse unsupported' },
+          { type: 'image_generation_call', id: 'ig_previous_fixture', status: 'completed', result: mockImageBase64 }
+        ]
+      }],
+      tools: [{ type: 'image_generation', size: '1024x1024' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses image_generation 历史图片复用应返回 guidance，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { output_text?: string; status?: string; metadata?: { gateway_guidance?: boolean } }
+  assert.equal(body.status, 'completed')
+  assert.equal(body.metadata?.gateway_guidance, true)
+  assert.match(body.output_text ?? '', /能力未执行：image_generation/)
+  assert.match(body.output_text ?? '', /图像生成 provider/)
+  assert.equal(upstreamHits.length, 0, 'history image_generation_call 复用不应请求 Anthropic 上游')
+  assert.equal(imageGenerationHits.length, 0, 'history image_generation_call 复用不应调用图像 provider')
+}
+
+async function assertResponsesImageGenerationProviderInvalidResponseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertResponsesImageGenerationProviderFailure(baseUrl, localApiKey, {
+    input: 'responses image_generation provider invalid json bridge',
+    expectedPrompt: /provider invalid json fixture/,
+    expectedCode: 'openai_anthropic_bridge_image_generation_provider_invalid_response',
+    expectedMessage: /缺少 data\[0\]\.b64_json/
+  })
+}
+
+async function assertResponsesImageGenerationProviderTooLargeBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertResponsesImageGenerationProviderFailure(baseUrl, localApiKey, {
+    input: 'responses image_generation provider too large bridge',
+    expectedPrompt: /provider too large fixture/,
+    expectedCode: 'openai_anthropic_bridge_image_generation_provider_response_too_large',
+    expectedMessage: /响应体超过读取上限/
+  })
+}
+
+async function assertResponsesImageGenerationProviderTimeoutBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertResponsesImageGenerationProviderFailure(baseUrl, localApiKey, {
+    input: 'responses image_generation provider timeout bridge',
+    expectedPrompt: /provider timeout fixture/,
+    expectedCode: 'openai_anthropic_bridge_image_generation_provider_timeout',
+    expectedMessage: /请求超时/
+  })
+}
+
+async function assertResponsesImageGenerationProviderFailure(
+  baseUrl: string,
+  localApiKey: string,
+  input: {
+    input: string
+    expectedPrompt: RegExp
+    expectedCode: string
+    expectedMessage: RegExp
+  }
+): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: input.input,
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'low' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses image_generation provider failure 应返回 Responses failed 对象，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    status?: string
+    error?: { type?: string; code?: string; message?: string }
+    output?: Array<{ type?: string; result?: string }>
+    metadata?: { gateway_generated_failure?: boolean; gateway_failure_source?: string }
+  }
+  assert.equal(body.status, 'failed')
+  assert.equal(body.error?.type, 'upstream_error')
+  assert.equal(body.error?.code, input.expectedCode)
+  assert.match(body.error?.message ?? '', input.expectedMessage)
+  assert.equal(body.metadata?.gateway_generated_failure, true)
+  assert.equal(body.metadata?.gateway_failure_source, 'image_generation_provider')
+  assert.equal(body.output?.length ?? 0, 0, 'provider failure 不应返回图片 output')
+  assertBridgeUpstreamHit(upstreamHits[0], false, input.input)
+  assert.equal(imageGenerationHits.length, 1, 'provider failure 应调用一次本地图像 provider 并返回其失败语义')
+  assert.match(String(imageGenerationHits[0]?.body.prompt ?? ''), input.expectedPrompt)
 }
 
 async function assertResponsesImageFileIdNotFound(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1980,6 +2469,11 @@ function createAnthropicBridgeMockUpstream(): http.Server {
       }
       if (body.stream === true && bodyText.includes('trigger bridge sse error')) {
         sendAnthropicSseError(res, `msg_openai_anthropic_bridge_sse_error_${hitIndex}`)
+      } else if (
+        body.stream === true
+        && (bodyText.includes('responses image_generation sse bridge') || bodyText.includes('responses image_generation partial sse bridge'))
+      ) {
+        sendAnthropicImageGenerationPromptSse(res, `msg_openai_anthropic_bridge_image_generation_sse_${hitIndex}`)
       } else if (body.stream === true && bodyText.includes('responses thinking sse bridge')) {
         sendAnthropicThinkingSse(res, `msg_openai_anthropic_bridge_thinking_sse_${hitIndex}`)
       } else if (body.stream === true && bodyText.includes('anthropic file search sse bridge')) {
@@ -1990,6 +2484,16 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         sendAnthropicInvalidStructuredOutputJson(res)
       } else if (anthropicRequestHasStructuredOutputTool(body)) {
         sendAnthropicStructuredOutputJson(res)
+      } else if (bodyText.includes('responses image_generation moderation bridge')) {
+        sendAnthropicImageGenerationModerationPromptJson(res)
+      } else if (bodyText.includes('responses image_generation provider invalid json bridge')) {
+        sendAnthropicImageGenerationCustomPromptJson(res, 'provider invalid json fixture')
+      } else if (bodyText.includes('responses image_generation provider too large bridge')) {
+        sendAnthropicImageGenerationCustomPromptJson(res, 'provider too large fixture')
+      } else if (bodyText.includes('responses image_generation provider timeout bridge')) {
+        sendAnthropicImageGenerationCustomPromptJson(res, 'provider timeout fixture')
+      } else if (bodyText.includes('responses image_generation json bridge')) {
+        sendAnthropicImageGenerationPromptJson(res)
       } else if (bodyText.includes('anthropic file search bridge') || bodyText.includes('anthropic chat file search bridge')) {
         sendAnthropicFileSearchJson(res)
       } else if (bodyText.includes('responses thinking bridge')) {
@@ -1999,6 +2503,92 @@ function createAnthropicBridgeMockUpstream(): http.Server {
       } else {
         sendAnthropicJson(res)
       }
+    })
+  })
+}
+
+function createImageGenerationMockProvider(): http.Server {
+  return http.createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      const bodyText = Buffer.concat(chunks).toString('utf8')
+      const body = safeParseJson(bodyText)
+      imageGenerationHits.push({
+        path: req.url?.split('?', 1)[0] ?? '',
+        method: req.method ?? '',
+        authorization: String(req.headers.authorization ?? ''),
+        body
+      })
+      if ((req.url?.split('?', 1)[0] ?? '') !== '/v1/images/generations') {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { type: 'not_found_error', message: 'mock image path not found' } }))
+        return
+      }
+      if (String(body.prompt ?? '').includes('moderation blocked poster')) {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          error: {
+            type: 'image_generation_user_error',
+            code: 'moderation_blocked',
+            message: 'Image generation blocked by moderation',
+            moderation_details: {
+              moderation_stage: 'input',
+              categories: ['harassment']
+            }
+          }
+        }))
+        return
+      }
+      if (String(body.prompt ?? '').includes('provider invalid json fixture')) {
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('not json')
+        return
+      }
+      if (String(body.prompt ?? '').includes('provider too large fixture')) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          data: [{
+            b64_json: `${mockImageBase64}${'A'.repeat(4096)}`,
+            revised_prompt: `provider revised: ${String(body.prompt ?? '')}`
+          }]
+        }))
+        return
+      }
+      if (String(body.prompt ?? '').includes('provider timeout fixture')) {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({
+            data: [{
+              b64_json: mockImageBase64,
+              revised_prompt: `provider revised: ${String(body.prompt ?? '')}`
+            }]
+          }))
+        }, 200)
+        return
+      }
+      if (body.stream === true) {
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+        writeSse(res, 'image_generation.partial_image', {
+          type: 'image_generation.partial_image',
+          partial_image_index: 0,
+          b64_json: mockPartialImageBase64
+        })
+        writeSse(res, 'image_generation.completed', {
+          type: 'image_generation.completed',
+          b64_json: mockImageBase64,
+          revised_prompt: `provider revised: ${String(body.prompt ?? '')}`
+        })
+        res.end()
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({
+        data: [{
+          b64_json: mockImageBase64,
+          revised_prompt: `provider revised: ${String(body.prompt ?? '')}`
+        }]
+      }))
     })
   })
 }
@@ -2016,6 +2606,54 @@ function sendAnthropicJson(res: http.ServerResponse): void {
       input_tokens: 11,
       output_tokens: 5,
       cache_read_input_tokens: 2
+    }
+  }))
+}
+
+function sendAnthropicImageGenerationPromptJson(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_image_generation',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text: 'watercolor city skyline at sunrise with precise ink lines' }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 19,
+      output_tokens: 10
+    }
+  }))
+}
+
+function sendAnthropicImageGenerationModerationPromptJson(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_image_generation_moderation',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text: 'moderation blocked poster with explicit warning text' }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 19,
+      output_tokens: 7
+    }
+  }))
+}
+
+function sendAnthropicImageGenerationCustomPromptJson(res: http.ServerResponse, prompt: string): void {
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_image_generation_custom',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text: prompt }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 19,
+      output_tokens: 5
     }
   }))
 }
@@ -2175,6 +2813,42 @@ function sendAnthropicSseError(res: http.ServerResponse, messageId: string): voi
       message: 'mock bridge stream overloaded'
     }
   })
+  res.end()
+}
+
+function sendAnthropicImageGenerationPromptSse(res: http.ServerResponse, messageId: string): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  writeSse(res, 'message_start', {
+    type: 'message_start',
+    message: {
+      id: messageId,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-haiku-4-5',
+      content: [],
+      usage: { input_tokens: 20, output_tokens: 0 }
+    }
+  })
+  writeSse(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'text', text: '' }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'text_delta', text: 'watercolor river at dawn with soft mist' }
+  })
+  writeSse(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: 0
+  })
+  writeSse(res, 'message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'end_turn' },
+    usage: { output_tokens: 9 }
+  })
+  writeSse(res, 'message_stop', { type: 'message_stop' })
   res.end()
 }
 

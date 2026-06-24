@@ -56,44 +56,19 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 | `content[].type=input_image` | Chat `image_url` content part | 保留 `image_url` / data URL 和 `detail`；实际是否可用取决于上游模型视觉能力 |
 | `tools[].type=function` | Chat `tools[].type=function` | 透传为 Chat function；namespace function 会展平成合法 Chat tool name，回流时恢复 namespace |
 | `tools[].type=custom` | Chat `tools[].type=function` | 包装成 `custom__<name>` Chat function，schema 固定为 `{ input: string }`；回流时恢复为 Codex `custom_tool_call` |
-| `tools[].type=web_search` | Chat 内部 function wrapper | 仅在 `JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT` 配置后启用 gateway runtime；未配置时按 unsupported 处理 |
-| `tools[].type=MCP/image_generation/computer/...` | 不透传 | Chat-only bridge 不能靠字段转换伪造 Responses 托管工具；`auto` 场景注入 system 约束，强制 `tool_choice` 场景受控拒绝 |
-| `tool_choice` | `tool_choice` | 支持字符串、指定 function、指定 custom、已配置执行器的 web_search；强制选择无法代执行的原生托管工具时拒绝 |
+| `tools[].type=web_search` | 不透传 | Chat-only bridge 不代执行搜索；如果供应商没有原生 Responses web_search 等价能力，返回正常 agent guidance 响应并不命中上游 |
+| `tools[].type=MCP/image_generation/computer/...` | 不透传 | Chat-only bridge 不能靠字段转换伪造 Responses 托管工具；没有真实执行器或上游等价能力时返回正常 agent guidance 响应 |
+| `tool_choice` | `tool_choice` | 支持字符串、指定 function、指定 custom；强制选择无法代执行的原生托管工具时返回 guidance，而不是转发到不支持的 Chat 上游 |
 | `parallel_tool_calls` | `parallel_tool_calls` | 布尔值原样透传 |
 | `max_output_tokens` | `max_tokens` | 同时兼容 `max_completion_tokens` |
 
 历史工具调用会先做 Chat 消息不变量归一化：一个 assistant `tool_calls` 消息后面必须紧跟对应 `tool` 输出，夹在 `function_call` 和 `function_call_output` 之间的 `developer/message` 会延后到工具输出之后；并行工具调用即使出现 `output A -> developer -> output B` 交错，也会等已登记工具输出归齐后再写入 Chat history。没有输出的 dangling `function_call`、找不到调用的 orphan `function_call_output` 和普通 `message role=tool` 会丢弃，避免把上游很容易 400 的非法 Chat history 暴露给客户端。
 
-当前实现不透传 MCP tool、tool search、local shell call、image generation、computer use、Responses `include`、`store`、`truncation` 和 `context_management` 等原生 Responses 托管语义。`function`、`custom` 和可展开为 function/custom 的 namespace tool 会转换到 Chat 工具层；`web_search` 只有在网关配置真实 HTTP 搜索执行器后才转换为内部 Chat function wrapper，并由网关执行后回灌第二轮 Chat。无法由 Chat 上游或网关 runtime 代执行的托管工具不会静默丢弃，`auto` 场景会写入 system 约束，强制 `tool_choice` 场景会受控拒绝。`previous_response_id` 已由 Chat-only bridge 的网关状态层在服务端消费：首轮成功后保存 response 状态，后续同 API Key、同分组、同供应商 profile 的请求可恢复历史并追加本轮 input；找不到、过期或跨边界时受控失败，不命中上游。`/responses/compact` 已支持网关摘要压缩：网关还原上下文后，在当前分组、当前供应商内发起内部 Chat Completions 摘要请求，再返回 Codex 可反序列化的 `compaction_summary`。该能力不是上游原生 Responses compact，也不能跨网关或跨供应商消费。
+当前实现不透传 MCP tool、tool search、local shell call、image generation、computer use、Responses `include`、`store`、`truncation` 和 `context_management` 等原生 Responses 托管语义。`function`、`custom` 和可展开为 function/custom 的 namespace tool 会转换到 Chat 工具层；`web_search`、MCP、image generation、computer use 等需要上游原生等价能力或调用方本地 agent / MCP 配置承接的工具不会由 Chat-only bridge 伪造。无法由 Chat 上游原生支持的托管工具不会静默丢弃，当前在 `auto` 和强制 `tool_choice` 场景都会返回正常 agent guidance 响应且不命中上游。GLM 搜索等能力应由调用方按供应商官方 MCP 或本地等价工具配置完成，不由本中转层实现。`previous_response_id` 已由 Chat-only bridge 的网关状态层在服务端消费：首轮成功后保存 response 状态，后续同 API Key、同分组、同供应商 profile 的请求可恢复历史并追加本轮 input；找不到、过期或跨边界时受控失败，不命中上游。`/responses/compact` 已支持网关摘要压缩：网关还原上下文后，在当前分组、当前供应商内发起内部 Chat Completions 摘要请求，再返回可反序列化的 `compaction_summary`。该能力不是上游原生 Responses compact，也不能跨网关或跨供应商消费。
 
-### `web_search` gateway runtime
+### 托管工具边界
 
-`web_search` 不再靠字段伪造。Chat-only bridge 只有在 `runtimeConfig.codexWebSearch.endpoint` 存在时启用搜索执行器，配置入口为：
-
-- `JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT`：必填，HTTP JSON 搜索服务地址。
-- `JUHE_AI_CODEX_WEB_SEARCH_API_KEY`：可选，作为 Bearer token 发给搜索服务。
-- `JUHE_AI_CODEX_WEB_SEARCH_TIMEOUT_MS`：可选，默认 10000。
-- `JUHE_AI_CODEX_WEB_SEARCH_MAX_RESULTS`：可选，默认 5，最大 10。
-- `JUHE_AI_CODEX_WEB_SEARCH_MAX_BODY_KB`：可选，默认 512KB。
-
-执行流程：
-
-1. 请求侧把 Responses `web_search` 映射为 Chat function tool `web_search`，schema 只允许模型输出 `{ "query": string }`。
-2. 如果下游强制 `tool_choice:{ "type":"web_search" }`，桥接层把它改成 Chat function `tool_choice`；未配置执行器时仍返回 `unsupported_codex_native_tool`。
-3. Chat 上游返回 `finish_reason=tool_calls` 且本批次只包含内部 `web_search` 调用时，桥接层不结束 Responses stream。
-4. 网关调用 HTTP 搜索执行器，搜索请求体包含 `query/max_results/filters/external_web_access/search_context_size`。搜索端点必须返回结构化 JSON：`results`、`data` 或 `items` 数组，单项至少包含 `url`，可包含 `title/snippet/description/content`。
-5. 下游先收到原生 Responses `web_search_call` output item，`action.type=search`，并附带结构化 `sources`。
-6. 网关把搜索结果作为 Chat `role=tool` 消息追加到同一账号的第二轮 Chat 请求；第二轮强制 `tool_choice=auto`，避免强制搜索形成死循环。
-7. 最终 Chat 文本若包含搜索结果中的 `[1]`、`[2]` 等引用标记，桥接层在最终 message content 中生成 `url_citation` annotations。
-
-当前安全边界：
-
-- 同一批 Chat tool_calls 中不允许混合 gateway `web_search` 和客户端 function/custom 工具；混合批次返回 `codex_mixed_tool_batch_unsupported`。
-- 如果 Chat 上游在 `web_search` 工具调用前已经输出可见文本，桥接层返回 `codex_web_search_after_visible_output`，避免下游状态半提交后继续隐藏执行。
-- 如果 Chat 上游给出 `web_search` tool call 但没有以 `finish_reason=tool_calls` 结束，桥接层返回 `codex_web_search_finish_reason_invalid`。
-- 工具循环最多 4 次，防止模型反复搜索。
-- 搜索执行器 endpoint 是管理员通过环境变量配置的本地运行时端点，不复用模型上游 Base URL 的私网 SSRF 拦截；因此可以指向本机或内网搜索服务。执行器请求仍只允许 `http/https`，endpoint 不能包含用户名密码，不跟随重定向，保留超时和返回体大小上限。
-- 搜索服务只接收结构化查询和工具配置，不由网关抓取整页正文；返回体有大小上限。
+Chat-only bridge 只做可验证的协议字段转换，不把 `web_search`、MCP、image generation、computer use 等托管工具转换成伪 tool result。只有当某个供应商上游提供原生等价能力并在 driver 中明确声明转换策略时，才能单独打开对应适配；否则统一返回正常 agent guidance 响应。即使同一个请求同时带有可转换的 function / custom tools，只要 `tool_choice` 是默认、`auto` 或 `required`，且工具列表里包含不可执行的 hosted/native tool，也必须 guidance，不把剩余 function tools 透传给 Chat 上游；只有 `tool_choice=none` 或显式选中可转换 function/custom 时，才能忽略未选中的 hosted/native tool。模型能够按普通 Chat function 名称输出 `web_search` 参数，只能证明它会调用一个客户端函数，不能证明上游具备联网搜索能力。
 
 请求头会清理 Codex / OpenAI 专属元数据，例如 `openai-beta`、`originator`、`session-id`、`thread-id`、`x-client-request-id`、`x-codex-*`，并把上游 `accept` 固定为 `text/event-stream`。
 
@@ -129,7 +104,7 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 - Chat `delta.content` 和 `delta.refusal` 转为 `response.output_text.delta`。
 - Chat `delta.reasoning_content` / `delta.reasoning` 转为 Codex 可消费的 `reasoning` output item 和 `response.reasoning_summary_text.delta`，不混入普通文本。
 - `response.completed.response.output` 按 output index 顺序保存，避免上游先 reasoning 后文本时 completed 快照与流事件顺序不一致。
-- 当前只会从 Chat tool_calls 生成 `function_call`、`custom_tool_call`，以及在已配置 gateway web search 执行器时生成真实执行后的 `web_search_call`；不会伪造 `mcp_call`、`image_generation_call`、`computer_call`、`local_shell_call` 等需要独立 runtime 的 output item。
+- 当前只会从 Chat tool_calls 生成 `function_call`、`custom_tool_call`；不会生成 `web_search_call`，也不会伪造 `mcp_call`、`image_generation_call`、`computer_call`、`local_shell_call` 等需要独立 runtime 或上游原生能力的 output item。
 
 usage 策略：
 
@@ -142,7 +117,7 @@ usage 策略：
 finish_reason 策略：
 
 - 标准 `stop` / `tool_calls` / `length` 按正常完成处理。
-- `tool_calls` 中如果只包含 gateway web_search wrapper，会进入工具执行循环；执行完成后追加 Chat tool output 并继续请求同一账号上游。
+- `tool_calls` 按普通 function/custom 输出给下游；`web_search` 等 Responses 原生托管工具会在请求转换前按 agent guidance 分类，不进入网关工具执行循环。
 - GLM `network_error` 与 DeepSeek `insufficient_system_resource` 转为 `response.failed`，由网关流式外层统一给 Codex 可重试错误。
 - GLM `sensitive` 转为内容安全失败，`model_context_window_exceeded` 转为上下文超限失败。
 
@@ -207,19 +182,21 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 
 - 已用 Codex 源码确认：普通 function call 应通过最终 `response.output_item.done` 的 `type=function_call` item 交给 Codex；`response.function_call_arguments.delta` 当前不被普通 function call 路径消费。
 - 已用 Codex 源码确认：Codex input / output item 覆盖 `function_call_output`、`custom_tool_call_output`、`input_image`、`reasoning`、`web_search_call`、`image_generation_call`、`compaction` 等多个形态；Chat bridge 只覆盖其中能无损或低风险映射到 Chat Completions 的子集。
-- GLM mock AI 已覆盖显式 `client_compatibility=codex_responses` 时 `/v1/responses` 改写到 `/chat/completions`、`stream_options.include_usage`、`thinking.type=disabled`、`tool_stream`、`parallel_tool_calls=false`、function tools 透传、custom tool wrapper -> `custom_tool_call` 还原、未配置执行器时 web_search auto 场景显式约束、未配置执行器时强制 web_search 受控拒绝且不命中上游、已配置执行器时强制 web_search -> Chat tool_calls -> gateway 搜索执行器 -> 第二轮同账号 Chat -> Responses `web_search_call` + `url_citation`、web_search 前置 reasoning 与 tool_call arguments 分片、历史 `reasoning` -> GLM `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、Chat reasoning/text delta 转 Responses reasoning/text delta、Chat tool_calls 转 Responses function_call/custom_tool_call item、`network_error` finish_reason 转可重试失败；同时覆盖 GLM Coding 账号选择 `openai_standard` 时拒绝 Codex bridge 且不命中上游。
-- DeepSeek mock AI 已覆盖 Codex bridge 的文本、`stream_options.include_usage`、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、已配置执行器时强制 web_search -> Chat tool_calls -> gateway 搜索执行器 -> 第二轮同账号 Chat -> Responses `web_search_call` + `url_citation`、web_search 前置 reasoning 与 tool_call arguments 分片、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL、usage 映射和 `insufficient_system_resource` finish_reason 转可重试失败。
+- GLM mock AI 已覆盖显式 `client_compatibility=codex_responses` 时 `/v1/responses` 改写到 `/chat/completions`、`stream_options.include_usage`、`thinking.type=disabled`、`tool_stream`、`parallel_tool_calls=false`、function tools 透传、custom tool wrapper -> `custom_tool_call` 还原、auto / 强制 `web_search` guidance 且不命中上游、历史 `reasoning` -> GLM `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、Chat reasoning/text delta 转 Responses reasoning/text delta、Chat tool_calls 转 Responses function_call/custom_tool_call item、`network_error` finish_reason 转可重试失败；同时覆盖 GLM Coding 账号选择 `openai_standard` 时拒绝 bridge 且不命中上游。
+- DeepSeek mock AI 已覆盖 bridge 的文本、`stream_options.include_usage`、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、auto `web_search` guidance 且不命中上游、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL、usage 映射和 `insufficient_system_resource` finish_reason 转可重试失败。
 - 本地真实 CLI 回归已覆盖 Claude Code、Codex CLI、opencode -> 本地网关 -> 上游 mock 的基础链路。2026-06-24 新增 Codex CLI -> 本地网关 `/v1/responses` -> DeepSeek driver -> vsllm `deepseek-v4-flash` 的真实 marker 链路，Codex 携带 `x-codex-turn-metadata`，下游模型保留为 `gpt-5.3-codex`，上游映射到 Chat Completions 后成功返回并被 Codex 消费。
 - 2026-06-24 真实 Codex CLI 工具链路验证：DeepSeek `deepseek-v4-flash` 编程任务中，Codex 成功识别 bridge 输出的 function call，并进入 `command_execution` 工具调用；最终任务失败是因为模型生成的 PowerShell 写文件命令被本地 Codex policy 拒绝，临时项目测试仍停留在 TODO。这证明协议层工具调用可被 Codex 识别，但不证明该上游模型具备稳定完成 Codex 编程任务的质量。
 - 2026-06-24 真实 vsllm.com 调研：`/v1/models` 可列出 `glm-5.2`、`glm-5-turbo`、`glm-4.7-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-ai-v4-flash` 等模型。第一组通道下 `glm-5.2` / `glm-5-turbo` 返回上游鉴权失败，`deepseek-v4-flash` 返回欠费类错误，`deepseek-v4-pro` 返回无可用 provider 或限流；可用成功样本为 `glm-4.7-flash` 和 `deepseek-ai-v4-flash`。第二组通道下 `glm-5.2` / `glm-5-turbo` 仍返回上游鉴权失败，`deepseek-v4-flash` 基础 Chat 成功并返回 `content` + `reasoning_content`，流式工具调用成功且按多个 `delta.tool_calls[index].function.arguments` 分片输出参数，最终 `finish_reason=stop`；`deepseek-v4-pro` / `deepseek-ai-v4-flash` 返回当天额度耗尽。GLM `glm-4.7-flash` Chat JSON 返回 `reasoning_content` 和 `tool_calls`，GLM SSE 在默认 thinking 下先输出 `delta.reasoning_content`，补 `thinking.disabled + tool_stream=true` 后返回 `delta.tool_calls` 与 `finish_reason=tool_calls`。本次补充用第二组通道直连 `glm-4.7-flash` 强制 `custom__apply_patch`，真实 SSE 返回 `delta.tool_calls[0].function.name=custom__apply_patch`、arguments 为 `{"input":"print(\"vsllm custom bridge\")"}`、`finish_reason=tool_calls` 和 usage；同一账号下 `deepseek-v4-flash` 返回 Arrearage，`deepseek-ai-v4-flash` / `deepseek-v4-pro` 返回当天额度耗尽。
-- 2026-06-24 使用当前 vsllm 账号直连 Chat function wrapper 探测：`glm-4.7-flash` 和 `deepseek-v4-flash` 在强制 `tool_choice=function:web_search` 时均返回 `finish_reason=tool_calls`、`tool_name=web_search` 和 JSON `query` 参数。该探测只证明模型能按 Chat function 形式请求搜索工具；真正联网搜索仍依赖网关配置 `JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT`。
+- 2026-06-24 使用当前 vsllm 账号直连 Chat function wrapper 探测：`glm-4.7-flash` 和 `deepseek-v4-flash` 在强制 `tool_choice=function:web_search` 时均返回 `finish_reason=tool_calls`、`tool_name=web_search` 和 JSON `query` 参数。该探测只证明模型能按普通 Chat function 形式请求一个名为 `web_search` 的客户端工具，不证明上游具备 Codex / Responses 原生联网搜索能力；网关不再把它包装成 Codex `web_search` 兼容能力。
 - 2026-06-24 GLM Codex CLI 真实验证：本地 mock 上游已证明 GLM driver 输出的 Responses SSE 能被 Codex CLI 消费，完整上游 Chat body 也可以直打 vsllm 成功返回 marker；但真实网关经 vsllm GLM `glm-4.7-flash` 多次出现流式错误或 `429 code=1305`（模型访问量过大）。因此 GLM 当前只能认为协议策略已适配、mock 可重复验证通过，不能对该 vsllm 通道宣称真实 Codex CLI 稳定可用。
+- 2026-06-24 guidance 修订复测：`test:glm-real-gateway-e2e` 使用当前 vsllm 账号和 `glm-4.7-flash` 两次复测，第一次 Chat JSON 成功但 bridge 在首个可见输出前收到 `upstream_retryable_error`，第二次 bridge 成功返回 `通过` 但 Chat JSON 返回上游 `503 service_unavailable` / 无可用账户；归类为 vsllm GLM 通道流式与路由不稳定，不是本地 guidance 或 bridge 协议回归。`test:deepseek-real-gateway-e2e` 使用当前 vsllm 账号和 `deepseek-v4-flash`，本地模型目录通过，Chat JSON 与 Chat SSE 均在 60 秒窗口内超时，Codex bridge 成功；因此 DeepSeek 本轮真实失败集中在普通 Chat 上游超时，不是 Responses -> Chat bridge 或 `web_search` guidance 回归。
+- 2026-06-24 真实 Codex CLI guidance 演练：`test:codex-openai-compatible-glm-real-e2e` 新增 `JUHE_REAL_CODEX_EXPECT_GUIDANCE=1` 模式，使用当前 vsllm 账号分别验证 GLM `glm-4.7-flash`、DeepSeek `deepseek-v4-flash` 和通用 OpenAI-compatible `gpt-5.5`。Codex CLI 实际请求 `/v1/responses`，工具列表包含 `shell_command`、`update_plan`、`request_user_input`、`apply_patch`、`view_image`、`tool_search` 和 `web_search`，`tool_choice=auto`。三类 profile 均返回正常 agent guidance，Codex CLI 以 `item.completed` / `turn.completed` 消费 guidance，没有 `turn.failed`、`response.failed` 或旧 `unsupported_codex_native_tool`，且没有产生上游成功 usage；这证明 guidance 方案可以被真实本地 agent 消费。
 
 ## 当前限制
 
 - 非 2xx Chat 上游错误当前仍走现有网关错误处理和统一失败响应，不在桥接层主动包装成 Responses `response.failed`。
 - 首版只支持流式 Codex 请求，不承接非流式 `/v1/responses`。
-- 当前支持能映射到 Chat function tool 的 `function/custom/namespace function`，以及配置真实 HTTP 搜索执行器后的 `web_search` gateway runtime；MCP tool、tool search、local shell call、image generation 和 computer use 仍需要独立真实 runtime，Chat-only bridge 不会伪造这些结果。
+- 当前支持能映射到 Chat function tool 的 `function/custom/namespace function`。`web_search`、MCP tool、tool search、local shell call、image generation 和 computer use 必须由上游原生能力或调用方本地 agent / MCP 配置承接；Chat-only bridge 不会在网关内伪造这些结果，缺少真实能力时返回正常 agent guidance。
 - `previous_response_id` 当前只在 Chat-only bridge 的本网关 file-backed 状态层内有效；跨网关、跨 API Key、跨分组、跨供应商或 7 天未使用过期后都会受控失败。
 - Gateway summary compact 当前已使用本网关 compact snapshot；它只能恢复为 Chat summary，不能宣称为原生 Responses opaque compact，也不能跨网关、跨 API Key、跨分组或跨供应商使用。
 - 当前只把 `reasoning_content` 映射成 reasoning summary；不支持 encrypted reasoning 的生成，也不承诺和原生 OpenAI reasoning state 等价。

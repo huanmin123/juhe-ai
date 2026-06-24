@@ -132,7 +132,7 @@ try {
     await assertResponsesJson(baseUrl, localKey.key)
     await assertResponsesSse(baseUrl, localKey.key)
     await assertFileSearchVectorStoreNotFound(baseUrl, localKey.key)
-    await assertChatWebSearchUnsupported(baseUrl, localKey.key)
+    await assertChatWebSearchGuidance(baseUrl, localKey.key)
     const optionalChecks = [
       await optionalCheck('chat_structured_output', () => assertChatStructuredOutput(baseUrl, localKey.key)),
       await optionalCheck('chat_image_data_url', () => assertChatImageDataUrl(baseUrl, localKey.key)),
@@ -154,7 +154,7 @@ try {
         'responses_json',
         'responses_sse',
         'file_search_vector_store_not_found',
-        'chat_web_search_unsupported',
+        'chat_web_search_guidance',
         ...optionalChecks
       ]
     }))
@@ -438,7 +438,7 @@ async function assertChatFileDataText(baseUrl: string, localApiKey: string): Pro
   assert((body.choices?.[0]?.message?.content ?? '').length > 0, '真实 Chat file_data text 探针应返回非空文本')
 }
 
-async function assertChatWebSearchUnsupported(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertChatWebSearchGuidance(baseUrl: string, localApiKey: string): Promise<void> {
   const response = await fetchWithTimeout(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -447,7 +447,7 @@ async function assertChatWebSearchUnsupported(baseUrl: string, localApiKey: stri
     },
     body: JSON.stringify({
       model: sourceModel,
-      messages: [{ role: 'user', content: 'chat web_search should be rejected locally' }],
+      messages: [{ role: 'user', content: 'chat web_search should return local guidance' }],
       tools: [{ type: 'web_search', search_context_size: 'low' }],
       tool_choice: 'required',
       max_tokens: 48,
@@ -455,9 +455,12 @@ async function assertChatWebSearchUnsupported(baseUrl: string, localApiKey: stri
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `真实 Chat web_search 应本地受控拒绝，HTTP ${response.status}: ${text.slice(0, 500)}`)
-  assert.match(text, /openai_anthropic_bridge_unsupported_hosted_tool/)
-  assert.match(text, /web_search/)
+  assert.equal(response.status, 200, `真实 Chat web_search 应返回本地 guidance，HTTP ${response.status}: ${text.slice(0, 500)}`)
+  const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string | null } }> }
+  const guidance = body.choices?.[0]?.message?.content ?? ''
+  assert.match(guidance, /能力未执行：web_search/)
+  assert.match(guidance, /建议下一步/)
+  assert.doesNotMatch(text, /openai_anthropic_bridge_unsupported_hosted_tool/)
 }
 
 async function assertResponsesFileDataText(baseUrl: string, localApiKey: string): Promise<void> {

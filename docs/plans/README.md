@@ -134,7 +134,10 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| PLAN-0060 | OpenAI 兼容 Files 与 File Search 本地运行时 | 进行中 | 2026-06-24 | 后端 / 网关 / OpenAI 兼容接口 / Anthropic bridge / 文件存储 / Vector Store / 本地检索 / 审计 / 文档 / 验证 | `docs/plans/计划-0060-OpenAI兼容Files与FileSearch本地运行时.md` |
+| PLAN-0063 | OpenAI 托管工具运行时适配 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / OpenAI hosted tools / MCP / code execution / computer use / 审计 / 文档 / 验证 | `docs/plans/计划-0063-OpenAI托管工具运行时适配.md` |
+| PLAN-0062 | 协议互转矩阵与模型映射约束 | 进行中 | 2026-06-24 | 前端 / 后端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 真实联调 / 文档 / 验证 | `docs/plans/计划-0062-协议互转矩阵与模型映射约束.md` |
+| PLAN-0061 | Responses 图像生成本地 Provider 桥接 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / Responses / 图像生成 / 权限 / 审计 / 文档 / 验证 | `docs/plans/计划-0061-Responses图像生成本地Provider桥接.md` |
+| PLAN-0060 | OpenAI 兼容 Files 与 File Search 本地运行时 | 已完成 | 2026-06-24 | 后端 / 网关 / OpenAI 兼容接口 / Anthropic bridge / 文件存储 / Vector Store / 本地检索 / 审计 / 文档 / 验证 | `docs/plans/计划-0060-OpenAI兼容Files与FileSearch本地运行时.md` |
 | PLAN-0059 | OpenAI 到 Anthropic 高兼容桥接增强 | 进行中 | 2026-06-24 | 后端 / 网关 / 供应商驱动 / 模型映射 / Responses 状态 / 工具 / 审计 / 文档 / 验证 | `docs/plans/计划-0059-OpenAI到Anthropic高兼容桥接增强.md` |
 | PLAN-0058 | OpenAI 到 Anthropic Messages 协议桥接 | 已完成 | 2026-06-24 | 后端 / 网关 / 供应商驱动 / 模型映射 / 混合智能路由 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0058-OpenAI到Anthropic协议桥接.md` |
 | PLAN-0057 | 客户端兼容与模型映射重设计 | 进行中 | 2026-06-23 | 前端 / 后端 / 存储 / 网关 / 账号 / 模型目录 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0057-客户端兼容与模型映射重设计.md` |

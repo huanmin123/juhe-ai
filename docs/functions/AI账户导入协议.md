@@ -246,7 +246,8 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略。
 - 通用 OpenAI-compatible 上游如需承接 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
-- 需要把 OpenAI Responses 请求转到 Chat Completions 上游时，在 `modelMappings` 中显式配置 `sourceEndpointFamily: "responses"` 和 `upstreamEndpointFamily: "chat_completions"`；不支持 `chat_completions` 转 `responses`。
+- `modelMappings` 右侧 `upstreamEndpointFamily: "responses"` 只允许账号真实支持 Responses API 的 OpenAI/GPT 原生上游，账户真实能力必须包含 `responses_json` 或 `responses_sse`；Chat-only、Messages 或未知兼容上游不要选择右侧 Responses。
+- 需要把 OpenAI Responses 请求转到 Chat Completions 上游时，在 `modelMappings` 中显式配置 `sourceEndpointFamily: "responses"` 和 `upstreamEndpointFamily: "chat_completions"`；需要让 Chat Completions 客户端访问 Responses-only 原生上游时，配置 `sourceEndpointFamily: "chat_completions"` 和 `upstreamEndpointFamily: "responses"`，由本地桥接还原 Chat 响应形态。
 - 需要把 OpenAI Chat Completions 或 Responses 请求桥接到 Anthropic Messages 上游时，在 `modelMappings` 中显式配置 `upstreamEndpointFamily: "messages"`；账户真实能力仍在 `credentials.supported_endpoint_modes` 中填写 `messages_json`、`messages_sse`，不要为了桥接填 `responses_json` 或 `responses_sse`。
 - `tags` 用于账户快速分类，单个账户最多 24 个标签，单个标签最长 40 个字符；空白标签会被忽略，同一账户内大小写重复标签会去重。
 - `modelMappings` 的 `sourceModel` 是客户端请求模型，必须来自目标账户所有者可见的 OpenAI 协议模型池；`upstreamModel` 是该账户实际转发模型，专用供应商必须来自当前供应商模型目录，通用 OpenAI-compatible 账号可来自 OpenAI 协议模型池。

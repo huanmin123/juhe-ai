@@ -202,6 +202,7 @@
     "test:gateway-account-side-effect-queue": "tsx src/scripts/regression/gateway-account-side-effect-queue-regression.ts",
     "test:gateway-account-side-effect-queue-limit": "tsx src/scripts/regression/gateway-account-side-effect-queue-limit-regression.ts",
     "test:gateway-upstream-keepalive": "tsx src/scripts/regression/gateway-upstream-keepalive-regression.ts",
+    "test:gateway-model-call-unified-entry": "tsx src/scripts/regression/gateway-model-call-unified-entry-regression.ts",
     "test:upstream-base-url-ssrf-policy": "tsx src/scripts/regression/upstream-base-url-ssrf-policy-regression.ts",
     "test:gateway-proxy-health": "tsx src/scripts/regression/gateway-proxy-health-regression.ts",
     "test:gateway-client-ip-account-avoidance": "tsx src/scripts/regression/gateway-client-ip-account-avoidance-regression.ts",

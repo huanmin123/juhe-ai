@@ -128,6 +128,7 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'all',
   'success',
   'success_after_retry',
+  'gateway_succeeded',
   'gateway_failed',
   'upstream_failed',
   'stream_failed',

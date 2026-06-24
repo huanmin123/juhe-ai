@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import type { AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
@@ -149,6 +149,13 @@ function apiKeyDraftActivationSnapshot(input: ReturnType<typeof apiKeyActivation
     'openai_standard',
     { protocolCode: OPENAI_PROTOCOL_CODE, protocolVersion: OPENAI_PROTOCOL_VERSION }
   )
+  const credentials = repositories.normalizeAccountCredentialsForWrite(input.type, input.credentials, {
+    providerCode: input.providerCode,
+    accountType: input.type,
+    clientCompatibility,
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION
+  })
   return {
     id: `acctdraft_${input.name}`,
     ownerSystemAccountId: input.ownerSystemAccountId,
@@ -160,20 +167,21 @@ function apiKeyDraftActivationSnapshot(input: ReturnType<typeof apiKeyActivation
     protocolVersion: OPENAI_PROTOCOL_VERSION,
     name: input.name,
     type: input.type,
-    credentials: repositories.normalizeAccountCredentialsForWrite(input.type, input.credentials, {
-      providerCode: input.providerCode,
-      accountType: input.type,
-      clientCompatibility,
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      protocolVersion: OPENAI_PROTOCOL_VERSION
-    }),
+    credentials,
     concurrencyLimit: input.concurrencyLimit,
     priority: input.priority,
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility,
     supportedModels: input.supportedModels,
-    modelMappings: repositories.normalizeAccountModelMappingsForProvider(input.modelMappings, input.providerCode, input.ownerSystemAccountId) ?? [],
+    modelMappings: repositories.normalizeAccountModelMappingsForProvider(input.modelMappings, input.providerCode, input.ownerSystemAccountId, {
+      providerCode: input.providerCode,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION
+    }, {
+      supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+    }) ?? [],
     availabilityScheduleJson: undefined,
     notes: input.notes
   }

@@ -562,6 +562,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let responseBodyText: string | undefined
   let responseUsageText: string | undefined
   let responseSemanticText: string | undefined
+  let bodyOmission: StreamBodyOmissionSummary | undefined
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
   let errorPayload: Record<string, unknown> = {}
@@ -848,10 +849,18 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   if (!upstreamResponse.ok) {
     errorPayload = parseGatewayProtocolErrorPayloadForRequest(req, account, responseBodyText ?? '', upstreamResponse.headers)
   }
+  if (upstreamResponse.ok) {
+    bodyOmission = nonStreamImageResponseBodyOmission(responseBodyText ?? responseSemanticText ?? responseBody?.toString('utf8'), responseBody?.byteLength)
+    if (bodyOmission) {
+      responseBody = undefined
+      responseBodyText = undefined
+      responseSemanticText = undefined
+    }
+  }
   auditCapture.completeAttempt(auditAttemptId, {
     statusCode: upstreamResponse.status,
     responseHeaders: upstreamResponse.headers,
-    responseBody,
+    responseBody: bodyOmission ? undefined : responseBody,
     success: upstreamResponse.ok,
     errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
     errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
@@ -863,6 +872,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     usage,
     firstTokenMs,
     responseBodyText,
+    bodyOmission,
     errorPayload
   }
 }
@@ -873,6 +883,37 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
     || input.clientStrategy?.codexCompactionExpected === true
     || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
   )
+}
+
+function nonStreamImageResponseBodyOmission(bodyText: string | undefined, capturedBytes: number | undefined): StreamBodyOmissionSummary | undefined {
+  if (!bodyText || !nonStreamBodyLooksLikeImageGenerationPayload(bodyText)) return undefined
+  const bodyBytes = capturedBytes ?? Buffer.byteLength(bodyText, 'utf8')
+  return {
+    omitted: true,
+    reason: 'image_json_payload',
+    message: '图像 JSON 正文已省略，避免在日志和审计中保存图片字节',
+    totalUpstreamBytes: bodyBytes,
+    totalResponseBytes: bodyBytes,
+    imageOutputReceived: true
+  }
+}
+
+function nonStreamBodyLooksLikeImageGenerationPayload(bodyText: string): boolean {
+  try {
+    return jsonContainsImageGenerationResult(JSON.parse(bodyText) as unknown)
+  } catch {
+    return bodyText.includes('"type":"image_generation_call"') && bodyText.includes('"result"')
+  }
+}
+
+function jsonContainsImageGenerationResult(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(jsonContainsImageGenerationResult)
+  if (typeof value !== 'object' || value === null) return false
+  const record = value as Record<string, unknown>
+  if (record.type === 'image_generation_call' && typeof record.result === 'string' && record.result.length > 0) {
+    return true
+  }
+  return Object.values(record).some(jsonContainsImageGenerationResult)
 }
 
 async function inspectBufferedHybridQualityResponse(input: {
@@ -1169,12 +1210,19 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
         bodyText: result.responseBodyText
       })
   })
+  if (result.bodyOmission) {
+    auditCapture.omitPayloadBodies({
+      label: 'non_stream_body_omission',
+      metadata: { ...result.bodyOmission },
+      partTypes: ['upstream_response']
+    })
+  }
   auditCapture.finalize({
     outcome: upstreamResponse.ok ? 'success' : 'upstream_failed',
     success: upstreamResponse.ok,
     statusCode: upstreamResponse.status,
     responseHeaders: responseHeadersToObject(res),
-    responseBody: result.responseBodyText,
+    responseBody: result.bodyOmission ? undefined : result.responseBodyText,
     responsePartType: upstreamResponse.ok ? 'gateway_response' : 'gateway_error',
     errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
     errorCode: typeof result.errorPayload.code === 'string' ? result.errorPayload.code : undefined,

@@ -312,7 +312,7 @@ function accountCreateActivationFingerprintSnapshot(input: {
     providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion
-  }) ?? []
+  }, credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]) ?? []
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     ownerSystemAccountId: input.ownerSystemAccountId,
@@ -437,7 +437,7 @@ function draftTestAccountSummary(input: {
     providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion
-  }) ?? []
+  }, input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]) ?? []
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     id: input.id ?? newId('acctdraft'),
@@ -514,9 +514,12 @@ function normalizeDraftAccountModelMappings(
     providerProtocolProfileId?: string
     protocolCode?: string
     protocolVersion?: string
-  }
+  },
+  supportedEndpointModes: readonly AccountSupportedEndpointMode[] | undefined
 ): AccountSummary['modelMappings'] {
-  return normalizeAccountModelMappingsForProvider(value ?? [], providerCode, ownerSystemAccountId, providerProfile) ?? []
+  return normalizeAccountModelMappingsForProvider(value ?? [], providerCode, ownerSystemAccountId, providerProfile, {
+    supportedEndpointModes
+  }) ?? []
 }
 
 function optionalText(value: unknown): string | undefined {

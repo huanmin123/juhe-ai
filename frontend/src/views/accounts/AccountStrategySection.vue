@@ -153,7 +153,8 @@ import {
   clientCompatibilityCapabilityLabel,
   canSelectClientCompatibility,
   defaultEndpointModesForAccount,
-  endpointModesForProfile
+  endpointModesForProfile,
+  responsesEndpointModes
 } from './accountProviderCapabilities'
 
 const props = defineProps<{
@@ -201,10 +202,14 @@ const endpointFamilyOptions = [
   { label: 'Messages', value: 'messages' }
 ] as const
 const sourceEndpointFamilyOptions = endpointFamilyOptions.filter((option) => option.value !== 'messages')
+const nativeResponsesUpstreamAvailable = computed(() => props.form.supportedEndpointModes.some((mode) => responsesEndpointModes.includes(mode)))
 
-watch(() => props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'), () => {
+watch(() => [
+  props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'),
+  props.form.supportedEndpointModes.join(',')
+].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
-    if (mapping.sourceEndpointFamily === 'chat_completions' && mapping.upstreamEndpointFamily === 'responses') {
+    if (mapping.upstreamEndpointFamily === 'responses' && !canSelectResponsesUpstream(mapping.sourceEndpointFamily)) {
       mapping.upstreamEndpointFamily = 'chat_completions'
     }
   }
@@ -213,10 +218,12 @@ watch(() => props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointF
 function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
   return endpointFamilyOptions.map((option) => ({
     ...option,
-    disabled: option.value === 'messages'
-      ? false
-      : sourceEndpointFamily === 'chat_completions' && option.value === 'responses'
+    disabled: option.value === 'responses' && !canSelectResponsesUpstream(sourceEndpointFamily)
   }))
+}
+
+function canSelectResponsesUpstream(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): boolean {
+  return sourceEndpointFamily === 'responses' && nativeResponsesUpstreamAvailable.value
 }
 
 function addModelMapping(): void {

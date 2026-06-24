@@ -25,6 +25,7 @@ import {
   resolveOpenAIAccountModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import { openAICompatibleFilesResolverForGatewayRequest } from '../../../openai-compatible-files/file-resolver.js'
+import { openAICompatibleImageGenerationExecutorForGatewayRequest } from '../../../openai-compatible-images/image-generation-executor.js'
 import { openAICompatibleFileSearchExecutorForGatewayRequest } from '../../../openai-compatible-vector-stores/file-search-executor.js'
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
@@ -117,9 +118,11 @@ export const anthropicProviderDriver: ProviderDriver = {
       return {
         headers,
         body: await buildOpenAIToAnthropicBridgeBody(req, {
+          guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
           fileResolver: openAICompatibleFilesResolverForGatewayRequest(req),
-          fileSearchExecutor: openAICompatibleFileSearchExecutorForGatewayRequest(req)
+          fileSearchExecutor: openAICompatibleFileSearchExecutorForGatewayRequest(req),
+          imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest()
         }, signal)
       }
     }
@@ -176,6 +179,13 @@ export const anthropicProviderDriver: ProviderDriver = {
       providerProtocolProfileId: account.providerProtocolProfileId
     })
   }
+}
+
+function guidanceProviderNameForAccount(account: DispatchAccountSecret): string {
+  if (account.providerCode === GLM_PROVIDER_CODE) return 'GLM'
+  if (account.providerCode === DEEPSEEK_PROVIDER_CODE) return 'DeepSeek'
+  if (account.providerCode === ANTHROPIC_PROVIDER_CODE) return 'Anthropic'
+  return account.providerCode
 }
 
 function shouldUseOpenAIToAnthropicBridge(

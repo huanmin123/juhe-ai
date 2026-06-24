@@ -64,6 +64,16 @@ function responsesMapping(sourceModel: string, upstreamModel: string, enabled = 
   }
 }
 
+function responsesToChatMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'responses',
+    upstreamModel,
+    upstreamEndpointFamily: 'chat_completions',
+    enabled
+  }
+}
+
 try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
@@ -167,6 +177,7 @@ try {
   assert.deepEqual(mappedBody.extra, { keep: true }, '模型映射不应丢弃未知字段')
   assert.equal(requestModel(originalRequest), sourceModel, 'requestModel 仍应保持下游请求模型')
 
+  assertNativeResponsesUpstreamRequiresEndpointModes()
   await assertInvalidMappingBodyRejected()
   await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
   await assertUsageRecordFields(runtimeAccount, group.id)
@@ -232,6 +243,7 @@ try {
     }, ownerAccess)
   }, /映射上游模型不在当前账号可用模型池中/, '映射上游模型必须存在于当前账号可用模型池')
   assertImportPreviewRejectsInvalidMapping(group.id)
+  assertImportPreviewRejectsNonNativeResponsesMapping(group.id)
 
   console.log('account model mapping regression passed')
 } finally {
@@ -242,6 +254,51 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
+  const group = repositories.createGroup({
+    name: '账号模型映射 Responses 原生能力约束分组',
+    providerCode: GPT_VENDOR_CODE
+  }, ownerAccess)
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Chat-only 账号不能配置 Responses 上游',
+      type: 'api_key',
+      clientCompatibility: 'openai_standard',
+      credentials: {
+        api_key: 'sk-account-model-mapping-chat-only-responses-upstream',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [upstreamModel],
+      modelMappings: [
+        responsesMapping(sourceModel, upstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射/, 'Chat-only 账号不能把映射右侧配置成 Responses')
+
+  const chatBridgeAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'Chat-only 账号允许 Responses 转 Chat',
+    type: 'api_key',
+    clientCompatibility: 'openai_standard',
+    credentials: {
+      api_key: 'sk-account-model-mapping-chat-only-responses-to-chat',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    supportedModels: [upstreamModel],
+    modelMappings: [
+      responsesToChatMapping(sourceModel, upstreamModel)
+    ],
+    groupId: group.id
+  }, ownerAccess)
+  assert.deepEqual(chatBridgeAccount.modelMappings, [
+    responsesToChatMapping(sourceModel, upstreamModel)
+  ], 'Chat-only 账号仍允许显式 Responses 转 Chat Completions bridge')
 }
 
 function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
@@ -268,6 +325,34 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
   assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在 OpenAI 协议客户端模型池中')), '导入预览应在预览阶段暴露模型映射目录错误')
+}
+
+function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): void {
+  const result = previewAccountImport({
+    type: 'juhe-ai-account-import',
+    version: 1,
+    accounts: [
+      {
+        name: '账号模型映射 Chat-only 非法 Responses 上游导入预览',
+        providerCode: GPT_VENDOR_CODE,
+        type: 'api_key',
+        clientCompatibility: 'openai_standard',
+        status: 'active',
+        groupId,
+        credentials: {
+          api_key: 'sk-account-model-mapping-import-chat-only-responses-upstream',
+          base_url: 'https://api.openai.com/v1',
+          supported_endpoint_modes: ['chat_json', 'chat_sse']
+        },
+        modelMappings: [
+          responsesMapping(sourceModel, replacementUpstreamModel)
+        ]
+      }
+    ]
+  }, {}, ownerAccess)
+  assert.equal(result.canImport, false, '非原生 Responses 上游映射导入预览不应允许确认导入')
+  assert.equal(result.accounts[0]?.action, 'failed', '非原生 Responses 上游映射导入预览应标记账户失败')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射')), '导入预览应暴露右侧 Responses 原生能力约束错误')
 }
 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {

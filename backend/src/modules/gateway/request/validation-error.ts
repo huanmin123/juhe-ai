@@ -17,3 +17,28 @@ export class GatewayRequestValidationError extends Error {
   }
 }
 
+export type GatewayAgentGuidanceProtocol = 'chat_completions' | 'responses'
+
+export class GatewayAgentGuidanceResponse extends Error {
+  readonly statusCode = 200
+  readonly type = 'agent_guidance'
+  readonly code: string
+  readonly accountScoped = false
+  readonly protocol: GatewayAgentGuidanceProtocol
+  readonly stream: boolean
+  readonly model: string
+
+  constructor(input: {
+    message: string
+    code: string
+    protocol: GatewayAgentGuidanceProtocol
+    stream: boolean
+    model: string
+  }) {
+    super(input.message)
+    this.code = input.code
+    this.protocol = input.protocol
+    this.stream = input.stream
+    this.model = input.model
+  }
+}

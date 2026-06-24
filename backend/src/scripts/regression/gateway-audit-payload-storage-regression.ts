@@ -59,6 +59,21 @@ const nonStreamSuccessBody = JSON.stringify({
   output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'audit success ok' }] }],
   usage: { input_tokens: 3, output_tokens: 2 }
 })
+const nonStreamImageResultBase64 = Buffer.from('audit non stream image result', 'utf8').toString('base64')
+const nonStreamImageSuccessBody = JSON.stringify({
+  id: 'resp_audit_non_stream_image_success',
+  object: 'response',
+  status: 'completed',
+  model,
+  output: [{
+    id: 'img_audit_non_stream_success',
+    type: 'image_generation_call',
+    status: 'completed',
+    result: nonStreamImageResultBase64,
+    revised_prompt: 'audit non stream image prompt'
+  }],
+  usage: { input_tokens: 3, output_tokens: 2 }
+})
 const retryFailureBody = JSON.stringify({
   error: { message: 'first account failed before audit retry success', type: 'server_error', code: 'audit_retry_first_failed' }
 })
@@ -100,13 +115,14 @@ try {
     await assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
     await assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl, upstreamBaseUrl)
     await assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl, upstreamBaseUrl)
+    await assertNonStreamImageSuccessOmissionRecordsMetadata(gatewayBaseUrl, upstreamBaseUrl)
     await assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl, upstreamBaseUrl)
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
   }
 
-  console.log('网关审计 payload 存储回归通过：非流式成功、先失败后成功、全失败、流式成功、流式失败和图像流省略均保留预期正文')
+  console.log('网关审计 payload 存储回归通过：非流式成功、先失败后成功、全失败、流式成功、流式失败、图像流省略和非流式图像省略均符合预期')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
@@ -288,6 +304,37 @@ async function assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl: s
   await assertStreamBodyOmissionMetadata(detail)
 }
 
+async function assertNonStreamImageSuccessOmissionRecordsMetadata(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const seeded = seedGatewayRoute(upstreamBaseUrl, '审计非流式图像成功省略', ['sk-audit-image-json-success'])
+  const traceId = 'trace-audit-image-json-success-omission'
+
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: gatewayHeaders(seeded.apiKey, traceId),
+    body: JSON.stringify({
+      model,
+      input: 'audit image non stream success should omit image result',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `非流式图像成功应返回 200，实际 ${response.status}: ${text}`)
+  assert.equal(text, nonStreamImageSuccessBody, '非流式图像成功响应体应完整返回给客户端')
+  assert.match(text, new RegExp(nonStreamImageResultBase64.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), '客户端响应应包含图像 result')
+
+  const detail = auditDetailByTrace(traceId)
+  assert.equal(detail.auditOutcome, 'success', '非流式图像成功应写入 success 审计')
+  await assertBodyOmissionMetadata(detail, 'non_stream_body_omission', 'image_json_payload', 0)
+  await assertPayloadBodyContains(detail, 'client_request', 'audit image non stream success should omit image result')
+  await assertPayloadBodyContains(detail, 'upstream_request', 'audit image non stream success should omit image result')
+  for (const payload of detail.payloads) {
+    if (!payload.hasBody || payload.partType === 'gateway_metadata') continue
+    const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+    assert(!payloadDetail?.bodyText?.includes(nonStreamImageResultBase64), `${detail.traceId} 非流式图像 result 不应保存在 ${payload.partType}`)
+    assert(!payloadDetail?.bodyText?.includes('"result"'), `${detail.traceId} 非流式图像 response JSON 不应保存在 ${payload.partType}`)
+  }
+}
+
 async function assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计缺失文件状态', ['sk-audit-missing-blob-status'])
   const traceId = 'trace-audit-missing-blob-status'
@@ -404,6 +451,10 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (url.pathname === '/v1/responses') {
+        if (String(body.input ?? '').includes('image non stream success')) {
+          sendJson(res, 200, nonStreamImageSuccessBody)
+          return
+        }
         if (body.stream === true && String(body.input ?? '').includes('image stream failure')) {
           sendImageStreamFailure(res)
           return
@@ -542,6 +593,15 @@ async function assertPayloadBodyContains(
 async function assertStreamBodyOmissionMetadata(
   detail: NonNullable<ReturnType<typeof repositories.getAuditLogDetail>>
 ): Promise<void> {
+  await assertBodyOmissionMetadata(detail, 'stream_body_omission', 'image_stream_payload')
+}
+
+async function assertBodyOmissionMetadata(
+  detail: NonNullable<ReturnType<typeof repositories.getAuditLogDetail>>,
+  label: string,
+  reason: string,
+  minOmittedPayloadCount = 1
+): Promise<void> {
   let metadata: {
     label?: string
     metadata?: {
@@ -553,15 +613,15 @@ async function assertStreamBodyOmissionMetadata(
   for (const payload of detail.payloads.filter((item) => item.partType === 'gateway_metadata' && item.hasBody)) {
     const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
     const parsed = JSON.parse(payloadDetail?.bodyText ?? '{}') as typeof metadata
-    if (parsed?.label === 'stream_body_omission') {
+    if (parsed?.label === label) {
       metadata = parsed
       break
     }
   }
-  assert(metadata, `${detail.traceId} 应记录流式正文省略元数据`)
-  assert.equal(metadata.metadata?.reason, 'image_stream_payload', `${detail.traceId} 省略原因应为图像流 payload`)
+  assert(metadata, `${detail.traceId} 应记录 ${label} 正文省略元数据`)
+  assert.equal(metadata.metadata?.reason, reason, `${detail.traceId} 省略原因应为 ${reason}`)
   assert.equal(metadata.metadata?.auditBodyPayloadsOmitted, true, `${detail.traceId} 应标记审计 body 已省略`)
-  assert((metadata.metadata?.omittedPayloadCount ?? 0) >= 1, `${detail.traceId} 应至少省略一个 payload body`)
+  assert((metadata.metadata?.omittedPayloadCount ?? 0) >= minOmittedPayloadCount, `${detail.traceId} 应至少省略 ${minOmittedPayloadCount} 个 payload body`)
 
   for (const payload of detail.payloads) {
     if (!payload.hasBody || payload.partType === 'gateway_metadata') continue

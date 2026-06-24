@@ -16,7 +16,7 @@ import {
   gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../../gateway/request/body.js'
-import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayJsonBodyInWorker
@@ -29,22 +29,23 @@ import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-he
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import type { CodexResponsesChatBridgeCompletionHandler } from '../../../gateway/codex-responses/chat-bridge-state.js'
 import {
-  runtimeCodexResponsesWebSearchExecutor,
-  type CodexResponsesWebSearchResult,
-  type CodexResponsesWebSearchToolConfig
-} from '../../../gateway/codex-responses/web-search-executor.js'
-import {
   resolveOpenAIAccountModelMapping,
   type OpenAIModelMappingRuntimeAccount
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
+import {
+  openAIHostedToolRuntimeCompatibilityDetail,
+  resolveOpenAIHostedToolRuntimeDecision
+} from './openai-hosted-tool-runtime-registry.js'
 
 type JsonRecord = Record<string, unknown>
 
 export interface OpenAIToAnthropicBridgeBodyOptions {
   defaultMaxTokens?: number
+  guidanceProviderName?: string
   modelOverride?: string
   fileResolver?: OpenAIToAnthropicFileResolver
   fileSearchExecutor?: OpenAIToAnthropicFileSearchExecutor
+  imageGenerationExecutor?: OpenAIToAnthropicImageGenerationExecutor
 }
 
 export interface OpenAIToAnthropicFileResolveInput {
@@ -90,6 +91,44 @@ export interface OpenAIToAnthropicFileSearchExecutor {
   }>
 }
 
+export interface OpenAIToAnthropicImageGenerationToolConfig {
+  action: 'auto' | 'generate' | 'edit'
+  size?: string
+  quality?: string
+  outputFormat?: string
+  outputCompression?: number
+  partialImages?: number
+  inputImageMask?: JsonRecord
+  moderation?: string
+  background?: string
+}
+
+export interface OpenAIToAnthropicImageGenerationInput {
+  prompt: string
+  tool: OpenAIToAnthropicImageGenerationToolConfig
+  signal?: AbortSignal
+}
+
+export interface OpenAIToAnthropicImageGenerationResult {
+  imageBase64: string
+  revisedPrompt?: string
+  outputFormat?: string
+}
+
+export interface OpenAIToAnthropicImageGenerationPartialResult {
+  imageBase64: string
+  partialImageIndex?: number
+}
+
+export type OpenAIToAnthropicImageGenerationStreamEvent =
+  | { type: 'partial_image'; partial: OpenAIToAnthropicImageGenerationPartialResult }
+  | { type: 'completed'; result: OpenAIToAnthropicImageGenerationResult }
+
+export interface OpenAIToAnthropicImageGenerationExecutor {
+  generate(input: OpenAIToAnthropicImageGenerationInput): Promise<OpenAIToAnthropicImageGenerationResult>
+  generateStream?(input: OpenAIToAnthropicImageGenerationInput): AsyncIterable<OpenAIToAnthropicImageGenerationStreamEvent>
+}
+
 interface OpenAIToAnthropicBridgeTransformOptions {
   model?: string
   previousResponseId?: string
@@ -99,8 +138,8 @@ interface OpenAIToAnthropicBridgeTransformOptions {
 interface OpenAIToAnthropicBridgeRequestPlan {
   structuredOutput?: OpenAIToAnthropicStructuredOutputPlan
   reasoningEffort?: string
-  webSearch?: OpenAIToAnthropicWebSearchPlan
   fileSearch?: OpenAIToAnthropicFileSearchPlan
+  imageGeneration?: OpenAIToAnthropicImageGenerationPlan
 }
 
 interface OpenAIToAnthropicBridgeContentContext {
@@ -122,14 +161,6 @@ interface StructuredOutputResult {
   error?: JsonRecord
 }
 
-interface OpenAIToAnthropicWebSearchPlan {
-  query: string
-  tool: CodexResponsesWebSearchToolConfig
-  results: CodexResponsesWebSearchResult[]
-  outputItemId?: string
-  emitted?: boolean
-}
-
 interface OpenAIToAnthropicFileSearchToolConfig {
   vectorStoreIds: string[]
   maxNumResults?: number
@@ -145,6 +176,13 @@ interface OpenAIToAnthropicFileSearchPlan {
   includeResults: boolean
   outputItemId?: string
   emitted?: boolean
+}
+
+interface OpenAIToAnthropicImageGenerationPlan {
+  prompt: string
+  tool: OpenAIToAnthropicImageGenerationToolConfig
+  executor: OpenAIToAnthropicImageGenerationExecutor
+  outputItemId?: string
 }
 
 interface AnthropicMessage {
@@ -280,7 +318,15 @@ export async function buildOpenAIToAnthropicBridgeBody(
     throw bridgeValidationError('OpenAI 到 Anthropic 桥接请求缺少 model', 'openai_anthropic_bridge_missing_model')
   }
   const requestPlan = createOpenAIToAnthropicBridgeRequestPlan(sourceEndpointFamily, body)
-  await applyOpenAIToAnthropicLocalToolEmulation(sourceEndpointFamily, body, requestPlan, options, signal)
+  await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
+  const guidance = openAIToAnthropicUnsupportedToolGuidance(sourceEndpointFamily, body, requestPlan, options, {
+    model,
+    stream: requestStream(req)
+  })
+  if (guidance) {
+    throw guidance
+  }
+  await applyOpenAIToAnthropicImageGenerationEmulation(sourceEndpointFamily, body, requestPlan, options.imageGenerationExecutor)
   setOpenAIToAnthropicBridgeRequestPlan(req, requestPlan)
   const contentContext: OpenAIToAnthropicBridgeContentContext = {
     sourceEndpointFamily,
@@ -394,6 +440,7 @@ async function chatBodyToAnthropicMessages(
     appendAnthropicMessage(messages, { role: 'user', content: [{ type: 'text', text: '' }] })
   }
   appendFileSearchContext(systemParts, requestPlan.fileSearch)
+  appendImageGenerationPromptInstruction(systemParts, requestPlan.imageGeneration)
   const output = baseAnthropicBody(body, model, options)
   output.messages = messages
   const system = systemParts.join('\n\n').trim()
@@ -928,6 +975,9 @@ function responsesToolsToAnthropicTools(
       if (isOpenAIFileSearchTool(item) && requestPlan?.fileSearch) {
         continue
       }
+      if (isOpenAIImageGenerationTool(item) && requestPlan?.imageGeneration) {
+        continue
+      }
       throw unsupportedOpenAIToolError(item, 'Responses')
     }
     const name = stringValue(item.name)
@@ -1041,6 +1091,7 @@ async function applyOpenAIToAnthropicLocalToolEmulation(
 ): Promise<void> {
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY && sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) return
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
+  await applyOpenAIToAnthropicImageGenerationEmulation(sourceEndpointFamily, body, requestPlan, options.imageGenerationExecutor)
 }
 
 async function applyOpenAIToAnthropicFileSearchEmulation(
@@ -1095,6 +1146,37 @@ async function applyOpenAIToAnthropicFileSearchEmulation(
       'upstream_error'
     )
   }
+}
+
+async function applyOpenAIToAnthropicImageGenerationEmulation(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  executor: OpenAIToAnthropicImageGenerationExecutor | undefined
+): Promise<void> {
+  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
+  const tool = responsesImageGenerationToolFromBody(body)
+  if (!tool) return
+  if (!executor) {
+    throw bridgeValidationError(
+      'Responses image_generation 需要配置本地图像生成 provider，当前不能桥接到 Anthropic Messages',
+      'openai_anthropic_bridge_image_generation_provider_unavailable'
+    )
+  }
+  if (tool.action === 'edit' || tool.inputImageMask || responsesBodyContainsImageGenerationEditContext(body)) {
+    throw bridgeValidationError(
+      'Responses image_generation 当前只支持无输入图片的 generate 路径，edit / mask / 历史图片复用尚未启用',
+      'openai_anthropic_bridge_image_generation_edit_unsupported'
+    )
+  }
+  const prompt = responsesUserQueryFromBody(body)
+  if (!prompt) {
+    throw bridgeValidationError(
+      'Responses image_generation 桥接无法从请求中提取图像提示词',
+      'openai_anthropic_bridge_image_generation_missing_prompt'
+    )
+  }
+  requestPlan.imageGeneration = { prompt, tool, executor }
 }
 
 function setOpenAIToAnthropicBridgeRequestPlan(req: Request, plan: OpenAIToAnthropicBridgeRequestPlan): void {
@@ -1175,6 +1257,12 @@ function responsesFileSearchToolFromBody(body: JsonRecord): OpenAIToAnthropicFil
   return tool ? fileSearchToolConfig(tool) : undefined
 }
 
+function responsesImageGenerationToolFromBody(body: JsonRecord): OpenAIToAnthropicImageGenerationToolConfig | undefined {
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  const tool = tools.find(isOpenAIImageGenerationTool)
+  return tool ? imageGenerationToolConfig(tool) : undefined
+}
+
 function chatFileSearchToolFromBody(body: JsonRecord): OpenAIToAnthropicFileSearchToolConfig | undefined {
   const tools = Array.isArray(body.tools) ? body.tools : []
   const tool = tools.find(isOpenAIFileSearchTool)
@@ -1185,6 +1273,10 @@ function isOpenAIFileSearchTool(value: unknown): value is JsonRecord {
   return isPlainObject(value) && stringValue(value.type) === 'file_search'
 }
 
+function isOpenAIImageGenerationTool(value: unknown): value is JsonRecord {
+  return isPlainObject(value) && stringValue(value.type) === 'image_generation'
+}
+
 function fileSearchToolConfig(value: JsonRecord): OpenAIToAnthropicFileSearchToolConfig {
   return {
     vectorStoreIds: stringArrayValue(value.vector_store_ids),
@@ -1192,6 +1284,32 @@ function fileSearchToolConfig(value: JsonRecord): OpenAIToAnthropicFileSearchToo
     filters: objectValue(value.filters) ?? objectValue(value.attribute_filter),
     rankingOptions: objectValue(value.ranking_options)
   }
+}
+
+function imageGenerationToolConfig(value: JsonRecord): OpenAIToAnthropicImageGenerationToolConfig {
+  const action = stringValue(value.action)
+  return {
+    action: action === 'edit' || action === 'generate' ? action : 'auto',
+    size: stringValue(value.size),
+    quality: stringValue(value.quality),
+    outputFormat: stringValue(value.output_format),
+    outputCompression: integerValue(value.output_compression),
+    partialImages: integerValue(value.partial_images),
+    inputImageMask: objectValue(value.input_image_mask),
+    moderation: stringValue(value.moderation),
+    background: stringValue(value.background)
+  }
+}
+
+function responsesBodyContainsImageGenerationEditContext(body: JsonRecord): boolean {
+  return responsesInputContainsType(body.input, 'input_image') || responsesInputContainsType(body.input, 'image_generation_call')
+}
+
+function responsesInputContainsType(value: unknown, type: string): boolean {
+  if (Array.isArray(value)) return value.some((item) => responsesInputContainsType(item, type))
+  if (!isPlainObject(value)) return false
+  if (stringValue(value.type) === type) return true
+  return responsesInputContainsType(value.content, type)
 }
 
 function responseIncludesFileSearchResults(body: JsonRecord): boolean {
@@ -1263,6 +1381,19 @@ function fileSearchContextText(fileSearch: OpenAIToAnthropicFileSearchPlan): str
   return lines.join('\n')
 }
 
+function appendImageGenerationPromptInstruction(
+  systemParts: string[],
+  imageGeneration: OpenAIToAnthropicImageGenerationPlan | undefined
+): void {
+  if (!imageGeneration) return
+  appendSystemText(systemParts, [
+    'The user requested OpenAI Responses image_generation.',
+    'Return only one concise, standalone revised image prompt for the image provider.',
+    'Do not claim the image was already generated. Do not include Markdown, explanations, JSON, or surrounding quotes.',
+    `Original user prompt: ${imageGeneration.prompt}`
+  ].join('\n'))
+}
+
 function unsupportedOpenAIToolError(tool: unknown, source: 'Chat' | 'Responses'): GatewayRequestValidationError {
   const type = isPlainObject(tool) ? stringValue(tool.type) ?? 'unknown' : 'unknown'
   const detail = openAIHostedToolCompatibilityDetail(type)
@@ -1270,6 +1401,150 @@ function unsupportedOpenAIToolError(tool: unknown, source: 'Chat' | 'Responses')
     `${source} tool type "${type}" 当前不能直接桥接到 Anthropic Messages：${detail}`,
     'openai_anthropic_bridge_unsupported_hosted_tool'
   )
+}
+
+function openAIToAnthropicUnsupportedToolGuidance(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  options: OpenAIToAnthropicBridgeBodyOptions,
+  response: { model: string; stream: boolean }
+): GatewayAgentGuidanceResponse | undefined {
+  const rejectedTools = rejectedOpenAIHostedRuntimeLabels(sourceEndpointFamily, body, requestPlan, options)
+  if (rejectedTools.length > 0) {
+    throw bridgeValidationError(
+      `当前配置拒绝执行以下 OpenAI 托管工具：${rejectedTools.join(', ')}`,
+      'openai_anthropic_bridge_hosted_tool_runtime_rejected'
+    )
+  }
+  const tools = unsupportedOpenAIHostedToolLabels(sourceEndpointFamily, body, requestPlan, options)
+  if (tools.length === 0) return undefined
+  return new GatewayAgentGuidanceResponse({
+    code: 'agent_guidance_unsupported_hosted_tool',
+    protocol: sourceEndpointFamily === OPENAI_RESPONSES_FAMILY ? 'responses' : 'chat_completions',
+    stream: response.stream,
+    model: response.model,
+    message: unsupportedBridgeCapabilityGuidanceMessage({
+      tools,
+      providerName: options.guidanceProviderName,
+      bridgeName: 'OpenAI 到 Anthropic Messages bridge'
+    })
+  })
+}
+
+function rejectedOpenAIHostedRuntimeLabels(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  options: OpenAIToAnthropicBridgeBodyOptions
+): string[] {
+  const labels: string[] = []
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  for (const tool of tools) {
+    const label = rejectedOpenAIHostedRuntimeLabel(sourceEndpointFamily, body, tool, requestPlan, options)
+    if (label) labels.push(label)
+  }
+  const toolChoice = objectValue(body.tool_choice)
+  const choiceType = stringValue(toolChoice?.type)
+  if (choiceType && choiceType !== 'function' && choiceType !== 'allowed_tools') {
+    const label = rejectedOpenAIHostedRuntimeLabel(sourceEndpointFamily, body, toolChoice, requestPlan, options)
+    if (label) labels.push(label)
+  }
+  return [...new Set(labels)]
+}
+
+function rejectedOpenAIHostedRuntimeLabel(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  tool: unknown,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  options: OpenAIToAnthropicBridgeBodyOptions
+): string | undefined {
+  if (!isPlainObject(tool)) return undefined
+  const type = stringValue(tool.type)
+  if (!type || type === 'function') return undefined
+  if (isOpenAIFileSearchTool(tool) && requestPlan.fileSearch) return undefined
+  if (isOpenAIImageGenerationTool(tool) && sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    const config = imageGenerationToolConfig(tool)
+    const supportedGenerate = Boolean(options.imageGenerationExecutor)
+      && config.action !== 'edit'
+      && !config.inputImageMask
+      && !responsesBodyContainsImageGenerationEditContext(body)
+    if (supportedGenerate) return undefined
+  }
+  const decision = resolveOpenAIHostedToolRuntimeDecision({ toolType: type, sourceEndpointFamily })
+  return decision?.mode === 'reject' ? decision.toolType : undefined
+}
+
+function unsupportedOpenAIHostedToolLabels(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  options: OpenAIToAnthropicBridgeBodyOptions
+): string[] {
+  const labels: string[] = []
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  for (const tool of tools) {
+    const label = unsupportedOpenAIHostedToolLabel(sourceEndpointFamily, body, tool, requestPlan, options)
+    if (label) labels.push(label)
+  }
+  const toolChoice = objectValue(body.tool_choice)
+  const choiceType = stringValue(toolChoice?.type)
+  if (choiceType && choiceType !== 'function' && choiceType !== 'allowed_tools') {
+    const label = unsupportedOpenAIHostedToolLabel(sourceEndpointFamily, body, toolChoice, requestPlan, options)
+    if (label) labels.push(label)
+  }
+  return [...new Set(labels)]
+}
+
+function unsupportedOpenAIHostedToolLabel(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  tool: unknown,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  options: OpenAIToAnthropicBridgeBodyOptions
+): string | undefined {
+  if (!isPlainObject(tool)) return undefined
+  const type = stringValue(tool.type)
+  if (!type || type === 'function') return undefined
+  if (isOpenAIFileSearchTool(tool) && requestPlan.fileSearch) return undefined
+  if (isOpenAIImageGenerationTool(tool) && sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    const config = imageGenerationToolConfig(tool)
+    const supportedGenerate = Boolean(options.imageGenerationExecutor)
+      && config.action !== 'edit'
+      && !config.inputImageMask
+      && !responsesBodyContainsImageGenerationEditContext(body)
+    return supportedGenerate ? undefined : type
+  }
+  const runtimeDecision = resolveOpenAIHostedToolRuntimeDecision({ toolType: type, sourceEndpointFamily })
+  if (runtimeDecision) return runtimeDecision.mode === 'reject' ? undefined : runtimeDecision.toolType
+  return type
+}
+
+function unsupportedBridgeCapabilityGuidanceMessage(input: {
+  tools: string[]
+  providerName?: string
+  bridgeName: string
+}): string {
+  const tools = input.tools.join(', ')
+  const provider = input.providerName?.trim() || '当前上游供应商'
+  const providerSpecificHint = provider.toLowerCase() === 'glm'
+    ? '\n供应商提示：GLM 的联网搜索通常应通过该供应商提供的官方 MCP 或等价本地工具配置来完成。'
+    : ''
+  return [
+    `能力未执行：${tools}`,
+    '',
+    `当前供应商：${provider}`,
+    `当前协议：${input.bridgeName}`,
+    `原因：当前上游供应商或协议档案未声明这些原生托管能力。中转层不会伪造工具结果，也不会把这些工具请求透传给不支持的上游。${providerSpecificHint}`,
+    '',
+    '建议下一步：',
+    '1. 检查本地客户端是否已配置该供应商提供的 MCP、图像生成 provider、沙箱或等价工具。',
+    '2. 如果已配置，请通过本地 MCP/工具执行所需能力后继续当前任务。',
+    '3. 如果未配置，请提示用户配置对应工具，或切换到支持该能力的供应商/模型。',
+    '',
+    `注意：本轮没有执行 ${tools}，因此没有外部工具结果。`
+  ].join('\n')
 }
 
 function openAIHostedToolCompatibilityDetail(type: string): string {
@@ -1282,19 +1557,9 @@ function openAIHostedToolCompatibilityDetail(type: string): string {
   if (type === 'image_generation') {
     return 'Anthropic Messages 不生成图片，需要本地图像生成 provider'
   }
-  if (type === 'code_interpreter' || type === 'container') {
-    return '需要 Anthropic code execution 能力或网关本地安全沙箱'
-  }
-  if (type === 'computer') {
-    return '需要 Anthropic computer use 或网关本地 computer adapter'
-  }
-  if (type === 'mcp') {
-    return '需要 MCP server allowlist、认证、审批和审计映射'
-  }
-  if (type === 'tool_search' || type === 'shell' || type === 'skills') {
-    return '需要 Codex 本地工具运行时，不能由 Anthropic Messages 字段转换凭空执行'
-  }
-  return '需要先在高兼容能力矩阵中定义映射、模拟或受控拒绝策略'
+  const runtimeDetail = openAIHostedToolRuntimeCompatibilityDetail(type)
+  if (runtimeDetail) return runtimeDetail
+  return '需要先在高兼容能力矩阵中定义映射、模拟或 agent guidance 策略'
 }
 
 async function * transformAnthropicMessagesJsonToChatJson(
@@ -1318,7 +1583,7 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
 ): AsyncIterable<Uint8Array> {
   const parsed = await readJsonBody(body)
   const message = isPlainObject(parsed) ? parsed : {}
-  const payload = anthropicMessageToResponsesResponse(message, {
+  const payload = await anthropicMessageToResponsesResponse(message, {
     model: options.model,
     requestPlan: options.requestPlan,
     previousResponseId: options.previousResponseId
@@ -1375,6 +1640,10 @@ async function * transformAnthropicMessagesSseToResponsesSse(
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
   }
 ): AsyncIterable<Uint8Array> {
+  if (options.requestPlan?.imageGeneration) {
+    yield * transformAnthropicMessagesSseToResponsesImageGenerationSse(body, options)
+    return
+  }
   const state = createAnthropicStreamState(OPENAI_RESPONSES_FAMILY, options.model, options.previousResponseId, options.requestPlan)
   for await (const event of iterateAnthropicSseEvents(body)) {
     for (const output of processAnthropicEventAsResponses(state, event)) {
@@ -1385,6 +1654,39 @@ async function * transformAnthropicMessagesSseToResponsesSse(
   if (!state.completed && !state.failed) {
     for (const output of failResponsesStream(state, {
       message: '上游 Anthropic Messages SSE 在正常结束事件前中断',
+      type: 'upstream_error',
+      code: 'upstream_stream_interrupted'
+    })) {
+      yield Buffer.from(output, 'utf8')
+    }
+    await notifyResponsesCompletion(state, options.onResponsesCompleted)
+  }
+}
+
+async function * transformAnthropicMessagesSseToResponsesImageGenerationSse(
+  body: AsyncIterable<Uint8Array>,
+  options: {
+    model: string
+    requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+    previousResponseId?: string
+    onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
+  }
+): AsyncIterable<Uint8Array> {
+  const state = createAnthropicStreamState(OPENAI_RESPONSES_FAMILY, options.model, options.previousResponseId, options.requestPlan)
+  for await (const event of iterateAnthropicSseEvents(body)) {
+    for (const output of processAnthropicEventAsResponsesImageGenerationPrompt(state, event)) {
+      yield Buffer.from(output, 'utf8')
+    }
+    if (state.terminalReceived && !state.completed && !state.failed) {
+      for await (const output of completeResponsesImageGenerationStream(state)) {
+        yield Buffer.from(output, 'utf8')
+      }
+      await notifyResponsesCompletion(state, options.onResponsesCompleted)
+    }
+  }
+  if (!state.completed && !state.failed) {
+    for (const output of failResponsesStream(state, {
+      message: '上游 Anthropic Messages SSE 在图像提示词完成前中断',
       type: 'upstream_error',
       code: 'upstream_stream_interrupted'
     })) {
@@ -1445,14 +1747,25 @@ function anthropicMessageToChatCompletion(
   }
 }
 
-function anthropicMessageToResponsesResponse(
+async function anthropicMessageToResponsesResponse(
   message: JsonRecord,
   options: { model: string; requestPlan?: OpenAIToAnthropicBridgeRequestPlan; previousResponseId?: string }
-): JsonRecord {
+): Promise<JsonRecord> {
   const model = stringValue(message.model) ?? options.model
   const responseId = responseIdFromAnthropicId(stringValue(message.id))
   const createdAt = Math.floor(Date.now() / 1000)
   const contentBlocks = Array.isArray(message.content) ? message.content : []
+  if (options.requestPlan?.imageGeneration) {
+    return await anthropicMessageToResponsesImageGenerationResponse({
+      contentBlocks,
+      createdAt,
+      message,
+      model,
+      previousResponseId: options.previousResponseId,
+      requestPlan: options.requestPlan,
+      responseId
+    })
+  }
   const structuredOutput = structuredOutputResultFromAnthropicBlocks(contentBlocks, options.requestPlan)
   if (structuredOutput?.error) {
     return failedResponsesResponseFromStructuredOutputError({
@@ -1557,6 +1870,172 @@ function anthropicContentBlocksToResponsesOutputItems(
       }]
     })
   }
+  return output
+}
+
+async function anthropicMessageToResponsesImageGenerationResponse(input: {
+  contentBlocks: unknown[]
+  createdAt: number
+  message: JsonRecord
+  model: string
+  previousResponseId?: string
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan
+  responseId: string
+}): Promise<JsonRecord> {
+  const imageGeneration = input.requestPlan.imageGeneration
+  if (!imageGeneration) {
+    throw new Error('image generation plan is required')
+  }
+  const revisedPrompt = imageGenerationRevisedPromptFromAnthropicBlocks(input.contentBlocks, imageGeneration.prompt)
+  let item: JsonRecord
+  try {
+    const result = await imageGeneration.executor.generate({
+      prompt: revisedPrompt,
+      tool: imageGeneration.tool
+    })
+    item = responsesImageGenerationCallItem(imageGeneration, input.responseId, result, revisedPrompt)
+  } catch (error) {
+    return failedResponsesResponseFromStructuredOutputError({
+      responseId: input.responseId,
+      createdAt: input.createdAt,
+      model: input.model,
+      previousResponseId: input.previousResponseId,
+      requestPlan: input.requestPlan,
+      usage: objectValue(input.message.usage),
+      error: openAIErrorObjectFromBridgeError(error, '图像生成 provider 执行失败'),
+      metadata: {
+        gateway_generated_failure: true,
+        gateway_failure_source: 'image_generation_provider'
+      }
+    })
+  }
+  return {
+    id: input.responseId,
+    object: 'response',
+    created_at: input.createdAt,
+    status: 'completed',
+    completed_at: input.createdAt,
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    max_output_tokens: null,
+    model: input.model,
+    output: [item],
+    output_text: '',
+    parallel_tool_calls: false,
+    previous_response_id: input.previousResponseId ?? null,
+    reasoning: {
+      effort: input.requestPlan.reasoningEffort ?? null,
+      summary: null
+    },
+    store: false,
+    temperature: null,
+    text: { format: { type: 'text' } },
+    tool_choice: 'auto',
+    tools: [responsesImageGenerationToolSnapshot(imageGeneration.tool)],
+    top_p: null,
+    truncation: 'disabled',
+    usage: anthropicUsageToResponsesUsage(objectValue(input.message.usage)),
+    user: null,
+    metadata: {}
+  }
+}
+
+function imageGenerationRevisedPromptFromAnthropicBlocks(blocks: unknown[], fallback: string): string {
+  const text = normalizeWhitespace(blocks.map(anthropicTextFromBlock).filter(Boolean).join('\n'))
+  return text || fallback
+}
+
+function responsesImageGenerationCallItem(
+  imageGeneration: OpenAIToAnthropicImageGenerationPlan,
+  responseId: string,
+  result: OpenAIToAnthropicImageGenerationResult,
+  fallbackRevisedPrompt: string
+): JsonRecord {
+  const itemId = ensureResponsesImageGenerationOutputItemId(imageGeneration, responseId)
+  const item: JsonRecord = {
+    id: itemId,
+    type: 'image_generation_call',
+    status: 'completed',
+    revised_prompt: result.revisedPrompt ?? fallbackRevisedPrompt,
+    result: result.imageBase64
+  }
+  if (result.outputFormat) item.output_format = result.outputFormat
+  return item
+}
+
+function responsesImageGenerationInProgressCallItem(
+  imageGeneration: OpenAIToAnthropicImageGenerationPlan,
+  responseId: string,
+  revisedPrompt: string
+): JsonRecord {
+  const item: JsonRecord = {
+    id: ensureResponsesImageGenerationOutputItemId(imageGeneration, responseId),
+    type: 'image_generation_call',
+    status: 'in_progress',
+    revised_prompt: revisedPrompt
+  }
+  if (imageGeneration.tool.outputFormat) item.output_format = imageGeneration.tool.outputFormat
+  return item
+}
+
+function ensureResponsesImageGenerationOutputItemId(
+  imageGeneration: OpenAIToAnthropicImageGenerationPlan,
+  responseId: string
+): string {
+  const itemId = imageGeneration.outputItemId ?? `ig_${safeIdSegment(responseId)}`
+  imageGeneration.outputItemId = itemId
+  return itemId
+}
+
+function responsesImageGenerationToolSnapshot(tool: OpenAIToAnthropicImageGenerationToolConfig): JsonRecord {
+  const snapshot: JsonRecord = { type: 'image_generation' }
+  if (tool.action !== 'auto') snapshot.action = tool.action
+  if (tool.size) snapshot.size = tool.size
+  if (tool.quality) snapshot.quality = tool.quality
+  if (tool.outputFormat) snapshot.output_format = tool.outputFormat
+  if (tool.outputCompression !== undefined) snapshot.output_compression = tool.outputCompression
+  if (tool.partialImages !== undefined) snapshot.partial_images = tool.partialImages
+  if (tool.moderation) snapshot.moderation = tool.moderation
+  if (tool.background) snapshot.background = tool.background
+  return snapshot
+}
+
+function openAIErrorObjectFromBridgeError(error: unknown, fallbackMessage: string): JsonRecord {
+  if (error instanceof GatewayRequestValidationError) {
+    return {
+      message: error.message,
+      type: error.type,
+      code: error.code
+    }
+  }
+  const imageGenerationProviderError = imageGenerationProviderErrorObject(error)
+  if (imageGenerationProviderError) return imageGenerationProviderError
+  return {
+    message: error instanceof Error ? error.message : fallbackMessage,
+    type: 'upstream_error',
+    code: 'openai_anthropic_bridge_image_generation_execution_failed'
+  }
+}
+
+function imageGenerationProviderErrorObject(error: unknown): JsonRecord | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const value = error as {
+    message?: unknown
+    type?: unknown
+    code?: unknown
+    moderationDetails?: unknown
+  }
+  const code = stringValue(value.code)
+  const type = stringValue(value.type)
+  const moderationDetails = objectValue(value.moderationDetails)
+  if (!code && !type && !moderationDetails) return undefined
+  const output: JsonRecord = {
+    message: stringValue(value.message) ?? '图像生成 provider 执行失败',
+    type: type ?? 'upstream_error',
+    code: code ?? 'openai_anthropic_bridge_image_generation_provider_error'
+  }
+  if (moderationDetails) output.moderation_details = moderationDetails
   return output
 }
 
@@ -1787,6 +2266,222 @@ function processAnthropicEventAsResponses(state: AnthropicStreamState, event: Pa
     output.push(...completeResponsesStream(state))
   }
   return output
+}
+
+function processAnthropicEventAsResponsesImageGenerationPrompt(state: AnthropicStreamState, event: ParsedSseEvent): string[] {
+  if (state.completed || state.failed) return []
+  if (event.eventName === 'error' || event.data?.type === 'error') {
+    const payload = openAIErrorFromAnthropicPayload(event.data)
+    return failResponsesStream(state, objectValue(payload.error) ?? {
+      message: '上游 Anthropic Messages 图像提示词流式响应失败',
+      type: 'upstream_error',
+      code: 'upstream_error'
+    })
+  }
+  if (event.dataParseError) {
+    return failResponsesStream(state, {
+      message: '上游 Anthropic Messages SSE 返回了无法解析的图像提示词事件',
+      type: 'upstream_error',
+      code: 'upstream_stream_parse_error'
+    })
+  }
+  const data = event.data
+  if (!data) return []
+  const output: string[] = []
+  if (data.type === 'message_start') {
+    const message = objectValue(data.message) ?? {}
+    state.id = stringValue(message.id) ?? state.id
+    state.responseId = responseIdFromAnthropicId(state.id)
+    state.responseMessageId = `msg_${safeIdSegment(state.responseId)}`
+    state.model = stringValue(message.model) ?? state.model
+    state.usage = anthropicUsageToResponsesUsage(objectValue(message.usage))
+    output.push(...ensureResponsesStreamStarted(state))
+    return output
+  }
+  if (data.type === 'content_block_start') {
+    const index = integerValue(data.index) ?? 0
+    const contentBlock = objectValue(data.content_block) ?? {}
+    state.blocks.set(index, streamBlockFromContentBlock(index, contentBlock))
+    return output
+  }
+  if (data.type === 'content_block_delta') {
+    const index = integerValue(data.index) ?? 0
+    const block = state.blocks.get(index)
+    const delta = objectValue(data.delta) ?? {}
+    if (delta.type === 'text_delta') {
+      if (block) block.text += stringValue(delta.text) ?? ''
+    } else if (delta.type === 'thinking_delta') {
+      if (block) block.text += stringValue(delta.thinking) ?? stringValue(delta.text) ?? ''
+    } else if (delta.type === 'input_json_delta') {
+      if (block) block.inputJson += stringValue(delta.partial_json) ?? ''
+    }
+    return output
+  }
+  if (data.type === 'content_block_stop') {
+    const index = integerValue(data.index) ?? 0
+    const block = state.blocks.get(index)
+    if (block) block.done = true
+    return output
+  }
+  if (data.type === 'message_delta') {
+    const delta = objectValue(data.delta) ?? {}
+    state.stopReason = stringValue(delta.stop_reason) ?? state.stopReason
+    const usage = objectValue(data.usage)
+    if (usage) state.usage = anthropicUsageToResponsesUsage(usage, state.usage)
+    return output
+  }
+  if (data.type === 'message_stop') {
+    state.terminalReceived = true
+  }
+  return output
+}
+
+async function * completeResponsesImageGenerationStream(state: AnthropicStreamState): AsyncIterable<string> {
+  if (state.completed || state.failed) return
+  const imageGeneration = state.requestPlan?.imageGeneration
+  if (!imageGeneration) {
+    yield * failResponsesStream(state, {
+      message: '图像生成请求缺少本地 provider 计划',
+      type: 'invalid_request_error',
+      code: 'openai_anthropic_bridge_image_generation_plan_missing'
+    })
+    return
+  }
+  const revisedPrompt = imageGenerationRevisedPromptFromStreamState(state, imageGeneration.prompt)
+  if (shouldStreamImageGenerationProvider(imageGeneration)) {
+    yield * completeResponsesImageGenerationProviderStream(state, imageGeneration, revisedPrompt)
+    return
+  }
+  let item: JsonRecord
+  try {
+    const result = await imageGeneration.executor.generate({
+      prompt: revisedPrompt,
+      tool: imageGeneration.tool
+    })
+    item = responsesImageGenerationCallItem(imageGeneration, state.responseId, result, revisedPrompt)
+  } catch (error) {
+    yield * failResponsesStream(state, openAIErrorObjectFromBridgeError(error, '图像生成 provider 执行失败'))
+    return
+  }
+  const outputIndex = state.nextOutputIndex++
+  state.outputItems.push(item)
+  state.completed = true
+  const inProgressItem: JsonRecord = { ...item, status: 'in_progress' }
+  delete inProgressItem.result
+  yield * [
+    ...ensureResponsesStreamStarted(state),
+    sse('response.output_item.added', {
+      type: 'response.output_item.added',
+      output_index: outputIndex,
+      item: inProgressItem
+    }),
+    sse('response.image_generation_call.completed', {
+      type: 'response.image_generation_call.completed',
+      output_index: outputIndex,
+      item_id: stringValue(item.id) ?? '',
+      result: stringValue(item.result) ?? null
+    }),
+    sse('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: outputIndex,
+      item
+    }),
+    sse('response.completed', {
+      type: 'response.completed',
+      response: responseSnapshot(state, 'completed')
+    })
+  ]
+}
+
+function shouldStreamImageGenerationProvider(imageGeneration: OpenAIToAnthropicImageGenerationPlan): boolean {
+  return typeof imageGeneration.tool.partialImages === 'number'
+    && typeof imageGeneration.executor.generateStream === 'function'
+}
+
+async function * completeResponsesImageGenerationProviderStream(
+  state: AnthropicStreamState,
+  imageGeneration: OpenAIToAnthropicImageGenerationPlan,
+  revisedPrompt: string
+): AsyncIterable<string> {
+  const itemId = ensureResponsesImageGenerationOutputItemId(imageGeneration, state.responseId)
+  const outputIndex = state.nextOutputIndex++
+  yield * [
+    ...ensureResponsesStreamStarted(state),
+    sse('response.output_item.added', {
+      type: 'response.output_item.added',
+      output_index: outputIndex,
+      item: responsesImageGenerationInProgressCallItem(imageGeneration, state.responseId, revisedPrompt)
+    })
+  ]
+
+  let finalResult: OpenAIToAnthropicImageGenerationResult | undefined
+  try {
+    const stream = imageGeneration.executor.generateStream?.({
+      prompt: revisedPrompt,
+      tool: imageGeneration.tool
+    })
+    if (!stream) {
+      throw bridgeValidationError(
+        '图像生成 provider 不支持 streaming partial image',
+        'openai_anthropic_bridge_image_generation_provider_stream_unavailable',
+        502,
+        'upstream_error'
+      )
+    }
+    for await (const event of stream) {
+      if (event.type === 'partial_image') {
+        const payload: JsonRecord = {
+          type: 'response.image_generation_call.partial_image',
+          output_index: outputIndex,
+          item_id: itemId,
+          partial_image_b64: event.partial.imageBase64
+        }
+        if (event.partial.partialImageIndex !== undefined) payload.partial_image_index = event.partial.partialImageIndex
+        yield sse('response.image_generation_call.partial_image', payload)
+      } else {
+        finalResult = event.result
+      }
+    }
+  } catch (error) {
+    yield * failResponsesStream(state, openAIErrorObjectFromBridgeError(error, '图像生成 provider streaming 执行失败'))
+    return
+  }
+
+  if (!finalResult) {
+    yield * failResponsesStream(state, {
+      message: '图像生成 provider streaming 响应缺少最终图片结果',
+      type: 'upstream_error',
+      code: 'openai_anthropic_bridge_image_generation_provider_invalid_response'
+    })
+    return
+  }
+
+  const item = responsesImageGenerationCallItem(imageGeneration, state.responseId, finalResult, revisedPrompt)
+  state.outputItems.push(item)
+  state.completed = true
+  yield * [
+    sse('response.image_generation_call.completed', {
+      type: 'response.image_generation_call.completed',
+      output_index: outputIndex,
+      item_id: stringValue(item.id) ?? itemId,
+      result: stringValue(item.result) ?? null
+    }),
+    sse('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: outputIndex,
+      item
+    }),
+    sse('response.completed', {
+      type: 'response.completed',
+      response: responseSnapshot(state, 'completed')
+    })
+  ]
+}
+
+function imageGenerationRevisedPromptFromStreamState(state: AnthropicStreamState, fallback: string): string {
+  const blocks = [...state.blocks.values()].sort((left, right) => left.index - right.index)
+  const text = normalizeWhitespace(blocks.map((block) => block.text).filter(Boolean).join('\n'))
+  return text || fallback
 }
 
 function ensureChatRoleChunk(state: AnthropicStreamState): string[] {
@@ -2297,6 +2992,7 @@ function failedResponsesResponseFromStructuredOutputError(input: {
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
   usage?: JsonRecord
   error: JsonRecord
+  metadata?: JsonRecord
 }): JsonRecord {
   return {
     id: input.responseId,
@@ -2326,7 +3022,7 @@ function failedResponsesResponseFromStructuredOutputError(input: {
     truncation: 'disabled',
     usage: anthropicUsageToResponsesUsage(input.usage),
     user: null,
-    metadata: {}
+    metadata: input.metadata ?? {}
   }
 }
 

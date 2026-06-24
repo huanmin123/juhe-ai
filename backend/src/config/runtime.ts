@@ -54,6 +54,21 @@ export interface RuntimeConfig {
     maxResults: number
     maxBodyBytes: number
   }
+  imageGenerationProvider: {
+    endpoint?: string
+    apiKey?: string
+    model: string
+    timeoutMs: number
+    maxBodyBytes: number
+  }
+  hostedToolRuntimes: {
+    codeInterpreter: HostedToolRuntimeMode
+    computer: HostedToolRuntimeMode
+    mcp: HostedToolRuntimeMode
+    shell: HostedToolRuntimeMode
+    skills: HostedToolRuntimeMode
+    toolSearch: HostedToolRuntimeMode
+  }
   log: {
     level: LogLevel
     directory: string
@@ -83,6 +98,7 @@ export type WorkerRuntimeRole =
   | 'ops-worker'
   | 'temporary-maintenance-worker'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
+export type HostedToolRuntimeMode = 'guidance' | 'reject'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -134,6 +150,21 @@ export const runtimeConfig: RuntimeConfig = {
     timeoutMs: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_TIMEOUT_MS', 10000, 1000, 120000),
     maxResults: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_MAX_RESULTS', 5, 1, 10),
     maxBodyBytes: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_MAX_BODY_KB', 512, 16, 4096) * 1024
+  },
+  imageGenerationProvider: {
+    endpoint: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT'),
+    apiKey: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY'),
+    model: stringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL', 'gpt-image-2'),
+    timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 120000, 1000, 300000),
+    maxBodyBytes: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB', 64, 1, 256) * 1024 * 1024
+  },
+  hostedToolRuntimes: {
+    codeInterpreter: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE', 'guidance'),
+    computer: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_COMPUTER_MODE', 'guidance'),
+    mcp: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_MCP_MODE', 'guidance'),
+    shell: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_SHELL_MODE', 'guidance'),
+    skills: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_SKILLS_MODE', 'guidance'),
+    toolSearch: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_TOOL_SEARCH_MODE', 'guidance')
   },
   log: {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),
@@ -317,6 +348,12 @@ function trustProxyConfig(name: string): boolean | number {
     return numericValue
   }
   throw new Error(`${name} 只能配置为 true/false 或 0-16 的反向代理跳数`)
+}
+
+function hostedToolRuntimeModeConfig(name: string, fallback: HostedToolRuntimeMode): HostedToolRuntimeMode {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'guidance' || value === 'reject') return value
+  return fallback
 }
 
 function upstreamUrlSecurityConfig(): RuntimeConfig['upstreamUrlSecurity'] {

@@ -1,4 +1,4 @@
-import { type AccountModelMapping, type ProviderDefinition } from '../../domain/types.js'
+import { type AccountModelMapping, type AccountSupportedEndpointMode, type ProviderDefinition } from '../../domain/types.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
@@ -14,6 +14,7 @@ export interface AccountImportModelCatalogContext {
 export interface AccountImportModelCatalogAccount {
   providerCode: string
   providerProtocolProfileId?: string
+  credentials?: Record<string, unknown>
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   messages: string[]
@@ -36,7 +37,12 @@ export function validateAccountModelCatalogFields(
       account.modelMappings,
       account.providerCode,
       context.targetSystemAccountId,
-      context.providerByCode.get(account.providerCode)?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId)
+      context.providerByCode.get(account.providerCode)?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId),
+      {
+        supportedEndpointModes: Array.isArray(account.credentials?.supported_endpoint_modes)
+          ? account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+          : undefined
+      }
     )
     assertAccountModelMappingUpstreamsAllowedBySupportedModels(account.modelMappings ?? [], account.supportedModels ?? [])
   } catch (error) {

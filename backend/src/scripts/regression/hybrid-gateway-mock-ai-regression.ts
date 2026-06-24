@@ -111,6 +111,10 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+  repositories.updateSettings({
+    temporaryUnschedulableRetryAttempts: 0,
+    temporaryUnschedulableRetryIntervalSeconds: 0
+  })
   gatewayCache.clearGatewayRuntimeCache()
   hybridAffinity.clearHybridRouteAffinityForTest()
   hybridScoring.clearHybridScoringCacheForTest()

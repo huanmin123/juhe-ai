@@ -13,7 +13,7 @@ import {
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { validateAccountEndpointModes } from './accountEndpointModes'
-import { canCreateOAuthAccount, endpointModesForProfile } from './accountProviderCapabilities'
+import { canCreateOAuthAccount, endpointModesForProfile, responsesEndpointModes } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
@@ -104,7 +104,7 @@ export function validateAccountSaveForm(input: {
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)
   if (!responseInspectionValidation.valid) return responseInspectionValidation.message || '账户响应检查策略配置不完整'
-  return validateAccountModelMappings(form.modelMappings)
+  return validateAccountModelMappings(form.modelMappings, form.supportedEndpointModes)
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
@@ -269,7 +269,10 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
   return output
 }
 
-function validateAccountModelMappings(value: AccountFormModel['modelMappings']): string | undefined {
+function validateAccountModelMappings(
+  value: AccountFormModel['modelMappings'],
+  supportedEndpointModes: AccountFormModel['supportedEndpointModes']
+): string | undefined {
   const seenSources = new Set<string>()
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
@@ -285,6 +288,12 @@ function validateAccountModelMappings(value: AccountFormModel['modelMappings']):
     if (sourceEndpointFamily === 'chat_completions' && upstreamEndpointFamily === 'responses') {
       return '暂不支持 Chat Completions 转 Responses'
     }
+    if (upstreamEndpointFamily === 'responses' && sourceEndpointFamily !== 'responses') {
+      return '上游协议 Responses 只能用于 Responses 到 Responses 的原生直连映射'
+    }
+    if (upstreamEndpointFamily === 'responses' && !hasNativeResponsesEndpointMode(supportedEndpointModes)) {
+      return '上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射'
+    }
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
@@ -299,4 +308,8 @@ function validateAccountModelMappings(value: AccountFormModel['modelMappings']):
 
 function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): string {
   return value === 'responses' ? 'Responses' : 'Chat Completions'
+}
+
+function hasNativeResponsesEndpointMode(value: AccountFormModel['supportedEndpointModes']): boolean {
+  return value.some((mode) => responsesEndpointModes.includes(mode))
 }

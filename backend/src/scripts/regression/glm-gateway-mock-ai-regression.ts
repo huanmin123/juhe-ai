@@ -708,10 +708,10 @@ async function assertGlmCodexResponsesBridge(input: {
   const body = parseJsonObject(hits[0]?.bodyText ?? '')
   assert.equal(body.model, input.model)
   assert.equal(body.stream, true, 'GLM Coding Codex 桥接上游请求必须使用 Chat SSE')
-  assert.equal((body.thinking as { type?: unknown } | undefined)?.type, 'disabled', 'GLM Codex bridge 应禁用上游默认思考流以避免工具协议超时')
-  assert.equal(body.tool_stream, true, 'GLM 流式工具调用必须显式启用 tool_stream')
-  assert.equal(body.parallel_tool_calls, false, 'GLM Codex bridge 应强制串行工具调用，避免上游并行工具流超时')
-  assert.equal((body.stream_options as { include_usage?: unknown } | undefined)?.include_usage, true, 'GLM Codex bridge 应请求流式 usage')
+  assert.equal(body.thinking, undefined, 'GLM Codex bridge 不应强加非 OpenAI 标准 thinking 字段')
+  assert.equal(body.tool_stream, undefined, 'GLM Codex bridge 不应强加非 OpenAI 标准 tool_stream 字段')
+  assert.equal(body.parallel_tool_calls, false, 'GLM Codex bridge 应保留下游串行工具调用要求')
+  assert.equal(body.stream_options, undefined, 'GLM Codex bridge 不应强加流式 usage 字段')
   assert(Array.isArray(body.messages), 'GLM Coding Codex 桥接应把 Responses input 转成 Chat messages')
   assert.equal((body.messages as unknown[]).some((message) => JSON.stringify(message).includes('hello glm codex bridge')), true, 'Chat messages 应包含用户输入')
   const chatMessages = body.messages as Array<Record<string, unknown>>
@@ -841,9 +841,47 @@ async function assertGlmCodexResponsesBridgeRejectsForcedNativeTool(input: {
     })
   })
   const autoText = await autoResponse.text()
-  assert.notEqual(autoResponse.status, 200, `auto web_search 不能由 Chat-only bridge 代执行，实际返回成功：${autoText}`)
-  assert.match(autoText, /unsupported_codex_native_tool|不能执行 Responses 原生托管工具/, 'auto 原生托管工具应返回明确错误码或错误文案')
-  assert.equal(upstreamHits.length, start, 'auto web_search 被拒绝时不应命中 Chat 上游')
+  assert.equal(autoResponse.status, 200, `auto web_search 应返回正常 guidance，实际 HTTP ${autoResponse.status}: ${autoText}`)
+  assert.match(autoText, /event: response\.completed/, 'auto 原生托管工具 guidance 应正常完成 Responses SSE')
+  assert.match(autoText, /能力未执行：web_search/, 'auto guidance 应说明未执行 web_search')
+  assert.match(autoText, /GLM 的联网搜索通常应通过该供应商提供的官方 MCP/, 'GLM guidance 应引导本地 MCP 或等价工具')
+  assert.doesNotMatch(autoText, /response\.failed|unsupported_codex_native_tool/, 'auto guidance 不应返回失败事件或旧错误码')
+  assert.equal(upstreamHits.length, start, 'auto web_search guidance 不应命中 Chat 上游')
+
+  const mixedAutoResponse = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-native-tool-mixed-auto-session',
+        thread_id: 'glm-native-tool-mixed-auto-thread',
+        turn_id: 'glm-native-tool-mixed-auto-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: 'hello glm mixed auto should guide as unsupported hosted tool',
+      stream: true,
+      store: false,
+      tools: [
+        { type: 'function', name: 'shell_command', parameters: { type: 'object', properties: {} } },
+        { type: 'custom', name: 'apply_patch', description: 'Apply a patch in the workspace.' },
+        { type: 'tool_search' },
+        { type: 'web_search', external_web_access: false }
+      ],
+      tool_choice: 'auto'
+    })
+  })
+  const mixedAutoText = await mixedAutoResponse.text()
+  assert.equal(mixedAutoResponse.status, 200, `混合 auto hosted tools 应返回正常 guidance，实际 HTTP ${mixedAutoResponse.status}: ${mixedAutoText}`)
+  assert.match(mixedAutoText, /event: response\.completed/, '混合 auto guidance 应正常完成 Responses SSE')
+  assert.match(mixedAutoText, /能力未执行：[^\\n]*(tool_search|web_search)/, '混合 auto guidance 应说明未执行托管工具')
+  assert.match(mixedAutoText, /tool_search/, '混合 auto guidance 应包含 tool_search')
+  assert.match(mixedAutoText, /web_search/, '混合 auto guidance 应包含 web_search')
+  assert.doesNotMatch(mixedAutoText, /response\.failed|unsupported_codex_native_tool/, '混合 auto guidance 不应返回失败事件或旧错误码')
+  assert.equal(upstreamHits.length, start, '混合 auto guidance 不应命中 Chat 上游')
 
   const response = await fetch(`${input.baseUrl}/v1/responses`, {
     method: 'POST',
@@ -872,9 +910,12 @@ async function assertGlmCodexResponsesBridgeRejectsForcedNativeTool(input: {
     })
   })
   const text = await response.text()
-  assert.notEqual(response.status, 200, `强制 web_search 不能由 Chat-only bridge 代执行，实际返回成功：${text}`)
-  assert.match(text, /unsupported_codex_native_tool|不能执行 Responses 原生工具选择 web_search/, '强制原生托管工具应返回明确错误码或错误文案')
-  assert.equal(upstreamHits.length, start, '强制 web_search 被拒绝时不应命中 Chat 上游')
+  assert.equal(response.status, 200, `强制 web_search 应返回正常 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.completed/, '强制原生托管工具 guidance 应正常完成 Responses SSE')
+  assert.match(text, /能力未执行：web_search/, '强制 guidance 应说明未执行 web_search')
+  assert.match(text, /建议下一步/, '强制 guidance 应给出下一步建议')
+  assert.doesNotMatch(text, /response\.failed|unsupported_codex_native_tool/, '强制 guidance 不应返回失败事件或旧错误码')
+  assert.equal(upstreamHits.length, start, '强制 web_search guidance 不应命中 Chat 上游')
 }
 
 async function assertGlmCodexResponsesBridgeRestoresPreviousResponseId(input: {

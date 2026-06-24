@@ -256,6 +256,7 @@ export const accountImportProtocolMarkdown = [
   '- 导入创建时 `status: "active"` 会转为 `pending_test`，测试通过后才参与调度；明确不希望调度时填 `disabled`。',
   '- `supportedModels` 只填明确支持的模型名称；不确定时省略。',
   '- 通用 OpenAI-compatible 上游如需承接 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。',
+  '- `modelMappings` 右侧 `upstreamEndpointFamily: "responses"` 只允许原生 Responses 直连：左侧必须是 `sourceEndpointFamily: "responses"`，且账户真实能力必须包含 `responses_json` 或 `responses_sse`；Chat-only、Messages 或本地 bridge 场景不要选择右侧 Responses。',
   '- 需要把 OpenAI Responses 请求转到 Chat Completions 上游时，在 `modelMappings` 中显式配置 `sourceEndpointFamily: "responses"` 和 `upstreamEndpointFamily: "chat_completions"`；不支持 `chat_completions` 转 `responses`。',
   '- 需要把 OpenAI Chat Completions 或 Responses 请求桥接到 Anthropic Messages 上游时，在 `modelMappings` 中显式配置 `upstreamEndpointFamily: "messages"`；账户真实能力仍在 `credentials.supported_endpoint_modes` 中填写 `messages_json`、`messages_sse`，不要为了桥接填 `responses_json` 或 `responses_sse`。',
   '- GLM Coding OpenAI Chat 和 DeepSeek OpenAI-compatible 的 `credentials.supported_endpoint_modes` 仍填写真实上游能力 `chat_json`、`chat_sse`。',

@@ -90,11 +90,8 @@ export const glmProviderDriver: ProviderDriver = {
         headers,
         body: await buildCodexResponsesChatBridgeBody(req, {
           defaultModel: GLM_CODEX_BRIDGE_DEFAULT_MODEL,
+          guidanceProviderName: 'GLM',
           includeReasoningContent: true,
-          streamOptionsIncludeUsage: true,
-          thinking: { type: 'disabled' },
-          parallelToolCalls: false,
-          toolStream: true,
           modelOverride: modelMapping?.upstreamModel
         }, signal)
       }

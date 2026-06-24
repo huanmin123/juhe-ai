@@ -22,7 +22,7 @@
 1. 能原生映射的字段直接映射。
 2. Anthropic 有等价能力但需要 profile / beta / 模型支持的字段，按账号能力显式启用。
 3. Anthropic 没有等价能力但网关可以实现的能力，由本地工具运行时或本地状态层模拟。
-4. 既不能映射也不能模拟的能力，返回 OpenAI 形态的受控错误，不静默丢弃。
+4. 既不能映射也不能模拟的 hosted/native 能力，返回 OpenAI 形态的 agent guidance；请求本身非法、权限或状态边界问题才返回受控错误。
 
 “完全兼容”的验收口径不是所有 OpenAI 字段都保证同等语义，而是客户端看到的协议形态、错误形态、流式事件、工具生命周期、usage 和状态续链都保持 OpenAI 风格；不可承接能力必须稳定、可诊断、可配置。
 
@@ -33,10 +33,10 @@
 | L1 | 原生字段映射 | Anthropic Messages 有等价表达，例如 text、function tool、tool result、URL / data URL 图片输入 | 直接转换并纳入 mock / real E2E |
 | L2 | 上游能力适配 | Anthropic 有相近能力，但依赖模型、beta header、profile 或服务端工具，例如 extended thinking、web search、computer use、code execution、structured outputs | 只有账号能力显式可用时启用；否则进入 L4 |
 | L3 | 网关本地模拟 | Anthropic 没有等价协议，但网关可以托管状态或执行工具，例如 Responses compact、file_id 解析、OpenAI file_search、image_generation、code interpreter | 必须有本地运行时、权限、审计和用量策略；未配置时进入 L4 |
-| L4 | 受控拒绝 | 当前不能可靠承接，例如 encrypted reasoning 原文验证、跨供应商 compact snapshot、未授权 MCP server | 返回 OpenAI error / Responses failed event，不请求上游 |
+| L4 | Agent guidance / 受控不执行 | 当前不能可靠承接，例如 encrypted reasoning 原文验证、跨供应商 compact snapshot、未授权 MCP server | hosted/native tool 无执行器时返回正常 agent guidance；非法历史、权限或状态边界问题返回对应协议错误；都不请求不支持的上游 |
 | L5 | 显式降级 | 不影响客户端正确性的优化字段，例如部分 metadata、detail hint、非关键 include 字段 | 记录审计 metadata；默认不用于会改变语义的能力 |
 
-默认禁止把 L4 伪装成 L5。只要字段会改变模型可访问的信息、工具执行能力、推理状态或客户端后续流程，就必须映射、模拟或拒绝。
+默认禁止把 L4 伪装成 L5。只要字段会改变模型可访问的信息、工具执行能力、推理状态或客户端后续流程，就必须映射、模拟、返回 agent guidance，或在请求本身非法时拒绝。
 
 ## 4. 当前实现状态
 
@@ -51,7 +51,7 @@
 | Reasoning / thinking | 已把 OpenAI `reasoning.effort` 映射到 Anthropic `thinking`，并把 thinking 输出渲染为 Responses reasoning item | Chat 形态默认不暴露 thinking；模型不支持 thinking 时仍按真实上游错误处理 |
 | Responses `previous_response_id` | Codex 场景已支持 | 普通 Responses 状态、跨 profile 边界和 compact 场景需要补测 |
 | `/responses/compact` | 不作为 Anthropic Messages 直转 endpoint；继续由网关托管 compact preflight / summary compact 承接 | Anthropic bridge 已覆盖 `compaction_summary` 输入恢复；统一非原生 Responses 上游 compact 状态层待后续抽象 |
-| OpenAI hosted tools | 已逐类返回 OpenAI 形态受控错误；Responses `web_search` 在配置本地 HTTP search executor 后可做预取模拟；Chat web search 进入同一 L3 本地预取模拟路径；不会再用泛化错误或静默丢弃 | file_search / image_generation / code_interpreter / computer / MCP 需要对应运行时后才能启用；Chat 搜索模型路径不提供 Responses 的完整工具控制和 sources 能力 |
+| OpenAI hosted tools | 已逐类返回正常 agent guidance 或本地承接；`web_search` 不再走本地预取模拟；`file_search` 和 `image_generation` 已有本地运行时首批路径 | `image_generation` 首批支持 Responses generate JSON / SSE，provider 未配置时返回 OpenAI 形态 guidance 且不命中 Anthropic；provider 审核失败返回 Responses `status=failed` 并保留稳定错误码；Responses `computer` / `code_interpreter` / `mcp` 与 Chat `code_interpreter` 的无 adapter guidance 已有 mock 覆盖；code_interpreter / computer / MCP 真实运行时仍需要对应本地运行时或上游原生等价能力后才能启用；Chat 搜索模型路径不提供 Responses 的完整工具控制和 sources 能力 |
 | 用量映射 | 已映射基本 input / output / cache read 和 thinking tokens | cache write、服务端工具用量和本地工具成本需要补充 |
 
 ## 5. 请求能力矩阵
@@ -78,15 +78,15 @@
 | Chat `role=tool` | user `tool_result` block | L1 | 已支持，补 orphan 拒绝 |
 | Responses `function_call` | assistant `tool_use` block | L1 | 已支持，补参数 JSON 非对象处理 |
 | Responses `function_call_output` | user `tool_result` block | L1 | 已支持，补历史闭合校验 |
-| Chat 搜索模型 / `web_search` / `web_search_preview` | Anthropic server tool 或网关本地 web search tool | L2/L3 | Responses 已支持配置本地 HTTP search executor 后的预取模拟；Chat 按专用搜索模型语义处理为“强制预取一次”：网关执行搜索、把结果注入 Anthropic system，非流式 Chat 返回 `message.annotations`；流式 Chat 保留正文 `[n]` 引用标记，不伪造 Responses hosted item；未配置执行器时仍 L4 |
+| Chat 搜索模型 / `web_search` / `web_search_preview` | Anthropic 原生 server tool / web search 等价能力 | L2/L4 | 当前 bridge 不做本地预取模拟；没有上游原生等价能力时返回正常 agent guidance，不请求 Anthropic、不伪造 citation 或 hosted item |
 | `file_search` | 网关本地 Files / Vector Store 检索后注入 Anthropic system context | L3 | 已按 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md) 实现本地 Files、Vector Store、文本 chunk、keyword retrieval 和 Responses JSON / SSE `file_search_call`；Chat 入口返回 `message.annotations`；vector store file 支持 `in_progress` / `completed` / `failed` 轮询生命周期，未找到、未授权或未就绪时本地 OpenAI 错误 |
-| `code_interpreter` / container | Anthropic code execution tool 或网关本地沙箱 | L2/L3 | 必须隔离文件、网络、时间和资源；没有沙箱时 L4 |
-| `computer` | Anthropic computer use 或网关本地 computer tool adapter | L2/L3 | 需要屏幕状态、动作协议和权限确认；不能用纯文本模拟 |
-| `mcp` / remote MCP | Anthropic MCP connector 或网关 MCP proxy | L2/L3 | 需要 server allowlist、auth、approval 和审计映射；默认 L4 |
-| Codex `shell` / `skills` / `tool_search` | 网关本地工具运行时 | L3 | 只有明确引入本地执行器后启用；模型侧不能凭空执行 |
-| `image_generation` | 本地图像生成 provider 或独立图像 API | L3 | Anthropic Messages 不产生图像；无图像运行时时必须 L4 |
+| `code_interpreter` / container | Anthropic code execution tool 或网关本地沙箱 | L2/L3 | 必须隔离文件、网络、时间和资源；没有沙箱时返回 agent guidance；Responses / Chat 无 adapter guidance 已有 mock 覆盖且不请求 Anthropic；真实运行时按 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md) 推进 |
+| `computer` | Anthropic computer use 或网关本地 computer tool adapter | L2/L3 | 需要屏幕状态、动作协议和权限确认；不能用纯文本模拟；无 adapter 时返回 agent guidance；Responses 无 adapter guidance 已有 mock 覆盖且不请求 Anthropic；真实运行时按 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md) 推进 |
+| `mcp` / remote MCP | Anthropic MCP connector 或网关 MCP proxy | L2/L3 | 需要 server allowlist、auth、approval 和审计映射；默认返回 agent guidance；Responses 无 adapter guidance 已有 mock 覆盖且不请求 Anthropic；真实运行时按 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md) 推进 |
+| Codex `shell` / `skills` / `tool_search` | 网关本地工具运行时 | L3 | 只有明确引入本地执行器后启用；模型侧不能凭空执行；真实运行时按 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md) 推进 |
+| `image_generation` | 本地图像生成 provider 或独立图像 API | L3 | Anthropic Messages 不产生图像；首批由 Anthropic 生成 revised prompt，再调用 OpenAI Images API 兼容 provider，Responses JSON / SSE 返回 `image_generation_call`；无 provider 时返回 guidance 且不命中 Anthropic；provider `moderation_blocked`、非 JSON / 缺失结果、超大响应体、超时返回 Responses failed object；edit / mask / 历史图像复用已覆盖 guidance |
 
-默认策略：列出 hosted tool 但没有可用适配器时，不删除该 tool 后继续请求上游。只有明确配置“可降级的 optional hosted tool”并写审计时，才允许 L5；否则返回 OpenAI 形态错误。
+默认策略：列出 hosted tool 但没有可用适配器时，不删除该 tool 后继续请求上游。只有明确配置“可降级的 optional hosted tool”并写审计时，才允许 L5；否则返回正常 agent guidance。
 
 ### 5.3 结构化输出
 
@@ -111,7 +111,7 @@
 | Responses `input_file.file_data` | Anthropic document block | L2 | 支持 PDF base64 / text/plain；不支持的 MIME 返回本地错误，不静默忽略 |
 | Responses `input_file.file_url` | Anthropic document URL source | L2 | 仅按 PDF URL 子集桥接；其他文件格式需要本地抽取或 Files resolver |
 | Responses `input_file.file_id` | 本地 Files resolver 读取后转 document source | L3 | 已支持本地 `/v1/files` 上传后解析 PDF / text；OpenAI file id 不直接交给 Anthropic；未知或无权 file id 本地失败 |
-| 输出图片 / `image_generation_call` | 本地图像生成 provider 后渲染 OpenAI image item | L3 | 与 Messages 文本响应分离；无 provider 时 L4 |
+| 输出图片 / `image_generation_call` | 本地图像生成 provider 后渲染 OpenAI image item | L3 | 与 Messages 文本响应分离；provider 成功路径输出 base64 `result` 和 `revised_prompt`；provider 失败路径不输出图片，保留 OpenAI 风格 `error.type` / `error.code` / `moderation_details`；审计不保存非流式 `result` 或流式 `partial_image_b64` 正文；流式支持 completed 事件和最终 `response.completed`，当 provider 返回 OpenAI Images SSE 且请求带 `partial_images` 时透出 `response.image_generation_call.partial_image`；真实 partial provider 仍需可用 Images API key 复测 |
 | 图片 `detail` | Anthropic 无完全等价字段 | L5 | 只作审计或提示，不影响图像本体 |
 
 ### 5.5 Reasoning / Thinking
@@ -143,9 +143,9 @@
 | text | `message.content` / `delta.content` | `message.output_text` / `response.output_text.delta` | 已支持，补多 block 顺序 |
 | tool_use | `tool_calls` / `delta.tool_calls` | `function_call` item | 已支持，补参数分片和多工具 |
 | thinking | 默认不进 content | `reasoning` item 或审计 summary | 已实现基础映射，必须防止泄露隐藏思考 |
-| web_search result / citation | Chat JSON `message.annotations`；Chat SSE 正文保留 `[n]` 标记 | Responses `web_search_call` + `annotations` / hosted tool item | 本地预取模拟覆盖 Responses JSON/SSE 和 Chat JSON/SSE；Chat 不输出 `web_search_call` hosted item |
+| web_search result / citation | 不输出本地模拟 citation | 不输出 `web_search_call` | 当前无 Anthropic 原生等价映射；命中 `web_search` 时返回 agent guidance |
 | file_search result / citation | Chat JSON `message.annotations`；Chat SSE 正文保留 `[F1]` / `[F2]` 类引用标记 | Responses `file_search_call` + `file_citation` annotations / include results | 本地预检索模拟覆盖 Responses JSON/SSE 和 Chat JSON；结果来自本地 Vector Store keyword retrieval，不承诺 OpenAI 托管语义完全等价 |
-| image_generation result | 不适用于 Chat text | `image_generation_call` / image output item | 依赖本地图像 provider |
+| image_generation result | 不适用于 Chat text | `image_generation_call` / image output item | 已支持 Responses generate JSON / SSE 的本地 provider 首批路径 |
 | error event | Chat SSE error / 断流策略 | `response.failed` | 已有基础，补 hosted tool 和 reasoning 场景 |
 | usage | Chat `usage` | Responses `usage` | 补 thinking、cache write、本地工具成本 |
 
@@ -157,7 +157,8 @@
 - `upstream_feature`：需要 Anthropic profile / beta / 模型支持。
 - `local_emulation`：需要网关本地运行时。
 - `best_effort_degrade`：显式允许且不改变核心语义的降级。
-- `reject`：本地 OpenAI 形态错误。
+- `guidance`：本地 OpenAI 形态 guidance，供调用方 agent 自行选择本地 MCP / 工具 / 其他供应商。
+- `reject`：本地 OpenAI 形态错误，仅用于请求非法、权限、状态链或 schema 校验等不能继续的边界。
 
 策略层需要输出审计 metadata：
 
@@ -180,7 +181,7 @@ mock 回归至少覆盖：
 | --- | --- |
 | 基础四入口 | Chat JSON、Chat SSE、Responses JSON、Responses SSE |
 | Function tools | 多工具、指定工具、required、none、tool result、orphan tool result |
-| Hosted tools | Responses / Chat web_search 配置执行器成功、web_search 不可用、image_generation required 受控失败、file_search 未知 vector store 本地失败、file_search 本地检索成功路径、vector store file `in_progress` / `failed` 生命周期 |
+| Hosted tools | Responses / Chat `web_search` guidance 且不命中上游、Responses `computer` / `code_interpreter` / `mcp` guidance 且不命中上游、Chat `code_interpreter` guidance 且不命中上游、image_generation 无 provider guidance、image_generation provider JSON / completed-only SSE / partial SSE 成功路径、provider `moderation_blocked` / 非 JSON / 超大响应体 / timeout failed response、edit / mask / 历史复用 guidance、file_search 未知 vector store 本地失败、file_search 本地检索成功路径、vector store file `in_progress` / `failed` 生命周期 |
 | Structured outputs | json_object 合法输出、json_schema strict 成功、schema 失败受控错误、Chat refusal、Responses mismatch code |
 | Thinking | reasoning.effort 映射、thinking 输出不混入文本、reasoning usage 映射 |
 | 图片 / 文件 | 图片 URL、图片 data URL、Chat/Responses inline PDF / text 文件、Responses PDF URL、`/v1/files` 上传后 Chat/Responses `file_id` 成功路径、未知 `file_id` 受控失败 |
@@ -195,7 +196,7 @@ mock 回归至少覆盖：
 - 图片 URL 或 data URL。
 - reasoning / thinking 请求，如果当前模型和上游 profile 支持。
 - web_search 或 code execution，如果当前上游明确支持。
-- 一个不可支持 hosted tool 的 OpenAI 形态错误。
+- 一个不可支持 hosted tool 的 agent guidance 响应。
 - compact / previous_response_id 续链。
 
 真实凭据只能通过临时环境变量传入，不写入仓库、文档、脚本默认值、日志或测试快照。

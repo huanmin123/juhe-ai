@@ -90,6 +90,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
         headers,
         body: await buildCodexResponsesChatBridgeBody(req, {
           defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
+          guidanceProviderName: 'DeepSeek',
           includeReasoningContent: true,
           streamOptionsIncludeUsage: true,
           modelOverride: modelMapping?.upstreamModel

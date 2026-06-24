@@ -945,7 +945,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
   const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
-  const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId, providerProfile) ?? []
+  const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId, providerProfile, {
+    supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  }) ?? []
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
@@ -1172,7 +1174,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     : current.supportedModels ?? []
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
   const nextModelMappings = hasModelMappingsInput
-    ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId, current) ?? []
+    ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId, current, {
+        supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+      }) ?? []
     : current.modelMappings ?? []
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
   const hasTagsInput = hasOwnInput(input, 'tags')

@@ -86,6 +86,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   if (protocolFailure) {
     return finalizeBufferedJsonProtocolFailure(input, protocolFailure)
   }
+  if (isGatewayGeneratedResponsesFailure(parsedJson, input)) return undefined
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)
   const context = {
     clientProfile: input.clientStrategy?.clientProfile ?? defaultClientProfile,
@@ -230,6 +231,22 @@ function validateBufferedJsonProtocolResponse(
     }
   }
   return undefined
+}
+
+function isGatewayGeneratedResponsesFailure(
+  parsedJson: unknown,
+  input: {
+    req: Request
+    account: UpstreamAccount
+  }
+): boolean {
+  const root = plainObject(parsedJson)
+  if (!root) return false
+  if (root.status !== 'failed') return false
+  const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
+  if (endpointFamily !== 'responses') return false
+  const metadata = plainObject(root.metadata)
+  return metadata?.gateway_generated_failure === true
 }
 
 async function finalizeBufferedJsonProtocolFailure(

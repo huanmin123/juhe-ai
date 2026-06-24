@@ -26,16 +26,16 @@ export interface StreamPipeResult {
 
 export interface StreamBodyOmissionSummary {
   omitted: true
-  reason: 'image_stream_payload'
+  reason: 'image_stream_payload' | 'image_json_payload'
   message: string
   totalUpstreamBytes: number
   totalResponseBytes: number
-  sseEventCount: number
+  sseEventCount?: number
   lastSseEventType?: string
-  recentSseEventTypes: string[]
+  recentSseEventTypes?: string[]
   imageOutputReceived: boolean
-  terminalReceived: boolean
-  failedReceived: boolean
+  terminalReceived?: boolean
+  failedReceived?: boolean
 }
 
 interface StreamInspectionSummaryInput {

@@ -2,7 +2,7 @@ import type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js
 
 export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
 
-export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
+export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_succeeded' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditPayloadCaptureStatus = 'complete' | 'summary_only' | 'hash_only' | 'expired' | 'overflow' | 'dropped'
 export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'

@@ -1,4 +1,4 @@
-import type { AccountModelMapping } from '../domain/types.js'
+import type { AccountModelMapping, AccountSupportedEndpointMode } from '../domain/types.js'
 import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
@@ -35,7 +35,10 @@ export function normalizeAccountModelMappingsForProvider(
   value: unknown,
   providerCode: string,
   systemAccountId: string,
-  providerProfile?: ProviderProtocolProfileDefinition
+  providerProfile?: ProviderProtocolProfileDefinition,
+  options: {
+    supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
+  } = {}
 ): AccountModelMapping[] | undefined {
   const mappings = normalizeAccountModelMappingsInput(value)
   if (!mappings?.length) return mappings
@@ -55,6 +58,12 @@ export function normalizeAccountModelMappingsForProvider(
     }
     if ((mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) && !openAIProfile) {
       throw new Error('当前供应商协议不支持 OpenAI 模型映射：只有 OpenAI 协议档案可以把上游协议配置为 Chat Completions 或 Responses')
+    }
+    if (mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY && mapping.sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) {
+      throw new Error('上游协议 Responses 只能用于 Responses 到 Responses 的原生直连映射')
+    }
+    if (mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
+      throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射')
     }
   }
 
@@ -138,4 +147,8 @@ export function assertAccountModelMappingEndpointFamilies(mappings: AccountModel
       throw new Error(`映射上游协议不支持：${mapping.upstreamEndpointFamily}`)
     }
   }
+}
+
+function hasNativeResponsesEndpointMode(value: readonly AccountSupportedEndpointMode[] | undefined): boolean {
+  return (value ?? []).some((mode) => mode === 'responses_json' || mode === 'responses_sse')
 }

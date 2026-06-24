@@ -753,9 +753,46 @@ async function assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(ba
     })
   })
   const text = await response.text()
-  assert.notEqual(response.status, 200, `auto web_search 不能由 Chat-only bridge 代执行，实际返回成功：${text}`)
-  assert.match(text, /unsupported_codex_native_tool|不能执行 Responses 原生托管工具/, 'auto 原生托管工具应返回明确错误码或错误文案')
-  assert.equal(upstreamHits.length, start, 'auto web_search 被拒绝时不应命中 DeepSeek Chat 上游')
+  assert.equal(response.status, 200, `auto web_search 应返回正常 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.completed/, 'auto 原生托管工具 guidance 应正常完成 Responses SSE')
+  assert.match(text, /能力未执行：web_search/, 'auto guidance 应说明未执行 web_search')
+  assert.match(text, /建议下一步/, 'auto guidance 应给出下一步建议')
+  assert.doesNotMatch(text, /response\.failed|unsupported_codex_native_tool/, 'auto guidance 不应返回失败事件或旧错误码')
+  assert.equal(upstreamHits.length, start, 'auto web_search guidance 不应命中 DeepSeek Chat 上游')
+
+  const mixedResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-native-tool-mixed-auto-session',
+        thread_id: 'deepseek-native-tool-mixed-auto-thread',
+        turn_id: 'deepseek-native-tool-mixed-auto-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      input: 'hello deepseek mixed auto should guide as unsupported hosted tool',
+      stream: true,
+      store: false,
+      tools: [
+        { type: 'function', name: 'shell_command', parameters: { type: 'object', properties: {} } },
+        { type: 'custom', name: 'apply_patch', description: 'Apply a patch in the workspace.' },
+        { type: 'tool_search' },
+        { type: 'web_search', external_web_access: false }
+      ],
+      tool_choice: 'auto'
+    })
+  })
+  const mixedText = await mixedResponse.text()
+  assert.equal(mixedResponse.status, 200, `混合 auto hosted tools 应返回正常 guidance，实际 HTTP ${mixedResponse.status}: ${mixedText}`)
+  assert.match(mixedText, /event: response\.completed/, '混合 auto guidance 应正常完成 Responses SSE')
+  assert.match(mixedText, /tool_search/, '混合 auto guidance 应包含 tool_search')
+  assert.match(mixedText, /web_search/, '混合 auto guidance 应包含 web_search')
+  assert.doesNotMatch(mixedText, /response\.failed|unsupported_codex_native_tool/, '混合 auto guidance 不应返回失败事件或旧错误码')
+  assert.equal(upstreamHits.length, start, '混合 auto guidance 不应命中 DeepSeek Chat 上游')
 }
 
 async function assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {

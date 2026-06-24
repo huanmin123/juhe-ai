@@ -46,7 +46,7 @@ import { type GatewayUpstreamResponse } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { createGatewayCompatibilityRecoveryState } from '../client-profiles/compatibility-policy.js'
-import { GatewayRequestValidationError } from '../request/validation-error.js'
+import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../request/validation-error.js'
 import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 
 export interface OpenAIUpstreamDispatchResult {
@@ -57,10 +57,6 @@ export interface OpenAIUpstreamDispatchResult {
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => void
-}
-
-export interface OpenAIUpstreamDispatchOptions {
-  sameAccountRetryEnabled?: boolean
 }
 
 export class UpstreamAttemptError extends Error {
@@ -96,8 +92,7 @@ export async function fetchFirstAvailableUpstream(
   requestLane: OpenAIGatewayRequestLane = 'text',
   groupSchedulingPolicy?: GroupSchedulingPolicy,
   accountStateMutationEnabled = true,
-  requestClientCompatibility?: ClientCompatibilityCapability,
-  options?: OpenAIUpstreamDispatchOptions
+  requestClientCompatibility?: ClientCompatibilityCapability
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -112,7 +107,6 @@ export async function fetchFirstAvailableUpstream(
   const failedAccountIds = new Set<string>()
   let dispatchAccounts = orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
   const compatibilityRecoveryState = createGatewayCompatibilityRecoveryState()
-  const sameAccountRetryEnabled = options?.sameAccountRetryEnabled !== false
 
   while (dispatchAccounts.length > 0) {
     let attemptedAccountCount = 0
@@ -252,6 +246,7 @@ export async function fetchFirstAvailableUpstream(
           } catch (error) {
             if (
               signal?.aborted
+              || error instanceof GatewayAgentGuidanceResponse
               || (error instanceof OpenAIOAuthCodexAdapterError && !error.accountScoped)
               || (error instanceof GatewayRequestValidationError && !error.accountScoped)
             ) {
@@ -355,7 +350,7 @@ export async function fetchFirstAvailableUpstream(
                   lastAttempt,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: sameAccountRetryEnabled && !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy),
+                  retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy),
                   requestBody: body,
                   compatibilityRecoveryState
                 })
@@ -402,7 +397,7 @@ export async function fetchFirstAvailableUpstream(
                   error,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: sameAccountRetryEnabled && !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                  retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 failedAccountIds.add(account.id)

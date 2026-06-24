@@ -27,7 +27,7 @@ OpenAI 到 Anthropic Messages 桥接可以长期支持，但必须按显式桥�
 | `POST /v1/responses` | JSON | `POST /v1/messages` | JSON | Responses JSON |
 | `POST /v1/responses` | SSE | `POST /v1/messages` | SSE | Responses SSE |
 
-这四类都能转为 Anthropic 支持的 Messages 请求。限制是：桥接只承诺明确列出的 OpenAI 协议子集，不承诺完整 OpenAI Responses / Chat 全字段无损等价。遇到不能可靠映射的字段，必须返回本地可读错误或明确降级记录，不能静默丢弃导致客户端误判成功。
+这四类都能转为 Anthropic 支持的 Messages 请求。限制是：桥接只承诺明确列出的 OpenAI 协议子集，不承诺完整 OpenAI Responses / Chat 全字段无损等价。遇到不能可靠映射的 hosted/native 能力时，必须返回本地可读 guidance；遇到非法请求边界时返回本地可读错误，或在明确不会影响客户端正确性的情况下记录降级，不能静默丢弃导致客户端误判成功。
 
 ## 3. 设计原则
 
@@ -74,7 +74,7 @@ OpenAI 到 Anthropic Messages 桥接可以长期支持，但必须按显式桥�
 | `messages[].role=assistant` | `messages[].role=assistant` | 普通文本转 text block；tool_calls 转 tool_use block |
 | `messages[].role=tool` | `messages[].role=user` + `tool_result` | 用 `tool_call_id` 关联 Anthropic `tool_use_id` |
 | `tools[].type=function` | `tools[]` | 转为 Anthropic tool schema |
-| `tools[].type=web_search` / 搜索模型 | 本地 web search 预取 + system 上下文 | 配置本地执行器时强制搜索一次；未配置时本地受控失败 |
+| `tools[].type=web_search` / 搜索模型 | 不做本地预取模拟 | Anthropic 上游没有在本 bridge 中声明原生等价能力时，返回正常 agent guidance 且不请求上游 |
 | `tool_choice` | `tool_choice` | 支持 `auto`、`none`、`required`、指定 function name |
 | `max_completion_tokens` / `max_tokens` | `max_tokens` | 优先使用 OpenAI 显式值；缺失时由桥接层补默认上限 |
 | `temperature`、`top_p`、`stop`、`metadata` | 同名或等价字段 | 能等价表达时透传 |
@@ -88,13 +88,12 @@ Chat `response_format` 做受控结构化输出适配：
 - `json_schema` 校验失败时，Chat JSON 返回合法 Chat Completion，`choices[0].message.content=null`，`choices[0].message.refusal` 携带 `openai_anthropic_bridge_structured_output_schema_mismatch` 和失败原因；Chat SSE 在流内输出 error frame。
 - 不支持 `n > 1`、`logprobs`、音频输出、`modalities` 音频、OpenAI 私有缓存字段的等价能力；命中时返回本地受控错误或明确忽略并写审计，具体策略在实现阶段按风险选择。
 
-Chat web search 做 L3 本地预取模拟：
+Chat web search 边界：
 
-- 官方 Chat Completions 搜索路径是 `gpt-5-search-api` 等专用搜索模型，语义上会先搜索再回答；它不是 Responses 的可选 hosted tool 循环。
-- 当 Chat 请求显式携带 `web_search` / `web_search_preview` tool，或模型名命中搜索模型路径时，如果 `JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT` 配置了本地 HTTP search executor，网关先用最后一条用户文本提取 query 并执行一次搜索。
-- 搜索结果作为 Anthropic system 上下文注入，不把 `web_search` 当 Anthropic client tool 发送。
-- Chat JSON 返回普通 Chat Completion，并在 `choices[0].message.annotations` 写入 `url_citation`；Chat SSE 保持标准 `delta.content` 流和 `[n]` 文本引用标记，不输出 Responses 的 `web_search_call` item。
-- 未配置本地执行器、无法提取 query 或执行器失败时，返回 OpenAI 形态本地错误，不请求 Anthropic。
+- 官方 Chat Completions 搜索路径是专用搜索模型或上游原生托管工具语义；它不是可以靠 Anthropic 文本模型和本地 system 注入无损模拟的通用字段转换。
+- 当前 bridge 不再实现本地 HTTP search executor 预取，不把 `web_search` 当 Anthropic client tool 发送，也不向 Chat JSON / SSE 伪造 citation。
+- 当 Chat 请求显式携带 `web_search` / `web_search_preview` tool，或模型名命中本 bridge 无法原生承接的搜索模型路径时，返回正常 agent guidance，不请求 Anthropic。
+- 只有未来某个 Anthropic profile 明确声明原生 server tool / web search 等价能力，并在 driver 中补齐真实映射和回归测试后，才能单独启用该路径。
 
 ### 5.2 Responses 到 Messages
 
@@ -117,11 +116,11 @@ Chat web search 做 L3 本地预取模拟：
 
 Responses 内置工具不能默认直传 Anthropic。当前策略：
 
-- `web_search` / `web_search_preview`：如果 `JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT` 配置了本地 HTTP search executor，网关会先执行搜索，把结果作为 Anthropic system 上下文注入，再把下游 Responses 输出还原为 `web_search_call` item 和 `url_citation` annotations。该路径是 L3 本地预取模拟，不是 Anthropic 原生 server tool，也不是模型自主多轮工具循环。
+- `web_search` / `web_search_preview`：当前不做本地预取模拟。没有 Anthropic 上游原生等价能力时返回正常 agent guidance，不输出 `web_search_call` 或 `url_citation`。
 - `file_search`：由 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md) 承接。未实现或未配置本地 Vector Store / retrieval 时返回受控错误；启用后先做本地预检索，把结果注入 Anthropic system context，并在 Responses 输出中渲染 `file_search_call`、`file_citation` annotations 和可选 `file_search_call.results`。
-- `code_interpreter`、`computer`、`image_generation`、MCP tool、namespace tool 和 custom tool：没有对应运行时时返回受控错误，不能静默丢弃。
+- `code_interpreter`、`computer`、MCP tool、namespace tool 和 custom tool：没有对应运行时时返回正常 agent guidance，不能静默丢弃。`image_generation` 首批已由本地图像 provider 承接无输入图片的 generate 路径：Anthropic Messages 只生成 revised prompt，图像 provider 返回 OpenAI Images JSON `data[0].b64_json`，桥接层渲染 Responses `image_generation_call.result`；无 provider 时返回 OpenAI 形态 guidance 且不请求 Anthropic。provider `moderation_blocked` 返回 Responses `status=failed` 并保留 `image_generation_user_error`、`moderation_blocked` 和 `moderation_details`；edit / mask 首批返回 guidance，历史图片复用、partial image streaming 继续按 [PLAN-0061](../plans/计划-0061-Responses图像生成本地Provider桥接.md) 后续推进。
 
-Responses `store`、`background`、`conversation`、`include`、`truncation`、`reasoning.encrypted_content`、OpenAI 原生 compact 和 hosted tool 输出不承诺等价。涉及这些字段时，桥接层必须返回可读错误，或在明确不会影响客户端正确性的情况下记录降级。`text.format=json_schema` 校验失败时会生成 Responses failed 语义；当前非流式请求会被 response-inspection 改写为 503，并保留 `openai_anthropic_bridge_structured_output_schema_mismatch`。
+Responses `store`、`background`、`conversation`、`include`、`truncation`、`reasoning.encrypted_content`、OpenAI 原生 compact 和 hosted tool 输出不承诺等价。涉及无法执行的 hosted/native 能力时，桥接层必须返回可读 agent guidance；涉及非法历史、权限、状态边界或 schema 校验失败时返回对应协议错误，或在明确不会影响客户端正确性的情况下记录降级。`text.format=json_schema` 校验失败时会生成 Responses failed 语义；当前非流式请求会被 response-inspection 改写为 503，并保留 `openai_anthropic_bridge_structured_output_schema_mismatch`。
 
 ### 5.3 文件输入边界
 
@@ -198,8 +197,9 @@ Responses SSE 不能复用 Chat SSE chunk handler。OpenAI Responses 是 typed e
 
 ## 8. 错误与降级策略
 
-本地错误格式按下游协议决定：
+本地错误和 guidance 格式按下游协议决定：
 
+- 不支持的 hosted/native tool 且没有真实执行器时，返回正常 Chat Completion / Responses completed guidance 消息，HTTP 200，不请求上游。
 - 下游 Chat JSON 请求：返回 OpenAI Chat-compatible error JSON。
 - Chat structured output 校验失败是例外：为避免被网关协议检查当作非法 Chat Completion 覆盖，返回合法 Chat Completion，并在 `message.refusal` 中携带 bridge 错误码和原因。
 - 下游 Chat SSE 请求：未提交事件前可返回普通 JSON 错误；已提交后按 Chat SSE 失败策略处理。

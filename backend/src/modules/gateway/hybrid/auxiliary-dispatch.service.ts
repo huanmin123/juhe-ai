@@ -173,8 +173,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
       'text',
       selection.groupAccess.schedulingPolicy,
       true,
-      clientStrategy.requestClientCompatibility,
-      { sameAccountRetryEnabled: false }
+      clientStrategy.requestClientCompatibility
     )
     let released = false
     const release = () => {
