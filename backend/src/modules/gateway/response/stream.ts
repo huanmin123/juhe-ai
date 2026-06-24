@@ -68,6 +68,7 @@ export type { StreamBodyOmissionSummary, StreamPipeResult } from './stream-resul
 export interface StreamFailureContext {
   downstreamBytesWritten: number
   outputReceived: boolean
+  protocolFailureEventReceived?: boolean
 }
 
 export interface StreamPipeOptions {
@@ -288,7 +289,7 @@ export async function pipeUpstreamStream(
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived))
+      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, finalInspection.failedReceived))
       endResponse(res)
       if (closeIteratorAfterEnd) {
         void closeAsyncIterator(iterator)
@@ -463,7 +464,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived))
+          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
           await closeAsyncIterator(iterator)
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
@@ -670,7 +671,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived))
+          handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
             message,
@@ -833,7 +834,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
+    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
         event: 'gateway_stream_failure_before_downstream_commit',
@@ -900,7 +901,7 @@ export async function pipeUpstreamStream(
       totalResponseBytes
     )
     if (!success) {
-      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
+      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     }
     streamLogger.warn({
       event: 'gateway_stream_completed_with_parser_skipped',
@@ -924,7 +925,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
+    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, false))
     streamLogger.warn({
       event: 'gateway_stream_missing_terminal',
       elapsedMs: Date.now() - startedAt,
@@ -988,7 +989,7 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
+    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
     streamLogger.warn({
       event: 'gateway_stream_finished_failed',
       completed,
@@ -1101,10 +1102,15 @@ async function readIteratorNextWithTimeout(
   }
 }
 
-function streamFailureContext(downstreamBytesWritten: number, outputReceived: boolean): StreamFailureContext {
+function streamFailureContext(
+  downstreamBytesWritten: number,
+  outputReceived: boolean,
+  protocolFailureEventReceived?: boolean
+): StreamFailureContext {
   return {
     downstreamBytesWritten,
-    outputReceived
+    outputReceived,
+    protocolFailureEventReceived
   }
 }
 

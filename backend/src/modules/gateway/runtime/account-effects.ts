@@ -85,6 +85,18 @@ export function handleStreamFailure(
   recordGatewayUpstreamBucketFailure(account, '流式响应失败')
   const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
+  if (context.protocolFailureEventReceived) {
+    getRequestLogger().info({
+      event: 'gateway_stream_protocol_failure_without_account_suppression',
+      accountId: account.id,
+      accountName: account.name,
+      errorCode,
+      reason,
+      downstreamBytesWritten: context.downstreamBytesWritten,
+      outputReceived: context.outputReceived
+    }, '流式响应收到协议失败事件，已按本次失败返回客户端但不隔离账号')
+    return
+  }
   if (usageContext?.trafficSource === 'gateway') {
     if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {
       const runtimeReason = `流式响应在可见输出前失败：${reason}`

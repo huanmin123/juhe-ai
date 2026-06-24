@@ -742,11 +742,11 @@ async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseU
 
   upstreamHits.length = 0
   const first = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool failover')
-  assert.equal(first.status, 200, `Anthropic 坏 Key 失败后应切到救援账户成功，实际 HTTP ${first.status}: ${first.text}`)
+  assert.equal(first.status, 200, `Anthropic 坏 Key 失败后应按通用策略尝试同账户后续 Key 成功，实际 HTTP ${first.status}: ${first.text}`)
   assert.deepEqual(
     upstreamHits.map((hit) => hit.xApiKey),
-    ['sk-ant-keypool-bad', 'sk-ant-keypool-rescue'],
-    'Anthropic 多 Key 账户当前 Key 失败后，本次请求应切到同分组救援账户'
+    ['sk-ant-keypool-bad', 'sk-ant-keypool-good'],
+    'Anthropic 多 Key 账户当前 Key 失败后，本次请求应按通用策略尝试同账户后续 Key'
   )
 
   upstreamHits.length = 0
