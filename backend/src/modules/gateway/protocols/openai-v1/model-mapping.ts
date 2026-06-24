@@ -76,12 +76,22 @@ export function isOpenAIResponsesToChatCompletionsModelMapping(
     && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
 }
 
+export function isOpenAIChatCompletionsToResponsesModelMapping(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): boolean {
+  return mapping?.sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY
+}
+
 export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: ResolvedOpenAIModelMapping): string {
-  if (!isOpenAIResponsesToChatCompletionsModelMapping(mapping)) {
-    return req.originalUrl || req.path || '/'
-  }
   const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
-  return `/chat/completions${query}`
+  if (isOpenAIResponsesToChatCompletionsModelMapping(mapping)) {
+    return `/chat/completions${query}`
+  }
+  if (isOpenAIChatCompletionsToResponsesModelMapping(mapping)) {
+    return `/responses${query}`
+  }
+  return req.originalUrl || req.path || '/'
 }
 
 export async function buildOpenAIModelMappedJsonBody(

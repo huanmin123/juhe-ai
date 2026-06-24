@@ -150,10 +150,13 @@ export function openAIStreamEventHasVisibleOutput(event: Record<string, unknown>
     return true
   }
   if (eventType === 'response.output_item.added' || eventType === 'response.output_item.done') {
-    return estimateTokensFromOutputValue(event.item) > 0
+    return responsesOutputItemRepresentsClientOutput(event.item)
+      || estimateTokensFromOutputValue(event.item) > 0
   }
   if (eventType === 'response.completed' || eventType === 'response.done' || eventType === 'response.incomplete') {
-    return estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output) > 0
+    const output = (event.response as Record<string, unknown> | undefined)?.output
+    return responsesOutputArrayRepresentsClientOutput(output)
+      || estimateTokensFromOutputValue(output) > 0
   }
   if (isOpenAIImageStreamEventType(eventType)) {
     return true
@@ -245,6 +248,27 @@ function hasMeaningfulDelta(value: unknown): boolean {
     }
   }
   return false
+}
+
+function responsesOutputArrayRepresentsClientOutput(value: unknown): boolean {
+  return Array.isArray(value) && value.some(responsesOutputItemRepresentsClientOutput)
+}
+
+function responsesOutputItemRepresentsClientOutput(value: unknown): boolean {
+  const item = objectValue(value)
+  if (!item || typeof item.type !== 'string') return false
+  return isResponsesCallableOutputItemType(item.type)
+}
+
+function isResponsesCallableOutputItemType(type: string): boolean {
+  return type === 'function_call'
+    || type === 'custom_tool_call'
+    || type === 'computer_call'
+    || type === 'web_search_call'
+    || type === 'file_search_call'
+    || type === 'mcp_call'
+    || type === 'code_interpreter_call'
+    || type === 'image_generation_call'
 }
 
 function estimateTokensFromRequestValue(value: unknown, key = ''): number {

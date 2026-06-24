@@ -172,9 +172,10 @@ function buildGlmOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req: Req
   if (req.method.toUpperCase() !== 'POST') {
     return []
   }
+  const baseUrl = normalizeGlmOpenAIChatBaseUrl(account.baseUrl)
   const modelMapping = resolveOpenAIRequestModelMapping(req, account)
   if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
-    return [`${normalizeGlmBaseUrl(account.baseUrl)}${openAIModelMappedUpstreamPathAndQuery(req, modelMapping)}`]
+    return [`${baseUrl}${openAIModelMappedUpstreamPathAndQuery(req, modelMapping)}`]
   }
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
@@ -182,9 +183,19 @@ function buildGlmOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req: Req
   if (normalizedPath !== '/chat/completions') {
     return []
   }
-  return [`${normalizeGlmBaseUrl(account.baseUrl)}${normalizedPath}${query}`]
+  return [`${baseUrl}${normalizedPath}${query}`]
 }
 
-function normalizeGlmBaseUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/\/+$/, '')
+function normalizeGlmOpenAIChatBaseUrl(baseUrl: string): string {
+  const normalizedBase = baseUrl.trim().replace(/\/+$/, '')
+  try {
+    const url = new URL(normalizedBase)
+    const normalizedPath = url.pathname.replace(/\/+$/, '')
+    if (!normalizedPath || normalizedPath === '/') {
+      return `${url.origin}/v1`
+    }
+  } catch {
+    return normalizedBase
+  }
+  return normalizedBase
 }

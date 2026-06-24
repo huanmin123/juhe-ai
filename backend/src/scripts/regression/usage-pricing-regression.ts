@@ -183,6 +183,22 @@ const outputItemAddedOnlyInspection = inspectOpenAIStreamText([
 assert.equal(outputItemAddedOnlyInspection.outputReceived, false)
 assert.equal(outputItemAddedOnlyInspection.estimatedOutputTokens, undefined)
 
+const customToolCallAddedOnlyInspection = inspectOpenAIStreamText([
+  'event: response.output_item.added',
+  'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"call_1","type":"custom_tool_call","status":"in_progress","name":"apply_patch","call_id":"call_1"}}',
+  ''
+].join('\n'))
+assert.equal(customToolCallAddedOnlyInspection.outputReceived, true)
+assert.equal(customToolCallAddedOnlyInspection.estimatedOutputTokens, undefined)
+
+const functionCallDoneMetadataOnlyInspection = inspectOpenAIStreamText([
+  'event: response.output_item.done',
+  'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"call_2","type":"function_call","status":"completed"}}',
+  ''
+].join('\n'))
+assert.equal(functionCallDoneMetadataOnlyInspection.outputReceived, true)
+assert.equal(functionCallDoneMetadataOnlyInspection.estimatedOutputTokens, undefined)
+
 const outputItemDoneOnlyInspection = inspectOpenAIStreamText([
   'event: response.output_item.done',
   'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world"}]}}',

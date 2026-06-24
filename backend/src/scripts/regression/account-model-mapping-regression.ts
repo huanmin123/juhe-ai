@@ -74,6 +74,16 @@ function responsesToChatMapping(sourceModel: string, upstreamModel: string, enab
   }
 }
 
+function chatToResponsesMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'chat_completions',
+    upstreamModel,
+    upstreamEndpointFamily: 'responses',
+    enabled
+  }
+}
+
 try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
@@ -278,7 +288,46 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       ],
       groupId: group.id
     }, ownerAccess)
-  }, /上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射/, 'Chat-only 账号不能把映射右侧配置成 Responses')
+  }, /上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游/, 'Chat-only 账号不能把映射右侧配置成 Responses')
+
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Chat-only 账号不能配置 Chat 转 Responses',
+      type: 'api_key',
+      clientCompatibility: 'openai_standard',
+      credentials: {
+        api_key: 'sk-account-model-mapping-chat-only-chat-to-responses',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [upstreamModel],
+      modelMappings: [
+        chatToResponsesMapping(sourceModel, upstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游/, 'Chat-only 账号不能配置 Chat Completions 转 Responses')
+
+  const chatToResponsesAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: '原生 Responses 账号允许 Chat 转 Responses',
+    type: 'api_key',
+    clientCompatibility: 'openai_standard',
+    credentials: {
+      api_key: 'sk-account-model-mapping-native-chat-to-responses',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
+    },
+    supportedModels: [upstreamModel],
+    modelMappings: [
+      chatToResponsesMapping(sourceModel, upstreamModel)
+    ],
+    groupId: group.id
+  }, ownerAccess)
+  assert.deepEqual(chatToResponsesAccount.modelMappings, [
+    chatToResponsesMapping(sourceModel, upstreamModel)
+  ], '原生 Responses 账号允许显式 Chat Completions 转 Responses bridge')
 
   const chatBridgeAccount = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
@@ -352,7 +401,7 @@ function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): v
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非原生 Responses 上游映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非原生 Responses 上游映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射')), '导入预览应暴露右侧 Responses 原生能力约束错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')), '导入预览应暴露右侧 Responses 原生能力约束错误')
 }
 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {

@@ -285,14 +285,8 @@ function validateAccountModelMappings(
     if (!sourceModel || !upstreamModel) {
       return '模型映射需要同时选择下游模型和上游模型'
     }
-    if (sourceEndpointFamily === 'chat_completions' && upstreamEndpointFamily === 'responses') {
-      return '暂不支持 Chat Completions 转 Responses'
-    }
-    if (upstreamEndpointFamily === 'responses' && sourceEndpointFamily !== 'responses') {
-      return '上游协议 Responses 只能用于 Responses 到 Responses 的原生直连映射'
-    }
     if (upstreamEndpointFamily === 'responses' && !hasNativeResponsesEndpointMode(supportedEndpointModes)) {
-      return '上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射'
+      return '上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游'
     }
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'

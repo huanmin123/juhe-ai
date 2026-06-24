@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { channel } from 'node:diagnostics_channel'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
@@ -64,6 +64,7 @@ const programmingTextArtifactFallback = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_
 const programmingForceApplyPatchToolChoice = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_FORCE_APPLY_PATCH_TOOL_CHOICE')
 const programmingForceApplyPatchToolChoiceCount = positiveIntegerEnv('JUHE_REAL_CODEX_PROGRAMMING_FORCE_APPLY_PATCH_TOOL_CHOICE_COUNT') ?? 1
 const debugDumpIncomingRequestPath = envText('JUHE_REAL_CODEX_DEBUG_DUMP_INCOMING_REQUEST_PATH')
+const debugDumpGatewayResponsePath = envText('JUHE_REAL_CODEX_DEBUG_DUMP_RESPONSE_PATH')
 const expectMarker = booleanEnv('JUHE_REAL_CODEX_EXPECT_MARKER')
 const expectGuidance = booleanEnv('JUHE_REAL_CODEX_EXPECT_GUIDANCE') || (!programmingTaskEnabled && !expectMarker)
 const marker = `CODEX_GPT_TO_GLM_OK_${Date.now()}`
@@ -260,7 +261,7 @@ try {
 function createGatewayServer(): http.Server {
   const app = express()
   app.use(requestContextMiddleware)
-  app.use('/v1', express.raw({ type: () => true, limit: '12mb' }), captureGatewayRawBody, captureIncomingGatewayRequest, openAIGatewayRouter)
+  app.use('/v1', express.raw({ type: () => true, limit: '12mb' }), captureGatewayRawBody, captureIncomingGatewayRequest, dumpGatewayResponseForDebug, openAIGatewayRouter)
   return http.createServer(app)
 }
 
@@ -337,6 +338,47 @@ function isToolChoiceStillAvailable(toolChoice: unknown, tools: unknown[]): bool
 function dumpIncomingGatewayRequestForDebug(body: Record<string, unknown>): void {
   if (!debugDumpIncomingRequestPath) return
   writeFileSync(debugDumpIncomingRequestPath, `${JSON.stringify(body, null, 2)}\n`, 'utf8')
+}
+
+function dumpGatewayResponseForDebug(req: Request, res: Response, next: NextFunction): void {
+  if (!debugDumpGatewayResponsePath) {
+    next()
+    return
+  }
+  mkdirSync(dirname(debugDumpGatewayResponsePath), { recursive: true })
+  const stream = createWriteStream(debugDumpGatewayResponsePath, { flags: 'a' })
+  let closed = false
+  const writeDump = (chunk: unknown): void => {
+    if (closed || chunk === undefined || chunk === null) return
+    if (Buffer.isBuffer(chunk)) {
+      stream.write(chunk)
+      return
+    }
+    if (chunk instanceof Uint8Array) {
+      stream.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+      return
+    }
+    stream.write(String(chunk))
+  }
+  const finishDump = (label: string): void => {
+    if (closed) return
+    closed = true
+    stream.end(`\n\n--- ${label} ${res.statusCode} ${req.method} ${req.originalUrl || req.url} ---\n`)
+  }
+  stream.write(`--- response ${req.method} ${req.originalUrl || req.url} ---\n`)
+  const originalWrite = res.write.bind(res)
+  const originalEnd = res.end.bind(res)
+  res.write = ((chunk: unknown, ...args: unknown[]) => {
+    writeDump(chunk)
+    return originalWrite(chunk as never, ...args as never[])
+  }) as typeof res.write
+  res.end = ((chunk?: unknown, ...args: unknown[]) => {
+    writeDump(chunk)
+    finishDump('end')
+    return originalEnd(chunk as never, ...args as never[])
+  }) as typeof res.end
+  res.once('close', () => finishDump('close'))
+  next()
 }
 
 function maybeForceApplyPatchToolChoice(req: Request, body: Record<string, unknown>): Record<string, unknown> {

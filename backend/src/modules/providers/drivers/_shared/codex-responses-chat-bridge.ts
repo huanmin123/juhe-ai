@@ -1222,7 +1222,11 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
     const failure = upstreamChatSseErrorFailure(error)
     return failResponsesStream(state, failure.message, failure.code)
   }
-  const output: string[] = ensureResponsesStreamStarted(state)
+  const output: string[] = []
+  const appendOutput = (events: string[]): void => {
+    if (events.length === 0) return
+    output.push(...ensureResponsesStreamStarted(state), ...events)
+  }
   state.model = stringValue(data.model) ?? state.model
   const usage = objectValue(data.usage)
   if (usage) {
@@ -1235,25 +1239,25 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
     if (delta) {
       const reasoningText = stringValue(delta.reasoning_content) ?? stringValue(delta.reasoning)
       if (reasoningText) {
-        output.push(...appendResponsesReasoningDelta(state, reasoningText))
+        appendOutput(appendResponsesReasoningDelta(state, reasoningText))
       }
       const text = stringValue(delta.content) ?? stringValue(delta.refusal)
       if (text) {
-        output.push(...appendResponsesTextDelta(state, text))
+        appendOutput(appendResponsesTextDelta(state, text))
       }
       for (const toolCall of chatToolCallDeltas(delta)) {
-        output.push(...appendResponsesToolCallDelta(state, toolCall))
+        appendOutput(appendResponsesToolCallDelta(state, toolCall))
       }
     }
     if (typeof choice.finish_reason === 'string') {
       state.terminalReceived = true
       const finishReasonFailure = state.finishReasonFailures.get(choice.finish_reason)
       if (finishReasonFailure) {
-        output.push(...completeOpenOutputItems(state))
+        appendOutput(completeOpenOutputItems(state))
         output.push(...failResponsesStream(state, finishReasonFailure.message, finishReasonFailure.code))
         continue
       }
-      output.push(...completeOpenOutputItems(state))
+      appendOutput(completeOpenOutputItems(state))
       output.push(...completeResponsesStream(state))
     }
   }
@@ -1611,7 +1615,7 @@ function completeResponsesStream(state: ChatToResponsesState): string[] {
 
 function failResponsesStream(state: ChatToResponsesState, message: string, code: string): string[] {
   if (state.completed || state.failed) return []
-  const output = ensureResponsesStreamStarted(state)
+  const output = state.started ? ensureResponsesStreamStarted(state) : []
   state.failed = true
   output.push(sse('response.failed', {
     type: 'response.failed',

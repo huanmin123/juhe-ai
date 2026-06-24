@@ -72,11 +72,19 @@
 - [x] 梳理当前 bridge 代码缺口并标注第一批实现点。
 - [x] 实现桥接能力策略层。
 - [x] 实现 hosted tool 分类与 OpenAI 形态 guidance。
+- [x] 补齐工具历史闭合校验：Chat `role=tool` 和 Responses `function_call_output` 缺少匹配 tool call 或重复提交同一调用结果时本地 OpenAI 错误拒绝，不请求 Anthropic。
+- [x] 补齐 function `tool_choice` 边界：Responses `allowed_tools` function 子集过滤到 Anthropic tools；OpenAI reasoning / Anthropic thinking 与强制工具调用冲突时本地拒绝。
+- [x] 补齐历史 function call 参数保留：Chat `tool_calls[].function.arguments` 和 Responses `function_call.arguments` 为 JSON 非对象或非法 JSON 时不再静默转为空对象。
+- [x] 补齐 Anthropic `tool_use` 流式反渲染边界：Chat SSE `tool_calls[].index` 按 OpenAI 工具序号连续递增，Responses SSE 多 function_call item 和 `input_json_delta` 参数分片可消费。
+- [x] 补齐 encrypted reasoning include 边界：Responses `include=reasoning.encrypted_content` 在 Anthropic bridge 下本地 OpenAI 错误拒绝，不请求上游，不静默省略。
+- [x] 补齐 OpenAI 输出形态边界：Chat `n>1`、Chat `logprobs=true` / `top_logprobs>0`、Responses `include=message.output_text.logprobs` / `top_logprobs>0` 在 Anthropic bridge 下本地拒绝，不静默返回少候选或缺少 logprobs 的假成功。
+- [ ] 补齐输出模态和内容块边界：Chat audio output、Chat / Responses `input_audio` 和未知 content block 在 Anthropic bridge 下本地拒绝，不静默丢输入或返回纯文本假成功。
 - [x] 撤销 Chat web_search / 搜索模型本地预取模拟，改为无上游原生等价能力时返回 guidance。
 - [x] 实现 strict structured output 的合成工具路径。
 - [x] 实现 JSON schema 本地二次校验和受控失败。
 - [x] 实现 thinking 输入 / 输出安全映射。
 - [x] 实现图片文件边界和 `file_id` 未配置受控失败。
+- [x] 补齐图片 data URL 输入校验：仅允许 Anthropic 支持的图片 MIME 和合法 base64，非法输入本地拒绝且不请求上游。
 - [x] 实现 Chat / Responses inline PDF / text 文件转 Anthropic document block，保留 `file_id` resolver 缺失的受控失败。
 - [x] 补齐 compact / previous_response_id 专项 mock 回归。
 - [x] 对齐 `/responses/compact` 官方外形、`compaction` item 输入恢复和 compact snapshot 跨 API Key 拒绝回归。
@@ -91,11 +99,19 @@
 | 命令类验证 | 后端类型检查 | `pnpm --dir backend typecheck` | 后端 TypeScript 类型检查通过 | 已通过 | 已通过 |
 | 命令类验证 | 前端类型检查 | `pnpm --dir frontend typecheck` | 前端类型检查不因共享类型变化回归 | 已通过 | 2026-06-24 复跑通过 |
 | Mock 回归 | 基础四入口回归 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat / Responses JSON / SSE 保持通过 | 已通过 | 已通过 |
+| Mock 回归 | 工具历史闭合 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat / Responses orphan 与 duplicate 工具结果返回本地 OpenAI 错误，且不命中 Anthropic | 已通过 | 2026-06-24 复跑通过，Chat / Responses orphan / duplicate 工具结果均本地 400 且不请求 Anthropic |
+| Mock 回归 | Function tool_choice | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Responses `allowed_tools` function 子集只发送允许工具；reasoning + 强制工具调用本地 400 且不请求 Anthropic | 已通过 | 2026-06-24 复跑通过，Anthropic 上游只收到 allowed function tool；thinking + required tool_choice 本地拒绝且不上游 |
+| Mock 回归 | Function arguments 保留 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat / Responses 历史 function call 的 JSON 非对象和非法 JSON arguments 不被吞成 `{}` | 已通过 | 2026-06-24 复跑通过，Chat JSON 数组 arguments 保留为 `openai_arguments`，Responses 非法 JSON arguments 保留为 `openai_arguments_text` |
+| Mock 回归 | Tool use 流式反渲染 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Anthropic 多 tool_use / input_json_delta 转 Chat SSE 和 Responses SSE 时工具顺序、index 与 arguments 正确 | 已通过 | 2026-06-24 复跑通过；修复空 `input:{}` 与 `input_json_delta` 拼接成 `{}{...}` 的问题，Chat SSE 工具 index 按 0/1 连续递增 |
+| Mock 回归 | Encrypted reasoning include | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Responses `include=reasoning.encrypted_content` 本地 400，且不请求 Anthropic | 已通过 | 2026-06-24 复跑通过，返回 `openai_anthropic_bridge_encrypted_reasoning_unsupported` 且不命中 Anthropic |
+| Mock 回归 | 输出形态边界 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat `n>1`、Chat `logprobs=true` / `top_logprobs>0`、Responses `include=message.output_text.logprobs` / `top_logprobs>0` 本地 400，且不请求 Anthropic | 已通过 | 2026-06-24 复跑通过，返回 `openai_anthropic_bridge_multiple_choices_unsupported` / `openai_anthropic_bridge_logprobs_unsupported` 且不命中 Anthropic |
+| Mock 回归 | 输出模态和内容块边界 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat audio output、Chat / Responses `input_audio` 和未知 content block 本地 400，且不请求 Anthropic | 待验证 | 待补 mock 覆盖 |
 | Mock 回归 | Hosted tool 策略 | 扩展 bridge mock 脚本 | web_search / code_interpreter / computer / MCP / image_generation / file_search 等按矩阵映射、guidance 或受控失败 | 已通过 | 已覆盖 Responses / Chat `web_search` guidance 且不请求 Anthropic、Responses `computer` / `code_interpreter` / `mcp` guidance 且不请求 Anthropic、Chat `code_interpreter` guidance 且不请求 Anthropic、`image_generation` 无 provider guidance、provider JSON / completed-only SSE / partial SSE 成功路径、provider `moderation_blocked` failed response、edit / mask / 历史复用 guidance、provider 非 JSON / 超大响应体 / timeout failed response、`file_search` 本地运行时成功和边界失败 |
 | Mock 回归 | Chat web_search 边界 | 扩展 bridge mock 脚本 | Chat JSON/SSE 不做本地执行器预取，`web_search` 返回 guidance，且不把 web_search 发送给 Anthropic | 已通过 | 已覆盖显式 Chat `web_search` guidance 和不命中上游 |
 | Mock 回归 | Structured outputs | 扩展 bridge mock 脚本 | json_schema strict 成功时输出合法 JSON；失败时受控错误 | 已通过 | 已覆盖合成工具成功、本地 schema 二次校验、Chat refusal 和 Responses 503 错误码保留 |
 | Mock 回归 | Thinking | 扩展 bridge mock 脚本 | thinking 不混入普通文本，Responses reasoning / usage 正确 | 已通过 | 已覆盖 JSON 和 SSE |
 | Mock 回归 | 图片与文件 | 扩展 bridge mock 脚本 | 图片 URL / data URL、inline PDF / text 文件和 Responses PDF URL 成功，`file_id` 未配置返回 OpenAI 形态错误 | 已通过 | 已覆盖 Chat data URL、Responses URL、Chat `file_data` PDF、Responses `file_data` text、Responses PDF `file_url`、Responses `file_id` 受控失败 |
+| Mock 回归 | 图片 data URL 校验 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | Chat / Responses 图片 data URL 非图片 MIME 或非法 base64 本地 400，且不请求 Anthropic | 已通过 | 2026-06-24 复跑通过，非图片 MIME 返回 `openai_anthropic_bridge_unsupported_image_media_type`，非法 base64 返回 `openai_anthropic_bridge_invalid_image_base64` |
 | Mock 回归 | Compact | 扩展 bridge mock 脚本 | `compaction` / `compaction_summary` 在 Anthropic bridge 下恢复为 system context；`/responses/compact` 返回 `response.compaction` 且不透传 Anthropic；跨 API Key snapshot 被拒绝 | 已通过 | 已覆盖官方 `compaction` item、历史 `compaction_summary` alias、compact endpoint 输出、恢复到 Anthropic system、`juhecmp.v2` 不上游透传和跨 API Key snapshot 拒绝 |
 | 回归场景 | Anthropic native | `pnpm --dir backend test:anthropic-gateway-mock-ai` | 原生 `/v1/messages` 不受 bridge 策略影响 | 已通过 | 已通过 |
 | 回归场景 | 既有 OpenAI-compatible bridge | `pnpm --dir backend test:deepseek-gateway-mock-ai`、`pnpm --dir backend test:glm-gateway-mock-ai` | 既有 `responses -> chat_completions` 不回归 | 已通过 | 已通过 |
@@ -122,6 +138,15 @@
 | 2026-06-24 | 进行中 | AI | 已补 `image_generation` provider partial SSE：请求带 `partial_images` 时，provider OpenAI Images SSE partial 会转为 Responses `response.image_generation_call.partial_image`；mock 已通过，真实 provider 仍需可用 Images API key。 |
 | 2026-06-24 | 进行中 | AI | 已将 MCP / computer / code execution / Codex 本地工具真实运行时拆分到 `PLAN-0063`，当前仍保持无 adapter guidance；后续必须先完成 Runtime Registry、沙箱 / allowlist / approval / 审计和 mock 回归。 |
 | 2026-06-24 | 进行中 | AI | PLAN-0063 已落地 Runtime Registry 首批骨架：`code_interpreter`、`computer`、`mcp`、`shell`、`skills`、`tool_search` 支持 `guidance` / `reject` 两种保守模式，mock 已覆盖 `code_interpreter=reject` 不上游。 |
+| 2026-06-24 | 进行中 | AI | 已补工具历史闭合策略：Chat `role=tool` 和 Responses `function_call_output` 如果找不到前文 tool call / function_call，或同一调用结果重复提交，本地返回 OpenAI 形态错误并阻止请求 Anthropic。 |
+| 2026-06-24 | 进行中 | AI | 已补 function `tool_choice` 边界：Responses `allowed_tools` function 子集会过滤 Anthropic tools，`mode=required` 映射为 `any`；Anthropic thinking 与 `tool_choice=any/tool` 冲突时本地拒绝。 |
+| 2026-06-24 | 进行中 | AI | 已补历史 function call arguments 保留：JSON 非对象包入 `openai_arguments`，非法 JSON 包入 `openai_arguments_text`，避免桥接到 Anthropic 时静默丢历史。 |
+| 2026-06-24 | 进行中 | AI | 已补 tool_use 流式反渲染：Chat SSE 使用独立 tool ordinal 作为 `tool_calls[].index`；空 `input:{}` 不再与后续 `input_json_delta` 拼接成非法 arguments；mock 覆盖 Chat / Responses 多工具参数分片。 |
+| 2026-06-24 | 进行中 | AI | 已补 Responses `include=reasoning.encrypted_content` 本地拒绝：Anthropic Messages 不能生成或验证 OpenAI encrypted reasoning，当前返回稳定 OpenAI 错误且不请求上游。 |
+| 2026-06-24 | 进行中 | AI | 已补图片 data URL 校验：Chat / Responses 仅接受 Anthropic 支持的 JPEG / PNG / GIF / WEBP 和合法 base64；非图片 MIME 或非法 base64 本地拒绝且不请求上游。 |
+| 2026-06-24 | 进行中 | AI | 已明确下一批输出形态边界：Chat `n>1`、Chat token logprobs 和 Responses output_text logprobs 在 Anthropic Messages 下没有等价返回结构，必须本地拒绝而不是静默降级；`top_logprobs=0` 视为未请求。 |
+| 2026-06-24 | 进行中 | AI | 已补输出形态边界实现和 mock：Chat `n>1` 本地返回 `openai_anthropic_bridge_multiple_choices_unsupported`；Chat / Responses logprobs 请求本地返回 `openai_anthropic_bridge_logprobs_unsupported`；这些错误均不上游。 |
+| 2026-06-24 | 进行中 | AI | 已明确输出模态和内容块边界：Anthropic Messages 不能等价返回 OpenAI Chat audio output，也不能消费 OpenAI `input_audio`；未知 content block 不能静默丢弃，必须先分类再支持。 |
 
 ## 决策记录
 
@@ -157,7 +182,7 @@
 ## 验证记录
 
 - 类型检查：2026-06-24 已复跑并通过 `pnpm --dir backend typecheck` 与 `pnpm --dir frontend typecheck`。
-- Mock 回归：2026-06-24 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`，覆盖四入口、function tools、图片 URL / data URL、Chat `file_data` PDF、Responses `file_data` text、Responses PDF `file_url`、strict JSON schema 合成工具、本地 schema mismatch 失败、thinking JSON / SSE、Responses / Chat `web_search` guidance 且不命中上游、Responses `computer` / `code_interpreter` / `mcp` guidance 且不命中上游、Chat `code_interpreter` guidance 且不命中上游、`image_generation` 无 provider guidance、`image_generation` provider JSON / completed-only SSE / partial SSE 成功路径、provider `moderation_blocked` failed response、edit / mask / 历史复用 guidance、provider 非 JSON / 超大响应体 / timeout failed response、`file_id` 受控失败、`compaction` / `compaction_summary` 恢复、`/responses/compact` 官方外形、跨 API Key snapshot 拒绝和 Codex `previous_response_id`。
+- Mock 回归：2026-06-24 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`，覆盖四入口、Chat `n>1` 本地拒绝、Chat `logprobs=true` / `top_logprobs>0` 本地拒绝、Responses `include=message.output_text.logprobs` / `top_logprobs>0` 本地拒绝、function tools、Responses `allowed_tools` function 子集、非对象 / 非法 JSON arguments 保留、Anthropic 多 tool_use / `input_json_delta` 到 Chat SSE / Responses SSE 的反渲染、thinking + 强制 tool_choice 本地拒绝、Responses `include=reasoning.encrypted_content` 本地拒绝、Chat / Responses orphan / duplicate tool result 本地拒绝、图片 URL / data URL、图片 data URL MIME / base64 拒绝边界、Chat `file_data` PDF、Responses `file_data` text、Responses PDF `file_url`、strict JSON schema 合成工具、本地 schema mismatch 失败、thinking JSON / SSE、Responses / Chat `web_search` guidance 且不命中上游、Responses `computer` / `code_interpreter` / `mcp` guidance 且不命中上游、Chat `code_interpreter` guidance 且不命中上游、`image_generation` 无 provider guidance、`image_generation` provider JSON / completed-only SSE / partial SSE 成功路径、provider `moderation_blocked` failed response、edit / mask / 历史复用 guidance、provider 非 JSON / 超大响应体 / timeout failed response、`file_id` 受控失败、`compaction` / `compaction_summary` 恢复、`/responses/compact` 官方外形、跨 API Key snapshot 拒绝和 Codex `previous_response_id`。
 - 审计回归：2026-06-24 已复跑并通过 `pnpm --dir backend test:gateway-audit-payload-storage`，覆盖流式图像 `partial_image_b64` 和非流式图像 `image_generation_call.result` 审计正文省略。
 - 回归验证：2026-06-24 已复跑并通过 `pnpm --dir backend test:deepseek-gateway-mock-ai`、`pnpm --dir backend test:glm-gateway-mock-ai`；先前已通过 `pnpm --dir backend test:anthropic-gateway-mock-ai`、`pnpm --dir backend test:codex-client-strategy`、`pnpm --dir backend test:hybrid-gateway-mock-ai`。其中 DeepSeek / GLM 回归覆盖 Chat-only bridge `web_search` guidance，确认不再进入网关工具循环。
 - 真实联调：2026-06-24 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-real`；真实上游 `https://vsllm.com`、模型 `claude-sonnet-4-6`、源模型 `gpt-5.5`。结果：核心四入口、`file_search` 本地受控错误、Chat structured output、Chat `file_data` text、Responses `file_data` text、Responses thinking、Responses file_search 本地运行时和 Responses compact 通过；本次 Chat image data URL 可选探针因请求超时失败，Chat web_search 当前真实脚本记录为本地 guidance。真实联调不测外部 PDF URL，避免把上游外网下载稳定性并入协议回归。

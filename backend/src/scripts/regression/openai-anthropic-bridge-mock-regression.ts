@@ -169,23 +169,45 @@ try {
 
     await assertChatJsonBridge(baseUrl, apiKey.key)
     await assertChatSseBridge(baseUrl, apiKey.key)
+    await assertChatMultipleChoicesRejected(baseUrl, apiKey.key)
+    await assertChatLogprobsRejected(baseUrl, apiKey.key)
+    await assertChatAudioOutputRejected(baseUrl, apiKey.key)
+    await assertChatInputAudioRejected(baseUrl, apiKey.key)
+    await assertChatUnknownContentPartRejected(baseUrl, apiKey.key)
+    await assertChatMultiToolSseBridge(baseUrl, apiKey.key)
     await assertResponsesJsonBridge(baseUrl, apiKey.key)
     await assertResponsesSseBridge(baseUrl, apiKey.key)
+    await assertResponsesLogprobsIncludeRejected(baseUrl, apiKey.key)
+    await assertResponsesTopLogprobsRejected(baseUrl, apiKey.key)
+    await assertResponsesInputAudioRejected(baseUrl, apiKey.key)
+    await assertResponsesUnknownContentPartRejected(baseUrl, apiKey.key)
+    await assertResponsesMultiToolSseBridge(baseUrl, apiKey.key)
     await assertBridgeSseErrorShape(baseUrl, apiKey.key)
     await assertChatImageDataUrlBridge(baseUrl, apiKey.key)
     await assertResponsesImageUrlBridge(baseUrl, apiKey.key)
+    await assertChatImageDataUrlMimeRejected(baseUrl, apiKey.key)
+    await assertResponsesImageDataUrlBase64Rejected(baseUrl, apiKey.key)
     await assertChatFileDataPdfBridge(baseUrl, apiKey.key)
     await assertResponsesFileDataTextBridge(baseUrl, apiKey.key)
     await assertResponsesFileUrlPdfBridge(baseUrl, apiKey.key)
     await assertChatToolCallBridge(baseUrl, apiKey.key)
     await assertResponsesFunctionCallBridge(baseUrl, apiKey.key)
+    await assertResponsesAllowedFunctionToolsBridge(baseUrl, apiKey.key)
+    await assertResponsesThinkingForcedToolChoiceRejected(baseUrl, apiKey.key)
     await assertChatToolResultBridge(baseUrl, apiKey.key)
     await assertResponsesFunctionOutputBridge(baseUrl, apiKey.key)
+    await assertChatOrphanToolResultRejected(baseUrl, apiKey.key)
+    await assertResponsesOrphanFunctionOutputRejected(baseUrl, apiKey.key)
+    await assertChatDuplicateToolResultRejected(baseUrl, apiKey.key)
+    await assertResponsesDuplicateFunctionOutputRejected(baseUrl, apiKey.key)
+    await assertChatFunctionArgumentsPreservedBridge(baseUrl, apiKey.key)
+    await assertResponsesFunctionArgumentsPreservedBridge(baseUrl, apiKey.key)
     await assertChatJsonSchemaStructuredOutputBridge(baseUrl, apiKey.key)
     await assertResponsesJsonSchemaStructuredOutputBridge(baseUrl, apiKey.key)
     await assertChatJsonSchemaValidationFailureBridge(baseUrl, apiKey.key)
     await assertResponsesJsonSchemaValidationFailureBridge(baseUrl, apiKey.key)
     await assertResponsesThinkingBridge(baseUrl, apiKey.key)
+    await assertResponsesEncryptedReasoningIncludeRejected(baseUrl, apiKey.key)
     await assertResponsesThinkingSseBridge(baseUrl, apiKey.key)
     await assertResponsesHostedToolUnsupported(baseUrl, apiKey.key)
     await assertHostedToolRuntimeRejectMode(baseUrl, apiKey.key)
@@ -300,6 +322,148 @@ async function assertChatSseBridge(baseUrl: string, localApiKey: string): Promis
   assertBridgeUpstreamHit(upstreamHits[0], true, 'chat sse bridge')
 }
 
+async function assertChatMultipleChoicesRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat n>1 unsupported bridge' }],
+      n: 2,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat n>1 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_multiple_choices_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Chat n>1 不应请求 Anthropic 上游')
+}
+
+async function assertChatLogprobsRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat logprobs unsupported bridge' }],
+      logprobs: true,
+      top_logprobs: 2,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat logprobs 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_logprobs_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Chat logprobs 不应请求 Anthropic 上游')
+}
+
+async function assertChatAudioOutputRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat audio output unsupported bridge' }],
+      modalities: ['text', 'audio'],
+      audio: { voice: 'alloy', format: 'wav' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat audio output 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_output_modality_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Chat audio output 不应请求 Anthropic 上游')
+}
+
+async function assertChatInputAudioRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'chat input audio unsupported bridge' },
+          { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } }
+        ]
+      }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat input_audio 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_audio_input_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Chat input_audio 不应请求 Anthropic 上游')
+}
+
+async function assertChatUnknownContentPartRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'chat unknown content unsupported bridge' },
+          { type: 'custom_binary', value: 'opaque' }
+        ]
+      }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat 未知 content block 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_unsupported_content_part/)
+  assert.equal(upstreamHits.length, 0, 'Chat 未知 content block 不应请求 Anthropic 上游')
+}
+
+async function assertChatMultiToolSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat multi tool sse bridge' }],
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Chat 多工具 SSE 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"tool_calls":\[\{"index":0,"id":"toolu_multi_weather"/, 'Chat SSE 第一个工具 index 应从 0 开始')
+  assert.match(text, /"tool_calls":\[\{"index":1,"id":"toolu_multi_news"/, 'Chat SSE 第二个工具 index 应连续为 1')
+  assert.match(text, /"tool_calls":\[\{"index":0,"function":\{"arguments":"\{\\"city\\""/, 'Chat SSE 应透出第一个工具参数分片')
+  assert.match(text, /"tool_calls":\[\{"index":1,"function":\{"arguments":"\{\\"topic\\""/, 'Chat SSE 应透出第二个工具参数分片')
+  assert.match(text, /data: \[DONE\]/)
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'chat multi tool sse bridge')
+}
+
 async function assertResponsesJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses`, {
@@ -350,6 +514,129 @@ async function assertResponsesSseBridge(baseUrl: string, localApiKey: string): P
   assert.match(text, /event: response\.completed/)
   assert.equal(text.includes('data: [DONE]'), false, 'Responses SSE 不应使用 Chat 的 [DONE] 结束语义')
   assertBridgeUpstreamHit(upstreamHits[0], true, 'responses sse bridge')
+}
+
+async function assertResponsesLogprobsIncludeRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses include output_text logprobs unsupported bridge',
+      include: ['message.output_text.logprobs'],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses logprobs include 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_logprobs_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses logprobs include 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesTopLogprobsRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses top_logprobs unsupported bridge',
+      top_logprobs: 2,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses top_logprobs>0 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_logprobs_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses top_logprobs>0 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesInputAudioRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'responses input audio unsupported bridge' },
+          { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } }
+        ]
+      }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses input_audio 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_audio_input_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses input_audio 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesUnknownContentPartRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'responses unknown content unsupported bridge' },
+          { type: 'custom_binary', value: 'opaque' }
+        ]
+      }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses 未知 content block 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_unsupported_content_part/)
+  assert.equal(upstreamHits.length, 0, 'Responses 未知 content block 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesMultiToolSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses multi tool sse bridge',
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses 多工具 SSE 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.output_item\.added/)
+  assert.match(text, /"type":"function_call","status":"in_progress","call_id":"toolu_multi_weather"/)
+  assert.match(text, /"type":"function_call","status":"in_progress","call_id":"toolu_multi_news"/)
+  assert.match(text, /"type":"function_call","status":"completed","call_id":"toolu_multi_weather","name":"lookup_weather","arguments":"\{\\"city\\":\\"Shanghai\\"\}"/)
+  assert.match(text, /"type":"function_call","status":"completed","call_id":"toolu_multi_news","name":"lookup_news","arguments":"\{\\"topic\\":\\"weather\\"\}"/)
+  assert.match(text, /event: response\.completed/)
+  assert.equal(text.includes('data: [DONE]'), false, 'Responses 多工具 SSE 不应使用 Chat 的 [DONE]')
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'responses multi tool sse bridge')
 }
 
 async function assertBridgeSseErrorShape(baseUrl: string, localApiKey: string): Promise<void> {
@@ -430,6 +717,59 @@ async function assertResponsesImageUrlBridge(baseUrl: string, localApiKey: strin
   const upstreamBodyText = JSON.stringify(upstreamHits[0]?.body ?? {})
   assert.match(upstreamBodyText, /"type":"image"/)
   assert.match(upstreamBodyText, /"source":\{"type":"url","url":"https:\/\/example\.com\/bridge\.png"/)
+}
+
+async function assertChatImageDataUrlMimeRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'chat image data url invalid mime' },
+          { type: 'image_url', image_url: { url: 'data:text/html;base64,PGgxPk5vdCBhbiBpbWFnZTwvaDE+' } }
+        ]
+      }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat 非图片 data URL 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_unsupported_image_media_type/)
+  assert.equal(upstreamHits.length, 0, 'Chat 非图片 data URL 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesImageDataUrlBase64Rejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'responses image data url invalid base64' },
+          { type: 'input_image', image_url: 'data:image/png;base64,not-valid-@@' }
+        ]
+      }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses 非法图片 base64 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_invalid_image_base64/)
+  assert.equal(upstreamHits.length, 0, 'Responses 非法图片 base64 不应请求 Anthropic 上游')
 }
 
 async function assertChatFileDataPdfBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -626,6 +966,86 @@ async function assertResponsesFunctionCallBridge(baseUrl: string, localApiKey: s
   assert.equal(upstreamToolNames(upstreamHits[0])[0], 'lookup_weather')
 }
 
+async function assertResponsesAllowedFunctionToolsBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses allowed tools bridge',
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup_weather',
+          description: '查询城市天气',
+          parameters: {
+            type: 'object',
+            properties: { city: { type: 'string' } },
+            required: ['city']
+          }
+        },
+        {
+          type: 'function',
+          name: 'lookup_news',
+          description: '查询城市新闻',
+          parameters: {
+            type: 'object',
+            properties: { city: { type: 'string' } },
+            required: ['city']
+          }
+        }
+      ],
+      tool_choice: {
+        type: 'allowed_tools',
+        mode: 'required',
+        tools: [{ type: 'function', name: 'lookup_weather' }]
+      },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses allowed_tools 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses allowed tools bridge')
+  assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['lookup_weather'], 'allowed_tools 只应发送允许的 function tool')
+  assert.deepEqual(upstreamHits[0]?.body.tool_choice, { type: 'any' }, 'allowed_tools required 应映射为 Anthropic any')
+}
+
+async function assertResponsesThinkingForcedToolChoiceRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses thinking forced tool choice',
+      reasoning: { effort: 'low' },
+      tools: [{
+        type: 'function',
+        name: 'lookup_weather',
+        description: '查询城市天气',
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city']
+        }
+      }],
+      tool_choice: 'required',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses reasoning + forced tool_choice 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_thinking_forced_tool_choice_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses reasoning + forced tool_choice 不应请求 Anthropic 上游')
+}
+
 async function assertChatToolResultBridge(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -701,6 +1121,207 @@ async function assertResponsesFunctionOutputBridge(baseUrl: string, localApiKey:
   assert.match(upstreamBodyText, /"type":"tool_result"/, 'Responses function_call_output 应转成 Anthropic tool_result')
   assert.match(upstreamBodyText, /"tool_use_id":"call_response_result"/, 'Responses function_call_output 应保留 call_id')
   assert.match(upstreamBodyText, /sunny/, 'Responses function_call_output 应保留工具输出内容')
+}
+
+async function assertChatOrphanToolResultRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'chat orphan tool result' },
+        { role: 'tool', tool_call_id: 'missing_call', content: 'sunny' }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat orphan tool_result 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_orphan_tool_result/)
+  assert.equal(upstreamHits.length, 0, 'Chat orphan tool_result 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesOrphanFunctionOutputRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [
+        {
+          type: 'function_call_output',
+          call_id: 'missing_call',
+          output: 'sunny'
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'responses orphan function output' }]
+        }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses orphan function_call_output 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_orphan_tool_result/)
+  assert.equal(upstreamHits.length, 0, 'Responses orphan function_call_output 不应请求 Anthropic 上游')
+}
+
+async function assertChatDuplicateToolResultRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'chat duplicate tool result' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_duplicate_result',
+            type: 'function',
+            function: { name: 'lookup_weather', arguments: '{"city":"Shanghai"}' }
+          }]
+        },
+        { role: 'tool', tool_call_id: 'call_duplicate_result', content: 'sunny' },
+        { role: 'tool', tool_call_id: 'call_duplicate_result', content: 'sunny again' }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat duplicate tool_result 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_duplicate_tool_result/)
+  assert.equal(upstreamHits.length, 0, 'Chat duplicate tool_result 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesDuplicateFunctionOutputRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [
+        {
+          type: 'function_call',
+          call_id: 'call_duplicate_response',
+          name: 'lookup_weather',
+          arguments: '{"city":"Shanghai"}'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_duplicate_response',
+          output: 'sunny'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_duplicate_response',
+          output: 'sunny again'
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'responses duplicate function output' }]
+        }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses duplicate function_call_output 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_duplicate_tool_result/)
+  assert.equal(upstreamHits.length, 0, 'Responses duplicate function_call_output 不应请求 Anthropic 上游')
+}
+
+async function assertChatFunctionArgumentsPreservedBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'chat function arguments history' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_array_arguments',
+            type: 'function',
+            function: { name: 'lookup_weather', arguments: '["Shanghai"]' }
+          }]
+        },
+        { role: 'tool', tool_call_id: 'call_array_arguments', content: 'sunny' },
+        { role: 'user', content: 'chat non object arguments bridge' }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Chat 非对象 arguments 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'chat non object arguments bridge')
+  const upstreamBodyText = JSON.stringify(upstreamHits[0]?.body ?? {})
+  assert.match(upstreamBodyText, /"openai_arguments":\["Shanghai"\]/, 'Chat JSON 非对象 arguments 不应被吞成空对象')
+}
+
+async function assertResponsesFunctionArgumentsPreservedBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [
+        {
+          type: 'function_call',
+          call_id: 'call_invalid_arguments',
+          name: 'lookup_weather',
+          arguments: 'not-json'
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_invalid_arguments',
+          output: 'sunny'
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'responses invalid arguments bridge' }]
+        }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses 非法 arguments 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses invalid arguments bridge')
+  const upstreamBodyText = JSON.stringify(upstreamHits[0]?.body ?? {})
+  assert.match(upstreamBodyText, /"openai_arguments_text":"not-json"/, 'Responses 非法 JSON arguments 不应被吞成空对象')
 }
 
 async function assertChatJsonSchemaStructuredOutputBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -890,6 +1511,28 @@ async function assertResponsesThinkingBridge(baseUrl: string, localApiKey: strin
   assert.equal(body.output?.some((item) => item.type === 'reasoning'), true, 'Anthropic thinking 应渲染为 Responses reasoning item')
   assertBridgeUpstreamHit(upstreamHits[0], false, 'responses thinking bridge')
   assert.deepEqual(upstreamHits[0]?.body.thinking, { type: 'enabled', budget_tokens: 2048 })
+}
+
+async function assertResponsesEncryptedReasoningIncludeRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses encrypted reasoning include unsupported',
+      reasoning: { effort: 'low' },
+      include: ['reasoning.encrypted_content'],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses encrypted reasoning include 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_encrypted_reasoning_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses encrypted reasoning include 不应请求 Anthropic 上游')
 }
 
 async function assertResponsesThinkingSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -2478,6 +3121,11 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         sendAnthropicThinkingSse(res, `msg_openai_anthropic_bridge_thinking_sse_${hitIndex}`)
       } else if (body.stream === true && bodyText.includes('anthropic file search sse bridge')) {
         sendAnthropicFileSearchSse(res, `msg_openai_anthropic_bridge_file_search_sse_${hitIndex}`)
+      } else if (
+        body.stream === true
+        && (bodyText.includes('chat multi tool sse bridge') || bodyText.includes('responses multi tool sse bridge'))
+      ) {
+        sendAnthropicMultiToolSse(res, `msg_openai_anthropic_bridge_multi_tool_sse_${hitIndex}`)
       } else if (body.stream === true) {
         sendAnthropicSse(res, `msg_openai_anthropic_bridge_sse_${hitIndex}`)
       } else if (anthropicRequestHasStructuredOutputTool(body) && bodyText.includes('structured schema invalid bridge')) {
@@ -2883,6 +3531,90 @@ function sendAnthropicSse(res: http.ServerResponse, messageId: string): void {
     type: 'message_delta',
     delta: { stop_reason: 'end_turn' },
     usage: { output_tokens: 4 }
+  })
+  writeSse(res, 'message_stop', { type: 'message_stop' })
+  res.end()
+}
+
+function sendAnthropicMultiToolSse(res: http.ServerResponse, messageId: string): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  writeSse(res, 'message_start', {
+    type: 'message_start',
+    message: {
+      id: messageId,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-haiku-4-5',
+      content: [],
+      usage: { input_tokens: 8, output_tokens: 0 }
+    }
+  })
+  writeSse(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'text', text: '' }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'text_delta', text: 'planning tool calls' }
+  })
+  writeSse(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: 0
+  })
+  writeSse(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: 1,
+    content_block: {
+      type: 'tool_use',
+      id: 'toolu_multi_weather',
+      name: 'lookup_weather',
+      input: {}
+    }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 1,
+    delta: { type: 'input_json_delta', partial_json: '{"city"' }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 1,
+    delta: { type: 'input_json_delta', partial_json: ':"Shanghai"}' }
+  })
+  writeSse(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: 1
+  })
+  writeSse(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: 2,
+    content_block: {
+      type: 'tool_use',
+      id: 'toolu_multi_news',
+      name: 'lookup_news',
+      input: {}
+    }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 2,
+    delta: { type: 'input_json_delta', partial_json: '{"topic"' }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 2,
+    delta: { type: 'input_json_delta', partial_json: ':"weather"}' }
+  })
+  writeSse(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: 2
+  })
+  writeSse(res, 'message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use' },
+    usage: { output_tokens: 9 }
   })
   writeSse(res, 'message_stop', { type: 'message_stop' })
   res.end()

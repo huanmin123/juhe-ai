@@ -9,6 +9,7 @@ import express from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-compatible-gateway-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -48,6 +49,8 @@ let upstreamHitCount = 0
 let upstreamAuthorization = ''
 let upstreamPath = ''
 let upstreamRequestBody = ''
+const chatToResponsesSourceModel = 'openai-compatible-chat-to-responses-source'
+const chatToResponsesUpstreamModel = 'openai-compatible-responses-upstream'
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -60,6 +63,7 @@ try {
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
+    registerCustomModels()
     upstreamServer = createOpenAICompatibleUpstream()
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
@@ -75,11 +79,19 @@ try {
       type: 'api_key',
       credentials: {
         api_key: 'sk-openai-compatible-upstream',
-        base_url: upstreamBaseUrl
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
       },
       groupId: group.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      modelMappings: [{
+        sourceModel: chatToResponsesSourceModel,
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel: chatToResponsesUpstreamModel,
+        upstreamEndpointFamily: 'responses',
+        enabled: true
+      }]
     }, access)
     const apiKey = repositories.createApiKeyRecord({
       name: '通用 OpenAI 兼容网关 E2E Key',
@@ -113,6 +125,66 @@ try {
     assert.equal(upstreamAuthorization, 'Bearer sk-openai-compatible-upstream')
     assert.match(upstreamRequestBody, /generic openai provider/)
 
+    const bridgeJsonResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: chatToResponsesSourceModel,
+        messages: [{ role: 'user', content: 'call lookup tool' }],
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'lookup',
+            description: 'lookup test data',
+            parameters: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query']
+            }
+          }
+        }],
+        tool_choice: { type: 'function', function: { name: 'lookup' } },
+        stream: false
+      })
+    })
+    const bridgeJsonText = await bridgeJsonResponse.text()
+    assert.equal(bridgeJsonResponse.status, 200, `Chat -> Responses JSON bridge 应成功，实际 HTTP ${bridgeJsonResponse.status}: ${bridgeJsonText}`)
+    const bridgeJsonBody = JSON.parse(bridgeJsonText) as { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> }; finish_reason?: string }> }
+    assert.equal(bridgeJsonBody.choices?.[0]?.finish_reason, 'tool_calls')
+    assert.equal(bridgeJsonBody.choices?.[0]?.message?.content, null)
+    assert.equal(bridgeJsonBody.choices?.[0]?.message?.tool_calls?.[0]?.function?.name, 'lookup')
+    assert.match(bridgeJsonBody.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments ?? '', /query/)
+    assert.equal(upstreamPath, '/v1/responses')
+    const bridgeJsonUpstreamBody = JSON.parse(upstreamRequestBody) as { model?: string; input?: unknown[]; tools?: Array<{ type?: string; name?: string }>; tool_choice?: { type?: string; name?: string } }
+    assert.equal(bridgeJsonUpstreamBody.model, chatToResponsesUpstreamModel, 'Chat -> Responses bridge 应改写上游模型')
+    assert.equal(bridgeJsonUpstreamBody.tools?.[0]?.type, 'function', 'Chat function tool 应转换为 Responses function tool')
+    assert.equal(bridgeJsonUpstreamBody.tools?.[0]?.name, 'lookup', 'Chat function 名称应进入 Responses tool 顶层')
+    assert.equal(bridgeJsonUpstreamBody.tool_choice?.name, 'lookup', 'Chat tool_choice 应转换为 Responses tool_choice')
+
+    const bridgeSseResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: chatToResponsesSourceModel,
+        messages: [{ role: 'user', content: 'stream through responses' }],
+        stream: true
+      })
+    })
+    const bridgeSseText = await bridgeSseResponse.text()
+    assert.equal(bridgeSseResponse.status, 200, `Chat -> Responses SSE bridge 应成功，实际 HTTP ${bridgeSseResponse.status}: ${bridgeSseText}`)
+    assert.match(bridgeSseResponse.headers.get('content-type') ?? '', /text\/event-stream/)
+    assert.match(bridgeSseText, /chat\.completion\.chunk/, 'Chat -> Responses SSE bridge 应输出 Chat chunk')
+    assert.match(bridgeSseText, /data:\s*\[DONE\]/, 'Chat -> Responses SSE bridge 应以 [DONE] 结束')
+    assert.match(bridgeSseText, /responses-stream-ok/, 'Chat -> Responses SSE bridge 应透出 Responses 文本 delta')
+    assert.equal(upstreamPath, '/v1/responses')
+    assert.equal(JSON.parse(upstreamRequestBody).stream, true, '下游 Chat SSE 应转换为上游 Responses SSE')
+
     const updated = repositories.findAccountSummary(account.id, access)
     assert.equal(updated?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '命中账号应保持通用 openai providerCode')
     assert.equal(updated?.status, 'active', '成功请求不应改写账号状态')
@@ -133,6 +205,21 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
+function registerCustomModels(): void {
+  for (const model of [chatToResponsesSourceModel, chatToResponsesUpstreamModel]) {
+    saveCustomProviderModel({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      model,
+      scope: 'global',
+      status: 'active',
+      supportedApiProtocols: ['chat_completions', 'responses'],
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2,
+      actorSystemAccountId: access.systemAccountId
+    })
+  }
+}
+
 function createOpenAICompatibleUpstream(): http.Server {
   return http.createServer((req, res) => {
     upstreamHitCount += 1
@@ -142,6 +229,46 @@ function createOpenAICompatibleUpstream(): http.Server {
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
       upstreamRequestBody = Buffer.concat(chunks).toString('utf8')
+      if ((req.url ?? '').split('?', 1)[0] === '/v1/responses') {
+        const requestBody = JSON.parse(upstreamRequestBody) as { stream?: boolean; tools?: unknown[] }
+        if (requestBody.stream === true) {
+          res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+          res.write('event: response.created\ndata: {"type":"response.created","response":{"id":"resp-openai-compatible-e2e","model":"openai-compatible-responses-upstream","status":"in_progress"}}\n\n')
+          res.write('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"responses-stream-ok"}\n\n')
+          res.end('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp-openai-compatible-e2e","model":"openai-compatible-responses-upstream","status":"completed","usage":{"input_tokens":5,"output_tokens":6,"total_tokens":11}}}\n\n')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'resp-openai-compatible-e2e',
+          object: 'response',
+          created_at: 1782259200,
+          status: 'completed',
+          model: 'openai-compatible-responses-upstream',
+          output: Array.isArray(requestBody.tools) && requestBody.tools.length > 0
+            ? [{
+                id: 'fc-openai-compatible-e2e',
+                type: 'function_call',
+                status: 'completed',
+                call_id: 'call-openai-compatible-e2e',
+                name: 'lookup',
+                arguments: '{"query":"ping"}'
+              }]
+            : [{
+                id: 'msg-openai-compatible-e2e',
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                content: [{ type: 'output_text', text: 'responses-json-ok' }]
+              }],
+          usage: {
+            input_tokens: 5,
+            output_tokens: 6,
+            total_tokens: 11
+          }
+        }))
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
         id: 'chatcmpl-openai-compatible-e2e',

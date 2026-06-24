@@ -1019,7 +1019,27 @@ function listRelatedProcesses(parentPid: number | undefined): ProcessSnapshot[] 
 
 function listProcessTable(): ProcessSnapshot[] {
   if (process.platform === 'win32') {
-    return []
+    const output = execFileSync('pwsh', [
+      '-NoProfile',
+      '-Command',
+      'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress'
+    ], { encoding: 'utf8' })
+    const parsed = JSON.parse(output || '[]') as unknown
+    const rows = Array.isArray(parsed) ? parsed : [parsed]
+    return rows.flatMap((row) => {
+      if (!row || typeof row !== 'object') return []
+      const record = row as Record<string, unknown>
+      const pid = Number(record.ProcessId)
+      const ppid = Number(record.ParentProcessId)
+      if (!Number.isFinite(pid) || !Number.isFinite(ppid)) return []
+      return [{
+        pid,
+        ppid,
+        cpuPercent: 0,
+        rssMb: 0,
+        command: typeof record.CommandLine === 'string' ? record.CommandLine : ''
+      }]
+    })
   }
   const output = execFileSync('ps', ['-eo', 'pid=,ppid=,pcpu=,rss=,command='], { encoding: 'utf8' })
   const rows: ProcessSnapshot[] = []

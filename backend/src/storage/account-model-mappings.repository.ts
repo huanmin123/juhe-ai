@@ -140,9 +140,6 @@ function assertSupportedEndpointFamilyConversion(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): void {
-  if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) {
-    throw new Error('暂不支持 Chat Completions 转 Responses')
-  }
   if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY) {
     throw new Error(`暂不支持转发到 ${endpointFamilyLabel(upstreamEndpointFamily)}`)
   }

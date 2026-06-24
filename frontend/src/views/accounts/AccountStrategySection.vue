@@ -209,21 +209,21 @@ watch(() => [
   props.form.supportedEndpointModes.join(',')
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
-    if (mapping.upstreamEndpointFamily === 'responses' && !canSelectResponsesUpstream(mapping.sourceEndpointFamily)) {
+    if (mapping.upstreamEndpointFamily === 'responses' && !canSelectResponsesUpstream()) {
       mapping.upstreamEndpointFamily = 'chat_completions'
     }
   }
 })
 
-function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
+function upstreamEndpointFamilyOptions(_sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
   return endpointFamilyOptions.map((option) => ({
     ...option,
-    disabled: option.value === 'responses' && !canSelectResponsesUpstream(sourceEndpointFamily)
+    disabled: option.value === 'responses' && !canSelectResponsesUpstream()
   }))
 }
 
-function canSelectResponsesUpstream(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): boolean {
-  return sourceEndpointFamily === 'responses' && nativeResponsesUpstreamAvailable.value
+function canSelectResponsesUpstream(): boolean {
+  return nativeResponsesUpstreamAvailable.value
 }
 
 function addModelMapping(): void {

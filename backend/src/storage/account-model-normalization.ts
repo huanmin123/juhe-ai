@@ -59,11 +59,8 @@ export function normalizeAccountModelMappingsForProvider(
     if ((mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) && !openAIProfile) {
       throw new Error('当前供应商协议不支持 OpenAI 模型映射：只有 OpenAI 协议档案可以把上游协议配置为 Chat Completions 或 Responses')
     }
-    if (mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY && mapping.sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) {
-      throw new Error('上游协议 Responses 只能用于 Responses 到 Responses 的原生直连映射')
-    }
     if (mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
-      throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的直连映射')
+      throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
     }
   }
 

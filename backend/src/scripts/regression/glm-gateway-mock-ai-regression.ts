@@ -1178,6 +1178,8 @@ async function assertGlmCodexResponsesBridgeFailsOnErrorEvent(input: {
   assert.match(text, /上游流式响应在输出前失败，请重试/, '上游 error 事件应向 Codex 客户端返回统一可重试文案')
   assert(!text.includes('glm mock stream error'), 'GLM 上游 error 原文不应泄露到 Codex Responses failed payload')
   assert(!text.includes('event: response.completed'), '上游 Chat SSE error 事件时桥接不应输出 completed 事件')
+  assert(!text.includes('event: response.created'), '上游 Chat SSE 输出前 error 时桥接不应提前输出 Responses created 事件')
+  assert(!text.includes('event: response.in_progress'), '上游 Chat SSE 输出前 error 时桥接不应提前输出 Responses in_progress 事件')
 }
 
 async function assertGlmCodexResponsesBridgeFailsOnNetworkFinishReason(input: {
@@ -1192,6 +1194,8 @@ async function assertGlmCodexResponsesBridgeFailsOnNetworkFinishReason(input: {
   assert.match(text, /upstream_retryable_error/, 'GLM network_error finish_reason 应标记为可重试上游错误')
   assert.match(text, /上游流式响应在输出前失败，请重试/, 'GLM network_error finish_reason 应返回 Codex 可重试文案')
   assert(!text.includes('event: response.completed'), 'GLM network_error finish_reason 不应输出 completed 事件')
+  assert(!text.includes('event: response.created'), 'GLM network_error 输出前失败时桥接不应提前输出 Responses created 事件')
+  assert(!text.includes('event: response.in_progress'), 'GLM network_error 输出前失败时桥接不应提前输出 Responses in_progress 事件')
 }
 
 async function requestGlmCodexBridgeFailure(input: {

@@ -18,6 +18,7 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isOpenAIChatCompletionsToResponsesModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
   openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
@@ -36,6 +37,11 @@ import {
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
+import {
+  buildOpenAIChatResponsesBridgeBody,
+  prepareOpenAIChatResponsesBridgeHeaders,
+  transformOpenAIChatResponsesBridgeUpstreamResponse
+} from '../_shared/openai-chat-responses-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 
 function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
@@ -71,7 +77,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       return []
     }
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+    if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping))) {
       return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
     }
     return buildUpstreamUrls(account.baseUrl, req.originalUrl)
@@ -84,6 +90,17 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       return {
         headers,
         body: await buildCodexResponsesChatBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
+    if (modelMapping && isOpenAIChatCompletionsToResponsesModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareOpenAIChatResponsesBridgeHeaders(headers)
+      return {
+        headers,
+        body: await buildOpenAIChatResponsesBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
         }, signal)
@@ -104,7 +121,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
   },
   transformUpstreamResponse(req, account, response, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    return transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
+    const responsesToChatResponse = transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
       defaultModel: modelMapping?.upstreamModel ?? requestModel(req) ?? 'openai-compatible',
       enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: true,
@@ -115,6 +132,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       continueChatRequest: context?.codexResponsesChatBridgeContinueChatRequest,
       requestClientCompatibility: context?.requestClientCompatibility
     })
+    return transformOpenAIChatResponsesBridgeUpstreamResponse(req, responsesToChatResponse, {
+      enabled: isOpenAIChatCompletionsToResponsesModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'openai-compatible'
+    })
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
@@ -122,6 +143,22 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
     if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
+    if (modelMapping && isOpenAIChatCompletionsToResponsesModelMapping(modelMapping)) {
+      const mode = openAIEndpointModeForRequestShape({
+        endpoint: '/responses',
+        stream: isEffectiveOpenAIStreamRequest(req, account)
+      })
+      if (!mode) return false
+      return accountSupportsOpenAIEndpointMode({
+        mode,
         supportedEndpointModes: account.supportedEndpointModes,
         credentials: account.credentials,
         providerCode: account.providerCode,

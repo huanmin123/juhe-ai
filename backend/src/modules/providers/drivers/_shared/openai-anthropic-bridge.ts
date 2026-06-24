@@ -192,6 +192,11 @@ interface AnthropicMessage {
 
 type AnthropicContentBlock = JsonRecord
 
+interface OpenAIToolResultHistory {
+  toolCallIds: Set<string>
+  completedToolCallIds: Set<string>
+}
+
 interface ParsedSseEvent {
   eventName?: string
   dataText: string
@@ -204,6 +209,7 @@ interface AnthropicStreamBlockState {
   type: string
   id?: string
   name?: string
+  toolCallIndex?: number
   text: string
   inputJson: string
   outputIndex?: number
@@ -223,6 +229,7 @@ interface AnthropicStreamState {
   responsesStarted: boolean
   responseMessageId: string
   nextOutputIndex: number
+  nextToolCallIndex: number
   blocks: Map<number, AnthropicStreamBlockState>
   outputItems: JsonRecord[]
   usage?: JsonRecord
@@ -318,6 +325,8 @@ export async function buildOpenAIToAnthropicBridgeBody(
     throw bridgeValidationError('OpenAI 到 Anthropic 桥接请求缺少 model', 'openai_anthropic_bridge_missing_model')
   }
   const requestPlan = createOpenAIToAnthropicBridgeRequestPlan(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicUnsupportedIncludes(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicOutputShapeOptions(sourceEndpointFamily, body)
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
   const guidance = openAIToAnthropicUnsupportedToolGuidance(sourceEndpointFamily, body, requestPlan, options, {
     model,
@@ -407,6 +416,7 @@ async function chatBodyToAnthropicMessages(
   const messages: AnthropicMessage[] = []
   const systemParts: string[] = []
   const inputMessages = Array.isArray(body.messages) ? body.messages : []
+  const toolHistory = createOpenAIToolResultHistory()
   for (const item of inputMessages) {
     if (!isPlainObject(item)) continue
     const role = stringValue(item.role)
@@ -415,11 +425,16 @@ async function chatBodyToAnthropicMessages(
       continue
     }
     if (role === 'tool') {
+      const callId = validateOpenAIToolResultHistory(
+        toolHistory,
+        stringValue(item.tool_call_id) ?? stringValue(item.id),
+        'Chat'
+      )
       appendAnthropicMessage(messages, {
         role: 'user',
         content: [{
           type: 'tool_result',
-          tool_use_id: stringValue(item.tool_call_id) ?? stringValue(item.id) ?? `tool_${messages.length}`,
+          tool_use_id: callId,
           content: openAIContentToText(item.content)
         }]
       })
@@ -429,6 +444,7 @@ async function chatBodyToAnthropicMessages(
     const content = await openAIChatContentToAnthropicBlocks(item.content, contentContext)
     if (role === 'assistant') {
       const toolUseBlocks = chatToolCallsToAnthropicToolUseBlocks(item.tool_calls)
+      rememberAnthropicToolUseBlocks(toolHistory, toolUseBlocks)
       content.push(...toolUseBlocks)
     }
     appendAnthropicMessage(messages, {
@@ -445,8 +461,9 @@ async function chatBodyToAnthropicMessages(
   output.messages = messages
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
-  const tools = chatToolsToAnthropicTools(body.tools, requestPlan)
+  const tools = chatToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
   applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput)
+  validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
   }
@@ -470,6 +487,7 @@ async function responsesBodyToAnthropicMessages(
   const systemParts: string[] = []
   appendSystemText(systemParts, stringValue(body.instructions))
   const input = body.input
+  const toolHistory = createOpenAIToolResultHistory()
   if (typeof input === 'string') {
     appendAnthropicMessage(messages, {
       role: 'user',
@@ -477,10 +495,10 @@ async function responsesBodyToAnthropicMessages(
     })
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, item, contentContext)
+      await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, item, contentContext, toolHistory)
     }
   } else if (isPlainObject(input)) {
-    await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, input, contentContext)
+    await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, input, contentContext, toolHistory)
   }
   if (!messages.length) {
     appendAnthropicMessage(messages, { role: 'user', content: [{ type: 'text', text: '' }] })
@@ -490,8 +508,9 @@ async function responsesBodyToAnthropicMessages(
   output.messages = messages
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
-  const tools = responsesToolsToAnthropicTools(body.tools, requestPlan)
+  const tools = responsesToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
   applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput)
+  validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
   }
@@ -532,7 +551,8 @@ async function appendResponsesInputItemAsAnthropicMessage(
   messages: AnthropicMessage[],
   systemParts: string[],
   item: unknown,
-  contentContext: OpenAIToAnthropicBridgeContentContext
+  contentContext: OpenAIToAnthropicBridgeContentContext,
+  toolHistory: OpenAIToolResultHistory
 ): Promise<void> {
   if (!isPlainObject(item)) return
   if (item.type === 'message') {
@@ -559,14 +579,14 @@ async function appendResponsesInputItemAsAnthropicMessage(
         type: 'tool_use',
         id: callId,
         name,
-        input: parseJsonObjectString(item.arguments) ?? {}
+        input: anthropicToolInputFromOpenAIArguments(item.arguments)
       }]
     })
+    rememberOpenAIToolCall(toolHistory, callId)
     return
   }
   if (item.type === 'function_call_output') {
-    const callId = stringValue(item.call_id)
-    if (!callId) return
+    const callId = validateOpenAIToolResultHistory(toolHistory, stringValue(item.call_id), 'Responses')
     appendAnthropicMessage(messages, {
       role: 'user',
       content: [{
@@ -595,6 +615,58 @@ function appendAnthropicMessage(messages: AnthropicMessage[], next: AnthropicMes
     return
   }
   messages.push(next)
+}
+
+function createOpenAIToolResultHistory(): OpenAIToolResultHistory {
+  return {
+    toolCallIds: new Set<string>(),
+    completedToolCallIds: new Set<string>()
+  }
+}
+
+function rememberAnthropicToolUseBlocks(history: OpenAIToolResultHistory, blocks: AnthropicContentBlock[]): void {
+  for (const block of blocks) {
+    if (block.type !== 'tool_use') continue
+    const id = stringValue(block.id)
+    if (id) rememberOpenAIToolCall(history, id)
+  }
+}
+
+function rememberOpenAIToolCall(history: OpenAIToolResultHistory, callId: string): void {
+  history.toolCallIds.add(callId)
+}
+
+function validateOpenAIToolResultHistory(
+  history: OpenAIToolResultHistory,
+  callId: string | undefined,
+  sourceFamily: 'Chat' | 'Responses'
+): string {
+  if (!callId) {
+    throw bridgeValidationError(
+      sourceFamily === 'Chat'
+        ? 'Chat role=tool 缺少 tool_call_id，无法匹配前文 assistant tool_call'
+        : 'Responses function_call_output 缺少 call_id，无法匹配前文 function_call',
+      'openai_anthropic_bridge_tool_result_missing_call_id'
+    )
+  }
+  if (!history.toolCallIds.has(callId)) {
+    throw bridgeValidationError(
+      sourceFamily === 'Chat'
+        ? `Chat role=tool 的 tool_call_id ${callId} 未匹配任何前文 assistant tool_call`
+        : `Responses function_call_output 的 call_id ${callId} 未匹配任何前文 function_call`,
+      'openai_anthropic_bridge_orphan_tool_result'
+    )
+  }
+  if (history.completedToolCallIds.has(callId)) {
+    throw bridgeValidationError(
+      sourceFamily === 'Chat'
+        ? `Chat role=tool 的 tool_call_id ${callId} 已经返回过工具结果`
+        : `Responses function_call_output 的 call_id ${callId} 已经返回过工具结果`,
+      'openai_anthropic_bridge_duplicate_tool_result'
+    )
+  }
+  history.completedToolCallIds.add(callId)
+  return callId
 }
 
 function appendSystemText(parts: string[], value: string | undefined): void {
@@ -627,7 +699,10 @@ async function openAIChatContentToAnthropicBlocks(
     }
     if (item.type === 'file' || item.type === 'input_file') {
       blocks.push(await anthropicDocumentBlockFromOpenAIFilePart(item, 'Chat', contentContext))
+      continue
     }
+    if (item.type === 'input_audio' || item.type === 'audio') throw unsupportedOpenAIAudioContentPart('Chat')
+    throw unsupportedOpenAIContentPart('Chat', item.type)
   }
   return blocks
 }
@@ -661,20 +736,52 @@ async function responsesContentToAnthropicBlocks(
     }
     if (item.type === 'input_file' || item.type === 'file') {
       blocks.push(await anthropicDocumentBlockFromOpenAIFilePart(item, 'Responses', contentContext))
+      continue
     }
+    if (item.type === 'input_audio' || item.type === 'audio') throw unsupportedOpenAIAudioContentPart('Responses')
+    throw unsupportedOpenAIContentPart('Responses', item.type)
   }
   return blocks
+}
+
+function unsupportedOpenAIAudioContentPart(sourceFamily: 'Chat' | 'Responses'): never {
+  throw bridgeValidationError(
+    `${sourceFamily} input_audio 当前不能桥接到 Anthropic Messages；请使用可消费音频输入的原生 OpenAI 上游，或先在客户端 / 本地运行时转写为文本`,
+    'openai_anthropic_bridge_audio_input_unsupported'
+  )
+}
+
+function unsupportedOpenAIContentPart(sourceFamily: 'Chat' | 'Responses', type: unknown): never {
+  const typeLabel = typeof type === 'string' && type.length > 0 ? type : 'unknown'
+  throw bridgeValidationError(
+    `${sourceFamily} content block ${typeLabel} 当前没有 OpenAI 到 Anthropic Messages 的等价映射；请先补能力矩阵和 mock 回归后再启用`,
+    'openai_anthropic_bridge_unsupported_content_part'
+  )
 }
 
 function anthropicImageBlockFromUrl(url: string): AnthropicContentBlock {
   const dataUrl = parseDataUrl(url)
   if (dataUrl) {
+    const mediaType = normalizeOpenAIFileMediaType(dataUrl.mediaType, undefined)
+    if (!isAnthropicSupportedImageMediaType(mediaType)) {
+      throw bridgeValidationError(
+        `OpenAI 到 Anthropic 桥接当前只支持 image/jpeg、image/png、image/gif、image/webp 图片 data URL，收到 ${dataUrl.mediaType}`,
+        'openai_anthropic_bridge_unsupported_image_media_type'
+      )
+    }
+    const base64Data = normalizedBase64Data(dataUrl.data)
+    if (!base64Data) {
+      throw bridgeValidationError(
+        'OpenAI 图片 data URL 不是合法 base64 数据',
+        'openai_anthropic_bridge_invalid_image_base64'
+      )
+    }
     return {
       type: 'image',
       source: {
         type: 'base64',
-        media_type: dataUrl.mediaType,
-        data: dataUrl.data
+        media_type: mediaType,
+        data: base64Data
       }
     }
   }
@@ -935,7 +1042,7 @@ function chatToolCallsToAnthropicToolUseBlocks(value: unknown): AnthropicContent
       type: 'tool_use',
       id,
       name,
-      input: parseJsonObjectString(fn?.arguments) ?? {}
+      input: anthropicToolInputFromOpenAIArguments(fn?.arguments)
     })
   }
   return blocks
@@ -943,9 +1050,11 @@ function chatToolCallsToAnthropicToolUseBlocks(value: unknown): AnthropicContent
 
 function chatToolsToAnthropicTools(
   value: unknown,
+  toolChoice: unknown,
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): JsonRecord[] {
   if (!Array.isArray(value)) return []
+  const allowedFunctionNames = allowedOpenAIFunctionToolNames(toolChoice)
   const tools: JsonRecord[] = []
   for (const item of value) {
     if (!isPlainObject(item) || item.type !== 'function') {
@@ -959,6 +1068,7 @@ function chatToolsToAnthropicTools(
     if (!name) {
       throw bridgeValidationError('function tool 缺少 name', 'openai_anthropic_bridge_invalid_tool')
     }
+    if (allowedFunctionNames && !allowedFunctionNames.has(name)) continue
     tools.push(anthropicToolFromFunctionDefinition(name, fn?.description, fn?.parameters))
   }
   return tools
@@ -966,9 +1076,11 @@ function chatToolsToAnthropicTools(
 
 function responsesToolsToAnthropicTools(
   value: unknown,
+  toolChoice: unknown,
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): JsonRecord[] {
   if (!Array.isArray(value)) return []
+  const allowedFunctionNames = allowedOpenAIFunctionToolNames(toolChoice)
   const tools: JsonRecord[] = []
   for (const item of value) {
     if (!isPlainObject(item) || item.type !== 'function') {
@@ -984,6 +1096,7 @@ function responsesToolsToAnthropicTools(
     if (!name) {
       throw bridgeValidationError('Responses function tool 缺少 name', 'openai_anthropic_bridge_invalid_tool')
     }
+    if (allowedFunctionNames && !allowedFunctionNames.has(name)) continue
     tools.push(anthropicToolFromFunctionDefinition(name, item.description, item.parameters))
   }
   return tools
@@ -1050,7 +1163,39 @@ function anthropicToolChoiceFromOpenAI(value: unknown): JsonRecord | undefined {
   if (value.type === 'auto') return { type: 'auto' }
   if (value.type === 'none') return { type: 'none' }
   if (value.type === 'required') return { type: 'any' }
+  if (value.type === 'allowed_tools') {
+    return stringValue(value.mode) === 'required'
+      ? { type: 'any' }
+      : { type: 'auto' }
+  }
   return undefined
+}
+
+function allowedOpenAIFunctionToolNames(toolChoice: unknown): Set<string> | undefined {
+  if (!isPlainObject(toolChoice) || toolChoice.type !== 'allowed_tools') return undefined
+  const names = new Set<string>()
+  const tools = Array.isArray(toolChoice.tools) ? toolChoice.tools : []
+  for (const tool of tools) {
+    if (typeof tool === 'string') {
+      names.add(tool)
+      continue
+    }
+    if (!isPlainObject(tool) || tool.type !== 'function') continue
+    const name = stringValue(tool.name) ?? stringValue(objectValue(tool.function)?.name)
+    if (name) names.add(name)
+  }
+  return names
+}
+
+function validateAnthropicThinkingToolChoiceCompatibility(output: JsonRecord): void {
+  if (!isPlainObject(output.thinking)) return
+  const toolChoice = objectValue(output.tool_choice)
+  const toolChoiceType = stringValue(toolChoice?.type)
+  if (toolChoiceType !== 'any' && toolChoiceType !== 'tool') return
+  throw bridgeValidationError(
+    'Anthropic Messages 不支持同时启用 thinking 和强制工具调用；请关闭 reasoning / thinking，或把 tool_choice 改为 auto / none',
+    'openai_anthropic_bridge_thinking_forced_tool_choice_unsupported'
+  )
 }
 
 function jsonInstructionFromStructuredOutputPlan(
@@ -1080,6 +1225,61 @@ function createOpenAIToAnthropicBridgeRequestPlan(
       : structuredOutputPlanFromChatBody(body),
     reasoningEffort: reasoningEffortFromOpenAIBody(body)
   }
+}
+
+function validateOpenAIToAnthropicUnsupportedIncludes(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord
+): void {
+  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
+  const include = Array.isArray(body.include) ? body.include : []
+  if (!include.includes('reasoning.encrypted_content')) return
+  throw bridgeValidationError(
+    'OpenAI 到 Anthropic 桥接不能生成或验证 OpenAI reasoning.encrypted_content；请移除 include=reasoning.encrypted_content，或改用原生 Responses 上游',
+    'openai_anthropic_bridge_encrypted_reasoning_unsupported'
+  )
+}
+
+function validateOpenAIToAnthropicOutputShapeOptions(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord
+): void {
+  if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
+    const choiceCount = integerValue(body.n)
+    if (choiceCount !== undefined && choiceCount !== 1) {
+      throw bridgeValidationError(
+        'Anthropic Messages 单次请求只能等价返回一个 Chat choice；请把 n 设为 1，或改用原生 OpenAI Chat 上游',
+        'openai_anthropic_bridge_multiple_choices_unsupported'
+      )
+    }
+    if (body.logprobs === true || requestedPositiveInteger(body.top_logprobs)) {
+      throw bridgeValidationError(
+        'Anthropic Messages 不能返回 OpenAI Chat token logprobs；请移除 logprobs / top_logprobs，或改用原生 OpenAI Chat 上游',
+        'openai_anthropic_bridge_logprobs_unsupported'
+      )
+    }
+    validateOpenAIToAnthropicChatOutputModalities(body)
+    return
+  }
+
+  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
+  const include = Array.isArray(body.include) ? body.include : []
+  if (!include.includes('message.output_text.logprobs') && !requestedPositiveInteger(body.top_logprobs)) return
+  throw bridgeValidationError(
+    'Anthropic Messages 不能返回 OpenAI Responses output_text logprobs；请移除 include=message.output_text.logprobs / top_logprobs，或改用原生 Responses 上游',
+    'openai_anthropic_bridge_logprobs_unsupported'
+  )
+}
+
+function validateOpenAIToAnthropicChatOutputModalities(body: JsonRecord): void {
+  const modalities = stringArrayValue(body.modalities)
+  const unsupportedModalities = modalities.filter((modality) => modality !== 'text')
+  const hasAudioConfig = hasOwn(body, 'audio') && body.audio !== undefined && body.audio !== null
+  if (!unsupportedModalities.length && !hasAudioConfig) return
+  throw bridgeValidationError(
+    'Anthropic Messages 不能返回 OpenAI Chat audio output；请移除 modalities 中的 audio / 其他非 text 输出模态和 audio 配置，或改用原生 OpenAI Chat 上游',
+    'openai_anthropic_bridge_output_modality_unsupported'
+  )
 }
 
 async function applyOpenAIToAnthropicLocalToolEmulation(
@@ -2064,12 +2264,13 @@ function processAnthropicEventAsChat(state: AnthropicStreamState, event: ParsedS
     const index = integerValue(data.index) ?? 0
     const contentBlock = objectValue(data.content_block) ?? {}
     const block = streamBlockFromContentBlock(index, contentBlock)
+    assignToolCallIndex(state, block)
     state.blocks.set(index, block)
     output.push(...ensureChatRoleChunk(state))
     if (block.type === 'tool_use' && !isStructuredOutputStreamBlock(state, block)) {
       output.push(chatSseChunk(state, {
         tool_calls: [{
-          index,
+          index: block.toolCallIndex ?? 0,
           id: block.id ?? `call_${index}`,
           type: 'function',
           function: {
@@ -2096,7 +2297,7 @@ function processAnthropicEventAsChat(state: AnthropicStreamState, event: ParsedS
       if (partial && block && !isStructuredOutputStreamBlock(state, block)) {
         output.push(chatSseChunk(state, {
           tool_calls: [{
-            index,
+            index: block.toolCallIndex ?? 0,
             function: { arguments: partial }
           }]
         }))
@@ -2172,6 +2373,7 @@ function processAnthropicEventAsResponses(state: AnthropicStreamState, event: Pa
     const index = integerValue(data.index) ?? 0
     const contentBlock = objectValue(data.content_block) ?? {}
     const block = streamBlockFromContentBlock(index, contentBlock)
+    assignToolCallIndex(state, block)
     block.outputIndex = state.nextOutputIndex++
     state.blocks.set(index, block)
     output.push(...ensureResponsesStreamStarted(state))
@@ -2301,7 +2503,9 @@ function processAnthropicEventAsResponsesImageGenerationPrompt(state: AnthropicS
   if (data.type === 'content_block_start') {
     const index = integerValue(data.index) ?? 0
     const contentBlock = objectValue(data.content_block) ?? {}
-    state.blocks.set(index, streamBlockFromContentBlock(index, contentBlock))
+    const block = streamBlockFromContentBlock(index, contentBlock)
+    assignToolCallIndex(state, block)
+    state.blocks.set(index, block)
     return output
   }
   if (data.type === 'content_block_delta') {
@@ -2741,6 +2945,7 @@ function createAnthropicStreamState(
     responsesStarted: false,
     responseMessageId: `msg_anthropic_${suffix}`,
     nextOutputIndex: 0,
+    nextToolCallIndex: 0,
     blocks: new Map(),
     outputItems: [],
     completed: false,
@@ -2757,9 +2962,19 @@ function streamBlockFromContentBlock(index: number, block: JsonRecord): Anthropi
     id: stringValue(block.id),
     name: stringValue(block.name),
     text: stringValue(block.text) ?? '',
-    inputJson: block.type === 'tool_use' ? JSON.stringify(isPlainObject(block.input) ? block.input : {}) : '',
+    inputJson: initialToolInputJsonFromContentBlock(block),
     done: false
   }
+}
+
+function initialToolInputJsonFromContentBlock(block: JsonRecord): string {
+  if (block.type !== 'tool_use' || !isPlainObject(block.input)) return ''
+  return Object.keys(block.input).length ? JSON.stringify(block.input) : ''
+}
+
+function assignToolCallIndex(state: AnthropicStreamState, block: AnthropicStreamBlockState): void {
+  if (block.type !== 'tool_use') return
+  block.toolCallIndex = state.nextToolCallIndex++
 }
 
 async function * iterateAnthropicSseEvents(body: AsyncIterable<Uint8Array>): AsyncIterable<ParsedSseEvent> {
@@ -3546,6 +3761,19 @@ function parseJsonObjectString(value: unknown): JsonRecord | undefined {
   }
 }
 
+function anthropicToolInputFromOpenAIArguments(value: unknown): JsonRecord {
+  if (isPlainObject(value)) return value
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return isPlainObject(parsed)
+      ? parsed
+      : { openai_arguments: parsed }
+  } catch {
+    return { openai_arguments_text: value }
+  }
+}
+
 function stopSequencesValue(value: unknown): string[] {
   if (typeof value === 'string' && value) return [value]
   if (!Array.isArray(value)) return []
@@ -3614,6 +3842,11 @@ function integerValue(value: unknown): number | undefined {
     : typeof value === 'string' && value.trim() ? Number(value) : NaN
   if (!Number.isFinite(number)) return undefined
   return Math.trunc(number)
+}
+
+function requestedPositiveInteger(value: unknown): boolean {
+  const integer = integerValue(value)
+  return integer !== undefined && integer > 0
 }
 
 function hasOwn(value: JsonRecord, key: string): boolean {
