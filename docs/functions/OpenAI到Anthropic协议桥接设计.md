@@ -38,6 +38,7 @@ OpenAI 到 Anthropic Messages 桥接可以长期支持，但必须按显式桥�
 - 混合智能路由只负责选目标模型和目标分组；目标分组能通过原生协议或本桥接承接当前下游协议时才可进入候选。
 - OpenAI 下游本地错误、上游 Anthropic 错误和流内错误都要按下游协议渲染，不能把 Anthropic error shape 直接返回给 OpenAI 客户端。
 - 使用记录和审计必须同时记录下游 endpoint family、上游实际 endpoint family、下游模型、实际上游模型、桥接类型和 usage 语义。
+- 上游供应商或当前模型不支持的 hosted/native 能力必须走 agent guidance 或受控拒绝，不因为能力缺口返回 500，也不把不支持能力伪装成上游成功。guidance 只写通用客户端 agent 可执行的下一步，不绑定具体客户端名称。
 
 ## 4. 触发条件
 
@@ -200,6 +201,8 @@ Responses SSE 不能复用 Chat SSE chunk handler。OpenAI Responses 是 typed e
 本地错误和 guidance 格式按下游协议决定：
 
 - 不支持的 hosted/native tool 且没有真实执行器时，返回正常 Chat Completion / Responses completed guidance 消息，HTTP 200，不请求上游。
+- 供应商 / 模型不支持某项能力时，优先把它归为能力缺口而不是服务端异常。guidance 必须包含能力类型、当前上游协议或供应商事实、可行动建议，例如配置本地 MCP / 工具执行器、换用支持该能力的模型或移除相关 tool，让客户端 agent 后续自行处理。
+- guidance 不写具体客户端品牌名；同一响应应能被任意 OpenAI-compatible / agent 客户端读取并作为下一轮决策依据。
 - 下游 Chat JSON 请求：返回 OpenAI Chat-compatible error JSON。
 - Chat structured output 校验失败是例外：为避免被网关协议检查当作非法 Chat Completion 覆盖，返回合法 Chat Completion，并在 `message.refusal` 中携带 bridge 错误码和原因。
 - 下游 Chat SSE 请求：未提交事件前可返回普通 JSON 错误；已提交后按 Chat SSE 失败策略处理。
@@ -219,6 +222,7 @@ Responses SSE 不能复用 Chat SSE chunk handler。OpenAI Responses 是 typed e
 降级原则：
 
 - 会改变客户端语义的字段必须拒绝，不能静默忽略。
+- 能力缺口优先 guidance，不直接打死会话；请求非法、权限越界、状态链损坏、schema 校验失败或安全策略命中才返回本地协议错误。
 - 只影响上游优化而不影响正确性的字段可以忽略，但必须写审计 metadata。
 - 工具调用历史不完整时必须受控拒绝，不能把 orphan tool result 发给 Anthropic。
 - JSON schema 严格输出必须走合成 Anthropic tool 或后续账号显式启用的原生 structured output，并通过本地 schema 校验；校验失败不能冒充成功。

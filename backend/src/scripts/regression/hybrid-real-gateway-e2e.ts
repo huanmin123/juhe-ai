@@ -47,21 +47,21 @@ const requestIntervalMs = positiveIntegerEnv('JUHE_REAL_HYBRID_REQUEST_INTERVAL_
 const requestConcurrency = positiveIntegerEnv('JUHE_REAL_HYBRID_CONCURRENCY') ?? 1
 const minSuccessRate = numberEnv('JUHE_REAL_HYBRID_MIN_SUCCESS_RATE') ?? 0.95
 const scoringModel = envText('JUHE_REAL_HYBRID_SCORING_MODEL') || 'gpt-5.4-mini'
-const deepseekModel = envText('JUHE_REAL_HYBRID_MODEL_1_3') || 'gpt-5.4-mini'
+const deepseekModel = envText('JUHE_REAL_HYBRID_MODEL_1_2') || envText('JUHE_REAL_HYBRID_MODEL_1_3') || 'gpt-5.4-mini'
 const glmModel = envText('JUHE_REAL_HYBRID_MODEL_4_6') || 'glm-5.2'
 const gptModel = envText('JUHE_REAL_HYBRID_MODEL_7_8') || 'gpt-5.5'
 const opusModel = envText('JUHE_REAL_HYBRID_MODEL_9_10') || 'claude-opus-4-8'
 const scoringUnitCost = numberEnv('JUHE_REAL_HYBRID_SCORING_UNIT_COST') ?? 0.002
 
 const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
-  { minLevel: 1, maxLevel: 3, targetModel: deepseekModel, enabled: true },
-  { minLevel: 4, maxLevel: 6, targetModel: glmModel, enabled: true },
+  { minLevel: 1, maxLevel: 2, targetModel: deepseekModel, enabled: true },
+  { minLevel: 3, maxLevel: 6, targetModel: glmModel, enabled: true },
   { minLevel: 7, maxLevel: 8, targetModel: gptModel, enabled: true },
   { minLevel: 9, maxLevel: 10, targetModel: opusModel, enabled: true }
 ]
 
 const modelUnitCosts = new Map<string, number>([
-  [deepseekModel, numberEnv('JUHE_REAL_HYBRID_COST_1_3') ?? 0.002],
+  [deepseekModel, numberEnv('JUHE_REAL_HYBRID_COST_1_2') ?? numberEnv('JUHE_REAL_HYBRID_COST_1_3') ?? 0.002],
   [glmModel, numberEnv('JUHE_REAL_HYBRID_COST_4_6') ?? 0.01],
   [gptModel, numberEnv('JUHE_REAL_HYBRID_COST_7_8') ?? 0.02],
   [opusModel, numberEnv('JUHE_REAL_HYBRID_COST_9_10') ?? 0.05]

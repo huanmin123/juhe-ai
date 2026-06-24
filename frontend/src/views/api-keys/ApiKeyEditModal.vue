@@ -143,13 +143,18 @@
             <a-select v-model:value="form.hybridRoutingConfig.qualityInspection.unavailableAction" :options="hybridQualityInspectionUnavailableOptions" />
           </a-form-item>
         </div>
-        <a-form-item label="等级模型区间" required tooltip="启用区间必须完整覆盖 1-10 且不能重叠；最低档必须从 1 开始并覆盖 1-2 到 1-5，至少配置 2 个不同目标模型。目标模型还必须能被绑定分组池承接。">
+        <a-form-item label="等级模型区间" required tooltip="等级区间按从小到大连续配置，起始等级自动接上上一段；例如上一段是 1-4，下一段只能从 5 开始。最多 5 个区间，必须完整覆盖 1-10 且至少配置 2 个不同目标模型。">
           <div class="hybrid-level-routes-field">
             <div v-for="(route, index) in form.hybridRoutingConfig.levelRoutes" :key="index" class="hybrid-level-route-row">
-              <a-switch v-model:checked="route.enabled" size="small" />
-              <a-input-number v-model:value="route.minLevel" :min="1" :max="10" />
+              <a-input-number v-model:value="route.minLevel" :min="1" :max="10" disabled />
               <span class="hybrid-level-separator">至</span>
-              <a-input-number v-model:value="route.maxLevel" :min="1" :max="10" />
+              <a-input-number
+                v-model:value="route.maxLevel"
+                :min="hybridRouteMinMaxLevel(index)"
+                :max="hybridRouteMaxMaxLevel(index)"
+                :disabled="index === form.hybridRoutingConfig.levelRoutes.length - 1"
+                @change="handleHybridRouteMaxLevelChange(index)"
+              />
               <a-select
                 v-model:value="route.targetModel"
                 class="hybrid-target-model-select"
@@ -168,7 +173,7 @@
                 </a-tooltip>
               </a-popconfirm>
             </div>
-            <a-button type="dashed" block @click="addHybridLevelRoute">
+            <a-button type="dashed" block :disabled="!canAddHybridLevelRoute" :title="addHybridLevelRouteDisabledReason" @click="addHybridLevelRoute">
               <template #icon><plus-outlined /></template>
               添加等级区间
             </a-button>
@@ -267,9 +272,13 @@ const editingId = ref<string>()
 const editingSystemAccountId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
+const hybridLevelRouteMaxCount = 5
+const hybridMinLevel = 1
+const hybridMaxLevel = 10
 const defaultHybridLevelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
-  { minLevel: 1, maxLevel: 3, targetModel: 'gpt-5.4-mini', enabled: true },
-  { minLevel: 4, maxLevel: 6, targetModel: 'glm-5.2', enabled: true },
+  { minLevel: 1, maxLevel: 2, targetModel: 'gpt-5.4-mini', enabled: true },
+  { minLevel: 3, maxLevel: 4, targetModel: 'gpt-5.4-mini', enabled: true },
+  { minLevel: 5, maxLevel: 6, targetModel: 'glm-5.2', enabled: true },
   { minLevel: 7, maxLevel: 8, targetModel: 'gpt-5.5', enabled: true },
   { minLevel: 9, maxLevel: 10, targetModel: 'claude-opus-4-8', enabled: true }
 ]
@@ -367,6 +376,20 @@ const {
   form,
   groups,
   formGroupSelectDisabled
+})
+const canAddHybridLevelRoute = computed(() => {
+  const routes = form.hybridRoutingConfig.levelRoutes
+  return routes.length < hybridLevelRouteMaxCount
+    && routes.some((route) => Number(route.maxLevel) > Number(route.minLevel))
+})
+const addHybridLevelRouteDisabledReason = computed(() => {
+  if (form.hybridRoutingConfig.levelRoutes.length >= hybridLevelRouteMaxCount) {
+    return `最多只能配置 ${hybridLevelRouteMaxCount} 个等级区间`
+  }
+  if (!canAddHybridLevelRoute.value) {
+    return '当前没有可继续拆分的等级区间'
+  }
+  return undefined
 })
 
 function handleHybridModelDropdownVisibleChange(open: boolean): void {
@@ -539,6 +562,7 @@ function quotaLimitsPayload(): ApiKeyQuotaLimits {
 
 function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig> = {}): ApiKeyHybridRoutingConfigForm {
   const qualityInspection = input.qualityInspection
+  const levelRoutes = normalizeHybridLevelRouteFormRows(input.levelRoutes?.length ? input.levelRoutes : defaultHybridLevelRoutes)
   return {
     scoringModel: input.scoringModel ?? 'gpt-5.4-mini',
     scoringContextMode: 'full_request',
@@ -551,12 +575,7 @@ function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig>
     affinityTtlSeconds: input.affinityTtlSeconds ?? 900,
     switchMinLevelDelta: input.switchMinLevelDelta ?? 2,
     downgradeConsecutiveLowCount: input.downgradeConsecutiveLowCount ?? 2,
-    levelRoutes: (input.levelRoutes?.length ? input.levelRoutes : defaultHybridLevelRoutes).map((route) => ({
-      minLevel: route.minLevel,
-      maxLevel: route.maxLevel,
-      targetModel: route.targetModel,
-      enabled: route.enabled
-    })),
+    levelRoutes,
     qualityInspection: {
       enabled: qualityInspection?.enabled ?? true,
       scoringModel: qualityInspection?.scoringModel ?? input.scoringModel ?? 'gpt-5.4-mini',
@@ -649,6 +668,11 @@ function normalizedHybridQualityInspection(): ApiKeyHybridRoutingConfig['quality
 }
 
 function normalizedHybridLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes'] | false {
+  normalizeHybridLevelRouteSequence()
+  if (form.hybridRoutingConfig.levelRoutes.length > hybridLevelRouteMaxCount) {
+    message.warning(`混合路由最多只能配置 ${hybridLevelRouteMaxCount} 个等级区间`)
+    return false
+  }
   const normalized = form.hybridRoutingConfig.levelRoutes.map((route, index) => {
     const minLevel = normalizeIntegerField(route.minLevel, 1, 10, `第 ${index + 1} 个区间起始等级`)
     const maxLevel = normalizeIntegerField(route.maxLevel, 1, 10, `第 ${index + 1} 个区间结束等级`)
@@ -658,51 +682,50 @@ function normalizedHybridLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes']
       return false
     }
     const targetModel = route.targetModel.trim()
-    if (route.enabled && !targetModel) {
+    if (!targetModel) {
       message.warning(`第 ${index + 1} 个启用区间必须选择目标模型`)
       return false
     }
-    if (route.enabled && !validateExistingHybridModel(targetModel, `第 ${index + 1} 个等级区间目标模型`)) {
+    if (!validateExistingHybridModel(targetModel, `第 ${index + 1} 个等级区间目标模型`)) {
       return false
     }
     return {
       minLevel,
       maxLevel,
       targetModel,
-      enabled: Boolean(route.enabled)
+      enabled: true
     }
   })
   if (normalized.some((route) => route === false)) return false
-  const routes = (normalized as ApiKeyHybridRoutingConfig['levelRoutes']).filter((route) => route.enabled)
+  const routes = normalized as ApiKeyHybridRoutingConfig['levelRoutes']
   const targetModelKeys = new Set(routes.map((route) => route.targetModel.trim().toLowerCase()).filter(Boolean))
   if (targetModelKeys.size < 2) {
     message.warning('混合路由至少需要配置 2 个不同的目标模型')
     return false
   }
-  const lowestRoute = routes.find((route) => route.minLevel === 1)
-  if (!lowestRoute || lowestRoute.maxLevel < 2 || lowestRoute.maxLevel > 5) {
+  const firstRoute = routes[0]
+  if (!firstRoute || firstRoute.minLevel !== 1 || firstRoute.maxLevel < 2 || firstRoute.maxLevel > 5) {
     message.warning('最低档必须从等级 1 开始，并覆盖 1-2 到 1-5 之间的范围')
     return false
   }
-  const coverage = new Map<number, number>()
-  routes.forEach((route) => {
-    if (!route.enabled) return
-    for (let level = route.minLevel; level <= route.maxLevel; level += 1) {
-      coverage.set(level, (coverage.get(level) ?? 0) + 1)
-    }
-  })
-  for (let level = 1; level <= 10; level += 1) {
-    const count = coverage.get(level) ?? 0
-    if (count === 0) {
-      message.warning(`等级 ${level} 没有启用的模型区间`)
+  let expectedMinLevel = hybridMinLevel
+  for (let index = 0; index < routes.length; index += 1) {
+    const route = routes[index]
+    if (route.minLevel !== expectedMinLevel) {
+      message.warning(`第 ${index + 1} 个等级区间必须从 ${expectedMinLevel} 开始`)
       return false
     }
-    if (count > 1) {
-      message.warning(`等级 ${level} 被多个模型区间重复覆盖`)
+    if (route.maxLevel < route.minLevel) {
+      message.warning(`第 ${index + 1} 个等级区间起始等级不能大于结束等级`)
       return false
     }
+    expectedMinLevel = route.maxLevel + 1
   }
-  return routes.sort((left, right) => left.minLevel - right.minLevel || left.maxLevel - right.maxLevel)
+  if (expectedMinLevel !== hybridMaxLevel + 1) {
+    message.warning('等级模型区间必须连续覆盖 1-10')
+    return false
+  }
+  return routes
 }
 
 function normalizeIntegerField(value: unknown, min: number, max: number, label: string): number | false {
@@ -714,17 +737,109 @@ function normalizeIntegerField(value: unknown, min: number, max: number, label: 
 }
 
 function addHybridLevelRoute() {
-  form.hybridRoutingConfig.levelRoutes.push({
-    minLevel: 1,
-    maxLevel: 1,
+  normalizeHybridLevelRouteSequence()
+  if (!canAddHybridLevelRoute.value) {
+    const reason = addHybridLevelRouteDisabledReason.value
+    if (reason) message.warning(reason)
+    return
+  }
+  const routes = form.hybridRoutingConfig.levelRoutes
+  let splitIndex = 0
+  for (let index = 1; index < routes.length; index += 1) {
+    if ((routes[index].maxLevel - routes[index].minLevel) > (routes[splitIndex].maxLevel - routes[splitIndex].minLevel)) {
+      splitIndex = index
+    }
+  }
+  const route = routes[splitIndex]
+  const originalMaxLevel = route.maxLevel
+  const splitMaxLevel = Math.floor((route.minLevel + route.maxLevel) / 2)
+  route.maxLevel = splitMaxLevel
+  routes.splice(splitIndex + 1, 0, {
+    minLevel: splitMaxLevel + 1,
+    maxLevel: originalMaxLevel,
     targetModel: '',
     enabled: true
   })
+  normalizeHybridLevelRouteSequence()
 }
 
 function removeHybridLevelRoute(index: number) {
   if (form.hybridRoutingConfig.levelRoutes.length <= 1) return
   form.hybridRoutingConfig.levelRoutes.splice(index, 1)
+  normalizeHybridLevelRouteSequence()
+}
+
+function handleHybridRouteMaxLevelChange(index: number): void {
+  normalizeHybridLevelRouteSequence(index)
+}
+
+function hybridRouteMinMaxLevel(index: number): number {
+  return form.hybridRoutingConfig.levelRoutes[index]?.minLevel ?? hybridMinLevel
+}
+
+function hybridRouteMaxMaxLevel(index: number): number {
+  const remainingRoutes = form.hybridRoutingConfig.levelRoutes.length - index - 1
+  const maxLevel = hybridMaxLevel - remainingRoutes
+  return index === 0 ? Math.min(5, maxLevel) : maxLevel
+}
+
+function normalizeHybridLevelRouteFormRows(routes: ApiKeyHybridRoutingConfig['levelRoutes']): ApiKeyHybridRoutingConfig['levelRoutes'] {
+  const enabledRoutes = routes
+    .filter((route) => route.enabled !== false)
+    .slice(0, hybridLevelRouteMaxCount)
+    .sort((left, right) => left.minLevel - right.minLevel || left.maxLevel - right.maxLevel)
+    .map((route) => ({
+      minLevel: route.minLevel,
+      maxLevel: route.maxLevel,
+      targetModel: route.targetModel,
+      enabled: true
+    }))
+  const normalizedRoutes = enabledRoutes.length ? enabledRoutes : defaultHybridLevelRoutes.map((route) => ({ ...route }))
+  normalizeHybridLevelRouteRows(normalizedRoutes)
+  return normalizedRoutes
+}
+
+function normalizeHybridLevelRouteSequence(changedIndex = 0): void {
+  normalizeHybridLevelRouteRows(form.hybridRoutingConfig.levelRoutes, changedIndex)
+}
+
+function normalizeHybridLevelRouteRows(routes: ApiKeyHybridRoutingConfig['levelRoutes'], changedIndex = 0): void {
+  if (!routes.length) {
+    routes.push({ minLevel: hybridMinLevel, maxLevel: hybridMaxLevel, targetModel: '', enabled: true })
+  }
+  if (routes.length > hybridLevelRouteMaxCount) {
+    routes.splice(hybridLevelRouteMaxCount)
+  }
+  for (let index = 0; index < routes.length; index += 1) {
+    const route = routes[index]
+    const minLevel = index === 0 ? hybridMinLevel : routes[index - 1].maxLevel + 1
+    const maxLevelCeiling = hybridRouteMaxLevelForRows(routes, index)
+    route.enabled = true
+    route.minLevel = minLevel
+    route.maxLevel = clampInteger(route.maxLevel, minLevel, maxLevelCeiling)
+    if (index === routes.length - 1) {
+      route.maxLevel = hybridMaxLevel
+    }
+  }
+  for (let index = Math.max(0, changedIndex + 1); index < routes.length; index += 1) {
+    const route = routes[index]
+    route.minLevel = routes[index - 1].maxLevel + 1
+    route.maxLevel = clampInteger(route.maxLevel, route.minLevel, hybridRouteMaxLevelForRows(routes, index))
+    if (index === routes.length - 1) {
+      route.maxLevel = hybridMaxLevel
+    }
+  }
+}
+
+function hybridRouteMaxLevelForRows(routes: ApiKeyHybridRoutingConfig['levelRoutes'], index: number): number {
+  const remainingRoutes = routes.length - index - 1
+  const maxLevel = hybridMaxLevel - remainingRoutes
+  return index === 0 ? Math.min(5, maxLevel) : maxLevel
+}
+
+function clampInteger(value: unknown, min: number, max: number): number {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : min
+  return Math.min(max, Math.max(min, numeric))
 }
 
 function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | false {
@@ -835,7 +950,7 @@ defineExpose({
 
 .hybrid-level-route-row {
   display: grid;
-  grid-template-columns: 48px 72px 24px 72px minmax(160px, 1fr) 32px;
+  grid-template-columns: 72px 24px 72px minmax(160px, 1fr) 32px;
   gap: 8px;
   align-items: center;
 }

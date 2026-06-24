@@ -49,8 +49,8 @@ const mockDefaultLevel = 7
 const bulkExperimentCount = 120
 
 const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
-  { minLevel: 1, maxLevel: 3, targetModel: deepseekModel, enabled: true },
-  { minLevel: 4, maxLevel: 6, targetModel: glmModel, enabled: true },
+  { minLevel: 1, maxLevel: 2, targetModel: deepseekModel, enabled: true },
+  { minLevel: 3, maxLevel: 6, targetModel: glmModel, enabled: true },
   { minLevel: 7, maxLevel: 8, targetModel: gptModel, enabled: true },
   { minLevel: 9, maxLevel: 10, targetModel: opusModel, enabled: true }
 ]

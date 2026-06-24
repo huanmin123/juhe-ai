@@ -46,7 +46,7 @@ const downstreamModel = envText('JUHE_REAL_CODEX_DOWNSTREAM_MODEL') || 'gpt-5.3-
 const upstreamModel = envText('JUHE_REAL_CODEX_UPSTREAM_MODEL') || 'glm-4.7-flash'
 const hybridMode = booleanEnv('JUHE_REAL_CODEX_HYBRID')
 const hybridScoringModel = envText('JUHE_REAL_CODEX_HYBRID_SCORING_MODEL') || 'deepseek-ai-v4-flash'
-const hybridModel1To3 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_1_3') || 'gpt-5.4-mini'
+const hybridModel1To2 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_1_2') || envText('JUHE_REAL_CODEX_HYBRID_MODEL_1_3') || 'gpt-5.4-mini'
 const hybridModel4To6 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_4_6') || 'gpt-5.4'
 const hybridModel7To10 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_7_10') || 'gpt-5.5'
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_CODEX_CLI_TIMEOUT_MS') ?? 240_000
@@ -565,8 +565,8 @@ function codexBridgeModelMapping(sourceModel: string, targetModel: string) {
 
 function hybridLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes'] {
   return [
-    { minLevel: 1, maxLevel: 3, targetModel: hybridModel1To3, enabled: true },
-    { minLevel: 4, maxLevel: 6, targetModel: hybridModel4To6, enabled: true },
+    { minLevel: 1, maxLevel: 2, targetModel: hybridModel1To2, enabled: true },
+    { minLevel: 3, maxLevel: 6, targetModel: hybridModel4To6, enabled: true },
     { minLevel: 7, maxLevel: 10, targetModel: hybridModel7To10, enabled: true }
   ]
 }

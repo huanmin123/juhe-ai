@@ -21,6 +21,13 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 - 原生 Responses / OpenAI OAuth Codex 路径和 Chat-only bridge 是两条不同能力线：前者可以透传 `/responses/compact` 等原生能力，后者必须由网关维护 `previous_response_id` 状态和自有 compact envelope，不能要求 Chat 上游认识 Responses 状态。
 - Anthropic Messages bridge 不属于本文的 `responses -> chat_completions` 范围；它的上游真实 endpoint family 是 `messages`，返回侧必须按下游 Chat / Responses 协议重新渲染。
 
+### 上游能力缺口处理规则
+
+- 协议转换只适配上游供应商和当前模型真实支持的能力。没有真实上游能力或本地执行器时，不能靠字段改名伪造 `web_search_call`、`mcp_call`、`computer_call`、`image_generation_call`、`code_interpreter_call` 或工具结果。
+- 供应商 / 模型不支持某项工具或 hosted/native 能力时，默认返回正常 agent guidance 消息，HTTP 和下游协议形态保持可被客户端继续消费；guidance 需要说明不支持的能力类型、当前上游协议和建议动作，例如配置本地 MCP / 工具执行器、换用支持该能力的模型或移除该工具。
+- guidance 文案只描述通用“客户端 agent / 调用方 agent”，不写死具体客户端名称。后续是否查找本地 MCP、切换工具或改写下一轮请求交给客户端 agent 自行处理。
+- 只有请求本身非法、权限或文件归属越界、状态链缺失 / 跨边界、schema 校验失败、请求体格式错误等不能安全继续的场景才返回本地协议错误。能力缺口不能返回 500，也不能把上游不支持包装成账号不可用。
+
 ## 启用条件
 
 通用桥接层只有在供应商 driver 显式开启时才生效。当前启用范围：

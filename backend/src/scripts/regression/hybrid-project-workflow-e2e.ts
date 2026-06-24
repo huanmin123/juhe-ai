@@ -130,7 +130,7 @@ hybridRouteDiagnosticsChannel.subscribe(hybridRouteDiagnosticsSubscriber)
 
 const scoringModel = envText('JUHE_REAL_HYBRID_PROJECT_SCORING_MODEL') || 'gpt-5.4-mini'
 const flashModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_1_2') || 'deepseek-ai-v4-flash'
-const lowModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_1_3') || 'gpt-5.4-mini'
+const lowModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_3_4') || envText('JUHE_REAL_HYBRID_PROJECT_MODEL_1_3') || 'gpt-5.4-mini'
 const glm51Model = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_5_6') || 'glm-5.1'
 const glmModel = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_7_8') || envText('JUHE_REAL_HYBRID_PROJECT_MODEL_4_6') || 'glm-5.2'
 const gpt54Model = envText('JUHE_REAL_HYBRID_PROJECT_MODEL_9') || 'gpt-5.4'
@@ -145,7 +145,7 @@ const qualityInspectionMaxRetries = Math.min(2, Math.max(0, positiveIntegerEnv('
 
 const modelUnitCosts = new Map<string, number>([
   [flashModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_1_2') ?? modelCostDefault(flashModel)],
-  [lowModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_1_3') ?? modelCostDefault(lowModel)],
+  [lowModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_3_4') ?? numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_1_3') ?? modelCostDefault(lowModel)],
   [glm51Model, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_5_6') ?? modelCostDefault(glm51Model)],
   [glmModel, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_4_6') ?? modelCostDefault(glmModel)],
   [gpt54Model, numberEnv('JUHE_REAL_HYBRID_PROJECT_COST_9') ?? modelCostDefault(gpt54Model)],
@@ -161,8 +161,7 @@ const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
   { minLevel: 3, maxLevel: 4, targetModel: lowModel, enabled: true },
   { minLevel: 5, maxLevel: 6, targetModel: glm51Model, enabled: true },
   { minLevel: 7, maxLevel: 8, targetModel: glmModel, enabled: true },
-  { minLevel: 9, maxLevel: 9, targetModel: gpt54Model, enabled: true },
-  { minLevel: 10, maxLevel: 10, targetModel: gptModel, enabled: true }
+  { minLevel: 9, maxLevel: 10, targetModel: gptModel, enabled: true }
 ]
 
 const allowedOutputFiles = new Set([

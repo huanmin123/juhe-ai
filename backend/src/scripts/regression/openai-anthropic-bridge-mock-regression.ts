@@ -169,6 +169,7 @@ try {
 
     await assertChatJsonBridge(baseUrl, apiKey.key)
     await assertChatSseBridge(baseUrl, apiKey.key)
+    await assertChatSseIncludeUsageBridge(baseUrl, apiKey.key)
     await assertChatMultipleChoicesRejected(baseUrl, apiKey.key)
     await assertChatLogprobsRejected(baseUrl, apiKey.key)
     await assertChatAudioOutputRejected(baseUrl, apiKey.key)
@@ -181,6 +182,10 @@ try {
     await assertResponsesTopLogprobsRejected(baseUrl, apiKey.key)
     await assertResponsesInputAudioRejected(baseUrl, apiKey.key)
     await assertResponsesUnknownContentPartRejected(baseUrl, apiKey.key)
+    await assertOpenAISamplingControlsRejected(baseUrl, apiKey.key)
+    await assertOpenAIPredictionRejected(baseUrl, apiKey.key)
+    await assertOpenAIVerbosityRejected(baseUrl, apiKey.key)
+    await assertOpenAIRequestControlBoundaries(baseUrl, apiKey.key)
     await assertResponsesMultiToolSseBridge(baseUrl, apiKey.key)
     await assertBridgeSseErrorShape(baseUrl, apiKey.key)
     await assertChatImageDataUrlBridge(baseUrl, apiKey.key)
@@ -193,6 +198,11 @@ try {
     await assertChatToolCallBridge(baseUrl, apiKey.key)
     await assertResponsesFunctionCallBridge(baseUrl, apiKey.key)
     await assertResponsesAllowedFunctionToolsBridge(baseUrl, apiKey.key)
+    await assertChatParallelToolCallsDisabledBridge(baseUrl, apiKey.key)
+    await assertResponsesParallelToolCallsDisabledBridge(baseUrl, apiKey.key)
+    await assertChatParallelToolCallsDisabledWithNoneBridge(baseUrl, apiKey.key)
+    await assertResponsesMaxToolCallsRejected(baseUrl, apiKey.key)
+    await assertResponsesStateControlBoundaries(baseUrl, apiKey.key)
     await assertResponsesThinkingForcedToolChoiceRejected(baseUrl, apiKey.key)
     await assertChatToolResultBridge(baseUrl, apiKey.key)
     await assertResponsesFunctionOutputBridge(baseUrl, apiKey.key)
@@ -207,8 +217,17 @@ try {
     await assertChatJsonSchemaValidationFailureBridge(baseUrl, apiKey.key)
     await assertResponsesJsonSchemaValidationFailureBridge(baseUrl, apiKey.key)
     await assertResponsesThinkingBridge(baseUrl, apiKey.key)
+    await assertResponsesReasoningEffortNoneBridge(baseUrl, apiKey.key)
+    await assertChatReasoningEffortNoneBridge(baseUrl, apiKey.key)
+    await assertResponsesReasoningUnsupportedEffortRejected(baseUrl, apiKey.key)
+    await assertChatReasoningUnsupportedEffortRejected(baseUrl, apiKey.key)
+    await assertResponsesReasoningSummaryNoneBridge(baseUrl, apiKey.key)
+    await assertResponsesReasoningUnsupportedSummaryRejected(baseUrl, apiKey.key)
     await assertResponsesEncryptedReasoningIncludeRejected(baseUrl, apiKey.key)
+    await assertResponsesUnsupportedIncludesRejected(baseUrl, apiKey.key)
+    await assertResponsesEncryptedReasoningInputItemRejected(baseUrl, apiKey.key)
     await assertResponsesThinkingSseBridge(baseUrl, apiKey.key)
+    await assertResponsesReasoningSummaryNoneSseBridge(baseUrl, apiKey.key)
     await assertResponsesHostedToolUnsupported(baseUrl, apiKey.key)
     await assertHostedToolRuntimeRejectMode(baseUrl, apiKey.key)
     configureMockImageGenerationProvider(imageGenerationEndpoint)
@@ -319,7 +338,33 @@ async function assertChatSseBridge(baseUrl: string, localApiKey: string): Promis
   assert.match(text, /"content":"bridge sse ok"/)
   assert.match(text, /data: \[DONE\]/)
   assert.equal(text.includes('event: content_block_delta'), false, '下游 Chat SSE 不应透出 Anthropic 原生事件名')
+  assert.doesNotMatch(text, /"choices":\[\],"usage":\{/, '默认 Chat SSE 不应输出真实 usage chunk')
   assertBridgeUpstreamHit(upstreamHits[0], true, 'chat sse bridge')
+}
+
+async function assertChatSseIncludeUsageBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat sse include_usage bridge' }],
+      stream: true,
+      stream_options: { include_usage: true }
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Chat SSE include_usage 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(text, /"finish_reason":"stop"/)
+  assert.match(text, /"choices":\[\],"usage":\{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11/)
+  assert.match(text, /data: \[DONE\]/)
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'chat sse include_usage bridge')
 }
 
 async function assertChatMultipleChoicesRejected(baseUrl: string, localApiKey: string): Promise<void> {
@@ -610,6 +655,218 @@ async function assertResponsesUnknownContentPartRejected(baseUrl: string, localA
   assert.equal(response.status, 400, `Responses 未知 content block 应本地 400，实际 HTTP ${response.status}: ${text}`)
   assert.match(text, /openai_anthropic_bridge_unsupported_content_part/)
   assert.equal(upstreamHits.length, 0, 'Responses 未知 content block 不应请求 Anthropic 上游')
+}
+
+async function assertOpenAISamplingControlsRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat temperature unsupported bridge' }],
+      temperature: 1.5,
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
+    label: 'Chat temperature>1'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat penalties unsupported bridge' }],
+      presence_penalty: 0.25,
+      frequency_penalty: 0.5,
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
+    label: 'Chat penalty'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses logit bias unsupported bridge',
+      logit_bias: { '42': -100 },
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
+    label: 'Responses logit_bias'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses seed unsupported bridge',
+      seed: 1234,
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
+    label: 'Responses seed'
+  })
+}
+
+async function assertOpenAIPredictionRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat prediction unsupported bridge' }],
+      prediction: { type: 'content', content: 'expected output' },
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_prediction_unsupported',
+    label: 'Chat prediction'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses prediction unsupported bridge',
+      prediction: { type: 'content', content: 'expected output' },
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_prediction_unsupported',
+    label: 'Responses prediction'
+  })
+}
+
+async function assertOpenAIVerbosityRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat verbosity unsupported bridge' }],
+      verbosity: 'high',
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_verbosity_unsupported',
+    label: 'Chat verbosity'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses verbosity unsupported bridge',
+      text: { verbosity: 'low' },
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_verbosity_unsupported',
+    label: 'Responses text.verbosity'
+  })
+}
+
+async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const allowedResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses request control allowed bridge',
+      service_tier: 'default',
+      safety_identifier: 'safe-user-123',
+      prompt_cache_key: 'local-cache-affinity-only',
+      stream: false
+    })
+  })
+  const allowedText = await allowedResponse.text()
+  assert.equal(allowedResponse.status, 200, `Responses 请求级默认控制字段应正常桥接，实际 HTTP ${allowedResponse.status}: ${allowedText}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses request control allowed bridge')
+  const upstreamMetadata = upstreamHits[0]?.body.metadata as { user_id?: unknown } | undefined
+  assert.equal(upstreamMetadata?.user_id, 'safe-user-123', 'safety_identifier 应映射为 Anthropic metadata.user_id')
+  assert.equal(upstreamHits[0]?.body.prompt_cache_key, undefined, 'prompt_cache_key 不应透传到 Anthropic')
+  assert.equal(upstreamHits[0]?.body.service_tier, undefined, 'service_tier=default 不应透传到 Anthropic')
+  assert.equal(upstreamHits[0]?.body.safety_identifier, undefined, 'safety_identifier 不应以 OpenAI 字段透传到 Anthropic')
+
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat priority service tier unsupported bridge' }],
+      service_tier: 'priority',
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_service_tier_unsupported',
+    label: 'Chat service_tier=priority'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses flex service tier unsupported bridge',
+      service_tier: 'flex',
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_service_tier_unsupported',
+    label: 'Responses service_tier=flex'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses prompt cache retention unsupported bridge',
+      prompt_cache_retention: '24h',
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_prompt_cache_retention_unsupported',
+    label: 'Responses prompt_cache_retention'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat store unsupported bridge' }],
+      store: true,
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_store_unsupported',
+    label: 'Chat store=true'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/responses',
+    body: {
+      model: 'gpt-5.5',
+      input: 'responses prompt template unsupported bridge',
+      prompt: { id: 'pmpt_openai_anthropic_bridge', variables: { topic: 'bridge' } },
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_prompt_template_unsupported',
+    label: 'Responses prompt template'
+  })
+  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+    path: '/v1/chat/completions',
+    body: {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat top level moderation unsupported bridge' }],
+      moderation: { input: true, output: true },
+      stream: false
+    },
+    expectedCode: 'openai_anthropic_bridge_moderation_unsupported',
+    label: 'Chat top-level moderation'
+  })
+}
+
+async function assertLocalBridgeRejects(
+  baseUrl: string,
+  localApiKey: string,
+  input: { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown>; expectedCode: string; label: string }
+): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}${input.path}`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(input.body)
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `${input.label} 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, new RegExp(input.expectedCode))
+  assert.equal(upstreamHits.length, 0, `${input.label} 不应请求 Anthropic 上游`)
 }
 
 async function assertResponsesMultiToolSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1012,6 +1269,209 @@ async function assertResponsesAllowedFunctionToolsBridge(baseUrl: string, localA
   assertBridgeUpstreamHit(upstreamHits[0], false, 'responses allowed tools bridge')
   assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['lookup_weather'], 'allowed_tools 只应发送允许的 function tool')
   assert.deepEqual(upstreamHits[0]?.body.tool_choice, { type: 'any' }, 'allowed_tools required 应映射为 Anthropic any')
+}
+
+async function assertChatParallelToolCallsDisabledBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat parallel tool calls disabled bridge' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'lookup_weather',
+          description: '查询城市天气',
+          parameters: {
+            type: 'object',
+            properties: { city: { type: 'string' } },
+            required: ['city']
+          }
+        }
+      }],
+      parallel_tool_calls: false,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Chat parallel_tool_calls=false 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'chat parallel tool calls disabled bridge')
+  assert.deepEqual(upstreamHits[0]?.body.tool_choice, {
+    type: 'auto',
+    disable_parallel_tool_use: true
+  })
+}
+
+async function assertResponsesParallelToolCallsDisabledBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses parallel tool calls disabled bridge',
+      tools: [{
+        type: 'function',
+        name: 'lookup_weather',
+        description: '查询城市天气',
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city']
+        }
+      }],
+      tool_choice: 'required',
+      parallel_tool_calls: false,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses parallel_tool_calls=false 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses parallel tool calls disabled bridge')
+  assert.deepEqual(upstreamHits[0]?.body.tool_choice, {
+    type: 'any',
+    disable_parallel_tool_use: true
+  })
+}
+
+async function assertChatParallelToolCallsDisabledWithNoneBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat parallel tool calls none bridge' }],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'lookup_weather',
+          description: '查询城市天气',
+          parameters: {
+            type: 'object',
+            properties: { city: { type: 'string' } },
+            required: ['city']
+          }
+        }
+      }],
+      tool_choice: 'none',
+      parallel_tool_calls: false,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Chat tool_choice=none + parallel_tool_calls=false 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'chat parallel tool calls none bridge')
+  assert.deepEqual(upstreamHits[0]?.body.tool_choice, { type: 'none' })
+}
+
+async function assertResponsesMaxToolCallsRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses max tool calls unsupported',
+      tools: [{
+        type: 'function',
+        name: 'lookup_weather',
+        description: '查询城市天气',
+        parameters: {
+          type: 'object',
+          properties: { city: { type: 'string' } },
+          required: ['city']
+        }
+      }],
+      max_tool_calls: 1,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses max_tool_calls 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_max_tool_calls_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses max_tool_calls 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesStateControlBoundaries(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const allowedResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses state control allowed bridge',
+      background: false,
+      store: false,
+      truncation: 'disabled',
+      stream: false
+    })
+  })
+  const allowedText = await allowedResponse.text()
+  assert.equal(allowedResponse.status, 200, `Responses background=false + store=false + truncation=disabled 应正常桥接，实际 HTTP ${allowedResponse.status}: ${allowedText}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses state control allowed bridge')
+  assert.equal(upstreamHits[0]?.body.background, undefined, 'background=false 不应透传到 Anthropic')
+  assert.equal(upstreamHits[0]?.body.store, undefined, 'store=false 不应透传到 Anthropic')
+  assert.equal(upstreamHits[0]?.body.truncation, undefined, 'truncation=disabled 不应透传到 Anthropic')
+
+  await assertResponsesStateControlRejected(baseUrl, localApiKey, {
+    conversation: 'conv_openai_anthropic_bridge'
+  }, 'openai_anthropic_bridge_conversation_unsupported')
+  await assertResponsesStateControlRejected(baseUrl, localApiKey, {
+    background: true
+  }, 'openai_anthropic_bridge_background_unsupported')
+  await assertResponsesStateControlRejected(baseUrl, localApiKey, {
+    store: true
+  }, 'openai_anthropic_bridge_store_unsupported')
+  await assertResponsesStateControlRejected(baseUrl, localApiKey, {
+    truncation: 'auto'
+  }, 'openai_anthropic_bridge_truncation_unsupported')
+  await assertResponsesStateControlRejected(baseUrl, localApiKey, {
+    context_management: {}
+  }, 'openai_anthropic_bridge_context_management_unsupported')
+}
+
+async function assertResponsesStateControlRejected(
+  baseUrl: string,
+  localApiKey: string,
+  extraBody: Record<string, unknown>,
+  expectedCode: string
+): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: `responses state control rejected ${expectedCode}`,
+      stream: false,
+      ...extraBody
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses 状态 / 上下文控制 ${expectedCode} 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, new RegExp(expectedCode))
+  assert.equal(upstreamHits.length, 0, `Responses 状态 / 上下文控制 ${expectedCode} 不应请求 Anthropic 上游`)
 }
 
 async function assertResponsesThinkingForcedToolChoiceRejected(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1513,6 +1973,145 @@ async function assertResponsesThinkingBridge(baseUrl: string, localApiKey: strin
   assert.deepEqual(upstreamHits[0]?.body.thinking, { type: 'enabled', budget_tokens: 2048 })
 }
 
+async function assertResponsesReasoningEffortNoneBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses reasoning effort none bridge',
+      reasoning: { effort: 'none' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses reasoning effort none 应成功且不启用 Anthropic thinking，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { reasoning?: { effort?: string | null } }
+  assert.equal(body.reasoning?.effort, 'none')
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses reasoning effort none bridge')
+  assert.equal(upstreamHits[0]?.body.thinking, undefined, 'reasoning.effort=none 不应向 Anthropic 发送 thinking')
+}
+
+async function assertChatReasoningEffortNoneBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat reasoning effort none bridge' }],
+      reasoning_effort: 'none',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Chat reasoning_effort none 应成功且不启用 Anthropic thinking，实际 HTTP ${response.status}: ${text}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'chat reasoning effort none bridge')
+  assert.equal(upstreamHits[0]?.body.thinking, undefined, 'Chat reasoning_effort=none 不应向 Anthropic 发送 thinking')
+}
+
+async function assertResponsesReasoningUnsupportedEffortRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses reasoning xhigh unsupported',
+      reasoning: { effort: 'xhigh' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses reasoning effort xhigh 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_reasoning_effort_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses reasoning effort xhigh 不应请求 Anthropic 上游')
+}
+
+async function assertChatReasoningUnsupportedEffortRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat reasoning xhigh unsupported' }],
+      reasoning_effort: 'xhigh',
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Chat reasoning_effort xhigh 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_reasoning_effort_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Chat reasoning_effort xhigh 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesReasoningSummaryNoneBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses thinking bridge summary none',
+      reasoning: { effort: 'low', summary: 'none' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses reasoning summary none 应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    output_text?: string
+    reasoning?: { effort?: string | null; summary?: string | null }
+    output?: Array<{ type?: string }>
+    usage?: { output_tokens_details?: { reasoning_tokens?: number } }
+  }
+  assert.equal(body.output_text, 'thinking visible answer')
+  assert.equal(body.reasoning?.effort, 'low')
+  assert.equal(body.reasoning?.summary, 'none')
+  assert.equal(body.output?.some((item) => item.type === 'reasoning'), false, 'reasoning.summary=none 不应输出 Responses reasoning item')
+  assert.equal(body.usage?.output_tokens_details?.reasoning_tokens, 3, 'summary=none 仍应保留 reasoning token usage')
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses thinking bridge summary none')
+  assert.deepEqual(upstreamHits[0]?.body.thinking, { type: 'enabled', budget_tokens: 2048 })
+}
+
+async function assertResponsesReasoningUnsupportedSummaryRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses reasoning summary unsupported',
+      reasoning: { effort: 'low', summary: 'verbose' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses reasoning summary verbose 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_reasoning_summary_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses reasoning summary verbose 不应请求 Anthropic 上游')
+}
+
 async function assertResponsesEncryptedReasoningIncludeRejected(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses`, {
@@ -1533,6 +2132,65 @@ async function assertResponsesEncryptedReasoningIncludeRejected(baseUrl: string,
   assert.equal(response.status, 400, `Responses encrypted reasoning include 应本地 400，实际 HTTP ${response.status}: ${text}`)
   assert.match(text, /openai_anthropic_bridge_encrypted_reasoning_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses encrypted reasoning include 不应请求 Anthropic 上游')
+}
+
+async function assertResponsesUnsupportedIncludesRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  const unsupportedIncludes = [
+    'web_search_call.action.sources',
+    'code_interpreter_call.outputs',
+    'computer_call_output.output.image_url',
+    'message.input_image.image_url'
+  ]
+  for (const include of unsupportedIncludes) {
+    upstreamHits.length = 0
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: `responses unsupported include ${include}`,
+        include: [include],
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 400, `Responses unsupported include ${include} 应本地 400，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /openai_anthropic_bridge_include_unsupported/)
+    assert.equal(upstreamHits.length, 0, `Responses unsupported include ${include} 不应请求 Anthropic 上游`)
+  }
+}
+
+async function assertResponsesEncryptedReasoningInputItemRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [
+        {
+          type: 'reasoning',
+          encrypted_content: 'opaque-openai-reasoning-state'
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'responses encrypted reasoning input item unsupported' }]
+        }
+      ],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 400, `Responses encrypted reasoning input item 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /openai_anthropic_bridge_encrypted_reasoning_input_unsupported/)
+  assert.equal(upstreamHits.length, 0, 'Responses encrypted reasoning input item 不应请求 Anthropic 上游')
 }
 
 async function assertResponsesThinkingSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1558,6 +2216,32 @@ async function assertResponsesThinkingSseBridge(baseUrl: string, localApiKey: st
   assert.match(text, /"reasoning_tokens":5/)
   assert.doesNotMatch(text, /"delta":"hidden thinking sse"/, 'thinking_delta 不应作为 output_text.delta 暴露')
   assertBridgeUpstreamHit(upstreamHits[0], true, 'responses thinking sse bridge')
+  assert.deepEqual(upstreamHits[0]?.body.thinking, { type: 'enabled', budget_tokens: 4096 })
+}
+
+async function assertResponsesReasoningSummaryNoneSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses thinking sse bridge summary none',
+      reasoning: { effort: 'medium', summary: 'none' },
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses reasoning summary none SSE 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.doesNotMatch(text, /"type":"reasoning"/, 'reasoning.summary=none SSE 不应输出 reasoning item')
+  assert.match(text, /thinking visible sse answer/)
+  assert.match(text, /"reasoning_tokens":5/)
+  assert.doesNotMatch(text, /"delta":"hidden thinking sse"/, 'summary=none SSE 也不能把 thinking_delta 混入 output_text.delta')
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'responses thinking sse bridge summary none')
   assert.deepEqual(upstreamHits[0]?.body.thinking, { type: 'enabled', budget_tokens: 4096 })
 }
 

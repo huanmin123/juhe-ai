@@ -300,6 +300,7 @@ const openAIModelReleaseDates = new Map<string, string>([
   ['gpt-realtime', '2025-09-01'],
   ['gpt-5', '2025-08-07'],
   ['gpt-5-chat-latest', '2025-08-07'],
+  ['gpt-5-search-api', '2025-08-07'],
   ['gpt-5-mini', '2025-08-07'],
   ['gpt-5-nano', '2025-08-07'],
   ['o3-pro', '2025-06-01'],

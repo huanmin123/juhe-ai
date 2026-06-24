@@ -21,6 +21,7 @@ export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_TRIGGER_LEVEL = 6
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 2
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION: ApiKeyHybridQualityInspectionConfig['failureAction'] = 'repair_then_upgrade'
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_UNAVAILABLE_ACTION: ApiKeyHybridQualityInspectionConfig['unavailableAction'] = 'pass_through'
+const HYBRID_LEVEL_ROUTE_MAX_COUNT = 5
 
 export function normalizeApiKeyRouteMode(value: unknown): ApiKeyRouteMode {
   if (value === undefined || value === null || value === '') return DEFAULT_API_KEY_ROUTE_MODE
@@ -231,31 +232,30 @@ function normalizeLevelRoutes(value: unknown): ApiKeyHybridLevelRoute[] {
   }
   const routes = value.map(normalizeLevelRoute)
     .filter((route) => route.enabled)
-    .sort((left, right) => left.minLevel - right.minLevel || left.maxLevel - right.maxLevel)
   if (!routes.length) {
     throw new Error('混合路由至少需要一个启用的等级范围')
+  }
+  if (routes.length > HYBRID_LEVEL_ROUTE_MAX_COUNT) {
+    throw new Error(`混合路由最多只能配置 ${HYBRID_LEVEL_ROUTE_MAX_COUNT} 个等级范围`)
   }
   const targetModelKeys = new Set(routes.map((route) => route.targetModel.trim().toLowerCase()))
   if (targetModelKeys.size < 2) {
     throw new Error('混合路由至少需要配置 2 个不同的目标模型')
   }
-  const firstRoute = routes.find((route) => route.minLevel === 1)
-  if (!firstRoute || firstRoute.maxLevel < 2 || firstRoute.maxLevel > 5) {
+  const firstRoute = routes[0]
+  if (!firstRoute || firstRoute.minLevel !== 1 || firstRoute.maxLevel < 2 || firstRoute.maxLevel > 5) {
     throw new Error('混合路由最低档必须从等级 1 开始，并覆盖 1-2 到 1-5 之间的范围')
   }
-  const coverage = new Set<number>()
-  for (const route of routes) {
-    for (let level = route.minLevel; level <= route.maxLevel; level += 1) {
-      if (coverage.has(level)) {
-        throw new Error(`混合路由等级范围重叠：${level}`)
-      }
-      coverage.add(level)
+  let expectedMinLevel = 1
+  for (let index = 0; index < routes.length; index += 1) {
+    const route = routes[index]
+    if (route.minLevel !== expectedMinLevel) {
+      throw new Error(`混合路由第 ${index + 1} 个等级范围必须从等级 ${expectedMinLevel} 开始`)
     }
+    expectedMinLevel = route.maxLevel + 1
   }
-  for (let level = 1; level <= 10; level += 1) {
-    if (!coverage.has(level)) {
-      throw new Error(`混合路由等级范围必须完整覆盖 1-10，缺少等级 ${level}`)
-    }
+  if (expectedMinLevel !== 11) {
+    throw new Error('混合路由等级范围必须按从小到大连续覆盖 1-10')
   }
   return routes
 }

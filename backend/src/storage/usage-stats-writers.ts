@@ -7,9 +7,9 @@ import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usage
 import { subtractAuthorizationUsageReportRows, upsertAuthorizationUsageReportRows } from './usage-stats-authorization-daily-writer.js'
 import { subtractAccountQualityMinuteStats, upsertAccountQualityMinuteStats } from './usage-stats-account-quality-writer.js'
 import { subtractUsageErrorBuckets, upsertUsageErrorBuckets } from './usage-stats-error-writer.js'
-import { subtractUsageLatencyEntry, upsertUsageLatencyEntry } from './usage-stats-latency-writer.js'
+import { addAggregatedLatencyEntries, subtractUsageLatencyEntry, upsertAggregatedLatencyEntries, upsertUsageLatencyEntry, type AggregatedLatencyEntry } from './usage-stats-latency-writer.js'
 import { subtractUsageModelBuckets, upsertUsageModelBuckets } from './usage-stats-model-writer.js'
-import { usageLatencyTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
+import { usageModelTimeBuckets, usageStatsTimeBuckets, usageStatsTimeKeys, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID, type UsageStatsAccumulator, type UsageStatsEntry, type UsageStatsRecordRow } from './usage-stats-types.js'
 
@@ -20,7 +20,6 @@ export interface UsageStatsAggregationContext extends UsageStatsAuthorizationLoo
 }
 
 type SqliteStatement = ReturnType<DatabaseSync['prepare']>
-type LatencyMetricType = 'duration_ms' | 'first_token_ms'
 
 interface UsageStatsUpsertStatements {
   database: DatabaseSync
@@ -38,17 +37,6 @@ interface AggregatedUsageStatsEntry {
 interface AggregatedUsageStatsTimeEntry extends AggregatedUsageStatsEntry {
   bucket: UsageStatsTimeBucketDefinition
   timeValue: string
-}
-
-interface AggregatedLatencyEntry {
-  bucket: UsageStatsTimeBucketDefinition
-  systemAccountId: string
-  scopeType: string
-  scopeId: string
-  metricType: LatencyMetricType
-  timeValue: string
-  bucketUpperBoundMs: number
-  sampleCount: number
 }
 
 interface AggregatedModelEntry {
@@ -75,8 +63,6 @@ interface AggregatedAccountQualityEntry {
   lastErrorAt?: string
   lastErrorMessage?: string
 }
-
-const latencyBucketUpperBoundsMs = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000, -1] as const
 
 export function createUsageStatsAggregationContext(rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
   const context: UsageStatsAggregationContext = {
@@ -273,30 +259,6 @@ function addAggregatedUsageStatsTimeEntry(target: Map<string, AggregatedUsageSta
   })
 }
 
-function addAggregatedLatencyEntries(target: Map<string, AggregatedLatencyEntry>, entry: UsageStatsEntry, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys): void {
-  for (const sample of latencySamples(row)) {
-    for (const bucket of usageLatencyTimeBuckets) {
-      const timeValue = timeKeys[bucket.valueKey]
-      const key = `${bucket.tableName}\u0000${timeValue}\u0000${usageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId)}\u0000${sample.metricType}\u0000${sample.bucketUpperBoundMs}`
-      const existing = target.get(key)
-      if (existing) {
-        existing.sampleCount += 1
-        continue
-      }
-      target.set(key, {
-        bucket,
-        systemAccountId: entry.systemAccountId,
-        scopeType: entry.scopeType,
-        scopeId: entry.scopeId,
-        metricType: sample.metricType,
-        timeValue,
-        bucketUpperBoundMs: sample.bucketUpperBoundMs,
-        sampleCount: 1
-      })
-    }
-  }
-}
-
 function addAggregatedUsageModelEntries(target: Map<string, AggregatedModelEntry>, row: UsageStatsRecordRow, timeKeys: UsageStatsTimeKeys): void {
   const model = row.model?.trim()
   if (!model) return
@@ -368,25 +330,6 @@ function addAggregatedAccountQualityEntry(target: Map<string, AggregatedAccountQ
     existing.lastErrorAt = row.created_at
     existing.lastErrorMessage = row.error_message ?? undefined
   }
-}
-
-function upsertAggregatedLatencyEntries(database: DatabaseSync, entries: Map<string, AggregatedLatencyEntry>, updatedAt: string): void {
-  const statements = new Map<string, SqliteStatement>()
-  for (const entry of entries.values()) {
-    const statement = statements.get(entry.bucket.tableName) ?? prepareUsageLatencyBucketCountUpsertStatement(database, entry.bucket)
-    statements.set(entry.bucket.tableName, statement)
-    statement.run(entry.systemAccountId, entry.scopeType, entry.scopeId, entry.metricType, entry.timeValue, entry.bucketUpperBoundMs, entry.sampleCount, updatedAt)
-  }
-}
-
-function prepareUsageLatencyBucketCountUpsertStatement(database: DatabaseSync, bucket: UsageStatsTimeBucketDefinition): SqliteStatement {
-  return database.prepare(`
-    INSERT INTO ${bucket.tableName} (system_account_id, scope_type, scope_id, metric_type, ${bucket.columnName}, bucket_upper_bound_ms, sample_count, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, scope_type, scope_id, metric_type, ${bucket.columnName}, bucket_upper_bound_ms) DO UPDATE SET
-      sample_count = sample_count + excluded.sample_count,
-      updated_at = excluded.updated_at
-  `)
 }
 
 function upsertAggregatedModelEntries(database: DatabaseSync, entries: Map<string, AggregatedModelEntry>, updatedAt: string): void {
@@ -525,28 +468,6 @@ function maxIso(left?: string, right?: string): string | undefined {
   if (!left) return right
   if (!right) return left
   return left >= right ? left : right
-}
-
-function latencySamples(row: UsageStatsRecordRow): Array<{ metricType: LatencyMetricType; bucketUpperBoundMs: number }> {
-  const samples: Array<{ metricType: LatencyMetricType; bucketUpperBoundMs: number }> = []
-  const durationMs = finiteNonNegativeNumber(row.duration_ms)
-  if (durationMs !== undefined) {
-    samples.push({ metricType: 'duration_ms', bucketUpperBoundMs: latencyBucketUpperBound(durationMs) })
-  }
-  const firstTokenMs = finiteNonNegativeNumber(row.first_token_ms)
-  if (firstTokenMs !== undefined) {
-    samples.push({ metricType: 'first_token_ms', bucketUpperBoundMs: latencyBucketUpperBound(firstTokenMs) })
-  }
-  return samples
-}
-
-function finiteNonNegativeNumber(value: unknown): number | undefined {
-  const number = Number(value ?? NaN)
-  return Number.isFinite(number) && number >= 0 ? number : undefined
-}
-
-function latencyBucketUpperBound(value: number): number {
-  return latencyBucketUpperBoundsMs.find((upperBound) => upperBound === -1 || value <= upperBound) ?? -1
 }
 
 function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {

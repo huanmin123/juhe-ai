@@ -86,7 +86,7 @@ const outputPath = envText('JUHE_REAL_HYBRID_QUALITY_OUTPUT_PATH')
 const outputMaxTokens = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_OUTPUT_MAX_TOKENS') ?? 1_400
 const judgeMaxTokens = positiveIntegerEnv('JUHE_REAL_HYBRID_QUALITY_JUDGE_MAX_TOKENS') ?? 1_200
 const scoringModel = envText('JUHE_REAL_HYBRID_QUALITY_SCORING_MODEL') || 'gpt-5.4-mini'
-const lowModel = envText('JUHE_REAL_HYBRID_QUALITY_MODEL_1_3') || 'gpt-5.4-mini'
+const lowModel = envText('JUHE_REAL_HYBRID_QUALITY_MODEL_1_2') || envText('JUHE_REAL_HYBRID_QUALITY_MODEL_1_3') || 'gpt-5.4-mini'
 const glmModel = envText('JUHE_REAL_HYBRID_QUALITY_MODEL_4_6') || 'glm-5.2'
 const gptModel = envText('JUHE_REAL_HYBRID_QUALITY_GPT_MODEL') || 'gpt-5.5'
 const opusModel = envText('JUHE_REAL_HYBRID_QUALITY_OPUS_MODEL') || 'claude-opus-4-7'
@@ -96,14 +96,14 @@ const judgeUnitCost = numberEnv('JUHE_REAL_HYBRID_QUALITY_JUDGE_UNIT_COST') ?? m
 const minPassRate = numberEnv('JUHE_REAL_HYBRID_QUALITY_MIN_PASS_RATE')
 
 const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
-  { minLevel: 1, maxLevel: 3, targetModel: lowModel, enabled: true },
-  { minLevel: 4, maxLevel: 6, targetModel: glmModel, enabled: true },
+  { minLevel: 1, maxLevel: 2, targetModel: lowModel, enabled: true },
+  { minLevel: 3, maxLevel: 6, targetModel: glmModel, enabled: true },
   { minLevel: 7, maxLevel: 8, targetModel: gptModel, enabled: true },
   { minLevel: 9, maxLevel: 10, targetModel: opusModel, enabled: true }
 ]
 
 const modelUnitCosts = new Map<string, number>([
-  [lowModel, numberEnv('JUHE_REAL_HYBRID_QUALITY_COST_1_3') ?? modelCostDefault(lowModel)],
+  [lowModel, numberEnv('JUHE_REAL_HYBRID_QUALITY_COST_1_2') ?? numberEnv('JUHE_REAL_HYBRID_QUALITY_COST_1_3') ?? modelCostDefault(lowModel)],
   [glmModel, numberEnv('JUHE_REAL_HYBRID_QUALITY_COST_4_6') ?? modelCostDefault(glmModel)],
   [gptModel, numberEnv('JUHE_REAL_HYBRID_QUALITY_GPT_COST') ?? modelCostDefault(gptModel)],
   [opusModel, numberEnv('JUHE_REAL_HYBRID_QUALITY_OPUS_COST') ?? modelCostDefault(opusModel)]

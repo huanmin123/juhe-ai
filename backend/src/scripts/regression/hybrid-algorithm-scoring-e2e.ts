@@ -511,8 +511,8 @@ function configuredLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes'] {
   const configured = envText('JUHE_REAL_HYBRID_ALGORITHM_LEVEL_ROUTES_JSON')
   if (!configured) {
     return [
-      { minLevel: 1, maxLevel: 3, targetModel: lowModel, enabled: true },
-      { minLevel: 4, maxLevel: 7, targetModel: midModel, enabled: true },
+      { minLevel: 1, maxLevel: 2, targetModel: lowModel, enabled: true },
+      { minLevel: 3, maxLevel: 7, targetModel: midModel, enabled: true },
       { minLevel: 8, maxLevel: 10, targetModel: highModel, enabled: true }
     ]
   }

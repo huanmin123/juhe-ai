@@ -138,6 +138,8 @@ interface OpenAIToAnthropicBridgeTransformOptions {
 interface OpenAIToAnthropicBridgeRequestPlan {
   structuredOutput?: OpenAIToAnthropicStructuredOutputPlan
   reasoningEffort?: string
+  reasoningSummary?: string
+  chatStreamIncludeUsage?: boolean
   fileSearch?: OpenAIToAnthropicFileSearchPlan
   imageGeneration?: OpenAIToAnthropicImageGenerationPlan
 }
@@ -243,6 +245,13 @@ interface AnthropicStreamState {
 const defaultAnthropicMaxTokens = 4096
 const structuredOutputSyntheticToolName = 'emit_structured_output'
 const structuredOutputSchemaMismatchCode = 'openai_anthropic_bridge_structured_output_schema_mismatch'
+const supportedAnthropicBridgeReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high'])
+const supportedAnthropicBridgeReasoningSummaries = new Set(['auto', 'concise', 'detailed', 'none'])
+const supportedOpenAIResponsesIncludesForAnthropicBridge = new Set(['file_search_call.results'])
+const openAIResponsesIncludesHandledByDedicatedValidators = new Set([
+  'message.output_text.logprobs',
+  'reasoning.encrypted_content'
+])
 const bridgeRequestPlanSymbol: unique symbol = Symbol('openAIToAnthropicBridgeRequestPlan')
 let openAIToAnthropicBridgeFileResolverForTest: OpenAIToAnthropicFileResolver | undefined
 
@@ -326,7 +335,12 @@ export async function buildOpenAIToAnthropicBridgeBody(
   }
   const requestPlan = createOpenAIToAnthropicBridgeRequestPlan(sourceEndpointFamily, body)
   validateOpenAIToAnthropicUnsupportedIncludes(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicReasoningOptions(body)
+  validateOpenAIToAnthropicToolCallControlOptions(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicResponseStateOptions(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicRequestControlOptions(sourceEndpointFamily, body)
   validateOpenAIToAnthropicOutputShapeOptions(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicSemanticControlOptions(body)
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
   const guidance = openAIToAnthropicUnsupportedToolGuidance(sourceEndpointFamily, body, requestPlan, options, {
     model,
@@ -462,7 +476,7 @@ async function chatBodyToAnthropicMessages(
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
   const tools = chatToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
-  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput)
+  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false)
   validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
@@ -509,7 +523,7 @@ async function responsesBodyToAnthropicMessages(
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
   const tools = responsesToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
-  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput)
+  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false)
   validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
@@ -535,7 +549,7 @@ function baseAnthropicBody(
   if (typeof body.top_p === 'number') output.top_p = body.top_p
   const stopSequences = stopSequencesValue(body.stop)
   if (stopSequences.length) output.stop_sequences = stopSequences
-  const user = stringValue(body.user)
+  const user = stringValue(body.safety_identifier) ?? stringValue(body.user)
   if (user) {
     output.metadata = { user_id: user }
   }
@@ -598,6 +612,7 @@ async function appendResponsesInputItemAsAnthropicMessage(
     return
   }
   if (item.type === 'reasoning') {
+    validateResponsesReasoningInputItem(item)
     const text = responsesReasoningTextFromItem(item)
     if (text) appendSystemText(systemParts, `历史推理摘要：\n${text}`)
     return
@@ -615,6 +630,14 @@ function appendAnthropicMessage(messages: AnthropicMessage[], next: AnthropicMes
     return
   }
   messages.push(next)
+}
+
+function validateResponsesReasoningInputItem(item: JsonRecord): void {
+  if (!hasMeaningfulField(item, 'encrypted_content')) return
+  throw bridgeValidationError(
+    'OpenAI 到 Anthropic 桥接不能恢复或验证历史 reasoning.encrypted_content；请移除该 reasoning item、提供可读 summary/content，或改用原生 Responses 上游',
+    'openai_anthropic_bridge_encrypted_reasoning_input_unsupported'
+  )
 }
 
 function createOpenAIToolResultHistory(): OpenAIToolResultHistory {
@@ -1110,21 +1133,34 @@ function anthropicToolFromFunctionDefinition(name: string, description: unknown,
   }
 }
 
-function applyTools(output: JsonRecord, tools: JsonRecord[], toolChoice: unknown): void {
+function applyTools(
+  output: JsonRecord,
+  tools: JsonRecord[],
+  toolChoice: unknown,
+  disableParallelToolUse: boolean
+): void {
   if (!tools.length) return
   output.tools = tools
   const anthropicToolChoice = anthropicToolChoiceFromOpenAI(toolChoice)
-  if (anthropicToolChoice) output.tool_choice = anthropicToolChoice
+  if (anthropicToolChoice) {
+    if (disableParallelToolUse && anthropicToolChoice.type !== 'none') {
+      anthropicToolChoice.disable_parallel_tool_use = true
+    }
+    output.tool_choice = anthropicToolChoice
+  } else if (disableParallelToolUse) {
+    output.tool_choice = { type: 'auto', disable_parallel_tool_use: true }
+  }
 }
 
 function applyStructuredOutputPlan(
   output: JsonRecord,
   tools: JsonRecord[],
   toolChoice: unknown,
-  structuredOutput: OpenAIToAnthropicStructuredOutputPlan | undefined
+  structuredOutput: OpenAIToAnthropicStructuredOutputPlan | undefined,
+  disableParallelToolUse: boolean
 ): void {
   if (!structuredOutput?.syntheticToolName) {
-    applyTools(output, tools, toolChoice)
+    applyTools(output, tools, toolChoice, disableParallelToolUse)
     return
   }
   if (tools.length) {
@@ -1223,7 +1259,11 @@ function createOpenAIToAnthropicBridgeRequestPlan(
     structuredOutput: sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
       ? structuredOutputPlanFromResponsesBody(body)
       : structuredOutputPlanFromChatBody(body),
-    reasoningEffort: reasoningEffortFromOpenAIBody(body)
+    reasoningEffort: reasoningEffortFromOpenAIBody(body),
+    reasoningSummary: reasoningSummaryFromOpenAIBody(body),
+    chatStreamIncludeUsage: sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+      ? objectValue(body.stream_options)?.include_usage === true
+      : undefined
   }
 }
 
@@ -1232,12 +1272,135 @@ function validateOpenAIToAnthropicUnsupportedIncludes(
   body: JsonRecord
 ): void {
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
-  const include = Array.isArray(body.include) ? body.include : []
-  if (!include.includes('reasoning.encrypted_content')) return
+  if (!hasMeaningfulField(body, 'include')) return
+  if (!Array.isArray(body.include)) {
+    throw bridgeValidationError(
+      'OpenAI Responses include 必须是字符串数组；Anthropic bridge 当前只支持 file_search_call.results，其他 include 需要原生 Responses 或对应本地运行时',
+      'openai_anthropic_bridge_include_unsupported'
+    )
+  }
+
+  const include = body.include
+  if (include.includes('reasoning.encrypted_content')) {
+    throw bridgeValidationError(
+      'OpenAI 到 Anthropic 桥接不能生成或验证 OpenAI reasoning.encrypted_content；请移除 include=reasoning.encrypted_content，或改用原生 Responses 上游',
+      'openai_anthropic_bridge_encrypted_reasoning_unsupported'
+    )
+  }
+
+  const unsupportedIncludes = include.filter((item) => {
+    if (typeof item !== 'string' || !item.trim()) return true
+    const normalized = item.trim()
+    return !supportedOpenAIResponsesIncludesForAnthropicBridge.has(normalized)
+      && !openAIResponsesIncludesHandledByDedicatedValidators.has(normalized)
+  })
+  if (!unsupportedIncludes.length) return
+  const unsupportedList = unsupportedIncludes
+    .map((item) => typeof item === 'string' && item.trim() ? item.trim() : '<non_string_include>')
+    .slice(0, 4)
+    .join('、')
   throw bridgeValidationError(
-    'OpenAI 到 Anthropic 桥接不能生成或验证 OpenAI reasoning.encrypted_content；请移除 include=reasoning.encrypted_content，或改用原生 Responses 上游',
-    'openai_anthropic_bridge_encrypted_reasoning_unsupported'
+    `Anthropic Messages 不能等价返回 OpenAI Responses include 扩展字段：${unsupportedList}；请移除这些 include，或改用原生 Responses / 对应本地运行时`,
+    'openai_anthropic_bridge_include_unsupported'
   )
+}
+
+function validateOpenAIToAnthropicReasoningOptions(body: JsonRecord): void {
+  const effort = reasoningEffortFromOpenAIBody(body)
+  if (hasOpenAIReasoningEffortRequest(body) && (effort === undefined || !supportedAnthropicBridgeReasoningEfforts.has(effort))) {
+    throw bridgeValidationError(
+      'OpenAI 到 Anthropic 桥接当前只支持 reasoning.effort / reasoning_effort 为 none、minimal、low、medium、high；xhigh 或未知值需要上游 profile 明确支持后才能启用',
+      'openai_anthropic_bridge_reasoning_effort_unsupported'
+    )
+  }
+
+  const summary = reasoningSummaryFromOpenAIBody(body)
+  if (hasOpenAIReasoningSummaryRequest(body) && (summary === undefined || !supportedAnthropicBridgeReasoningSummaries.has(summary))) {
+    throw bridgeValidationError(
+      'OpenAI 到 Anthropic 桥接当前只支持 reasoning.summary 为 auto、concise、detailed、none；未知 summary 会导致客户端误判 reasoning 输出形态',
+      'openai_anthropic_bridge_reasoning_summary_unsupported'
+    )
+  }
+}
+
+function validateOpenAIToAnthropicToolCallControlOptions(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord
+): void {
+  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY || !hasMeaningfulField(body, 'max_tool_calls')) return
+  throw bridgeValidationError(
+    'Anthropic Messages 不能等价承接 OpenAI Responses max_tool_calls 工具调用次数上限；请移除 max_tool_calls，或改用原生 Responses 上游',
+    'openai_anthropic_bridge_max_tool_calls_unsupported'
+  )
+}
+
+function validateOpenAIToAnthropicResponseStateOptions(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord
+): void {
+  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
+  if (hasMeaningfulField(body, 'conversation')) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能直接承接 OpenAI Responses conversation 状态恢复和写回语义；请移除 conversation，或改用原生 Responses / 网关 Conversation 状态层',
+      'openai_anthropic_bridge_conversation_unsupported'
+    )
+  }
+  if (hasMeaningfulField(body, 'background') && body.background !== false) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI Responses background 后台响应语义；请移除 background 或设为 false，或改用原生 Responses 上游',
+      'openai_anthropic_bridge_background_unsupported'
+    )
+  }
+  const truncation = normalizedOpenAIEnumValue(body.truncation)
+  if (hasMeaningfulField(body, 'truncation') && truncation !== 'disabled') {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI Responses truncation=auto 上下文裁剪策略；请移除 truncation 或设为 disabled，或改用原生 Responses 上游',
+      'openai_anthropic_bridge_truncation_unsupported'
+    )
+  }
+  if (hasMeaningfulField(body, 'context_management')) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI Responses context_management 上下文管理配置；请移除 context_management，或改用原生 Responses 上游',
+      'openai_anthropic_bridge_context_management_unsupported'
+    )
+  }
+}
+
+function validateOpenAIToAnthropicRequestControlOptions(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord
+): void {
+  const serviceTier = normalizedOpenAIEnumValue(body.service_tier)
+  if (hasMeaningfulField(body, 'service_tier') && serviceTier !== 'auto' && serviceTier !== 'default') {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI service_tier 服务档位；请移除 service_tier 或设为 auto/default，或改用原生 OpenAI 上游',
+      'openai_anthropic_bridge_service_tier_unsupported'
+    )
+  }
+  if (hasMeaningfulField(body, 'prompt_cache_retention')) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI prompt_cache_retention 缓存保留策略；请移除 prompt_cache_retention，或改用原生 OpenAI 上游',
+      'openai_anthropic_bridge_prompt_cache_retention_unsupported'
+    )
+  }
+  if (hasMeaningfulField(body, 'store') && body.store !== false) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI store=true 存储、后续检索或 distillation/evals 语义；请移除 store 或设为 false，或改用原生 OpenAI 上游',
+      'openai_anthropic_bridge_store_unsupported'
+    )
+  }
+  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && hasMeaningfulField(body, 'prompt')) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能解析 OpenAI Responses prompt template 引用；请展开为 instructions/input 后重试，或改用原生 Responses 上游',
+      'openai_anthropic_bridge_prompt_template_unsupported'
+    )
+  }
+  if (hasMeaningfulField(body, 'moderation')) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI 顶层 moderation 输入 / 输出审核配置；请移除 moderation，或改用具备审核策略的原生 OpenAI 上游',
+      'openai_anthropic_bridge_moderation_unsupported'
+    )
+  }
 }
 
 function validateOpenAIToAnthropicOutputShapeOptions(
@@ -1280,6 +1443,50 @@ function validateOpenAIToAnthropicChatOutputModalities(body: JsonRecord): void {
     'Anthropic Messages 不能返回 OpenAI Chat audio output；请移除 modalities 中的 audio / 其他非 text 输出模态和 audio 配置，或改用原生 OpenAI Chat 上游',
     'openai_anthropic_bridge_output_modality_unsupported'
   )
+}
+
+function validateOpenAIToAnthropicSemanticControlOptions(body: JsonRecord): void {
+  const samplingControl = unsupportedOpenAISamplingControlName(body)
+  if (samplingControl) {
+    throw bridgeValidationError(
+      `Anthropic Messages 不能等价承接 OpenAI ${samplingControl} 采样控制；请移除该字段，或改用原生 OpenAI 上游`,
+      'openai_anthropic_bridge_sampling_control_unsupported'
+    )
+  }
+  if (hasMeaningfulField(body, 'prediction')) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI Predicted Outputs prediction；请移除 prediction，或改用原生 OpenAI 上游',
+      'openai_anthropic_bridge_prediction_unsupported'
+    )
+  }
+  if (hasOpenAIVerbosityRequest(body)) {
+    throw bridgeValidationError(
+      'Anthropic Messages 不能等价承接 OpenAI verbosity 输出详细度控制；请移除 verbosity，或改用原生 OpenAI 上游',
+      'openai_anthropic_bridge_verbosity_unsupported'
+    )
+  }
+}
+
+function unsupportedOpenAISamplingControlName(body: JsonRecord): string | undefined {
+  const temperature = numberValue(body.temperature)
+  if (temperature !== undefined && temperature > 1) return 'temperature>1'
+  if (nonDefaultNumber(body.presence_penalty, 0)) return 'presence_penalty'
+  if (nonDefaultNumber(body.frequency_penalty, 0)) return 'frequency_penalty'
+  if (hasOpenAILogitBiasRequest(body.logit_bias)) return 'logit_bias'
+  if (hasMeaningfulField(body, 'seed')) return 'seed'
+  return undefined
+}
+
+function hasOpenAILogitBiasRequest(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (isPlainObject(value)) return Object.keys(value).length > 0
+  return true
+}
+
+function hasOpenAIVerbosityRequest(body: JsonRecord): boolean {
+  if (hasMeaningfulField(body, 'verbosity')) return true
+  const text = objectValue(body.text)
+  return text ? hasMeaningfulField(text, 'verbosity') : false
 }
 
 async function applyOpenAIToAnthropicLocalToolEmulation(
@@ -1424,7 +1631,27 @@ function structuredOutputPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthro
 
 function reasoningEffortFromOpenAIBody(body: JsonRecord): string | undefined {
   const reasoning = objectValue(body.reasoning)
-  return stringValue(reasoning?.effort) ?? stringValue(body.reasoning_effort)
+  return normalizedOpenAIEnumValue(reasoning?.effort) ?? normalizedOpenAIEnumValue(body.reasoning_effort)
+}
+
+function reasoningSummaryFromOpenAIBody(body: JsonRecord): string | undefined {
+  const reasoning = objectValue(body.reasoning)
+  return normalizedOpenAIEnumValue(reasoning?.summary)
+}
+
+function hasOpenAIReasoningEffortRequest(body: JsonRecord): boolean {
+  const reasoning = objectValue(body.reasoning)
+  return Boolean(reasoning && hasMeaningfulField(reasoning, 'effort')) || hasMeaningfulField(body, 'reasoning_effort')
+}
+
+function hasOpenAIReasoningSummaryRequest(body: JsonRecord): boolean {
+  const reasoning = objectValue(body.reasoning)
+  return Boolean(reasoning && hasMeaningfulField(reasoning, 'summary'))
+}
+
+function normalizedOpenAIEnumValue(value: unknown): string | undefined {
+  const text = stringValue(value)
+  return text === undefined ? undefined : text.trim().toLowerCase()
 }
 
 function applyAnthropicThinkingFromOpenAIReasoning(output: JsonRecord, body: JsonRecord): void {
@@ -2007,7 +2234,7 @@ async function anthropicMessageToResponsesResponse(
     previous_response_id: options.previousResponseId ?? null,
     reasoning: {
       effort: options.requestPlan?.reasoningEffort ?? null,
-      summary: null
+      summary: options.requestPlan?.reasoningSummary ?? null
     },
     store: false,
     temperature: null,
@@ -2040,7 +2267,7 @@ function anthropicContentBlocksToResponsesOutputItems(
       }
       if (block.type === 'thinking') {
         const thinkingText = anthropicThinkingTextFromBlock(block)
-        if (thinkingText) {
+        if (thinkingText && shouldEmitResponsesReasoningItem(requestPlan)) {
           output.push(responsesReasoningItem(responseId, output.length, thinkingText))
         }
         continue
@@ -2071,6 +2298,14 @@ function anthropicContentBlocksToResponsesOutputItems(
     })
   }
   return output
+}
+
+function shouldEmitResponsesReasoningItem(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): boolean {
+  return requestPlan?.reasoningSummary !== 'none'
+}
+
+function shouldEmitResponsesStreamBlock(state: AnthropicStreamState, block: AnthropicStreamBlockState): boolean {
+  return block.type !== 'thinking' || shouldEmitResponsesReasoningItem(state.requestPlan)
 }
 
 async function anthropicMessageToResponsesImageGenerationResponse(input: {
@@ -2126,7 +2361,7 @@ async function anthropicMessageToResponsesImageGenerationResponse(input: {
     previous_response_id: input.previousResponseId ?? null,
     reasoning: {
       effort: input.requestPlan.reasoningEffort ?? null,
-      summary: null
+      summary: input.requestPlan.reasoningSummary ?? null
     },
     store: false,
     temperature: null,
@@ -2374,9 +2609,10 @@ function processAnthropicEventAsResponses(state: AnthropicStreamState, event: Pa
     const contentBlock = objectValue(data.content_block) ?? {}
     const block = streamBlockFromContentBlock(index, contentBlock)
     assignToolCallIndex(state, block)
-    block.outputIndex = state.nextOutputIndex++
     state.blocks.set(index, block)
     output.push(...ensureResponsesStreamStarted(state))
+    if (!shouldEmitResponsesStreamBlock(state, block)) return output
+    block.outputIndex = state.nextOutputIndex++
     output.push(...ensureResponsesLocalToolPreface(state))
     if (block.type === 'text' || isStructuredOutputStreamBlock(state, block)) {
       output.push(sse('response.output_item.added', {
@@ -2698,6 +2934,7 @@ function completeChatStream(state: AnthropicStreamState, finishReason: string | 
   if (state.completed || state.failed) return []
   state.completed = true
   const output = ensureChatRoleChunk(state)
+  const usage = state.usage ?? estimatedChatUsageFromStreamState(state)
   output.push(chatSseData({
     id: state.chatId,
     object: 'chat.completion.chunk',
@@ -2708,8 +2945,18 @@ function completeChatStream(state: AnthropicStreamState, finishReason: string | 
       delta: {},
       finish_reason: finishReason ?? 'stop'
     }],
-    usage: state.usage ?? estimatedChatUsageFromStreamState(state)
+    usage: null
   }))
+  if (state.requestPlan?.chatStreamIncludeUsage) {
+    output.push(chatSseData({
+      id: state.chatId,
+      object: 'chat.completion.chunk',
+      created: state.createdAt,
+      model: state.model,
+      choices: [],
+      usage
+    }))
+  }
   output.push(chatSseDone())
   return output
 }
@@ -2781,6 +3028,7 @@ function completeResponsesBlock(state: AnthropicStreamState, block: AnthropicStr
     return completeResponsesTextBlock(state, block, result.text)
   }
   if (block.type === 'thinking') {
+    if (!shouldEmitResponsesReasoningItem(state.requestPlan)) return []
     const item = responsesReasoningItem(state.responseId, block.index, block.text)
     state.outputItems.push(item)
     return [sse('response.output_item.done', {
@@ -2893,7 +3141,7 @@ function responseSnapshot(state: AnthropicStreamState, status: 'in_progress' | '
     previous_response_id: state.previousResponseId ?? null,
     reasoning: {
       effort: state.requestPlan?.reasoningEffort ?? null,
-      summary: null
+      summary: state.requestPlan?.reasoningSummary ?? null
     },
     store: false,
     temperature: null,
@@ -3226,7 +3474,7 @@ function failedResponsesResponseFromStructuredOutputError(input: {
     previous_response_id: input.previousResponseId ?? null,
     reasoning: {
       effort: input.requestPlan?.reasoningEffort ?? null,
-      summary: null
+      summary: input.requestPlan?.reasoningSummary ?? null
     },
     store: false,
     temperature: null,
@@ -3836,6 +4084,11 @@ function numberValue(value: unknown): number | undefined {
   return Number.isFinite(number) ? number : undefined
 }
 
+function nonDefaultNumber(value: unknown, defaultValue: number): boolean {
+  const number = numberValue(value)
+  return number !== undefined && number !== defaultValue
+}
+
 function integerValue(value: unknown): number | undefined {
   const number = typeof value === 'number'
     ? value
@@ -3847,6 +4100,10 @@ function integerValue(value: unknown): number | undefined {
 function requestedPositiveInteger(value: unknown): boolean {
   const integer = integerValue(value)
   return integer !== undefined && integer > 0
+}
+
+function hasMeaningfulField(value: JsonRecord, key: string): boolean {
+  return hasOwn(value, key) && value[key] !== undefined && value[key] !== null
 }
 
 function hasOwn(value: JsonRecord, key: string): boolean {

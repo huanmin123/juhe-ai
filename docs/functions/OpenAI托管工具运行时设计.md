@@ -39,6 +39,13 @@ OpenAI 到 Anthropic Messages 的高兼容桥接已经把普通 function tools�
 
 默认能力为 L4 guidance。只有配置、权限、执行器和 mock 回归都到位后，单项工具才能升级为 L2 / L3。
 
+### 4.1 无承接能力时的 guidance-first 规则
+
+- 如果上游供应商、当前模型、账号 profile 或本地 registry 没有声明真实执行能力，Bridge 必须把该 tool 判定为 `guidance`，不能通过字段转换伪造执行结果。
+- `guidance` 必须按下游协议返回可继续消费的正常消息，说明缺失能力、当前上游事实和可行动建议，例如配置本地 MCP / 工具执行器、换用支持能力的模型或移除 tool。
+- 能力缺口不返回 500，不标记账号不可用，不继续请求不支持的上游。请求非法、权限越界、allowlist 未命中、状态链损坏或安全策略命中，才进入 `reject` / 错误路径。
+- guidance 文案只面向通用客户端 agent，不写死具体客户端名称；后续恢复策略由客户端 agent 自行决定。
+
 ## 5. 运行时边界
 
 ### 5.1 Runtime Registry
