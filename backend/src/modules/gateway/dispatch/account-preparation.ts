@@ -130,7 +130,12 @@ export async function prepareUpstreamAccount(account: UpstreamAccount, signal?: 
   return await prepareGatewayUpstreamAccount(account, signal)
 }
 
-export function selectAccountApiKeyForDispatch(account: UpstreamAccount): UpstreamAccount | undefined {
+export function selectAccountApiKeyForDispatch(
+  account: UpstreamAccount,
+  options: {
+    excludeFingerprints?: Iterable<string>
+  } = {}
+): UpstreamAccount | undefined {
   if (account.type !== 'api_key') {
     return account
   }
@@ -140,6 +145,7 @@ export function selectAccountApiKeyForDispatch(account: UpstreamAccount): Upstre
   const selected = selectAccountRuntimeApiKeyEntry({
     accountId,
     credentials,
+    excludeFingerprints: options.excludeFingerprints,
     runtimeStates: [
       ...(account.apiKeyRuntimeStates ?? []),
       ...localAccountApiKeyRuntimeStatesForDispatch(accountId)

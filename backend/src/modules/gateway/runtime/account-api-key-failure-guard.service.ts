@@ -71,6 +71,7 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
     | 'not_selected_api_key'
     | 'non_gateway_traffic'
     | 'policy_error'
+    | 'same_account_success_confirmed'
     | 'failure_storm_confirmed'
     | 'failure_storm_pending'
   failureCount?: number
@@ -78,6 +79,11 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
   distinctApiKeyCount?: number
   successCount?: number
   failureRatio?: number
+}
+
+export interface GatewayAccountApiKeyLocalFailureGuardDecision {
+  suppressed: boolean
+  reason: 'not_selected_api_key' | 'suppressed'
 }
 
 export interface GatewayAccountApiKeyFailureGuardSnapshotEntry {
@@ -123,6 +129,9 @@ export function recordGatewayAccountApiKeyFailureGuard(
   if (status === 'error') {
     return { persist: true, reason: 'policy_error' }
   }
+  if (input.source === 'same_account_api_key_failover_confirmed') {
+    return { persist: true, reason: 'same_account_success_confirmed' }
+  }
 
   const storm = rememberApiKeyFailureStorm(target, status, input)
   const decision = shouldPersistApiKeyFailureStorm(target, storm)
@@ -145,6 +154,18 @@ export function recordGatewayAccountApiKeyFailureGuard(
     reason: 'failure_storm_pending',
     ...metadata
   }
+}
+
+export function recordGatewayAccountApiKeyLocalFailureGuard(
+  account: OpenAIAccountSecret,
+  input: Pick<GatewayAccountApiKeyFailureGuardInput, 'status' | 'errorMessage'>
+): GatewayAccountApiKeyLocalFailureGuardDecision {
+  const target = accountApiKeyRuntimeTarget(account)
+  if (!target) {
+    return { suppressed: false, reason: 'not_selected_api_key' }
+  }
+  rememberLocalApiKeySuppression(target, normalizeFailureStatus(input.status), input.errorMessage)
+  return { suppressed: true, reason: 'suppressed' }
 }
 
 export function clearGatewayAccountApiKeyFailureGuard(account: OpenAIAccountSecret): boolean {

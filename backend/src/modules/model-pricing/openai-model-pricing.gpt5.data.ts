@@ -1,8 +1,16 @@
-// Curated from official OpenAI model and pricing docs on 2026-05-08.
+// Curated from official OpenAI model, pricing, and web search docs on 2026-06-24.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 // Current GPT-5 family model prices.
 
 export const openAIGPT5ModelPricingData = [
+  {
+    model: "gpt-5-search-api",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 200000,
+    max_input_tokens: 200000,
+    supported_api_protocols: ["chat_completions"]
+  },
   {
     model: "gpt-5.5",
     litellm_provider: "openai",

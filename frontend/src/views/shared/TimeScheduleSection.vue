@@ -1,17 +1,15 @@
 <template>
   <section class="time-schedule-section" :class="{ 'time-schedule-section-bordered': bordered }">
     <div class="schedule-toggle-row">
-      <span class="schedule-toggle-label">{{ readonly ? readonlyLabel : label }}</span>
+      <span class="schedule-toggle-label">
+        <span>{{ readonly ? readonlyLabel : label }}</span>
+        <a-tooltip :title="scheduleTooltipTitle">
+          <QuestionCircleOutlined class="help-icon" />
+        </a-tooltip>
+      </span>
       <a-switch v-model:checked="form.availabilitySchedule.enabled" :disabled="readonly" />
     </div>
     <div v-if="form.availabilitySchedule.enabled" class="schedule-config">
-      <a-alert
-        v-if="helpMessage"
-        class="schedule-help"
-        type="info"
-        show-icon
-        :message="helpMessage"
-      />
       <div class="schedule-window-list">
         <div v-for="(window, index) in form.availabilitySchedule.windows" :key="window.key" class="schedule-window-row">
           <a-select
@@ -41,7 +39,8 @@
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { computed } from 'vue'
 
 import { createTimeScheduleWindowFormRow, weekdayOptions, type TimeScheduleForm } from './timeSchedule'
 
@@ -59,6 +58,7 @@ const props = withDefaults(defineProps<{
   rowKeyPrefix: 'time_schedule_window',
   bordered: true
 })
+const scheduleTooltipTitle = computed(() => props.helpMessage || '开启后只在配置的星期和时间段内参与调度；未命中时间段时会暂时跳过。')
 
 function addScheduleWindow(): void {
   if (props.readonly) return
@@ -92,9 +92,22 @@ function removeScheduleWindow(index: number): void {
 }
 
 .schedule-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.help-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+
+.help-icon:hover {
+  color: #1677ff;
 }
 
 .schedule-config,
@@ -105,10 +118,6 @@ function removeScheduleWindow(index: number): void {
 
 .schedule-config {
   margin-top: 12px;
-}
-
-.schedule-help {
-  font-size: 12px;
 }
 
 .schedule-window-row {

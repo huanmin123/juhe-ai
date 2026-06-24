@@ -77,6 +77,28 @@ export async function resolveNormalGatewayModelRoute(
     return { outcome: 'skipped', reason: 'empty_binding', requestedModel }
   }
 
+  const activeProviderProtocolProfileIds = new Set(bindings.map(binding => binding.provider_protocol_profile_id))
+  if (activeProviderProtocolProfileIds.size === 1) {
+    return { outcome: 'skipped', reason: 'single_provider_protocol_profile', requestedModel }
+  }
+
+  const catalogRoute = await resolveCatalogProviderRoute({
+    bindings,
+    requestedModel,
+    systemAccountId: apiKeyRecord.system_account_id
+  })
+  if (catalogRoute.outcome === 'missing') {
+    return {
+      outcome: 'failed',
+      statusCode: 400,
+      type: 'invalid_request_error',
+      code: 'model_not_routable_for_api_key',
+      message: `当前 API Key 绑定的供应商中没有可路由模型：${requestedModel}`,
+      requestedModel,
+      matchedProviderCodes: catalogRoute.matchedProviderCodes
+    }
+  }
+
   const mappingTarget = await selectGatewayModelTargetGroup({
     req,
     apiKeyRecord,
@@ -106,22 +128,6 @@ export async function resolveNormalGatewayModelRoute(
     }
   }
 
-  const catalogRoute = await resolveCatalogProviderRoute({
-    bindings,
-    requestedModel,
-    systemAccountId: apiKeyRecord.system_account_id
-  })
-  if (catalogRoute.outcome === 'missing') {
-    return {
-      outcome: 'failed',
-      statusCode: 400,
-      type: 'invalid_request_error',
-      code: 'model_not_routable_for_api_key',
-      message: `当前 API Key 绑定的供应商中没有可路由模型：${requestedModel}`,
-      requestedModel,
-      matchedProviderCodes: catalogRoute.matchedProviderCodes
-    }
-  }
   if (catalogRoute.outcome === 'ambiguous') {
     return {
       outcome: 'failed',
@@ -144,14 +150,6 @@ export async function resolveNormalGatewayModelRoute(
     }
   }
   const matchedRoute = catalogRoute.route
-  const activeProviderProtocolProfileIds = new Set(bindings.map(binding => binding.provider_protocol_profile_id))
-  if (
-    activeProviderProtocolProfileIds.size === 1
-    && matchedRoute.providerProtocolProfileIds.size === 1
-    && matchedRoute.providerProtocolProfileIds.has(bindings[0]!.provider_protocol_profile_id)
-  ) {
-    return { outcome: 'skipped', reason: 'single_provider_protocol_profile', requestedModel }
-  }
   const candidateBindings = bindings
     .filter(binding => matchedRoute.providerProtocolProfileIds.has(binding.provider_protocol_profile_id))
 

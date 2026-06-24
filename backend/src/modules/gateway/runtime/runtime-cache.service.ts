@@ -7,6 +7,7 @@ import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routi
 import { hashSecret } from '../../../storage/crypto.js'
 import {
   listOpenAIAccountsForGroupResult,
+  listRecoverableUnavailableOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
@@ -235,6 +236,48 @@ export async function listCachedOpenAIAccountsForGroupAsync(
     ttlMs: openAIAccountsRetainTtlMs
   })
   return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
+}
+
+export async function listFreshOpenAIAccountsForGroupAsync(
+  groupId: string,
+  systemAccountId: string,
+  options: CachedOpenAIAccountsForGroupOptions = {}
+): Promise<OpenAIAccountSecret[]> {
+  const result = runtimeConfig.processRole === 'server'
+    ? await requestDbService({
+        type: 'list_openai_accounts_for_group_result',
+        groupId,
+        systemAccountId,
+        requestedModel: options.requestedModel,
+        requestedEndpointFamily: options.requestedEndpointFamily
+      })
+    : listOpenAIAccountsForGroupResult(groupId, systemAccountId, {
+        requestedModel: options.requestedModel,
+        requestedEndpointFamily: options.requestedEndpointFamily
+      })
+  return cloneOpenAIAccountsWithCurrentConcurrency(result.accounts)
+}
+
+export async function listRecoverableUnavailableOpenAIAccountsForGroupAsync(
+  groupId: string,
+  systemAccountId: string,
+  options: CachedOpenAIAccountsForGroupOptions & { windowMs?: number } = {}
+): Promise<OpenAIAccountSecret[]> {
+  const accounts = runtimeConfig.processRole === 'server'
+    ? await requestDbService({
+        type: 'list_recoverable_unavailable_openai_accounts_for_group',
+        groupId,
+        systemAccountId,
+        requestedModel: options.requestedModel,
+        requestedEndpointFamily: options.requestedEndpointFamily,
+        windowMs: options.windowMs
+      })
+    : listRecoverableUnavailableOpenAIAccountsForGroup(groupId, systemAccountId, {
+        requestedModel: options.requestedModel,
+        requestedEndpointFamily: options.requestedEndpointFamily,
+        windowMs: options.windowMs
+      })
+  return accounts.map(cloneStaticOpenAIAccountSecret)
 }
 
 export async function listCachedProviderModelCatalogAsync(input: {

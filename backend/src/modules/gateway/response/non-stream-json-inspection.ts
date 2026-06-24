@@ -10,11 +10,11 @@ import { responseInspectionAuditMetadata } from '../audit/metadata.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
-  extractGatewayProtocolJsonSemanticFrames,
-  gatewayProtocolClientErrorProtocolForProfile,
-  gatewayProtocolDefaultClientProfileForProfile,
+  extractGatewayProtocolJsonSemanticFramesForRequest,
+  gatewayProtocolClientErrorProtocolForRequest,
+  gatewayProtocolDefaultClientProfileForRequest,
   gatewayProtocolResponseEndpointFamilyForRequest,
-  parseGatewayProtocolUsageFromJsonBuffer
+  parseGatewayProtocolUsageFromJsonBufferForRequest
 } from '../protocols/registry.js'
 import {
   forgetOpenAIAccountForSession
@@ -86,13 +86,13 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   if (protocolFailure) {
     return finalizeBufferedJsonProtocolFailure(input, protocolFailure)
   }
-  const defaultClientProfile = gatewayProtocolDefaultClientProfileForProfile(input.account)
+  const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)
   const context = {
     clientProfile: input.clientStrategy?.clientProfile ?? defaultClientProfile,
     accountClientCompatibility: input.account.clientCompatibility,
     codexCompactionExpected: input.clientStrategy?.codexCompactionExpected
   }
-  const frames = extractGatewayProtocolJsonSemanticFrames(parsedJson, input.req, input.account)
+  const frames = extractGatewayProtocolJsonSemanticFramesForRequest(parsedJson, input.req, input.account)
   if (
     context.codexCompactionExpected === true
     && context.clientProfile === 'codex'
@@ -107,7 +107,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     }
   }
   if (frames.length === 0) return undefined
-  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForProfile(input.account)
+  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
 
   const policies = resolveRuntimeResponseInspectionPolicies({
     account: input.account,
@@ -136,7 +136,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     label: 'response_inspection',
     metadata: responseInspectionAuditMetadata(decision)
   })
-  const usage = parseGatewayProtocolUsageFromJsonBuffer(input.account, input.responseBody)
+  const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
   const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
   const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
   forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
@@ -253,7 +253,7 @@ async function finalizeBufferedJsonProtocolFailure(
   failure: { message: string; errorCode: string }
 ): Promise<UpstreamResponseHandlingResult> {
   const responsePayload = gatewayErrorPayload(failure.message, 'upstream_response_error', failure.errorCode)
-  const usage = parseGatewayProtocolUsageFromJsonBuffer(input.account, input.responseBody)
+  const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
   forgetOpenAIAccountForSession(input.sessionAffinityKey, input.account.id)
   input.auditCapture.completeAttempt(input.auditAttemptId, {
     statusCode: input.upstreamResponse.status,
@@ -323,7 +323,7 @@ async function finalizeBufferedJsonProtocolFailure(
       errorCode: failure.errorCode
     }
   }
-  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForProfile(input.account)
+  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(input.req, input.account)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
   sendGatewayErrorResponse(input.res, 502, responsePayload, { protocol: clientErrorProtocol })
   input.auditCapture.finalize({

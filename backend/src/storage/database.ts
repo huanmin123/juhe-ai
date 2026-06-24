@@ -192,7 +192,7 @@ export function beginDatabaseTransaction(target = getBusinessDatabase()): boolea
   if (target.isTransaction) {
     return false
   }
-  target.exec('BEGIN')
+  target.exec('BEGIN IMMEDIATE')
   return true
 }
 
@@ -306,7 +306,7 @@ export function sqliteWriterBoundaryStrictModeEnabled(): boolean {
   if (configured && ['0', 'false', 'no', 'off'].includes(configured)) {
     return isProductionRuntime()
   }
-  return !isOfflineSqliteScriptRuntime()
+  return !isLocalRegressionOrPerformanceScriptRuntime()
 }
 
 export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDatabaseRuntimeInfo {
@@ -359,18 +359,20 @@ function normalizeCodexContextStateShardIndex(shardIndex: number): number {
   return integer
 }
 
-function isOfflineSqliteScriptRuntime(): boolean {
+export function newId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
+}
+
+function isLocalRegressionOrPerformanceScriptRuntime(): boolean {
   const entry = process.argv[1]
   if (!entry) {
     return false
   }
   const normalized = normalize(entry).replace(/\\/g, '/').toLowerCase()
-  return normalized.includes('/src/scripts/')
-    || normalized.includes('/dist/scripts/')
-}
-
-export function newId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
+  return normalized.includes('/src/scripts/regression/')
+    || normalized.includes('/src/scripts/performance/')
+    || normalized.includes('/dist/scripts/regression/')
+    || normalized.includes('/dist/scripts/performance/')
 }
 
 export function runAfterDatabaseCommit(effect: AfterCommitEffect, target = getBusinessDatabase()): void {

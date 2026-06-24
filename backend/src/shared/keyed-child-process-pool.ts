@@ -9,6 +9,8 @@ export interface KeyedChildProcessPoolRuntime {
   handledJobs: number
   failedJobs: number
   rejectedJobs: number
+  timedOutJobs: number
+  restartedWorkers: number
   oldestQueuedMs: number
   maxQueueWaitMs: number
   maxRunMs: number
@@ -28,6 +30,7 @@ export interface KeyedChildProcessPoolOptions<Operation> {
   queueMaxItems: () => number
   shardIndexForOperation: (operation: Operation) => number
   operationType?: (operation: Operation) => string
+  runTimeoutMs?: () => number
 }
 
 interface KeyedChildProcessPoolJob<Operation> {
@@ -35,6 +38,7 @@ interface KeyedChildProcessPoolJob<Operation> {
   operation: Operation
   queuedAt: number
   startedAt?: number
+  timeout?: NodeJS.Timeout
   resolve: (value: unknown) => void
   reject: (error: Error) => void
 }
@@ -52,6 +56,8 @@ export class KeyedChildProcessPool<Operation> {
   private handledJobs = 0
   private failedJobs = 0
   private rejectedJobs = 0
+  private timedOutJobs = 0
+  private restartedWorkers = 0
   private maxQueueWaitMs = 0
   private maxRunMs = 0
   private exclusiveBarrier: Promise<unknown> = Promise.resolve()
@@ -67,6 +73,8 @@ export class KeyedChildProcessPool<Operation> {
       handledJobs: this.handledJobs,
       failedJobs: this.failedJobs,
       rejectedJobs: this.rejectedJobs,
+      timedOutJobs: this.timedOutJobs,
+      restartedWorkers: this.restartedWorkers,
       oldestQueuedMs: this.oldestQueuedMs(),
       maxQueueWaitMs: Math.round(this.maxQueueWaitMs),
       maxRunMs: Math.round(this.maxRunMs)
@@ -86,6 +94,8 @@ export class KeyedChildProcessPool<Operation> {
     this.handledJobs = 0
     this.failedJobs = 0
     this.rejectedJobs = 0
+    this.timedOutJobs = 0
+    this.restartedWorkers = 0
     this.maxQueueWaitMs = 0
     this.maxRunMs = 0
     this.notifyIdle()
@@ -165,9 +175,10 @@ export class KeyedChildProcessPool<Operation> {
           exitCode: code
         }, `${this.options.name} writer worker 异常退出`)
       }
-      if (slot.worker === worker) {
-        slot.worker = undefined
+      if (slot.worker !== worker) {
+        return
       }
+      slot.worker = undefined
       this.failSlotJobs(slot, new Error(`${this.options.name} writer worker 已退出，退出码 ${code}`))
     })
     return worker
@@ -184,6 +195,7 @@ export class KeyedChildProcessPool<Operation> {
     this.maxQueueWaitMs = Math.max(this.maxQueueWaitMs, job.startedAt - job.queuedAt)
     try {
       const worker = this.ensureSlotWorker(slot)
+      this.startJobTimeout(slot, job)
       worker.send({
         requestId: job.id,
         operation: job.operation
@@ -192,12 +204,14 @@ export class KeyedChildProcessPool<Operation> {
         if (slot.active === job) {
           slot.active = undefined
         }
+        this.clearJobTimeout(job)
         this.failJob(job, error)
         this.pumpSlot(slot)
         this.notifyIdle()
       })
     } catch (error) {
       slot.active = undefined
+      this.clearJobTimeout(job)
       this.failJob(job, error)
       this.pumpSlot(slot)
     }
@@ -209,6 +223,7 @@ export class KeyedChildProcessPool<Operation> {
       return
     }
     slot.active = undefined
+    this.clearJobTimeout(job)
     this.recordRunDuration(job)
     if (message.ok) {
       this.handledJobs += 1
@@ -222,6 +237,7 @@ export class KeyedChildProcessPool<Operation> {
 
   private failSlotJobs(slot: KeyedChildProcessPoolSlot<Operation>, error: Error): void {
     if (slot.active) {
+      this.clearJobTimeout(slot.active)
       this.failJob(slot.active, error)
       slot.active = undefined
     }
@@ -233,9 +249,74 @@ export class KeyedChildProcessPool<Operation> {
   }
 
   private failJob(job: KeyedChildProcessPoolJob<Operation>, error: unknown): void {
+    this.clearJobTimeout(job)
     this.recordRunDuration(job)
     this.failedJobs += 1
     job.reject(error instanceof Error ? error : new Error(String(error)))
+  }
+
+  private startJobTimeout(slot: KeyedChildProcessPoolSlot<Operation>, job: KeyedChildProcessPoolJob<Operation>): void {
+    this.clearJobTimeout(job)
+    const timeoutMs = this.jobRunTimeoutMs()
+    if (timeoutMs <= 0) {
+      return
+    }
+    job.timeout = setTimeout(() => {
+      if (slot.active !== job) {
+        return
+      }
+      job.timeout = undefined
+      slot.active = undefined
+      this.recordRunDuration(job)
+      this.failedJobs += 1
+      this.timedOutJobs += 1
+      const operationType = this.options.operationType?.(job.operation)
+      logger.warn({
+        event: 'keyed_child_process_pool_job_timeout',
+        poolName: this.options.name,
+        workerSlot: slot.index,
+        jobId: job.id,
+        operationType,
+        timeoutMs,
+        runMs: job.startedAt === undefined ? undefined : Date.now() - job.startedAt
+      }, `${this.options.name} writer 操作超时，已重启对应 worker`)
+      job.reject(new Error(`${this.options.name} writer 操作超时 ${timeoutMs}ms`))
+      this.restartSlotWorker(slot)
+      this.notifyIdle()
+    }, timeoutMs)
+    job.timeout.unref()
+  }
+
+  private clearJobTimeout(job: KeyedChildProcessPoolJob<Operation>): void {
+    if (!job.timeout) {
+      return
+    }
+    clearTimeout(job.timeout)
+    job.timeout = undefined
+  }
+
+  private restartSlotWorker(slot: KeyedChildProcessPoolSlot<Operation>): void {
+    const worker = slot.worker
+    if (worker) {
+      slot.worker = undefined
+      this.restartedWorkers += 1
+      void stopWriterChild(worker).finally(() => {
+        this.ensureSlotWorker(slot)
+        this.pumpSlot(slot)
+        this.notifyIdle()
+      })
+      return
+    }
+    this.ensureSlotWorker(slot)
+    this.pumpSlot(slot)
+  }
+
+  private jobRunTimeoutMs(): number {
+    const rawValue = this.options.runTimeoutMs?.() ?? 30_000
+    if (!Number.isFinite(rawValue)) {
+      return 30_000
+    }
+    return Math.max(0, Math.trunc(rawValue))
   }
 
   private recordRunDuration(job: KeyedChildProcessPoolJob<Operation>): void {

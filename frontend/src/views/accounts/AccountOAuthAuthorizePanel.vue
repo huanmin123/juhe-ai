@@ -28,7 +28,6 @@
           </div>
         </div>
       </div>
-      <a-alert class="form-alert" type="info" show-icon :message="manualAlertMessage" />
     </div>
     <div class="oauth-actions">
       <a-button type="primary" :loading="authLoading" @click="$emit('generate-auth-url')">生成授权链接</a-button>
@@ -38,16 +37,14 @@
     <a-form-item v-if="authResult" class="oauth-url-field" label="授权链接">
       <a-textarea :value="authResult.authUrl" :rows="3" readonly />
     </a-form-item>
-    <a-form-item class="oauth-callback-field" label="回调 URL" required>
+    <a-form-item class="oauth-callback-field" label="回调 URL" required :tooltip="callbackTooltip">
       <a-textarea v-model:value="form.callbackUrl" :rows="3" placeholder="粘贴浏览器地址栏里的 http://localhost:1455/auth/callback?code=...&state=..." />
-      <div class="form-help">需要粘贴完整地址，不能只粘贴 code 或 state。</div>
     </a-form-item>
   </template>
 
   <template v-else>
     <div class="oauth-token-panel">
-      <a-alert class="form-alert" type="info" show-icon :message="refreshTokenAlertMessage" />
-      <a-form-item class="oauth-token-field" label="Refresh Token" required>
+      <a-form-item class="oauth-token-field" label="Refresh Token" required :tooltip="refreshTokenAlertMessage">
         <a-textarea v-model:value="form.refreshToken" :rows="4" :placeholder="refreshTokenPlaceholder" />
       </a-form-item>
     </div>
@@ -55,6 +52,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import type { OpenAIAuthURLResult } from '@/types/domain'
 import type { AccountOAuthAuthorizeForm } from './accountFormTypes'
 
@@ -63,7 +62,7 @@ const oauthModeOptions = [
   { label: '粘贴 Refresh Token', value: 'refresh_token' }
 ]
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   authLoading: boolean
   authResult?: OpenAIAuthURLResult
   form: AccountOAuthAuthorizeForm
@@ -75,6 +74,7 @@ withDefaults(defineProps<{
   refreshTokenAlertMessage: '已有 Refresh Token 时可跳过浏览器授权，后端会换取 Access Token 后创建账户。',
   refreshTokenPlaceholder: '粘贴 OpenAI 的 Refresh Token'
 })
+const callbackTooltip = computed(() => `${props.manualAlertMessage} 需要粘贴完整地址，不能只粘贴 code 或 state。`)
 
 defineEmits<{
   (event: 'copy-auth-url', value: string): void
@@ -158,16 +158,6 @@ defineEmits<{
 .oauth-callback-field,
 .oauth-token-field {
   margin-bottom: 0;
-}
-
-.form-help {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.form-alert {
-  border-radius: 12px;
 }
 
 @media (max-width: 992px) {

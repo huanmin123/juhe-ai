@@ -57,8 +57,30 @@
           </div>
         </div>
       </div>
+      <div v-if="showApiKeyRuntimeDetails" class="api-key-runtime-panel">
+        <div class="api-key-runtime-title">已保存 Key 状态</div>
+        <div v-for="(detail, index) in apiKeyRuntimeDetailRows" :key="runtimeDetailKey(detail, index)" class="api-key-runtime-row">
+          <span class="api-key-runtime-index">{{ runtimeIndexText(detail, index) }}</span>
+          <a-tag :color="runtimeStatusColor(detail)">
+            {{ runtimeStatusText(detail) }}
+          </a-tag>
+          <span v-if="runtimeKeySuffixText(detail)" class="api-key-runtime-muted">
+            {{ runtimeKeySuffixText(detail) }}
+          </span>
+          <span class="api-key-runtime-muted">权重 {{ runtimeWeightText(detail) }}</span>
+          <span v-if="runtimeFailureText(detail)" class="api-key-runtime-muted">
+            {{ runtimeFailureText(detail) }}
+          </span>
+          <span v-if="runtimeScheduleText(detail)" class="api-key-runtime-muted">
+            {{ runtimeScheduleText(detail) }}
+          </span>
+          <a-tooltip v-if="detail.lastErrorMessage" :title="detail.lastErrorMessage">
+            <span class="api-key-runtime-error">{{ runtimeLastErrorText(detail) }}</span>
+          </a-tooltip>
+        </div>
+      </div>
     </a-form-item>
-    <a-form-item label="Base URL" required extra="填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1 或 https://api.anthropic.com/v1；不要填写 /responses、/messages 等具体接口路径。">
+    <a-form-item label="Base URL" required tooltip="填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1 或 https://api.anthropic.com/v1；不要填写 /responses、/messages 等具体接口路径。">
       <a-input
         v-model:value="form.baseUrl"
         autocomplete="off"
@@ -75,10 +97,13 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { computed, watch } from 'vue'
 
+import { formatDateTime } from '@/shared/formatters'
+import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { normalizedAccountApiKeys } from './accountCredentials'
 
 const props = defineProps<{
+  apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   baseUrlPlaceholder: string
   editing: boolean
   form: AccountFormModel
@@ -89,6 +114,11 @@ const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).le
 const showApiKeyStrategy = computed(() => filledApiKeyCount.value > 1)
 const showWeightInputs = computed(() => showApiKeyStrategy.value && props.form.apiKeyStrategy === 'weighted_round_robin')
 const showBatchDeleteApiKeys = computed(() => props.form.apiKeys.some((value) => value.trim()))
+const showApiKeyRuntimeDetails = computed(() => props.editing && Boolean(props.apiKeyRuntimeDetails?.length))
+const apiKeyRuntimeDetailRows = computed<AccountApiKeyRuntimeDetail[]>(() => {
+  if (!showApiKeyRuntimeDetails.value) return []
+  return [...(props.apiKeyRuntimeDetails ?? [])].sort((left, right) => left.keyIndex - right.keyIndex)
+})
 
 watch(
   [() => props.form.apiKeys.length, () => props.form.apiKeyStrategy],
@@ -149,6 +179,67 @@ function normalizeApiKeyWeight(value: number | null | undefined): number {
   const numberValue = Number(value ?? 1)
   if (!Number.isInteger(numberValue)) return 1
   return Math.min(100, Math.max(1, numberValue))
+}
+
+function runtimeDetailKey(detail: AccountApiKeyRuntimeDetail, index: number): string {
+  return detail.keyFingerprintPrefix || `${detail.keyIndex}-${detail.keySuffix ?? index}`
+}
+
+function runtimeIndexText(detail: AccountApiKeyRuntimeDetail, index: number): string {
+  return `已保存 Key ${Number.isInteger(detail.keyIndex) ? detail.keyIndex + 1 : index + 1}`
+}
+
+function runtimeStatusText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  return runtimeStatusMeta(detail?.status).label
+}
+
+function runtimeStatusColor(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  return runtimeStatusMeta(detail?.status).color
+}
+
+function runtimeStatusMeta(status: AccountApiKeyRuntimeStatus | undefined): { label: string; color: string } {
+  switch (status) {
+    case 'active':
+      return { label: '可调度', color: 'green' }
+    case 'temporary_unavailable':
+      return { label: '临时避让', color: 'gold' }
+    case 'rate_limited':
+      return { label: '限流冷却', color: 'orange' }
+    case 'error':
+      return { label: '异常', color: 'red' }
+    case 'disabled':
+      return { label: '已停用', color: 'default' }
+    default:
+      return { label: '未记录', color: 'default' }
+  }
+}
+
+function runtimeKeySuffixText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  return detail?.keySuffix ? `尾号 ${detail.keySuffix}` : ''
+}
+
+function runtimeWeightText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  return String(detail?.weight ?? 1)
+}
+
+function runtimeFailureText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  if (!detail) return ''
+  if (detail.consecutiveFailures > 0) return `连续失败 ${detail.consecutiveFailures}`
+  if (detail.failureCount > 0) return `累计失败 ${detail.failureCount}`
+  if (detail.successCount > 0) return `成功 ${detail.successCount}`
+  return ''
+}
+
+function runtimeScheduleText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  if (!detail) return ''
+  if (detail.cooldownUntil) return `冷却至 ${formatDateTime(detail.cooldownUntil)}`
+  if (detail.nextProbeAt) return `探测 ${formatDateTime(detail.nextProbeAt)}`
+  return ''
+}
+
+function runtimeLastErrorText(detail: AccountApiKeyRuntimeDetail | undefined): string {
+  if (!detail?.lastErrorMessage) return ''
+  return detail.lastErrorCode ? `最近错误 ${detail.lastErrorCode}` : '最近错误'
 }
 
 function extractOpenAIApiKeys(value: string): string[] {
@@ -255,6 +346,54 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 .api-key-weight-input :deep(.ant-input-number-input) {
   height: 30px;
   padding-inline: 8px;
+}
+
+.api-key-runtime-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.api-key-runtime-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.api-key-runtime-title {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.api-key-runtime-index {
+  color: #334155;
+  font-weight: 600;
+}
+
+.api-key-runtime-row :deep(.ant-tag) {
+  margin-inline-end: 0;
+}
+
+.api-key-runtime-muted {
+  overflow-wrap: anywhere;
+}
+
+.api-key-runtime-error {
+  max-width: 100%;
+  overflow: hidden;
+  color: #b91c1c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .api-key-row-actions {

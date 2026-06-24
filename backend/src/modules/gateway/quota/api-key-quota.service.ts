@@ -1,6 +1,7 @@
 import { createAppCache } from '../../../shared/cache.js'
 import { registerApiKeyQuotaCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getStatsDatabase } from '../../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../../storage/request-quota-limits.js'
@@ -81,9 +82,25 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
       scopeId: apiKey.id,
       hourlyWindowHours: quotaLimits.hourly?.hours
     })
-    const allowed = costs
-      ? !isRequestQuotaExceeded(quotaLimits, costs)
-      : !isGatewayQuotaCostSnapshotIncomplete()
+    let allowed = costs ? !isRequestQuotaExceeded(quotaLimits, costs) : true
+    if (!costs && isGatewayQuotaCostSnapshotIncomplete()) {
+      try {
+        const dbService = await import('../../db-service/db-service-ipc.js')
+        const decision = await dbService.requestDbService({ type: 'check_api_key_quota', apiKey }, { timeoutMs: 1000 })
+        setApiKeyQuotaCacheEntry(apiKey.id, cacheKey, {
+          ...decision,
+          checkedAtMs: Date.now()
+        })
+        return decision
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'gateway_api_key_quota_snapshot_fallback_failed',
+          apiKeyId: apiKey.id,
+          systemAccountId: apiKey.system_account_id
+        }), 'API Key 配额快照不完整且 DB service 精确补判失败，按保护策略拒绝请求')
+        allowed = false
+      }
+    }
     const passiveDecision: ApiKeyQuotaCacheEntry = {
       allowed,
       message: allowed ? undefined : API_KEY_QUOTA_EXCEEDED_MESSAGE,

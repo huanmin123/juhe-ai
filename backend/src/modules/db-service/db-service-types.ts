@@ -29,6 +29,25 @@ import type {
   CodexContextResponseStateIndexInput,
   CodexContextStateBoundary
 } from '../../storage/codex-context-state.repository.js'
+import type {
+  OpenAICompatibleFileCreateInput,
+  OpenAICompatibleFileListOptions,
+  OpenAICompatibleFileListResult,
+  OpenAICompatibleFileRecord
+} from '../../storage/openai-compatible-files.repository.js'
+import type {
+  OpenAICompatibleVectorStoreCreateInput,
+  OpenAICompatibleVectorStoreFileCreateInput,
+  OpenAICompatibleVectorStoreFileChunkRecord,
+  OpenAICompatibleVectorStoreFileListOptions,
+  OpenAICompatibleVectorStoreFileListResult,
+  OpenAICompatibleVectorStoreFileRecord,
+  OpenAICompatibleVectorStoreListOptions,
+  OpenAICompatibleVectorStoreListResult,
+  OpenAICompatibleVectorStoreRecord,
+  OpenAICompatibleVectorStoreSearchOptions,
+  OpenAICompatibleVectorStoreSearchResult
+} from '../../storage/openai-compatible-vector-stores.repository.js'
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -85,12 +104,17 @@ export interface DbServiceRuntimeSnapshot {
   eventLoopLagMs?: number
   pendingRequestCount: number
   queuedRequestCount?: number
+  queuedRequestBytes?: number
   queuedHighRequestCount?: number
   queuedNormalRequestCount?: number
   queuedLowRequestCount?: number
   oldestQueuedMs?: number
   lastQueueWaitMs?: number
   maxQueueWaitMs?: number
+  queueRejectedCount?: number
+  queueExpiredCount?: number
+  activeConcurrentRequestCount?: number
+  maxActiveConcurrentRequestCount?: number
   lastExecMs?: number
   maxExecMs?: number
   slowOpCount?: number
@@ -249,16 +273,23 @@ export interface DbServiceServerRuntimeSnapshot {
     pendingRequestCount: number
     pendingDatasetWriteRequestCount?: number
     oldestDatasetWriteRequestMs?: number
+    timedOutDatasetWriteRequestCount?: number
+    rejectedDatasetWriteRequestCount?: number
     timedOutRequestCount: number
     rejectedRequestCount?: number
     failedRequestCount: number
     queuedRequestCount?: number
+    queuedRequestBytes?: number
     queuedHighRequestCount?: number
     queuedNormalRequestCount?: number
     queuedLowRequestCount?: number
     oldestQueuedMs?: number
     lastQueueWaitMs?: number
     maxQueueWaitMs?: number
+    queueRejectedCount?: number
+    queueExpiredCount?: number
+    activeConcurrentRequestCount?: number
+    maxActiveConcurrentRequestCount?: number
     lastExecMs?: number
     maxExecMs?: number
     slowOpCount?: number
@@ -357,11 +388,93 @@ export type DbServiceOperation =
     requestedEndpointFamily?: 'chat_completions' | 'responses'
   }
   | {
+    type: 'list_recoverable_unavailable_openai_accounts_for_group'
+    groupId: string
+    systemAccountId: string
+    requestedModel?: string
+    requestedEndpointFamily?: 'chat_completions' | 'responses'
+    windowMs?: number
+  }
+  | {
     type: 'read_gateway_runtime'
     key: string
     groupId?: string
     systemAccountId?: string
     skipDynamicRouteSelection?: boolean
+  }
+  | {
+    type: 'create_openai_compatible_file'
+    input: OpenAICompatibleFileCreateInput
+  }
+  | {
+    type: 'list_openai_compatible_files'
+    options: OpenAICompatibleFileListOptions
+  }
+  | {
+    type: 'get_openai_compatible_file'
+    fileId: string
+    systemAccountId: string
+    apiKeyId: string
+  }
+  | {
+    type: 'delete_openai_compatible_file'
+    fileId: string
+    systemAccountId: string
+    apiKeyId: string
+  }
+  | {
+    type: 'create_openai_compatible_vector_store'
+    input: OpenAICompatibleVectorStoreCreateInput
+  }
+  | {
+    type: 'list_openai_compatible_vector_stores'
+    options: OpenAICompatibleVectorStoreListOptions
+  }
+  | {
+    type: 'get_openai_compatible_vector_store'
+    vectorStoreId: string
+    systemAccountId: string
+    apiKeyId: string
+  }
+  | {
+    type: 'delete_openai_compatible_vector_store'
+    vectorStoreId: string
+    systemAccountId: string
+    apiKeyId: string
+  }
+  | {
+    type: 'create_openai_compatible_vector_store_file'
+    input: OpenAICompatibleVectorStoreFileCreateInput
+  }
+  | {
+    type: 'list_openai_compatible_vector_store_files'
+    options: OpenAICompatibleVectorStoreFileListOptions
+  }
+  | {
+    type: 'get_openai_compatible_vector_store_file'
+    vectorStoreId: string
+    fileId: string
+    systemAccountId: string
+    apiKeyId: string
+  }
+  | {
+    type: 'delete_openai_compatible_vector_store_file'
+    vectorStoreId: string
+    fileId: string
+    systemAccountId: string
+    apiKeyId: string
+  }
+  | {
+    type: 'search_openai_compatible_vector_store'
+    options: OpenAICompatibleVectorStoreSearchOptions
+  }
+  | {
+    type: 'list_openai_compatible_vector_store_file_chunks'
+    vectorStoreId: string
+    fileId: string
+    systemAccountId: string
+    apiKeyId: string
+    limit?: number
   }
   | {
     type: 'list_provider_model_catalog'
@@ -685,7 +798,22 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'resolve_group_usage_access' } ? GroupUsageAccessMetadata | undefined :
   T extends { type: 'list_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
   T extends { type: 'list_openai_accounts_for_group_result' } ? OpenAIAccountsForGroupResult :
+  T extends { type: 'list_recoverable_unavailable_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
   T extends { type: 'read_gateway_runtime' } ? DbServiceGatewayRuntime :
+  T extends { type: 'create_openai_compatible_file' } ? OpenAICompatibleFileRecord :
+  T extends { type: 'list_openai_compatible_files' } ? OpenAICompatibleFileListResult :
+  T extends { type: 'get_openai_compatible_file' } ? OpenAICompatibleFileRecord | undefined :
+  T extends { type: 'delete_openai_compatible_file' } ? OpenAICompatibleFileRecord | undefined :
+  T extends { type: 'create_openai_compatible_vector_store' } ? OpenAICompatibleVectorStoreRecord :
+  T extends { type: 'list_openai_compatible_vector_stores' } ? OpenAICompatibleVectorStoreListResult :
+  T extends { type: 'get_openai_compatible_vector_store' } ? OpenAICompatibleVectorStoreRecord | undefined :
+  T extends { type: 'delete_openai_compatible_vector_store' } ? OpenAICompatibleVectorStoreRecord | undefined :
+  T extends { type: 'create_openai_compatible_vector_store_file' } ? OpenAICompatibleVectorStoreFileRecord | undefined :
+  T extends { type: 'list_openai_compatible_vector_store_files' } ? OpenAICompatibleVectorStoreFileListResult :
+  T extends { type: 'get_openai_compatible_vector_store_file' } ? OpenAICompatibleVectorStoreFileRecord | undefined :
+  T extends { type: 'delete_openai_compatible_vector_store_file' } ? OpenAICompatibleVectorStoreFileRecord | undefined :
+  T extends { type: 'search_openai_compatible_vector_store' } ? OpenAICompatibleVectorStoreSearchResult[] :
+  T extends { type: 'list_openai_compatible_vector_store_file_chunks' } ? OpenAICompatibleVectorStoreFileChunkRecord[] :
   T extends { type: 'list_provider_model_catalog' } ? ProviderModelCatalogItem[] :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
@@ -744,6 +872,7 @@ export type DbServiceParentMessage =
     type: 'db_service_request'
     requestId: string
     operation: DbServiceOperation
+    deadlineAtMs?: number
   }
   | {
     type: 'db_service_server_runtime_response'

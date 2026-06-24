@@ -13,6 +13,8 @@ export interface BackgroundWorkerRoleStateInput {
   pendingQueues?: BackgroundWorkerIpcQueuesRuntime
   pendingWriteRequestCount?: number
   oldestPendingWriteMs?: number
+  rejectedWriteRequestCount?: number
+  timedOutWriteRequestCount?: number
   pendingSnapshotRequestCount: number
   timedOutSnapshotRequestCount: number
   rejectedSnapshotRequestCount: number
@@ -41,6 +43,12 @@ export function buildBackgroundWorkerRoleState(input: BackgroundWorkerRoleStateI
   }
   if (input.oldestPendingWriteMs !== undefined) {
     state.oldestPendingWriteMs = input.oldestPendingWriteMs
+  }
+  if (input.rejectedWriteRequestCount !== undefined) {
+    state.rejectedWriteRequestCount = input.rejectedWriteRequestCount
+  }
+  if (input.timedOutWriteRequestCount !== undefined) {
+    state.timedOutWriteRequestCount = input.timedOutWriteRequestCount
   }
   return state
 }

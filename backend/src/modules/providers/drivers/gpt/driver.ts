@@ -130,6 +130,7 @@ export const gptProviderDriver: ProviderDriver = {
       model: modelMapping?.upstreamModel,
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
       onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
+      continueChatRequest: context?.codexResponsesChatBridgeContinueChatRequest,
       requestClientCompatibility: context?.requestClientCompatibility
     })
   },

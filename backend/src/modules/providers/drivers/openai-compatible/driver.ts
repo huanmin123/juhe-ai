@@ -112,6 +112,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       model: modelMapping?.upstreamModel,
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
       onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
+      continueChatRequest: context?.codexResponsesChatBridgeContinueChatRequest,
       requestClientCompatibility: context?.requestClientCompatibility
     })
   },

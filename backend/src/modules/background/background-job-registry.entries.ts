@@ -404,7 +404,7 @@ export const backgroundWorkerRegistry = [
     category: 'ipc-queue',
     kind: 'maintenance',
     lifecycle: 'hybrid',
-    defaultRole: 'ops-worker',
+    defaultRole: 'ingest-worker',
     hotspot: false,
     singleOwner: true,
     shardable: false,

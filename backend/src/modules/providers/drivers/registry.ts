@@ -1,6 +1,6 @@
 import type { Request } from 'express'
 
-import type { AccountModelMappingEndpointFamily, ProviderCode } from '../../../domain/types.js'
+import type { AccountModelMappingSourceEndpointFamily, ProviderCode } from '../../../domain/types.js'
 import { openAIEndpointModeForRequestShape } from '../../../domain/openai-endpoint-modes.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken, type ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../storage/openai-account-selector.types.js'
@@ -60,7 +60,7 @@ export function usageSemanticForProfile(profile: ProviderProtocolProfileDefiniti
 export function resolveGatewayUsageModel(
   account: DispatchAccountSecret,
   requestedModel?: string,
-  sourceEndpointFamily?: AccountModelMappingEndpointFamily
+  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
 ): ProviderUsageModelResolution {
   return providerDriverForAccount(account)?.resolveUsageModel(account, requestedModel, sourceEndpointFamily) ?? {
     upstreamModel: requestedModel,

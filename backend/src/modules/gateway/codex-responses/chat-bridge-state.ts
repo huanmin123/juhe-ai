@@ -419,7 +419,7 @@ async function resolveCodexCompactionReferencesInInput(input: {
   const resolved: unknown[] = []
   let changed = false
   for (const item of input.input) {
-    if (!isPlainObject(item) || item.type !== 'compaction_summary') {
+    if (!isPlainObject(item) || !isCodexCompactionInputItem(item)) {
       resolved.push(item)
       continue
     }
@@ -444,6 +444,7 @@ async function resolveCodexCompactionReferencesInInput(input: {
     }
     resolved.push({
       ...item,
+      type: 'compaction_summary',
       encrypted_content: encodeInlineCodexCompactionSummary(summaryResult.summary)
     })
     changed = true
@@ -493,6 +494,10 @@ async function readCodexCompactionSnapshotSummary(input: {
     }), 'Codex Responses Chat bridge compact snapshot 读取失败')
     return { outcome: 'payload_unavailable' }
   }
+}
+
+function isCodexCompactionInputItem(item: JsonRecord): boolean {
+  return item.type === 'compaction' || item.type === 'compaction_summary'
 }
 
 function parseCodexCompactionReference(value: string): { compactId: string; digest: string } | undefined {

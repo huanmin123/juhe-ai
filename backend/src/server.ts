@@ -23,6 +23,8 @@ import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate } from './shared/http-security.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { sendRuntimeLogLineToWorker } from './modules/background/background-ipc.js'
+import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
+import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -158,6 +160,8 @@ app.use(systemPrefix, (_req, res) => {
 app.use(
   preResolveGatewayRuntime,
   handleGatewayDbServiceUnavailable,
+  openAICompatibleFilesRouter,
+  openAICompatibleVectorStoresRouter,
   rejectGatewayRawBodyByContentLength,
   express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
   handleGatewayRawBodyError,

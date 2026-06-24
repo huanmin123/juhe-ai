@@ -28,6 +28,10 @@ export interface BackgroundWorkerStateSnapshotInput {
   pendingSnapshotRequestCount: number
   timedOutSnapshotRequestCount: number
   rejectedSnapshotRequestCount: number
+  pendingDbServiceRequestCount?: number
+  oldestPendingDbServiceRequestMs?: number
+  rejectedDbServiceRequestCount?: number
+  timedOutDbServiceRequestCount?: number
   pendingProcessEventLoopRequestCount: number
   timedOutProcessEventLoopRequestCount: number
   failedProcessEventLoopRequestCount: number
@@ -48,6 +52,10 @@ export function buildBackgroundWorkerStateSnapshot(input: BackgroundWorkerStateS
     pendingSnapshotRequestCount: input.pendingSnapshotRequestCount,
     timedOutSnapshotRequestCount: input.timedOutSnapshotRequestCount,
     rejectedSnapshotRequestCount: input.rejectedSnapshotRequestCount,
+    pendingDbServiceRequestCount: input.pendingDbServiceRequestCount,
+    oldestPendingDbServiceRequestMs: input.oldestPendingDbServiceRequestMs,
+    rejectedDbServiceRequestCount: input.rejectedDbServiceRequestCount,
+    timedOutDbServiceRequestCount: input.timedOutDbServiceRequestCount,
     pendingProcessEventLoopRequestCount: input.pendingProcessEventLoopRequestCount,
     timedOutProcessEventLoopRequestCount: input.timedOutProcessEventLoopRequestCount,
     failedProcessEventLoopRequestCount: input.failedProcessEventLoopRequestCount

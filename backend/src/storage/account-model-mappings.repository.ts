@@ -1,5 +1,11 @@
-import type { AccountModelMapping, AccountModelMappingEndpointFamily } from '../domain/types.js'
+import type {
+  AccountModelMapping,
+  AccountModelMappingEndpointFamily,
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily
+} from '../domain/types.js'
 import {
+  ANTHROPIC_MESSAGES_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
 } from '../domain/provider-protocol.js'
@@ -9,9 +15,9 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 interface AccountModelMappingRow {
   account_id: string
   source_model: string
-  source_endpoint_family: AccountModelMappingEndpointFamily
+  source_endpoint_family: AccountModelMappingSourceEndpointFamily
   upstream_model: string
-  upstream_endpoint_family: AccountModelMappingEndpointFamily
+  upstream_endpoint_family: AccountModelMappingUpstreamEndpointFamily
   enabled: number
 }
 
@@ -29,9 +35,9 @@ export function normalizeAccountModelMappingsInput(value: unknown): AccountModel
     }
     const record = item as Record<string, unknown>
     const sourceModel = stringModelValue(record.sourceModel, '下游模型')
-    const sourceEndpointFamily = endpointFamilyValue(record.sourceEndpointFamily, '下游协议')
+    const sourceEndpointFamily = sourceEndpointFamilyValue(record.sourceEndpointFamily)
     const upstreamModel = stringModelValue(record.upstreamModel, '上游模型')
-    const upstreamEndpointFamily = endpointFamilyValue(record.upstreamEndpointFamily, '上游协议')
+    const upstreamEndpointFamily = upstreamEndpointFamilyValue(record.upstreamEndpointFamily)
     assertSupportedEndpointFamilyConversion(sourceEndpointFamily, upstreamEndpointFamily)
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
@@ -116,24 +122,36 @@ export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string,
   return output
 }
 
-function endpointFamilyValue(value: unknown, label: string): AccountModelMappingEndpointFamily {
+function sourceEndpointFamilyValue(value: unknown): AccountModelMappingSourceEndpointFamily {
   if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY) {
     return value
   }
-  throw new Error(`${label}必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)} 或 ${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}`)
+  throw new Error(`下游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)} 或 ${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}`)
+}
+
+function upstreamEndpointFamilyValue(value: unknown): AccountModelMappingUpstreamEndpointFamily {
+  if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY || value === ANTHROPIC_MESSAGES_FAMILY) {
+    return value
+  }
+  throw new Error(`上游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)} 或 ${endpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}`)
 }
 
 function assertSupportedEndpointFamilyConversion(
-  sourceEndpointFamily: AccountModelMappingEndpointFamily,
-  upstreamEndpointFamily: AccountModelMappingEndpointFamily
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): void {
   if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) {
     throw new Error('暂不支持 Chat Completions 转 Responses')
   }
+  if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY) {
+    throw new Error(`暂不支持转发到 ${endpointFamilyLabel(upstreamEndpointFamily)}`)
+  }
 }
 
 function endpointFamilyLabel(value: AccountModelMappingEndpointFamily): string {
-  return value === OPENAI_RESPONSES_FAMILY ? 'Responses' : 'Chat Completions'
+  if (value === OPENAI_RESPONSES_FAMILY) return 'Responses'
+  if (value === ANTHROPIC_MESSAGES_FAMILY) return 'Messages'
+  return 'Chat Completions'
 }
 
 export function loadModelMappingsForAccount(accountId: string): AccountModelMapping[] {

@@ -11,6 +11,7 @@ interface WeightedRouteState {
 
 const roundRobinStates = new Map<string, RoundRobinState>()
 const weightedRouteStates = new Map<string, WeightedRouteState>()
+const apiKeyGroupRouteStateMaxEntries = 10000
 
 export function orderGatewayApiKeyGroupBindingsForDispatch(apiKey: GatewayApiKeyRow): GatewayApiKeyGroupBindingRow[] {
   const bindings = normalizeGatewayApiKeyGroupBindings(apiKey.group_bindings)
@@ -41,6 +42,7 @@ function nextRoundRobinIndex(apiKeyId: string, bindingCount: number): number {
   const state = roundRobinStates.get(apiKeyId) ?? { nextIndex: 0 }
   const index = state.nextIndex % bindingCount
   roundRobinStates.set(apiKeyId, { nextIndex: (index + 1) % bindingCount })
+  trimApiKeyRouteStateMap(roundRobinStates)
   return index
 }
 
@@ -63,6 +65,7 @@ function orderWeightedBindings(apiKeyId: string, bindings: GatewayApiKeyGroupBin
     state.currentWeights.set(selected.id, (state.currentWeights.get(selected.id) ?? 0) - totalWeight)
   }
   weightedRouteStates.set(apiKeyId, state)
+  trimApiKeyRouteStateMap(weightedRouteStates)
   const selectedIndex = bindings.findIndex((binding) => binding.id === selected?.id)
   const orderedByWeightDebt = [...bindings]
     .filter((binding) => binding.id !== selected?.id)
@@ -74,6 +77,16 @@ function orderWeightedBindings(apiKeyId: string, bindings: GatewayApiKeyGroupBin
       return compareBindingOrder(left, right)
     })
   return selectedIndex >= 0 ? [bindings[selectedIndex], ...orderedByWeightDebt] : bindings
+}
+
+function trimApiKeyRouteStateMap<TValue>(map: Map<string, TValue>): void {
+  while (map.size > apiKeyGroupRouteStateMaxEntries) {
+    const oldestKey = map.keys().next().value
+    if (typeof oldestKey !== 'string') {
+      return
+    }
+    map.delete(oldestKey)
+  }
 }
 
 function cleanupWeightedState(state: WeightedRouteState, bindings: GatewayApiKeyGroupBindingRow[]): void {

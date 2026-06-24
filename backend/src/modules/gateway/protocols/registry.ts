@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { openAIEndpointFamilyFromPath } from '../../../domain/openai-endpoint-modes.js'
 import type { ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
 import type { ParsedUsage } from '../usage/types.js'
 import { anthropicV1ProtocolDriver } from './anthropic-v1/driver.js'
@@ -35,6 +36,18 @@ export function gatewayProtocolDriverForProfileOrDefault(profile: ProviderProtoc
   return gatewayProtocolDriverForProfile(profile) ?? openAIV1ProtocolDriver
 }
 
+export function gatewayProtocolDriverForRequestOrProfile(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined
+): GatewayProtocolDriver {
+  const endpoint = req.originalUrl || req.path || ''
+  if (openAIEndpointFamilyFromPath(endpoint)) {
+    return openAIV1ProtocolDriver
+  }
+  return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)
+    ?? gatewayProtocolDriverForProfileOrDefault(profile)
+}
+
 export function gatewayProtocolDriverForResponseProtocolOrDefault(
   responseProtocol: ResponseProtocolCode | undefined
 ): GatewayProtocolDriver {
@@ -57,13 +70,27 @@ export function gatewayProtocolResponseProtocolForProfile(profile: ProviderProto
   return gatewayProtocolDriverForProfileOrDefault(profile).responseProtocol
 }
 
+export function gatewayProtocolResponseProtocolForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined
+): ResponseProtocolCode {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).responseProtocol
+}
+
 export function gatewayProtocolClientErrorProtocolForProfile(
   profile: ProviderProtocolProfileDefinition | undefined
 ): GatewayProtocolClientErrorProtocol {
   return gatewayProtocolDriverForProfileOrDefault(profile).clientErrorProtocol
 }
 
-export function gatewayProtocolClientErrorProtocolForRequest(req: Request): GatewayProtocolClientErrorProtocol {
+export function gatewayProtocolClientErrorProtocolForRequest(
+  req: Request,
+  profile?: ProviderProtocolProfileDefinition | undefined
+): GatewayProtocolClientErrorProtocol {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).clientErrorProtocol
+}
+
+export function gatewayProtocolClientErrorProtocolForNativeRequest(req: Request): GatewayProtocolClientErrorProtocol {
   return gatewayProtocolDrivers.find((driver) => driver.isNativeRequest?.(req) === true)?.clientErrorProtocol ?? 'openai'
 }
 
@@ -80,11 +107,18 @@ export function gatewayProtocolDefaultClientProfileForProfile(
   return gatewayProtocolDriverForProfileOrDefault(profile).defaultClientProfile
 }
 
+export function gatewayProtocolDefaultClientProfileForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined
+): GatewayProtocolDefaultClientProfile {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).defaultClientProfile
+}
+
 export function gatewayProtocolResponseEndpointFamilyForRequest(
   req: Request,
   profile: ProviderProtocolProfileDefinition | undefined
 ): ResponseEndpointFamily {
-  return gatewayProtocolDriverForProfileOrDefault(profile).responseEndpointFamilyForRequest(req)
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).responseEndpointFamilyForRequest(req)
 }
 
 export function extractGatewayProtocolJsonSemanticFrames(
@@ -95,6 +129,14 @@ export function extractGatewayProtocolJsonSemanticFrames(
   return gatewayProtocolDriverForProfileOrDefault(profile).extractJsonSemanticFrames(value, req)
 }
 
+export function extractGatewayProtocolJsonSemanticFramesForRequest(
+  value: unknown,
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined
+): ResponseSemanticFrame[] {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).extractJsonSemanticFrames(value, req)
+}
+
 export function parseGatewayProtocolUsageFromJsonBuffer(
   profile: ProviderProtocolProfileDefinition | undefined,
   responseBody: Buffer
@@ -102,11 +144,27 @@ export function parseGatewayProtocolUsageFromJsonBuffer(
   return gatewayProtocolDriverForProfileOrDefault(profile).parseUsageFromJsonBuffer(responseBody)
 }
 
+export function parseGatewayProtocolUsageFromJsonBufferForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined,
+  responseBody: Buffer
+): ParsedUsage {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseUsageFromJsonBuffer(responseBody)
+}
+
 export function parseGatewayProtocolUsageFromJsonTextFragment(
   profile: ProviderProtocolProfileDefinition | undefined,
   text?: string
 ): ParsedUsage {
   return gatewayProtocolDriverForProfileOrDefault(profile).parseUsageFromJsonTextFragment(text)
+}
+
+export function parseGatewayProtocolUsageFromJsonTextFragmentForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined,
+  text?: string
+): ParsedUsage {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseUsageFromJsonTextFragment(text)
 }
 
 export function parseGatewayProtocolErrorPayload(
@@ -117,6 +175,15 @@ export function parseGatewayProtocolErrorPayload(
   return gatewayProtocolDriverForProfileOrDefault(profile).parseErrorPayload(text, headers)
 }
 
+export function parseGatewayProtocolErrorPayloadForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined,
+  text: string,
+  headers: Headers
+): GatewayProtocolErrorPayload {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseErrorPayload(text, headers)
+}
+
 export function applyGatewayProtocolStreamUsageFallback(
   req: Request,
   profile: ProviderProtocolProfileDefinition | undefined,
@@ -124,4 +191,13 @@ export function applyGatewayProtocolStreamUsageFallback(
   input: GatewayStreamUsageFallbackInput
 ): GatewayStreamUsageFallbackResult {
   return gatewayProtocolDriverForProfileOrDefault(profile).applyStreamUsageFallback(req, usage, input)
+}
+
+export function applyGatewayProtocolStreamUsageFallbackForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined,
+  usage: ParsedUsage,
+  input: GatewayStreamUsageFallbackInput
+): GatewayStreamUsageFallbackResult {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).applyStreamUsageFallback(req, usage, input)
 }

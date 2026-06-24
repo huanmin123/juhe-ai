@@ -619,6 +619,76 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       executed_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS openai_compatible_files (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      media_type TEXT,
+      storage_key TEXT NOT NULL UNIQUE,
+      sha256 TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'processed',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      deleted_at TEXT,
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_vector_stores (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT NOT NULL,
+      name TEXT,
+      description TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      bytes INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_after_anchor TEXT,
+      expires_after_days INTEGER,
+      expires_at TEXT,
+      deleted_at TEXT,
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_vector_store_files (
+      vector_store_id TEXT NOT NULL,
+      file_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT NOT NULL,
+      attributes_json TEXT NOT NULL DEFAULT '{}',
+      chunking_strategy_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'in_progress',
+      usage_bytes INTEGER NOT NULL DEFAULT 0,
+      last_error_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      PRIMARY KEY (vector_store_id, file_id),
+      FOREIGN KEY (vector_store_id) REFERENCES openai_compatible_vector_stores(id) ON DELETE CASCADE,
+      FOREIGN KEY (file_id) REFERENCES openai_compatible_files(id) ON DELETE CASCADE,
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_vector_store_chunks (
+      id TEXT PRIMARY KEY,
+      vector_store_id TEXT NOT NULL,
+      file_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      content_text TEXT NOT NULL,
+      content_preview TEXT NOT NULL,
+      token_estimate INTEGER NOT NULL DEFAULT 0,
+      keyword_index_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (vector_store_id, file_id) REFERENCES openai_compatible_vector_store_files(vector_store_id, file_id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_schedule_status_events (
       event_key TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -809,6 +879,20 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_group_key ON api_key_group_bindings(system_account_id, group_id, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_schedule_status_events_api_key
       ON api_key_schedule_status_events(api_key_id, executed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_owner_created
+      ON openai_compatible_files(system_account_id, api_key_id, created_at DESC, id DESC)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_purpose_created
+      ON openai_compatible_files(system_account_id, api_key_id, purpose, created_at DESC, id DESC)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_vector_stores_owner_created
+      ON openai_compatible_vector_stores(system_account_id, api_key_id, created_at DESC, id DESC)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_vector_store_files_owner_created
+      ON openai_compatible_vector_store_files(system_account_id, api_key_id, vector_store_id, created_at DESC, file_id DESC)
+      WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_vector_store_chunks_search
+      ON openai_compatible_vector_store_chunks(system_account_id, api_key_id, vector_store_id, file_id, chunk_index);
     CREATE INDEX IF NOT EXISTS idx_account_schedule_status_events_account
       ON account_schedule_status_events(account_id, executed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);

@@ -18,6 +18,10 @@ export interface GatewayDispatchCandidateOrderOptions {
   modelRankByAccountId?: ReadonlyMap<string, number>
 }
 
+export interface GatewayDispatchCandidateWindowOptions {
+  includeUnavailable?: boolean
+}
+
 export interface GatewayDispatchModelCandidateRowsResult {
   rows: OpenAIGroupAccountSelectionRow[]
   modelRankByAccountId: Map<string, number>
@@ -125,8 +129,14 @@ export function listGatewayDispatchCandidateRows(
   database: DatabaseSync,
   groupId: string,
   groupAccess: GroupUsageAccessMetadata,
-  now: string
+  now: string,
+  options: GatewayDispatchCandidateWindowOptions = {}
 ): OpenAIGroupAccountSelectionRow[] {
+  const includeUnavailable = options.includeUnavailable === true
+  const statusSetSql = includeUnavailable
+    ? "'active', 'rate_limited', 'temporary_unavailable'"
+    : "'active'"
+  const includeUnavailableFlag = includeUnavailable ? 1 : 0
   return database
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.system_account_id AS binding_system_account_id, group_accounts.group_id, group_accounts.account_authorization_id,
@@ -161,10 +171,10 @@ export function listGatewayDispatchCandidateRows(
         AND group_accounts.enabled = 1
         AND accounts.provider_protocol_profile_id = ?
         AND accounts.deleted_at IS NULL
-        AND accounts.status = 'active'
+        AND accounts.status IN (${statusSetSql})
         AND accounts.schedulable = 1
         AND accounts.availability_schedule_active = 1
-        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
+        AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
           OR (
@@ -172,10 +182,10 @@ export function listGatewayDispatchCandidateRows(
             AND source_accounts.deleted_at IS NULL
             AND source_accounts.provider_protocol_profile_id = ?
             AND source_accounts.type IN ('api_key', 'oauth')
-            AND source_accounts.status = 'active'
+            AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
             AND source_accounts.availability_schedule_active = 1
-            AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
+            AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
             AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
             AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
           )
@@ -193,8 +203,10 @@ export function listGatewayDispatchCandidateRows(
       groupId,
       groupAccess.groupOwnerSystemAccountId,
       groupAccess.providerProtocolProfileId,
+      includeUnavailableFlag,
       now,
       groupAccess.providerProtocolProfileId,
+      includeUnavailableFlag,
       now,
       now,
       now,
@@ -208,12 +220,18 @@ export function listGatewayDispatchModelCandidateRows(
   groupAccess: GroupUsageAccessMetadata,
   now: string,
   requestedModel: string,
-  requestedEndpointFamily?: 'chat_completions' | 'responses'
+  requestedEndpointFamily?: 'chat_completions' | 'responses',
+  options: GatewayDispatchCandidateWindowOptions = {}
 ): GatewayDispatchModelCandidateRowsResult {
   const model = requestedModel.trim()
   if (!model) {
     return { rows: [], modelRankByAccountId: new Map() }
   }
+  const includeUnavailable = options.includeUnavailable === true
+  const statusSetSql = includeUnavailable
+    ? "'active', 'rate_limited', 'temporary_unavailable'"
+    : "'active'"
+  const includeUnavailableFlag = includeUnavailable ? 1 : 0
   const rows = database
     .prepare(`
       WITH eligible_rows AS (
@@ -252,10 +270,10 @@ export function listGatewayDispatchModelCandidateRows(
           AND group_accounts.enabled = 1
           AND accounts.provider_protocol_profile_id = ?
           AND accounts.deleted_at IS NULL
-          AND accounts.status = 'active'
+          AND accounts.status IN (${statusSetSql})
           AND accounts.schedulable = 1
           AND accounts.availability_schedule_active = 1
-          AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
+          AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
           AND (
             (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
             OR (
@@ -263,10 +281,10 @@ export function listGatewayDispatchModelCandidateRows(
               AND source_accounts.deleted_at IS NULL
               AND source_accounts.provider_protocol_profile_id = ?
               AND source_accounts.type IN ('api_key', 'oauth')
-              AND source_accounts.status = 'active'
+              AND source_accounts.status IN (${statusSetSql})
               AND source_accounts.schedulable = 1
               AND source_accounts.availability_schedule_active = 1
-              AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
+              AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
               AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
               AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
             )
@@ -336,8 +354,10 @@ export function listGatewayDispatchModelCandidateRows(
       groupId,
       groupAccess.groupOwnerSystemAccountId,
       groupAccess.providerProtocolProfileId,
+      includeUnavailableFlag,
       now,
       groupAccess.providerProtocolProfileId,
+      includeUnavailableFlag,
       now,
       now,
       now,

@@ -47,6 +47,8 @@ interface DbServiceState {
   pendingRequestCount: number
   pendingDatasetWriteRequestCount: number
   oldestDatasetWriteRequestMs: number
+  timedOutDatasetWriteRequestCount: number
+  rejectedDatasetWriteRequestCount: number
   timedOutRequestCount: number
   rejectedRequestCount: number
   failedRequestCount: number
@@ -64,6 +66,7 @@ const requestTimeoutMs = 5000
 const invalidateTimeoutMs = 500
 const unavailableCircuitOpenMs = 3000
 const maxPendingRequests = 2000
+const maxPendingDatasetWriteRequests = 1000
 
 let dbServiceProcess: ChildProcess | undefined
 let dbServiceReady = false
@@ -79,6 +82,8 @@ let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
+let timedOutDatasetWriteRequestCount = 0
+let rejectedDatasetWriteRequestCount = 0
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let processEventLoopTimeoutStreak = 0
@@ -166,10 +171,12 @@ export async function requestDbService<T extends DbServiceOperation>(
     throw new DbServiceRequestQueueFullError('本地数据库服务请求队列已满，请稍后重试')
   }
   const requestId = randomUUID()
+  const timeoutMs = options.timeoutMs ?? requestTimeoutMs
   const message: DbServiceParentMessage = {
     type: 'db_service_request',
     requestId,
-    operation
+    operation,
+    deadlineAtMs: Date.now() + timeoutMs
   }
   try {
     return await new Promise<DbServiceOperationResult<T>>((resolve, reject) => {
@@ -182,7 +189,7 @@ export async function requestDbService<T extends DbServiceOperation>(
         pendingRequests.delete(requestId)
         const timeoutError = new DbServiceRequestTimedOutError('本地数据库服务请求超时，请稍后重试')
         pending.reject(timeoutError)
-      }, options.timeoutMs ?? requestTimeoutMs)
+      }, timeoutMs)
       pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
       const failSend = (error: unknown): void => {
         const pending = pendingRequests.get(requestId)
@@ -250,6 +257,8 @@ export function getDbServiceState(): DbServiceState {
     pendingRequestCount: pendingRequests.size,
     pendingDatasetWriteRequestCount: pendingDatasetWriteRequests.size,
     oldestDatasetWriteRequestMs: oldestDbServiceDatasetWriteRequestMs(),
+    timedOutDatasetWriteRequestCount,
+    rejectedDatasetWriteRequestCount,
     timedOutRequestCount,
     rejectedRequestCount,
     failedRequestCount,
@@ -428,6 +437,16 @@ export async function requestDbServiceDatasetWrite<T extends import('../backgrou
     return undefined
   }
 
+  if (pendingDatasetWriteRequests.size >= maxPendingDatasetWriteRequests) {
+    rejectedDatasetWriteRequestCount += 1
+    logger.warn({
+      event: 'db_service_dataset_write_pending_full',
+      operationType: operation.type,
+      pendingCount: pendingDatasetWriteRequests.size,
+      maxPendingCount: maxPendingDatasetWriteRequests
+    }, 'DB service dataset-writer pending 请求已达上限，已拒绝本次请求')
+    throw new Error('后台 dataset-writer pending 请求过多，请稍后重试')
+  }
   const requestId = randomUUID()
   return await new Promise<import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -435,6 +454,7 @@ export async function requestDbServiceDatasetWrite<T extends import('../backgrou
       if (!pending) {
         return
       }
+      timedOutDatasetWriteRequestCount += 1
       pendingDatasetWriteRequests.delete(requestId)
       pending.reject(new Error('后台 dataset-writer 请求超时'))
     }, timeoutMs)
@@ -1027,16 +1047,23 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       pendingRequestCount: dbServiceState.pendingRequestCount,
       pendingDatasetWriteRequestCount: dbServiceState.pendingDatasetWriteRequestCount,
       oldestDatasetWriteRequestMs: dbServiceState.oldestDatasetWriteRequestMs,
+      timedOutDatasetWriteRequestCount: dbServiceState.timedOutDatasetWriteRequestCount,
+      rejectedDatasetWriteRequestCount: dbServiceState.rejectedDatasetWriteRequestCount,
       timedOutRequestCount: dbServiceState.timedOutRequestCount,
       rejectedRequestCount: dbServiceState.rejectedRequestCount,
       failedRequestCount: dbServiceState.failedRequestCount,
       queuedRequestCount: dbServiceState.lastSnapshot?.queuedRequestCount,
+      queuedRequestBytes: dbServiceState.lastSnapshot?.queuedRequestBytes,
       queuedHighRequestCount: dbServiceState.lastSnapshot?.queuedHighRequestCount,
       queuedNormalRequestCount: dbServiceState.lastSnapshot?.queuedNormalRequestCount,
       queuedLowRequestCount: dbServiceState.lastSnapshot?.queuedLowRequestCount,
       oldestQueuedMs: dbServiceState.lastSnapshot?.oldestQueuedMs,
       lastQueueWaitMs: dbServiceState.lastSnapshot?.lastQueueWaitMs,
       maxQueueWaitMs: dbServiceState.lastSnapshot?.maxQueueWaitMs,
+      queueRejectedCount: dbServiceState.lastSnapshot?.queueRejectedCount,
+      queueExpiredCount: dbServiceState.lastSnapshot?.queueExpiredCount,
+      activeConcurrentRequestCount: dbServiceState.lastSnapshot?.activeConcurrentRequestCount,
+      maxActiveConcurrentRequestCount: dbServiceState.lastSnapshot?.maxActiveConcurrentRequestCount,
       lastExecMs: dbServiceState.lastSnapshot?.lastExecMs,
       maxExecMs: dbServiceState.lastSnapshot?.maxExecMs,
       slowOpCount: dbServiceState.lastSnapshot?.slowOpCount,

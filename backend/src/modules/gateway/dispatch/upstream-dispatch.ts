@@ -29,10 +29,12 @@ import {
   filterLocallySuppressedGatewayAccounts,
   type GatewayAccountHalfOpenLease
 } from '../runtime/account-side-effects.service.js'
+import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unavailable-wait.js'
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
 import {
   handleFailedUpstreamResponse,
-  handleUpstreamRequestError
+  handleUpstreamRequestError,
+  type PendingAccountApiKeyFailure
 } from '../response/failure-dispatch.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { buildGatewayUpstreamUrlsForAccount } from '../../providers/drivers/registry.js'
@@ -45,6 +47,7 @@ import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapte
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { createGatewayCompatibilityRecoveryState } from '../client-profiles/compatibility-policy.js'
 import { GatewayRequestValidationError } from '../request/validation-error.js'
+import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -53,6 +56,11 @@ export interface OpenAIUpstreamDispatchResult {
   auditAttemptId: string
   releaseConcurrency: () => void
   markFirstOutput: () => void
+  confirmSameAccountApiKeyFailures: () => void
+}
+
+export interface OpenAIUpstreamDispatchOptions {
+  sameAccountRetryEnabled?: boolean
 }
 
 export class UpstreamAttemptError extends Error {
@@ -74,6 +82,7 @@ interface AccountConcurrencyAcquireResult {
 
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
+const maxAccountApiKeyAttemptsPerAccountPerRequest = 2
 
 export async function fetchFirstAvailableUpstream(
   req: Request,
@@ -87,7 +96,8 @@ export async function fetchFirstAvailableUpstream(
   requestLane: OpenAIGatewayRequestLane = 'text',
   groupSchedulingPolicy?: GroupSchedulingPolicy,
   accountStateMutationEnabled = true,
-  requestClientCompatibility?: ClientCompatibilityCapability
+  requestClientCompatibility?: ClientCompatibilityCapability,
+  options?: OpenAIUpstreamDispatchOptions
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -102,6 +112,7 @@ export async function fetchFirstAvailableUpstream(
   const failedAccountIds = new Set<string>()
   let dispatchAccounts = orderAccountsForRequestLane(accounts, requestLane, groupSchedulingPolicy)
   const compatibilityRecoveryState = createGatewayCompatibilityRecoveryState()
+  const sameAccountRetryEnabled = options?.sameAccountRetryEnabled !== false
 
   while (dispatchAccounts.length > 0) {
     let attemptedAccountCount = 0
@@ -193,194 +204,228 @@ export async function fetchFirstAvailableUpstream(
           limit: concurrencySlot.limit
         }, '账号并发槽短等后释放，继续使用当前账号')
       }
-      let skipAccount = false
       let keepConcurrencySlot = false
+      const excludedApiKeyFingerprints = new Set<string>()
+      const pendingApiKeyFailures: PendingAccountApiKeyFailure[] = []
+      let accountApiKeyAttemptCount = 0
       try {
-        let account = originalAccount
-        let headers: Headers
-        let body: Buffer | string | undefined
-        let upstreamUrls: string[]
-        const preparationStartedAt = Date.now()
-        try {
-          account = await prepareUpstreamAccount(originalAccount, signal)
-          upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, req)
-          if (upstreamUrls.length === 0) {
-            continue
-          }
-          const selectedAccount = selectAccountApiKeyForDispatch(account)
-          if (!selectedAccount) {
-            lastAttempt = accountApiKeyPoolUnavailableAttempt(account)
-            failedAccountIds.add(account.id)
-            auditCapture.addGatewayMetadata({
-              label: 'account_api_key_pool_unavailable_dispatch_skip',
-              metadata: {
-                accountId: account.id,
-                accountName: account.name
-              }
-            })
-            continue
-          }
-          account = selectedAccount
-          const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal, {
-            requestClientCompatibility
-          })
-          headers = requestParts.headers
-          body = requestParts.body
-        } catch (error) {
-          if (
-            signal?.aborted
-            || (error instanceof OpenAIOAuthCodexAdapterError && !error.accountScoped)
-            || (error instanceof GatewayRequestValidationError && !error.accountScoped)
-          ) {
-            throw error
-          }
-          const requestErrorResult = await handleUpstreamRequestError({
-            req,
-            usageContext,
-            auditCapture,
-            auditAttemptId: '',
-            account,
-            upstreamUrl: 'account:preparation',
-            attemptStartedAt: preparationStartedAt,
-            attemptIndex: 0,
-            auditAttemptIndex,
-            settings,
-            sessionAffinityKey,
-            signal,
-            lastAttempt,
-            failedProxyDispatchKeys,
-            error,
-            clientIpAccountAvoidanceTracker,
-            accountStateMutationEnabled
-          })
-          lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
-          failedAccountIds.add(account.id)
-          continue
-        }
-        for (const upstreamUrl of upstreamUrls) {
-          let activeBodyVariant = false
-          for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
-            const attemptStartedAt = Date.now()
-            auditAttemptIndex += 1
-            const auditAttemptId = auditCapture.startAttempt({
-              account,
-              attemptIndex: auditAttemptIndex,
-              upstreamUrl,
-              method: req.method,
-              headers,
-              body
-            })
-            try {
-              const response = await performUpstreamRequestAttempt({
-                req,
-                account,
-                upstreamUrl,
-                attemptIndex,
-                auditAttemptIndex,
-                headers,
-                body,
-                settings,
-                attemptStartedAt,
-                signal,
-                requestClientCompatibility
-              })
-              lastAttempt = {
-                accountId: account.id,
-                accountName: account.name,
-                providerCode: account.providerCode,
-                providerProtocolProfileId: account.providerProtocolProfileId,
-                protocolCode: account.protocolCode,
-                protocolVersion: account.protocolVersion,
-                upstreamUrl,
-                status: response.status
-              }
-              if (response.ok) {
-                rememberOpenAIAccountForSession(sessionAffinityKey, account.id, {
-                  systemAccountId: usageContext.systemAccountId,
-                  apiKeyId: usageContext.apiKeyId,
-                  groupId: usageContext.groupId
-                })
-                keepConcurrencySlot = true
-                return {
-                  account,
-                  response,
-                  upstreamUrl,
-                  auditAttemptId,
-                  releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release, halfOpenLease),
-                  markFirstOutput: concurrencySlot.markFirstOutput
-                }
-              }
-
-              const failedResponseResult = await handleFailedUpstreamResponse({
-                req,
-                usageContext,
-                auditCapture,
-                auditAttemptId,
-                account,
-                upstreamUrl,
-                response,
-                settings,
-                attemptStartedAt,
-                attemptIndex,
-                auditAttemptIndex,
-                sessionAffinityKey,
-                signal,
-                lastAttempt,
-                clientIpAccountAvoidanceTracker,
-                accountStateMutationEnabled,
-                retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy),
-                requestBody: body,
-                compatibilityRecoveryState
-              })
-              lastAttempt = failedResponseResult.lastAttempt
-              failedAccountIds.add(account.id)
-              if (failedResponseResult.action === 'retry_with_body_variant') {
-                body = failedResponseResult.body
-                activeBodyVariant = true
-                attemptLimit += 1
-                continue
-              }
-              if (failedResponseResult.action === 'retry') {
-                await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
-                continue
-              }
-              skipAccount = true
+        let retryAccountApiKey = false
+        do {
+          retryAccountApiKey = false
+          let skipAccount = false
+          let account = originalAccount
+          let headers: Headers
+          let body: Buffer | string | undefined
+          let upstreamUrls: string[]
+          const preparationStartedAt = Date.now()
+          try {
+            account = await prepareUpstreamAccount(originalAccount, signal)
+            upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, req)
+            if (upstreamUrls.length === 0) {
               break
-            } catch (error) {
-              const requestErrorResult = await handleUpstreamRequestError({
-                req,
-                usageContext,
-                auditCapture,
-                auditAttemptId,
-                account,
-                upstreamUrl,
-                attemptStartedAt,
-                attemptIndex,
-                auditAttemptIndex,
-                settings,
-                sessionAffinityKey,
-                signal,
-                lastAttempt,
-                failedProxyDispatchKeys,
-                error,
-                clientIpAccountAvoidanceTracker,
-                accountStateMutationEnabled,
-                retrySameAccount: !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
-              })
-              lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+            }
+            const selectedAccount = selectAccountApiKeyForDispatch(account, {
+              excludeFingerprints: excludedApiKeyFingerprints
+            })
+            if (!selectedAccount) {
+              lastAttempt = accountApiKeyPoolUnavailableAttempt(account)
               failedAccountIds.add(account.id)
-              if (requestErrorResult.action === 'retry') {
-                await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
-                continue
+              auditCapture.addGatewayMetadata({
+                label: 'account_api_key_pool_unavailable_dispatch_skip',
+                metadata: {
+                  accountId: account.id,
+                  accountName: account.name
+                }
+              })
+              break
+            }
+            account = selectedAccount
+            if (account.selectedApiKeyFingerprint) {
+              accountApiKeyAttemptCount += 1
+              excludedApiKeyFingerprints.add(account.selectedApiKeyFingerprint)
+            }
+            const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal, {
+              requestClientCompatibility
+            })
+            headers = requestParts.headers
+            body = requestParts.body
+          } catch (error) {
+            if (
+              signal?.aborted
+              || (error instanceof OpenAIOAuthCodexAdapterError && !error.accountScoped)
+              || (error instanceof GatewayRequestValidationError && !error.accountScoped)
+            ) {
+              throw error
+            }
+            const requestErrorResult = await handleUpstreamRequestError({
+              req,
+              usageContext,
+              auditCapture,
+              auditAttemptId: '',
+              account,
+              upstreamUrl: 'account:preparation',
+              attemptStartedAt: preparationStartedAt,
+              attemptIndex: 0,
+              auditAttemptIndex,
+              settings,
+              sessionAffinityKey,
+              signal,
+              lastAttempt,
+              failedProxyDispatchKeys,
+              error,
+              clientIpAccountAvoidanceTracker,
+              accountStateMutationEnabled
+            })
+            lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+            failedAccountIds.add(account.id)
+            if (shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)) {
+              retryAccountApiKey = true
+            }
+            continue
+          }
+          for (const upstreamUrl of upstreamUrls) {
+            let activeBodyVariant = false
+            for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
+              const attemptStartedAt = Date.now()
+              auditAttemptIndex += 1
+              const auditAttemptId = auditCapture.startAttempt({
+                account,
+                attemptIndex: auditAttemptIndex,
+                upstreamUrl,
+                method: req.method,
+                headers,
+                body
+              })
+              try {
+                const response = await performUpstreamRequestAttempt({
+                  req,
+                  account,
+                  upstreamUrl,
+                  attemptIndex,
+                  auditAttemptIndex,
+                  headers,
+                  body,
+                  settings,
+                  attemptStartedAt,
+                  signal,
+                  requestClientCompatibility
+                })
+                lastAttempt = {
+                  accountId: account.id,
+                  accountName: account.name,
+                  providerCode: account.providerCode,
+                  providerProtocolProfileId: account.providerProtocolProfileId,
+                  protocolCode: account.protocolCode,
+                  protocolVersion: account.protocolVersion,
+                  upstreamUrl,
+                  status: response.status
+                }
+                if (response.ok) {
+                  rememberOpenAIAccountForSession(sessionAffinityKey, account.id, {
+                    systemAccountId: usageContext.systemAccountId,
+                    apiKeyId: usageContext.apiKeyId,
+                    groupId: usageContext.groupId
+                  })
+                  keepConcurrencySlot = true
+                  return {
+                    account,
+                    response,
+                    upstreamUrl,
+                    auditAttemptId,
+                    releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release, halfOpenLease),
+                    markFirstOutput: concurrencySlot.markFirstOutput,
+                    confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext)
+                  }
+                }
+
+                const failedResponseResult = await handleFailedUpstreamResponse({
+                  req,
+                  usageContext,
+                  auditCapture,
+                  auditAttemptId,
+                  account,
+                  upstreamUrl,
+                  response,
+                  settings,
+                  attemptStartedAt,
+                  attemptIndex,
+                  auditAttemptIndex,
+                  sessionAffinityKey,
+                  signal,
+                  lastAttempt,
+                  clientIpAccountAvoidanceTracker,
+                  accountStateMutationEnabled,
+                  retrySameAccount: sameAccountRetryEnabled && !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy),
+                  requestBody: body,
+                  compatibilityRecoveryState
+                })
+                lastAttempt = failedResponseResult.lastAttempt
+                failedAccountIds.add(account.id)
+                if (failedResponseResult.action === 'retry_with_body_variant') {
+                  body = failedResponseResult.body
+                  activeBodyVariant = true
+                  attemptLimit += 1
+                  continue
+                }
+                if (failedResponseResult.action === 'retry') {
+                  await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
+                  continue
+                }
+                if (
+                  !activeBodyVariant
+                  && shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                ) {
+                  if (failedResponseResult.pendingApiKeyFailure) {
+                    pendingApiKeyFailures.push(failedResponseResult.pendingApiKeyFailure)
+                  }
+                  retryAccountApiKey = true
+                  break
+                }
+                skipAccount = true
+                break
+              } catch (error) {
+                const requestErrorResult = await handleUpstreamRequestError({
+                  req,
+                  usageContext,
+                  auditCapture,
+                  auditAttemptId,
+                  account,
+                  upstreamUrl,
+                  attemptStartedAt,
+                  attemptIndex,
+                  auditAttemptIndex,
+                  settings,
+                  sessionAffinityKey,
+                  signal,
+                  lastAttempt,
+                  failedProxyDispatchKeys,
+                  error,
+                  clientIpAccountAvoidanceTracker,
+                  accountStateMutationEnabled,
+                  retrySameAccount: sameAccountRetryEnabled && !activeBodyVariant && shouldRetrySameAccountAfterFailure(account, attemptIndex, sameAccountRetryPolicy)
+                })
+                lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+                failedAccountIds.add(account.id)
+                if (requestErrorResult.action === 'retry') {
+                  await waitForSameAccountRetry(account, upstreamUrl, attemptIndex, sameAccountRetryPolicy, auditCapture, signal)
+                  continue
+                }
+                if (
+                  !activeBodyVariant
+                  && shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                ) {
+                  retryAccountApiKey = true
+                  break
+                }
+                skipAccount = true
+                break
               }
-              skipAccount = true
+            }
+            if (skipAccount || retryAccountApiKey) {
               break
             }
           }
-          if (skipAccount) {
-            break
-          }
-        }
+        } while (retryAccountApiKey)
       } finally {
         if (!keepConcurrencySlot) {
           concurrencySlot.release()
@@ -391,6 +436,23 @@ export async function fetchFirstAvailableUpstream(
 
     if (attemptedAccountCount > 0 || localSuppressedSkipCount === 0) {
       break
+    }
+
+    const suppressionFilter = filterLocallySuppressedGatewayAccounts(dispatchAccounts)
+    const wait = await waitForRecoverableUnavailableState({
+      scopeKey: recoverableDispatchSuppressionScopeKey(usageContext.systemAccountId, usageContext.apiKeyId, usageContext.groupId),
+      reason: 'local_account_suppression_dispatch',
+      initialState: suppressionFilter,
+      refresh: () => filterLocallySuppressedGatewayAccounts(dispatchAccounts),
+      isReady: (state) => !state.allSuppressed,
+      nextRetryAfterMs: (state) => state.nextRetryAfterMs,
+      waitWithoutRetryAfter: true,
+      auditCapture,
+      signal
+    })
+    if (!wait.state.allSuppressed) {
+      dispatchAccounts = wait.state.accounts
+      continue
     }
 
     auditCapture.addGatewayMetadata({
@@ -492,6 +554,77 @@ function accountApiKeyPoolUnavailableAttempt(account: UpstreamAccount): Upstream
     upstreamUrl: 'account:api_key_pool_unavailable',
     message: '账户 API Key 池暂无可用 Key'
   }
+}
+
+function shouldRetryAnotherAccountApiKey(
+  account: UpstreamAccount,
+  keyScopedFailure: boolean | undefined,
+  accountApiKeyAttemptCount: number,
+  auditCapture: AuditCaptureContext
+): boolean {
+  if (!keyScopedFailure || !account.selectedApiKeyFingerprint) {
+    return false
+  }
+  if ((account.apiKeys?.length ?? 0) <= accountApiKeyAttemptCount) {
+    return false
+  }
+  if (accountApiKeyAttemptCount >= maxAccountApiKeyAttemptsPerAccountPerRequest) {
+    return false
+  }
+  getRequestLogger().warn({
+    event: 'gateway_account_api_key_request_failover_scheduled',
+    accountId: account.id,
+    accountName: account.name,
+    selectedApiKeyIndex: account.selectedApiKeyIndex,
+    accountApiKeyAttemptCount,
+    maxAccountApiKeyAttemptsPerAccountPerRequest
+  }, '账户内 API Key 请求失败，本次请求尝试同账户下一个 Key')
+  auditCapture.addGatewayMetadata({
+    label: 'account_api_key_request_failover_scheduled',
+    metadata: {
+      accountId: account.id,
+      accountName: account.name,
+      selectedApiKeyIndex: account.selectedApiKeyIndex,
+      accountApiKeyAttemptCount,
+      maxAccountApiKeyAttemptsPerAccountPerRequest
+    }
+  })
+  return true
+}
+
+function recordConfirmedSameAccountApiKeyFailures(
+  failures: PendingAccountApiKeyFailure[],
+  successAccount: UpstreamAccount,
+  usageContext: GatewayUsageContext
+): void {
+  if (!failures.length || !successAccount.selectedApiKeyFingerprint) {
+    return
+  }
+  const successSourceAccountId = accountRuntimeSourceId(successAccount)
+  for (const failure of failures) {
+    if (accountRuntimeSourceId(failure.account) !== successSourceAccountId) {
+      continue
+    }
+    if (!failure.account.selectedApiKeyFingerprint || failure.account.selectedApiKeyFingerprint === successAccount.selectedApiKeyFingerprint) {
+      continue
+    }
+    recordGatewayAccountApiKeyFailure(failure.account, {
+      status: failure.status,
+      statusCode: failure.statusCode,
+      errorCode: failure.errorCode,
+      errorMessage: failure.errorMessage,
+      cooldownUntil: failure.cooldownUntil,
+      trafficSource: usageContext.trafficSource,
+      clientIp: usageContext.clientIp,
+      apiKeyId: usageContext.apiKeyId,
+      source: 'same_account_api_key_failover_confirmed'
+    })
+  }
+  failures.length = 0
+}
+
+function accountRuntimeSourceId(account: UpstreamAccount): string {
+  return account.credentialSourceAccountId || account.id
 }
 
 function shouldRetrySameAccountAfterFailure(
@@ -605,4 +738,8 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): string {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+}
+
+function recoverableDispatchSuppressionScopeKey(systemAccountId: string, apiKeyId: string | undefined, groupId: string): string {
+  return [systemAccountId, apiKeyId ?? '', groupId].join(':')
 }

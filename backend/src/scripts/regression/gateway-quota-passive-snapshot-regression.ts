@@ -8,7 +8,10 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/quota/api-key-quota.service.js'
-import { checkGatewayAuthorizationQuotaBatchAsync } from '../../modules/gateway/quota/authorization-quota.service.js'
+import {
+  checkGatewayAuthorizationQuotaBatchAsync,
+  clearAuthorizationQuotaCache
+} from '../../modules/gateway/quota/authorization-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
   checkGatewayAuthorizationQuotaByIds
@@ -41,8 +44,12 @@ const databaseModule = await import('../../storage/database.js')
 class FakeDbServiceChild extends EventEmitter {
   readonly pid = 525252
   readonly connected = true
+  readonly sentMessages: unknown[] = []
+  onSend?: (message: unknown) => void
 
-  send(_message: unknown, callback?: (error?: Error | null) => void): boolean {
+  send(message: unknown, callback?: (error?: Error | null) => void): boolean {
+    this.sentMessages.push(message)
+    this.onSend?.(message)
     callback?.()
     return true
   }
@@ -301,6 +308,8 @@ try {
   assert.equal(cappedRuntime.costEntriesComplete, true, 'server 接收完整 API Key 成本窗口时应默认标记快照完整')
   assert.equal(cappedRuntime.authorizationEntriesComplete, true, 'server 接收完整授权决策窗口时应默认标记快照完整')
 
+  await assertAuthorizationQuotaBatchFallbackFansOutSharedCacheKey()
+
   console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，worker 有界构建额度快照，并禁止误调同步 SQLite 配额读取')
 } finally {
   clearGatewayQuotaSnapshot()
@@ -447,6 +456,74 @@ async function assertDbServiceAuthorizationQuotaInvalidationBridge(): Promise<vo
   assert.equal(runtime.authorizationEntriesComplete, false, 'DB service 授权配额失效消息必须让 server 标记授权快照不完整')
   assert.equal(runtime.costEntryCount, 1, 'DB service 授权配额失效消息不能清空 server API Key 成本快照')
   assert.equal(runtime.costEntriesComplete, true, 'DB service 授权配额失效消息不能把 server API Key 成本快照误标为不完整')
+}
+
+async function assertAuthorizationQuotaBatchFallbackFansOutSharedCacheKey(): Promise<void> {
+  clearGatewayQuotaSnapshot()
+  clearAuthorizationQuotaCache()
+  replaceGatewayQuotaSnapshot({
+    generatedAt: new Date().toISOString(),
+    costEntries: [],
+    authorizationEntries: [],
+    costEntriesComplete: true,
+    authorizationEntriesComplete: false
+  })
+
+  const fakeChild = new FakeDbServiceChild()
+  const previousProcessRole = runtimeConfig.processRole
+  let fallbackRequestCount = 0
+  let fallbackRequestAccountCount = 0
+  try {
+    runtimeConfig.processRole = 'server'
+    fakeChild.onSend = (message: unknown) => {
+      const record = message as {
+        type?: string
+        requestId?: string
+        operation?: { type?: string; accounts?: unknown[] }
+      }
+      if (record.type !== 'db_service_request'
+        || record.operation?.type !== 'check_authorization_quota_batch'
+        || typeof record.requestId !== 'string') {
+        return
+      }
+      fallbackRequestCount += 1
+      fallbackRequestAccountCount = Array.isArray(record.operation.accounts) ? record.operation.accounts.length : 0
+      queueMicrotask(() => {
+        fakeChild.emit('message', {
+          type: 'db_service_response',
+          requestId: record.requestId,
+          ok: true,
+          result: [{ allowed: false, message: '分组授权额度已耗尽' }]
+        })
+      })
+    }
+    dbServiceIpc.attachDbServiceProcess(fakeChild as never)
+    fakeChild.emit('message', {
+      type: 'db_service_ready',
+      pid: fakeChild.pid,
+      httpHost: '127.0.0.1',
+      httpPort: 1
+    })
+
+    const decisions = await checkGatewayAuthorizationQuotaBatchAsync({
+      groupAccess: {
+        groupOwnerSystemAccountId: 'sys_passive_quota',
+        groupAccessType: 'authorized',
+        groupAuthorizationId: 'group_auth_batch_fallback_fanout',
+        groupAuthorizationQuotaLimited: true
+      } as GroupUsageAccessMetadata,
+      accounts: [
+        passiveAccount('account_auth_batch_fallback_fanout_a'),
+        passiveAccount('account_auth_batch_fallback_fanout_b')
+      ]
+    })
+    assert.equal(fallbackRequestCount, 1, '授权配额批量 fallback 应按共享 cacheKey 去重请求 DB service')
+    assert.equal(fallbackRequestAccountCount, 1, '共享分组授权 cacheKey 的账号只应派生一个 DB service 补判请求')
+    assert.equal(decisions.get('account_auth_batch_fallback_fanout_a')?.allowed, false, '共享分组授权补判拒绝时，第一个账号必须被拒绝')
+    assert.equal(decisions.get('account_auth_batch_fallback_fanout_b')?.allowed, false, '共享分组授权补判拒绝时，同 cacheKey 的其他账号也必须被拒绝')
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceChild, operation: () => Promise<T> | T): Promise<T> {

@@ -7,6 +7,7 @@ import {
 } from '../../../../domain/anthropic-endpoint-modes.js'
 import {
   ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_MESSAGES_FAMILY,
   ANTHROPIC_PROVIDER_CODE,
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
@@ -17,8 +18,14 @@ import {
   isAnthropicProtocolProfile
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
-import { buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
-import { buildOpenAIModelMappedJsonBody, resolveOpenAIAccountModelMapping } from '../../../gateway/protocols/openai-v1/model-mapping.js'
+import { buildAnthropicUpstreamUrl, buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
+import {
+  buildOpenAIModelMappedJsonBody,
+  openAIRequestEndpointFamily,
+  resolveOpenAIAccountModelMapping
+} from '../../../gateway/protocols/openai-v1/model-mapping.js'
+import { openAICompatibleFilesResolverForGatewayRequest } from '../../../openai-compatible-files/file-resolver.js'
+import { openAICompatibleFileSearchExecutorForGatewayRequest } from '../../../openai-compatible-vector-stores/file-search-executor.js'
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
   buildUpstreamRequestBody,
@@ -26,10 +33,22 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import {
+  buildOpenAIToAnthropicBridgeBody,
+  isOpenAIToAnthropicBridgeCandidateRequest,
+  isOpenAIToAnthropicMessagesModelMapping,
+  openAIToAnthropicBridgeRequiredEndpointMode,
+  openAIToAnthropicBridgeUpstreamModel,
+  openAIToAnthropicBridgeUpstreamPath,
+  prepareOpenAIToAnthropicBridgeHeaders,
+  transformOpenAIToAnthropicBridgeUpstreamResponse
+} from '../_shared/openai-anthropic-bridge.js'
 
 const defaultAnthropicVersion = '2023-06-01'
 
 function anthropicEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
+  const bridgeMode = openAIToAnthropicBridgeRequiredEndpointMode(req)
+  if (bridgeMode) return bridgeMode
   return anthropicEndpointModeForRequestShape({
     endpoint: req.path || req.originalUrl.split('?', 1)[0],
     stream: isEffectiveOpenAIStreamRequest(req, account)
@@ -70,9 +89,13 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+    const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
+    if (account.type === 'api_key' && bridgePath) {
+      return [buildAnthropicUpstreamUrl(account.baseUrl, bridgePath)]
+    }
     return buildAnthropicUpstreamUrlsForAccount(account, req)
   },
-  async buildUpstreamRequestParts(req, account, _identity, signal) {
+  async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     if (account.type !== 'api_key') {
       throw new Error('Anthropic 当前仅支持 API Key 账户')
     }
@@ -89,6 +112,17 @@ export const anthropicProviderDriver: ProviderDriver = {
     if (!headers.get('accept')) {
       headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
     }
+    if (shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
+      prepareOpenAIToAnthropicBridgeHeaders(headers, req)
+      return {
+        headers,
+        body: await buildOpenAIToAnthropicBridgeBody(req, {
+          modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
+          fileResolver: openAICompatibleFilesResolverForGatewayRequest(req),
+          fileSearchExecutor: openAICompatibleFileSearchExecutorForGatewayRequest(req)
+        }, signal)
+      }
+    }
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestModel(req), undefined)
     return {
       headers,
@@ -97,8 +131,35 @@ export const anthropicProviderDriver: ProviderDriver = {
         : buildUpstreamRequestBody(req)
     }
   },
+  transformUpstreamResponse(req, account, response, context) {
+    if (!shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
+      return response
+    }
+    return transformOpenAIToAnthropicBridgeUpstreamResponse(req, response, {
+      model: openAIToAnthropicBridgeUpstreamModel(req, account),
+      previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
+      onResponsesCompleted: context?.codexResponsesChatBridgeCompletionHandler
+    })
+  },
   endpointModeForRequest: anthropicEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
+    if (isOpenAIToAnthropicBridgeCandidateRequest(req)) {
+      if (!shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
+        return false
+      }
+      const mode = anthropicEndpointModeForGatewayRequest(req, account)
+      if (!mode) return false
+      return accountSupportsAnthropicEndpointMode({
+        mode,
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        accountType: account.type,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion,
+        providerProtocolProfileId: account.providerProtocolProfileId
+      })
+    }
     if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
       return false
     }
@@ -115,6 +176,19 @@ export const anthropicProviderDriver: ProviderDriver = {
       providerProtocolProfileId: account.providerProtocolProfileId
     })
   }
+}
+
+function shouldUseOpenAIToAnthropicBridge(
+  req: Request,
+  account: ProviderDriverAccount,
+  requestClientCompatibility: import('../../../../domain/types.js').ClientCompatibilityCapability | undefined
+): boolean {
+  return isOpenAIToAnthropicBridgeCandidateRequest(req)
+    && (
+      isOpenAIToAnthropicMessagesModelMapping(req, account)
+      || requestClientCompatibility === 'codex_responses'
+      || account.clientCompatibility === 'codex_responses'
+    )
 }
 
 function applyAnthropicUpstreamAuthHeaders(headers: Headers, account: DispatchAccountSecret): void {

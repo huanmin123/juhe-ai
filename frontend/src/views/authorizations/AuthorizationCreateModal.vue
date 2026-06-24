@@ -1,14 +1,7 @@
 <template>
   <a-modal v-model:open="open" title="新增授权" width="680px" :confirm-loading="saving" :ok-button-props="{ disabled: saving }" @ok="$emit('ok')">
     <a-form layout="vertical">
-      <a-alert
-        v-if="isManagementView"
-        class="form-alert"
-        type="info"
-        show-icon
-        message="管理端需要先指定授权人，再从该用户自己的资源中选择授权资源。"
-      />
-      <a-form-item v-if="isManagementView" label="授权人" required>
+      <a-form-item v-if="isManagementView" label="授权人" required tooltip="管理端需要先指定授权人，再从该用户自己的资源中选择授权资源；管理员可选择自己，等同于代自己授权。">
         <SystemPrincipalSelect
           v-model:value="form.ownerSystemAccountId"
           :accounts="ownerUsers"
@@ -20,7 +13,6 @@
           @search="$emit('owner-search', $event)"
           @change="$emit('owner-change')"
         />
-        <div class="form-help">授权人就是资源归属人；管理员可选择自己，等同于代自己授权。</div>
       </a-form-item>
       <a-form-item class="inline-radio-form-item">
         <div class="inline-radio-row">
@@ -74,7 +66,11 @@
           </a-radio-group>
         </div>
       </a-form-item>
-      <a-form-item :label="form.granteeType === 'system_account' ? '被授权用户' : '被授权团队'" required>
+      <a-form-item
+        :label="form.granteeType === 'system_account' ? '被授权用户' : '被授权团队'"
+        required
+        :tooltip="form.granteeType === 'team' ? '团队授权会自动展开到团队内所有启用成员；成员移除后，对应团队来源授权也会自动回收。' : undefined"
+      >
         <SystemPrincipalSelect
           v-model:value="form.granteeId"
           :accounts="users"
@@ -90,7 +86,7 @@
           @search="$emit('grantee-search', $event)"
         />
       </a-form-item>
-      <a-form-item v-if="targetGroupVisible" label="目标分组" required>
+      <a-form-item v-if="targetGroupVisible" label="目标分组" required :tooltip="targetGroupTip">
         <GroupSelect
           v-model:value="form.targetGroupId"
           v-model:selected-group="form.targetGroup"
@@ -102,22 +98,14 @@
           @dropdown-visible-change="$emit('target-group-dropdown', $event)"
           @search="$emit('target-group-search', $event)"
         />
-        <div class="form-help">{{ targetGroupTip }}</div>
       </a-form-item>
       <a-form-item label="说明">
         <a-textarea v-model:value="form.remark" :rows="3" placeholder="可选，填写授权用途或范围说明" />
       </a-form-item>
-      <a-form-item label="到期时间">
+      <a-form-item label="到期时间" tooltip="可选，支持选择明天 0 点或中午 12 点，到期后授权自动变为“授权到期”。">
         <a-date-picker v-model:value="form.expiresAt" show-time allow-clear :disabled-date="disabledDate" style="width: 100%" />
-        <div class="form-help">可选，支持选择明天 0 点或中午 12 点，到期后授权自动变为“授权到期”。</div>
       </a-form-item>
       <RequestQuotaFields :model="form.quotaLimits" />
-      <a-alert
-        v-if="form.granteeType === 'team'"
-        type="info"
-        show-icon
-        message="团队授权会自动展开到团队内所有启用成员；成员移除后，对应团队来源授权也会自动回收。"
-      />
     </a-form>
   </a-modal>
 </template>
@@ -180,10 +168,6 @@ defineEmits<{
 </script>
 
 <style scoped>
-.form-alert {
-  margin-bottom: 16px;
-}
-
 .inline-radio-form-item {
   margin-bottom: 16px;
 }

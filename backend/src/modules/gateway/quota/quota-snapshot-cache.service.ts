@@ -1,4 +1,5 @@
 import type { RequestQuotaCosts } from './request-quota-checker.js'
+import { logger } from '../../../shared/logger.js'
 
 export interface GatewayQuotaDecision {
   allowed: boolean
@@ -53,6 +54,18 @@ export function replaceGatewayQuotaSnapshot(snapshot: GatewayQuotaSnapshot): voi
   }
   for (const entry of snapshot.authorizationEntries) {
     authorizationSnapshot.set(authorizationSnapshotKey(entry.scopeType, entry.authorizationId), { ...entry.decision })
+  }
+  if (!costSnapshotComplete || !authorizationSnapshotComplete) {
+    logger.warn({
+      event: 'gateway_quota_snapshot_incomplete',
+      generatedAt: snapshot.generatedAt,
+      costEntryCount: snapshot.costEntries.length,
+      authorizationEntryCount: snapshot.authorizationEntries.length,
+      costEntriesComplete: costSnapshotComplete,
+      authorizationEntriesComplete: authorizationSnapshotComplete,
+      maxCostEntries: maxGatewayQuotaSnapshotCostEntries,
+      maxAuthorizationEntries: maxGatewayQuotaSnapshotAuthorizationEntries
+    }, '网关配额快照不完整，运行时将对缺失 scope 通过 DB service 精确补判')
   }
 }
 

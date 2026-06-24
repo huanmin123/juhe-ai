@@ -2,16 +2,23 @@
   <section class="form-section">
     <div class="form-section-head">
       <div>
-        <h4>有效期</h4>
+        <h4 class="section-title">
+          <span>有效期</span>
+          <a-tooltip title="用于表达账号套餐或授权到期时间；到期后调度会跳过该账号。">
+            <QuestionCircleOutlined class="help-icon" />
+          </a-tooltip>
+        </h4>
       </div>
     </div>
-    <a-form-item label="账户到期时间">
+    <a-form-item label="账户到期时间" tooltip="不填表示不按到期时间限制；填写后，超过这个时间账号将不再参与调度。">
       <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear :disabled="readonly" style="width: 100%" />
     </a-form-item>
   </section>
 </template>
 
 <script setup lang="ts">
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
+
 import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
@@ -36,6 +43,22 @@ defineProps<{
   color: #0f172a;
   font-size: 14px;
   font-weight: 600;
+}
+
+.section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+
+.help-icon:hover {
+  color: #1677ff;
 }
 
 .form-section-head p {

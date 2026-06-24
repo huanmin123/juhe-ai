@@ -134,6 +134,9 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-0060 | OpenAI 兼容 Files 与 File Search 本地运行时 | 进行中 | 2026-06-24 | 后端 / 网关 / OpenAI 兼容接口 / Anthropic bridge / 文件存储 / Vector Store / 本地检索 / 审计 / 文档 / 验证 | `docs/plans/计划-0060-OpenAI兼容Files与FileSearch本地运行时.md` |
+| PLAN-0059 | OpenAI 到 Anthropic 高兼容桥接增强 | 进行中 | 2026-06-24 | 后端 / 网关 / 供应商驱动 / 模型映射 / Responses 状态 / 工具 / 审计 / 文档 / 验证 | `docs/plans/计划-0059-OpenAI到Anthropic高兼容桥接增强.md` |
+| PLAN-0058 | OpenAI 到 Anthropic Messages 协议桥接 | 已完成 | 2026-06-24 | 后端 / 网关 / 供应商驱动 / 模型映射 / 混合智能路由 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0058-OpenAI到Anthropic协议桥接.md` |
 | PLAN-0057 | 客户端兼容与模型映射重设计 | 进行中 | 2026-06-23 | 前端 / 后端 / 存储 / 网关 / 账号 / 模型目录 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0057-客户端兼容与模型映射重设计.md` |
 | PLAN-0056 | ops-worker 外部 I/O 并发控制 | 已完成 | 2026-06-23 | 后端 / 后台任务 / ops-worker / 账号探测 / 依赖 / 文档 / 验证 | `docs/plans/计划-0056-opsWorker外部IO并发控制.md` |
 | PLAN-0055 | 后台 Worker 三角色收敛 | 已完成 | 2026-06-23 | 后端 / 后台任务 / 统计 / 系统监控 / SQLite / 前端统计页 / 文档 / 验证 | `docs/plans/计划-0055-后台Worker三角色收敛.md` |

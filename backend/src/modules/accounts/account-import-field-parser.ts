@@ -1,4 +1,9 @@
-import type { AccountAvailabilitySchedule, AccountModelMapping, AccountModelMappingEndpointFamily } from '../../domain/types.js'
+import type {
+  AccountAvailabilitySchedule,
+  AccountModelMapping,
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily
+} from '../../domain/types.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
@@ -219,9 +224,9 @@ export function optionalModelMappingsField(record: Record<string, unknown>, key:
     }
     const itemRecord = item as Record<string, unknown>
     const sourceModel = optionalModelMappingText(itemRecord.sourceModel)
-    const sourceEndpointFamily = optionalModelMappingEndpointFamily(itemRecord.sourceEndpointFamily)
+    const sourceEndpointFamily = optionalModelMappingSourceEndpointFamily(itemRecord.sourceEndpointFamily)
     const upstreamModel = optionalModelMappingText(itemRecord.upstreamModel)
-    const upstreamEndpointFamily = optionalModelMappingEndpointFamily(itemRecord.upstreamEndpointFamily)
+    const upstreamEndpointFamily = optionalModelMappingUpstreamEndpointFamily(itemRecord.upstreamEndpointFamily)
     if (!sourceModel || !sourceEndpointFamily || !upstreamModel || !upstreamEndpointFamily) {
       messages.push(`${label}条目必须包含 sourceModel、sourceEndpointFamily、upstreamModel 和 upstreamEndpointFamily`)
       return undefined
@@ -252,8 +257,15 @@ export function optionalModelMappingText(value: unknown): string | undefined {
   return text || undefined
 }
 
-export function optionalModelMappingEndpointFamily(value: unknown): AccountModelMappingEndpointFamily | undefined {
+export function optionalModelMappingSourceEndpointFamily(value: unknown): AccountModelMappingSourceEndpointFamily | undefined {
   if (value === 'chat_completions' || value === 'responses') {
+    return value
+  }
+  return undefined
+}
+
+export function optionalModelMappingUpstreamEndpointFamily(value: unknown): AccountModelMappingUpstreamEndpointFamily | undefined {
+  if (value === 'chat_completions' || value === 'responses' || value === 'messages') {
     return value
   }
   return undefined

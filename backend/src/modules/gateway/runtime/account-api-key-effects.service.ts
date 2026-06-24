@@ -5,7 +5,8 @@ import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import {
   recordGatewayAccountApiKeySuccessGuard,
-  recordGatewayAccountApiKeyFailureGuard
+  recordGatewayAccountApiKeyFailureGuard,
+  recordGatewayAccountApiKeyLocalFailureGuard
 } from './account-api-key-failure-guard.service.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 
@@ -64,6 +65,19 @@ export function recordGatewayAccountApiKeyFailure(
       selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
       source: input.source
     }), '账户内 API Key 失败运行态写入失败')
+  })
+}
+
+export function recordGatewayAccountApiKeyLocalFailure(
+  account: OpenAIAccountSecret,
+  input: {
+    status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+    errorMessage?: string
+  }
+): void {
+  recordGatewayAccountApiKeyLocalFailureGuard(account, {
+    status: input.status,
+    errorMessage: input.errorMessage
   })
 }
 

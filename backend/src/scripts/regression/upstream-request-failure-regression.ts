@@ -112,10 +112,10 @@ async function main(): Promise<void> {
     }, access)
     const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
     dispatchRaceSecondAccountId = secondAccount.id
-    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽快速失败回归分组', providerCode: 'gpt', enabled: true }, access)
+    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
     const fastFailAccount = repositories.createAccount({
       providerCode: 'gpt',
-      name: '单账号快速失败回归账户',
+      name: '单账号恢复等待回归账户',
       type: 'api_key',
       credentials: {
         api_key: 'sk-request-failure-fast-fail',
@@ -126,6 +126,20 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const fastFailApiKey = createRegressionApiKey(fastFailGroup.id, 'sk-request-failure-fast-fail-key')
+    const cooldownRecoverGroup = repositories.createGroup({ name: '本地冷却恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
+    const cooldownRecoverAccount = repositories.createAccount({
+      providerCode: 'gpt',
+      name: '单账号冷却恢复等待回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-request-failure-cooldown-recover',
+        base_url: upstreamBaseUrl
+      },
+      groupId: cooldownRecoverGroup.id,
+      status: 'active',
+      schedulable: true
+    }, access)
+    const cooldownRecoverApiKey = createRegressionApiKey(cooldownRecoverGroup.id, 'sk-request-failure-cooldown-recover-key')
     const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', enabled: true }, access)
     const singleFailureAccount = repositories.createAccount({
       providerCode: 'gpt',
@@ -455,9 +469,9 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'single_account_local_suppression_fast_fail'
-    accountSideEffects.suppressGatewayAccountLocallyForTest(fastFailAccount.id, 1_000, '单账号快速失败回归')
-    const fastFailStartedAtMs = Date.now()
+    currentScenario = 'single_account_local_suppression_wait_recover'
+    accountSideEffects.suppressGatewayAccountLocallyForTest(fastFailAccount.id, 1_000, '单账号恢复等待回归')
+    const recoverWaitStartedAtMs = Date.now()
     const waitResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -466,18 +480,52 @@ async function main(): Promise<void> {
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'single account local suppression should fail fast' }],
+        messages: [{ role: 'user', content: 'single account local suppression should wait and recover' }],
         stream: false
       })
     })
     const waitResponseText = await waitResponse.text()
-    const fastFailElapsedMs = Date.now() - fastFailStartedAtMs
-    assert.equal(waitResponse.status, 503, `单账号处于本地屏蔽时应立即返回 503，实际 HTTP ${waitResponse.status}: ${waitResponseText}`)
-    assert.match(waitResponseText, /所有上游账户正在临时隔离/, `单账号本地屏蔽快速失败应说明临时隔离：${waitResponseText}`)
-    assert.equal(waitResponse.headers.get('retry-after'), '1', '单账号本地屏蔽快速失败应返回最短 Retry-After')
-    assert(fastFailElapsedMs < 800, `单账号本地屏蔽不应等待释放，实际耗时 ${fastFailElapsedMs}ms`)
-    assert.equal(singleAccountLocalSuppressionFastFailHitCount, 0, `单账号本地屏蔽快速失败不应命中上游，实际 ${singleAccountLocalSuppressionFastFailHitCount}`)
+    const recoverWaitElapsedMs = Date.now() - recoverWaitStartedAtMs
+    assert.equal(waitResponse.status, 200, `单账号本地屏蔽释放后应继续调度成功，实际 HTTP ${waitResponse.status}: ${waitResponseText}`)
+    assert.equal(waitResponseText, singleAccountLocalSuppressionRecoverBody, `单账号本地屏蔽恢复等待响应体异常：${waitResponseText}`)
+    assert(recoverWaitElapsedMs >= 900, `单账号本地屏蔽恢复等待不应在屏蔽释放前打上游，实际耗时 ${recoverWaitElapsedMs}ms`)
+    assert(recoverWaitElapsedMs < 3_000, `单账号本地屏蔽恢复等待不应等满巡检窗口，实际耗时 ${recoverWaitElapsedMs}ms`)
+    assert.equal(singleAccountLocalSuppressionRecoverHitCount, 1, `单账号本地屏蔽恢复后应命中上游一次，实际 ${singleAccountLocalSuppressionRecoverHitCount}`)
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+
+    currentScenario = 'single_account_cooldown_recover_wait'
+    repositories.markAccountCooldown(
+      cooldownRecoverAccount.id,
+      new Date(Date.now() + 1_000).toISOString(),
+      '单账号冷却恢复等待回归',
+      'rate_limited'
+    )
+    gatewayCache.clearGatewayRuntimeCache()
+    setTimeout(() => {
+      repositories.clearAccountFailureState(cooldownRecoverAccount.id, access)
+      gatewayCache.clearGatewayRuntimeCache()
+    }, 500).unref()
+    const cooldownRecoverStartedAtMs = Date.now()
+    const cooldownRecoverResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${cooldownRecoverApiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'single account cooldown should wait and recover' }],
+        stream: false
+      })
+    })
+    const cooldownRecoverResponseText = await cooldownRecoverResponse.text()
+    const cooldownRecoverElapsedMs = Date.now() - cooldownRecoverStartedAtMs
+    assert.equal(cooldownRecoverResponse.status, 200, `单账号本地冷却恢复后应继续调度成功，实际 HTTP ${cooldownRecoverResponse.status}: ${cooldownRecoverResponseText}`)
+    assert.equal(cooldownRecoverResponseText, singleAccountCooldownRecoverBody, `单账号本地冷却恢复等待响应体异常：${cooldownRecoverResponseText}`)
+    assert(cooldownRecoverElapsedMs >= 900, `单账号本地冷却恢复等待不应在本地冷却时间前打上游，实际耗时 ${cooldownRecoverElapsedMs}ms`)
+    assert(cooldownRecoverElapsedMs < 3_000, `单账号本地冷却恢复等待不应等满巡检窗口，实际耗时 ${cooldownRecoverElapsedMs}ms`)
+    assert.equal(singleAccountCooldownRecoverHitCount, 1, `单账号本地冷却恢复后应命中上游一次，实际 ${singleAccountCooldownRecoverHitCount}`)
+    assertAccountsActive([cooldownRecoverAccount], '单账号本地冷却恢复后应保持正常')
 
     currentScenario = 'single_account_failure_default_cooldown'
     gatewayCache.clearGatewayRuntimeCache()
@@ -500,9 +548,9 @@ async function main(): Promise<void> {
     assertAccountsRuntimeSuppressedActive([singleFailureAccount], /上游账号返回非成功状态：HTTP 418|generic upstream failure/, '单账号普通上游失败应进入运行态屏障而不是立即写库')
 
     usageRecordQueue.flushAllUsageRecordQueue()
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount, fastFailAccount], '已恢复的主测试账号最终应保持正常')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount, fastFailAccount, cooldownRecoverAccount], '已恢复的主测试账号最终应保持正常')
 
-    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后切号并进入运行态屏障；后续账号成功不掩盖前序账号屏障；全部失败返回统一网关错误；单账号本地屏蔽耗尽时快速失败且不命中上游')
+    console.log('上游失败回归通过：无效 JSON 由网关拒绝且不命中账号；普通上游失败会按临时状态配置原地重试，用尽后切号并进入运行态屏障；后续账号成功不掩盖前序账号屏障；全部失败返回统一网关错误；单账号本地屏蔽耗尽时会短等释放并恢复调度')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -528,7 +576,8 @@ type RegressionScenario =
   | 'non_stream_first_byte_timeout_switch_account_success'
   | 'non_stream_body_interrupted_after_output_client_retry'
   | 'dispatch_loop_local_suppression_race'
-  | 'single_account_local_suppression_fast_fail'
+  | 'single_account_local_suppression_wait_recover'
+  | 'single_account_cooldown_recover_wait'
   | 'single_account_failure_default_cooldown'
 
 let currentScenario: RegressionScenario = 'invalid_request_confirmation'
@@ -548,7 +597,8 @@ let nonStreamBodyInterruptedSecondAccountHitCount = 0
 let dispatchRaceFirstAccountHitCount = 0
 let dispatchRaceSecondAccountHitCount = 0
 let dispatchRaceThirdAccountHitCount = 0
-let singleAccountLocalSuppressionFastFailHitCount = 0
+let singleAccountLocalSuppressionRecoverHitCount = 0
+let singleAccountCooldownRecoverHitCount = 0
 let singleFailureHitCount = 0
 const invalidRequestRejectedRequestMessage = 'Invalid value for model level: expected one of low, medium, high.'
 const invalidRequestRejectedRequestBody = JSON.stringify({
@@ -650,13 +700,25 @@ const nonStreamBodyInterruptedDownstreamChunk = Buffer.concat([
   Buffer.from('{"id":"chatcmpl-partial","object":"chat.completion","padding":"', 'utf8'),
   Buffer.alloc(1024 * 1024 + 1, 'x')
 ])
-const singleAccountLocalSuppressionShouldNotHitBody = JSON.stringify({
-  id: 'chatcmpl-single-account-local-suppression-should-not-hit',
+const singleAccountLocalSuppressionRecoverBody = JSON.stringify({
+  id: 'chatcmpl-single-account-local-suppression-recover',
   object: 'chat.completion',
   choices: [
     {
       index: 0,
-      message: { role: 'assistant', content: 'should not hit upstream while locally suppressed' },
+      message: { role: 'assistant', content: 'ok after local suppression wait' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
+const singleAccountCooldownRecoverBody = JSON.stringify({
+  id: 'chatcmpl-single-account-cooldown-recover',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok after local cooldown wait' },
       finish_reason: 'stop'
     }
   ],
@@ -677,10 +739,16 @@ const dispatchRaceSuccessBody = JSON.stringify({
 
 function createRejectedRequestUpstream(): http.Server {
   return http.createServer((req, res) => {
-    if (currentScenario === 'single_account_local_suppression_fast_fail') {
-      singleAccountLocalSuppressionFastFailHitCount += 1
+    if (currentScenario === 'single_account_local_suppression_wait_recover') {
+      singleAccountLocalSuppressionRecoverHitCount += 1
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(singleAccountLocalSuppressionShouldNotHitBody)
+      res.end(singleAccountLocalSuppressionRecoverBody)
+      return
+    }
+    if (currentScenario === 'single_account_cooldown_recover_wait') {
+      singleAccountCooldownRecoverHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(singleAccountCooldownRecoverBody)
       return
     }
     if (currentScenario === 'dispatch_loop_local_suppression_race') {
@@ -824,7 +892,8 @@ function totalUpstreamHitCount(): number {
     + dispatchRaceFirstAccountHitCount
     + dispatchRaceSecondAccountHitCount
     + dispatchRaceThirdAccountHitCount
-    + singleAccountLocalSuppressionFastFailHitCount
+    + singleAccountLocalSuppressionRecoverHitCount
+    + singleAccountCooldownRecoverHitCount
     + singleFailureHitCount
 }
 

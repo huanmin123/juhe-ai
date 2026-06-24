@@ -44,6 +44,7 @@ export function selectAccountRuntimeApiKey(input: {
   accountId: string
   credentials: Record<string, unknown>
   runtimeStates?: AccountApiKeyRuntimeSelectionState[]
+  excludeFingerprints?: Iterable<string>
 }): string | undefined {
   return selectAccountRuntimeApiKeyEntry(input)?.key
 }
@@ -52,11 +53,17 @@ export function selectAccountRuntimeApiKeyEntry(input: {
   accountId: string
   credentials: Record<string, unknown>
   runtimeStates?: AccountApiKeyRuntimeSelectionState[]
+  excludeFingerprints?: Iterable<string>
 }): AccountApiKeyEntry | undefined {
   const entries = accountApiKeyEntries(input.credentials)
   if (!entries.length) return undefined
-  if (entries.length === 1) return entries[0]
-  const availableEntries = accountApiKeyEntriesAvailableForDispatch(entries, input.runtimeStates)
+  const excludedFingerprints = new Set([...(input.excludeFingerprints ?? [])].map((value) => value.trim()).filter(Boolean))
+  const candidateEntries = excludedFingerprints.size
+    ? entries.filter((entry) => !excludedFingerprints.has(entry.fingerprint))
+    : entries
+  if (!candidateEntries.length) return undefined
+  if (entries.length === 1) return candidateEntries[0]
+  const availableEntries = accountApiKeyEntriesAvailableForDispatch(candidateEntries, input.runtimeStates)
   if (!availableEntries.length) return undefined
   const strategy = accountApiKeyStrategy(input.credentials)
   return strategy === 'weighted_round_robin'

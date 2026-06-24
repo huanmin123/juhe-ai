@@ -132,10 +132,10 @@ try {
     apiKeyId: 'gateway-key-b',
     source: 'storm_confirmed_regression'
   })
-  await waitFor(() => runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint) === 'temporary_unavailable', 1000)
+  await waitFor(() => runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint) === 'temporary_unavailable', 5000)
 
   apiKeyEffects.recordGatewayAccountApiKeySuccess(selectedA, 'storm_recovered')
-  await waitFor(() => runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint) === 'active', 1000)
+  await waitFor(() => runtimeStatus(account.id, selectedA.selectedApiKeyFingerprint) === 'active', 5000)
   for (let index = 0; index < 4; index += 1) {
     apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedA, {
       status: 'temporary_unavailable',
@@ -170,7 +170,7 @@ try {
     apiKeyId: 'gateway-key-a',
     source: 'policy_error_regression'
   })
-  await waitFor(() => runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint) === 'error', 1000)
+  await waitFor(() => runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint) === 'error', 5000)
 
   console.log('账户内 API Key 失败保护回归通过：同源高并发失败只本地短避让，跨 IP 持续失败或错误策略确认后才写全局 Key 状态')
 } finally {

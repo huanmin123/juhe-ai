@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-image-permission-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -55,6 +56,8 @@ interface SeededGateway {
   apiKey: string
   ownerSystemAccountId: string
   upstreamKey: string
+  normalRouteApiKey: string
+  normalRouteGptUpstreamKey: string
 }
 
 interface MockUpstreamRequest {
@@ -194,6 +197,11 @@ try {
   assert.match(forcedTool.text, /image_generation_disabled/, '强制 image_generation 工具应返回稳定错误码')
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), responsesHitsAfterDowngradedLargeTool, '禁用图像生成时强制工具请求不应进入上游')
 
+  const normalRouteForcedTool = await requestForcedResponsesImageTool(baseUrl, seeded.normalRouteApiKey)
+  assert.equal(normalRouteForcedTool.status, 403, `normal 路由切到 GPT 号池后强制 image_generation 工具仍应被图像权限拦截，实际 ${normalRouteForcedTool.status}: ${normalRouteForcedTool.text}`)
+  assert.match(normalRouteForcedTool.text, /image_generation_disabled/, 'normal 路由后的强制 image_generation 工具应返回稳定错误码')
+  assert.equal(upstreamHitCount(upstreamState, seeded.normalRouteGptUpstreamKey, '/v1/responses'), 0, 'normal 路由从 Anthropic 初始分组切到 GPT 后不应绕过权限请求 GPT 上游')
+
   const text = await requestChatCompletion(baseUrl, seeded.apiKey)
   assert.equal(text.status, 200, `图像权限禁用不应影响文本请求，实际 ${text.status}: ${text.text}`)
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/chat/completions'), 1, '文本请求应正常命中上游')
@@ -210,7 +218,7 @@ try {
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses'), responsesHitsAfterDowngradedLargeTool + 1, '开启图像生成后 Responses 工具请求应继续进入上游')
   assert.equal(hasImageGenerationTool(lastUpstreamRequest(upstreamState, seeded.upstreamKey, '/v1/responses')?.body), true, '开启图像生成后转发给上游的 Responses body 应保留 image_generation 工具')
 
-  console.log('API Key 图像生成权限回归通过：默认禁用图片接口不上游，auto image_generation 工具降级为文本，超文本上限的大请求直接拒绝，强制工具仍拦截，开启后同一 Key 立即放行')
+  console.log('API Key 图像生成权限回归通过：默认禁用图片接口不上游，auto image_generation 工具降级为文本，normal 路由后强制工具仍拦截，开启后同一 Key 立即放行')
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
@@ -264,11 +272,60 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     status: 'active'
   }, access)
   assert(apiKey.key, '临时 API Key 未返回明文密钥')
+
+  const normalRouteAnthropicGroup = repositories.createGroup({
+    name: '图像权限 normal 路由 Anthropic 初始分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE
+  }, access)
+  const normalRouteGptGroup = repositories.createGroup({
+    name: '图像权限 normal 路由 GPT 目标分组',
+    providerCode: 'gpt'
+  }, access)
+  repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: '图像权限 normal 路由 Anthropic 初始账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-image-permission-anthropic-upstream',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_json', 'messages_sse']
+    },
+    status: 'active',
+    schedulable: true,
+    groupId: normalRouteAnthropicGroup.id
+  }, access)
+  const normalRouteGptUpstreamKey = 'sk-image-permission-normal-route-gpt-upstream'
+  repositories.createAccount({
+    providerCode: 'gpt',
+    name: '图像权限 normal 路由 GPT 目标账号',
+    type: 'api_key',
+    credentials: {
+      api_key: normalRouteGptUpstreamKey,
+      base_url: upstreamBaseUrl
+    },
+    status: 'active',
+    schedulable: true,
+    groupId: normalRouteGptGroup.id,
+    supportedModels: ['gpt-5.4']
+  }, access)
+  const normalRouteApiKey = repositories.createApiKeyRecord({
+    name: '图像权限 normal 路由 API Key',
+    routeMode: 'normal',
+    groupBindings: [
+      { groupId: normalRouteAnthropicGroup.id, priority: 1, status: 'active' },
+      { groupId: normalRouteGptGroup.id, priority: 2, status: 'active' }
+    ],
+    status: 'active'
+  }, access)
+  assert(normalRouteApiKey.key, 'normal 路由 API Key 未返回明文密钥')
+
   gatewayCache.clearGatewayRuntimeCache()
   return {
     apiKey: apiKey.key,
     ownerSystemAccountId: owner.id,
-    upstreamKey
+    upstreamKey,
+    normalRouteApiKey: normalRouteApiKey.key,
+    normalRouteGptUpstreamKey
   }
 }
 

@@ -95,6 +95,29 @@ export async function performUpstreamRequestAttempt(
   return transformGatewayUpstreamResponseForAccount(req, account, response, {
     requestClientCompatibility,
     codexResponsesChatBridgePreviousResponseId: codexBridgeState?.previousResponseId,
-    codexResponsesChatBridgeCompletionHandler: codexResponsesChatBridgeCompletionHandlerForRequest(req, account)
+    codexResponsesChatBridgeCompletionHandler: codexResponsesChatBridgeCompletionHandlerForRequest(req, account),
+    codexResponsesChatBridgeContinueChatRequest: async (nextBody) => {
+      const nextBodyBuffer = Buffer.from(JSON.stringify(nextBody), 'utf8')
+      getRequestLogger().debug({
+        event: 'gateway_codex_bridge_continue_chat_request_started',
+        accountId: account.id,
+        accountType: account.type,
+        upstreamUrl: safeUpstreamUrl,
+        attemptIndex,
+        auditAttemptIndex,
+        requestBodyBytes: nextBodyBuffer.byteLength,
+        socketTimeoutMs,
+        requestTimeoutMs
+      }, 'Codex Chat bridge 工具循环继续请求上游')
+      return requestUpstream(upstreamUrl, {
+        method: req.method,
+        headers: new Headers(headers),
+        body: nextBodyBuffer,
+        proxyUrl: account.proxyUrl,
+        timeoutMs: socketTimeoutMs,
+        requestTimeoutMs,
+        signal
+      })
+    }
   })
 }

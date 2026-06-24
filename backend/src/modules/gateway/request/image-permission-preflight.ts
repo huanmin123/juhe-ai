@@ -42,6 +42,7 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
   clientIp?: string
   endpoint: string
   gatewayTextRawBodyLimitMegabytes?: number
+  deferForcedImageGenerationTool?: boolean
   signal?: AbortSignal
 }): Promise<OpenAIGatewayImagePermissionPreflightResult> {
   if (!isImageGenerationDisabledForApiKey(input.apiKeyRecord, input.requestLane)) {
@@ -74,6 +75,19 @@ export async function applyOpenAIGatewayImagePermissionPreflight(input: {
       }
     })
     return { outcome: 'continue', requestLane: 'text' }
+  }
+
+  if (downgrade.reason === 'forced_image_generation_tool' && input.deferForcedImageGenerationTool === true) {
+    input.auditCapture.addGatewayMetadata({
+      label: 'system_account_image_generation_permission',
+      metadata: {
+        allowed: false,
+        downgraded: false,
+        deferred: true,
+        reason: downgrade.reason
+      }
+    })
+    return { outcome: 'continue', requestLane: input.requestLane }
   }
 
   if (downgrade.reason === 'invalid_json') {

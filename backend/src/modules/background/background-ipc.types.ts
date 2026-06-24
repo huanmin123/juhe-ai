@@ -114,6 +114,8 @@ export interface BackgroundWorkerRoleState {
   pendingQueues?: BackgroundWorkerIpcQueuesRuntime
   pendingWriteRequestCount?: number
   oldestPendingWriteMs?: number
+  rejectedWriteRequestCount?: number
+  timedOutWriteRequestCount?: number
   pendingSnapshotRequestCount: number
   timedOutSnapshotRequestCount: number
   rejectedSnapshotRequestCount: number
@@ -185,6 +187,10 @@ export interface BackgroundWorkerState {
   pendingSnapshotRequestCount: number
   timedOutSnapshotRequestCount: number
   rejectedSnapshotRequestCount: number
+  pendingDbServiceRequestCount?: number
+  oldestPendingDbServiceRequestMs?: number
+  rejectedDbServiceRequestCount?: number
+  timedOutDbServiceRequestCount?: number
   pendingProcessEventLoopRequestCount: number
   timedOutProcessEventLoopRequestCount: number
   failedProcessEventLoopRequestCount: number

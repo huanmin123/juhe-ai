@@ -13,7 +13,7 @@
       <a-form-item label="授权账户">
         <a-input :value="account?.name || '-'" readonly />
       </a-form-item>
-      <a-form-item label="绑定到我的分组" required>
+      <a-form-item label="绑定到我的分组" required tooltip="绑定后按目标分组的调度配置执行；账户绑定不再单独配置权重或排队阈值。">
         <GroupSelect
           :value="groupId"
           :selected-group="group"
@@ -26,7 +26,6 @@
           @update:selected-group="$emit('update:groupSelection', $event)"
           @update:value="$emit('update:groupId', String($event))"
         />
-        <div class="form-help">绑定后按目标分组的调度配置执行；账户绑定不再单独配置权重或排队阈值。</div>
       </a-form-item>
     </a-form>
   </a-modal>
@@ -63,9 +62,4 @@ defineEmits<{
   border-radius: 12px;
 }
 
-.form-help {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-}
 </style>

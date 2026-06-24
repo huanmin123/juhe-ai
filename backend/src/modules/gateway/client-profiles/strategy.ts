@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
-import { gatewayProtocolResponseProtocolForProfile } from '../protocols/registry.js'
+import { gatewayProtocolResponseProtocolForRequest } from '../protocols/registry.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { requestStream } from '../request/metadata.js'
 import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
@@ -64,7 +64,7 @@ export function resolveOpenAIGatewayClientStrategy(
   req: Request,
   identity: OpenAIGatewayClientStrategyIdentity
 ): OpenAIGatewayClientStrategyContext {
-  if (gatewayProtocolResponseProtocolForProfile(identity) === 'anthropic_v1') {
+  if (gatewayProtocolResponseProtocolForRequest(req, identity) === 'anthropic_v1') {
     return resolveAnthropicGatewayClientStrategy(req)
   }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)

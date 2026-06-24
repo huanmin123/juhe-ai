@@ -10,6 +10,7 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
+import { waitForRecoverableUnavailableState } from './recoverable-unavailable-wait.js'
 
 export async function resolveLocalSuppressionFilter(input: {
   req: Request
@@ -23,7 +24,7 @@ export async function resolveLocalSuppressionFilter(input: {
   groupId: string
   signal?: AbortSignal
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
-  const filter = filterLocallySuppressedGatewayAccounts(input.accounts)
+  let filter = filterLocallySuppressedGatewayAccounts(input.accounts)
   if (filter.suppressedCount > 0) {
     logger.warn({
       event: filter.allSuppressed
@@ -37,7 +38,7 @@ export async function resolveLocalSuppressionFilter(input: {
       systemAccountId: input.systemAccountId,
       apiKeyId: input.apiKeyId
     }, filter.allSuppressed
-      ? '候选上游账号均处于本地短期屏蔽，立即返回'
+      ? '候选上游账号均处于本地短期屏蔽，准备进入本地恢复等待窗口'
       : '网关本地短期屏蔽账号已应用到候选列表')
     input.auditCapture.addGatewayMetadata({
       label: 'local_account_suppression',
@@ -48,6 +49,21 @@ export async function resolveLocalSuppressionFilter(input: {
         nextRetryAfterMs: filter.nextRetryAfterMs
       }
     })
+  }
+
+  if (filter.allSuppressed) {
+    const wait = await waitForRecoverableUnavailableState({
+      scopeKey: recoverableSuppressionScopeKey(input.systemAccountId, input.apiKeyId, input.groupId),
+      reason: 'local_account_suppression',
+      initialState: filter,
+      refresh: () => filterLocallySuppressedGatewayAccounts(input.accounts),
+      isReady: (state) => !state.allSuppressed,
+      nextRetryAfterMs: (state) => state.nextRetryAfterMs,
+      waitWithoutRetryAfter: true,
+      auditCapture: input.auditCapture,
+      signal: input.signal
+    })
+    filter = wait.state
   }
 
   if (!filter.allSuppressed) {
@@ -79,4 +95,8 @@ export async function resolveLocalSuppressionFilter(input: {
     }
   })
   return undefined
+}
+
+function recoverableSuppressionScopeKey(systemAccountId: string, apiKeyId: string | undefined, groupId: string): string {
+  return [systemAccountId, apiKeyId ?? '', groupId].join(':')
 }

@@ -25,6 +25,7 @@ import {
   getAccountPrecheckMutationState,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
+  listRecoverableUnavailableOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   markAccountException,
   markAccountCooldown,
@@ -96,6 +97,24 @@ import {
   recordAccountApiKeyRuntimeFailure,
   recordAccountApiKeyRuntimeSuccess
 } from '../../storage/account-api-key-runtime-state.repository.js'
+import {
+  createOpenAICompatibleFile,
+  deleteOpenAICompatibleFile,
+  findOpenAICompatibleFile,
+  listOpenAICompatibleFiles
+} from '../../storage/openai-compatible-files.repository.js'
+import {
+  createOpenAICompatibleVectorStore,
+  createOpenAICompatibleVectorStoreFile,
+  deleteOpenAICompatibleVectorStore,
+  deleteOpenAICompatibleVectorStoreFile,
+  findOpenAICompatibleVectorStore,
+  findOpenAICompatibleVectorStoreFile,
+  listOpenAICompatibleVectorStoreFileChunks,
+  listOpenAICompatibleVectorStoreFiles,
+  listOpenAICompatibleVectorStores,
+  searchOpenAICompatibleVectorStore
+} from '../../storage/openai-compatible-vector-stores.repository.js'
 import type {
   DbServiceGatewayRuntime,
   DbServiceOperation,
@@ -123,12 +142,17 @@ const slowDbServiceOperationMs = 500
 
 export interface DbServiceQueueRuntimeMetrics {
   queuedRequestCount: number
+  queuedRequestBytes: number
   queuedHighRequestCount: number
   queuedNormalRequestCount: number
   queuedLowRequestCount: number
   oldestQueuedMs: number
   lastQueueWaitMs: number
   maxQueueWaitMs: number
+  queueRejectedCount: number
+  queueExpiredCount: number
+  activeConcurrentRequestCount: number
+  maxActiveConcurrentRequestCount: number
 }
 
 export async function handleDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
@@ -192,12 +216,17 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     eventLoopLagMs: currentProcessEventLoopLagMs(),
     pendingRequestCount,
     queuedRequestCount: queueRuntime?.queuedRequestCount,
+    queuedRequestBytes: queueRuntime?.queuedRequestBytes,
     queuedHighRequestCount: queueRuntime?.queuedHighRequestCount,
     queuedNormalRequestCount: queueRuntime?.queuedNormalRequestCount,
     queuedLowRequestCount: queueRuntime?.queuedLowRequestCount,
     oldestQueuedMs: queueRuntime?.oldestQueuedMs,
     lastQueueWaitMs: queueRuntime?.lastQueueWaitMs,
     maxQueueWaitMs: queueRuntime?.maxQueueWaitMs,
+    queueRejectedCount: queueRuntime?.queueRejectedCount,
+    queueExpiredCount: queueRuntime?.queueExpiredCount,
+    activeConcurrentRequestCount: queueRuntime?.activeConcurrentRequestCount,
+    maxActiveConcurrentRequestCount: queueRuntime?.maxActiveConcurrentRequestCount,
     lastExecMs,
     maxExecMs,
     slowOpCount,
@@ -252,8 +281,74 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         requestedModel: operation.requestedModel,
         requestedEndpointFamily: operation.requestedEndpointFamily
       })
+    case 'list_recoverable_unavailable_openai_accounts_for_group':
+      return listRecoverableUnavailableOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId, {
+        requestedModel: operation.requestedModel,
+        requestedEndpointFamily: operation.requestedEndpointFamily,
+        windowMs: operation.windowMs
+      })
     case 'read_gateway_runtime':
       return readGatewayRuntime(operation)
+    case 'create_openai_compatible_file':
+      return createOpenAICompatibleFile(operation.input)
+    case 'list_openai_compatible_files':
+      return listOpenAICompatibleFiles(operation.options)
+    case 'get_openai_compatible_file':
+      return findOpenAICompatibleFile({
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
+    case 'delete_openai_compatible_file':
+      return deleteOpenAICompatibleFile({
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
+    case 'create_openai_compatible_vector_store':
+      return createOpenAICompatibleVectorStore(operation.input)
+    case 'list_openai_compatible_vector_stores':
+      return listOpenAICompatibleVectorStores(operation.options)
+    case 'get_openai_compatible_vector_store':
+      return findOpenAICompatibleVectorStore({
+        vectorStoreId: operation.vectorStoreId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
+    case 'delete_openai_compatible_vector_store':
+      return deleteOpenAICompatibleVectorStore({
+        vectorStoreId: operation.vectorStoreId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
+    case 'create_openai_compatible_vector_store_file':
+      return createOpenAICompatibleVectorStoreFile(operation.input)
+    case 'list_openai_compatible_vector_store_files':
+      return listOpenAICompatibleVectorStoreFiles(operation.options)
+    case 'get_openai_compatible_vector_store_file':
+      return findOpenAICompatibleVectorStoreFile({
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
+    case 'delete_openai_compatible_vector_store_file':
+      return deleteOpenAICompatibleVectorStoreFile({
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId
+      })
+    case 'search_openai_compatible_vector_store':
+      return searchOpenAICompatibleVectorStore(operation.options)
+    case 'list_openai_compatible_vector_store_file_chunks':
+      return listOpenAICompatibleVectorStoreFileChunks({
+        vectorStoreId: operation.vectorStoreId,
+        fileId: operation.fileId,
+        systemAccountId: operation.systemAccountId,
+        apiKeyId: operation.apiKeyId,
+        limit: operation.limit
+      })
     case 'list_provider_model_catalog':
       return listProviderModelCatalog({
         providerCode: operation.providerCode,

@@ -5,7 +5,12 @@
         <template #header>
           <div class="policy-summary">
             <div class="policy-title-row">
-              <h4>错误处理策略</h4>
+              <h4 class="policy-title-text">
+                <span>错误处理策略</span>
+                <a-tooltip title="按上游错误状态码、错误码、类型或关键词识别账号异常，并自动执行临时避让、限流或标记异常等处理。">
+                  <QuestionCircleOutlined class="help-icon" />
+                </a-tooltip>
+              </h4>
               <a-space :size="6" wrap>
                 <a-tag color="blue">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
                 <a-tag v-if="readonly" color="default">只读</a-tag>
@@ -74,31 +79,31 @@
                   <a-form-item label="规则名称">
                     <a-input v-model:value="rule.name" :disabled="readonly" placeholder="例如 429 临时限流" />
                   </a-form-item>
-                  <a-form-item label="优先级">
+                  <a-form-item label="优先级" tooltip="小值先匹配。多条规则都能命中时，优先执行优先级更靠前的规则。">
                     <a-input-number v-model:value="rule.priority" :disabled="readonly" :min="1" :max="9999" style="width: 100%" />
                   </a-form-item>
-                  <a-form-item label="处理动作">
+                  <a-form-item label="处理动作" tooltip="命中规则后对账号做什么处理，例如短期避让、进入限流冷却或标记为异常。">
                     <a-select v-model:value="rule.action" :disabled="readonly" :options="actionOptions" />
                   </a-form-item>
                 </div>
 
                 <div class="form-grid error-rule-grid matcher-grid">
-                  <a-form-item label="状态码">
+                  <a-form-item label="状态码" tooltip="匹配上游 HTTP 状态码，例如 429、502、503。多个值用逗号、分号或换行分隔。">
                     <a-input v-model:value="rule.status_codes" :disabled="readonly" placeholder="429, 502, 503" />
                   </a-form-item>
-                  <a-form-item label="错误码">
+                  <a-form-item label="错误码" tooltip="匹配响应体 error.code，例如 insufficient_quota。不同供应商字段可能不同，可先从审计日志或运行日志确认。">
                     <a-input v-model:value="rule.error_codes" :disabled="readonly" placeholder="insufficient_quota" />
                   </a-form-item>
-                  <a-form-item label="错误类型">
+                  <a-form-item label="错误类型" tooltip="匹配响应体 error.type，例如 rate_limit_exceeded。适合供应商把错误原因放在 type 字段的场景。">
                     <a-input v-model:value="rule.error_types" :disabled="readonly" placeholder="rate_limit_exceeded" />
                   </a-form-item>
-                  <a-form-item label="关键词">
+                  <a-form-item label="关键词" tooltip="匹配错误消息文本中的关键词。多个关键词用英文或中文逗号分隔；任一关键词命中即可。">
                     <a-textarea v-model:value="rule.keywords" :disabled="readonly" :rows="1" auto-size placeholder="多个关键词仅用英文或中文逗号分隔" />
                   </a-form-item>
                 </div>
 
                 <div v-if="rule.action === 'rate_limited'" class="form-grid error-rule-grid compact">
-                  <a-form-item label="恢复策略">
+                  <a-form-item label="恢复策略" tooltip="账号进入限流后什么时候自动恢复候选。按时长、每天固定时间或每周固定时间恢复。">
                     <a-select v-model:value="rule.reset_strategy" :disabled="readonly" :options="accountErrorRecoveryStrategyOptions" />
                   </a-form-item>
                   <a-form-item v-if="rule.reset_strategy === 'duration'" label="恢复小时数">
@@ -343,6 +348,22 @@ function collapseAllRules() {
   margin: 0;
   color: #0f172a;
   font-size: 16px;
+}
+
+.policy-title-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+
+.help-icon:hover {
+  color: #1677ff;
 }
 
 .error-policy-actions {

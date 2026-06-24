@@ -6,7 +6,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 
 和 GPT 全链路相比，Anthropic 当前剩余缺口不在“能不能发请求”，而在 GPT 长期沉淀的增强层：
 
-- OpenAI-compatible 客户端到 Anthropic Messages 的协议互转尚未实现。
+- OpenAI-compatible 客户端到 Anthropic Messages 的协议互转已进入 PLAN-0058，目标覆盖 Chat JSON、Chat SSE、Responses JSON、Responses SSE 四类入口，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 - Anthropic usage 明细已进入 input / output / cache read / cache write / 1h cache / thinking token；统计预聚合表、授权消耗和大盘卡片仍只按现有通用维度展示。
 - Claude Code 画像已识别，但没有 GPT Codex 那套 turn 级失败避让、专用可重试 SSE 兜底和订阅额度快照。
 
@@ -37,7 +37,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 | Base URL | API Key 可填 OpenAI-compatible 根地址 | API Key 可填 Anthropic-compatible 根地址 | 已对齐 |
 | 多 API Key | 单账户多 key、轮询 / 加权、Key 级故障隔离 | 多 key 可保存并参与轮询 / 加权，已启用 Key 级运行态隔离 | 已对齐 |
 | 客户端兼容能力 | GPT API Key 同时具备 OpenAI 标准 / Codex Responses，OAuth 固定 Codex；请求侧兼容能力决定是否改写 | Anthropic API Key 具备 Anthropic 原生 / Claude Code 请求能力，不暴露 OpenAI 账号兼容切换 | 正确，不应照搬 |
-| OpenAI-compatible 客户端 | 支持 `/v1/chat/completions`、`/v1/responses` 等 OpenAI v1 入口 | 不支持把 OpenAI Chat / Responses 自动转 Anthropic Messages | 如产品要“非 Claude 客户端也能调用 Claude”，需新建 OpenAI -> Anthropic adapter |
+| OpenAI-compatible 客户端 | 支持 `/v1/chat/completions`、`/v1/responses` 等 OpenAI v1 入口 | PLAN-0058 目标支持 OpenAI Chat / Responses 到 Anthropic Messages 的显式桥接，覆盖 JSON / SSE 四类入口 | 进行中；不能隐藏在 Anthropic raw passthrough 中 |
 | Anthropic native 客户端 | GPT 不适用 | 支持 `Authorization` 和 `x-api-key` 作为本地认证，支持 `/v1/messages` / `/v1/models` | 已落地 |
 | Claude Code 画像 | Codex 有 turn metadata、Responses SSE、专用失败兜底和 turn 级避让 | Claude Code 通过显式 header 或官方 CLI 多信号识别，只影响画像与审计 | 可选增强，不应复制 Codex 语义 |
 | 账户测试 | 按账户能力选择 Chat / Responses / Codex 请求，复用真实网关链路 | 用 `/v1/messages` 最小请求，支持 Anthropic 模型目录 | 主链路已对齐 |
@@ -79,22 +79,24 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 
 ### P2：看产品方向再决定
 
-1. OpenAI -> Anthropic 显式互转 adapter
-   - 目标：让非 Claude / 非 Anthropic SDK 的 OpenAI-compatible 客户端用 `/v1/chat/completions` 或 `/v1/responses` 调 Claude 模型。
-   - 范围很大：system/developer、tools/tool_choice、tool_result、image、PDF、thinking、cache、stream、usage、错误渲染都要单独测试。
-   - 不能隐藏在官方 Anthropic API Key raw passthrough 中。
-
-2. Claude Code 专项稳定性增强
+1. Claude Code 专项稳定性增强
    - 可参考 Codex turn 级避让，但不能直接复用 Codex `response.failed` 事件。
    - 如果真实 Claude Code 客户端需要稳定续会，可基于 `x-claude-code-session-id`、`metadata.user_id`、`container`、`context_management` 等明确字段建立会话亲和和失败避让。
 
-3. Anthropic-compatible 第三方供应商档案
+2. Anthropic-compatible 第三方供应商档案
    - DeepSeek、GLM、Kimi 等应各自建供应商 / 协议档案、模型目录和价格目录。
    - 不能并入官方 `anthropic` 账号池。
 
-4. Anthropic 上游 Models 同步
+3. Anthropic 上游 Models 同步
    - 当前 `/v1/models` 返回本地目录。
    - 如需同步官方或兼容网关模型目录，必须做大小限制、分页 / 流式读取和管理员触发，不在普通请求链路调用上游。
+
+### 进行中：OpenAI -> Anthropic 显式桥接 adapter
+
+- 目标：让非 Claude / 非 Anthropic SDK 的 OpenAI-compatible 客户端用 `/v1/chat/completions` 或 `/v1/responses` 调 Claude / Anthropic Messages 模型。
+- 范围：Chat JSON、Chat SSE、Responses JSON、Responses SSE 四类入口；system/developer、function tools、tool_choice、tool_result、image、thinking、cache、stream、usage、错误渲染都必须单独测试。
+- 边界：不隐藏在官方 Anthropic API Key raw passthrough 中，不把 Anthropic 账号真实 endpoint modes 伪装成 OpenAI 能力，不支持字段必须受控拒绝或明确降级记录。
+- 跟踪：PLAN-0058，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 
 ### 不建议补到 Anthropic API Key 路径
 

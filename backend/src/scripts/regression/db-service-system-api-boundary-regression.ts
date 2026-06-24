@@ -62,9 +62,21 @@ assert(proxySource.includes('dbServiceHttpProxyTimeoutMs'), 'DB service HTTP pro
 assert(dbServiceSource.includes('enqueueDbServiceRequest'), 'DB service 父进程 IPC 请求必须先进入内部优先级队列')
 assert(dbServiceSource.includes('shiftNextDbServiceRequest'), 'DB service 内部队列必须按优先级取下一个请求')
 assert(dbServiceSource.includes('yieldDbServiceRequestQueue'), 'DB service 内部队列每个请求后必须让出事件循环，避免后台 IPC 长时间压住 HTTP 管理请求')
+assert(systemApiSource.includes('systemApiDbServiceAdmissionControl'), 'DB service system API 必须有内部在途请求保护，避免管理端慢查询压住 DB service')
+assert(dbServiceSource.includes('dbServiceRequestQueueMaxRequests'), 'DB service 子进程队列必须保留请求数上限')
+assert(dbServiceSource.includes('dbServiceRequestQueueMaxBytes'), 'DB service 子进程队列必须保留字节上限')
 assert(
-  dbServiceSource.indexOf('queuedDbServiceRequests.high.shift()') < dbServiceSource.indexOf('queuedDbServiceRequests.low.shift()'),
-  'DB service 内部队列出队必须先 high 后 low，不能退回普通 FIFO'
+  dbServiceSource.includes('dbServiceHighDispatchesBeforeLow')
+    && dbServiceSource.includes('dbServiceRequestPriorityOrder')
+    && dbServiceSource.includes("return ['high', 'normal', 'low']")
+    && dbServiceSource.includes("return ['low', 'high', 'normal']"),
+  'DB service 内部队列必须保留 high 优先，同时通过 high dispatch 配额避免 low 长期饥饿'
+)
+assert(
+  dbServiceSource.includes('shiftNextDispatchableDbServiceRequest')
+    && dbServiceSource.includes('canShiftQueuedDbServiceRequest')
+    && !dbServiceSource.includes('blockedByConcurrentLimit'),
+  'DB service concurrent 写池满时必须跳过暂不可执行请求，不能队首阻塞普通管理操作'
 )
 assert(dbServicePrioritySource.includes('cleanup_expired_system_sessions'), 'DB service 维护类操作必须登记为低优先级候选')
 assert.equal(

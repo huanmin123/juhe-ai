@@ -1,6 +1,7 @@
 import { createAppCache } from '../../../shared/cache.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { RequestQuotaLimits } from '../../../domain/types.js'
 import { getBusinessDatabase, getStatsDatabase } from '../../../storage/database.js'
 import { chunkValues, sqlPlaceholders } from '../../../storage/query-utils.js'
@@ -92,12 +93,34 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     return cached
   }
   if (runtimeConfig.processRole === 'server') {
-    const decision = authorizationQuotaDecisionFromSnapshot({
+    const snapshotInput = {
       groupAuthorizationId: input.groupAccess.groupAuthorizationId,
       groupAuthorizationQuotaLimited: input.groupAccess.groupAuthorizationQuotaLimited,
       accountAuthorizationId: input.account?.accountAuthorizationId,
       accountAuthorizationQuotaLimited: input.account?.accountAuthorizationQuotaLimited
-    })
+    }
+    if (authorizationQuotaSnapshotNeedsDbFallback(snapshotInput)) {
+      try {
+        const dbService = await import('../../db-service/db-service-ipc.js')
+        const decision = await dbService.requestDbService({
+          type: 'check_authorization_quota',
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          accountAuthorizationId: input.account?.accountAuthorizationId
+        }, { timeoutMs: 1000 })
+        authorizationQuotaCache.set(cacheKey, {
+          ...decision,
+          checkedAtMs: Date.now()
+        })
+        return decision
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'gateway_authorization_quota_snapshot_fallback_failed',
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          accountAuthorizationId: input.account?.accountAuthorizationId
+        }), '授权配额快照不完整且 DB service 精确补判失败，按保护策略继续使用快照判定')
+      }
+    }
+    const decision = authorizationQuotaDecisionFromSnapshot(snapshotInput)
     authorizationQuotaCache.set(cacheKey, {
       ...decision,
       checkedAtMs: Date.now()
@@ -156,6 +179,46 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     const output = new Map<string, AuthorizationQuotaDecision>()
     for (const [accountId, decision] of cachedDecisionsByAccountId.entries()) {
       output.set(accountId, decision)
+    }
+    if (authorizationQuotaBatchSnapshotNeedsDbFallback(input.groupAccess, missingAccounts)) {
+      try {
+        const dbService = await import('../../db-service/db-service-ipc.js')
+        const decisions = await dbService.requestDbService({
+          type: 'check_authorization_quota_batch',
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          accounts: missingAccounts.map((account) => ({
+            accountId: account.id,
+            accountAuthorizationId: account.accountAuthorizationId
+          }))
+        }, { timeoutMs: 1000 })
+        const missingDecisionsByCacheKey = new Map<string, AuthorizationQuotaDecision>()
+        missingAccounts.forEach((account, index) => {
+          const decision = decisions[index] ?? { allowed: true }
+          const cacheKey = missingCacheKeys.get(account.id)
+          if (cacheKey) {
+            missingDecisionsByCacheKey.set(cacheKey, decision)
+            authorizationQuotaCache.set(cacheKey, {
+              ...decision,
+              checkedAtMs: Date.now()
+            })
+          }
+        })
+        for (const [accountId, cacheKey] of missingCacheKeys.entries()) {
+          output.set(accountId, missingDecisionsByCacheKey.get(cacheKey) ?? { allowed: true })
+        }
+        input.accounts.forEach((account) => {
+          if (!output.has(account.id)) {
+            output.set(account.id, { allowed: true })
+          }
+        })
+        return output
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'gateway_authorization_quota_batch_snapshot_fallback_failed',
+          groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+          accountCount: missingAccounts.length
+        }), '授权配额快照不完整且 DB service 批量补判失败，按保护策略继续使用快照判定')
+      }
     }
     for (const account of missingAccounts) {
       const cacheKey = missingCacheKeys.get(account.id)
@@ -468,6 +531,51 @@ function authorizationQuotaRuntimeCacheKey(groupAuthorizationId?: string, accoun
     scopeId: '',
     now
   })}\u0000${runtimeConfig.processRole === 'server' ? gatewayAuthorizationQuotaSnapshotVersion() : 0}`
+}
+
+function authorizationQuotaBatchSnapshotNeedsDbFallback(
+  groupAccess: GroupUsageAccessMetadata,
+  accounts: OpenAIAccountSecret[]
+): boolean {
+  if (!isGatewayAuthorizationSnapshotIncomplete()) {
+    return false
+  }
+  if (
+    groupAccess.groupAuthorizationId
+    && groupAccess.groupAuthorizationQuotaLimited
+    && !readGatewayAuthorizationQuotaSnapshot('group_authorization', groupAccess.groupAuthorizationId)
+  ) {
+    return true
+  }
+  return accounts.some((account) => authorizationQuotaSnapshotNeedsDbFallback({
+    groupAuthorizationId: groupAccess.groupAuthorizationId,
+    groupAuthorizationQuotaLimited: groupAccess.groupAuthorizationQuotaLimited,
+    accountAuthorizationId: account.accountAuthorizationId,
+    accountAuthorizationQuotaLimited: account.accountAuthorizationQuotaLimited
+  }))
+}
+
+function authorizationQuotaSnapshotNeedsDbFallback(input: {
+  groupAuthorizationId?: string
+  groupAuthorizationQuotaLimited?: boolean
+  accountAuthorizationId?: string
+  accountAuthorizationQuotaLimited?: boolean
+}): boolean {
+  if (!isGatewayAuthorizationSnapshotIncomplete()) {
+    return false
+  }
+  if (
+    input.groupAuthorizationId
+    && input.groupAuthorizationQuotaLimited
+    && !readGatewayAuthorizationQuotaSnapshot('group_authorization', input.groupAuthorizationId)
+  ) {
+    return true
+  }
+  return Boolean(
+    input.accountAuthorizationId
+    && input.accountAuthorizationQuotaLimited
+    && !readGatewayAuthorizationQuotaSnapshot('account_authorization', input.accountAuthorizationId)
+  )
 }
 
 function authorizationQuotaDecisionFromSnapshot(input: {

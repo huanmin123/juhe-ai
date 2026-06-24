@@ -184,15 +184,29 @@ function compactContextText(input: unknown[]): string {
 }
 
 function buildCodexCompactResponse(input: { compactId: string; encryptedContent: string }): JsonRecord {
+  const responseId = `resp_${input.compactId.replace(/^cmp_/, '')}`
   return {
+    id: responseId,
+    object: 'response.compaction',
+    created_at: Math.floor(Date.now() / 1000),
     output: [
       {
         id: input.compactId,
-        type: 'compaction_summary',
-        status: 'completed',
+        type: 'compaction',
         encrypted_content: input.encryptedContent
       }
-    ]
+    ],
+    usage: {
+      input_tokens: 0,
+      input_tokens_details: {
+        cached_tokens: 0
+      },
+      output_tokens: 0,
+      output_tokens_details: {
+        reasoning_tokens: 0
+      },
+      total_tokens: 0
+    }
   }
 }
 

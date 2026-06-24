@@ -43,6 +43,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   clientIp?: string
   endpoint: string
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
+  recoverUnavailableCandidateAccounts?: () => Promise<UpstreamAccount[] | undefined>
   loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof openAIRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
 }): Promise<RequestCandidateFilterResult> {
   const requestedModel = requestModel(input.req)
@@ -56,6 +57,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     if (fallback.attempted) {
       return { outcome: 'fallback', context: fallback.context }
     }
+    rawCandidateAccounts = await input.recoverUnavailableCandidateAccounts?.() ?? rawCandidateAccounts
   }
 
   let capabilityFilter = filterGatewayAccountsByRequestCapability(input.req, rawCandidateAccounts, {

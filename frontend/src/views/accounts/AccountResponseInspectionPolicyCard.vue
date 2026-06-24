@@ -5,7 +5,12 @@
         <template #header>
           <div class="policy-summary">
             <div class="policy-title-row">
-              <h4>响应检查策略</h4>
+              <h4 class="policy-title-text">
+                <span>响应检查策略</span>
+                <a-tooltip title="在上游返回 200 后继续检查内容、SSE 事件或错误字段，识别账号专属广告、污染文本或异常响应；会和全局策略一起生效。">
+                  <QuestionCircleOutlined class="help-icon" />
+                </a-tooltip>
+              </h4>
               <a-space :size="6" wrap>
                 <a-tag color="purple">{{ enabledRuleCount }}/{{ rules.length }} 启用</a-tag>
                 <a-tag color="blue">叠加全局策略</a-tag>
@@ -59,14 +64,14 @@
                   <a-form-item label="规则名称">
                     <a-input v-model:value="rule.name" :disabled="readonly" placeholder="例如 屏蔽账号专属广告" />
                   </a-form-item>
-                  <a-form-item label="优先级">
+                  <a-form-item label="优先级" tooltip="小值先匹配。账户专属规则会与全局策略叠加，命中后按处置模板处理。">
                     <a-input-number v-model:value="rule.priority" :disabled="readonly" :min="1" :max="9999" style="width: 100%" />
                   </a-form-item>
                 </div>
 
                 <ResponseInspectionMatchFields :form="rule" :disabled="readonly" />
 
-                <a-form-item label="处置模板">
+                <a-form-item label="处置模板" tooltip="命中响应检查规则后的处理方式，例如短期避让当前账号、返回本地错误或仅记录诊断。">
                   <ResponseInspectionActionSelector v-model="rule.action" :disabled="readonly" />
                 </a-form-item>
 
@@ -249,6 +254,22 @@ function accountCompatibilityLabel(value: string): string {
   margin: 0;
   color: #111827;
   font-size: 16px;
+}
+
+.policy-title-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+
+.help-icon:hover {
+  color: #1677ff;
 }
 
 .response-policy-actions,

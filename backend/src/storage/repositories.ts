@@ -564,6 +564,7 @@ export {
   findOpenAIAccountForGroup,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
+  listRecoverableUnavailableOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
   runtimeOpenAIAccountCredentials,
   selectOpenAIAccountForGroup,

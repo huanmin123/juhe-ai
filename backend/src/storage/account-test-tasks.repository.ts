@@ -872,9 +872,9 @@ function accountModelMappingsValue(value: unknown): AccountSummary['modelMapping
     }
     const record = item as Record<string, unknown>
     const sourceModel = normalizedOptionalText(record.sourceModel)
-    const sourceEndpointFamily = accountModelMappingEndpointFamilyValue(record.sourceEndpointFamily)
+    const sourceEndpointFamily = accountModelMappingSourceEndpointFamilyValue(record.sourceEndpointFamily)
     const upstreamModel = normalizedOptionalText(record.upstreamModel)
-    const upstreamEndpointFamily = accountModelMappingEndpointFamilyValue(record.upstreamEndpointFamily)
+    const upstreamEndpointFamily = accountModelMappingUpstreamEndpointFamilyValue(record.upstreamEndpointFamily)
     const sourceKey = `${sourceEndpointFamily}\n${sourceModel?.toLowerCase() ?? ''}`
     if (!sourceModel || !sourceEndpointFamily || !upstreamModel || !upstreamEndpointFamily || (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) || seenSources.has(sourceKey)) {
       continue
@@ -894,8 +894,12 @@ function accountModelMappingsValue(value: unknown): AccountSummary['modelMapping
   return output.length ? output : undefined
 }
 
-function accountModelMappingEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | undefined {
+function accountModelMappingSourceEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | undefined {
   return value === 'chat_completions' || value === 'responses' ? value : undefined
+}
+
+function accountModelMappingUpstreamEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | 'messages' | undefined {
+  return value === 'chat_completions' || value === 'responses' || value === 'messages' ? value : undefined
 }
 
 function availabilityScheduleValue(value: unknown): AccountAvailabilitySchedule | undefined {

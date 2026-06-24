@@ -65,6 +65,15 @@ class HeadIndexedQueue<T> {
     this.items.push(item)
   }
 
+  unshift(item: T): void {
+    if (this.headIndex > 0) {
+      this.headIndex -= 1
+      this.items[this.headIndex] = item
+      return
+    }
+    this.items.unshift(item)
+  }
+
   shift(): T | undefined {
     if (this.length <= 0) {
       return undefined
@@ -237,7 +246,11 @@ function pumpJsonWorkerQueue(): void {
     if (!slot) {
       return
     }
-    const job = shiftQueuedJob()
+    const queuedJobIndex = queuedJobs.findIndex(canStartGatewayJsonWorkerJob)
+    if (queuedJobIndex < 0) {
+      return
+    }
+    const job = removeQueuedJobAt(queuedJobIndex)
     if (!job) {
       return
     }
@@ -373,7 +386,18 @@ function removeQueuedJobAt(index: number): GatewayJsonWorkerJob | undefined {
 function canQueueGatewayJsonWorkerJob(job: GatewayJsonWorkerJob): boolean {
   const jobBytes = gatewayJsonWorkerJobBytes(job)
   return queuedJobs.length < gatewayJsonWorkerMaxQueuedJobs
-    && queuedJobsBytes + jobBytes <= gatewayJsonWorkerMaxQueuedBytes
+    && queuedJobsBytes + activeGatewayJsonWorkerBytes() + jobBytes <= gatewayJsonWorkerMaxTotalBytes
+}
+
+function canStartGatewayJsonWorkerJob(job: GatewayJsonWorkerJob): boolean {
+  const activeBytes = activeGatewayJsonWorkerBytes()
+  return activeBytes === 0 || activeBytes + gatewayJsonWorkerJobBytes(job) <= gatewayJsonWorkerMaxActiveBytes
+}
+
+function activeGatewayJsonWorkerBytes(): number {
+  return workerSlots.reduce((total, slot) => {
+    return total + (slot.activeJob ? gatewayJsonWorkerJobBytes(slot.activeJob) : 0)
+  }, 0)
 }
 
 function gatewayJsonWorkerJobBytes(job: GatewayJsonWorkerJob): number {
@@ -515,4 +539,5 @@ function gatewayJsonWorkerPoolSize(): number {
 const gatewayJsonWorkerSlowQueueWaitMs = 500
 const gatewayJsonWorkerSlowDurationMs = 1000
 const gatewayJsonWorkerMaxQueuedJobs = 128
-const gatewayJsonWorkerMaxQueuedBytes = 256 * 1024 * 1024
+const gatewayJsonWorkerMaxActiveBytes = 128 * 1024 * 1024
+const gatewayJsonWorkerMaxTotalBytes = 256 * 1024 * 1024

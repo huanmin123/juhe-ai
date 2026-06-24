@@ -16,7 +16,7 @@ DeepSeek hosted API 没有需要本项目优先接入的独立 native 网关协�
 - 底层账户类型仍为 `api_key`
 - OpenAI-compatible 是默认接入类型，默认只声明 Chat Completions JSON / SSE 能力
 - Codex 客户端兼容通过 `clientCompatibility = codex_responses` 显式启用，账户底层 endpoint modes 仍保存真实上游能力 `chat_json`、`chat_sse`
-- 当前不声明 DeepSeek 原生 OpenAI Responses、DeepSeek native 协议、`message_token_counting`、MCP 或代码执行能力；Anthropic v1 档案默认只声明 `messages_json`、`messages_sse`
+- 当前不声明 DeepSeek 原生 OpenAI Responses、DeepSeek native 协议、`message_token_counting`、MCP 或代码执行能力；Codex bridge 的 `web_search` 仅在网关配置真实 HTTP 搜索执行器后可用。搜索执行器是管理员配置的本地 runtime endpoint，可以指向本机或内网服务，不复用模型上游 Base URL 的私网 SSRF 拦截，但仍限制为 `http/https`、禁止 endpoint 用户名密码、禁用重定向，并保留超时和响应体大小上限。Anthropic v1 档案默认只声明 `messages_json`、`messages_sse`
 
 ## 落地状态
 
@@ -25,9 +25,9 @@ DeepSeek hosted API 没有需要本项目优先接入的独立 native 网关协�
 - 后端已新增 `deepseek` provider、`profile_deepseek_openai_v1`、默认 DeepSeek 分组、DeepSeek provider driver、credential driver、模型价格目录和 usage / response 语义解析。
 - 前端已新增 DeepSeek 供应商展示、账户表单能力、导入协议示例、模型目录分类和模型检测入口隔离。
 - 已落地部分支持 OpenAI-compatible Chat Completions JSON / SSE；当前不进入 Responses 模型检测。
-- 已落地 DeepSeek Codex Responses -> Chat SSE 桥接，覆盖 Codex `/v1/responses` 入站、上游 `/v1/chat/completions` 改写、function tools、`input_image` data URL、`reasoning_content`、截断失败和 SSE error 事件。
+- 已落地 DeepSeek Codex Responses -> Chat SSE 桥接，覆盖 Codex `/v1/responses` 入站、上游 `/v1/chat/completions` 改写、function tools、配置网关搜索执行器后的 `web_search_call`、`input_image` data URL、`reasoning_content`、截断失败和 SSE error 事件。
 - DeepSeek Anthropic v1 已新增 `profile_deepseek_anthropic_v1`、默认 DeepSeek Claude Code 分组、前端接入类型、凭据归一化和 Anthropic 协议 driver 分支；默认只启用 Messages JSON / SSE，不启用 Count Tokens。
-- 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、模型映射、非 Codex `/responses` 拒绝、Codex bridge、cache usage、`reasoning_content`、`insufficient_system_resource` 和上游 `Content-Length`。
+- 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、模型映射、非 Codex `/responses` 拒绝、Codex bridge、配置执行器后的 `web_search` 工具循环、cache usage、`reasoning_content`、`insufficient_system_resource` 和上游 `Content-Length`。
 - 真实 `https://vsllm.com` 验证中，`deepseek-ai-v4-flash` JSON / SSE 通过；`deepseek-ai-v4-pro` JSON 返回上游 429 当日配额超限，SSE 返回上游连接超时，待更换 Key、额度恢复或上游稳定后补测。
 
 ## 供应商与协议档案
@@ -128,7 +128,7 @@ DeepSeek Anthropic-compatible 档案面向“客户端发送 Anthropic Messages�
 
 - 默认只声明 `messages_json`、`messages_sse`
 - 文本消息、`system`、`temperature`、`top_p`、`max_tokens`、`stop_sequences`、`stream` 等基础 Messages 能力可按 Anthropic 协议层处理
-- `tools`、`tool_choice`、`tool_use`、`tool_result` 可以作为协议字段透传候选，但不能默认标记为已验证能力；`2026-06-20` 真实验证中，`https://vsllm.com` + `deepseek-ai-v4-flash` 的 OpenAI tool calls 返回 `choices:null`，Anthropic tool use 返回空 content，需要按上游和模型单独验证后再开放为稳定能力
+- `tools`、`tool_choice`、`tool_use`、`tool_result` 可以作为协议字段透传候选，但不能默认标记为所有上游稳定能力；`2026-06-20` 真实验证中，`https://vsllm.com` + `deepseek-ai-v4-flash` 的 OpenAI tool calls 返回 `choices:null`，Anthropic tool use 返回空 content。`2026-06-24` 使用当前 vsllm 账号复测 OpenAI Chat function wrapper，`deepseek-v4-flash` 强制 `tool_choice=function:web_search` 可返回 `finish_reason=tool_calls` 和 JSON query 参数；仍需按上游和模型单独验证后再开放为稳定能力。
 - `image`、`document`、MCP、code execution、container upload、部分 search / server tool 扩展和 content block cache control 不作为默认支持能力
 - DeepSeek 兼容面中 `container`、`mcp_servers`、`service_tier`、`top_k`、`anthropic-beta`、`anthropic-version` 等字段会被忽略，文档和 UI 不能宣称这些字段对 DeepSeek 生效
 - `thinking` 可以透传，但 `budget_tokens` 会被忽略；`output_config` 只按官方确认的 `effort` 范围处理

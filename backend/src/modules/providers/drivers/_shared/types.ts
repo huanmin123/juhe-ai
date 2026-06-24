@@ -4,7 +4,7 @@ import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.
 import type {
   AccountClientCompatibility,
   AccountModelMapping,
-  AccountModelMappingEndpointFamily,
+  AccountModelMappingSourceEndpointFamily,
   ClientCompatibilityCapability,
   AccountSupportedEndpointMode,
   AccountType,
@@ -39,6 +39,7 @@ export interface ProviderGatewayRequestContext {
   requestClientCompatibility?: ClientCompatibilityCapability
   codexResponsesChatBridgePreviousResponseId?: string
   codexResponsesChatBridgeCompletionHandler?: CodexResponsesChatBridgeCompletionHandler
+  codexResponsesChatBridgeContinueChatRequest?: (body: Record<string, unknown>) => Promise<GatewayUpstreamResponse>
 }
 
 export interface ProviderUpstreamRequestParts {
@@ -66,7 +67,7 @@ export interface ProviderDriver {
   usageSemantic: string
   profileIds: readonly string[]
   supportsProfile(profile: ProviderProtocolProfileDefinition | undefined): boolean
-  resolveUsageModel(account: ProviderDriverAccount, requestedModel?: string, sourceEndpointFamily?: AccountModelMappingEndpointFamily): ProviderUsageModelResolution
+  resolveUsageModel(account: ProviderDriverAccount, requestedModel?: string, sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily): ProviderUsageModelResolution
   prepareAccountBeforeDispatch?(
     account: DispatchAccountSecret,
     context: ProviderAccountPreparationContext

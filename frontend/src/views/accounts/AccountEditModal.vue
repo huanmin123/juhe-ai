@@ -42,6 +42,7 @@
 
       <AccountApiKeySection
         v-if="isApiKeyForm && !authorizedEditing"
+        :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
         :base-url-placeholder="baseUrlPlaceholder"
         :editing="editing"
         :form="form"
@@ -64,8 +65,12 @@
       <section v-if="authorizedEditing" class="form-section readonly-config-section">
         <div class="form-section-head">
           <div>
-            <h4>上游公开配置</h4>
-            <p>来源账户的敏感凭据不会展示。</p>
+            <h4 class="section-title">
+              <span>上游公开配置</span>
+              <a-tooltip title="来源账户的敏感凭据不会展示。">
+                <QuestionCircleOutlined class="help-icon" />
+              </a-tooltip>
+            </h4>
           </div>
         </div>
         <a-descriptions bordered size="small" :column="2">
@@ -151,6 +156,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
@@ -253,8 +259,10 @@ const mappingUpstreamModelOptions = computed(() => (
   props.form.providerCode === 'openai' ? props.mappingSourceModelOptions : props.modelOptions
 ))
 
-function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): string {
-  return value === 'responses' ? 'Responses' : 'Chat Completions'
+function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']): string {
+  if (value === 'responses') return 'Responses'
+  if (value === 'messages') return 'Messages'
+  return 'Chat Completions'
 }
 const confirmButtonProps = computed(() => ({
   ...props.okButtonProps,
@@ -313,6 +321,7 @@ defineEmits<{
 
 <style scoped>
 .form-section {
+  min-width: 0;
   padding: 0;
   border-bottom: 0;
   background: transparent;
@@ -329,10 +338,20 @@ defineEmits<{
   font-weight: 600;
 }
 
-.form-section-head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
+.section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 14px;
+}
+
+.help-icon:hover {
+  color: #1677ff;
 }
 
 .readonly-config-section {
@@ -349,12 +368,24 @@ defineEmits<{
 }
 
 .account-advanced-collapse {
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
 }
 
+.account-form,
+.account-form :deep(.ant-form-item),
+.account-form :deep(.ant-form-item-control),
+.account-form :deep(.ant-form-item-control-input),
+.account-form :deep(.ant-form-item-control-input-content) {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .account-advanced-collapse :deep(.ant-collapse-item) {
+  min-width: 0;
   border-bottom: 0;
 }
 
@@ -364,10 +395,12 @@ defineEmits<{
 }
 
 .account-advanced-collapse :deep(.ant-collapse-content) {
+  min-width: 0;
   border-top: 1px solid #eef2f7;
 }
 
 .account-advanced-collapse :deep(.ant-collapse-content-box) {
+  min-width: 0;
   padding: 16px !important;
   background: #f8fafc;
 }
@@ -393,6 +426,7 @@ defineEmits<{
 .advanced-section-stack {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .advanced-section-stack :deep(.form-section:last-child) {

@@ -20,7 +20,11 @@
       <a-form-item label="当前账户">
         <a-input :value="sourceAccount?.name || '-'" readonly />
       </a-form-item>
-      <a-form-item label="目标账户" required>
+      <a-form-item
+        label="目标账户"
+        required
+        :tooltip="isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一分组下处于正常状态且可调度的账户。'"
+      >
         <AccountSelect
           :value="targetAccountId"
           :selected-account="targetAccount"
@@ -31,15 +35,13 @@
           @update:value="handleTargetAccountIdUpdate"
           @update:selected-account="$emit('update:targetAccount', $event)"
         />
-        <div class="form-help">{{ isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一分组下处于正常状态且可调度的账户。' }}</div>
       </a-form-item>
-      <a-form-item :label="isAuthorizedSource ? '迁移后当前授权实例状态' : '迁移后原账户状态'">
+      <a-form-item :label="isAuthorizedSource ? '迁移后当前授权实例状态' : '迁移后原账户状态'" :tooltip="sourceStatusHelpText">
         <a-radio-group :value="sourceStatus" @update:value="handleSourceStatusChange">
           <a-radio value="unchanged">不影响原账户</a-radio>
           <a-radio value="temporary_unavailable">临时不可调用</a-radio>
           <a-radio value="disabled">停用账户</a-radio>
         </a-radio-group>
-        <div class="form-help">{{ sourceStatusHelpText }}</div>
       </a-form-item>
     </a-form>
   </a-modal>
@@ -112,9 +114,4 @@ function handleTargetAccountIdUpdate(value: string | string[] | undefined) {
   border-radius: 12px;
 }
 
-.form-help {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-}
 </style>

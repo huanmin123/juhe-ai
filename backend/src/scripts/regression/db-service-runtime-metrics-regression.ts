@@ -54,18 +54,27 @@ const handlers = await import('../../modules/db-service/db-service-handlers.js')
 
 handlers.setDbServiceQueueRuntimeProvider(() => ({
   queuedRequestCount: 7,
+  queuedRequestBytes: 4096,
   queuedHighRequestCount: 1,
   queuedNormalRequestCount: 4,
   queuedLowRequestCount: 2,
   oldestQueuedMs: 900,
   lastQueueWaitMs: 12,
-  maxQueueWaitMs: 34
+  maxQueueWaitMs: 34,
+  queueRejectedCount: 3,
+  queueExpiredCount: 2,
+  activeConcurrentRequestCount: 5,
+  maxActiveConcurrentRequestCount: 6
 }))
 
 const localSnapshot = handlers.buildDbServiceRuntimeSnapshot(51001)
 assert.equal(localSnapshot.queuedRequestCount, 7, 'DB service status snapshot 应包含总排队数量')
+assert.equal(localSnapshot.queuedRequestBytes, 4096, 'DB service status snapshot 应包含排队字节数')
 assert.equal(localSnapshot.queuedHighRequestCount, 1, 'DB service status snapshot 应包含高优先级排队数量')
 assert.equal(localSnapshot.oldestQueuedMs, 900, 'DB service status snapshot 应包含最老排队等待时间')
+assert.equal(localSnapshot.queueRejectedCount, 3, 'DB service status snapshot 应包含队列拒绝数量')
+assert.equal(localSnapshot.queueExpiredCount, 2, 'DB service status snapshot 应包含队列过期数量')
+assert.equal(localSnapshot.activeConcurrentRequestCount, 5, 'DB service status snapshot 应包含活跃并发请求数量')
 
 await handlers.handleDbServiceOperation({ type: 'status' })
 const handledSnapshot = handlers.buildDbServiceRuntimeSnapshot(51001)

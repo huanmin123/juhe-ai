@@ -189,9 +189,37 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 export function listOpenAIAccountsForGroup(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses'; includeUnavailable?: boolean } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
+}
+
+export function listRecoverableUnavailableOpenAIAccountsForGroup(
+  groupId: string,
+  systemAccountId: string,
+  options: {
+    requestedModel?: string
+    requestedEndpointFamily?: 'chat_completions' | 'responses'
+    windowMs?: number
+  } = {}
+): OpenAIAccountSecret[] {
+  const nowMs = Date.now()
+  const windowMs = normalizeRecoverableUnavailableWindowMs(options.windowMs)
+  const latestRecoverableAtMs = nowMs + windowMs
+  return listOpenAIAccountsForGroupResult(groupId, systemAccountId, {
+    requestedModel: options.requestedModel,
+    requestedEndpointFamily: options.requestedEndpointFamily,
+    includeUnavailable: true
+  }).accounts.filter((account) => {
+    const cooldownUntilMs = accountRecoverableCooldownUntilMs(account)
+    if (cooldownUntilMs === undefined || cooldownUntilMs > latestRecoverableAtMs) {
+      return false
+    }
+    if (account.status === 'active') {
+      return cooldownUntilMs > nowMs
+    }
+    return account.status === 'temporary_unavailable' || account.status === 'rate_limited'
+  })
 }
 
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
@@ -208,7 +236,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
 export function listOpenAIAccountsForGroupResult(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses'; includeUnavailable?: boolean } = {}
 ): OpenAIAccountsForGroupResult {
   const database = getBusinessDatabase()
   const now = nowIso()
@@ -220,15 +248,16 @@ export function listOpenAIAccountsForGroupResult(
       diagnostics: emptyGatewayDispatchCandidateDiagnostics()
     }
   }
+  const candidateWindowOptions = { includeUnavailable: options.includeUnavailable === true }
   const modelCandidateRows = options.requestedModel?.trim()
-    ? listGatewayDispatchModelCandidateRows(database, groupId, groupAccess, now, options.requestedModel, options.requestedEndpointFamily)
+    ? listGatewayDispatchModelCandidateRows(database, groupId, groupAccess, now, options.requestedModel, options.requestedEndpointFamily, candidateWindowOptions)
     : undefined
   const groupAccountRows = modelCandidateRows
     ? mergeOpenAIGroupAccountRowsForDispatch(
       modelCandidateRows.rows,
-      listGatewayDispatchCandidateRows(database, groupId, groupAccess, now)
+      listGatewayDispatchCandidateRows(database, groupId, groupAccess, now, candidateWindowOptions)
     )
-    : listGatewayDispatchCandidateRows(database, groupId, groupAccess, now)
+    : listGatewayDispatchCandidateRows(database, groupId, groupAccess, now, candidateWindowOptions)
   const accountAuthorizationsByIdOrResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
   const eligibleRows = groupAccountRows
     .map((row) => ({
@@ -236,7 +265,7 @@ export function listOpenAIAccountsForGroupResult(
       accountAccess: resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId })
     }))
     .filter((item): item is EligibleOpenAIGroupAccountSelection => Boolean(item.accountAccess))
-    .filter((item) => isOpenAIAccountAvailableForSelection(item.row, item.row, item.accountAccess, now, false))
+    .filter((item) => isOpenAIAccountAvailableForSelection(item.row, item.row, item.accountAccess, now, options.includeUnavailable === true))
   const qualityByAccountId = loadFreshGatewayDispatchCandidateQualityRows(eligibleRows.map((item) => item.row.account_id), qualityFreshAfter)
   applyGatewayDispatchCandidateQualityRows(eligibleRows, qualityByAccountId)
 
@@ -282,6 +311,20 @@ export function listOpenAIAccountsForGroupResult(
       scanLimitReached: groupAccountRows.length >= gatewayDispatchAccountCandidateScanLimit
     }
   }
+}
+
+function normalizeRecoverableUnavailableWindowMs(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : 30_000
+}
+
+function accountRecoverableCooldownUntilMs(account: OpenAIAccountSecret): number | undefined {
+  if (!account.cooldownUntil) {
+    return undefined
+  }
+  const cooldownUntilMs = Date.parse(account.cooldownUntil)
+  return Number.isFinite(cooldownUntilMs) ? cooldownUntilMs : undefined
 }
 
 function mergeOpenAIGroupAccountRowsForDispatch(

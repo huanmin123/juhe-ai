@@ -13,46 +13,39 @@
       <a-form-item label="分组名称" required>
         <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
       </a-form-item>
-      <a-form-item label="所属供应商" required>
+      <a-form-item label="所属供应商" required tooltip="供应商决定这个分组后续可绑定的账户范围。">
         <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" @change="handleProviderChange" />
-        <div class="form-help">供应商决定这个分组后续可绑定的账户范围。</div>
       </a-form-item>
-      <a-form-item v-if="providerProfileOptions.length > 1" label="协议档案" required>
+      <a-form-item v-if="providerProfileOptions.length > 1" label="协议档案" required tooltip="协议档案决定分组承接的协议形态和可绑定账户范围。">
         <a-select v-model:value="form.providerProtocolProfileId" :options="providerProfileOptions" :disabled="providerLocked || editingAuthorizedGroup" />
-        <div class="form-help">协议档案决定分组承接的协议形态和可绑定账户范围。</div>
       </a-form-item>
-      <a-form-item label="分组类型" required>
+      <a-form-item label="分组类型" required tooltip="个人分组按账号并发直接调度；高并发分组会启用短队列、单账户软阈值和可选单 IP 并发限制。">
         <a-radio-group v-model:value="form.groupType" button-style="solid">
           <a-radio-button value="personal">个人分组</a-radio-button>
           <a-radio-button value="high_concurrency">高并发分组</a-radio-button>
         </a-radio-group>
       </a-form-item>
       <div v-if="form.groupType === 'high_concurrency'" class="scheduling-policy-grid">
-        <a-form-item label="最大单账户排队阈值">
+        <a-form-item label="最大单账户排队阈值" tooltip="达到该阈值后优先切到其他账户；实际值不会超过账户并发上限。">
           <a-input-number v-model:value="form.schedulingPolicy.defaultSoftConcurrency" :min="1" :max="1000000" />
-          <div class="form-help">达到该阈值后优先切到其他账户；实际值不会超过账户并发上限。</div>
         </a-form-item>
-        <a-form-item label="最大等待时间（秒）">
+        <a-form-item label="最大等待时间（秒）" tooltip="所有账户硬并发都满时，请求最多在分组短队列等待这么久；超时后返回 429。">
           <a-input-number :value="maxQueueWaitSeconds" :min="1" :max="3600" @update:value="emit('max-queue-wait-seconds-change', $event)" />
-          <div class="form-help">所有账户硬并发都满时，请求最多在分组短队列等待这么久；超时后返回 429。</div>
         </a-form-item>
-        <a-form-item class="scheduling-policy-wide" label="限制单 IP 并发">
+        <a-form-item class="scheduling-policy-wide" label="限制单 IP 并发" tooltip="开启后限制同一 IP 在当前分组和 API Key 下同时占用的请求数。默认关闭。">
           <a-switch :checked="clientIpLimitEnabled" checked-children="开启" un-checked-children="关闭" @update:checked="emit('update:clientIpLimitEnabled', $event)" />
-          <div class="form-help">默认关闭；开启后限制同一 IP 在当前分组和 API Key 下同时占用的请求数。</div>
         </a-form-item>
-        <a-form-item label="单 IP 并发上限">
+        <a-form-item label="单 IP 并发上限" tooltip="开启限制时默认 5 个并发；关闭后不限制。">
           <a-input-number :value="clientIpConcurrencyLimit" :min="1" :max="1000000" :disabled="!clientIpLimitEnabled" @update:value="emit('client-ip-concurrency-limit-change', $event)" />
-          <div class="form-help">开启限制时默认 5 个并发；关闭后不限制。</div>
         </a-form-item>
-        <a-form-item label="超过限制时">
+        <a-form-item label="超过限制时" tooltip="立即拒绝会返回 429；排队等待会先等同 IP 请求释放，再进入分组调度。">
           <a-segmented v-model:value="form.schedulingPolicy.clientIpConcurrencyOverflowMode" :options="clientIpOverflowModeOptions" :disabled="!clientIpLimitEnabled" block />
-          <div class="form-help">立即拒绝会返回 429；排队等待会先等同 IP 请求释放，再进入分组调度。</div>
         </a-form-item>
       </div>
-      <a-form-item label="说明">
+      <a-form-item label="说明" tooltip="仅用于后台识别分组用途，不参与调度规则。">
         <a-textarea v-model:value="form.description" :rows="3" :disabled="editingAuthorizedGroup" />
       </a-form-item>
-      <a-form-item label="状态">
+      <a-form-item label="状态" tooltip="停用后该分组不会继续承接 API Key 调度请求。">
         <a-switch v-model:checked="form.enabled" checked-children="启用" un-checked-children="停用" />
       </a-form-item>
     </a-form>
@@ -102,11 +95,6 @@ function handleProviderChange(value: unknown) {
 
 .modal-form {
   margin-top: 16px;
-}
-
-.form-help {
-  color: #64748b;
-  font-size: 12px;
 }
 
 .scheduling-policy-grid {

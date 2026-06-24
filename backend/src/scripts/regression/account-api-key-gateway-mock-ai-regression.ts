@@ -17,6 +17,7 @@ import { logger } from '../../shared/logger.js'
 interface MockUpstreamHit {
   authorization: string
   path: string
+  userAgent: string
 }
 
 type ApiKeyStrategy = 'round_robin' | 'weighted_round_robin'
@@ -56,6 +57,7 @@ const forcedFailureAuthorizations = new Set<string>()
 let mockUpstream: http.Server | undefined
 let backendProcess: ChildProcess | undefined
 let failoverBadKeyRecovered = false
+let postBatchSequence = 0
 
 try {
   mockUpstream = createMockOpenAIUpstream()
@@ -125,8 +127,8 @@ try {
   await waitForHealth(backendBaseUrl, backendProcess)
   await waitForApiReady(backendBaseUrl, cookie, backendProcess)
 
-  await postChatCompletions(backendBaseUrl, roundRobinGatewayApiKey, 5)
-  const roundRobinAuthorizations = lastAuthorizations(5)
+  const roundRobinBatch = await postChatCompletions(backendBaseUrl, roundRobinGatewayApiKey, 5)
+  const roundRobinAuthorizations = authorizationsForBatches([roundRobinBatch])
   assert.deepEqual(
     roundRobinAuthorizations,
     [
@@ -139,8 +141,8 @@ try {
     '网关真实请求应在单个账户内按 API Key 轮询转发'
   )
 
-  await postChatCompletions(backendBaseUrl, weightedGatewayApiKey, 8)
-  const weightedAuthorizations = lastAuthorizations(8)
+  const weightedBatch = await postChatCompletions(backendBaseUrl, weightedGatewayApiKey, 8)
+  const weightedAuthorizations = authorizationsForBatches([weightedBatch])
   assert.equal(
     weightedAuthorizations.filter((authorization) => authorization === 'Bearer sk-gateway-weight-a').length,
     6,
@@ -152,8 +154,8 @@ try {
     '权重 1 的 API Key 在 8 次真实网关请求中应命中 2 次'
   )
 
-  await postChatCompletions(backendBaseUrl, openAICompatibleGatewayApiKey, 3)
-  const openAICompatibleAuthorizations = lastAuthorizations(3)
+  const openAICompatibleBatch = await postChatCompletions(backendBaseUrl, openAICompatibleGatewayApiKey, 3)
+  const openAICompatibleAuthorizations = authorizationsForBatches([openAICompatibleBatch])
   assert.deepEqual(
     openAICompatibleAuthorizations,
     [
@@ -164,23 +166,21 @@ try {
     'OpenAI 兼容供应商的 API Key 账户也应在单个账户内按 Key 轮询'
   )
 
-  const failoverStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 1)
-  const firstFailoverAuthorizations = mockHits.slice(failoverStartHitCount).map((hit) => hit.authorization)
+  const firstFailoverBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 1)
+  const firstFailoverAuthorizations = authorizationsForBatches([firstFailoverBatch])
   assert.deepEqual(
     firstFailoverAuthorizations,
-    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-rescue'],
-    '多 Key 账户当前 Key 失败后，本次请求应切到后续账户，不应继续尝试同账户其他 Key'
+    ['Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
+    '多 Key 账户当前 Key 失败后，本次请求应在预算内切到同账户后续 Key'
   )
-  await sleep(200)
-  assert.equal(apiKeyRuntimeStateStatus('sk-gateway-failover-bad'), undefined, '单来源坏 Key 首次失败不应写入全局 Key 运行态')
-  const afterFailureStateHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 2)
-  const recoveredAccountAuthorizations = mockHits.slice(afterFailureStateHitCount).map((hit) => hit.authorization)
+  await waitFor(() => apiKeyRuntimeStateStatus('sk-gateway-failover-bad') === 'temporary_unavailable', 5000)
+  const failoverBadKeyPersistedState = apiKeyRuntimeStateStatus('sk-gateway-failover-bad')
+  const recoveredAccountBatch = await postChatCompletions(backendBaseUrl, failoverGatewayApiKey, 2)
+  const recoveredAccountAuthorizations = authorizationsForBatches([recoveredAccountBatch])
   assert.deepEqual(
     recoveredAccountAuthorizations,
     ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-good'],
-    '坏 Key 单来源失败后，后续请求应先使用剩余可用 Key 的本地短避让'
+    '坏 Key 被同账号其他 Key 成功确认后，后续请求应先使用剩余可用 Key 的短避让'
   )
   assert.equal(
     mockHits.filter((hit) => hit.authorization === 'Bearer sk-gateway-failover-bad').length,
@@ -189,35 +189,42 @@ try {
   )
   failoverBadKeyRecovered = true
 
-  const authorizedStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, authorizedScenario.apiKey, 1)
-  const authorizedAuthorizations = mockHits.slice(authorizedStartHitCount).map((hit) => hit.authorization)
+  const authorizedBatch = await postChatCompletions(backendBaseUrl, authorizedScenario.apiKey, 1)
+  const authorizedAuthorizations = authorizationsForBatches([authorizedBatch])
   assert.deepEqual(
     authorizedAuthorizations,
-    ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-rescue'],
-    '被授权实例命中来源账户坏 Key 后，本次请求应切到被授权人同组后备账户'
+    ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-good'],
+    '被授权实例命中来源账户坏 Key 后，本次请求应在预算内切到来源账户后续 Key'
   )
   await sleep(200)
   const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountIdOrMissing('sk-gateway-authorized-bad')
-  assert.equal(authorizedRuntimeTarget, undefined, '授权实例单来源失败不应写入来源账户全局 Key 运行态')
+  assert.equal(authorizedRuntimeTarget, authorizedScenario.sourceAccountId, '授权实例命中来源账户坏 Key 并由同账号好 Key 成功确认后，应写入来源账户 Key 运行态')
   const authorizedInstanceSummary = repositories.findAccountForTest(authorizedScenario.authorizedInstanceAccountId, authorizedScenario.granteeAccess)
-  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, '被授权实例单来源失败不应污染来源账户 Key 运行态摘要')
+  assert.equal(authorizedInstanceSummary?.apiKeyRuntime?.temporaryUnavailable ?? 0, 1, '被授权实例可见来源账户 Key 池摘要，便于用户判断授权号池是否健康')
+  assert.equal(authorizedInstanceSummary?.apiKeyRuntimeDetails, undefined, '被授权实例不应暴露来源账户 Key 明细')
 
-  const allBadStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
-  await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
-  await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
-  const allBadAuthorizations = mockHits.slice(allBadStartHitCount).map((hit) => hit.authorization)
+  const allBadBatches = [
+    await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1),
+    await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1),
+    await postChatCompletions(backendBaseUrl, allBadScenario.apiKey, 1)
+  ]
+  const allBadAuthorizations = authorizationsForBatches(allBadBatches)
   assert.deepEqual(
     allBadAuthorizations,
     [
       'Bearer sk-gateway-allbad-a',
+      'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue',
       'Bearer sk-gateway-allbad-b',
       'Bearer sk-gateway-allbad-rescue',
       'Bearer sk-gateway-allbad-rescue'
     ],
-    '账户内全部 Key 被同一来源短避让后，后续请求应短期跳过该账户并直接切到后备账户'
+    '账户内 Key 失败时单请求最多尝试 2 个 Key，剩余坏 Key 只能在后续请求中逐步短避让'
+  )
+  assert.equal(
+    allBadAuthorizations.indexOf('Bearer sk-gateway-allbad-rescue'),
+    2,
+    '三个坏 Key 场景首个请求应只尝试两个账户内 Key 后切后备账户'
   )
   const allBadSourceSummary = repositories.findAccountForTest(allBadScenario.sourceAccountId, access)
   assert.equal(allBadSourceSummary?.apiKeyRuntime?.allUnavailable ?? false, false, '单来源打穿全部 Key 不应写成全局 Key 池不可用')
@@ -229,36 +236,30 @@ try {
   const allBadTemporaryOptionIds = repositories.listAccountOptions(access, { status: 'temporary_unavailable', limit: 50 }).map((item) => item.id)
   assert(!allBadTemporaryOptionIds.includes(allBadScenario.sourceAccountId), '单来源打穿全部 Key 后账户 options 不应归入临时不可调用状态筛选')
 
-  const superPriorityStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, superPriorityGatewayApiKey, 1)
-  const superPriorityAuthorizations = mockHits.slice(superPriorityStartHitCount).map((hit) => hit.authorization)
+  const superPriorityBatch = await postChatCompletions(backendBaseUrl, superPriorityGatewayApiKey, 1)
+  const superPriorityAuthorizations = authorizationsForBatches([superPriorityBatch])
   assert.deepEqual(
     superPriorityAuthorizations,
     ['Bearer sk-gateway-super-priority'],
     '真实网关请求应优先命中同分组超级优先账户'
   )
 
-  const fallbackStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, fallbackGatewayApiKey, 1)
-  const fallbackAuthorizations = mockHits.slice(fallbackStartHitCount).map((hit) => hit.authorization)
+  const fallbackBatch = await postChatCompletions(backendBaseUrl, fallbackGatewayApiKey, 1)
+  const fallbackAuthorizations = authorizationsForBatches([fallbackBatch])
   assert.deepEqual(
     fallbackAuthorizations,
     ['Bearer sk-gateway-fallback-primary'],
     '真实网关请求在主池可用时不应先打到降级备用账户'
   )
 
-  const fallbackFailureStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, fallbackFailureGatewayApiKey, 1)
-  const fallbackFailureAuthorizations = mockHits.slice(fallbackFailureStartHitCount).map((hit) => hit.authorization)
+  const fallbackFailureBatch = await postChatCompletions(backendBaseUrl, fallbackFailureGatewayApiKey, 1)
+  const fallbackFailureAuthorizations = authorizationsForBatches([fallbackFailureBatch])
   assert.equal(fallbackFailureAuthorizations[0], 'Bearer sk-gateway-fallback-bad-primary', '真实网关请求应先尝试主池账户')
-  assert.equal(
-    fallbackFailureAuthorizations.at(-1),
-    'Bearer sk-gateway-fallback-after-failure',
-    '真实网关请求在主池失败后应降级切到备用账户'
-  )
+  const fallbackReserveIndex = fallbackFailureAuthorizations.indexOf('Bearer sk-gateway-fallback-after-failure')
+  assert(fallbackReserveIndex > 0, '真实网关请求在主池失败后应降级切到备用账户')
   assert(
-    fallbackFailureAuthorizations.slice(0, -1).every((authorization) => authorization === 'Bearer sk-gateway-fallback-bad-primary'),
-    '切到备用前不应提前命中其他备用或无关账户'
+    fallbackFailureAuthorizations.slice(0, fallbackReserveIndex).every((authorization) => authorization === 'Bearer sk-gateway-fallback-bad-primary'),
+    `切到备用前不应提前命中其他备用或无关账户，实际 ${JSON.stringify(fallbackFailureAuthorizations)}`
   )
 
   await postAdminEnvelope(
@@ -270,9 +271,8 @@ try {
       sourceStatus: 'temporary_unavailable'
     }
   )
-  const trafficMigrationStartHitCount = mockHits.length
-  await postChatCompletions(backendBaseUrl, trafficMigrationOverrideScenario.apiKey, 1)
-  const trafficMigrationAuthorizations = mockHits.slice(trafficMigrationStartHitCount).map((hit) => hit.authorization)
+  const trafficMigrationBatch = await postChatCompletions(backendBaseUrl, trafficMigrationOverrideScenario.apiKey, 1)
+  const trafficMigrationAuthorizations = authorizationsForBatches([trafficMigrationBatch])
   assert.deepEqual(
     trafficMigrationAuthorizations,
     ['Bearer sk-gateway-migration-target'],
@@ -289,7 +289,7 @@ try {
     failover: {
       first: firstFailoverAuthorizations,
       afterKeyIsolation: recoveredAccountAuthorizations,
-      persistedState: 'not_written_for_single_source'
+      persistedStateAfterConfirmation: failoverBadKeyPersistedState
     },
     oauthNonIsolation: 'excluded_from_api_key_pool',
     authorizedSourceRuntime: {
@@ -531,7 +531,7 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
     type: 'api_key',
     credentials: {
       api_key: 'sk-gateway-allbad-a',
-      api_keys: ['sk-gateway-allbad-a', 'sk-gateway-allbad-b'],
+      api_keys: ['sk-gateway-allbad-a', 'sk-gateway-allbad-b', 'sk-gateway-allbad-c'],
       api_key_strategy: 'round_robin',
       base_url: upstreamBaseUrl
     },
@@ -555,6 +555,7 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
   }, access)
   forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-a')
   forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-b')
+  forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-c')
   const apiKey = repositories.createApiKeyRecord({
     name: '全部 Key 摘除切号网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -751,13 +752,15 @@ function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiK
   }
 }
 
-async function postChatCompletions(backendBaseUrl: string, apiKey: string, count: number): Promise<void> {
+async function postChatCompletions(backendBaseUrl: string, apiKey: string, count: number): Promise<string> {
+  const batchId = `gateway-api-key-regression-${++postBatchSequence}`
   for (let index = 0; index < count; index += 1) {
     const response = await fetch(`${backendBaseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        'user-agent': batchUserAgent(batchId)
       },
       body: JSON.stringify({
         model: 'gpt-5.5',
@@ -768,6 +771,7 @@ async function postChatCompletions(backendBaseUrl: string, apiKey: string, count
     const text = await response.text()
     assert.equal(response.status, 200, `网关请求应成功，实际 HTTP ${response.status}: ${text}`)
   }
+  return batchId
 }
 
 async function postAdminEnvelope(backendBaseUrl: string, path: string, cookie: string, body: Record<string, unknown>): Promise<unknown> {
@@ -784,8 +788,15 @@ async function postAdminEnvelope(backendBaseUrl: string, path: string, cookie: s
   return text ? JSON.parse(text) : undefined
 }
 
-function lastAuthorizations(count: number): string[] {
-  return mockHits.slice(-count).map((hit) => hit.authorization)
+function authorizationsForBatches(batchIds: string[]): string[] {
+  const userAgents = new Set(batchIds.map(batchUserAgent))
+  return mockHits
+    .filter((hit) => userAgents.has(hit.userAgent))
+    .map((hit) => hit.authorization)
+}
+
+function batchUserAgent(batchId: string): string {
+  return `juhe-ai-account-api-key-gateway-mock-ai/${batchId}`
 }
 
 function createMockOpenAIUpstream(): http.Server {
@@ -800,7 +811,8 @@ function createMockOpenAIUpstream(): http.Server {
       }
       mockHits.push({
         authorization: String(req.headers.authorization ?? ''),
-        path: requestPath
+        path: requestPath,
+        userAgent: String(req.headers['user-agent'] ?? '')
       })
       const authorization = String(req.headers.authorization ?? '')
       if (shouldFailAuthorization(authorization)) {
@@ -939,6 +951,17 @@ async function waitForApiReady(baseUrl: string, cookie: string, child: ChildProc
     await sleep(200)
   }
   throw new Error('临时后端管理 API 等待超时')
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (predicate()) {
+      return
+    }
+    await sleep(50)
+  }
+  assert.fail(`等待条件超时 ${timeoutMs}ms`)
 }
 
 async function onceListening(server: http.Server): Promise<void> {

@@ -1,6 +1,10 @@
 import type { Request } from 'express'
 
-import type { AccountModelMapping, AccountModelMappingEndpointFamily } from '../../../../domain/types.js'
+import type {
+  AccountModelMapping,
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily
+} from '../../../../domain/types.js'
 import {
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
@@ -27,15 +31,15 @@ export interface OpenAIModelMappingRuntimeAccount {
 
 export interface ResolvedOpenAIModelMapping {
   sourceModel: string
-  sourceEndpointFamily: AccountModelMappingEndpointFamily
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamModel: string
-  upstreamEndpointFamily: AccountModelMappingEndpointFamily
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 }
 
 export function resolveOpenAIAccountModelMapping(
   account: OpenAIModelMappingRuntimeAccount | undefined,
   requestedModel: string | undefined,
-  sourceEndpointFamily: AccountModelMappingEndpointFamily | undefined
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily | undefined
 ): ResolvedOpenAIModelMapping | undefined {
   const model = requestedModel?.trim()
   if (!model || !sourceEndpointFamily) return undefined
@@ -60,7 +64,7 @@ export function resolveOpenAIRequestModelMapping(
   return resolveOpenAIAccountModelMapping(account, requestModel(req), openAIRequestEndpointFamily(req))
 }
 
-export function openAIRequestEndpointFamily(req: Request): AccountModelMappingEndpointFamily | undefined {
+export function openAIRequestEndpointFamily(req: Request): AccountModelMappingSourceEndpointFamily | undefined {
   const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
   return openAIEndpointFamilyFromPath(endpoint)
 }

@@ -5,6 +5,7 @@ import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
 export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'messages_json' | 'messages_sse' | 'message_token_counting'
+export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountCredentials {
   api_key?: string
@@ -175,7 +176,7 @@ export interface AccountModelMapping {
   sourceModel: string
   sourceEndpointFamily: 'chat_completions' | 'responses'
   upstreamModel: string
-  upstreamEndpointFamily: 'chat_completions' | 'responses'
+  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages'
   enabled: boolean
 }
 
@@ -246,6 +247,7 @@ export interface AccountSummary {
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
+  apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
   lastUsedAt?: string
@@ -291,6 +293,24 @@ export interface AccountApiKeyRuntimeSummary {
   unavailable: number
   allUnavailable: boolean
   nextProbeAt?: string
+}
+
+export interface AccountApiKeyRuntimeDetail {
+  keyIndex: number
+  keyFingerprintPrefix: string
+  keySuffix?: string
+  weight: number
+  status: AccountApiKeyRuntimeStatus
+  failureCount: number
+  consecutiveFailures: number
+  successCount: number
+  cooldownUntil?: string
+  nextProbeAt?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+  lastFailureAt?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
 }
 
 export interface AccountListResult {

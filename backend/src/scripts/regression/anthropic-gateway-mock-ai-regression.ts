@@ -141,7 +141,7 @@ try {
     await assertAnthropicJsonErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertAnthropicSseErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
     await assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl, upstreamBaseUrl)
-    await assertAnthropicGroupRejectsOpenAIResponses(baseUrl, apiKey.key)
+    await assertAnthropicGroupBridgesOpenAIResponses(baseUrl, apiKey.key)
     assertAnthropicSignatureDeltaIsNotOutput()
     if (truthyEnv('JUHE_RUN_CLAUDE_CODE_CLI_MOCK')) {
       await assertOfficialClaudeCodeCliMockCapture(baseUrl, apiKey.key)
@@ -1043,7 +1043,7 @@ async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, 
   assert.equal(upstreamHits.length, 0, 'OpenAI 分组被拒绝后不应命中 Anthropic mock 上游')
 }
 
-async function assertAnthropicGroupRejectsOpenAIResponses(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertAnthropicGroupBridgesOpenAIResponses(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -1055,16 +1055,23 @@ async function assertAnthropicGroupRejectsOpenAIResponses(baseUrl: string, local
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5',
-      input: 'must not dispatch openai responses to anthropic group',
+      input: 'must dispatch openai responses to anthropic messages bridge',
       stream: true
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Anthropic 分组不应承接 OpenAI Responses，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /Anthropic 原生分组/, '错误消息应明确说明当前 API Key 绑定的是 Anthropic 原生分组')
-  assert.match(text, /不兼容 Codex \/ OpenAI 请求路径/, '错误消息应明确说明 Codex/OpenAI 路径不兼容')
-  assert.match(text, /anthropic_native_group_openai_compatible_request/, '错误 code 应标识 Anthropic 原生分组收到 OpenAI-compatible 请求')
-  assert.equal(upstreamHits.length, 0, 'Anthropic 分组拒绝 OpenAI Responses 后不应命中 mock 上游')
+  assert.equal(response.status, 200, `Anthropic 分组应桥接 OpenAI Responses，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'OpenAI Responses 桥接应返回 SSE')
+  assert.match(text, /event: response\.created/, '桥接后应输出 OpenAI Responses response.created 事件')
+  assert.match(text, /event: response\.output_text\.delta/, '桥接后应输出 OpenAI Responses 文本 delta 事件')
+  assert.match(text, /anthropic sse ok/, '桥接后应保留 Anthropic 上游文本输出')
+  assert.equal(text.includes('event: content_block_delta'), false, '桥接后不应透出 Anthropic 原生 SSE 事件名')
+  assert.equal(upstreamHits.length, 1, 'OpenAI Responses 桥接应命中一次 Anthropic mock 上游')
+  assertAnthropicUpstreamHit(upstreamHits[0], {
+    path: '/v1/messages',
+    method: 'POST',
+    bodyIncludes: 'must dispatch openai responses to anthropic messages bridge'
+  })
 }
 
 async function postAnthropicMessage(

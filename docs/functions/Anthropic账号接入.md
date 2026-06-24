@@ -4,7 +4,7 @@
 
 本文记录 Anthropic / Claude 供应商的当前接入方案、协议档案、账户创建类型、网关透传边界、模型目录、用量统计和实现注意事项。本文按当前目标一次性完整落地描述，运行事实以当前代码、schema 和本文契约为准。
 
-本次调研结论同时参考了 Anthropic 官方文档、官方 SDK / GitHub 生态、Claude Code OAuth 认证说明、DeepSeek / GLM / Kimi 等 Anthropic-compatible 入口说明，以及本地参考项目 `sub2api`、`new-api` 的已落地拆分方式。参考项目只用于抽象分层经验，不复制其深度协议互转、全供应商大网关范围或尚未真实验证的 OAuth / Claude Code token 账号链路。
+本次调研结论同时参考了 Anthropic 官方文档、官方 SDK / GitHub 生态、Claude Code OAuth 认证说明、DeepSeek / GLM / Kimi 等 Anthropic-compatible 入口说明，以及本地参考项目 `sub2api`、`new-api` 的已落地拆分方式。参考项目只用于抽象分层经验，不复制其无边界深度协议互转、全供应商大网关范围或尚未真实验证的 OAuth / Claude Code token 账号链路。
 
 Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异见 [Anthropic 与 GPT 全链路能力对比](Anthropic与GPT全链路能力对比.md)。
 
@@ -13,7 +13,7 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 - 直连 Anthropic 必须作为独立 `anthropic/v1` 原生协议档案接入，核心端点是 `POST /v1/messages`。
 - Anthropic 官方确实提供 OpenAI SDK compatibility，但官方定位主要是测试和对比，不适合作为本项目直连接入的主协议。
 - “Anthropic-compatible” 和 “Claude 官方模型”不是一回事。DeepSeek、GLM Coding、Kimi 等国内入口即使暴露 Anthropic Messages 形态，也应归到各自供应商，不应显示为官方 Anthropic。
-- 当前目标完整落地 Anthropic API Key 直连和 Messages / Models / Count Tokens 的轻量闭环，并单独支持 Claude Code 作为下游客户端画像。OAuth / Setup Token 账号链路、Bedrock、Vertex、OpenAI Chat/Responses 到 Anthropic Messages 自动互转都不纳入当前目标；如果以后重新提出，必须作为新的明确需求重新设计，不作为本目标的延续项。
+- 当前 Anthropic 原生目标完整落地 Anthropic API Key 直连和 Messages / Models / Count Tokens 的轻量闭环，并单独支持 Claude Code 作为下游客户端画像。OAuth / Setup Token 账号链路、Bedrock、Vertex 仍不纳入当前目标。OpenAI Chat / Responses 到 Anthropic Messages 不属于原生 raw passthrough，而是独立的显式桥接能力，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 
 ## 当前落地状态（2026-06-18）
 
@@ -35,9 +35,15 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 仍保持为后续独立需求的边界：
 
 - 不支持 Anthropic OAuth、Setup Token、Claude Code token 或 Claude 订阅账号中转。
-- 不做 OpenAI Chat / Responses 与 Anthropic Messages 自动互转。
+- 不在 Anthropic 原生 `/v1/messages` 透传路径里隐式做 OpenAI Chat / Responses 转换；OpenAI-compatible 下游请求 Claude 模型必须走显式 OpenAI -> Anthropic Messages bridge，且覆盖范围、失败策略和测试矩阵以 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md) 为准。
 - stats staged / window / summary 表、授权消耗报表和统计大盘暂未按 cache write、1h cache、thinking token 扩维；后续必须继续由 worker 增量聚合，不在 API 路由临时扫描明细。
 - Anthropic-compatible 国产入口必须按各自供应商建档，不并入官方 `anthropic` 账号池、价格目录和默认分组。
+
+新增进行中需求：
+
+- `2026-06-24` 已建立 PLAN-0058，目标是让 OpenAI Chat JSON、Chat SSE、Responses JSON、Responses SSE 四类下游入口通过显式桥接命中 Anthropic Messages 上游。
+- 该桥接不改变 Anthropic 账号真实 endpoint modes；账号仍声明 `messages_json`、`messages_sse`、`message_token_counting`。
+- 该桥接要求模型能通过目标模型或账号模型映射明确定位到 Anthropic Messages 档案，不允许仅凭客户端画像或模型名猜测全局账号池。
 
 真实联网验证补充：
 
@@ -120,7 +126,7 @@ type AnthropicAccountType = 'api_key'
 - 新建账户默认写入 `pending_test` 且不可调度，测试通过后才恢复正常。
 - Anthropic API Key 账户不显示 OAuth、Refresh Token、Access Token、OpenAI Organization、OpenAI Project、Codex Responses、GPT 客户端兼容能力等字段。
 - 当前不支持 Anthropic Workload Identity Federation Bearer Token；该能力涉及短期 token、身份联邦和组织级配置，不纳入当前目标。
-- 当前不支持 OAuth / Setup Token / Claude Code token 账号。参考项目中 OAuth token、Claude Code 伪装 header、客户端版本检测、请求体守卫和 OpenAI <-> Claude 深度互转不进入当前目标；Claude Code 作为下游客户端工具的画像兼容见 [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)。
+- 当前不支持 OAuth / Setup Token / Claude Code token 账号。参考项目中 OAuth token、Claude Code 伪装 header、客户端版本检测和请求体守卫不进入当前 API Key 原生目标；Claude Code 作为下游客户端工具的画像兼容见 [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)。OpenAI-compatible 到 Anthropic Messages 的受控桥接单独按 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md) 落地。
 
 可选高级字段：
 
@@ -180,20 +186,20 @@ Anthropic 接入必须复用项目现有网关流水线，不能新增一套按�
 | 官方供应商适配层 `adapters/anthropic` | 官方 Anthropic API Key 上游 URL 拼接、`x-api-key` 写入、`anthropic-version` 默认补齐、客户端 `anthropic-beta` 透传和官方直连诊断字段 | 不生成 OpenAI 组织 / 项目 / Beta 头，不把第三方兼容入口归为官方 Anthropic，不实现当前不纳入目标的 OAuth / Setup Token / Claude Code token 账号链路，不把 Anthropic header 做成账号配置 |
 | 第三方兼容供应商适配层 | DeepSeek、GLM、Kimi 等 Anthropic-compatible 入口按各自 `providerCode` 建 adapter，可复用 `protocolCode=anthropic` 的 Messages 协议适配器 | 不共用官方 `anthropic` 账号池、模型目录、价格目录、默认分组和错误策略 |
 | 客户端画像层 | 默认普通 Anthropic native / Anthropic SDK 类客户端语义；显式 `x-juhe-client-profile: claude_code` 或官方 Claude Code 多信号命中时识别为 Claude Code 客户端画像 | 不把单个 User-Agent、模型名或某个错误码临时推断成 Claude Code，不把 Codex 可重试语义扩散给 Anthropic native |
-| 兼容策略与请求恢复层 | 仅在明确发现可恢复的协议状态时，基于请求特征和上游错误信号生成一次受控 body/header 变体重试 | 不修改原始 `req.rawBody`，不写账号状态，不开放用户自定义脚本，不做 OpenAI -> Anthropic 自动翻译 |
+| 兼容策略与请求恢复层 | 仅在明确发现可恢复的协议状态时，基于请求特征和上游错误信号生成一次受控 body/header 变体重试 | 不修改原始 `req.rawBody`，不写账号状态，不开放用户自定义脚本，不在失败恢复里临时生成 OpenAI -> Anthropic 翻译 |
 | 候选账号筛选层 | 用 `provider_protocol_profile_id`、endpoint mode、模型路由和账户模型限制过滤候选账号 | 因模型或端点不匹配被跳过的账号不算失败，不进入账户错误处理策略 |
 | 调度运行态层 | 复用本地账号短期屏蔽、半开探测、事前确认、IP 级账号回避、上游桶避让和分组 fallback | 不把短 TTL 运行态写成持久健康事实，不按 `authentication_error`、`rate_limit_error` 等类型直接冷却 |
-| 返回侧协议适配层 | 把 Anthropic JSON / SSE 解析为统一响应语义帧，提取可见输出、工具调用、thinking、完成状态、usage 和错误事件 | 不决定账号是否永久不可用，不把 Anthropic 事件伪装成 OpenAI chunk，未定义渲染器前不做跨协议互转 |
+| 返回侧协议适配层 | 把 Anthropic JSON / SSE 解析为统一响应语义帧，提取可见输出、工具调用、thinking、完成状态、usage 和错误事件；显式 OpenAI -> Anthropic bridge 命中时按下游 OpenAI 协议渲染 | 不决定账号是否永久不可用，不在未命中显式 bridge 时把 Anthropic 事件伪装成 OpenAI chunk |
 | 统计与审计层 | 保存 `usage_semantic=anthropic`、缓存读写 token、thinking token、`request-id` 和受限错误摘要 | 不在 API 路由实时扫描 usage 明细或审计 payload，不用上游错误文案覆盖账号状态原因 |
 
 当前兼容策略收敛为“原生透传 + API Key 上游认证 + 显式本地边界”：
 
 - 官方 Anthropic 直连请求默认 raw passthrough，只做本地认证、路径归一、header 过滤、上游认证替换和 Base URL 拼接。
-- 账户测试由后端生成合法最小 Messages 请求；真实客户端请求不自动补齐 `max_tokens`、不自动移动 system message、不自动把 OpenAI Chat / Responses 请求转成 Messages。
+- 账户测试由后端生成合法最小 Messages 请求；Anthropic native 真实客户端请求不自动补齐 `max_tokens`、不自动移动 system message。OpenAI Chat / Responses 请求转成 Messages 只允许在显式 bridge 命中时发生。
 - `anthropic-version` 默认值和 `anthropic-beta` 客户端 header 透传属于上游请求准备，不属于失败后的兼容恢复。
 - OAuth / Setup Token / Claude Code token 账号链路不进入请求准备、调度和返回侧流程；不能在运行时通过状态码或错误类型临时推断并切到 OAuth 行为。Claude Code 下游客户端画像只通过显式本地 header 或官方 CLI 多信号识别，不改变 Anthropic API Key 上游认证。
 - 如果需要新增兼容恢复，必须先补 [网关兼容策略与请求恢复设计](网关兼容策略与请求恢复设计.md) 对应 Anthropic 场景；策略输出只能是“继续默认失败流程”或“一次受控变体重试”，不能直接改账号健康。
-- Anthropic 官方 OpenAI SDK compatibility 只作为用户迁移线索。若本项目要让 OpenAI-compatible 客户端调用 Claude 模型，应新增显式 OpenAI -> Anthropic adapter 和响应渲染器，不隐藏在官方直连透传链路里。
+- Anthropic 官方 OpenAI SDK compatibility 只作为用户迁移线索。本项目让 OpenAI-compatible 客户端调用 Claude 模型时，必须使用显式 OpenAI -> Anthropic adapter 和响应渲染器，不隐藏在官方直连透传链路里。
 
 ## 上游请求边界
 
@@ -203,8 +209,8 @@ Anthropic API Key 账户按原生 Messages API 透传，不走 OpenAI v1 adapter
 
 - 除账户模型映射只改写顶层 `model` 外，默认 raw body passthrough，保留 Anthropic 原生字段：`max_tokens`、`messages`、`system`、`tools`、`tool_choice`、`thinking`、`stop_sequences`、`stream`、`metadata`、`service_tier`、`container`、`context_management`、`mcp_servers`、`output_format`、`output_config`、`cache_control` 等。
 - 模型映射必须复用现有大 body JSON 解析边界，只在 JSON body 顶层 `model` 命中映射时改写；不解析或改写 `messages`、`tools`、`thinking` 等嵌套字段。
-- 不把 OpenAI `messages[].role = system/developer` 自动翻译成 Anthropic 顶层 `system`。Anthropic native 客户端应按 Anthropic 格式提交；OpenAI -> Anthropic 互转后续单独立项。
-- 不把 `/v1/chat/completions`、`/v1/responses` 自动改写为 `/v1/messages`。如果 API Key 只绑定 Anthropic native 分组却收到 OpenAI 路径，应在本地请求能力过滤阶段返回明确不兼容错误，错误码为 `anthropic_native_group_openai_compatible_request`，并提示客户端改用 Anthropic `/v1/messages` 或绑定支持 OpenAI Responses / Chat Completions 的分组。
+- Anthropic native 客户端应按 Anthropic 格式提交；只有 OpenAI -> Anthropic bridge 命中时，才把 OpenAI `messages[].role = system/developer` 转成 Anthropic 顶层 `system`。
+- `/v1/chat/completions`、`/v1/responses` 只有在目标模型或账号模型映射明确命中 Anthropic Messages 档案时才改写为 `/v1/messages`。如果 API Key 只绑定 Anthropic native 分组但没有显式可承接模型或映射，应在本地请求能力过滤阶段返回明确不兼容错误，错误码为 `anthropic_native_group_openai_compatible_request`，并提示配置 OpenAI -> Anthropic bridge 或改用 Anthropic `/v1/messages`。
 - `max_tokens` 是 Anthropic Messages 必填字段之一。账户测试由后端生成最小请求时必须显式传入；对真实客户端请求，默认让上游返回真实错误，除非后续明确要做本地兼容补齐。
 
 请求头：
@@ -282,8 +288,8 @@ Anthropic 返回侧必须新增协议适配器，不能复用 OpenAI v1 的 `cho
 下游渲染：
 
 - Anthropic native 客户端默认原样返回 Anthropic JSON / SSE 事件。
-- 如果要支持 OpenAI-compatible 客户端请求 Claude 模型，应新增显式的 OpenAI -> Anthropic 请求转换和 Anthropic -> OpenAI 响应渲染，不把它藏进当前透传链路。
-- 参考 `new-api` 的 Claude channel 和 `sub2api` 的 protocol converter 可以证明这类互转复杂度高，必须单独测试工具调用、图片、PDF、thinking、cache、流内错误和 usage，不能顺手实现。
+- OpenAI-compatible 客户端请求 Claude 模型时，必须命中显式 OpenAI -> Anthropic bridge，由桥接层把 Anthropic JSON / SSE 渲染回 Chat JSON / Chat SSE / Responses JSON / Responses SSE。
+- 参考 `new-api` 的 Claude channel 和 `sub2api` 的 protocol converter 可以证明这类互转复杂度高，必须单独测试工具调用、图片、PDF、thinking、cache、流内错误和 usage，不能顺手实现或静默降级。
 
 ## 错误处理
 
@@ -489,7 +495,7 @@ Anthropic 账户测试必须复用真实网关链路。
 - `sub2api` 对 Anthropic API Key direct、Claude OAuth / SetupToken、Vertex Anthropic、Bedrock Claude、OpenAI Responses 互转分别建请求构造和转换路径。这说明“官方直连 API Key”“OAuth 账号”“云平台托管”“协议兼容代理”应分层处理。
 - `sub2api` 的 Anthropic API Key 使用 `x-api-key`，OAuth / SetupToken 使用 `Authorization: Bearer <access_token>`，并由 Claude token provider 做 access token 缓存和刷新。这说明 OAuth 如果后续恢复立项，必须作为独立账号链路真实验证，不能混进 API Key adapter。
 - `sub2api` 同时包含 Claude Code header / beta 模拟、5h 窗口、会话数量、RPM、TLS 指纹和上下文处理等重型 OAuth 专属能力。本项目当前不落 OAuth；这些能力仅作为新需求真实验证清单，不作为当前范围。
-- `sub2api` 和 `new-api` 都有 OpenAI <-> Claude 深度互转代码，但这类能力涉及工具调用、图片、PDF、thinking、cache、usage 和流式状态机，不能作为当前目标默认范围。
+- `sub2api` 和 `new-api` 都有 OpenAI <-> Claude 深度互转代码，但这类能力涉及工具调用、图片、PDF、thinking、cache、usage 和流式状态机。本项目只按 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md) 的受控子集落地，不复制无边界转换。
 - LiteLLM 的 Claude Code 指南说明 Claude Code 可以通过网关使用 Anthropic 或非 Anthropic 模型，但它要求模型映射、用量追踪和兼容边界显式配置。适合本项目参考的是“非 Anthropic 模型必须进入独立供应商 / 档案”，不是把所有 Claude Code 请求混进官方 Anthropic 账号池。
 - CLIProxyAPI 对 `metadata.user_id`、`X-Client-Request-Id`、会话哈希和 Claude Code cloaking / CCH signing 有完整链路。这些可作为未来会话亲和与订阅账号链路的调研材料；当前 API Key 目标不采用 cloaking、签名或 OAuth 伪装。
 
@@ -499,7 +505,7 @@ Anthropic 账户测试必须复用真实网关链路。
 - 不对 API Key 账户默认追加 Claude Code CLI 专属 `anthropic-beta` 和 `User-Agent`。
 - 不在当前目标新增 Anthropic OAuth / Setup Token 创建、导入、刷新或上游请求路径。
 - 不把第三方 Anthropic-compatible 入口合并到官方 `anthropic` 供应商。
-- 不在当前目标实现 OpenAI Chat / Responses 到 Anthropic Messages 的自动互转。
+- 不在 Anthropic 原生透传目标里实现 OpenAI Chat / Responses 到 Anthropic Messages 的隐式互转；显式桥接按 PLAN-0058 单独实现和验证。
 
 ## 官方资料与开源生态
 
@@ -559,7 +565,7 @@ MCP 是工具 / 上下文协议，不是本项目的上游模型网关协议。�
 当前代码落地必须覆盖：
 
 - 创建 Anthropic API Key 账户，保存后落到 `profile_anthropic_anthropic_v1`。
-- 新账户默认 `supported_endpoint_modes = messages_json/messages_sse/message_token_counting`，不参与 OpenAI `/v1/chat/completions` 或 `/v1/responses` 调度。
+- 新账户默认 `supported_endpoint_modes = messages_json/messages_sse/message_token_counting`，不伪装成 OpenAI Chat / Responses 原生能力；只有请求命中显式 OpenAI -> Anthropic bridge 时，才参与 OpenAI `/v1/chat/completions` 或 `/v1/responses` 调度。
 - Anthropic 账户只能绑定 Anthropic 档案分组，不能加入 DeepSeek / GLM Anthropic-compatible 分组。
 - 本地 `POST /v1/messages` 使用 `x-api-key` 或 `Authorization` 都能通过本地 API Key 认证。
 - 本地 `POST /v1/messages` 带 `x-juhe-client-profile: claude_code`，或官方 Claude Code 多信号至少命中两个时识别为 Claude Code 客户端画像；未命中时仍是通用 Anthropic native。

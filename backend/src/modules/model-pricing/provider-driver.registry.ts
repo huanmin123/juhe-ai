@@ -113,6 +113,7 @@ function buildOpenAIModelCandidates(model: string): string[] {
   if (withoutDate !== model) candidates.add(withoutDate)
 
   if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
+  if (model.startsWith('gpt-5-search-api-')) candidates.add('gpt-5-search-api')
   if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
   if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
   if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')

@@ -22,7 +22,7 @@ import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './us
 import { loadAccountUsageSummariesForScopes } from './usage-summary-loaders.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import { optionalString } from './value-utils.js'
-import { loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
+import { loadAccountApiKeyRuntimeDetailsByAccountIds, loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
 
 export interface AccountListResult {
   items: AccountSummary[]
@@ -97,6 +97,10 @@ function accountSummariesFromRows(
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row)))
   const apiKeyRuntimeByAccount = loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
+  const ownerAccountIds = includeCredentials
+    ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
+    : []
+  const apiKeyRuntimeDetailsByAccount = loadAccountApiKeyRuntimeDetailsByAccountIds(ownerAccountIds)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows
     ? loadSystemAccountNameMapByIds(rows.flatMap((row) => [
@@ -204,6 +208,7 @@ function accountSummariesFromRows(
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
       apiKeyRuntime: apiKeyRuntimeByAccount.get(row.id),
+      apiKeyRuntimeDetails: isAuthorizedView ? undefined : apiKeyRuntimeDetailsByAccount.get(row.id),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
       lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? undefined,

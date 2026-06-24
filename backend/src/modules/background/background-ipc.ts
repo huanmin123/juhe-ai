@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
@@ -83,6 +84,9 @@ const usageRecordMessageQueueMaxMessages = 10_000
 const usageRecordMessageQueueMaxBytes = 64 * 1024 * 1024
 const regularWorkerMessageQueueMaxMessages = 5_000
 const regularWorkerMessageQueueMaxBytes = 64 * 1024 * 1024
+const pendingDatasetWriteRequestMaxCount = 1000
+const pendingStatsWriteRequestMaxCount = 1000
+const pendingBackgroundDbServiceRequestMaxCount = 1000
 const ingestUsageBurstBeforeRegular = 8
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const ingestUsageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
@@ -106,6 +110,12 @@ let pendingParentIngestStatusRequests = new Map<string, PendingIngestStatusReque
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingStatsWriteRequests = new Map<string, PendingStatsWriteRequest>()
+let rejectedDatasetWriteRequestCount = 0
+let timedOutDatasetWriteRequestCount = 0
+let rejectedStatsWriteRequestCount = 0
+let timedOutStatsWriteRequestCount = 0
+let rejectedBackgroundDbServiceRequestCount = 0
+let timedOutBackgroundDbServiceRequestCount = 0
 let timedOutProcessEventLoopRequestCount = 0
 let failedProcessEventLoopRequestCount = 0
 let backgroundWorkerReadyHandler: (() => void) | undefined
@@ -566,6 +576,10 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
     pendingSnapshotRequestCount: workerSnapshotStats.pendingSnapshotRequestCount,
     timedOutSnapshotRequestCount: workerSnapshotStats.timedOutSnapshotRequestCount,
     rejectedSnapshotRequestCount: workerSnapshotStats.rejectedSnapshotRequestCount,
+    pendingDbServiceRequestCount: pendingBackgroundDbServiceRequests.size,
+    oldestPendingDbServiceRequestMs: oldestPendingRequestMs(pendingBackgroundDbServiceRequests),
+    rejectedDbServiceRequestCount: rejectedBackgroundDbServiceRequestCount,
+    timedOutDbServiceRequestCount: timedOutBackgroundDbServiceRequestCount,
     pendingProcessEventLoopRequestCount: pendingProcessEventLoopRequests.size,
     timedOutProcessEventLoopRequestCount,
     failedProcessEventLoopRequestCount,
@@ -579,6 +593,8 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
         pendingQueues: buildIngestPendingQueuesRuntime(),
         pendingWriteRequestCount: pendingDatasetWriteRequests.size,
         oldestPendingWriteMs: oldestPendingRequestMs(pendingDatasetWriteRequests),
+        rejectedWriteRequestCount: rejectedDatasetWriteRequestCount,
+        timedOutWriteRequestCount: timedOutDatasetWriteRequestCount,
         pendingSnapshotRequestCount: ingestSnapshotStats.pendingSnapshotRequestCount,
         timedOutSnapshotRequestCount: ingestSnapshotStats.timedOutSnapshotRequestCount,
         rejectedSnapshotRequestCount: ingestSnapshotStats.rejectedSnapshotRequestCount
@@ -589,6 +605,8 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
         lastSnapshot: statsSnapshotStats.lastSnapshot,
         pendingWriteRequestCount: pendingStatsWriteRequests.size,
         oldestPendingWriteMs: oldestPendingRequestMs(pendingStatsWriteRequests),
+        rejectedWriteRequestCount: rejectedStatsWriteRequestCount,
+        timedOutWriteRequestCount: timedOutStatsWriteRequestCount,
         pendingSnapshotRequestCount: statsSnapshotStats.pendingSnapshotRequestCount,
         timedOutSnapshotRequestCount: statsSnapshotStats.timedOutSnapshotRequestCount,
         rejectedSnapshotRequestCount: statsSnapshotStats.rejectedSnapshotRequestCount
@@ -747,6 +765,11 @@ export async function requestBackgroundWorkerDatasetWrite<T extends import('./ba
     if (typeof process.send !== 'function') {
       return undefined
     }
+    if (pendingDatasetWriteRequests.size >= pendingDatasetWriteRequestMaxCount) {
+      rejectedDatasetWriteRequestCount += 1
+      rejectPendingBackgroundRequest('dataset-writer', pendingDatasetWriteRequests.size, pendingDatasetWriteRequestMaxCount, operation.type)
+      throw new Error('后台 dataset-writer pending 请求过多，请稍后重试')
+    }
     const requestId = randomUUID()
     return await new Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -754,6 +777,7 @@ export async function requestBackgroundWorkerDatasetWrite<T extends import('./ba
         if (!pending) {
           return
         }
+        timedOutDatasetWriteRequestCount += 1
         pendingDatasetWriteRequests.delete(requestId)
         pending.reject(new Error('后台 dataset-writer 请求超时'))
       }, timeoutMs)
@@ -782,9 +806,15 @@ export async function requestBackgroundWorkerDatasetWrite<T extends import('./ba
   if (!child || !child.connected || !ingestWorkerReady) {
     return undefined
   }
+  if (pendingDatasetWriteRequests.size >= pendingDatasetWriteRequestMaxCount) {
+    rejectedDatasetWriteRequestCount += 1
+    rejectPendingBackgroundRequest('dataset-writer', pendingDatasetWriteRequests.size, pendingDatasetWriteRequestMaxCount, operation.type)
+    return undefined
+  }
   const requestId = randomUUID()
   return await new Promise<import('./background-dataset-writer.js').BackgroundDatasetWriteOperationResult<T> | undefined>((resolve) => {
     const timeout = setTimeout(() => {
+      timedOutDatasetWriteRequestCount += 1
       finishDatasetWriteRequest(requestId, undefined)
     }, timeoutMs)
     pendingDatasetWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout, createdAt: Date.now() })
@@ -836,6 +866,11 @@ export async function requestBackgroundWorkerStatsWrite<T extends import('./back
     if (typeof process.send !== 'function') {
       return undefined
     }
+    if (pendingStatsWriteRequests.size >= pendingStatsWriteRequestMaxCount) {
+      rejectedStatsWriteRequestCount += 1
+      rejectPendingBackgroundRequest('stats-writer', pendingStatsWriteRequests.size, pendingStatsWriteRequestMaxCount, operation.type)
+      throw new Error('后台 stats-writer pending 请求过多，请稍后重试')
+    }
     const requestId = randomUUID()
     return await new Promise<import('./background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -843,6 +878,7 @@ export async function requestBackgroundWorkerStatsWrite<T extends import('./back
         if (!pending) {
           return
         }
+        timedOutStatsWriteRequestCount += 1
         pendingStatsWriteRequests.delete(requestId)
         pending.reject(new Error('后台 stats-writer 请求超时'))
       }, timeoutMs)
@@ -866,9 +902,15 @@ export async function requestBackgroundWorkerStatsWrite<T extends import('./back
   if (!child || !child.connected || !statsWorkerReady) {
     return undefined
   }
+  if (pendingStatsWriteRequests.size >= pendingStatsWriteRequestMaxCount) {
+    rejectedStatsWriteRequestCount += 1
+    rejectPendingBackgroundRequest('stats-writer', pendingStatsWriteRequests.size, pendingStatsWriteRequestMaxCount, operation.type)
+    return undefined
+  }
   const requestId = randomUUID()
   return await new Promise<import('./background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined>((resolve) => {
     const timeout = setTimeout(() => {
+      timedOutStatsWriteRequestCount += 1
       finishStatsWriteRequest(requestId, undefined)
     }, timeoutMs)
     pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject: () => resolve(undefined), timeout, createdAt: Date.now() })
@@ -918,6 +960,21 @@ function oldestPendingRequestMs(
     }
   }
   return oldestAt === 0 ? 0 : Math.max(0, Date.now() - oldestAt)
+}
+
+function rejectPendingBackgroundRequest(
+  channel: 'dataset-writer' | 'stats-writer' | 'background-db-service',
+  pendingCount: number,
+  maxPendingCount: number,
+  operationType: string
+): void {
+  logger.warn({
+    event: 'background_direct_ipc_pending_full',
+    channel,
+    operationType,
+    pendingCount,
+    maxPendingCount
+  }, '后台直连 IPC pending 请求已达上限，已拒绝本次请求')
 }
 
 function queueWorkerMessage(inputMessage: BackgroundWorkerMessage): boolean {
@@ -1884,6 +1941,7 @@ interface PendingDbServiceRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
+  createdAt: number
 }
 
 const pendingBackgroundDbServiceRequests = new Map<string, PendingDbServiceRequest>()
@@ -1900,6 +1958,11 @@ export async function requestBackgroundWorkerDbService<T extends import('../db-s
     return undefined
   }
 
+  if (pendingBackgroundDbServiceRequests.size >= pendingBackgroundDbServiceRequestMaxCount) {
+    rejectedBackgroundDbServiceRequestCount += 1
+    rejectPendingBackgroundRequest('background-db-service', pendingBackgroundDbServiceRequests.size, pendingBackgroundDbServiceRequestMaxCount, operation.type)
+    throw new Error('后台 DB service pending 请求过多，请稍后重试')
+  }
   const requestId = randomUUID()
   return await new Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T> | undefined>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1907,10 +1970,11 @@ export async function requestBackgroundWorkerDbService<T extends import('../db-s
       if (!pending) {
         return
       }
+      timedOutBackgroundDbServiceRequestCount += 1
       pendingBackgroundDbServiceRequests.delete(requestId)
       pending.reject(new Error('后台 DB service 请求超时'))
     }, timeoutMs)
-    pendingBackgroundDbServiceRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+    pendingBackgroundDbServiceRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
     sendToParentOrServer({
       type: 'background_worker_db_service_request',
       requestId,

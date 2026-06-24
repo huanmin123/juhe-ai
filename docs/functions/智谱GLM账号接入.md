@@ -117,7 +117,7 @@ GLM Coding Plan 当前需要支持 Codex 客户端，但 Codex 客户端只发�
 - `/v1/responses` 改写为上游 `/chat/completions`，保留查询参数。
 - `instructions` 转为 system message。
 - Responses `input` 转为 Chat `messages`；`function_call` / `function_call_output` 转为 Chat 工具调用历史。
-- 只透传 `type=function` 的工具；`web_search`、namespace tool、custom tool 和图像工具首版不透传。
+- 透传 `type=function` 的工具；`custom` 工具包装为 `custom__<name>` Chat function；`web_search` 仅在配置 `JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT` 后由网关真实执行并回灌第二轮 Chat；MCP、image generation、computer use 等仍不透传、不伪造。
 - `max_output_tokens` / `max_completion_tokens` 转为 `max_tokens`。
 - 清理 Codex 专属 header，并把上游请求固定为 Chat SSE。
 
@@ -126,13 +126,15 @@ GLM Coding Plan 当前需要支持 Codex 客户端，但 Codex 客户端只发�
 - Chat `delta.content` 和 `delta.refusal` 转为 Responses `response.output_text.delta`。
 - Chat `delta.reasoning_content` 不转为普通文本，避免把 GLM 推理字段泄露给 Codex 普通输出；后续如需展示 reasoning，必须单独实现 Responses reasoning item 映射。
 - Chat `delta.tool_calls` 累积后转为最终 `response.output_item.done` 的 `type=function_call` item。根据本次核对的 Codex 源码，普通 function call 不依赖 `response.function_call_arguments.delta`。
+- 已配置网关搜索执行器时，Chat `web_search` wrapper tool call 会触发真实 HTTP 搜索执行器，并向下游输出 `web_search_call` 与最终 message 的 `url_citation` annotations。
+- 搜索执行器是管理员配置的本地 runtime endpoint，可以指向本机或内网搜索服务；它不复用模型上游 Base URL 的私网 SSRF 拦截，但仍限制为 `http/https`、禁止 endpoint 用户名密码、禁用重定向，并保留超时和响应体大小上限。
 - Chat usage 转为 Responses usage；`reasoning_tokens` 保留在 `output_tokens_details.reasoning_tokens`。
 
 边界：
 
 - GLM Coding bridge 不等于 GLM 原生支持 OpenAI Responses；账户 `supported_endpoint_modes` 仍保存 `chat_json/chat_sse`。
 - GLM Coding bridge 不由 profile 隐式开启，必须由账户客户端兼容配置显式开启；这让页面、导入导出和排障都能直接看出该账号是否支持 Codex。
-- 非 Codex 客户端、非流式 Responses、`/responses/compact`、namespace tools、web_search 和 image generation 不在首版 bridge 范围内。
+- 非 Codex 客户端、非流式 Responses、未配置执行器的 `web_search`、MCP、image generation 和 computer use 不在 Chat-only bridge 执行范围内；`/responses/compact` 由网关 summary compact 状态层处理，不是上游原生 compact。
 - 通用 GLM API Key 不启用 Codex bridge。
 - 审计和排障应同时展示下游 `/v1/responses` 与上游 `/chat/completions`，并保留 provider/profile/model 维度。
 

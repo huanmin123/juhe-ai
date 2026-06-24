@@ -32,6 +32,7 @@ export interface RuntimeConfig {
   statsDatabasePath: string
   usageShardRoot: string
   codexContextRoot: string
+  openAICompatibleFilesRoot: string
   codexContextStateShardRoot: string
   codexContextStateShardCount: number
   codexContextStateWriterPoolEnabled: boolean
@@ -45,6 +46,13 @@ export interface RuntimeConfig {
   oauthProxyUrl?: string
   gateway: {
     bodyInFlightMaxBytes: number
+  }
+  codexWebSearch: {
+    endpoint?: string
+    apiKey?: string
+    timeoutMs: number
+    maxResults: number
+    maxBodyBytes: number
   }
   log: {
     level: LogLevel
@@ -83,6 +91,7 @@ export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juh
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
+export const defaultOpenAICompatibleFilesRoot = resolve(backendRoot, 'data', 'openai-compatible-files')
 export const defaultCodexContextStateShardRoot = resolve(defaultCodexContextRoot, 'state-shards')
 export const defaultRuntimeSecret = 'juhe-ai-dev-secret-change-me'
 const minimumProductionSecretLength = 32
@@ -102,6 +111,7 @@ export const runtimeConfig: RuntimeConfig = {
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
   codexContextRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_ROOT', defaultCodexContextRoot),
+  openAICompatibleFilesRoot: pathConfig('JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT', defaultOpenAICompatibleFilesRoot),
   codexContextStateShardRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', defaultCodexContextStateShardRoot),
   codexContextStateShardCount: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 16, 1, 256),
   codexContextStateWriterPoolEnabled: booleanConfig('JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED', !isScriptEntryRuntime()),
@@ -117,6 +127,13 @@ export const runtimeConfig: RuntimeConfig = {
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   gateway: {
     bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024
+  },
+  codexWebSearch: {
+    endpoint: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT'),
+    apiKey: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_API_KEY'),
+    timeoutMs: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_TIMEOUT_MS', 10000, 1000, 120000),
+    maxResults: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_MAX_RESULTS', 5, 1, 10),
+    maxBodyBytes: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_MAX_BODY_KB', 512, 16, 4096) * 1024
   },
   log: {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),

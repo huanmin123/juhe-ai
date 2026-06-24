@@ -6,6 +6,7 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import type { OpenAIAccountSecret } from './openai-account-selector.types.js'
+import type { AccountApiKeyRuntimeDetail } from '../domain/types.js'
 
 export interface AccountApiKeyRuntimeFailureInput {
   account: OpenAIAccountSecret
@@ -51,6 +52,23 @@ interface AccountApiKeyRuntimeRow {
   cooldown_until: string | null
   next_probe_at: string | null
   probe_backoff_seconds: number | null
+}
+
+interface AccountApiKeyRuntimeDetailRow {
+  account_id: string
+  key_fingerprint: string
+  key_index: number
+  status: AccountApiKeyRuntimeStatus
+  failure_count: number | null
+  consecutive_failures: number | null
+  success_count: number | null
+  cooldown_until: string | null
+  next_probe_at: string | null
+  last_attempt_at: string | null
+  last_success_at: string | null
+  last_failure_at: string | null
+  last_error_code: string | null
+  last_error_message: string | null
 }
 
 interface AccountApiKeyRuntimeTarget {
@@ -226,6 +244,59 @@ export function loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds: string
     }
     summary.allUnavailable = summary.total > 0 && summary.active === 0
     output.set(row.viewAccountId, summary)
+  }
+  return output
+}
+
+export function loadAccountApiKeyRuntimeDetailsByAccountIds(accountIds: string[]): Map<string, AccountApiKeyRuntimeDetail[]> {
+  const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+  const output = new Map<string, AccountApiKeyRuntimeDetail[]>()
+  if (!ids.length) return output
+  const rows = accountApiKeyRuntimeSummaryRows(ids)
+  const statesByAccountId = loadAccountApiKeyRuntimeDetailRowsByAccountIds(rows.map((row) => row.sourceAccountId))
+  for (const row of rows) {
+    let credentials: Record<string, unknown>
+    try {
+      credentials = decryptJson<Record<string, unknown>>(row.credentialsEncrypted)
+    } catch {
+      continue
+    }
+    if (!isAccountApiKeyPoolIsolationEnabled({
+      providerCode: row.providerCode,
+      protocolCode: row.protocolCode,
+      protocolVersion: row.protocolVersion,
+      type: row.type,
+      credentials
+    })) {
+      continue
+    }
+    const entries = accountApiKeyEntries(credentials)
+    if (entries.length < 2) {
+      continue
+    }
+    const statesByFingerprint = new Map(
+      (statesByAccountId.get(row.sourceAccountId) ?? []).map((state) => [state.key_fingerprint, state])
+    )
+    output.set(row.viewAccountId, entries.map((entry) => {
+      const state = statesByFingerprint.get(entry.fingerprint)
+      return {
+        keyIndex: entry.index,
+        keyFingerprintPrefix: entry.fingerprint.slice(0, 12),
+        keySuffix: keySuffixForRuntimeDisplay(entry.key),
+        weight: entry.weight,
+        status: state?.status ?? 'active',
+        failureCount: positiveInteger(state?.failure_count),
+        consecutiveFailures: positiveInteger(state?.consecutive_failures),
+        successCount: positiveInteger(state?.success_count),
+        cooldownUntil: state?.cooldown_until ?? undefined,
+        nextProbeAt: state?.next_probe_at ?? undefined,
+        lastAttemptAt: state?.last_attempt_at ?? undefined,
+        lastSuccessAt: state?.last_success_at ?? undefined,
+        lastFailureAt: state?.last_failure_at ?? undefined,
+        lastErrorCode: state?.last_error_code ?? undefined,
+        lastErrorMessage: runtimeErrorMessageForResponse(state?.last_error_message)
+      }
+    }))
   }
   return output
 }
@@ -463,6 +534,30 @@ function accountApiKeyRuntimeSummaryRows(accountIds: string[]): Array<{
     }))
 }
 
+function loadAccountApiKeyRuntimeDetailRowsByAccountIds(accountIds: string[]): Map<string, AccountApiKeyRuntimeDetailRow[]> {
+  const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+  const output = new Map<string, AccountApiKeyRuntimeDetailRow[]>()
+  if (!ids.length) return output
+  const database = getBusinessDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = database
+      .prepare(`
+        SELECT account_id, key_fingerprint, key_index, status, failure_count, consecutive_failures,
+          success_count, cooldown_until, next_probe_at, last_attempt_at, last_success_at, last_failure_at,
+          last_error_code, last_error_message
+        FROM account_api_key_runtime_states
+        WHERE account_id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(...chunk) as unknown as AccountApiKeyRuntimeDetailRow[]
+    for (const row of rows) {
+      const items = output.get(row.account_id) ?? []
+      items.push(row)
+      output.set(row.account_id, items)
+    }
+  }
+  return output
+}
+
 function markRuntimeStateChanged(sourceAccountId: string): void {
   const affectedAccountIds = accountIdsAffectedBySourceAccount(sourceAccountId)
   markGroupAccountStatsDirtyByAccountIds(affectedAccountIds.length ? affectedAccountIds : [sourceAccountId], 'account_api_key_runtime')
@@ -497,4 +592,18 @@ function nextProbeBackoffSeconds(previous: number | null | undefined): number {
 
 function sanitizeRuntimeErrorMessage(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 1000) || '上游请求失败'
+}
+
+function runtimeErrorMessageForResponse(value: string | null | undefined): string | undefined {
+  const text = value?.replace(/\s+/g, ' ').trim()
+  return text ? text.slice(0, 240) : undefined
+}
+
+function keySuffixForRuntimeDisplay(key: string): string | undefined {
+  const normalized = key.trim()
+  return normalized ? normalized.slice(-4) : undefined
+}
+
+function positiveInteger(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0
 }
