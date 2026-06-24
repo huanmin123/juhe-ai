@@ -9,7 +9,7 @@ export const DEFAULT_API_KEY_ROUTE_MODE: ApiKeyRouteMode = 'normal'
 export const DEFAULT_HYBRID_SCORING_CONTEXT_MODE: ApiKeyHybridRoutingConfig['scoringContextMode'] = 'full_request'
 export const DEFAULT_HYBRID_QUALITY_PREFERENCE: ApiKeyHybridRoutingConfig['qualityPreference'] = 'balanced'
 export const DEFAULT_HYBRID_SCORING_TIMEOUT_MS = 15000
-export const DEFAULT_HYBRID_FAILURE_DEFAULT_LEVEL = 7
+export const DEFAULT_HYBRID_SCORING_FALLBACK_MAX_LEVEL = 5
 export const DEFAULT_HYBRID_SCORING_CACHE_ENABLED = true
 export const DEFAULT_HYBRID_SCORING_CACHE_TTL_SECONDS = 300
 export const DEFAULT_HYBRID_AFFINITY_TTL_SECONDS = 900
@@ -20,6 +20,7 @@ export const DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE: ApiKeyHybridQuality
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_TRIGGER_LEVEL = 6
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 2
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION: ApiKeyHybridQualityInspectionConfig['failureAction'] = 'repair_then_upgrade'
+export const DEFAULT_HYBRID_QUALITY_INSPECTION_UNAVAILABLE_ACTION: ApiKeyHybridQualityInspectionConfig['unavailableAction'] = 'pass_through'
 
 export function normalizeApiKeyRouteMode(value: unknown): ApiKeyRouteMode {
   if (value === undefined || value === null || value === '') return DEFAULT_API_KEY_ROUTE_MODE
@@ -57,12 +58,12 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     60000,
     '混合路由评分超时时间必须是 1000-60000 毫秒'
   )
-  const failureDefaultLevel = normalizeIntegerRange(
-    record.failureDefaultLevel,
-    DEFAULT_HYBRID_FAILURE_DEFAULT_LEVEL,
-    1,
-    10,
-    '混合路由评分失败参考等级必须是 1-10'
+  const scoringFallbackMaxLevel = normalizeIntegerRange(
+    record.scoringFallbackMaxLevel,
+    DEFAULT_HYBRID_SCORING_FALLBACK_MAX_LEVEL,
+    2,
+    5,
+    '混合路由评分不可用兜底上限必须是 2-5'
   )
   const scoringCacheEnabled = DEFAULT_HYBRID_SCORING_CACHE_ENABLED
   const scoringCacheTtlSeconds = normalizeIntegerRange(
@@ -104,7 +105,7 @@ export function normalizeHybridRoutingConfig(value: unknown): ApiKeyHybridRoutin
     scoringContextMode,
     qualityPreference,
     scoringTimeoutMs,
-    failureDefaultLevel,
+    scoringFallbackMaxLevel,
     scoringCacheEnabled,
     scoringCacheTtlSeconds,
     cacheAffinityEnabled,
@@ -139,7 +140,7 @@ export function higherHybridLevelRoutes(
 
 export function clampHybridLevel(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numeric)) return DEFAULT_HYBRID_FAILURE_DEFAULT_LEVEL
+  if (!Number.isFinite(numeric)) return DEFAULT_HYBRID_SCORING_FALLBACK_MAX_LEVEL
   return Math.min(10, Math.max(1, Math.round(numeric)))
 }
 
@@ -166,7 +167,8 @@ function normalizeQualityInspectionConfig(
       triggerMode: DEFAULT_HYBRID_QUALITY_INSPECTION_TRIGGER_MODE,
       maxTriggerLevel: DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_TRIGGER_LEVEL,
       maxRetries: DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES,
-      failureAction: DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION
+      failureAction: DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION,
+      unavailableAction: DEFAULT_HYBRID_QUALITY_INSPECTION_UNAVAILABLE_ACTION
     }
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -200,7 +202,8 @@ function normalizeQualityInspectionConfig(
       2,
       '混合路由质量评分重试次数必须是 0-2'
     ),
-    failureAction: normalizeQualityInspectionFailureAction(record.failureAction)
+    failureAction: normalizeQualityInspectionFailureAction(record.failureAction),
+    unavailableAction: normalizeQualityInspectionUnavailableAction(record.unavailableAction)
   }
 }
 
@@ -216,6 +219,12 @@ function normalizeQualityInspectionFailureAction(value: unknown): ApiKeyHybridQu
   throw new Error('混合路由质量评分失败动作无效')
 }
 
+function normalizeQualityInspectionUnavailableAction(value: unknown): ApiKeyHybridQualityInspectionConfig['unavailableAction'] {
+  if (value === undefined || value === null || value === '') return DEFAULT_HYBRID_QUALITY_INSPECTION_UNAVAILABLE_ACTION
+  if (value === 'pass_through' || value === 'return_error') return value
+  throw new Error('混合路由质量评分不可用处理方式无效')
+}
+
 function normalizeLevelRoutes(value: unknown): ApiKeyHybridLevelRoute[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error('混合路由等级范围不能为空')
@@ -225,6 +234,14 @@ function normalizeLevelRoutes(value: unknown): ApiKeyHybridLevelRoute[] {
     .sort((left, right) => left.minLevel - right.minLevel || left.maxLevel - right.maxLevel)
   if (!routes.length) {
     throw new Error('混合路由至少需要一个启用的等级范围')
+  }
+  const targetModelKeys = new Set(routes.map((route) => route.targetModel.trim().toLowerCase()))
+  if (targetModelKeys.size < 2) {
+    throw new Error('混合路由至少需要配置 2 个不同的目标模型')
+  }
+  const firstRoute = routes.find((route) => route.minLevel === 1)
+  if (!firstRoute || firstRoute.maxLevel < 2 || firstRoute.maxLevel > 5) {
+    throw new Error('混合路由最低档必须从等级 1 开始，并覆盖 1-2 到 1-5 之间的范围')
   }
   const coverage = new Set<number>()
   for (const route of routes) {

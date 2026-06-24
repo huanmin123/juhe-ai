@@ -70,15 +70,15 @@ import {
   type ParsedUsage
 } from '../usage/types.js'
 import {
-  applyGatewayProtocolStreamUsageFallback,
-  extractGatewayProtocolJsonSemanticFrames,
-  gatewayProtocolClientErrorProtocolForProfile,
-  gatewayProtocolDefaultClientProfileForProfile,
+  applyGatewayProtocolStreamUsageFallbackForRequest,
+  extractGatewayProtocolJsonSemanticFramesForRequest,
+  gatewayProtocolClientErrorProtocolForRequest,
+  gatewayProtocolDefaultClientProfileForRequest,
   gatewayProtocolResponseEndpointFamilyForRequest,
-  gatewayProtocolResponseProtocolForProfile,
-  parseGatewayProtocolUsageFromJsonBuffer,
-  parseGatewayProtocolUsageFromJsonTextFragment,
-  parseGatewayProtocolErrorPayload
+  gatewayProtocolResponseProtocolForRequest,
+  parseGatewayProtocolUsageFromJsonBufferForRequest,
+  parseGatewayProtocolUsageFromJsonTextFragmentForRequest,
+  parseGatewayProtocolErrorPayloadForRequest
 } from '../protocols/registry.js'
 import {
   requestModel
@@ -169,10 +169,10 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     accountStateMutationEnabled
   } = input
 
-  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForProfile(account)
-  const responseProtocol = gatewayProtocolResponseProtocolForProfile(account)
+  const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(req, account)
+  const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, account)
   const responseEndpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(req, account)
-  const defaultClientProfile = gatewayProtocolDefaultClientProfileForProfile(account)
+  const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(req, account)
   if (!upstreamResponse.body) {
     const responsePayload = gatewayErrorPayload('上游响应体为空', 'upstream_response_error')
     const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
@@ -272,7 +272,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     throw error
   }
 
-  const streamUsageFallback = applyGatewayProtocolStreamUsageFallback(req, account, streamResult.usage, {
+  const streamUsageFallback = applyGatewayProtocolStreamUsageFallbackForRequest(req, account, streamResult.usage, {
     outputReceived: streamResult.outputReceived,
     estimatedOutputTokens: streamResult.estimatedOutputTokens
   })
@@ -576,6 +576,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     } else if (upstreamResponse.ok) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const inspectJsonResponse = isOpenAIJsonResponseContentType(contentType)
+        && shouldBufferNonStreamJsonResponse(input)
       if (inspectJsonResponse) {
         const pipeResult = await pipeNonStreamUpstreamResponseForInspection(upstreamResponse.body, res, {
           startedAt,
@@ -830,9 +831,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     throw error
   }
   if (responseBody) {
-    usage = parseGatewayProtocolUsageFromJsonBuffer(account, responseBody)
+    usage = parseGatewayProtocolUsageFromJsonBufferForRequest(req, account, responseBody)
   } else if (upstreamResponse.ok) {
-    usage = parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText)
+    usage = parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText)
   }
   if (upstreamResponse.ok) {
     usage = applyNonStreamUsageFallback({
@@ -845,7 +846,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     })
   }
   if (!upstreamResponse.ok) {
-    errorPayload = parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
+    errorPayload = parseGatewayProtocolErrorPayloadForRequest(req, account, responseBodyText ?? '', upstreamResponse.headers)
   }
   auditCapture.completeAttempt(auditAttemptId, {
     statusCode: upstreamResponse.status,
@@ -864,6 +865,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     errorPayload
   }
+}
+
+function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): boolean {
+  return Boolean(
+    (input.responseInspectionPolicies?.length ?? 0) > 0
+    || input.clientStrategy?.codexCompactionExpected === true
+    || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
+  )
 }
 
 async function inspectBufferedHybridQualityResponse(input: {
@@ -886,6 +895,21 @@ async function inspectBufferedHybridQualityResponse(input: {
   if (!hybridRoute || !input.upstreamResponse.ok) {
     return undefined
   }
+  if (hybridRoute.scoringFallbackApplied) {
+    input.auditCapture.addGatewayMetadata({
+      label: 'hybrid_quality_inspection',
+      metadata: {
+        triggered: false,
+        triggerReason: 'scoring_fallback_skip_quality_inspection',
+        pass: true,
+        routeLevel: hybridRoute.scoring.level,
+        targetModel: hybridRoute.targetModel,
+        qualityRetryCount: hybridRoute.qualityRetryCount,
+        scoringFallbackApplied: true
+      }
+    })
+    return undefined
+  }
   const quality = await inspectHybridGatewayQuality({
     req: input.req,
     apiKeyRecord: hybridRoute.apiKeyRecord,
@@ -906,7 +930,7 @@ async function inspectBufferedHybridQualityResponse(input: {
   if (!quality.triggered || quality.pass) {
     return undefined
   }
-  const usage = parseGatewayProtocolUsageFromJsonBuffer(input.account, input.responseBody)
+  const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
   const message = hybridQualityFailureMessage(quality)
   const errorCode = quality.errorCode ?? `hybrid_quality_${quality.result?.failureType ?? 'failed'}`
   input.auditCapture.completeAttempt(input.auditAttemptId, {
@@ -1008,7 +1032,7 @@ function applyNonStreamUsageFallback(input: {
   } catch {
     return input.usage
   }
-  const frames = extractGatewayProtocolJsonSemanticFrames(parsed, input.req, input.account)
+  const frames = extractGatewayProtocolJsonSemanticFramesForRequest(parsed, input.req, input.account)
   const outputText = frames
     .filter((frame) => (frame.frameType === 'output_text_delta' || frame.frameType === 'output_text_done') && typeof frame.text === 'string')
     .map((frame) => frame.text ?? '')
@@ -1016,7 +1040,7 @@ function applyNonStreamUsageFallback(input: {
     .join('\n')
   const outputReceived = outputText.length > 0 || frames.some((frame) => frame.visibleOutput === true)
   if (!outputReceived) return input.usage
-  const fallback = applyGatewayProtocolStreamUsageFallback(input.req, input.account, input.usage, {
+  const fallback = applyGatewayProtocolStreamUsageFallbackForRequest(input.req, input.account, input.usage, {
     outputReceived,
     estimatedOutputTokens: outputText ? estimateTokenCountFromText(outputText) : undefined
   })

@@ -47,10 +47,20 @@ export function apiKeyRouteModeText(apiKey: ApiKeySummary): string {
 
 export function apiKeyHybridRouteSummary(apiKey: ApiKeySummary): string {
   if (apiKey.routeMode !== 'hybrid' || !apiKey.hybridRoutingConfig) return '-'
-  return apiKey.hybridRoutingConfig.levelRoutes
+  const routes = apiKey.hybridRoutingConfig.levelRoutes
     .filter((route) => route.enabled)
     .map((route) => `${route.minLevel}-${route.maxLevel}：${route.targetModel}`)
     .join(' / ') || '-'
+  const quality = apiKey.hybridRoutingConfig.qualityInspection
+  const qualityText = quality?.enabled
+    ? `质量评分：${quality.scoringModel}，不可用${quality.unavailableAction === 'return_error' ? '返回错误' : '放行原 200'}`
+    : '质量评分：关闭'
+  return [
+    `评分模型：${apiKey.hybridRoutingConfig.scoringModel}`,
+    `评分不可用兜底：1-${apiKey.hybridRoutingConfig.scoringFallbackMaxLevel}`,
+    qualityText,
+    `等级区间：${routes}`
+  ].join('\n')
 }
 
 function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefined, binding: ApiKeyGroupBindingSummary, index: number): string {

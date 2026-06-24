@@ -44,7 +44,8 @@ const deepseekModel = 'deepseek-ai-v4-flash'
 const glmModel = 'glm-5.2'
 const gptModel = 'gpt-5.5'
 const opusModel = 'claude-opus-4-8'
-const failureDefaultLevel = 7
+const scoringFallbackMaxLevel = 5
+const mockDefaultLevel = 7
 const bulkExperimentCount = 120
 
 const levelRoutes: ApiKeyHybridRoutingConfig['levelRoutes'] = [
@@ -101,6 +102,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: HybridMockHit[] = []
+let scoringFailoverFailureConsumed = false
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -124,10 +126,19 @@ try {
 
     const scoring = createHybridGroupAccount({
       groupName: 'Hybrid Mock 评分分组',
-      accountName: 'Hybrid Mock GLM 评分账户',
+      accountName: 'Hybrid Mock GLM 评分主账户',
       providerCode: GLM_PROVIDER_CODE,
       providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
-      upstreamApiKey: 'sk-hybrid-scoring',
+      upstreamApiKey: 'sk-hybrid-scoring-primary',
+      baseUrl: upstreamRootUrl,
+      supportedModel: scoringModel
+    })
+    createHybridAdditionalAccount({
+      groupId: scoring.groupId,
+      accountName: 'Hybrid Mock GLM 评分备用账户',
+      providerCode: GLM_PROVIDER_CODE,
+      providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+      upstreamApiKey: 'sk-hybrid-scoring-backup',
       baseUrl: upstreamRootUrl,
       supportedModel: scoringModel
     })
@@ -183,7 +194,7 @@ try {
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
         scoringTimeoutMs: 10_000,
-        failureDefaultLevel,
+        scoringFallbackMaxLevel,
         scoringCacheEnabled: true,
         scoringCacheTtlSeconds: 300,
         cacheAffinityEnabled: true,
@@ -216,7 +227,7 @@ try {
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
         scoringTimeoutMs: 10_000,
-        failureDefaultLevel,
+        scoringFallbackMaxLevel,
         scoringCacheEnabled: true,
         scoringCacheTtlSeconds: 300,
         cacheAffinityEnabled: true,
@@ -229,7 +240,8 @@ try {
           triggerMode: 'always_for_hybrid',
           maxTriggerLevel: 6,
           maxRetries: 2,
-          failureAction: 'repair_then_upgrade'
+          failureAction: 'repair_then_upgrade',
+          unavailableAction: 'pass_through'
         },
         levelRoutes
       } satisfies ApiKeyHybridRoutingConfig,
@@ -251,7 +263,7 @@ try {
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
         scoringTimeoutMs: 10_000,
-        failureDefaultLevel,
+        scoringFallbackMaxLevel: 3,
         scoringCacheEnabled: true,
         scoringCacheTtlSeconds: 300,
         cacheAffinityEnabled: true,
@@ -264,7 +276,8 @@ try {
           triggerMode: 'always_for_hybrid',
           maxTriggerLevel: 6,
           maxRetries: 2,
-          failureAction: 'repair_then_upgrade'
+          failureAction: 'repair_then_upgrade',
+          unavailableAction: 'pass_through'
         },
         levelRoutes
       } satisfies ApiKeyHybridRoutingConfig,
@@ -287,17 +300,25 @@ try {
       })
     }
 
-    await assertHybridGatewayFailure({
+    await assertHybridRequest({
+      baseUrl,
+      localApiKey: apiKey.key,
+      marker: 'HYBRID_LEVEL_5_SCORING_FAILOVER',
+      expectedModel: glmModel,
+      expectedRouteScoringHits: 2,
+      expectedDistinctRouteScoringAuthorizations: 2,
+      expectedQualityScoringHits: 1,
+      sessionId: 'scoring-account-failover'
+    })
+
+    await assertHybridRequest({
       baseUrl,
       localApiKey: apiKey.key,
       marker: 'HYBRID_SCORE_INVALID',
-      sessionId: 'invalid-scoring',
-      expectedStatus: 502,
-      expectedErrorCode: 'hybrid_scoring_failed',
-      expectedScoringHits: 1,
-      expectedTargetHits: 0
+      expectedModel: deepseekModel,
+      expectedQualityScoringHits: 0,
+      sessionId: 'invalid-scoring'
     })
-
     await assertHybridRequest({
       baseUrl,
       localApiKey: apiKey.key,
@@ -362,7 +383,7 @@ try {
 
     usageRecordQueue.flushAllUsageRecordQueue()
     const scoringUsageCount = scoringUsageRecordCount()
-    const expectedRequests = basicCases.length + 1 + 2 + 3 + 2 + bulkExperimentCount
+    const expectedRequests = basicCases.length + 1 + 1 + 2 + 3 + 2 + bulkExperimentCount
     const expectedScoringUsageCount = expectedRequests - 1
     assert(scoringUsageCount >= expectedScoringUsageCount, `评分使用记录数量不足，期望至少 ${expectedScoringUsageCount}，实际 ${scoringUsageCount}`)
     assertHybridScoringLargeBodyGuard()
@@ -378,15 +399,23 @@ try {
       marker: 'HYBRID_LEVEL_5_QUALITY_FAIL',
       sessionId: 'quality-upgrade'
     })
-    await assertHybridGatewayFailure({
+    await assertHybridRequest({
       baseUrl,
       localApiKey: qualityUnavailableApiKey.key,
       marker: 'HYBRID_LEVEL_5_QUALITY_FAIL',
+      expectedModel: glmModel,
+      expectedQualityScoringHits: 0,
+      sessionId: 'quality-unavailable'
+    })
+    await assertHybridGatewayFailure({
+      baseUrl,
+      localApiKey: qualityUnavailableApiKey.key,
+      marker: 'HYBRID_SCORE_INVALID_NO_LOW_POOL',
       sessionId: 'quality-unavailable',
       expectedStatus: 503,
-      expectedErrorCode: 'no_quality_scoring_account',
+      expectedErrorCode: 'hybrid_scoring_fallback_unavailable',
       expectedScoringHits: 1,
-      expectedTargetHits: 1
+      expectedTargetHits: 0
     })
     usageRecordQueue.flushAllUsageRecordQueue()
     const qualityScoringUsageCount = qualityScoringUsageRecordCount()
@@ -484,10 +513,43 @@ function createHybridGroupAccount(input: {
   return { accountId: account.id, groupId: group.id }
 }
 
+function createHybridAdditionalAccount(input: {
+  accountName: string
+  baseUrl: string
+  groupId: string
+  providerCode: ProviderCode
+  providerProtocolProfileId: string
+  supportedModel: string
+  upstreamApiKey: string
+  clientCompatibility?: 'openai_standard' | 'codex_responses'
+}): string {
+  const account = repositories.createAccount({
+    providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    name: input.accountName,
+    type: 'api_key',
+    clientCompatibility: input.clientCompatibility ?? 'openai_standard',
+    credentials: {
+      api_key: input.upstreamApiKey,
+      base_url: input.baseUrl,
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    groupId: input.groupId,
+    status: 'active',
+    schedulable: true,
+    concurrencyLimit: 16,
+    supportedModels: [input.supportedModel]
+  }, access)
+  assert.deepEqual(account.supportedModels, [input.supportedModel])
+  return account.id
+}
+
 async function assertHybridRequest(input: {
   baseUrl: string
   expectedModel: string
+  expectedDistinctRouteScoringAuthorizations?: number
   expectedQualityScoringHits?: number
+  expectedRouteScoringHits?: number
   localApiKey: string
   marker: string
   sessionId: string
@@ -517,7 +579,14 @@ async function assertHybridRequest(input: {
   const routeScoringHits = hits.filter(isRouteScoringHit)
   const qualityScoringHits = hits.filter(isQualityScoringHit)
   const targetHits = hits.filter(isTargetHit)
-  assert.equal(routeScoringHits.length, 1, `每次混合请求应恰好调用一次入口评分模型，实际 ${routeScoringHits.length}`)
+  assert.equal(routeScoringHits.length, input.expectedRouteScoringHits ?? 1, `混合请求入口评分模型调用次数错误，实际 ${routeScoringHits.length}`)
+  if (input.expectedDistinctRouteScoringAuthorizations !== undefined) {
+    assert.equal(
+      new Set(routeScoringHits.map((hit) => hit.authorization)).size,
+      input.expectedDistinctRouteScoringAuthorizations,
+      `混合请求入口评分模型账号切换错误，实际不同上游凭据数 ${new Set(routeScoringHits.map((hit) => hit.authorization)).size}`
+    )
+  }
   if (input.expectedQualityScoringHits !== undefined) {
     assert.equal(qualityScoringHits.length, input.expectedQualityScoringHits, `混合请求质量评分触发次数错误，实际 ${qualityScoringHits.length}`)
   } else {
@@ -748,6 +817,20 @@ function createHybridMockUpstream(): http.Server {
         rawUrl: req.url ?? ''
       })
       if (model === scoringModel) {
+        if (
+          marker === 'HYBRID_LEVEL_5_SCORING_FAILOVER'
+          && !scoringFailoverFailureConsumed
+        ) {
+          scoringFailoverFailureConsumed = true
+          writeJson(res, {
+            error: {
+              message: 'mock scoring account failed once',
+              type: 'server_error',
+              code: 'mock_scoring_account_failed_once'
+            }
+          }, 500)
+          return
+        }
         writeJson(res, bodyText.includes('响应质量评分器')
           ? qualityResponseBody(bodyText)
           : scoringResponseBody(bodyText))
@@ -870,7 +953,7 @@ function openAIChatResponse(content: string, usage: Record<string, unknown>): Re
 function levelForBodyText(bodyText: string): number {
   const match = bodyText.match(/HYBRID_LEVEL_(10|[1-9])_/)
   if (match?.[1]) return Number(match[1])
-  return failureDefaultLevel
+  return mockDefaultLevel
 }
 
 function markerForBodyText(bodyText: string): string {
@@ -889,8 +972,8 @@ function safeJsonObject(text: string): Record<string, unknown> {
   }
 }
 
-function writeJson(res: http.ServerResponse, body: Record<string, unknown>): void {
-  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+function writeJson(res: http.ServerResponse, body: Record<string, unknown>, statusCode = 200): void {
+  res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
 }
 

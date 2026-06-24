@@ -223,7 +223,7 @@ try {
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
         scoringTimeoutMs: 60_000,
-        failureDefaultLevel: 7,
+        scoringFallbackMaxLevel: 5,
         scoringCacheEnabled: true,
         scoringCacheTtlSeconds: 300,
         cacheAffinityEnabled: true,

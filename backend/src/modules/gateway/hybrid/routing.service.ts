@@ -41,6 +41,7 @@ export type HybridGatewayRouteResult =
     config: ApiKeyHybridRoutingConfig
     targetModel: string
     affinityApplied: boolean
+    scoringFallbackApplied: boolean
   }
   | {
     outcome: 'skipped'
@@ -60,6 +61,7 @@ export interface HybridGatewayRuntimeRoute {
   route: ApiKeyHybridLevelRoute
   targetModel: string
   affinityApplied: boolean
+  scoringFallbackApplied: boolean
   qualityRetryCount: number
 }
 
@@ -100,7 +102,62 @@ export async function resolveHybridGatewayRoute(input: {
     signal: input.signal
   })
   if (scoring.failed) {
-    const reason = scoring.errorCode ?? 'hybrid_scoring_failed'
+    const fallbackTarget = await selectHybridScoringFallbackTarget({
+      req: input.req,
+      apiKeyRecord: input.apiKeyRecord,
+      config,
+      requestClientCompatibility: input.requestClientCompatibility
+    })
+    if (fallbackTarget) {
+      const routeDiagnostics = {
+        traceId: input.traceId,
+        apiKeyId: input.apiKeyRecord.id,
+        sessionId: input.req.get?.('x-session-id'),
+        clientRequestId: input.req.get?.('x-client-request-id'),
+        endpoint: input.endpoint,
+        outcome: 'selected',
+        level: scoring.level,
+        confidence: scoring.confidence,
+        scoringDefaulted: scoring.defaulted,
+        scoringCacheHit: scoring.cacheHit === true,
+        scoringAccountId: scoring.scoringAccountId,
+        scoringErrorCode: scoring.errorCode,
+        scoringErrorMessage: scoring.errorMessage,
+        scoringFactors: scoring.factors,
+        scoringReason: scoring.reason,
+        targetModel: fallbackTarget.route.targetModel,
+        targetGroupId: fallbackTarget.groupId,
+        levelRange: [fallbackTarget.route.minLevel, fallbackTarget.route.maxLevel],
+        scoringFallbackApplied: true,
+        scoringFallbackReason: scoring.errorCode ?? 'hybrid_scoring_failed',
+        scoringFallbackMaxLevel: config.scoringFallbackMaxLevel,
+        affinityApplied: false
+      }
+      input.auditCapture.addGatewayMetadata({
+        label: 'hybrid_route',
+        metadata: routeDiagnostics
+      })
+      hybridRouteDiagnosticsChannel.publish(routeDiagnostics)
+      await rewriteHybridRequestModel(input.req, fallbackTarget.route.targetModel, input.signal)
+      return {
+        outcome: 'selected',
+        apiKeyRecord: {
+          ...input.apiKeyRecord,
+          selected_group_id: fallbackTarget.groupId
+        },
+        groupId: fallbackTarget.groupId,
+        groupAccess: fallbackTarget.groupAccess,
+        accounts: fallbackTarget.accounts,
+        responseInspectionPolicies: fallbackTarget.responseInspectionPolicies,
+        scoring,
+        route: fallbackTarget.route,
+        config,
+        targetModel: fallbackTarget.route.targetModel,
+        affinityApplied: false,
+        scoringFallbackApplied: true
+      }
+    }
+    const reason = 'hybrid_scoring_fallback_unavailable'
     hybridRouteDiagnosticsChannel.publish({
       traceId: input.traceId,
       apiKeyId: input.apiKeyRecord.id,
@@ -109,6 +166,7 @@ export async function resolveHybridGatewayRoute(input: {
       endpoint: input.endpoint,
       outcome: 'failed',
       reason,
+      scoringFallbackMaxLevel: config.scoringFallbackMaxLevel,
       scoringDefaulted: scoring.defaulted,
       scoringCacheHit: scoring.cacheHit === true,
       scoringAccountId: scoring.scoringAccountId,
@@ -186,7 +244,8 @@ export async function resolveHybridGatewayRoute(input: {
       route: candidateRoute,
       config,
       targetModel: candidateRoute.targetModel,
-      affinityApplied: affinity.applied
+      affinityApplied: affinity.applied,
+      scoringFallbackApplied: false
     }
   }
   hybridRouteDiagnosticsChannel.publish({
@@ -269,6 +328,40 @@ async function selectHybridTargetGroup(input: {
     targetModel: input.route.targetModel,
     requestClientCompatibility: input.requestClientCompatibility
   })
+}
+
+async function selectHybridScoringFallbackTarget(input: {
+  req: Request
+  apiKeyRecord: GatewayApiKeyRow
+  config: ApiKeyHybridRoutingConfig
+  requestClientCompatibility?: ClientCompatibilityCapability
+}): Promise<{
+  groupId: string
+  groupAccess: GroupUsageAccessMetadata
+  accounts: OpenAIAccountSecret[]
+  responseInspectionPolicies: ResponseInspectionPolicySummary[]
+  route: ApiKeyHybridLevelRoute
+} | undefined> {
+  for (const route of hybridScoringFallbackRoutes(input.config)) {
+    const target = await selectHybridTargetGroup({
+      req: input.req,
+      apiKeyRecord: input.apiKeyRecord,
+      route,
+      requestClientCompatibility: input.requestClientCompatibility
+    })
+    if (!target) continue
+    return {
+      ...target,
+      route
+    }
+  }
+  return undefined
+}
+
+function hybridScoringFallbackRoutes(config: ApiKeyHybridRoutingConfig): ApiKeyHybridLevelRoute[] {
+  return config.levelRoutes
+    .filter((route) => route.enabled && route.minLevel <= config.scoringFallbackMaxLevel)
+    .sort((left, right) => left.minLevel - right.minLevel || left.maxLevel - right.maxLevel)
 }
 
 async function rewriteHybridRequestModel(req: Request, targetModel: string, signal?: AbortSignal): Promise<void> {

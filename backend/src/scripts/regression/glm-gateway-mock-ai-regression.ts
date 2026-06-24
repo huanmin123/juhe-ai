@@ -159,6 +159,18 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream',
       expectedContent: 'glm mock sse ok'
     })
+    await assertGlmCodexResponsesBridgeCustomTool({
+      baseUrl,
+      localApiKey: coding.localApiKey,
+      model: 'glm-5.2',
+      expectedPath: '/api/coding/paas/v4/chat/completions',
+      expectedAuthorization: 'Bearer sk-glm-coding-upstream'
+    })
+    await assertGlmCodexResponsesBridgeRejectsForcedNativeTool({
+      baseUrl,
+      localApiKey: coding.localApiKey,
+      model: 'glm-5.2'
+    })
     await assertGlmCodexResponsesBridgeRestoresPreviousResponseId({
       baseUrl,
       localApiKey: coding.localApiKey,
@@ -182,6 +194,13 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream'
     })
     await assertGlmCodexResponsesBridgeFailsOnErrorEvent({
+      baseUrl,
+      localApiKey: coding.localApiKey,
+      model: 'glm-5.2',
+      expectedPath: '/api/coding/paas/v4/chat/completions',
+      expectedAuthorization: 'Bearer sk-glm-coding-upstream'
+    })
+    await assertGlmCodexResponsesBridgeFailsOnNetworkFinishReason({
       baseUrl,
       localApiKey: coding.localApiKey,
       model: 'glm-5.2',
@@ -595,6 +614,10 @@ async function assertGlmCodexResponsesBridge(input: {
           content: [{ type: 'input_text', text: 'previous glm tool task' }]
         },
         {
+          type: 'reasoning',
+          summary: [{ type: 'summary_text', text: 'glm preserved thinking before tools' }]
+        },
+        {
           type: 'function_call',
           call_id: 'call_glm_history_a',
           name: 'shell_command',
@@ -658,10 +681,6 @@ async function assertGlmCodexResponsesBridge(input: {
             required: ['command'],
             additionalProperties: false
           }
-        },
-        {
-          type: 'web_search',
-          external_web_access: false
         }
       ],
       tool_choice: 'auto',
@@ -671,9 +690,12 @@ async function assertGlmCodexResponsesBridge(input: {
   const text = await response.text()
   assert.equal(response.status, 200, `GLM Coding Codex Responses 桥接应成功，实际 HTTP ${response.status}: ${text}`)
   assert.match(text, /event: response\.created/, '桥接响应应输出 Responses created 事件')
+  assert.match(text, /event: response\.reasoning_summary_text\.delta/, '桥接响应应保留 GLM reasoning_content')
   assert.match(text, /event: response\.output_text\.delta/, '桥接响应应输出 Responses 文本 delta 事件')
   assert.match(text, /event: response\.completed/, '桥接响应应输出 Responses completed 事件')
+  assert.match(text, /glm mock reasoning/, 'GLM reasoning 内容应进入 Responses 事件')
   assert.match(text, new RegExp(input.expectedContent))
+  assert.match(text, /"type":"reasoning"/, '桥接响应应把 GLM reasoning_content 聚合成 Codex 可消费的 reasoning output item')
   assert.match(text, /"type":"function_call"/, '桥接响应应把 Chat tool_calls 转成 Codex 可消费的 FunctionCall output item')
   assert(!text.includes('response.function_call_arguments.delta'), 'Codex 当前不消费 function_call_arguments.delta，桥接不应依赖该事件')
   assert(!text.includes('chat.completion.chunk'), '桥接后的下游响应不应泄漏 Chat Completions SSE 原始对象')
@@ -686,6 +708,10 @@ async function assertGlmCodexResponsesBridge(input: {
   const body = parseJsonObject(hits[0]?.bodyText ?? '')
   assert.equal(body.model, input.model)
   assert.equal(body.stream, true, 'GLM Coding Codex 桥接上游请求必须使用 Chat SSE')
+  assert.equal((body.thinking as { type?: unknown } | undefined)?.type, 'disabled', 'GLM Codex bridge 应禁用上游默认思考流以避免工具协议超时')
+  assert.equal(body.tool_stream, true, 'GLM 流式工具调用必须显式启用 tool_stream')
+  assert.equal(body.parallel_tool_calls, false, 'GLM Codex bridge 应强制串行工具调用，避免上游并行工具流超时')
+  assert.equal((body.stream_options as { include_usage?: unknown } | undefined)?.include_usage, true, 'GLM Codex bridge 应请求流式 usage')
   assert(Array.isArray(body.messages), 'GLM Coding Codex 桥接应把 Responses input 转成 Chat messages')
   assert.equal((body.messages as unknown[]).some((message) => JSON.stringify(message).includes('hello glm codex bridge')), true, 'Chat messages 应包含用户输入')
   const chatMessages = body.messages as Array<Record<string, unknown>>
@@ -694,7 +720,7 @@ async function assertGlmCodexResponsesBridge(input: {
     && (message.tool_calls as Array<{ id?: string }>).some((toolCall) => toolCall.id === 'call_glm_history_a'))
   assert(historyAssistantIndex >= 0, 'GLM Coding Codex 桥接应把历史 function_call 转成 assistant tool_calls')
   const historyAssistant = chatMessages[historyAssistantIndex] as { reasoning_content?: string; tool_calls?: Array<{ id?: string }> }
-  assert.equal(historyAssistant.reasoning_content, undefined, 'GLM Coding Codex 桥接不应透传 DeepSeek 专用 reasoning_content 字段')
+  assert.equal(historyAssistant.reasoning_content, 'glm preserved thinking before tools', 'GLM Coding Codex 桥接应按官方 preserved thinking 要求回传 reasoning_content')
   assert.equal(historyAssistant.tool_calls?.length, 2, 'GLM Coding Codex 桥接应把连续历史 function_call 合并到一个 assistant tool_calls 消息')
   assert.equal(chatMessages[historyAssistantIndex + 1]?.role, 'tool', '历史 assistant tool_calls 后应紧跟第一个 tool 输出')
   assert.equal(chatMessages[historyAssistantIndex + 1]?.tool_call_id, 'call_glm_history_a')
@@ -710,8 +736,145 @@ async function assertGlmCodexResponsesBridge(input: {
   assert(!JSON.stringify(chatMessages).includes('call_glm_unanswered'), '未收到输出的 dangling function_call 不应透传给 Chat 上游')
   assert(!JSON.stringify(chatMessages).includes('call_glm_orphan'), '找不到对应 function_call 的 orphan tool output 不应透传给 Chat 上游')
   assert(Array.isArray(body.tools), 'GLM Coding Codex 桥接应把 function tools 转成 Chat tools')
-  assert.equal((body.tools as unknown[]).length, 1, 'GLM Coding Codex 桥接首版只透传 function tools，不透传 web_search/namespace')
+  assert.equal((body.tools as unknown[]).length, 1, 'GLM Coding Codex 桥接应透传 function tools')
   assert.match(JSON.stringify(body.tools), /shell_command/)
+  assert.doesNotMatch(JSON.stringify(body.messages), /不能代执行以下 Responses 原生托管工具/, 'Chat-only bridge 不应注入 hosted tool 降级 system prompt')
+}
+
+async function assertGlmCodexResponsesBridgeCustomTool(input: {
+  baseUrl: string
+  localApiKey: string
+  model: string
+  expectedPath: string
+  expectedAuthorization: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${input.baseUrl}/v1/responses?trace=codex-custom-tool`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-custom-tool-session',
+        thread_id: 'glm-custom-tool-thread',
+        turn_id: 'glm-custom-tool-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hello glm custom codex bridge' }]
+        }
+      ],
+      stream: true,
+      store: false,
+      tools: [
+        {
+          type: 'custom',
+          name: 'apply_patch',
+          description: 'Apply a patch in the workspace.'
+        },
+        {
+          type: 'web_search',
+          external_web_access: false
+        }
+      ],
+      tool_choice: { type: 'custom', name: 'apply_patch' }
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `GLM custom tool Codex bridge 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.output_item\.added/, 'custom tool 应输出 output_item.added')
+  assert.match(text, /"type":"custom_tool_call"/, 'Chat custom wrapper tool_calls 必须还原为 Codex custom_tool_call')
+  assert.match(text, /"name":"apply_patch"/, 'custom_tool_call 应还原 Responses 原始工具名')
+  assert(text.includes('"input":"print(\\"glm custom bridge\\")"'), 'custom_tool_call 应从 Chat wrapper arguments.input 还原自由文本 input')
+  assert(!text.includes('"type":"function_call"'), 'custom tool 场景不应被错误还原成 function_call')
+
+  const hits = upstreamHits.slice(start)
+  assert.equal(hits.length, 1, 'GLM custom tool bridge 应只命中一次上游')
+  assert.equal(hits[0]?.path, input.expectedPath)
+  assert.equal(hits[0]?.rawUrl, `${input.expectedPath}?trace=codex-custom-tool`)
+  assert.equal(hits[0]?.authorization, input.expectedAuthorization)
+  const body = parseJsonObject(hits[0]?.bodyText ?? '')
+  assert(Array.isArray(body.tools), 'custom Responses tool 应转换为 Chat function wrapper')
+  assert.equal((body.tools as unknown[]).length, 1, 'custom tool 场景不应把 web_search 透传给 Chat 上游')
+  assert.match(JSON.stringify(body.tools), /custom__apply_patch/, 'custom Responses tool 应转换为 custom__ 前缀 Chat 工具名')
+  assert.match(JSON.stringify(body.tools), /"input"/, 'custom wrapper schema 必须包含 input 字段')
+  assert.equal((body.tool_choice as { function?: { name?: unknown } } | undefined)?.function?.name, 'custom__apply_patch', 'custom tool_choice 应映射到 Chat wrapper 工具名')
+  assert.doesNotMatch(JSON.stringify(body.messages), /不能代执行以下 Responses 原生托管工具/, '明确选择 custom tool 时不应注入未选 hosted tool 降级 system prompt')
+}
+
+async function assertGlmCodexResponsesBridgeRejectsForcedNativeTool(input: {
+  baseUrl: string
+  localApiKey: string
+  model: string
+}): Promise<void> {
+  const start = upstreamHits.length
+  const autoResponse = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-native-tool-auto-reject-session',
+        thread_id: 'glm-native-tool-auto-reject-thread',
+        turn_id: 'glm-native-tool-auto-reject-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: 'hello glm auto web search should reject as unsupported hosted tool',
+      stream: true,
+      store: false,
+      tools: [
+        {
+          type: 'web_search',
+          external_web_access: false
+        }
+      ],
+      tool_choice: 'auto'
+    })
+  })
+  const autoText = await autoResponse.text()
+  assert.notEqual(autoResponse.status, 200, `auto web_search 不能由 Chat-only bridge 代执行，实际返回成功：${autoText}`)
+  assert.match(autoText, /unsupported_codex_native_tool|不能执行 Responses 原生托管工具/, 'auto 原生托管工具应返回明确错误码或错误文案')
+  assert.equal(upstreamHits.length, start, 'auto web_search 被拒绝时不应命中 Chat 上游')
+
+  const response = await fetch(`${input.baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'glm-native-tool-reject-session',
+        thread_id: 'glm-native-tool-reject-thread',
+        turn_id: 'glm-native-tool-reject-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: input.model,
+      input: 'hello glm forced web search should reject',
+      stream: true,
+      store: false,
+      tools: [
+        {
+          type: 'web_search',
+          external_web_access: false
+        }
+      ],
+      tool_choice: { type: 'web_search' }
+    })
+  })
+  const text = await response.text()
+  assert.notEqual(response.status, 200, `强制 web_search 不能由 Chat-only bridge 代执行，实际返回成功：${text}`)
+  assert.match(text, /unsupported_codex_native_tool|不能执行 Responses 原生工具选择 web_search/, '强制原生托管工具应返回明确错误码或错误文案')
+  assert.equal(upstreamHits.length, start, '强制 web_search 被拒绝时不应命中 Chat 上游')
 }
 
 async function assertGlmCodexResponsesBridgeRestoresPreviousResponseId(input: {
@@ -859,9 +1022,12 @@ async function assertGlmCodexResponsesBridgeGatewaySummaryCompact(input: {
   })
   const text = await response.text()
   assert.equal(response.status, 200, `GLM Coding Codex bridge /responses/compact 应返回网关摘要，实际 HTTP ${response.status}: ${text}`)
-  const payload = JSON.parse(text) as { output?: Array<Record<string, unknown>> }
+  const payload = JSON.parse(text) as { id?: unknown; object?: unknown; created_at?: unknown; output?: Array<Record<string, unknown>> }
+  assert.equal(payload.object, 'response.compaction', '/responses/compact 应返回 OpenAI CompactResource 兼容 object')
+  assert.equal(typeof payload.id, 'string', '/responses/compact 应返回顶层 response id')
+  assert.equal(typeof payload.created_at, 'number', '/responses/compact 应返回 created_at')
   const compactItem = payload.output?.[0]
-  assert.equal(compactItem?.type, 'compaction_summary', '/responses/compact 应返回 Codex 可消费的 compaction_summary item')
+  assert.equal(compactItem?.type, 'compaction', '/responses/compact 应返回 OpenAI CompactResource compaction item')
   assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v2\.cmp_[^.]+\.[a-f0-9]{64}$/i, 'compact summary 应使用网关 snapshot reference envelope')
   let hits = upstreamHits.slice(start)
   assert.equal(hits.length, 1, 'GLM Coding Codex bridge /responses/compact 应通过内部 Chat Completions 摘要请求命中一次上游')
@@ -897,9 +1063,9 @@ async function assertGlmCodexResponsesBridgeGatewaySummaryCompact(input: {
     })
   })
   const bridgeText = await bridgeResponse.text()
-  assert.equal(bridgeResponse.status, 200, `GLM Coding Codex bridge 应能消费 compaction_summary，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
+  assert.equal(bridgeResponse.status, 200, `GLM Coding Codex bridge 应能消费 compaction item，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
   hits = upstreamHits.slice(start)
-  assert.equal(hits.length, 2, 'GLM compaction_summary 后续请求应再命中一次上游')
+  assert.equal(hits.length, 2, 'GLM compaction 后续请求应再命中一次上游')
   assert.match(hits[1]?.bodyText ?? '', /glm mock json ok/, '后续 Chat messages 应包含 compact 摘要文本')
   assert.match(hits[1]?.bodyText ?? '', /continue after compact summary/, '后续 Chat messages 应包含 compact 后的新输入')
 }
@@ -971,6 +1137,20 @@ async function assertGlmCodexResponsesBridgeFailsOnErrorEvent(input: {
   assert.match(text, /上游流式响应在输出前失败，请重试/, '上游 error 事件应向 Codex 客户端返回统一可重试文案')
   assert(!text.includes('glm mock stream error'), 'GLM 上游 error 原文不应泄露到 Codex Responses failed payload')
   assert(!text.includes('event: response.completed'), '上游 Chat SSE error 事件时桥接不应输出 completed 事件')
+}
+
+async function assertGlmCodexResponsesBridgeFailsOnNetworkFinishReason(input: {
+  baseUrl: string
+  localApiKey: string
+  model: string
+  expectedPath: string
+  expectedAuthorization: string
+}): Promise<void> {
+  const text = await requestGlmCodexBridgeFailure(input, 'hello glm codex bridge network finish')
+  assert.match(text, /event: response\.failed/, 'GLM network_error finish_reason 应转换为 Responses failed 事件')
+  assert.match(text, /upstream_retryable_error/, 'GLM network_error finish_reason 应标记为可重试上游错误')
+  assert.match(text, /上游流式响应在输出前失败，请重试/, 'GLM network_error finish_reason 应返回 Codex 可重试文案')
+  assert(!text.includes('event: response.completed'), 'GLM network_error finish_reason 不应输出 completed 事件')
 }
 
 async function requestGlmCodexBridgeFailure(input: {
@@ -1106,6 +1286,42 @@ function createGlmMockUpstream(): http.Server {
           res.end('event: error\ndata: {"error":{"message":"glm mock stream error","code":"glm_mock_stream_error"}}\n\n')
           return
         }
+        if (bodyText.includes('hello glm codex bridge network finish')) {
+          res.write('data: {"id":"chatcmpl-glm-mock-sse","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"network_error"}],"usage":{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}}\n\n')
+          res.end('data: [DONE]\n\n')
+          return
+        }
+        if (bodyText.includes('hello glm custom codex bridge')) {
+          const toolChoice = requestBody.tool_choice as { function?: { name?: unknown } } | undefined
+          const toolName = typeof toolChoice?.function?.name === 'string' ? toolChoice.function.name : 'custom__apply_patch'
+          res.write(`data: ${JSON.stringify({
+            id: 'chatcmpl-glm-mock-custom-tool',
+            object: 'chat.completion.chunk',
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_glm_mock_custom_tool',
+                      type: 'function',
+                      function: {
+                        name: toolName,
+                        arguments: '{"input":"print(\\"glm custom bridge\\")"}'
+                      }
+                    }
+                  ]
+                },
+                finish_reason: null
+              }
+            ]
+          })}\n\n`)
+          res.write('data: {"id":"chatcmpl-glm-mock-custom-tool","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}\n\n')
+          res.end('data: [DONE]\n\n')
+          return
+        }
+        res.write('data: {"id":"chatcmpl-glm-mock-sse","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"glm mock reasoning"},"finish_reason":null}]}\n\n')
         res.write('data: {"id":"chatcmpl-glm-mock-sse","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"glm mock sse ok"},"finish_reason":null}]}\n\n')
         if (Array.isArray(requestBody.tools)) {
           res.write('data: {"id":"chatcmpl-glm-mock-sse","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_glm_mock_tool","type":"function","function":{"name":"shell_command","arguments":"{\\"command\\":\\"Get-Date\\"}"}}]},"finish_reason":null}]}\n\n')

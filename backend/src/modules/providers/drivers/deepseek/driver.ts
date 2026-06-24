@@ -34,6 +34,7 @@ import {
 import {
   buildCodexResponsesChatBridgeBody,
   codexResponsesChatBridgeRequiredEndpointMode,
+  isCodexResponsesChatBridgeRequest,
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
@@ -82,7 +83,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+    if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
       return {
@@ -90,6 +91,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
         body: await buildCodexResponsesChatBridgeBody(req, {
           defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
           includeReasoningContent: true,
+          streamOptionsIncludeUsage: true,
           modelOverride: modelMapping?.upstreamModel
         }, signal)
       }
@@ -111,19 +113,26 @@ export const deepSeekProviderDriver: ProviderDriver = {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     return transformCodexResponsesChatBridgeUpstreamResponse(req, response, {
       defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
-      enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
-      explicitMappingBridge: true,
+      enabled: shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping),
+      explicitMappingBridge: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
+      finishReasonFailures: {
+        insufficient_system_resource: {
+          code: 'upstream_retryable_error',
+          message: '上游模型资源不足，请重试'
+        }
+      },
       idPrefix: 'deepseek_bridge',
       model: modelMapping?.upstreamModel,
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
       onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
+      continueChatRequest: context?.codexResponsesChatBridgeContinueChatRequest,
       requestClientCompatibility: context?.requestClientCompatibility
     })
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+    if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
         supportedEndpointModes: account.supportedEndpointModes,
@@ -159,6 +168,10 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
   if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
     return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
   }
+  if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, 'codex_responses', modelMapping)) {
+    const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
+    return [buildUpstreamUrl(account.baseUrl, `/chat/completions${query}`)]
+  }
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
   const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
@@ -166,4 +179,20 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
     return []
   }
   return [buildUpstreamUrl(account.baseUrl, `${normalizedPath}${query}`)]
+}
+
+function shouldUseDeepSeekCodexResponsesChatBridge(
+  req: Request,
+  account: ProviderDriverAccount,
+  requestClientCompatibility: import('../../../../domain/types.js').ClientCompatibilityCapability | undefined,
+  modelMapping: ReturnType<typeof resolveOpenAIRequestModelMapping>
+): boolean {
+  if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
+    return true
+  }
+  return account.clientCompatibility === 'codex_responses'
+    && isCodexResponsesChatBridgeRequest(req, {
+      enabled: true,
+      requestClientCompatibility
+    })
 }

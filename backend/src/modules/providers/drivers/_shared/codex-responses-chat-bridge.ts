@@ -17,12 +17,16 @@ import {
   estimateTokenCountFromText,
   parseOpenAISseEventText
 } from '../../../gateway/protocols/openai-v1/stream-events.js'
-import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 import type { CodexResponsesChatBridgeCompletionHandler } from '../../../gateway/codex-responses/chat-bridge-state.js'
-
+import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 type JsonRecord = Record<string, unknown>
 const codexResponsesChatBridgeLocalValidationUrl = 'codex-responses-chat-bridge:local-validation'
+const codexCustomToolChatNamePrefix = 'custom__'
+
+type CodexResponsesChatBridgeRuntimeRequest = Request & {
+  codexResponsesChatBridgeToolAdaptersByChatName?: Map<string, CodexResponsesChatBridgeToolAdapter>
+}
 
 interface CodexResponsesChatBridgeRequestOptions {
   enabled: boolean
@@ -34,14 +38,39 @@ interface BuildCodexResponsesChatBridgeBodyOptions {
   defaultModel: string
   includeReasoningContent?: boolean
   modelOverride?: string
+  streamOptionsIncludeUsage?: boolean
+  thinking?: JsonRecord
+  parallelToolCalls?: boolean
+  toolStream?: boolean
 }
 
 interface TransformCodexResponsesChatBridgeResponseOptions extends CodexResponsesChatBridgeRequestOptions {
   defaultModel: string
+  finishReasonFailures?: Record<string, CodexResponsesChatBridgeFinishReasonFailure>
   idPrefix?: string
   model?: string
   previousResponseId?: string
   onCompleted?: CodexResponsesChatBridgeCompletionHandler
+  continueChatRequest?: unknown
+}
+
+interface CodexResponsesChatBridgeFinishReasonFailure {
+  code: string
+  message: string
+}
+
+interface CodexResponsesChatBridgeToolAdapter {
+  kind: 'function' | 'custom'
+  chatName: string
+  responsesName: string
+  namespace?: string
+}
+
+interface CodexResponsesChatBridgeToolPlan {
+  chatTools: JsonRecord[]
+  adaptersByChatName: Map<string, CodexResponsesChatBridgeToolAdapter>
+  adaptersByResponsesKey: Map<string, CodexResponsesChatBridgeToolAdapter>
+  unsupportedTools: string[]
 }
 
 interface ChatToolCallState {
@@ -49,6 +78,7 @@ interface ChatToolCallState {
   callId: string
   name: string
   arguments: string
+  adapter?: CodexResponsesChatBridgeToolAdapter
   outputIndex: number
   added: boolean
   done: boolean
@@ -58,6 +88,7 @@ interface PendingChatToolCall {
   callId: string
   name: string
   arguments: string
+  adapter?: CodexResponsesChatBridgeToolAdapter
   output?: string
 }
 
@@ -65,6 +96,12 @@ interface PendingChatToolCallGroup {
   calls: PendingChatToolCall[]
   deferredMessages: JsonRecord[]
   reasoningText: string
+}
+
+interface ResponsesInputToChatMessagesOptions {
+  includeReasoningContent?: boolean
+  forcedToolChoiceMessage?: string
+  unsupportedTools?: string[]
 }
 
 interface ChatToResponsesState {
@@ -87,8 +124,10 @@ interface ChatToResponsesState {
   outputText: string
   outputItems: JsonRecord[]
   toolCalls: Map<number, ChatToolCallState>
+  toolAdaptersByChatName: Map<string, CodexResponsesChatBridgeToolAdapter>
   usage?: JsonRecord
   estimatedInputTokens?: number
+  finishReasonFailures: Map<string, CodexResponsesChatBridgeFinishReasonFailure>
   completed: boolean
   failed: boolean
   terminalReceived: boolean
@@ -155,22 +194,41 @@ export async function buildCodexResponsesChatBridgeBody(
 ): Promise<Buffer> {
   const body = await parseGatewayJsonObject(req, signal)
   validateCodexResponsesChatBridgeBody(body)
+  const toolPlan = responsesToolsToChatToolPlan(body.tools)
+  const runtimeRequest = req as CodexResponsesChatBridgeRuntimeRequest
+  runtimeRequest.codexResponsesChatBridgeToolAdaptersByChatName = toolPlan.adaptersByChatName
+  const toolChoice = responsesToolChoiceToChatToolChoice(body.tool_choice, toolPlan)
+  throwIfUnsupportedResponsesTools(toolPlan.unsupportedTools, body.tool_choice, toolPlan)
   const chatBody: JsonRecord = {
     model: options.modelOverride ?? stringValue(body.model) ?? options.defaultModel,
     messages: responsesInputToChatMessages(body, {
-      includeReasoningContent: options.includeReasoningContent === true
+      includeReasoningContent: options.includeReasoningContent === true,
+      forcedToolChoiceMessage: forcedToolChoiceSystemMessage(body.tool_choice, toolPlan),
+      unsupportedTools: unsupportedToolsForSystemMessage(body.tool_choice, toolPlan)
     }),
     stream: true
   }
+  if (options.streamOptionsIncludeUsage === true) {
+    chatBody.stream_options = {
+      ...objectValue(body.stream_options),
+      include_usage: true
+    }
+  }
+  if (options.thinking && isPlainObject(options.thinking)) {
+    chatBody.thinking = options.thinking
+  }
 
-  const tools = responsesToolsToChatTools(body.tools)
-  if (tools.length > 0) {
-    chatBody.tools = tools
-    const toolChoice = responsesToolChoiceToChatToolChoice(body.tool_choice)
+  if (toolPlan.chatTools.length > 0) {
+    chatBody.tools = toolPlan.chatTools
+    if (options.toolStream === true) {
+      chatBody.tool_stream = true
+    }
     if (toolChoice !== undefined) {
       chatBody.tool_choice = toolChoice
     }
-    if (typeof body.parallel_tool_calls === 'boolean') {
+    if (typeof options.parallelToolCalls === 'boolean') {
+      chatBody.parallel_tool_calls = options.parallelToolCalls
+    } else if (typeof body.parallel_tool_calls === 'boolean') {
       chatBody.parallel_tool_calls = body.parallel_tool_calls
     }
   }
@@ -185,7 +243,6 @@ export async function buildCodexResponsesChatBridgeBody(
   if (typeof body.top_p === 'number') {
     chatBody.top_p = body.top_p
   }
-
   return Buffer.from(JSON.stringify(chatBody), 'utf8')
 }
 
@@ -218,10 +275,12 @@ export function transformCodexResponsesChatBridgeUpstreamResponse(
     ok: response.ok,
     headers,
     body: transformChatCompletionsSseToResponsesSse(response.body, {
+      finishReasonFailures: options.finishReasonFailures,
       idPrefix: options.idPrefix,
       estimatedInputTokens: estimateResponsesRequestInputTokens(req),
       model: options.model ?? stringValue((req.body as JsonRecord | undefined)?.model) ?? options.defaultModel,
       previousResponseId: options.previousResponseId,
+      toolAdaptersByChatName: (req as CodexResponsesChatBridgeRuntimeRequest).codexResponsesChatBridgeToolAdaptersByChatName,
       onCompleted: options.onCompleted
     })
   }
@@ -296,12 +355,19 @@ function validateCodexResponsesChatBridgeBody(body: JsonRecord): void {
 
 function responsesInputToChatMessages(
   body: JsonRecord,
-  options: { includeReasoningContent?: boolean } = {}
+  options: ResponsesInputToChatMessagesOptions = {}
 ): JsonRecord[] {
   const messages: JsonRecord[] = []
   const instructions = stringValue(body.instructions)
   if (instructions) {
     messages.push({ role: 'system', content: instructions })
+  }
+  const unsupportedToolsMessage = unsupportedToolsSystemMessage(options.unsupportedTools)
+  if (unsupportedToolsMessage) {
+    messages.push({ role: 'system', content: unsupportedToolsMessage })
+  }
+  if (options.forcedToolChoiceMessage) {
+    messages.push({ role: 'system', content: options.forcedToolChoiceMessage })
   }
   let pendingToolGroup = createPendingChatToolCallGroup()
   const input = body.input
@@ -331,10 +397,10 @@ function appendResponsesInputItemAsChatMessage(
   messages: JsonRecord[],
   pendingToolGroup: PendingChatToolCallGroup,
   item: unknown,
-  options: { includeReasoningContent?: boolean }
+  options: ResponsesInputToChatMessagesOptions
 ): PendingChatToolCallGroup {
   if (!isPlainObject(item)) return pendingToolGroup
-  if (item.type === 'compaction_summary') {
+  if (item.type === 'compaction' || item.type === 'compaction_summary') {
     const summary = responsesCompactionSummaryTextFromItem(item)
     if (!summary) return pendingToolGroup
     if (pendingToolGroup.calls.length > 0) {
@@ -358,18 +424,34 @@ function appendResponsesInputItemAsChatMessage(
     const name = stringValue(item.name)
     const callId = stringValue(item.call_id) ?? stringValue(item.id)
     if (!name || !callId) return pendingToolGroup
+    const namespace = stringValue(item.namespace)
     if (pendingToolGroup.calls.length > 0 && pendingToolCallsAllAnswered(pendingToolGroup)) {
       flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
       pendingToolGroup = createPendingChatToolCallGroup()
     }
     pendingToolGroup.calls.push({
       callId,
-      name,
+      name: namespace ? chatToolNameFromParts([namespace, name]) : name,
       arguments: stringValue(item.arguments) ?? ''
     })
     return pendingToolGroup
   }
-  if (item.type === 'function_call_output') {
+  if (item.type === 'custom_tool_call') {
+    const name = stringValue(item.name)
+    const callId = stringValue(item.call_id) ?? stringValue(item.id)
+    if (!name || !callId) return pendingToolGroup
+    if (pendingToolGroup.calls.length > 0 && pendingToolCallsAllAnswered(pendingToolGroup)) {
+      flushPendingChatToolCallGroup(messages, pendingToolGroup, options)
+      pendingToolGroup = createPendingChatToolCallGroup()
+    }
+    pendingToolGroup.calls.push({
+      callId,
+      name: customChatToolName(name),
+      arguments: JSON.stringify({ input: stringValue(item.input) ?? '' })
+    })
+    return pendingToolGroup
+  }
+  if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
     const callId = stringValue(item.call_id)
     if (!callId) return pendingToolGroup
     const call = pendingToolGroup.calls.find((candidate) => candidate.callId === callId && candidate.output === undefined)
@@ -401,7 +483,7 @@ function pendingToolCallsAllAnswered(pendingToolGroup: PendingChatToolCallGroup)
 function flushPendingChatToolCallGroup(
   messages: JsonRecord[],
   pendingToolGroup: PendingChatToolCallGroup,
-  options: { includeReasoningContent?: boolean }
+  options: ResponsesInputToChatMessagesOptions
 ): void {
   const answeredCalls = pendingToolGroup.calls.filter((call) => call.output !== undefined)
   if (answeredCalls.length > 0) {
@@ -563,53 +645,416 @@ function responsesContentFromValue(value: unknown): unknown {
   return parts
 }
 
-function responsesToolsToChatTools(value: unknown): JsonRecord[] {
-  if (!Array.isArray(value)) return []
-  const tools: JsonRecord[] = []
-  for (const item of value) {
-    if (!isPlainObject(item) || item.type !== 'function') continue
-    const name = stringValue(item.name)
-    if (!name) continue
-    const tool: JsonRecord = {
-      type: 'function',
-      function: {
-        name,
-        description: stringValue(item.description) ?? '',
-        parameters: isPlainObject(item.parameters) ? item.parameters : { type: 'object', properties: {} }
-      }
-    }
-    const strict = item.strict
-    if (typeof strict === 'boolean') {
-      ;(tool.function as JsonRecord).strict = strict
-    }
-    tools.push(tool)
+function responsesToolsToChatToolPlan(value: unknown): CodexResponsesChatBridgeToolPlan {
+  const plan: CodexResponsesChatBridgeToolPlan = {
+    chatTools: [],
+    adaptersByChatName: new Map(),
+    adaptersByResponsesKey: new Map(),
+    unsupportedTools: []
   }
-  return tools
+  if (!Array.isArray(value)) return plan
+
+  const usedChatNames = new Set<string>()
+  for (const item of value) {
+    appendResponsesToolToChatPlan(plan, usedChatNames, item)
+  }
+  plan.unsupportedTools = [...new Set(plan.unsupportedTools)]
+  return plan
 }
 
-function responsesToolChoiceToChatToolChoice(value: unknown): unknown {
-  if (value === undefined || value === null) return undefined
-  if (typeof value === 'string') return value
-  if (!isPlainObject(value)) return undefined
-  if (value.type === 'function') {
-    const name = stringValue(value.name)
-    return name ? { type: 'function', function: { name } } : undefined
+function appendResponsesToolToChatPlan(
+  plan: CodexResponsesChatBridgeToolPlan,
+  usedChatNames: Set<string>,
+  item: unknown,
+  namespace?: string
+): void {
+  if (!isPlainObject(item)) return
+  const type = stringValue(item.type)
+  if (type === 'function') {
+    const name = stringValue(item.name)
+    if (!name) return
+    const chatName = uniqueChatToolName(namespace ? chatToolNameFromParts([namespace, name]) : sanitizeChatToolName(name), usedChatNames)
+    const adapter: CodexResponsesChatBridgeToolAdapter = {
+      kind: 'function',
+      chatName,
+      responsesName: name,
+      namespace
+    }
+    plan.adaptersByChatName.set(chatName, adapter)
+    plan.adaptersByResponsesKey.set(responsesToolAdapterKey('function', name, namespace), adapter)
+    plan.chatTools.push(responsesFunctionToolToChatTool(item, chatName))
+    return
   }
-  return value
+  if (type === 'custom') {
+    const name = stringValue(item.name)
+    if (!name) return
+    const chatName = uniqueChatToolName(customChatToolName(name, namespace), usedChatNames)
+    const adapter: CodexResponsesChatBridgeToolAdapter = {
+      kind: 'custom',
+      chatName,
+      responsesName: name,
+      namespace
+    }
+    plan.adaptersByChatName.set(chatName, adapter)
+    plan.adaptersByResponsesKey.set(responsesToolAdapterKey('custom', name, namespace), adapter)
+    plan.chatTools.push(responsesCustomToolToChatTool(item, chatName, name))
+    return
+  }
+  if (type === 'web_search' || type === 'web_search_preview' || type === 'web_search_preview_2025_03_11') {
+    plan.unsupportedTools.push(unsupportedResponsesToolLabel(item, namespace))
+    return
+  }
+  if (type === 'namespace') {
+    const nextNamespace = stringValue(item.namespace) ?? stringValue(item.name) ?? namespace
+    const tools = Array.isArray(item.tools) ? item.tools : []
+    for (const child of tools) {
+      appendResponsesToolToChatPlan(plan, usedChatNames, child, nextNamespace)
+    }
+    if (tools.length === 0) {
+      plan.unsupportedTools.push(unsupportedResponsesToolLabel(item, namespace))
+    }
+    return
+  }
+  if (type) {
+    plan.unsupportedTools.push(unsupportedResponsesToolLabel(item, namespace))
+  }
+}
+
+function responsesFunctionToolToChatTool(item: JsonRecord, chatName: string): JsonRecord {
+  const tool: JsonRecord = {
+    type: 'function',
+    function: {
+      name: chatName,
+      description: stringValue(item.description) ?? '',
+      parameters: isPlainObject(item.parameters) ? item.parameters : { type: 'object', properties: {} }
+    }
+  }
+  const strict = item.strict
+  if (typeof strict === 'boolean') {
+    ;(tool.function as JsonRecord).strict = strict
+  }
+  return tool
+}
+
+function responsesCustomToolToChatTool(item: JsonRecord, chatName: string, responsesName: string): JsonRecord {
+  if (responsesName === 'apply_patch') {
+    return responsesApplyPatchToolToChatTool(item, chatName)
+  }
+  const descriptionParts = [
+    `Use the Responses custom tool "${responsesName}" through this Chat bridge wrapper.`,
+    'You must call this function with JSON arguments containing exactly one field named "input".',
+    'Put the complete free-form custom tool payload inside the "input" string. Do not paste the payload as assistant text.',
+    customToolFormatDescription(item)
+  ].filter(Boolean)
+  return {
+    type: 'function',
+    function: {
+      name: chatName,
+      description: descriptionParts.join('\n\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          input: {
+            type: 'string',
+            description: 'Complete free-form custom tool input.'
+          }
+        },
+        required: ['input'],
+        additionalProperties: false
+      },
+      strict: true
+    }
+  }
+}
+
+function responsesApplyPatchToolToChatTool(item: JsonRecord, chatName: string): JsonRecord {
+  const descriptionParts = [
+    'Use apply_patch to create or edit local files.',
+    'Prefer the structured "files" array when creating complete files: provide one object per file with "path" and full "content".',
+    'The gateway will convert "files" into a valid apply_patch payload.',
+    'Alternatively, provide an exact apply_patch payload in "input" when you need manual patch control.',
+    customToolFormatDescription(item)
+  ].filter(Boolean)
+  return {
+    type: 'function',
+    function: {
+      name: chatName,
+      description: descriptionParts.join('\n\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          input: {
+            type: 'string',
+            description: 'Exact apply_patch payload. Use only when not using files.'
+          },
+          files: {
+            type: 'array',
+            description: 'Complete files to add. Prefer this for new files.',
+            items: {
+              type: 'object',
+              properties: {
+                path: {
+                  type: 'string',
+                  description: 'Relative file path.'
+                },
+                content: {
+                  type: 'string',
+                  description: 'Full file content.'
+                }
+              },
+              required: ['path', 'content'],
+              additionalProperties: false
+            }
+          }
+        },
+        additionalProperties: false
+      }
+    }
+  }
+}
+
+function customToolFormatDescription(item: JsonRecord): string | undefined {
+  const format = objectValue(item.format)
+  if (!format) return undefined
+  const type = stringValue(format.type)
+  const syntax = stringValue(format.syntax)
+  const definition = stringValue(format.definition)
+  const parts = [
+    type ? `Original custom tool format type: ${type}.` : undefined,
+    syntax ? `Grammar syntax: ${syntax}.` : undefined,
+    definition ? `The "input" string must satisfy this grammar:\n${definition}` : undefined
+  ].filter(Boolean)
+  return parts.length ? parts.join('\n') : undefined
+}
+
+function responsesToolChoiceToChatToolChoice(
+  value: unknown,
+  plan: CodexResponsesChatBridgeToolPlan
+): unknown {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') {
+    if (value === 'required' && plan.chatTools.length === 0) {
+      throwUnsupportedNativeToolChoice('required', plan.unsupportedTools)
+    }
+    return value
+  }
+  if (!isPlainObject(value)) return undefined
+
+  const type = stringValue(value.type)
+  if (type === 'web_search' || type === 'web_search_preview' || type === 'web_search_preview_2025_03_11') {
+    const adapter = plan.adaptersByResponsesKey.get(responsesToolAdapterKey('web_search', 'web_search'))
+    if (!adapter) {
+      throwUnsupportedNativeToolChoice('web_search', plan.unsupportedTools)
+    }
+    return { type: 'function', function: { name: adapter.chatName } }
+  }
+  if (type === 'function' || type === 'custom') {
+    const name = stringValue(value.name)
+    if (!name) return undefined
+    const namespace = stringValue(value.namespace)
+    const adapter = plan.adaptersByResponsesKey.get(responsesToolAdapterKey(type, name, namespace))
+    if (!adapter) {
+      throwUnsupportedNativeToolChoice(`${type}:${namespace ? `${namespace}.` : ''}${name}`, plan.unsupportedTools)
+    }
+    return { type: 'function', function: { name: adapter.chatName } }
+  }
+
+  if (type === 'allowed_tools') {
+    const mode = stringValue(value.mode)
+    const allowed = Array.isArray(value.tools) ? value.tools : []
+    const allowedAdapters = allowed
+      .map((tool) => allowedToolChoiceAdapter(tool, plan))
+      .filter((adapter): adapter is CodexResponsesChatBridgeToolAdapter => adapter !== undefined)
+    if (allowed.length > 0 && allowedAdapters.length === 0 && mode === 'required') {
+      throwUnsupportedNativeToolChoice('allowed_tools', plan.unsupportedTools)
+    }
+    return mode === 'required' ? 'required' : 'auto'
+  }
+
+  if (type) {
+    throwUnsupportedNativeToolChoice(type, plan.unsupportedTools)
+  }
+  return undefined
+}
+
+function allowedToolChoiceAdapter(
+  value: unknown,
+  plan: CodexResponsesChatBridgeToolPlan
+): CodexResponsesChatBridgeToolAdapter | undefined {
+  if (!isPlainObject(value)) return undefined
+  const type = stringValue(value.type)
+  if (type === 'web_search' || type === 'web_search_preview' || type === 'web_search_preview_2025_03_11') {
+    return plan.adaptersByResponsesKey.get(responsesToolAdapterKey('web_search', 'web_search'))
+  }
+  if (type !== 'function' && type !== 'custom') return undefined
+  const name = stringValue(value.name)
+  if (!name) return undefined
+  return plan.adaptersByResponsesKey.get(responsesToolAdapterKey(type, name, stringValue(value.namespace)))
+}
+
+function responsesToolAdapterKey(kind: 'function' | 'custom' | 'web_search', name: string, namespace?: string): string {
+  return `${kind}:${namespace ?? ''}:${name}`
+}
+
+function unsupportedResponsesToolLabel(item: JsonRecord, namespace?: string): string {
+  const type = stringValue(item.type) ?? 'unknown'
+  const label = stringValue(item.name) ?? stringValue(item.server_label) ?? stringValue(item.connector_id) ?? stringValue(item.server_url)
+  const qualified = label ? `${type}:${label}` : type
+  return namespace ? `${namespace}.${qualified}` : qualified
+}
+
+function unsupportedToolsSystemMessage(unsupportedTools: string[] | undefined): string | undefined {
+  const tools = [...new Set((unsupportedTools ?? []).filter(Boolean))]
+  if (tools.length === 0) return undefined
+  return `Chat-only Codex bridge 当前不能代执行以下 Responses 原生托管工具：${tools.join(', ')}。如果任务必须依赖这些工具，请直接说明当前 Chat 上游不支持该能力，不要假装已经调用。`
+}
+
+function forcedToolChoiceSystemMessage(
+  toolChoice: unknown,
+  plan: CodexResponsesChatBridgeToolPlan
+): string | undefined {
+  if (!isPlainObject(toolChoice)) return undefined
+  const type = stringValue(toolChoice.type)
+  if (type !== 'function' && type !== 'custom') return undefined
+  const name = stringValue(toolChoice.name)
+  if (!name) return undefined
+  const adapter = plan.adaptersByResponsesKey.get(responsesToolAdapterKey(type, name, stringValue(toolChoice.namespace)))
+  if (!adapter) return undefined
+  return [
+    `This request explicitly selected the "${adapter.chatName}" tool.`,
+    'You must call that tool in this turn.',
+    'Do not answer with a plan, status update, explanation, or plain text instead of the selected tool call.'
+  ].join(' ')
+}
+
+function unsupportedToolsForSystemMessage(
+  toolChoice: unknown,
+  plan: CodexResponsesChatBridgeToolPlan
+): string[] {
+  if (plan.unsupportedTools.length === 0) return []
+  if (toolChoice === undefined || toolChoice === null) return plan.unsupportedTools
+  if (typeof toolChoice === 'string') {
+    return toolChoice === 'auto' || toolChoice === 'required' ? plan.unsupportedTools : []
+  }
+  if (!isPlainObject(toolChoice)) return plan.unsupportedTools
+  const type = stringValue(toolChoice.type)
+  if (type === 'function' || type === 'custom') {
+    const name = stringValue(toolChoice.name)
+    if (!name) return plan.unsupportedTools
+    return plan.adaptersByResponsesKey.has(responsesToolAdapterKey(type, name, stringValue(toolChoice.namespace)))
+      ? []
+      : plan.unsupportedTools
+  }
+  if (type === 'allowed_tools') {
+    const allowed = Array.isArray(toolChoice.tools) ? toolChoice.tools : []
+    return allowed.length > 0 && allowed.every((tool) => allowedToolChoiceAdapter(tool, plan))
+      ? []
+      : plan.unsupportedTools
+  }
+  return plan.unsupportedTools
+}
+
+function throwIfUnsupportedResponsesTools(
+  unsupportedTools: string[],
+  toolChoice: unknown,
+  plan: CodexResponsesChatBridgeToolPlan
+): void {
+  const tools = [...new Set(unsupportedTools.filter(Boolean))]
+  if (tools.length === 0) {
+    return
+  }
+  if (canIgnoreUnsupportedResponsesTools(toolChoice, plan)) {
+    return
+  }
+  throw new GatewayRequestValidationError(
+    `当前 Chat-only Codex bridge 不能执行 Responses 原生托管工具：${tools.join(', ')}`,
+    'unsupported_codex_native_tool'
+  )
+}
+
+function canIgnoreUnsupportedResponsesTools(
+  toolChoice: unknown,
+  plan: CodexResponsesChatBridgeToolPlan
+): boolean {
+  if (toolChoice === undefined || toolChoice === null) {
+    return plan.chatTools.length > 0
+  }
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'none') return true
+    if (toolChoice === 'auto' || toolChoice === 'required') return plan.chatTools.length > 0
+    return false
+  }
+  if (!isPlainObject(toolChoice)) {
+    return false
+  }
+  const type = stringValue(toolChoice.type)
+  if (type === 'function' || type === 'custom') {
+    const name = stringValue(toolChoice.name)
+    if (!name) return false
+    const namespace = stringValue(toolChoice.namespace)
+    return plan.adaptersByResponsesKey.has(responsesToolAdapterKey(type, name, namespace))
+  }
+  if (type === 'allowed_tools') {
+    const allowed = Array.isArray(toolChoice.tools) ? toolChoice.tools : []
+    return allowed.length > 0 && allowed.every((tool) => allowedToolChoiceAdapter(tool, plan))
+  }
+  return false
+}
+
+function throwUnsupportedNativeToolChoice(choice: string, unsupportedTools: string[]): never {
+  const suffix = unsupportedTools.length > 0 ? `；当前不可代执行工具：${unsupportedTools.join(', ')}` : ''
+  throw new GatewayRequestValidationError(
+    `当前 Chat-only Codex bridge 不能执行 Responses 原生工具选择 ${choice}${suffix}`,
+    'unsupported_codex_native_tool'
+  )
+}
+
+function customChatToolName(name: string, namespace?: string): string {
+  const parts = namespace ? [namespace, `${codexCustomToolChatNamePrefix}${name}`] : [`${codexCustomToolChatNamePrefix}${name}`]
+  return chatToolNameFromParts(parts)
+}
+
+function chatToolNameFromParts(parts: string[]): string {
+  const name = parts.map(sanitizeChatToolName).filter(Boolean).join('__')
+  return name || 'tool'
+}
+
+function sanitizeChatToolName(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'tool'
+}
+
+function uniqueChatToolName(base: string, used: Set<string>): string {
+  let name = base.slice(0, 64) || 'tool'
+  let index = 2
+  while (used.has(name)) {
+    const suffix = `_${index++}`
+    name = `${base.slice(0, Math.max(1, 64 - suffix.length))}${suffix}`
+  }
+  used.add(name)
+  return name
 }
 
 async function * transformChatCompletionsSseToResponsesSse(
   upstreamBody: AsyncIterable<Uint8Array>,
   input: {
     estimatedInputTokens?: number
+    finishReasonFailures?: Record<string, CodexResponsesChatBridgeFinishReasonFailure>
     idPrefix?: string
     model: string
     previousResponseId?: string
+    toolAdaptersByChatName?: Map<string, CodexResponsesChatBridgeToolAdapter>
     onCompleted?: CodexResponsesChatBridgeCompletionHandler
   }
 ): AsyncIterable<Uint8Array> {
+  const state = createChatToResponsesState(
+    input.model,
+    input.idPrefix,
+    input.estimatedInputTokens,
+    input.previousResponseId,
+    input.finishReasonFailures,
+    input.toolAdaptersByChatName
+  )
   const decoder = new StringDecoder('utf8')
-  const state = createChatToResponsesState(input.model, input.idPrefix, input.estimatedInputTokens, input.previousResponseId)
   let pending = ''
   for await (const chunk of upstreamBody) {
     pending += decoder.write(Buffer.from(chunk))
@@ -623,6 +1068,7 @@ async function * transformChatCompletionsSseToResponsesSse(
       await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
     }
   }
+
   pending += decoder.end()
   if (pending.trim()) {
     const outputs = processChatSseEvent(state, pending)
@@ -640,7 +1086,14 @@ async function * transformChatCompletionsSseToResponsesSse(
   await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
 }
 
-function createChatToResponsesState(model: string, idPrefix = 'chat_bridge', estimatedInputTokens?: number, previousResponseId?: string): ChatToResponsesState {
+function createChatToResponsesState(
+  model: string,
+  idPrefix = 'chat_bridge',
+  estimatedInputTokens?: number,
+  previousResponseId?: string,
+  finishReasonFailures?: Record<string, CodexResponsesChatBridgeFinishReasonFailure>,
+  toolAdaptersByChatName?: Map<string, CodexResponsesChatBridgeToolAdapter>
+): ChatToResponsesState {
   const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   return {
     responseId: `resp_${idPrefix}_${suffix}`,
@@ -660,7 +1113,9 @@ function createChatToResponsesState(model: string, idPrefix = 'chat_bridge', est
     outputText: '',
     outputItems: [],
     toolCalls: new Map(),
+    toolAdaptersByChatName: new Map(toolAdaptersByChatName ?? []),
     estimatedInputTokens,
+    finishReasonFailures: new Map(Object.entries(finishReasonFailures ?? {})),
     completed: false,
     failed: false,
     terminalReceived: false,
@@ -693,21 +1148,15 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
     return failResponsesStream(state, '上游 Chat SSE 返回了无法解析的事件', 'upstream_stream_parse_error')
   }
   if (event.eventName === 'error' || event.eventType === 'error') {
-    return failResponsesStream(
-      state,
-      event.errorMessage ?? '上游 Chat SSE 返回错误事件',
-      event.errorCode ?? 'upstream_stream_error'
-    )
+    const failure = upstreamChatSseErrorFailure(objectValue(event.data?.error) ?? event.data)
+    return failResponsesStream(state, failure.message, failure.code)
   }
   const data = event.data
   if (!data) return []
   const error = objectValue(data.error)
   if (error) {
-    return failResponsesStream(
-      state,
-      stringValue(error.message) ?? event.errorMessage ?? '上游 Chat SSE 返回错误对象',
-      stringValue(error.code) ?? stringValue(error.type) ?? event.errorCode ?? 'upstream_stream_error'
-    )
+    const failure = upstreamChatSseErrorFailure(error)
+    return failResponsesStream(state, failure.message, failure.code)
   }
   const output: string[] = ensureResponsesStreamStarted(state)
   state.model = stringValue(data.model) ?? state.model
@@ -728,13 +1177,18 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
       if (text) {
         output.push(...appendResponsesTextDelta(state, text))
       }
-      const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : []
-      for (const toolCall of toolCalls) {
+      for (const toolCall of chatToolCallDeltas(delta)) {
         output.push(...appendResponsesToolCallDelta(state, toolCall))
       }
     }
     if (typeof choice.finish_reason === 'string') {
       state.terminalReceived = true
+      const finishReasonFailure = state.finishReasonFailures.get(choice.finish_reason)
+      if (finishReasonFailure) {
+        output.push(...completeOpenOutputItems(state))
+        output.push(...failResponsesStream(state, finishReasonFailure.message, finishReasonFailure.code))
+        continue
+      }
       output.push(...completeOpenOutputItems(state))
       output.push(...completeResponsesStream(state))
     }
@@ -823,13 +1277,32 @@ function appendResponsesTextDelta(state: ChatToResponsesState, text: string): st
   return output
 }
 
+function chatToolCallDeltas(delta: JsonRecord): unknown[] {
+  const output: unknown[] = []
+  if (Array.isArray(delta.tool_calls)) {
+    output.push(...delta.tool_calls)
+  }
+  if (Array.isArray(delta.function_calls)) {
+    output.push(...delta.function_calls)
+  }
+  const functionCall = objectValue(delta.function_call)
+  if (functionCall) {
+    output.push({
+      index: 0,
+      type: 'function',
+      function: functionCall
+    })
+  }
+  return output
+}
+
 function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknown): string[] {
   if (!isPlainObject(value)) return []
   const index = integerValue(value.index) ?? 0
-  let toolCall = state.toolCalls.get(index)
-  if (!toolCall) {
+  const existingToolCall = state.toolCalls.get(index)
+  const toolCall = existingToolCall ?? (() => {
     const callId = stringValue(value.id) ?? `call_${state.idPrefix}_${index}_${Date.now().toString(36)}`
-    toolCall = {
+    const created: ChatToolCallState = {
       id: `fc_${state.idPrefix}_${index}_${Date.now().toString(36)}`,
       callId,
       name: '',
@@ -838,126 +1311,226 @@ function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknow
       added: false,
       done: false
     }
-    state.toolCalls.set(index, toolCall)
-  }
+    state.toolCalls.set(index, created)
+    return created
+  })()
+  const activeToolCall = toolCall
   const fn = objectValue(value.function)
-  toolCall.name = stringValue(fn?.name) ?? toolCall.name
+  const chatName = stringValue(fn?.name)
+  if (chatName) {
+    const adapter = state.toolAdaptersByChatName.get(chatName)
+    activeToolCall.adapter = adapter ?? activeToolCall.adapter
+    activeToolCall.name = adapter?.responsesName ?? chatName
+  }
   const argumentsDelta = stringValue(fn?.arguments) ?? ''
+  if (argumentsDelta) {
+    activeToolCall.arguments += argumentsDelta
+  }
   const output: string[] = []
-  if (!toolCall.added && (toolCall.name || argumentsDelta)) {
-    toolCall.added = true
+  if (!activeToolCall.added && activeToolCall.name) {
+    activeToolCall.added = true
     output.push(sse('response.output_item.added', {
       type: 'response.output_item.added',
-      output_index: toolCall.outputIndex,
-      item: {
-        id: toolCall.id,
-        type: 'function_call',
-        status: 'in_progress',
-        call_id: toolCall.callId,
-        name: toolCall.name,
-        arguments: ''
-      }
+      output_index: activeToolCall.outputIndex,
+      item: toolCallInProgressItem(activeToolCall)
     }))
-  }
-  if (argumentsDelta) {
-    toolCall.arguments += argumentsDelta
   }
   return output
 }
 
 function completeOpenOutputItems(state: ChatToResponsesState): string[] {
   const output: string[] = []
+  const completions: Array<{ outputIndex: number; complete: () => void }> = []
   if (state.textStarted && !state.textDone) {
-    state.textDone = true
-    const item = {
-      id: state.messageId,
-      type: 'message',
-      status: 'completed',
-      role: 'assistant',
-      content: [
-        {
-          type: 'output_text',
-          text: state.outputText,
-          annotations: []
-        }
-      ]
-    }
-    output.push(sse('response.output_text.done', {
-      type: 'response.output_text.done',
-      item_id: state.messageId,
-      output_index: state.textOutputIndex ?? 0,
-      content_index: 0,
-      text: state.outputText
-    }))
-    output.push(sse('response.content_part.done', {
-      type: 'response.content_part.done',
-      item_id: state.messageId,
-      output_index: state.textOutputIndex ?? 0,
-      content_index: 0,
-      part: item.content[0]
-    }))
-    output.push(sse('response.output_item.done', {
-      type: 'response.output_item.done',
-      output_index: state.textOutputIndex ?? 0,
-      item
-    }))
-    state.outputItems.push(item)
+    completions.push({
+      outputIndex: state.textOutputIndex ?? 0,
+      complete: () => completeTextOutputItem(state, output)
+    })
   }
   if (state.reasoningStarted && !state.reasoningDone) {
-    state.reasoningDone = true
-    const item = {
-      id: state.reasoningId,
-      type: 'reasoning',
-      status: 'completed',
-      summary: [
-        {
-          type: 'summary_text',
-          text: state.reasoningText
-        }
-      ],
-      encrypted_content: null
-    }
-    output.push(sse('response.output_item.done', {
-      type: 'response.output_item.done',
-      output_index: state.reasoningOutputIndex ?? 0,
-      item
-    }))
-    state.outputItems.push(item)
+    completions.push({
+      outputIndex: state.reasoningOutputIndex ?? 0,
+      complete: () => completeReasoningOutputItem(state, output)
+    })
   }
   for (const toolCall of state.toolCalls.values()) {
     if (toolCall.done) continue
-    if (!toolCall.added) {
-      toolCall.added = true
-      output.push(sse('response.output_item.added', {
-        type: 'response.output_item.added',
-        output_index: toolCall.outputIndex,
-        item: {
-          id: toolCall.id,
-          type: 'function_call',
-          status: 'in_progress',
-          call_id: toolCall.callId,
-          name: toolCall.name,
-          arguments: ''
-        }
-      }))
-    }
-    toolCall.done = true
-    const item = {
+    completions.push({
+      outputIndex: toolCall.outputIndex,
+      complete: () => completeToolCallOutputItem(state, output, toolCall)
+    })
+  }
+  completions.sort((a, b) => a.outputIndex - b.outputIndex)
+  for (const completion of completions) {
+    completion.complete()
+  }
+  return output
+}
+
+function completeTextOutputItem(state: ChatToResponsesState, output: string[]): void {
+  state.textDone = true
+  const item = {
+    id: state.messageId,
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    content: [
+      {
+        type: 'output_text',
+        text: state.outputText,
+        annotations: []
+      }
+    ]
+  }
+  output.push(sse('response.output_text.done', {
+    type: 'response.output_text.done',
+    item_id: state.messageId,
+    output_index: state.textOutputIndex ?? 0,
+    content_index: 0,
+    text: state.outputText
+  }))
+  output.push(sse('response.content_part.done', {
+    type: 'response.content_part.done',
+    item_id: state.messageId,
+    output_index: state.textOutputIndex ?? 0,
+    content_index: 0,
+    part: item.content[0]
+  }))
+  output.push(sse('response.output_item.done', {
+    type: 'response.output_item.done',
+    output_index: state.textOutputIndex ?? 0,
+    item
+  }))
+  state.outputItems.push(item)
+}
+
+function completeReasoningOutputItem(state: ChatToResponsesState, output: string[]): void {
+  state.reasoningDone = true
+  const item = {
+    id: state.reasoningId,
+    type: 'reasoning',
+    status: 'completed',
+    summary: [
+      {
+        type: 'summary_text',
+        text: state.reasoningText
+      }
+    ],
+    encrypted_content: null
+  }
+  output.push(sse('response.output_item.done', {
+    type: 'response.output_item.done',
+    output_index: state.reasoningOutputIndex ?? 0,
+    item
+  }))
+  state.outputItems.push(item)
+}
+
+function completeToolCallOutputItem(
+  state: ChatToResponsesState,
+  output: string[],
+  toolCall: ChatToolCallState
+): void {
+  if (!toolCall.added) {
+    toolCall.added = true
+    output.push(sse('response.output_item.added', {
+      type: 'response.output_item.added',
+      output_index: toolCall.outputIndex,
+      item: toolCallInProgressItem(toolCall)
+    }))
+  }
+  toolCall.done = true
+  const item = completedToolCallItem(toolCall)
+  output.push(sse('response.output_item.done', {
+    type: 'response.output_item.done',
+    output_index: toolCall.outputIndex,
+    item
+  }))
+  state.outputItems.push(item)
+}
+
+function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
+  if (toolCall.adapter?.kind === 'custom') {
+    return {
       id: toolCall.id,
-      type: 'function_call',
+      type: 'custom_tool_call',
+      status: 'in_progress',
+      call_id: toolCall.callId,
+      name: toolCall.name,
+      input: ''
+    }
+  }
+  const item: JsonRecord = {
+    id: toolCall.id,
+    type: 'function_call',
+    status: 'in_progress',
+    call_id: toolCall.callId,
+    name: toolCall.name,
+    arguments: ''
+  }
+  if (toolCall.adapter?.namespace) {
+    item.namespace = toolCall.adapter.namespace
+  }
+  return item
+}
+
+function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
+  if (toolCall.adapter?.kind === 'custom') {
+    return {
+      id: toolCall.id,
+      type: 'custom_tool_call',
       status: 'completed',
       call_id: toolCall.callId,
       name: toolCall.name,
-      arguments: toolCall.arguments
+      input: customToolInputFromChatArguments(toolCall.arguments, toolCall.adapter?.responsesName)
     }
-    output.push(sse('response.output_item.done', {
-      type: 'response.output_item.done',
-      output_index: toolCall.outputIndex,
-      item
-    }))
-    state.outputItems.push(item)
   }
-  return output
+  const item: JsonRecord = {
+    id: toolCall.id,
+    type: 'function_call',
+    status: 'completed',
+    call_id: toolCall.callId,
+    name: toolCall.name,
+    arguments: toolCall.arguments
+  }
+  if (toolCall.adapter?.namespace) {
+    item.namespace = toolCall.adapter.namespace
+  }
+  return item
+}
+
+function customToolInputFromChatArguments(argumentsText: string, toolName?: string): string {
+  try {
+    const parsed = JSON.parse(argumentsText) as unknown
+    if (isPlainObject(parsed)) {
+      const input = stringValue(parsed.input)
+      if (input) return input
+      if (toolName === 'apply_patch') {
+        const patch = applyPatchInputFromStructuredFiles(parsed.files)
+        if (patch) return patch
+      }
+    }
+  } catch {
+  }
+  return argumentsText
+}
+
+function applyPatchInputFromStructuredFiles(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined
+  const hunks: string[] = []
+  for (const item of value) {
+    if (!isPlainObject(item)) continue
+    const path = stringValue(item.path)
+    const content = stringValue(item.content)
+    if (!path || content === undefined || path.includes('\n') || path.includes('\r')) continue
+    hunks.push(`*** Add File: ${path}`)
+    const lines = content.split(/\r?\n/)
+    for (const line of lines) {
+      hunks.push(`+${line}`)
+    }
+  }
+  if (hunks.length === 0) return undefined
+  return ['*** Begin Patch', ...hunks, '*** End Patch', ''].join('\n')
 }
 
 function completeResponsesStream(state: ChatToResponsesState): string[] {
@@ -1036,6 +1609,13 @@ function responseFailedSnapshot(state: ChatToResponsesState, message: string, co
       code,
       message
     }
+  }
+}
+
+function upstreamChatSseErrorFailure(error: JsonRecord | undefined): { message: string; code: string } {
+  return {
+    message: stringValue(error?.message) ?? '上游 Chat SSE 返回错误事件',
+    code: stringValue(error?.code) ?? stringValue(error?.type) ?? 'upstream_error'
   }
 }
 

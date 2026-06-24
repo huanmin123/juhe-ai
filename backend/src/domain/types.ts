@@ -1,6 +1,7 @@
 export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled' | 'unchanged'
 export const ACCOUNT_CLIENT_COMPATIBILITIES = ['openai_standard', 'codex_responses'] as const
 export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[number]
@@ -405,13 +406,15 @@ export interface AccountEffectiveAvailability {
   retryAt?: string
 }
 
-export type AccountModelMappingEndpointFamily = 'chat_completions' | 'responses'
+export type AccountModelMappingSourceEndpointFamily = 'chat_completions' | 'responses'
+export type AccountModelMappingUpstreamEndpointFamily = 'chat_completions' | 'responses' | 'messages'
+export type AccountModelMappingEndpointFamily = AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
 
 export interface AccountModelMapping {
   sourceModel: string
-  sourceEndpointFamily: AccountModelMappingEndpointFamily
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamModel: string
-  upstreamEndpointFamily: AccountModelMappingEndpointFamily
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
   enabled: boolean
 }
 
@@ -496,6 +499,7 @@ export interface AccountSummary {
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
+  apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
   lastUsedAt?: string
@@ -541,6 +545,24 @@ export interface AccountApiKeyRuntimeSummary {
   unavailable: number
   allUnavailable: boolean
   nextProbeAt?: string
+}
+
+export interface AccountApiKeyRuntimeDetail {
+  keyIndex: number
+  keyFingerprintPrefix: string
+  keySuffix?: string
+  weight: number
+  status: AccountApiKeyRuntimeStatus
+  failureCount: number
+  consecutiveFailures: number
+  successCount: number
+  cooldownUntil?: string
+  nextProbeAt?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+  lastFailureAt?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
 }
 
 export type AccountOptionSummary = Pick<
@@ -984,6 +1006,7 @@ export type ApiKeyRouteMode = 'normal' | 'hybrid'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
 export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
+export type ApiKeyHybridQualityInspectionUnavailableAction = 'pass_through' | 'return_error'
 export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
 export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
 
@@ -1002,6 +1025,7 @@ export interface ApiKeyHybridQualityInspectionConfig {
   maxTriggerLevel: number
   maxRetries: number
   failureAction: ApiKeyHybridQualityInspectionFailureAction
+  unavailableAction: ApiKeyHybridQualityInspectionUnavailableAction
 }
 
 export interface ApiKeyHybridRoutingConfig {
@@ -1010,7 +1034,7 @@ export interface ApiKeyHybridRoutingConfig {
   scoringContextMode: 'full_request'
   qualityPreference: ApiKeyHybridQualityPreference
   scoringTimeoutMs: number
-  failureDefaultLevel: number
+  scoringFallbackMaxLevel: number
   scoringCacheEnabled: boolean
   scoringCacheTtlSeconds: number
   cacheAffinityEnabled: boolean

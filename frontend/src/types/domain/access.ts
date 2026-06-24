@@ -24,6 +24,7 @@ export type ApiKeyRouteMode = 'normal' | 'hybrid'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
 export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
+export type ApiKeyHybridQualityInspectionUnavailableAction = 'pass_through' | 'return_error'
 export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
 export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
 
@@ -42,6 +43,7 @@ export interface ApiKeyHybridQualityInspectionConfig {
   maxTriggerLevel: number
   maxRetries: number
   failureAction: ApiKeyHybridQualityInspectionFailureAction
+  unavailableAction: ApiKeyHybridQualityInspectionUnavailableAction
 }
 
 export interface ApiKeyHybridRoutingConfig {
@@ -50,7 +52,7 @@ export interface ApiKeyHybridRoutingConfig {
   scoringContextMode: 'full_request'
   qualityPreference: ApiKeyHybridQualityPreference
   scoringTimeoutMs: number
-  failureDefaultLevel: number
+  scoringFallbackMaxLevel: number
   scoringCacheEnabled: boolean
   scoringCacheTtlSeconds: number
   cacheAffinityEnabled: boolean

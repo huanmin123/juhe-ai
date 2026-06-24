@@ -314,6 +314,7 @@ try {
     await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
     await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
     await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl, codexBridgeApiKey.key)
@@ -321,6 +322,7 @@ try {
     await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeFailsOnInsufficientResourceFinishReason(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
     assertDeepSeekSemanticParsing()
@@ -648,10 +650,6 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
             required: ['command'],
             additionalProperties: false
           }
-        },
-        {
-          type: 'web_search',
-          external_web_access: false
         }
       ],
       tool_choice: 'auto',
@@ -680,9 +678,19 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
   assert.equal(hit.path, '/v1/chat/completions')
   assert.equal(hit.rawUrl, '/v1/chat/completions?trace=deepseek-codex-bridge', 'DeepSeek Codex bridge 应保留查询参数')
   assert.equal(hit.authorization, 'Bearer sk-deepseek-codex-upstream')
-  const body = JSON.parse(hit.bodyText) as { model?: string; stream?: boolean; messages?: unknown[]; tools?: unknown[]; max_tokens?: number; temperature?: number; top_p?: number }
+  const body = JSON.parse(hit.bodyText) as {
+    model?: string
+    stream?: boolean
+    stream_options?: { include_usage?: boolean }
+    messages?: unknown[]
+    tools?: unknown[]
+    max_tokens?: number
+    temperature?: number
+    top_p?: number
+  }
   assert.equal(body.model, 'deepseek-ai-v4-flash', 'DeepSeek Codex bridge 应应用账号模型映射')
   assert.equal(body.stream, true, 'DeepSeek Codex bridge 上游请求必须使用 Chat SSE')
+  assert.equal(body.stream_options?.include_usage, true, 'DeepSeek Codex bridge 应请求流式 usage')
   assert.equal(body.max_tokens, 128, 'DeepSeek Codex bridge 应把 max_output_tokens 转成 max_tokens')
   assert.equal(body.temperature, 0)
   assert.equal(body.top_p, 1)
@@ -711,8 +719,43 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
   assert(!JSON.stringify(chatMessages).includes('call_deepseek_unanswered'), '未收到输出的 dangling function_call 不应透传给 Chat 上游')
   assert(!JSON.stringify(chatMessages).includes('call_deepseek_orphan'), '找不到对应 function_call 的 orphan tool output 不应透传给 Chat 上游')
   assert(Array.isArray(body.tools), 'DeepSeek Codex bridge 应把 function tools 转成 Chat tools')
-  assert.equal(body.tools.length, 1, 'DeepSeek Codex bridge 首版只透传 function tools，不透传 web_search/namespace')
+  assert.equal(body.tools.length, 1, 'DeepSeek Codex bridge 应透传 function tools')
   assert.match(JSON.stringify(body.tools), /shell_command/)
+  assert.doesNotMatch(JSON.stringify(body.messages), /不能代执行以下 Responses 原生托管工具/, 'DeepSeek Codex bridge 不应注入 hosted tool 降级 system prompt')
+}
+
+async function assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        session_id: 'deepseek-native-tool-auto-reject-session',
+        thread_id: 'deepseek-native-tool-auto-reject-thread',
+        turn_id: 'deepseek-native-tool-auto-reject-turn'
+      })
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      input: 'hello deepseek auto web search should reject as unsupported hosted tool',
+      stream: true,
+      store: false,
+      tools: [
+        {
+          type: 'web_search',
+          external_web_access: false
+        }
+      ],
+      tool_choice: 'auto'
+    })
+  })
+  const text = await response.text()
+  assert.notEqual(response.status, 200, `auto web_search 不能由 Chat-only bridge 代执行，实际返回成功：${text}`)
+  assert.match(text, /unsupported_codex_native_tool|不能执行 Responses 原生托管工具/, 'auto 原生托管工具应返回明确错误码或错误文案')
+  assert.equal(upstreamHits.length, start, 'auto web_search 被拒绝时不应命中 DeepSeek Chat 上游')
 }
 
 async function assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl: string, localApiKey: string): Promise<void> {
@@ -847,9 +890,12 @@ async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: 
   })
   const text = await response.text()
   assert.equal(response.status, 200, `DeepSeek Codex bridge /responses/compact 应返回网关摘要，实际 HTTP ${response.status}: ${text}`)
-  const payload = JSON.parse(text) as { output?: Array<Record<string, unknown>> }
+  const payload = JSON.parse(text) as { id?: unknown; object?: unknown; created_at?: unknown; output?: Array<Record<string, unknown>> }
+  assert.equal(payload.object, 'response.compaction', '/responses/compact 应返回 OpenAI CompactResource 兼容 object')
+  assert.equal(typeof payload.id, 'string', '/responses/compact 应返回顶层 response id')
+  assert.equal(typeof payload.created_at, 'number', '/responses/compact 应返回 created_at')
   const compactItem = payload.output?.[0]
-  assert.equal(compactItem?.type, 'compaction_summary', '/responses/compact 应返回 Codex 可消费的 compaction_summary item')
+  assert.equal(compactItem?.type, 'compaction', '/responses/compact 应返回 OpenAI CompactResource compaction item')
   assert.match(String(compactItem?.encrypted_content ?? ''), /^juhecmp\.v2\.cmp_[^.]+\.[a-f0-9]{64}$/i, 'compact summary 应使用网关 snapshot reference envelope')
   assert.equal(upstreamHits.length, 1, 'DeepSeek Codex bridge /responses/compact 应通过内部 Chat Completions 摘要请求命中一次上游')
   assert.equal(upstreamHits[0]?.path, '/v1/chat/completions', 'compact 内部请求必须走 Chat Completions 路径')
@@ -884,8 +930,8 @@ async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: 
     })
   })
   const bridgeText = await bridgeResponse.text()
-  assert.equal(bridgeResponse.status, 200, `DeepSeek Codex bridge 应能消费 compaction_summary，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
-  assert.equal(upstreamHits.length, 2, 'DeepSeek compaction_summary 后续请求应再命中一次上游')
+  assert.equal(bridgeResponse.status, 200, `DeepSeek Codex bridge 应能消费 compaction item，实际 HTTP ${bridgeResponse.status}: ${bridgeText}`)
+  assert.equal(upstreamHits.length, 2, 'DeepSeek compaction 后续请求应再命中一次上游')
   assert.match(upstreamHits[1]?.bodyText ?? '', /deepseek json ok/, '后续 Chat messages 应包含 compact 摘要文本')
   assert.match(upstreamHits[1]?.bodyText ?? '', /continue after compact summary/, '后续 Chat messages 应包含 compact 后的新输入')
 
@@ -1022,6 +1068,14 @@ async function assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl: stri
   assert.match(text, /上游流式响应在输出前失败，请重试/, '上游 error 事件应向 Codex 客户端返回统一可重试文案')
   assert(!text.includes('deepseek mock stream error'), 'DeepSeek 上游 error 原文不应泄露到 Codex Responses failed payload')
   assert(!text.includes('event: response.completed'), '上游 Chat SSE error 事件时 DeepSeek bridge 不应输出 completed 事件')
+}
+
+async function assertDeepSeekCodexResponsesBridgeFailsOnInsufficientResourceFinishReason(baseUrl: string, localApiKey: string): Promise<void> {
+  const text = await requestDeepSeekCodexBridgeFailure(baseUrl, localApiKey, 'hello deepseek codex bridge insufficient resource')
+  assert.match(text, /event: response\.failed/, 'DeepSeek insufficient_system_resource finish_reason 应转换为 Responses failed 事件')
+  assert.match(text, /upstream_retryable_error/, 'DeepSeek insufficient_system_resource finish_reason 应标记为可重试上游错误')
+  assert.match(text, /上游流式响应在输出前失败，请重试/, 'DeepSeek insufficient_system_resource finish_reason 应返回 Codex 可重试文案')
+  assert(!text.includes('event: response.completed'), 'DeepSeek insufficient_system_resource finish_reason 不应输出 completed 事件')
 }
 
 async function requestDeepSeekCodexBridgeFailure(baseUrl: string, localApiKey: string, marker: string): Promise<string> {
@@ -1280,6 +1334,22 @@ function createDeepSeekMockUpstream(): http.Server {
         }
         if (bodyText.includes('hello deepseek codex bridge error event')) {
           res.end('event: error\ndata: {"error":{"message":"deepseek mock stream error","code":"upstream_retryable_error"}}\n\n')
+          return
+        }
+        if (bodyText.includes('hello deepseek codex bridge insufficient resource')) {
+          res.write(`data: ${JSON.stringify({
+            id: 'chatcmpl-deepseek-sse',
+            object: 'chat.completion.chunk',
+            choices: [
+              { index: 0, delta: {}, finish_reason: 'insufficient_system_resource' }
+            ],
+            usage: {
+              prompt_tokens: 12,
+              completion_tokens: 0,
+              total_tokens: 12
+            }
+          })}\n\n`)
+          res.end('data: [DONE]\n\n')
           return
         }
         if (bodyText.includes('hello deepseek codex bridge string usage')) {

@@ -5,23 +5,15 @@ import type {
   ApiKeyHybridQualityInspectionConfig,
   ApiKeyHybridRoutingConfig
 } from '../../../domain/types.js'
-import { tryAcquireAccountConcurrency } from '../../../shared/account-concurrency.js'
-import type { GatewayApiKeyRow, OpenAIAccountSecret } from '../../../storage/repositories.js'
-import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
-import {
-  buildGatewayUpstreamRequestParts,
-  buildGatewayUpstreamUrlsForAccount
-} from '../../providers/drivers/registry.js'
+import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
-import {
-  orderGatewayApiKeyGroupBindingsForDispatch
-} from '../routing/api-key-group-route-selector.service.js'
-import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
-import { requestUpstream } from '../upstream/request.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
-import { emptyUsage } from '../usage/types.js'
+import {
+  dispatchHybridAuxiliaryChatCompletion,
+  emptyHybridAuxiliaryUsage
+} from './auxiliary-dispatch.service.js'
 import type { HybridScoringResult } from './scoring.service.js'
 
 export type HybridQualityFailureType =
@@ -38,6 +30,7 @@ export type HybridQualityRetryRecommendation =
   | 'upgrade_next_level'
   | 'return_error'
 export type HybridQualityAction = HybridQualityRetryRecommendation | 'repair_then_upgrade'
+  | 'pass_through'
 
 export interface HybridQualityScoreResult {
   pass: boolean
@@ -94,9 +87,6 @@ export async function inspectHybridGatewayQuality(input: {
   }
 
   const startedAt = Date.now()
-  let account: OpenAIAccountSecret | undefined
-  let qualityGroupId: string | undefined
-  let statusCode: number | undefined
   try {
     const requestBody = await parseHybridQualityRequestBody(input.req, input.signal)
     const context = buildHybridQualityContext({
@@ -109,159 +99,123 @@ export async function inspectHybridGatewayQuality(input: {
     })
     const qualityBody = buildHybridQualityRequestBody(qualityConfig, context)
     const qualityReq = createHybridQualityGatewayRequest(qualityBody)
-    const qualitySelection = await selectHybridQualityAccount({
+    const dispatch = await dispatchHybridAuxiliaryChatCompletion({
+      req: qualityReq,
       apiKeyRecord: input.apiKeyRecord,
-      scoringModel: qualityConfig.scoringModel,
-      qualityReq
+      targetModel: qualityConfig.scoringModel,
+      traceId: input.traceId,
+      clientIp: input.clientIp,
+      endpoint: input.endpoint,
+      trafficSource: 'hybrid_quality_scoring',
+      timeoutMs: input.config.scoringTimeoutMs,
+      responseMaxBytes: hybridQualityResponseMaxBytes,
+      noAccountErrorCode: 'no_quality_scoring_account',
+      noAccountErrorMessage: '混合路由绑定分组池没有可用质量评分账户',
+      dispatchErrorCode: 'hybrid_quality_scoring_failed',
+      dispatchErrorMessage: '混合路由质量评分模型调用失败',
+      httpErrorCode: 'hybrid_quality_scoring_http_error',
+      responseTooLargeMessage: '混合路由质量评分响应超过保护上限',
+      signal: input.signal,
+      requestClientCompatibility: 'openai_standard'
     })
-    if (!qualitySelection) {
-      return qualityInspectionUnavailable('no_quality_scoring_account', '混合路由绑定分组池没有可用质量评分账户')
+    if (dispatch.outcome === 'failed') {
+      if (dispatch.shouldRecordUsage && dispatch.account && dispatch.groupId) {
+        recordHybridScoringAttempt({
+          traceId: input.traceId,
+          clientIp: input.clientIp,
+          systemAccountId: input.apiKeyRecord.system_account_id,
+          apiKeyId: input.apiKeyRecord.id,
+          groupId: dispatch.groupId,
+          account: dispatch.account,
+          endpoint: `${input.endpoint}#hybrid-quality-scoring`,
+          statusCode: dispatch.statusCode,
+          success: false,
+          startedAt,
+          scoringModel: qualityConfig.scoringModel,
+          usage: emptyHybridAuxiliaryUsage(),
+          errorCode: dispatch.errorCode,
+          errorMessage: dispatch.errorMessage,
+          requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+          responseSnapshot: { statusCode: dispatch.statusCode },
+          trafficSource: 'hybrid_quality_scoring'
+        })
+      }
+      return qualityInspectionUnavailable(
+        dispatch.errorCode,
+        dispatch.errorMessage,
+        qualityConfig.unavailableAction,
+        dispatch.account?.id,
+        dispatch.statusCode
+      )
     }
-    account = qualitySelection.account
-    const selectedQualityGroupId = qualitySelection.groupId
-    qualityGroupId = selectedQualityGroupId
-    const slot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
-    if (!slot.acquired) {
-      return qualityInspectionUnavailable('quality_scoring_account_busy', '混合路由质量评分账户并发已满', account.id)
-    }
+    let parsed: HybridQualityScoreResult
     try {
-      const upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, qualityReq)
-      const upstreamUrl = upstreamUrls[0]
-      if (!upstreamUrl) {
-        throw new Error('混合路由质量评分账户不支持 Chat Completions 请求')
-      }
-      const requestParts = await buildGatewayUpstreamRequestParts(qualityReq, account, {
-        systemAccountId: input.apiKeyRecord.system_account_id,
-        apiKeyId: input.apiKeyRecord.id,
-        groupId: selectedQualityGroupId
-      }, input.signal, {
-        requestClientCompatibility: 'openai_standard'
-      })
-      const response = await requestUpstream(upstreamUrl, {
-        method: qualityReq.method,
-        headers: requestParts.headers,
-        body: requestParts.body,
-        proxyUrl: account.proxyUrl,
-        timeoutMs: input.config.scoringTimeoutMs,
-        requestTimeoutMs: input.config.scoringTimeoutMs,
-        signal: buildHybridQualityAbortSignal(input.signal, input.config.scoringTimeoutMs)
-      })
-      statusCode = response.status
-      const responseBody = await readQualityResponseBody(response.body)
-      const usage = parseOpenAIUsageFromJsonBuffer(responseBody)
-      if (!response.ok) {
-        recordHybridScoringAttempt({
-          traceId: input.traceId,
-          clientIp: input.clientIp,
-          systemAccountId: input.apiKeyRecord.system_account_id,
-          apiKeyId: input.apiKeyRecord.id,
-          groupId: selectedQualityGroupId,
-          account,
-          endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-          statusCode: response.status,
-          success: false,
-          startedAt,
-          scoringModel: qualityConfig.scoringModel,
-          usage,
-          errorCode: 'hybrid_quality_scoring_http_error',
-          errorMessage: `质量评分模型返回 HTTP ${response.status}`,
-          requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-          responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) },
-          trafficSource: 'hybrid_quality_scoring'
-        })
-        return qualityInspectionUnavailable(
-          'hybrid_quality_scoring_http_error',
-          `质量评分模型返回 HTTP ${response.status}`,
-          account.id,
-          response.status
-        )
-      }
-      let parsed: HybridQualityScoreResult
-      try {
-        parsed = parseHybridQualityResponse(responseBody)
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        recordHybridScoringAttempt({
-          traceId: input.traceId,
-          clientIp: input.clientIp,
-          systemAccountId: input.apiKeyRecord.system_account_id,
-          apiKeyId: input.apiKeyRecord.id,
-          groupId: selectedQualityGroupId,
-          account,
-          endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-          statusCode: response.status,
-          success: false,
-          startedAt,
-          scoringModel: qualityConfig.scoringModel,
-          usage,
-          errorCode: 'hybrid_quality_scoring_failed',
-          errorMessage,
-          requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-          responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) },
-          trafficSource: 'hybrid_quality_scoring'
-        })
-        return qualityInspectionUnavailable(
-          'hybrid_quality_scoring_failed',
-          errorMessage,
-          account.id,
-          response.status
-        )
-      }
-      const actualAction = resolveHybridQualityAction(parsed, qualityConfig)
+      parsed = parseHybridQualityResponse(dispatch.responseBody)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
       recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: selectedQualityGroupId,
-        account,
+        groupId: dispatch.groupId,
+        account: dispatch.account,
         endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-        statusCode: response.status,
-        success: true,
-        startedAt,
-        scoringModel: qualityConfig.scoringModel,
-        usage,
-        requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-        responseSnapshot: { statusCode: response.status, parsed },
-        trafficSource: 'hybrid_quality_scoring'
-      })
-      return {
-        triggered: true,
-        triggerReason: trigger.reason,
-        pass: parsed.pass,
-        result: parsed,
-        actualAction,
-        qualityAccountId: account.id,
-        statusCode: response.status
-      }
-    } finally {
-      slot.release()
-    }
-  } catch (error) {
-    if (account && qualityGroupId) {
-      recordHybridScoringAttempt({
-        traceId: input.traceId,
-        clientIp: input.clientIp,
-        systemAccountId: input.apiKeyRecord.system_account_id,
-        apiKeyId: input.apiKeyRecord.id,
-        groupId: qualityGroupId,
-        account,
-        endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-        statusCode,
+        statusCode: dispatch.statusCode,
         success: false,
         startedAt,
-        scoringModel: input.config.qualityInspection?.scoringModel ?? input.config.scoringModel,
-        usage: emptyUsage(),
+        scoringModel: qualityConfig.scoringModel,
+        usage: dispatch.usage,
         errorCode: 'hybrid_quality_scoring_failed',
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage,
+        requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+        responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) },
         trafficSource: 'hybrid_quality_scoring'
       })
+      dispatch.finish({ success: false, errorCode: 'hybrid_quality_scoring_failed', errorMessage })
+      return qualityInspectionUnavailable(
+        'hybrid_quality_scoring_failed',
+        errorMessage,
+        qualityConfig.unavailableAction,
+        dispatch.account.id,
+        dispatch.statusCode
+      )
     }
+    const actualAction = resolveHybridQualityAction(parsed, qualityConfig)
+    recordHybridScoringAttempt({
+      traceId: input.traceId,
+      clientIp: input.clientIp,
+      systemAccountId: input.apiKeyRecord.system_account_id,
+      apiKeyId: input.apiKeyRecord.id,
+      groupId: dispatch.groupId,
+      account: dispatch.account,
+      endpoint: `${input.endpoint}#hybrid-quality-scoring`,
+      statusCode: dispatch.statusCode,
+      success: true,
+      startedAt,
+      scoringModel: qualityConfig.scoringModel,
+      usage: dispatch.usage,
+      requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+      responseSnapshot: { statusCode: dispatch.statusCode, parsed },
+      trafficSource: 'hybrid_quality_scoring'
+    })
+    dispatch.finish({ success: true })
+    return {
+      triggered: true,
+      triggerReason: trigger.reason,
+      pass: parsed.pass,
+      result: parsed,
+      actualAction,
+      qualityAccountId: dispatch.account.id,
+      statusCode: dispatch.statusCode
+    }
+  } catch (error) {
     return qualityInspectionUnavailable(
       'hybrid_quality_scoring_failed',
       error instanceof Error ? error.message : String(error),
-      account?.id,
-      statusCode
+      input.config.qualityInspection?.unavailableAction ?? 'pass_through',
+      undefined,
+      undefined
     )
   }
 }
@@ -312,22 +266,6 @@ function resolveHybridQualityAction(
   if (result.failureType === 'unsafe_or_policy') return 'return_error'
   if (result.retryRecommendation === 'return_error') return 'return_error'
   return config.failureAction
-}
-
-async function selectHybridQualityAccount(input: {
-  apiKeyRecord: GatewayApiKeyRow
-  scoringModel: string
-  qualityReq: Request
-}): Promise<{ account: OpenAIAccountSecret; groupId: string } | undefined> {
-  const selection = await selectGatewayModelTargetGroup({
-    req: input.qualityReq,
-    apiKeyRecord: input.apiKeyRecord,
-    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
-    targetModel: input.scoringModel,
-    requestClientCompatibility: 'openai_standard'
-  })
-  const account = selection?.accounts[0]
-  return selection && account ? { account, groupId: selection.groupId } : undefined
 }
 
 async function parseHybridQualityRequestBody(req: Request, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
@@ -519,26 +457,6 @@ function createHybridQualityGatewayRequest(body: Record<string, unknown>): Reque
   } as unknown as Request
 }
 
-function buildHybridQualityAbortSignal(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs)
-  return parent ? AbortSignal.any([parent, timeoutSignal]) : timeoutSignal
-}
-
-async function readQualityResponseBody(body: AsyncIterable<Uint8Array> | null): Promise<Buffer> {
-  if (!body) return Buffer.alloc(0)
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of body) {
-    const buffer = Buffer.from(chunk)
-    bytes += buffer.byteLength
-    if (bytes > hybridQualityResponseMaxBytes) {
-      throw new Error('混合路由质量评分响应超过保护上限')
-    }
-    chunks.push(buffer)
-  }
-  return Buffer.concat(chunks)
-}
-
 function parseHybridQualityResponse(body: Buffer): HybridQualityScoreResult {
   const response = JSON.parse(body.toString('utf8')) as {
     choices?: Array<{ message?: { content?: unknown } }>
@@ -613,20 +531,22 @@ function responseBodySnippet(body: Buffer): string {
 function qualityInspectionUnavailable(
   errorCode: string,
   errorMessage: string,
+  unavailableAction: ApiKeyHybridQualityInspectionConfig['unavailableAction'],
   qualityAccountId?: string,
   statusCode?: number
 ): HybridQualityInspectionOutcome {
+  const passThrough = unavailableAction === 'pass_through'
   return {
     triggered: true,
     triggerReason: 'quality_scoring_unavailable',
-    pass: false,
+    pass: passThrough,
     result: {
       pass: false,
       score: 0,
       reason: errorMessage,
       retryRecommendation: 'return_error'
     },
-    actualAction: 'return_error',
+    actualAction: passThrough ? 'pass_through' : 'return_error',
     qualityAccountId,
     statusCode,
     errorCode,

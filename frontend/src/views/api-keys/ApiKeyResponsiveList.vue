@@ -73,7 +73,10 @@
         </div>
       </template>
       <template v-else-if="column.key === 'routeMode'">
-        <a-tooltip :title="apiKeyHybridRouteSummary(record)">
+        <a-tooltip>
+          <template #title>
+            <div class="route-tooltip">{{ apiKeyHybridRouteSummary(record) }}</div>
+          </template>
           <a-tag :color="apiKeyRouteModeTagColor(record)">{{ apiKeyRouteModeText(record) }}</a-tag>
         </a-tooltip>
       </template>
@@ -251,6 +254,12 @@ const emit = defineEmits<{
   max-width: 320px;
   line-height: 1.7;
   white-space: pre-wrap;
+}
+
+.route-tooltip {
+  max-width: 360px;
+  line-height: 1.7;
+  white-space: pre-line;
 }
 
 .key-preview-cell {

@@ -151,6 +151,7 @@ export async function captureGatewayRawBody(
       releaseGatewayRequestBodyInFlightBytes(req)
       return
     }
+    releaseGatewayRequestBodyInFlightBytes(req)
     next()
   } catch (error) {
     releaseGatewayRequestBodyInFlightBytes(req)

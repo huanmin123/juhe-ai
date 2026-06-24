@@ -4,7 +4,9 @@ import { logger } from '../../../shared/logger.js'
 import { bindRequestContextFields } from '../../../shared/request-context.js'
 import { type GatewayApiKeyRow, type GroupUsageAccessMetadata, type OpenAIAccountsForGroupDiagnostics } from '../../../storage/repositories.js'
 import {
+  listFreshOpenAIAccountsForGroupAsync,
   listCachedOpenAIAccountsForGroupAsync,
+  listRecoverableUnavailableOpenAIAccountsForGroupAsync,
   readCachedGatewaySettingsAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
@@ -49,7 +51,13 @@ import {
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
-import { OPENAI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_MESSAGES_FAMILY,
+  OPENAI_CHAT_COMPLETIONS_FAMILY,
+  OPENAI_PROTOCOL_CODE,
+  OPENAI_RESPONSES_FAMILY,
+  isAnthropicProtocolProfile
+} from '../../../domain/provider-protocol.js'
 import {
   canAttemptApiKeyGroupFallback,
   resolveNextApiKeyGroupFallbackCandidate
@@ -70,6 +78,12 @@ import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hy
 import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
 import { applyCodexResponsesChatBridgeStatePreflight } from '../codex-responses/chat-bridge-state.js'
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
+import {
+  recoverableUnavailableMaxWaitMs,
+  waitForRecoverableUnavailableState
+} from '../runtime/recoverable-unavailable-wait.js'
+import { requestModel } from './metadata.js'
+import { openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -231,27 +245,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
-  const imagePermissionPreflight = await applyOpenAIGatewayImagePermissionPreflight({
-    req,
-    res,
-    auditCapture,
-    usageContext: baseUsageContext,
-    startedAt,
-    apiKeyRecord,
-    requestLane,
-    systemAccountId,
-    apiKeyId,
-    groupId,
-    clientIp: gatewayClientIp,
-    endpoint,
-    gatewayTextRawBodyLimitMegabytes: activeGatewaySettings.gatewayTextRawBodyLimitMegabytes,
-    signal
-  })
-  if (imagePermissionPreflight.outcome === 'completed') {
-    return undefined
-  }
-  requestLane = imagePermissionPreflight.requestLane
-
   const initialClientStrategy = resolveOpenAIGatewayClientStrategy(req, {
     systemAccountId,
     apiKeyId,
@@ -371,7 +364,8 @@ export async function prepareOpenAIGatewayDispatchContext(
           level: hybridRoute.scoring?.failed ? undefined : hybridRoute.scoring?.level,
           scoringDefaulted: hybridRoute.scoring?.defaulted,
           scoringErrorCode: hybridRoute.scoring?.errorCode,
-          scoringErrorMessage: hybridRoute.scoring?.errorMessage
+          scoringErrorMessage: hybridRoute.scoring?.errorMessage,
+          scoringFallbackMaxLevel: apiKeyRecord.hybrid_routing_config?.scoringFallbackMaxLevel
         }
       })
       const statusCode = hybridRouteFailureStatusCode(hybridRoute.reason)
@@ -417,6 +411,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         route: hybridRoute.route,
         targetModel: hybridRoute.targetModel,
         affinityApplied: hybridRoute.affinityApplied,
+        scoringFallbackApplied: hybridRoute.scoringFallbackApplied,
         qualityRetryCount: 0
       }
       auditCapture.bindContext({ groupId })
@@ -628,6 +623,16 @@ export async function prepareOpenAIGatewayDispatchContext(
     loadModelAwareCandidateAccounts: options.candidateAccounts
       ? undefined
       : (model, sourceEndpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model, requestedEndpointFamily: sourceEndpointFamily }),
+    recoverUnavailableCandidateAccounts: options.candidateAccounts
+      ? undefined
+      : () => waitForRecoverableOpenAIGatewayCandidateAccounts({
+        req,
+        auditCapture,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        signal
+      }),
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
@@ -655,6 +660,32 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (candidateFilter.outcome === 'completed') {
     return undefined
   }
+
+  const imagePermissionPreflight = await applyOpenAIGatewayImagePermissionPreflight({
+    req,
+    res,
+    auditCapture,
+    usageContext,
+    startedAt,
+    apiKeyRecord,
+    requestLane,
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    clientIp: gatewayClientIp,
+    endpoint,
+    gatewayTextRawBodyLimitMegabytes: activeGatewaySettings.gatewayTextRawBodyLimitMegabytes,
+    deferForcedImageGenerationTool: shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge({
+      req,
+      accounts: candidateFilter.accounts,
+      requestClientCompatibility: clientStrategy.requestClientCompatibility
+    }),
+    signal
+  })
+  if (imagePermissionPreflight.outcome === 'completed') {
+    return undefined
+  }
+  requestLane = imagePermissionPreflight.requestLane
 
   const dispatchPreparation = await prepareOpenAIGatewayDispatchAccounts({
     req,
@@ -721,6 +752,89 @@ export async function prepareOpenAIGatewayDispatchContext(
 
 function isGatewayModelsRequest(req: Request, groupAccess: GroupUsageAccessMetadata): boolean {
   return isGatewayProtocolModelsRequest(req, groupAccess)
+}
+
+interface RecoverableOpenAICandidateState {
+  accounts: UpstreamAccount[]
+  recoverableAccounts: UpstreamAccount[]
+}
+
+async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
+  req: Request
+  auditCapture: AuditCaptureContext
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  signal?: AbortSignal
+}): Promise<UpstreamAccount[]> {
+  const requestedModel = requestModel(input.req)
+  const requestedEndpointFamily = openAIRequestEndpointFamily(input.req)
+  const loadActiveAccounts = () => listFreshOpenAIAccountsForGroupAsync(input.groupId, input.systemAccountId, {
+    requestedModel,
+    requestedEndpointFamily
+  })
+  const loadRecoverableAccounts = () => listRecoverableUnavailableOpenAIAccountsForGroupAsync(input.groupId, input.systemAccountId, {
+    requestedModel,
+    requestedEndpointFamily,
+    windowMs: recoverableUnavailableMaxWaitMs
+  })
+  const activeAccounts = await loadActiveAccounts()
+  if (activeAccounts.length > 0) {
+    return activeAccounts
+  }
+  const initialState: RecoverableOpenAICandidateState = {
+    accounts: [],
+    recoverableAccounts: await loadRecoverableAccounts()
+  }
+  if (initialState.recoverableAccounts.length === 0) {
+    return []
+  }
+  const wait = await waitForRecoverableUnavailableState({
+    scopeKey: recoverableCandidateScopeKey(input.systemAccountId, input.apiKeyId, input.groupId, requestedModel, requestedEndpointFamily),
+    reason: 'account_cooldown_recoverable',
+    initialState,
+    refresh: async () => {
+      const accounts = await loadActiveAccounts()
+      return {
+        accounts,
+        recoverableAccounts: accounts.length > 0 ? [] : await loadRecoverableAccounts()
+      }
+    },
+    isReady: (state) => state.accounts.length > 0,
+    nextRetryAfterMs: (state) => nextRecoverableAccountRetryAfterMs(state.recoverableAccounts),
+    auditCapture: input.auditCapture,
+    signal: input.signal
+  })
+  return wait.state.accounts
+}
+
+function nextRecoverableAccountRetryAfterMs(accounts: UpstreamAccount[]): number | undefined {
+  const now = Date.now()
+  let nextRetryAfterMs: number | undefined
+  for (const account of accounts) {
+    if (!account.cooldownUntil) {
+      continue
+    }
+    const cooldownUntilMs = Date.parse(account.cooldownUntil)
+    if (!Number.isFinite(cooldownUntilMs)) {
+      continue
+    }
+    const retryAfterMs = Math.max(0, cooldownUntilMs - now)
+    nextRetryAfterMs = nextRetryAfterMs === undefined
+      ? retryAfterMs
+      : Math.min(nextRetryAfterMs, retryAfterMs)
+  }
+  return nextRetryAfterMs
+}
+
+function recoverableCandidateScopeKey(
+  systemAccountId: string,
+  apiKeyId: string | undefined,
+  groupId: string,
+  requestedModel: string | undefined,
+  requestedEndpointFamily: ReturnType<typeof openAIRequestEndpointFamily>
+): string {
+  return [systemAccountId, apiKeyId ?? '', groupId, requestedModel ?? '', requestedEndpointFamily ?? ''].join(':')
 }
 
 interface ApiKeyGroupFallbackDispatchInput {
@@ -881,6 +995,9 @@ function hybridRouteFailureMessage(reason: string): string {
   if (reason === 'hybrid_level_route_missing') {
     return '混合路由等级配置不可用'
   }
+  if (reason === 'hybrid_scoring_fallback_unavailable') {
+    return '混合路由评分模型不可用，且低档兜底范围内没有可用目标模型'
+  }
   if (reason === 'hybrid_target_group_unavailable') {
     return '混合路由目标分组暂不可用'
   }
@@ -892,6 +1009,27 @@ function hybridRouteFailureStatusCode(reason: string): number {
     return 502
   }
   return 503
+}
+
+function shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(input: {
+  req: Request
+  accounts?: UpstreamAccount[]
+  requestClientCompatibility: ClientCompatibilityCapability
+}): boolean {
+  const sourceEndpointFamily = openAIRequestEndpointFamily(input.req)
+  if (sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) {
+    return false
+  }
+  const accounts = input.accounts ?? []
+  if (!accounts.length) return false
+  return accounts.every((account) => {
+    if (!isAnthropicProtocolProfile(account)) return false
+    if (input.requestClientCompatibility === 'codex_responses' || account.clientCompatibility === 'codex_responses') {
+      return true
+    }
+    const mapping = resolveOpenAIAccountModelMapping(account, requestModel(input.req), sourceEndpointFamily)
+    return mapping?.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+  })
 }
 
 export function buildGatewayUsageContext(input: {

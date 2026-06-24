@@ -1,18 +1,25 @@
 import { strict as assert } from 'node:assert'
+import { channel } from 'node:diagnostics_channel'
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
+import type { ApiKeyHybridRoutingConfig } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import { replaceGatewayJsonBody } from '../../modules/gateway/request/body.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 
@@ -30,13 +37,37 @@ interface CliRunResult {
   stdout: string
 }
 
+process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT = '0'
+
 const realApiKey = requiredEnv('JUHE_REAL_CODEX_OPENAI_COMPATIBLE_API_KEY', ['JUHE_REAL_OPENAI_COMPATIBLE_API_KEY', 'JUHE_REAL_HYBRID_API_KEY'])
 const realBaseUrl = envText('JUHE_REAL_CODEX_OPENAI_COMPATIBLE_BASE_URL', ['JUHE_REAL_OPENAI_COMPATIBLE_BASE_URL', 'JUHE_REAL_HYBRID_BASE_URL']) || 'https://vsllm.com'
+const realProvider = providerFromEnv()
 const downstreamModel = envText('JUHE_REAL_CODEX_DOWNSTREAM_MODEL') || 'gpt-5.3-codex'
 const upstreamModel = envText('JUHE_REAL_CODEX_UPSTREAM_MODEL') || 'glm-4.7-flash'
+const hybridMode = booleanEnv('JUHE_REAL_CODEX_HYBRID')
+const hybridScoringModel = envText('JUHE_REAL_CODEX_HYBRID_SCORING_MODEL') || 'deepseek-ai-v4-flash'
+const hybridModel1To3 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_1_3') || 'gpt-5.4-mini'
+const hybridModel4To6 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_4_6') || 'gpt-5.4'
+const hybridModel7To10 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_7_10') || 'gpt-5.5'
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_CODEX_CLI_TIMEOUT_MS') ?? 240_000
+const streamRequestTimeoutSecondsOverride = positiveIntegerEnv('JUHE_REAL_CODEX_STREAM_REQUEST_TIMEOUT_SECONDS')
+const streamIdleTimeoutSecondsOverride = positiveIntegerEnv('JUHE_REAL_CODEX_STREAM_IDLE_TIMEOUT_SECONDS')
 const programmingTaskEnabled = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_TASK')
+const programmingTaskKind = envText('JUHE_REAL_CODEX_PROGRAMMING_TASK_KIND') || 'balanced_brackets'
+const programmingProjectRootOverride = envText('JUHE_REAL_CODEX_PROGRAMMING_PROJECT_ROOT')
+const programmingSandboxMode = envText('JUHE_REAL_CODEX_PROGRAMMING_SANDBOX') || 'workspace-write'
+const programmingDisableShellTool = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_DISABLE_SHELL_TOOL')
+const programmingForceApplyPatchToolChoice = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_FORCE_APPLY_PATCH_TOOL_CHOICE')
+const programmingForceApplyPatchToolChoiceCount = positiveIntegerEnv('JUHE_REAL_CODEX_PROGRAMMING_FORCE_APPLY_PATCH_TOOL_CHOICE_COUNT') ?? 1
 const marker = `CODEX_GPT_TO_GLM_OK_${Date.now()}`
+const hybridRouteEvents: Array<Record<string, unknown>> = []
+const hybridRouteDiagnosticsChannel = channel('juhe-ai:hybrid-route-decision')
+const hybridRouteDiagnosticsSubscriber = (message: unknown): void => {
+  if (typeof message === 'object' && message !== null) {
+    hybridRouteEvents.push(message as Record<string, unknown>)
+  }
+}
+hybridRouteDiagnosticsChannel.subscribe(hybridRouteDiagnosticsSubscriber)
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-codex-openai-compatible-glm-real-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'codex-openai-compatible-glm-real.sqlite3')
@@ -47,6 +78,7 @@ runtimeConfig.secret = 'codex-openai-compatible-glm-real-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -72,6 +104,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const gatewayIncomingHits: GatewayIncomingHit[] = []
+let programmingForceApplyPatchToolChoiceRemaining = programmingForceApplyPatchToolChoiceCount
 
 try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -80,39 +113,8 @@ try {
   let gatewayServer: http.Server | undefined
   try {
     registerCustomModels()
-    const group = repositories.createGroup({
-      name: 'Codex GPT 转 GLM 真实网关分组',
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-      enabled: true
-    }, access)
-    repositories.createAccount({
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-      name: 'Codex GPT 转 GLM 真实上游账户',
-      type: 'api_key',
-      credentials: {
-        api_key: realApiKey,
-        base_url: realBaseUrl,
-        supported_endpoint_modes: ['chat_json', 'chat_sse']
-      },
-      groupId: group.id,
-      status: 'active',
-      schedulable: true,
-      supportedModels: [upstreamModel],
-      modelMappings: [{
-        sourceModel: downstreamModel,
-        sourceEndpointFamily: 'responses',
-        upstreamModel,
-        upstreamEndpointFamily: 'chat_completions',
-        enabled: true
-      }]
-    }, access)
-    const apiKey = repositories.createApiKeyRecord({
-      name: 'Codex GPT 转 GLM 真实网关 Key',
-      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-      status: 'active'
-    }, access)
+    updateGatewayStreamTimeoutsForTest()
+    const apiKey = hybridMode ? createHybridCodexApiKey() : createSingleCodexApiKey()
     assert(apiKey.key, '真实联调本地 API Key 未返回明文密钥')
 
     gatewayServer = createGatewayServer()
@@ -125,7 +127,9 @@ try {
     assert.equal(result.exitCode, 0, `Codex CLI 应成功退出：${summarizeCliFailure(result)}`)
     if (programmingProjectRoot) {
       const testResult = await runProjectTests(programmingProjectRoot)
-      assert.equal(testResult.exitCode, 0, `Codex 编程任务完成后测试应通过：${summarizeCliFailure(testResult)}`)
+      if (testResult.exitCode !== 0) {
+        throw new Error(`Codex 编程任务完成后测试应通过；codex=${summarizeCliFailure(result)}；check=${summarizeCliFailure(testResult)}`)
+      }
     } else {
       assert.match(result.stdout, new RegExp(marker), `Codex CLI 输出应包含 marker：${sanitizeSecretText(result.stdout).slice(0, 2000)}`)
     }
@@ -139,22 +143,60 @@ try {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 50 }).items
-    assert(records.some((record) => record.success === true && record.model === downstreamModel), '使用记录应保存下游 GPT/Codex 模型名并标记成功')
+    const successfulGatewayModels = records
+      .filter((record) => record.success === true && record.trafficSource === 'gateway')
+      .map((record) => record.model)
+      .filter((model): model is string => typeof model === 'string')
+    const expectedSuccessModels = hybridMode
+      ? new Set(hybridLevelRoutes().map((route) => route.targetModel))
+      : new Set([downstreamModel])
+    assert(
+      successfulGatewayModels.some((model) => expectedSuccessModels.has(model)),
+      `使用记录应保存成功模型，实际：${successfulGatewayModels.join(', ') || '无'}`
+    )
 
     console.log(JSON.stringify({
       ok: true,
       cli: 'codex',
-      provider: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      provider: realProvider.providerCode,
+      providerProfile: realProvider.profileId,
       baseUrl: sanitizeBaseUrl(realBaseUrl),
       downstreamModel,
-      upstreamModel,
+      upstreamModel: hybridMode ? undefined : upstreamModel,
+      hybridMode,
+      hybridScoringModel: hybridMode ? hybridScoringModel : undefined,
+      hybridRouteModels: hybridMode ? hybridLevelRoutes().map((route) => `${route.minLevel}-${route.maxLevel}:${route.targetModel}`) : undefined,
+      gatewayStreamTimeoutOverrides: streamRequestTimeoutSecondsOverride || streamIdleTimeoutSecondsOverride
+        ? {
+            streamRequestTimeoutSeconds: streamRequestTimeoutSecondsOverride,
+            streamIdleTimeoutSeconds: streamIdleTimeoutSecondsOverride
+          }
+        : undefined,
+      successfulGatewayModels,
+      hybridRouteEvents: hybridMode ? hybridRouteEvents.map((event) => ({
+        outcome: event.outcome,
+        level: event.level,
+        targetModel: event.targetModel,
+        levelRange: event.levelRange,
+        scoringCacheHit: event.scoringCacheHit,
+        scoringFallbackApplied: event.scoringFallbackApplied,
+        scoringErrorCode: event.scoringErrorCode,
+        scoringErrorMessage: event.scoringErrorMessage,
+        statusCode: event.statusCode,
+        affinityApplied: event.affinityApplied
+      })) : undefined,
       mode: programmingProjectRoot ? 'programming_task' : 'marker',
+      programmingTaskKind: programmingProjectRoot ? programmingTaskKind : undefined,
       marker: programmingProjectRoot ? undefined : marker,
       programmingProjectRoot,
       responsesRequests: responsesHits.map((hit) => ({
         path: hit.path,
         model: hit.bodySummary.model,
         stream: hit.bodySummary.stream,
+        inputType: hit.bodySummary.inputType,
+        toolCount: hit.bodySummary.toolCount,
+        toolChoice: hit.bodySummary.toolChoice,
+        tools: hit.bodySummary.tools,
         codexTurnMetadataPresent: Boolean(hit.codexTurnMetadata)
       }))
     }, null, 2))
@@ -162,8 +204,34 @@ try {
     await closeServer(gatewayServer)
   }
 } catch (error) {
-  throw new Error(sanitizeSecretText(error instanceof Error ? error.stack ?? error.message : String(error)))
+  const routeDebug = hybridMode && hybridRouteEvents.length
+    ? `\nhybridRouteEvents=${JSON.stringify(hybridRouteEvents.map((event) => ({
+      outcome: event.outcome,
+      level: event.level,
+      targetModel: event.targetModel,
+      levelRange: event.levelRange,
+      scoringCacheHit: event.scoringCacheHit,
+      scoringFallbackApplied: event.scoringFallbackApplied,
+      scoringErrorCode: event.scoringErrorCode,
+      scoringErrorMessage: event.scoringErrorMessage,
+      statusCode: event.statusCode,
+      affinityApplied: event.affinityApplied
+    })))}`
+    : ''
+  const requestDebug = gatewayIncomingHits.length
+    ? `\nresponsesRequests=${JSON.stringify(gatewayIncomingHits.map((hit) => ({
+      path: hit.path,
+      model: hit.bodySummary.model,
+      stream: hit.bodySummary.stream,
+      inputType: hit.bodySummary.inputType,
+      toolCount: hit.bodySummary.toolCount,
+      toolChoice: hit.bodySummary.toolChoice,
+      tools: hit.bodySummary.tools
+    })))}`
+    : ''
+  throw new Error(sanitizeSecretText(`${error instanceof Error ? error.stack ?? error.message : String(error)}${routeDebug}${requestDebug}`))
 } finally {
+  hybridRouteDiagnosticsChannel.unsubscribe(hybridRouteDiagnosticsSubscriber)
   usageRecordQueue.flushAllUsageRecordQueue()
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
   auditLogQueue.flushAllAuditLogQueue()
@@ -180,8 +248,16 @@ function createGatewayServer(): http.Server {
   return http.createServer(app)
 }
 
+function updateGatewayStreamTimeoutsForTest(): void {
+  if (!streamRequestTimeoutSecondsOverride && !streamIdleTimeoutSecondsOverride) return
+  repositories.updateSettings({
+    ...(streamRequestTimeoutSecondsOverride ? { streamRequestTimeoutSeconds: streamRequestTimeoutSecondsOverride } : {}),
+    ...(streamIdleTimeoutSecondsOverride ? { streamIdleTimeoutSeconds: streamIdleTimeoutSecondsOverride } : {})
+  })
+}
+
 function captureIncomingGatewayRequest(req: Request, _res: Response, next: NextFunction): void {
-  const body = parseJsonObject(requestBodyText(req))
+  const body = maybeForceApplyPatchToolChoice(req, parseJsonObject(requestBodyText(req)))
   gatewayIncomingHits.push({
     path: req.originalUrl || req.url,
     method: req.method,
@@ -190,16 +266,60 @@ function captureIncomingGatewayRequest(req: Request, _res: Response, next: NextF
     bodySummary: {
       model: typeof body.model === 'string' ? body.model : undefined,
       stream: body.stream === true,
-      inputType: Array.isArray(body.input) ? 'array' : typeof body.input
+      inputType: Array.isArray(body.input) ? 'array' : typeof body.input,
+      toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+      toolChoice: typeof body.tool_choice === 'string' ? body.tool_choice : typeof body.tool_choice,
+      tools: summarizeResponseTools(body.tools)
     }
   })
   next()
 }
 
+function maybeForceApplyPatchToolChoice(req: Request, body: Record<string, unknown>): Record<string, unknown> {
+  if (!programmingTaskEnabled || !programmingForceApplyPatchToolChoice || programmingForceApplyPatchToolChoiceRemaining <= 0) {
+    return body
+  }
+  if (!Array.isArray(body.tools) || !body.tools.some((tool) => isResponseApplyPatchTool(tool))) {
+    return body
+  }
+  programmingForceApplyPatchToolChoiceRemaining -= 1
+  const nextBody = {
+    ...body,
+    tool_choice: {
+      type: 'custom',
+      name: 'apply_patch'
+    }
+  }
+  replaceGatewayJsonBody(req, nextBody)
+  return nextBody
+}
+
+function isResponseApplyPatchTool(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return record.type === 'custom' && record.name === 'apply_patch'
+}
+
+function summarizeResponseTools(value: unknown): Array<Record<string, unknown>> | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.slice(0, 12).map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return { type: typeof item }
+    const record = item as Record<string, unknown>
+    return {
+      type: typeof record.type === 'string' ? record.type : undefined,
+      name: typeof record.name === 'string' ? record.name : undefined,
+      namespace: typeof record.namespace === 'string' ? record.namespace : undefined
+    }
+  })
+}
+
 function registerCustomModels(): void {
-  for (const model of [downstreamModel, upstreamModel]) {
+  const models = hybridMode
+    ? [downstreamModel, hybridScoringModel, ...hybridLevelRoutes().map((route) => route.targetModel)]
+    : [downstreamModel, upstreamModel]
+  for (const model of new Set(models)) {
     saveCustomProviderModel({
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerCode: realProvider.providerCode,
       model,
       scope: 'personal',
       systemAccountId: access.systemAccountId,
@@ -211,6 +331,138 @@ function registerCustomModels(): void {
       actorSystemAccountId: access.systemAccountId
     })
   }
+}
+
+function createSingleCodexApiKey(): { id: string; key?: string } {
+  const group = repositories.createGroup({
+    name: `Codex GPT 转 ${realProvider.label} 真实网关分组`,
+    providerCode: realProvider.providerCode,
+    providerProtocolProfileId: realProvider.profileId,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: realProvider.providerCode,
+    providerProtocolProfileId: realProvider.profileId,
+    name: `Codex GPT 转 ${realProvider.label} 真实上游账户`,
+    type: 'api_key',
+    credentials: {
+      api_key: realApiKey,
+      base_url: realBaseUrl,
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: [upstreamModel],
+    modelMappings: [codexBridgeModelMapping(downstreamModel, upstreamModel)]
+  }, access)
+  return repositories.createApiKeyRecord({
+    name: `Codex GPT 转 ${realProvider.label} 真实网关 Key`,
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+}
+
+function createHybridCodexApiKey(): { id: string; key?: string } {
+  const scoring = createRealGroupAccount({
+    accountName: 'Codex Hybrid 评分账户',
+    clientCompatibility: 'openai_standard',
+    groupName: 'Codex Hybrid 评分分组',
+    modelMappings: [],
+    supportedModel: hybridScoringModel
+  })
+  const targetGroups = new Map<string, { accountId: string; groupId: string }>()
+  for (const route of hybridLevelRoutes()) {
+    if (targetGroups.has(route.targetModel)) continue
+    targetGroups.set(route.targetModel, createRealGroupAccount({
+      accountName: `Codex Hybrid ${route.targetModel} 目标账户`,
+      clientCompatibility: 'openai_standard',
+      groupName: `Codex Hybrid ${route.targetModel} 目标分组`,
+      modelMappings: [
+        codexBridgeModelMapping(downstreamModel, route.targetModel),
+        codexBridgeModelMapping(route.targetModel, route.targetModel)
+      ],
+      supportedModel: route.targetModel
+    }))
+  }
+  const groupBindings = [scoring, ...targetGroups.values()].map((item, index) => ({
+    groupId: item.groupId,
+    priority: index + 1,
+    weight: 1,
+    status: 'active' as const
+  }))
+  return repositories.createApiKeyRecord({
+    name: 'Codex Hybrid 真实混合路由 Key',
+    routeMode: 'hybrid',
+    groupRouteStrategy: 'priority_failover',
+    groupBindings,
+    hybridRoutingConfig: {
+      scoringModel: hybridScoringModel,
+      scoringContextMode: 'full_request',
+      qualityPreference: 'balanced',
+      scoringTimeoutMs: 45_000,
+      scoringFallbackMaxLevel: 5,
+      scoringCacheEnabled: true,
+      scoringCacheTtlSeconds: 300,
+      cacheAffinityEnabled: true,
+      affinityTtlSeconds: 900,
+      switchMinLevelDelta: 0,
+      downgradeConsecutiveLowCount: 1,
+      levelRoutes: hybridLevelRoutes()
+    } satisfies ApiKeyHybridRoutingConfig,
+    status: 'active'
+  }, access)
+}
+
+function createRealGroupAccount(input: {
+  accountName: string
+  clientCompatibility: 'openai_standard' | 'codex_responses'
+  groupName: string
+  modelMappings: Array<ReturnType<typeof codexBridgeModelMapping>>
+  supportedModel: string
+}): { accountId: string; groupId: string } {
+  const group = repositories.createGroup({
+    name: input.groupName,
+    providerCode: realProvider.providerCode,
+    providerProtocolProfileId: realProvider.profileId,
+    enabled: true
+  }, access)
+  const account = repositories.createAccount({
+    providerCode: realProvider.providerCode,
+    providerProtocolProfileId: realProvider.profileId,
+    name: input.accountName,
+    type: 'api_key',
+    clientCompatibility: input.clientCompatibility,
+    credentials: {
+      api_key: realApiKey,
+      base_url: realBaseUrl,
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    supportedModels: [input.supportedModel],
+    modelMappings: input.modelMappings
+  }, access)
+  return { accountId: account.id, groupId: group.id }
+}
+
+function codexBridgeModelMapping(sourceModel: string, targetModel: string) {
+  return {
+    sourceModel,
+    sourceEndpointFamily: 'responses' as const,
+    upstreamModel: targetModel,
+    upstreamEndpointFamily: 'chat_completions' as const,
+    enabled: true
+  }
+}
+
+function hybridLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes'] {
+  return [
+    { minLevel: 1, maxLevel: 3, targetModel: hybridModel1To3, enabled: true },
+    { minLevel: 4, maxLevel: 6, targetModel: hybridModel4To6, enabled: true },
+    { minLevel: 7, maxLevel: 10, targetModel: hybridModel7To10, enabled: true }
+  ]
 }
 
 function runCodexCli(gatewayBaseUrl: string, localApiKey: string): Promise<CliRunResult> {
@@ -263,7 +515,7 @@ function runCodexCli(gatewayBaseUrl: string, localApiKey: string): Promise<CliRu
 }
 
 function runCodexProgrammingCli(gatewayBaseUrl: string, localApiKey: string, projectRoot: string): Promise<CliRunResult> {
-  const codexHome = join(projectRoot, '.codex')
+  const codexHome = join(tempRoot, 'codex-programming-home')
   mkdirSync(codexHome, { recursive: true })
   return runCli({
     args: [
@@ -271,11 +523,12 @@ function runCodexProgrammingCli(gatewayBaseUrl: string, localApiKey: string, pro
       '--json',
       '--ephemeral',
       '--ignore-user-config',
+      ...(programmingDisableShellTool ? ['--disable', 'shell_tool'] : []),
       '--skip-git-repo-check',
       '-C',
       projectRoot,
       '-s',
-      'workspace-write',
+      programmingSandboxMode,
       '-c',
       'approval_policy=never',
       '-c',
@@ -299,25 +552,53 @@ function runCodexProgrammingCli(gatewayBaseUrl: string, localApiKey: string, pro
       '-'
     ],
     cwd: projectRoot,
-    env: isolatedCliEnv(projectRoot, {
+    env: isolatedCliEnv(join(tempRoot, 'programming-cli-root'), {
       CODEX_HOME: codexHome,
       JUHE_CODEX_API_KEY: localApiKey,
       OPENAI_API_KEY: '',
       DISABLE_TELEMETRY: '1'
     }),
-    stdinText: [
-      '这是一个很小的编程任务。',
-      '请实现 src/isBalanced.js 中的 isBalanced(input) 函数，判断字符串里的 (), [], {} 是否括号平衡。',
-      '要求忽略非括号字符，导出函数名保持 isBalanced。',
-      '请运行 node --test test/isBalanced.test.js，并修复直到测试通过。',
-      '不要安装依赖。'
-    ].join('\n'),
+    stdinText: programmingTaskPrompt(),
     timeoutMs: requestTimeoutMs
   })
 }
 
+function providerFromEnv(): { providerCode: string; profileId: string; label: string } {
+  const value = (envText('JUHE_REAL_CODEX_PROVIDER') || 'openai-compatible').toLowerCase()
+  if (value === 'openai-compatible' || value === 'openai' || value === 'gpt') {
+    return {
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      profileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+      label: 'OpenAI Compatible'
+    }
+  }
+  if (value === 'glm') {
+    return {
+      providerCode: GLM_PROVIDER_CODE,
+      profileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
+      label: 'GLM'
+    }
+  }
+  if (value === 'deepseek' || value === 'ds') {
+    return {
+      providerCode: DEEPSEEK_PROVIDER_CODE,
+      profileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
+      label: 'DeepSeek'
+    }
+  }
+  throw new Error(`JUHE_REAL_CODEX_PROVIDER 只支持 openai-compatible、glm、deepseek，实际为 ${value}`)
+}
+
 function seedProgrammingProject(): string {
-  const projectRoot = join(tempRoot, 'programming-task')
+  const projectRoot = programmingProjectRootOverride ? resolve(programmingProjectRootOverride) : join(tempRoot, 'programming-task')
+  if (programmingProjectRootOverride && existsSync(projectRoot)) {
+    throw new Error(`编程任务输出目录已存在，为避免覆盖请换一个新目录：${projectRoot}`)
+  }
+  if (programmingTaskKind === 'snake_html') return seedSnakeHtmlProject(projectRoot)
+  return seedBalancedBracketProject(projectRoot)
+}
+
+function seedBalancedBracketProject(projectRoot: string): string {
   mkdirSync(join(projectRoot, 'src'), { recursive: true })
   mkdirSync(join(projectRoot, 'test'), { recursive: true })
   writeFileSync(join(projectRoot, 'package.json'), `${JSON.stringify({
@@ -354,9 +635,98 @@ function seedProgrammingProject(): string {
   return projectRoot
 }
 
+function seedSnakeHtmlProject(projectRoot: string): string {
+  mkdirSync(projectRoot, { recursive: true })
+  writeFileSync(join(projectRoot, 'README.md'), [
+    '# 贪吃蛇小游戏',
+    '',
+    '请使用纯 HTML、CSS 和 JavaScript 实现一个可直接打开的贪吃蛇小游戏。',
+    ''
+  ].join('\n'), 'utf8')
+  return projectRoot
+}
+
+function programmingTaskPrompt(): string {
+  if (programmingTaskKind === 'snake_html') {
+    return [
+      '这是一个很小的前端编程任务。',
+      '请在当前目录创建一个可直接用浏览器打开的贪吃蛇小游戏。',
+      '不要只回复计划或说明；第一步必须创建或修改文件。',
+      '请优先使用 apply_patch 工具创建或修改文件，不要用 PowerShell here-string 或 Set-Content 写长 HTML、CSS、JavaScript 内容。',
+      '如果最终没有生成 index.html、styles.css、game.js 三个文件，任务就是失败。',
+      '必须使用纯 HTML、CSS、JavaScript，至少创建 index.html、styles.css、game.js 三个文件。',
+      '游戏需要包含：开始/暂停/重新开始、方向键和 WASD 控制、得分显示、速度随得分提升、撞墙或撞到自己结束、移动端按钮控制。',
+      '界面文案使用中文，样式要完整，不要依赖外部 CDN，不要安装依赖。',
+      '完成后请运行 node --check game.js 做语法检查；如果失败请修复。'
+    ].join('\n')
+  }
+  return [
+    '这是一个很小的编程任务。',
+    '请实现 src/isBalanced.js 中的 isBalanced(input) 函数，判断字符串里的 (), [], {} 是否括号平衡。',
+    '要求忽略非括号字符，导出函数名保持 isBalanced。',
+    '请运行 node --test test/isBalanced.test.js，并修复直到测试通过。',
+    '不要安装依赖。'
+  ].join('\n')
+}
+
 function runProjectTests(projectRoot: string): Promise<CliRunResult> {
+  if (programmingTaskKind === 'snake_html') return runSnakeHtmlProjectChecks(projectRoot)
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, ['--test', 'test/isBalanced.test.js'], {
+      cwd: projectRoot,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+    child.on('error', rejectPromise)
+    child.on('close', (code) => resolvePromise({
+      exitCode: code,
+      stdout: Buffer.concat(stdout).toString('utf8'),
+      stderr: Buffer.concat(stderr).toString('utf8')
+    }))
+  })
+}
+
+async function runSnakeHtmlProjectChecks(projectRoot: string): Promise<CliRunResult> {
+  const requiredFiles = ['index.html', 'styles.css', 'game.js']
+  const missing = requiredFiles.filter((file) => !existsSync(join(projectRoot, file)))
+  if (missing.length) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `缺少文件：${missing.join(', ')}`
+    }
+  }
+  const html = readFileSync(join(projectRoot, 'index.html'), 'utf8')
+  const js = readFileSync(join(projectRoot, 'game.js'), 'utf8')
+  const css = readFileSync(join(projectRoot, 'styles.css'), 'utf8')
+  const htmlChecks = [
+    html.includes('styles.css'),
+    html.includes('game.js'),
+    /<canvas\b|class=["'][^"']*(board|game|grid)/i.test(html)
+  ]
+  const sourceChecks = [
+    /keydown|keyup|pointerdown|touchstart|click/i.test(js),
+    /score|得分|分数/i.test(js + html),
+    /restart|重新|reset/i.test(js + html),
+    /@media|grid|flex|canvas|button/i.test(css + html)
+  ]
+  const failedChecks = [
+    ...htmlChecks.map((ok, index) => ok ? undefined : `HTML 检查 ${index + 1} 失败`),
+    ...sourceChecks.map((ok, index) => ok ? undefined : `源码检查 ${index + 1} 失败`)
+  ].filter(Boolean)
+  if (failedChecks.length) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: failedChecks.join('; ')
+    }
+  }
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, ['--check', 'game.js'], {
       cwd: projectRoot,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -383,7 +753,8 @@ function runCli(input: {
 }): Promise<CliRunResult> {
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false
-    const child = spawn('codex', input.args, {
+    const launcher = process.platform === 'win32' ? resolveWindowsNodeCliLauncher('codex') : undefined
+    const child = spawn(launcher?.command ?? 'codex', [...(launcher?.args ?? []), ...input.args], {
       cwd: input.cwd,
       env: input.env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -416,6 +787,35 @@ function runCli(input: {
       }))
     })
   })
+}
+
+function resolveWindowsNodeCliLauncher(command: string): { command: string; args: string[] } | undefined {
+  const entryByCommand: Record<string, string> = {
+    codex: 'node_modules\\@openai\\codex\\bin\\codex.js'
+  }
+  const entry = entryByCommand[command]
+  if (!entry) return undefined
+  const commandPath = findOnPath(`${command}.cmd`) ?? findOnPath(`${command}.ps1`) ?? findOnPath(command)
+  if (!commandPath) return undefined
+  const baseDir = dirname(commandPath)
+  const entryPath = join(baseDir, entry)
+  if (!existsSync(entryPath)) return undefined
+  const bundledNode = join(baseDir, 'node.exe')
+  return {
+    command: existsSync(bundledNode) ? bundledNode : 'node.exe',
+    args: [entryPath]
+  }
+}
+
+function findOnPath(filename: string): string | undefined {
+  const pathValue = process.env.PATH ?? process.env.Path ?? ''
+  for (const rawDir of pathValue.split(pathDelimiter)) {
+    const dir = rawDir.trim().replace(/^"|"$/g, '')
+    if (!dir) continue
+    const candidate = join(dir, filename)
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }
 
 function isolatedCliEnv(cliRoot: string, extra: Record<string, string>): Record<string, string> {

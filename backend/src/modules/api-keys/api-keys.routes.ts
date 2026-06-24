@@ -32,7 +32,7 @@ const apiKeyMutationSchema = z.object({
     scoringContextMode: z.literal('full_request').optional(),
     qualityPreference: z.enum(['cost_first', 'balanced', 'quality_first']).optional(),
     scoringTimeoutMs: z.number().int().min(1000).max(60000).optional(),
-    failureDefaultLevel: z.number().int().min(1).max(10).optional(),
+    scoringFallbackMaxLevel: z.number().int().min(2).max(5).optional(),
     scoringCacheEnabled: z.boolean().optional(),
     scoringCacheTtlSeconds: z.number().int().min(1).max(3600).optional(),
     cacheAffinityEnabled: z.boolean().optional(),
@@ -52,7 +52,8 @@ const apiKeyMutationSchema = z.object({
       triggerMode: z.enum(['quality_first_only', 'risk_based', 'always_for_hybrid']).optional(),
       maxTriggerLevel: z.number().int().min(1).max(10).optional(),
       maxRetries: z.number().int().min(0).max(2).optional(),
-      failureAction: z.enum(['repair_then_upgrade', 'upgrade_next_level', 'retry_same_model', 'return_error']).optional()
+      failureAction: z.enum(['repair_then_upgrade', 'upgrade_next_level', 'retry_same_model', 'return_error']).optional(),
+      unavailableAction: z.enum(['pass_through', 'return_error']).optional()
     }).strict().optional()
   }).strict().nullable().optional(),
   status: z.enum(['active', 'disabled']).optional(),

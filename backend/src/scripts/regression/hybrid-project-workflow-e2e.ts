@@ -250,7 +250,7 @@ try {
         scoringContextMode: 'full_request',
         qualityPreference: 'balanced',
         scoringTimeoutMs: 45_000,
-        failureDefaultLevel: 7,
+        scoringFallbackMaxLevel: 5,
         scoringCacheEnabled: true,
         scoringCacheTtlSeconds,
         cacheAffinityEnabled: true,
@@ -263,7 +263,8 @@ try {
           triggerMode: 'risk_based',
           maxTriggerLevel: qualityInspectionMaxLevel,
           maxRetries: qualityInspectionMaxRetries,
-          failureAction: 'repair_then_upgrade'
+          failureAction: 'repair_then_upgrade',
+          unavailableAction: 'pass_through'
         } : undefined,
         levelRoutes
       } satisfies ApiKeyHybridRoutingConfig,

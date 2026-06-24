@@ -18,7 +18,7 @@ import {
   applyAccountErrorHandlingWithCacheInvalidation,
   persistOpenAICodexHeadersIfNeeded
 } from '../runtime/account-effects.js'
-import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
+import { recordGatewayAccountApiKeyFailure, recordGatewayAccountApiKeyLocalFailure } from '../runtime/account-api-key-effects.service.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import {
@@ -113,8 +113,17 @@ interface HandleUpstreamRequestErrorInput {
 }
 
 type HandleFailedUpstreamResponseResult =
-  | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt }
+  | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure }
   | { action: 'retry_with_body_variant'; lastAttempt: UpstreamAttempt; body: Buffer }
+
+export interface PendingAccountApiKeyFailure {
+  account: UpstreamAccount
+  status: 'temporary_unavailable' | 'rate_limited' | 'error'
+  statusCode?: number
+  errorCode?: string
+  errorMessage?: string
+  cooldownUntil?: string
+}
 
 export async function handleFailedUpstreamResponse(
   input: HandleFailedUpstreamResponseInput
@@ -245,8 +254,6 @@ export async function handleFailedUpstreamResponse(
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   const endpointCapabilityFailure = isEndpointCapabilityFailure(req, account, response.status)
-  const requestScopedFailure = !responseBodyRead.truncated
-    && isRequestScopedUpstreamResponseFailure(response.status, parsedError, responseBodyText)
   if (input.retrySameAccount) {
     auditCapture.addGatewayMetadata({
       label: 'same_account_retry_response_failed',
@@ -261,7 +268,7 @@ export async function handleFailedUpstreamResponse(
     return { action: 'retry', lastAttempt }
   }
 
-  if (!endpointCapabilityFailure && !requestScopedFailure) {
+  if (!endpointCapabilityFailure) {
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   }
   if (endpointCapabilityFailure) {
@@ -275,25 +282,22 @@ export async function handleFailedUpstreamResponse(
       }
     })
   }
-  if (requestScopedFailure) {
-    auditCapture.addGatewayMetadata({
-      label: 'request_scoped_upstream_response_failed',
-      metadata: {
-        accountId: account.id,
-        upstreamUrl: safeUpstreamUrl,
-        statusCode: response.status,
-        endpoint: requestEndpoint(req),
-        errorCode: stringValue(parsedError.code) || undefined,
-        errorType: stringValue(parsedError.type) || undefined
-      }
-    })
-  }
 
-  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false && !endpointCapabilityFailure && !requestScopedFailure
+  const accountStateMutationEnabled = input.accountStateMutationEnabled !== false && !endpointCapabilityFailure
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
-  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && isRealUpstreamUrl(upstreamUrl)) {
+  const responseKeyFailoverEligible = accountStateMutationEnabled
+    && isolateAccountApiKeyFailure
+    && !isCooldownRetestTrafficSource(usageContext.trafficSource)
+    && isRealUpstreamUrl(upstreamUrl)
+  const apiKeyFailureStatus = accountApiKeyFailureStatusFromPolicyDecision(policyDecision)
+  const keyFailureStateMutationEnabled = accountStateMutationEnabled
+    && isolateAccountApiKeyFailure
+    && Boolean(policyDecision)
+    && !isCooldownRetestTrafficSource(usageContext.trafficSource)
+    && isRealUpstreamUrl(upstreamUrl)
+  if (keyFailureStateMutationEnabled) {
     recordGatewayAccountApiKeyFailure(account, {
-      status: accountApiKeyFailureStatusFromPolicyDecision(policyDecision),
+      status: apiKeyFailureStatus,
       statusCode: response.status,
       errorCode: stringValue(parsedError.code) || undefined,
       errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
@@ -302,6 +306,11 @@ export async function handleFailedUpstreamResponse(
       clientIp: usageContext.clientIp,
       apiKeyId: usageContext.apiKeyId,
       source: 'upstream_response_failed'
+    })
+  } else if (responseKeyFailoverEligible) {
+    recordGatewayAccountApiKeyLocalFailure(account, {
+      status: apiKeyFailureStatus,
+      errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined
     })
   }
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
@@ -333,7 +342,7 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  if (!endpointCapabilityFailure && !requestScopedFailure) {
+  if (!endpointCapabilityFailure) {
     rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
       statusCode: response.status,
       errorCode: stringValue(parsedError.code) || undefined,
@@ -344,7 +353,21 @@ export async function handleFailedUpstreamResponse(
     })
   }
 
-  return { action: 'skip_account', lastAttempt }
+  return {
+    action: 'skip_account',
+    lastAttempt,
+    keyScopedFailure: responseKeyFailoverEligible,
+    pendingApiKeyFailure: responseKeyFailoverEligible && !keyFailureStateMutationEnabled
+      ? {
+          account,
+          status: apiKeyFailureStatus,
+          statusCode: response.status,
+          errorCode: stringValue(parsedError.code) || undefined,
+          errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
+          cooldownUntil: policyDecision?.cooldownUntil
+        }
+      : undefined
+  }
 }
 
 function errorPolicyFailureReason(
@@ -370,42 +393,6 @@ function accountApiKeyFailureStatusFromPolicyDecision(
   return 'temporary_unavailable'
 }
 
-function isRequestScopedUpstreamResponseFailure(
-  statusCode: number,
-  parsedError: Record<string, unknown>,
-  bodyText: string
-): boolean {
-  const code = normalizedFailureText(parsedError.code)
-  const type = normalizedFailureText(parsedError.type)
-  const message = normalizedFailureText(parsedError.message) || normalizedFailureText(bodyText)
-  const combined = [code, type, message].filter(Boolean).join(' ')
-  if (!combined) {
-    return false
-  }
-  if (/\b(auth|api[_ -]?key|credential|permission|forbidden|quota|billing|balance|arrearage|rate[_ -]?limit|too[_ -]?many[_ -]?requests)\b/.test(combined)) {
-    return false
-  }
-  if (/\b(model[_ -]?not[_ -]?found|invalid[_ -]?model|unsupported[_ -]?model|model[_ -]?not[_ -]?available|context[_ -]?length[_ -]?exceeded|content[_ -]?policy|safety|blocked|invalid[_ -]?request|bad[_ -]?request|not[_ -]?found)\b/.test(combined)) {
-    return true
-  }
-  if (/\bno available channel for model\b/.test(combined)) {
-    return true
-  }
-  if (/\bmodel\b.*\b(not found|not available|unsupported|does not exist|invalid)\b/.test(combined)) {
-    return true
-  }
-  if (/\b(max[_ -]?tokens|tool_choice|tool|schema|parameter|payload|prompt|message)\b.*\b(required|invalid|unsupported|missing|too long)\b/.test(combined)) {
-    return true
-  }
-  return statusCode >= 400 && statusCode < 500 && !/\b(server|overload|timeout|temporar|unavailable|upstream|internal)\b/.test(combined)
-}
-
-function normalizedFailureText(value: unknown): string {
-  return typeof value === 'string'
-    ? value.toLowerCase().replace(/[^a-z0-9_ -]+/g, ' ').replace(/\s+/g, ' ').trim()
-    : ''
-}
-
 function isEndpointCapabilityFailure(
   req: Request,
   account: UpstreamAccount,
@@ -416,7 +403,7 @@ function isEndpointCapabilityFailure(
 
 export async function handleUpstreamRequestError(
   input: HandleUpstreamRequestErrorInput
-): Promise<{ action: 'retry' | 'skip_account'; lastAttempt?: UpstreamAttempt }> {
+): Promise<{ action: 'retry' | 'skip_account'; lastAttempt?: UpstreamAttempt; keyScopedFailure?: boolean }> {
   const {
     req,
     usageContext,
@@ -527,16 +514,6 @@ export async function handleUpstreamRequestError(
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
   const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
-  if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && isRealUpstreamUrl(upstreamUrl)) {
-    recordGatewayAccountApiKeyFailure(account, {
-      status: 'temporary_unavailable',
-      errorMessage: message,
-      trafficSource: usageContext.trafficSource,
-      clientIp: usageContext.clientIp,
-      apiKeyId: usageContext.apiKeyId,
-      source: 'upstream_request_failed'
-    })
-  }
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway' && isRealUpstreamUrl(upstreamUrl)) {
     recordGatewayUpstreamBucketFailure(account, '上游请求异常', {
       bucketScope: gatewayProxyKey(account) ? 'proxy' : 'upstream'
@@ -567,7 +544,11 @@ export async function handleUpstreamRequestError(
   if (isRealUpstreamUrl(upstreamUrl)) {
     rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   }
-  return { action: 'skip_account', lastAttempt }
+  return {
+    action: 'skip_account',
+    lastAttempt,
+    keyScopedFailure: false
+  }
 }
 
 export function formatUpstreamRequestErrorMessage(error: unknown): string {

@@ -341,6 +341,7 @@ export async function handleOpenAIGatewayRequest(
         route: nextRoute.route,
         targetModel: nextRoute.targetModel,
         affinityApplied: false,
+        scoringFallbackApplied: hybridRoute.scoringFallbackApplied,
         qualityRetryCount: hybridRoute.qualityRetryCount + 1
       }
     }
@@ -466,7 +467,7 @@ export async function handleOpenAIGatewayRequest(
         }
         throw error
       }
-      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures } = upstreamResult
 
       try {
         activeDownstreamSessionAffinity = sessionAffinityKey
@@ -759,6 +760,7 @@ export async function handleOpenAIGatewayRequest(
           clientIpAccountAvoidanceTracker,
           accountStateMutationEnabled: options.disableAccountStateMutation !== true
         })
+        confirmSameAccountApiKeyFailures()
         return
       } finally {
         releaseConcurrency()

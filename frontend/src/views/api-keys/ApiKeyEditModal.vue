@@ -12,7 +12,7 @@
       <a-form-item label="名称" required>
         <a-input v-model:value="form.name" />
       </a-form-item>
-      <a-form-item label="入口路由模式">
+      <a-form-item label="入口路由模式" tooltip="普通路由按客户端请求的 model 选择号池；混合智能路由会先调用评分模型，再按等级改写为目标模型。评分请求会单独计入当前 API Key 用量。">
         <a-segmented v-model:value="form.routeMode" :options="routeModeOptions" block />
       </a-form-item>
       <a-form-item label="分组路由策略">
@@ -75,7 +75,7 @@
       </a-form-item>
       <template v-if="form.routeMode === 'hybrid'">
         <div class="hybrid-config-grid">
-          <a-form-item label="评分模型" required>
+          <a-form-item label="评分模型" required tooltip="评分模型只从模型目录选择；运行时仍从当前 API Key 绑定分组池里选择能承接该模型的账号，不配置独立评分分组。">
             <a-select
               v-model:value="form.hybridRoutingConfig.scoringModel"
               show-search
@@ -89,30 +89,34 @@
           <a-form-item label="质量偏好">
             <a-select v-model:value="form.hybridRoutingConfig.qualityPreference" :options="hybridQualityPreferenceOptions" />
           </a-form-item>
-          <a-form-item label="评分超时">
+          <a-form-item label="评分超时" tooltip="评分请求超过该时间会进入评分不可用兜底，不再阻断客户端主请求。">
             <a-input-number v-model:value="form.hybridRoutingConfig.scoringTimeoutMs" :min="1000" :max="60000" :step="1000" addon-after="ms" />
           </a-form-item>
-          <a-form-item label="失败参考等级">
-            <a-input-number v-model:value="form.hybridRoutingConfig.failureDefaultLevel" :min="1" :max="10" />
+          <a-form-item label="评分不可用兜底上限" tooltip="评分模型不可用时，系统只在该等级以内从低到高寻找可用目标模型；默认最高到 5，避免直接打到高成本档。">
+            <a-input-number v-model:value="form.hybridRoutingConfig.scoringFallbackMaxLevel" :min="2" :max="5" />
           </a-form-item>
-          <a-form-item label="评分缓存 TTL">
+          <a-form-item label="评分缓存 TTL" tooltip="只缓存完全相同请求指纹的成功评分结果；缓存命中只省评分调用，目标模型请求仍会正常执行。">
             <a-input-number v-model:value="form.hybridRoutingConfig.scoringCacheTtlSeconds" :min="1" :max="3600" addon-after="秒" />
           </a-form-item>
-          <a-form-item label="缓存亲和 TTL">
+          <a-form-item label="缓存亲和 TTL" tooltip="同一会话短时间内尽量保持模型稳定，减少频繁跨模型导致的上游缓存损失。">
             <a-input-number v-model:value="form.hybridRoutingConfig.affinityTtlSeconds" :min="1" :max="86400" addon-after="秒" />
           </a-form-item>
-          <a-form-item label="切换最小等级差">
+          <a-form-item label="切换最小等级差" tooltip="本次评分和上次评分差距小于该值时，优先沿用上次目标模型。">
             <a-input-number v-model:value="form.hybridRoutingConfig.switchMinLevelDelta" :min="0" :max="9" />
           </a-form-item>
-          <a-form-item label="低分降级确认次数">
+          <a-form-item label="低分降级确认次数" tooltip="从高档降到低档前需要连续低分确认，避免一次波动破坏会话缓存。">
             <a-input-number v-model:value="form.hybridRoutingConfig.downgradeConsecutiveLowCount" :min="1" :max="20" />
           </a-form-item>
         </div>
         <a-form-item>
-          <a-checkbox v-model:checked="form.hybridRoutingConfig.qualityInspection.enabled">启用 200 响应质量评分</a-checkbox>
+          <a-checkbox v-model:checked="form.hybridRoutingConfig.qualityInspection.enabled">
+            <a-tooltip title="质量评分是额外模型调用，只检查上游 200 响应内容是否可交付；非 200、超时和连接失败仍走原有切号与重试。质量评分不可用默认放行原 200。">
+              <span>启用 200 响应质量评分</span>
+            </a-tooltip>
+          </a-checkbox>
         </a-form-item>
         <div v-if="form.hybridRoutingConfig.qualityInspection.enabled" class="hybrid-config-grid">
-          <a-form-item label="质量评分模型" required>
+          <a-form-item label="质量评分模型" required tooltip="质量评分模型同样从当前 API Key 绑定分组池里选账号；不可用时按下方处理方式决定放行或报错。">
             <a-select
               v-model:value="form.hybridRoutingConfig.qualityInspection.scoringModel"
               show-search
@@ -135,8 +139,11 @@
           <a-form-item label="失败动作">
             <a-select v-model:value="form.hybridRoutingConfig.qualityInspection.failureAction" :options="hybridQualityInspectionFailureOptions" />
           </a-form-item>
+          <a-form-item label="不可用处理" tooltip="质量评分器不可用不等于响应质量不合格。默认放行原始 200；严格质量场景可改为返回错误。">
+            <a-select v-model:value="form.hybridRoutingConfig.qualityInspection.unavailableAction" :options="hybridQualityInspectionUnavailableOptions" />
+          </a-form-item>
         </div>
-        <a-form-item label="等级模型区间" required>
+        <a-form-item label="等级模型区间" required tooltip="启用区间必须完整覆盖 1-10 且不能重叠；最低档必须从 1 开始并覆盖 1-2 到 1-5，至少配置 2 个不同目标模型。目标模型还必须能被绑定分组池承接。">
           <div class="hybrid-level-routes-field">
             <div v-for="(route, index) in form.hybridRoutingConfig.levelRoutes" :key="index" class="hybrid-level-route-row">
               <a-switch v-model:checked="route.enabled" size="small" />
@@ -282,6 +289,10 @@ const hybridQualityInspectionFailureOptions = [
   { label: '同模型重试', value: 'retry_same_model' },
   { label: '返回错误', value: 'return_error' }
 ] satisfies Array<{ label: string; value: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>['failureAction'] }>
+const hybridQualityInspectionUnavailableOptions = [
+  { label: '放行原 200', value: 'pass_through' },
+  { label: '返回错误', value: 'return_error' }
+] satisfies Array<{ label: string; value: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>['unavailableAction'] }>
 const form = reactive({
   name: '',
   routeMode: 'normal' as ApiKeyRouteMode,
@@ -533,7 +544,7 @@ function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig>
     scoringContextMode: 'full_request',
     qualityPreference: input.qualityPreference ?? 'balanced',
     scoringTimeoutMs: input.scoringTimeoutMs ?? 15000,
-    failureDefaultLevel: input.failureDefaultLevel ?? 7,
+    scoringFallbackMaxLevel: input.scoringFallbackMaxLevel ?? 5,
     scoringCacheEnabled: true,
     scoringCacheTtlSeconds: input.scoringCacheTtlSeconds ?? 300,
     cacheAffinityEnabled: true,
@@ -552,7 +563,8 @@ function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig>
       triggerMode: qualityInspection?.triggerMode ?? 'risk_based',
       maxTriggerLevel: qualityInspection?.maxTriggerLevel ?? 6,
       maxRetries: qualityInspection?.maxRetries ?? 2,
-      failureAction: qualityInspection?.failureAction ?? 'repair_then_upgrade'
+      failureAction: qualityInspection?.failureAction ?? 'repair_then_upgrade',
+      unavailableAction: qualityInspection?.unavailableAction ?? 'pass_through'
     }
   }
 }
@@ -568,14 +580,14 @@ function hybridRoutingConfigPayload(): ApiKeyHybridRoutingConfig | undefined | f
     return false
   }
   const scoringTimeoutMs = normalizeIntegerField(form.hybridRoutingConfig.scoringTimeoutMs, 1000, 60000, '评分超时')
-  const failureDefaultLevel = normalizeIntegerField(form.hybridRoutingConfig.failureDefaultLevel, 1, 10, '失败参考等级')
+  const scoringFallbackMaxLevel = normalizeIntegerField(form.hybridRoutingConfig.scoringFallbackMaxLevel, 2, 5, '评分不可用兜底上限')
   const scoringCacheTtlSeconds = normalizeIntegerField(form.hybridRoutingConfig.scoringCacheTtlSeconds, 1, 3600, '评分缓存 TTL')
   const affinityTtlSeconds = normalizeIntegerField(form.hybridRoutingConfig.affinityTtlSeconds, 1, 86400, '缓存亲和 TTL')
   const switchMinLevelDelta = normalizeIntegerField(form.hybridRoutingConfig.switchMinLevelDelta, 0, 9, '切换最小等级差')
   const downgradeConsecutiveLowCount = normalizeIntegerField(form.hybridRoutingConfig.downgradeConsecutiveLowCount, 1, 20, '低分降级确认次数')
   if (
     scoringTimeoutMs === false
-    || failureDefaultLevel === false
+    || scoringFallbackMaxLevel === false
     || scoringCacheTtlSeconds === false
     || affinityTtlSeconds === false
     || switchMinLevelDelta === false
@@ -592,7 +604,7 @@ function hybridRoutingConfigPayload(): ApiKeyHybridRoutingConfig | undefined | f
     scoringContextMode: 'full_request',
     qualityPreference: form.hybridRoutingConfig.qualityPreference,
     scoringTimeoutMs,
-    failureDefaultLevel,
+    scoringFallbackMaxLevel,
     scoringCacheEnabled: true,
     scoringCacheTtlSeconds,
     cacheAffinityEnabled: true,
@@ -610,7 +622,8 @@ function normalizedHybridQualityInspection(): ApiKeyHybridRoutingConfig['quality
     return {
       ...qualityInspection,
       enabled: false,
-      scoringModel: qualityInspection.scoringModel.trim()
+      scoringModel: qualityInspection.scoringModel.trim(),
+      unavailableAction: qualityInspection.unavailableAction
     }
   }
   const scoringModel = qualityInspection.scoringModel.trim()
@@ -630,7 +643,8 @@ function normalizedHybridQualityInspection(): ApiKeyHybridRoutingConfig['quality
     triggerMode: qualityInspection.triggerMode,
     maxTriggerLevel,
     maxRetries,
-    failureAction: qualityInspection.failureAction
+    failureAction: qualityInspection.failureAction,
+    unavailableAction: qualityInspection.unavailableAction
   }
 }
 
@@ -660,6 +674,16 @@ function normalizedHybridLevelRoutes(): ApiKeyHybridRoutingConfig['levelRoutes']
   })
   if (normalized.some((route) => route === false)) return false
   const routes = (normalized as ApiKeyHybridRoutingConfig['levelRoutes']).filter((route) => route.enabled)
+  const targetModelKeys = new Set(routes.map((route) => route.targetModel.trim().toLowerCase()).filter(Boolean))
+  if (targetModelKeys.size < 2) {
+    message.warning('混合路由至少需要配置 2 个不同的目标模型')
+    return false
+  }
+  const lowestRoute = routes.find((route) => route.minLevel === 1)
+  if (!lowestRoute || lowestRoute.maxLevel < 2 || lowestRoute.maxLevel > 5) {
+    message.warning('最低档必须从等级 1 开始，并覆盖 1-2 到 1-5 之间的范围')
+    return false
+  }
   const coverage = new Map<number, number>()
   routes.forEach((route) => {
     if (!route.enabled) return

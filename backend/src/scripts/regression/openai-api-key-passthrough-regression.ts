@@ -542,28 +542,11 @@ async function testLargeImageJsonBodyAllowedByGatewayMiddleware(): Promise<void>
 async function testGatewayRawBodyInFlightLimit(): Promise<void> {
   clearGatewayRequestBodyInFlightForTest()
   const rawBodyA = Buffer.alloc(512 * 1024, 'a')
-  const rawBodyB = Buffer.alloc(512 * 1024, 'b')
-  const maxBytes = rawBodyA.length + rawBodyB.length - 1
+  const maxBytes = rawBodyA.length
   setGatewayRequestBodyInFlightMaxBytesForTest(maxBytes)
 
   try {
-    const reqA = createRequest(rawBodyA, { 'content-type': 'application/octet-stream' }, rawBodyA)
-    const resA = createMockResponse()
-    let nextA = false
-
-    await captureGatewayRawBody(reqA, resA as never, () => {
-      nextA = true
-    })
-
-    assert.equal(nextA, true)
-    assert.equal(reqA.rawBody?.length, rawBodyA.length)
-    assert.deepEqual(getGatewayRequestBodyInFlightState(), {
-      currentBytes: rawBodyA.length,
-      requestCount: 1,
-      maxBytes,
-      rejectedCount: 0
-    })
-
+    const rawBodyB = Buffer.alloc(rawBodyA.length + 1, 'b')
     const reqB = createRequest(rawBodyB, { 'content-type': 'application/octet-stream' }, rawBodyB)
     const resB = createMockResponse()
     let nextB = false
@@ -584,13 +567,22 @@ async function testGatewayRawBodyInFlightLimit(): Promise<void> {
       }
     })
     assert.deepEqual(getGatewayRequestBodyInFlightState(), {
-      currentBytes: rawBodyA.length,
-      requestCount: 1,
+      currentBytes: 0,
+      requestCount: 0,
       maxBytes,
       rejectedCount: 1
     })
 
-    resA.emit('finish')
+    const reqA = createRequest(rawBodyA, { 'content-type': 'application/octet-stream' }, rawBodyA)
+    const resA = createMockResponse()
+    let nextA = false
+
+    await captureGatewayRawBody(reqA, resA as never, () => {
+      nextA = true
+    })
+
+    assert.equal(nextA, true)
+    assert.equal(reqA.rawBody?.length, rawBodyA.length)
     assert.deepEqual(getGatewayRequestBodyInFlightState(), {
       currentBytes: 0,
       requestCount: 0,
@@ -598,6 +590,7 @@ async function testGatewayRawBodyInFlightLimit(): Promise<void> {
       rejectedCount: 1
     })
 
+    resA.emit('finish')
     resA.emit('close')
     assert.deepEqual(getGatewayRequestBodyInFlightState(), {
       currentBytes: 0,

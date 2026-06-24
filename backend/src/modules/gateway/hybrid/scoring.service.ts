@@ -6,27 +6,19 @@ import {
   clampHybridLevel
 } from '../../../domain/api-key-hybrid-routing.js'
 import type { ApiKeyHybridRoutingConfig } from '../../../domain/types.js'
-import { tryAcquireAccountConcurrency } from '../../../shared/account-concurrency.js'
 import { createAppCache } from '../../../shared/cache.js'
-import type { GatewayApiKeyRow, OpenAIAccountSecret } from '../../../storage/repositories.js'
-import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
+import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import {
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
-import {
-  orderGatewayApiKeyGroupBindingsForDispatch
-} from '../routing/api-key-group-route-selector.service.js'
-import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
-import { requestUpstream } from '../upstream/request.js'
-import {
-  buildGatewayUpstreamRequestParts,
-  buildGatewayUpstreamUrlsForAccount
-} from '../../providers/drivers/registry.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
-import { emptyUsage } from '../usage/types.js'
+import {
+  dispatchHybridAuxiliaryChatCompletion,
+  emptyHybridAuxiliaryUsage
+} from './auxiliary-dispatch.service.js'
 
 export interface HybridScoringResult {
   level: number
@@ -73,9 +65,6 @@ export async function scoreHybridGatewayRequest(input: {
   signal?: AbortSignal
 }): Promise<HybridScoringResult> {
   const startedAt = Date.now()
-  let account: OpenAIAccountSecret | undefined
-  let scoringGroupId: string | undefined
-  let statusCode: number | undefined
   try {
     const body = await parseHybridRequestBody(input.req, input.config.scoringTimeoutMs, input.signal)
     const context = buildHybridScoringContext(input.req, body)
@@ -99,171 +88,117 @@ export async function scoreHybridGatewayRequest(input: {
     }
     const scoringBody = buildHybridScoringRequestBody(input.config.scoringModel, context)
     const scoringReq = createHybridScoringGatewayRequest(scoringBody)
-    const scoringSelection = await selectHybridScoringAccount({
+    const dispatch = await dispatchHybridAuxiliaryChatCompletion({
+      req: scoringReq,
       apiKeyRecord: input.apiKeyRecord,
-      scoringModel: input.config.scoringModel,
-      scoringReq
+      targetModel: input.config.scoringModel,
+      traceId: input.traceId,
+      clientIp: input.clientIp,
+      endpoint: input.endpoint,
+      trafficSource: 'hybrid_scoring',
+      timeoutMs: input.config.scoringTimeoutMs,
+      responseMaxBytes: hybridScoringResponseMaxBytes,
+      noAccountErrorCode: 'no_scoring_account',
+      noAccountErrorMessage: '混合路由绑定分组池没有可用评分账户',
+      dispatchErrorCode: 'hybrid_scoring_failed',
+      dispatchErrorMessage: '混合路由评分模型调用失败',
+      httpErrorCode: 'hybrid_scoring_http_error',
+      responseTooLargeMessage: '混合路由评分响应超过保护上限',
+      signal: input.signal,
+      requestClientCompatibility: 'openai_standard'
     })
-    if (!scoringSelection) {
-      return failedScoringResult(input.config, 'no_scoring_account', '混合路由绑定分组池没有可用评分账户')
+    if (dispatch.outcome === 'failed') {
+      if (dispatch.shouldRecordUsage && dispatch.account && dispatch.groupId) {
+        recordHybridScoringAttempt({
+          traceId: input.traceId,
+          clientIp: input.clientIp,
+          systemAccountId: input.apiKeyRecord.system_account_id,
+          apiKeyId: input.apiKeyRecord.id,
+          groupId: dispatch.groupId,
+          account: dispatch.account,
+          endpoint: `${input.endpoint}#hybrid-scoring`,
+          statusCode: dispatch.statusCode,
+          success: false,
+          startedAt,
+          scoringModel: input.config.scoringModel,
+          usage: emptyHybridAuxiliaryUsage(),
+          errorCode: dispatch.errorCode,
+          errorMessage: dispatch.errorMessage,
+          requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+          responseSnapshot: { statusCode: dispatch.statusCode }
+        })
+      }
+      return failedScoringResult(input.config, dispatch.errorCode, dispatch.errorMessage, dispatch.account?.id, dispatch.statusCode)
     }
-    account = scoringSelection.account
-    const selectedScoringGroupId = scoringSelection.groupId
-    scoringGroupId = selectedScoringGroupId
-    const slot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
-    if (!slot.acquired) {
-      return failedScoringResult(input.config, 'scoring_account_busy', '混合路由评分账户并发已满', account.id)
-    }
+    let parsed: { level: number; confidence?: number; factors?: string[]; reason?: string }
     try {
-      const upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, scoringReq)
-      const upstreamUrl = upstreamUrls[0]
-      if (!upstreamUrl) {
-        throw new Error('混合路由评分账户不支持 Chat Completions 请求')
-      }
-      const requestParts = await buildGatewayUpstreamRequestParts(scoringReq, account, {
-        systemAccountId: input.apiKeyRecord.system_account_id,
-        apiKeyId: input.apiKeyRecord.id,
-        groupId: selectedScoringGroupId
-      }, input.signal, {
-        requestClientCompatibility: 'openai_standard'
-      })
-      const response = await requestUpstream(upstreamUrl, {
-        method: scoringReq.method,
-        headers: requestParts.headers,
-        body: requestParts.body,
-        proxyUrl: account.proxyUrl,
-        timeoutMs: input.config.scoringTimeoutMs,
-        requestTimeoutMs: input.config.scoringTimeoutMs,
-        signal: buildHybridScoringAbortSignal(input.signal, input.config.scoringTimeoutMs)
-      })
-      statusCode = response.status
-      const responseBody = await readScoringResponseBody(response.body)
-      const usage = parseOpenAIUsageFromJsonBuffer(responseBody)
-      if (!response.ok) {
-        recordHybridScoringAttempt({
-          traceId: input.traceId,
-          clientIp: input.clientIp,
-          systemAccountId: input.apiKeyRecord.system_account_id,
-          apiKeyId: input.apiKeyRecord.id,
-          groupId: selectedScoringGroupId,
-          account,
-          endpoint: `${input.endpoint}#hybrid-scoring`,
-          statusCode: response.status,
-          success: false,
-          startedAt,
-          scoringModel: input.config.scoringModel,
-          usage,
-          errorCode: 'hybrid_scoring_http_error',
-          errorMessage: `评分模型返回 HTTP ${response.status}`,
-          requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-          responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) }
-        })
-        return failedScoringResult(input.config, 'hybrid_scoring_http_error', `评分模型返回 HTTP ${response.status}`, account.id, response.status)
-      }
-      let parsed: { level: number; confidence?: number; factors?: string[]; reason?: string }
-      try {
-        parsed = parseHybridScoringResponse(responseBody)
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        recordHybridScoringAttempt({
-          traceId: input.traceId,
-          clientIp: input.clientIp,
-          systemAccountId: input.apiKeyRecord.system_account_id,
-          apiKeyId: input.apiKeyRecord.id,
-          groupId: selectedScoringGroupId,
-          account,
-          endpoint: `${input.endpoint}#hybrid-scoring`,
-          statusCode: response.status,
-          success: false,
-          startedAt,
-          scoringModel: input.config.scoringModel,
-          usage,
-          errorCode: 'hybrid_scoring_failed',
-          errorMessage,
-          requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-          responseSnapshot: { statusCode: response.status, body: responseBodySnippet(responseBody) }
-        })
-        return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, account.id, response.status)
-      }
-      const scoringResult: HybridScoringResult = {
-        level: clampHybridLevel(parsed.level),
-        confidence: parsed.confidence,
-        factors: parsed.factors,
-        reason: parsed.reason,
-        defaulted: false,
-        cacheHit: false,
-        scoringAccountId: account.id,
-        scoringGroupId: selectedScoringGroupId,
-        statusCode: response.status
-      }
-      rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
+      parsed = parseHybridScoringResponse(dispatch.responseBody)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
       recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
         systemAccountId: input.apiKeyRecord.system_account_id,
         apiKeyId: input.apiKeyRecord.id,
-        groupId: selectedScoringGroupId,
-        account,
+        groupId: dispatch.groupId,
+        account: dispatch.account,
         endpoint: `${input.endpoint}#hybrid-scoring`,
-        statusCode: response.status,
-        success: true,
-        startedAt,
-        scoringModel: input.config.scoringModel,
-        usage,
-        requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-        responseSnapshot: { statusCode: response.status, parsed }
-      })
-      return scoringResult
-    } finally {
-      slot.release()
-    }
-  } catch (error) {
-    if (account && scoringGroupId) {
-      recordHybridScoringAttempt({
-        traceId: input.traceId,
-        clientIp: input.clientIp,
-        systemAccountId: input.apiKeyRecord.system_account_id,
-        apiKeyId: input.apiKeyRecord.id,
-        groupId: scoringGroupId,
-        account,
-        endpoint: `${input.endpoint}#hybrid-scoring`,
-        statusCode,
+        statusCode: dispatch.statusCode,
         success: false,
         startedAt,
         scoringModel: input.config.scoringModel,
-        usage: emptyUsage(),
+        usage: dispatch.usage,
         errorCode: 'hybrid_scoring_failed',
-        errorMessage: error instanceof Error ? error.message : String(error)
+        errorMessage,
+        requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+        responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) }
       })
+      dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
+      return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, dispatch.account.id, dispatch.statusCode)
     }
+    const scoringResult: HybridScoringResult = {
+      level: clampHybridLevel(parsed.level),
+      confidence: parsed.confidence,
+      factors: parsed.factors,
+      reason: parsed.reason,
+      defaulted: false,
+      cacheHit: false,
+      scoringAccountId: dispatch.account.id,
+      scoringGroupId: dispatch.groupId,
+      statusCode: dispatch.statusCode
+    }
+    rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
+    recordHybridScoringAttempt({
+      traceId: input.traceId,
+      clientIp: input.clientIp,
+      systemAccountId: input.apiKeyRecord.system_account_id,
+      apiKeyId: input.apiKeyRecord.id,
+      groupId: dispatch.groupId,
+      account: dispatch.account,
+      endpoint: `${input.endpoint}#hybrid-scoring`,
+      statusCode: dispatch.statusCode,
+      success: true,
+      startedAt,
+      scoringModel: input.config.scoringModel,
+      usage: dispatch.usage,
+      requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+      responseSnapshot: { statusCode: dispatch.statusCode, parsed }
+    })
+    dispatch.finish({ success: true })
+    return scoringResult
+  } catch (error) {
     return failedScoringResult(
       input.config,
       'hybrid_scoring_failed',
       error instanceof Error ? error.message : String(error),
-      account?.id,
-      statusCode
+      undefined,
+      undefined
     )
   }
 }
 
 export function clearHybridScoringCacheForTest(): void {
   hybridScoringCache.clear()
-}
-
-async function selectHybridScoringAccount(input: {
-  apiKeyRecord: GatewayApiKeyRow
-  scoringModel: string
-  scoringReq: Request
-}): Promise<{ account: OpenAIAccountSecret; groupId: string } | undefined> {
-  const selection = await selectGatewayModelTargetGroup({
-    req: input.scoringReq,
-    apiKeyRecord: input.apiKeyRecord,
-    bindings: orderGatewayApiKeyGroupBindingsForDispatch(input.apiKeyRecord),
-    targetModel: input.scoringModel,
-    requestClientCompatibility: 'openai_standard'
-  })
-  const account = selection?.accounts[0]
-  return selection && account ? { account, groupId: selection.groupId } : undefined
 }
 
 async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
@@ -484,7 +419,7 @@ function hybridScoringConfigFingerprint(config: ApiKeyHybridRoutingConfig): Reco
     scoringContextMode: config.scoringContextMode,
     qualityPreference: config.qualityPreference,
     scoringTimeoutMs: config.scoringTimeoutMs,
-    failureDefaultLevel: config.failureDefaultLevel,
+    scoringFallbackMaxLevel: config.scoringFallbackMaxLevel,
     cacheAffinityEnabled: config.cacheAffinityEnabled,
     affinityTtlSeconds: config.affinityTtlSeconds,
     switchMinLevelDelta: config.switchMinLevelDelta,
@@ -539,26 +474,6 @@ function rememberHybridScoringCacheResult(
     factors: result.factors,
     reason: result.reason
   }, { ttlMs })
-}
-
-function buildHybridScoringAbortSignal(parent: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs)
-  return parent ? AbortSignal.any([parent, timeoutSignal]) : timeoutSignal
-}
-
-async function readScoringResponseBody(body: AsyncIterable<Uint8Array> | null): Promise<Buffer> {
-  if (!body) return Buffer.alloc(0)
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of body) {
-    const buffer = Buffer.from(chunk)
-    bytes += buffer.byteLength
-    if (bytes > hybridScoringResponseMaxBytes) {
-      throw new Error('混合路由评分响应超过保护上限')
-    }
-    chunks.push(buffer)
-  }
-  return Buffer.concat(chunks)
 }
 
 function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {
@@ -621,7 +536,7 @@ function failedScoringResult(
   statusCode?: number
 ): HybridScoringResult {
   return {
-    level: config.failureDefaultLevel,
+    level: config.scoringFallbackMaxLevel,
     defaulted: false,
     failed: true,
     errorCode,
