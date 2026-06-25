@@ -106,6 +106,7 @@ try {
     await listen(imageGenerationServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
     const imageGenerationEndpoint = `http://127.0.0.1:${serverAddress(imageGenerationServer).port}/v1/images/generations`
+    const imageGenerationResponsesEndpoint = `http://127.0.0.1:${serverAddress(imageGenerationServer).port}/v1/responses`
 
     const group = repositories.createGroup({
       name: 'OpenAI 到 Anthropic 桥接 mock 分组',
@@ -198,6 +199,8 @@ try {
     await assertChatToolCallBridge(baseUrl, apiKey.key)
     await assertResponsesFunctionCallBridge(baseUrl, apiKey.key)
     await assertResponsesAllowedFunctionToolsBridge(baseUrl, apiKey.key)
+    await assertResponsesToolSearchNamespaceBridge(baseUrl, apiKey.key)
+    await assertResponsesToolSearchNamespaceSseBridge(baseUrl, apiKey.key)
     await assertChatParallelToolCallsDisabledBridge(baseUrl, apiKey.key)
     await assertResponsesParallelToolCallsDisabledBridge(baseUrl, apiKey.key)
     await assertChatParallelToolCallsDisabledWithNoneBridge(baseUrl, apiKey.key)
@@ -243,6 +246,9 @@ try {
     configureMockImageGenerationProvider(imageGenerationEndpoint, { timeoutMs: 20 })
     await assertResponsesImageGenerationProviderTimeoutBridge(baseUrl, apiKey.key)
     configureMockImageGenerationProvider(imageGenerationEndpoint)
+    configureMockImageGenerationProvider(imageGenerationResponsesEndpoint, { api: 'responses', model: 'gpt-image-2-chat-mock' })
+    await assertResponsesImageGenerationResponsesProviderJsonBridge(baseUrl, apiKey.key)
+    await assertResponsesImageGenerationResponsesProviderPartialImageSseBridge(baseUrl, apiKey.key)
     clearMockImageGenerationProvider()
     await assertResponsesImageFileIdNotFound(baseUrl, apiKey.key)
     await assertResponsesImageFileIdResolverBridge(baseUrl, apiKey.key)
@@ -273,12 +279,15 @@ try {
 }
 
 function configureMockImageGenerationProvider(endpoint: string, options: {
+  api?: 'images' | 'responses'
+  model?: string
   timeoutMs?: number
   maxBodyBytes?: number
 } = {}): void {
   runtimeConfig.imageGenerationProvider.endpoint = endpoint
   runtimeConfig.imageGenerationProvider.apiKey = 'sk-image-generation-mock'
-  runtimeConfig.imageGenerationProvider.model = 'gpt-image-2-mock'
+  runtimeConfig.imageGenerationProvider.api = options.api ?? 'images'
+  runtimeConfig.imageGenerationProvider.model = options.model ?? 'gpt-image-2-mock'
   runtimeConfig.imageGenerationProvider.timeoutMs = options.timeoutMs ?? 30000
   runtimeConfig.imageGenerationProvider.maxBodyBytes = options.maxBodyBytes ?? 1024 * 1024
 }
@@ -286,6 +295,7 @@ function configureMockImageGenerationProvider(endpoint: string, options: {
 function clearMockImageGenerationProvider(): void {
   runtimeConfig.imageGenerationProvider.endpoint = undefined
   runtimeConfig.imageGenerationProvider.apiKey = undefined
+  runtimeConfig.imageGenerationProvider.api = 'images'
   runtimeConfig.imageGenerationProvider.model = 'gpt-image-2'
 }
 
@@ -1269,6 +1279,106 @@ async function assertResponsesAllowedFunctionToolsBridge(baseUrl: string, localA
   assertBridgeUpstreamHit(upstreamHits[0], false, 'responses allowed tools bridge')
   assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['lookup_weather'], 'allowed_tools 只应发送允许的 function tool')
   assert.deepEqual(upstreamHits[0]?.body.tool_choice, { type: 'any' }, 'allowed_tools required 应映射为 Anthropic any')
+}
+
+async function assertResponsesToolSearchNamespaceBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses tool search namespace bridge',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for order management.',
+          tools: [{
+            type: 'function',
+            name: 'list_open_orders',
+            description: 'List open orders for a customer.',
+            defer_loading: true,
+            parameters: {
+              type: 'object',
+              properties: { customer_id: { type: 'string' } },
+              required: ['customer_id'],
+              additionalProperties: false
+            }
+          }]
+        },
+        { type: 'tool_search' }
+      ],
+      tool_choice: { type: 'function', name: 'list_open_orders', namespace: 'crm' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses tool_search namespace 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    output?: Array<{ type?: string; call_id?: string; name?: string; namespace?: string; arguments?: string; status?: string }>
+  }
+  const functionCall = body.output?.find((item) => item.type === 'function_call')
+  assert.equal(functionCall?.status, 'completed')
+  assert.equal(functionCall?.call_id, 'toolu_bridge_lookup')
+  assert.equal(functionCall?.name, 'list_open_orders')
+  assert.equal(functionCall?.namespace, 'crm')
+  assert.deepEqual(JSON.parse(functionCall?.arguments ?? '{}'), { customer_id: 'CUST-12345' })
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses tool search namespace bridge')
+  assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['crm__list_open_orders'])
+  assert.deepEqual(
+    upstreamHits[0]?.body.tool_choice,
+    { type: 'tool', name: 'crm__list_open_orders' },
+    'namespace function tool_choice 应映射为展开后的 Anthropic tool name'
+  )
+}
+
+async function assertResponsesToolSearchNamespaceSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses tool search namespace sse bridge',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for order management.',
+          tools: [{
+            type: 'function',
+            name: 'list_open_orders',
+            description: 'List open orders for a customer.',
+            defer_loading: true,
+            parameters: {
+              type: 'object',
+              properties: { customer_id: { type: 'string' } },
+              required: ['customer_id'],
+              additionalProperties: false
+            }
+          }]
+        },
+        { type: 'tool_search' }
+      ],
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses tool_search namespace SSE 桥接应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.output_item\.added/)
+  assert.match(text, /"type":"function_call","status":"in_progress","call_id":"toolu_namespace_open_orders","name":"list_open_orders","arguments":"","namespace":"crm"/)
+  assert.match(text, /"type":"function_call","status":"completed","call_id":"toolu_namespace_open_orders","name":"list_open_orders","arguments":"\{\\"customer_id\\":\\"CUST-12345\\"\}","namespace":"crm"/)
+  assert.match(text, /event: response\.completed/)
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'responses tool search namespace sse bridge')
+  assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['crm__list_open_orders'])
 }
 
 async function assertChatParallelToolCallsDisabledBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -2550,6 +2660,82 @@ async function assertResponsesImageGenerationPartialImageSseBridge(baseUrl: stri
   assert.match(String(imageGenerationHits[0]?.body.prompt ?? ''), /watercolor river at dawn/)
 }
 
+async function assertResponsesImageGenerationResponsesProviderJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation json bridge',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'low', output_format: 'png' }],
+      tool_choice: { type: 'image_generation' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses provider image_generation JSON 应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { output?: Array<{ type?: string; result?: string; revised_prompt?: string }> }
+  const imageItem = body.output?.find((item) => item.type === 'image_generation_call')
+  assert(imageItem, `Responses provider JSON 应返回 image_generation_call: ${text}`)
+  assert.equal(imageItem.result, mockImageBase64)
+  assert.match(imageItem.revised_prompt ?? '', /responses provider revised/)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'responses image_generation json bridge')
+  assert.equal(imageGenerationHits.length, 1, 'Responses provider JSON 应调用一次本地图像 provider')
+  assert.equal(imageGenerationHits[0]?.path, '/v1/responses')
+  assert.equal(imageGenerationHits[0]?.authorization, 'Bearer sk-image-generation-mock')
+  assert.equal(imageGenerationHits[0]?.body.model, 'gpt-image-2-chat-mock')
+  assert.match(String(imageGenerationHits[0]?.body.input ?? ''), /watercolor city skyline/)
+  const tools = imageGenerationHits[0]?.body.tools as Array<Record<string, unknown>> | undefined
+  assert.equal(tools?.[0]?.type, 'image_generation')
+  assert.equal(tools?.[0]?.action, 'generate')
+  assert.equal(tools?.[0]?.size, '1024x1024')
+  assert.equal(tools?.[0]?.quality, 'low')
+  assert.equal(tools?.[0]?.output_format, 'png')
+  assert.deepEqual(imageGenerationHits[0]?.body.tool_choice, { type: 'image_generation' })
+}
+
+async function assertResponsesImageGenerationResponsesProviderPartialImageSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  imageGenerationHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses image_generation partial sse bridge',
+      tools: [{ type: 'image_generation', size: '1024x1024', quality: 'medium', output_format: 'png', partial_images: 2 }],
+      tool_choice: { type: 'image_generation' },
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Responses provider image_generation partial SSE 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /event: response\.image_generation_call\.partial_image/)
+  assert(text.includes(mockPartialImageBase64), 'Responses provider partial SSE 应透出 provider partial image base64')
+  assert.match(text, /event: response\.image_generation_call\.completed/)
+  assert(text.includes(mockImageBase64), 'Responses provider partial SSE 最终 completed 应透出 provider final image base64')
+  assert.match(text, /event: response\.completed/)
+  assert.doesNotMatch(text, /response\.output_text\.delta/, 'Responses provider partial image_generation SSE 不应把 revised prompt 当文本增量输出')
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'responses image_generation partial sse bridge')
+  assert.equal(imageGenerationHits.length, 1, 'Responses provider partial SSE 应调用一次本地图像 provider')
+  assert.equal(imageGenerationHits[0]?.path, '/v1/responses')
+  assert.equal(imageGenerationHits[0]?.body.stream, true)
+  const tools = imageGenerationHits[0]?.body.tools as Array<Record<string, unknown>> | undefined
+  assert.equal(tools?.[0]?.type, 'image_generation')
+  assert.equal(tools?.[0]?.partial_images, 2)
+  assert.equal(tools?.[0]?.output_format, 'png')
+  assert.match(String(imageGenerationHits[0]?.body.input ?? ''), /watercolor river at dawn/)
+}
+
 async function assertResponsesImageGenerationModerationBlockedBridge(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   imageGenerationHits.length = 0
@@ -3805,6 +3991,8 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         sendAnthropicThinkingSse(res, `msg_openai_anthropic_bridge_thinking_sse_${hitIndex}`)
       } else if (body.stream === true && bodyText.includes('anthropic file search sse bridge')) {
         sendAnthropicFileSearchSse(res, `msg_openai_anthropic_bridge_file_search_sse_${hitIndex}`)
+      } else if (body.stream === true && bodyText.includes('responses tool search namespace sse bridge')) {
+        sendAnthropicNamespaceToolSse(res, `msg_openai_anthropic_bridge_namespace_tool_sse_${hitIndex}`)
       } else if (
         body.stream === true
         && (bodyText.includes('chat multi tool sse bridge') || bodyText.includes('responses multi tool sse bridge'))
@@ -3831,7 +4019,7 @@ function createAnthropicBridgeMockUpstream(): http.Server {
       } else if (bodyText.includes('responses thinking bridge')) {
         sendAnthropicThinkingJson(res)
       } else if (anthropicRequestHasTool(body)) {
-        sendAnthropicToolJson(res)
+        sendAnthropicToolJson(res, body)
       } else {
         sendAnthropicJson(res)
       }
@@ -3852,7 +4040,12 @@ function createImageGenerationMockProvider(): http.Server {
         authorization: String(req.headers.authorization ?? ''),
         body
       })
-      if ((req.url?.split('?', 1)[0] ?? '') !== '/v1/images/generations') {
+      const path = req.url?.split('?', 1)[0] ?? ''
+      if (path === '/v1/responses') {
+        sendImageGenerationResponsesProviderResponse(res, body)
+        return
+      }
+      if (path !== '/v1/images/generations') {
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ error: { type: 'not_found_error', message: 'mock image path not found' } }))
         return
@@ -3925,6 +4118,44 @@ function createImageGenerationMockProvider(): http.Server {
   })
 }
 
+function sendImageGenerationResponsesProviderResponse(res: http.ServerResponse, body: Record<string, unknown>): void {
+  const input = String(body.input ?? '')
+  const imageItem = {
+    id: 'ig_responses_provider_mock',
+    type: 'image_generation_call',
+    status: 'completed',
+    result: mockImageBase64,
+    revised_prompt: `responses provider revised: ${input}`
+  }
+  if (body.stream === true) {
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+    writeSse(res, 'response.image_generation_call.partial_image', {
+      type: 'response.image_generation_call.partial_image',
+      partial_image_index: 0,
+      partial_image_b64: mockPartialImageBase64
+    })
+    writeSse(res, 'response.completed', {
+      type: 'response.completed',
+      response: {
+        id: 'resp_responses_provider_mock',
+        object: 'response',
+        status: 'completed',
+        output: [imageItem]
+      }
+    })
+    res.end()
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'resp_responses_provider_mock',
+    object: 'response',
+    status: 'completed',
+    output: [imageItem],
+    output_text: ''
+  }))
+}
+
 function sendAnthropicJson(res: http.ServerResponse): void {
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({
@@ -3990,7 +4221,11 @@ function sendAnthropicImageGenerationCustomPromptJson(res: http.ServerResponse, 
   }))
 }
 
-function sendAnthropicToolJson(res: http.ServerResponse): void {
+function sendAnthropicToolJson(res: http.ServerResponse, body: Record<string, unknown>): void {
+  const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'lookup_weather'
+  const input = toolName.includes('list_open_orders')
+    ? { customer_id: 'CUST-12345' }
+    : { city: 'Shanghai' }
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({
     id: 'msg_openai_anthropic_bridge_tool',
@@ -4000,8 +4235,8 @@ function sendAnthropicToolJson(res: http.ServerResponse): void {
     content: [{
       type: 'tool_use',
       id: 'toolu_bridge_lookup',
-      name: 'lookup_weather',
-      input: { city: 'Shanghai' }
+      name: toolName,
+      input
     }],
     stop_reason: 'tool_use',
     usage: {
@@ -4299,6 +4534,47 @@ function sendAnthropicMultiToolSse(res: http.ServerResponse, messageId: string):
     type: 'message_delta',
     delta: { stop_reason: 'tool_use' },
     usage: { output_tokens: 9 }
+  })
+  writeSse(res, 'message_stop', { type: 'message_stop' })
+  res.end()
+}
+
+function sendAnthropicNamespaceToolSse(res: http.ServerResponse, messageId: string): void {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  writeSse(res, 'message_start', {
+    type: 'message_start',
+    message: {
+      id: messageId,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-haiku-4-5',
+      content: [],
+      usage: { input_tokens: 11, output_tokens: 0 }
+    }
+  })
+  writeSse(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'tool_use', id: 'toolu_namespace_open_orders', name: 'crm__list_open_orders', input: {} }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'input_json_delta', partial_json: '{"customer_id"' }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'input_json_delta', partial_json: ':"CUST-12345"}' }
+  })
+  writeSse(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: 0
+  })
+  writeSse(res, 'message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use' },
+    usage: { output_tokens: 7 }
   })
   writeSse(res, 'message_stop', { type: 'message_stop' })
   res.end()

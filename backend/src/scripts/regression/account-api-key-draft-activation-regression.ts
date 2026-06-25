@@ -3,10 +3,11 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import type { AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '../../domain/types.js'
+import type { AccountModelMapping, AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
+import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -20,6 +21,9 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const draftMessagesSourceModel = 'claude-draft-activation-source'
+const draftChatUpstreamModel = 'gpt-draft-activation-chat-upstream'
 
 const [
   databaseModule,
@@ -48,6 +52,7 @@ try {
     providerCode: 'gpt'
   }, access)
   assert.equal(group.providerProtocolProfileId, GPT_OPENAI_V1_PROFILE_ID, 'API Key 草稿激活回归需要 GPT OpenAI v1 分组')
+  registerDraftModelCatalog(owner.id)
 
   const accountInput = apiKeyActivationRequest({
     groupId: group.id,
@@ -62,6 +67,12 @@ try {
     }),
     access
   })
+  const storedTask = accountTestTasks.getAccountTestTaskRecord(task.id)
+  assert.deepEqual(
+    storedTask?.draftAccount?.modelMappings,
+    accountInput.modelMappings,
+    '草稿测试任务记录读回后应保留 Messages -> Chat Completions 模型映射'
+  )
 
   const createStatus = accountDraftTest.accountCreateStatusFromActivationTest({
     account: {
@@ -122,8 +133,39 @@ function apiKeyActivationRequest(input: {
     priority: 0,
     clientCompatibility: 'codex_responses' as const,
     supportedModels: [],
-    modelMappings: [],
+    modelMappings: [draftMessagesToChatMapping()],
     notes: 'API Key 草稿测试成功后保存应直接启用'
+  }
+}
+
+function registerDraftModelCatalog(systemAccountId: string): void {
+  saveCustomProviderModel({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    model: draftMessagesSourceModel,
+    scope: 'global',
+    supportedApiProtocols: ['messages'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GPT_VENDOR_CODE,
+    model: draftChatUpstreamModel,
+    scope: 'global',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: systemAccountId
+  })
+}
+
+function draftMessagesToChatMapping(): AccountModelMapping {
+  return {
+    sourceModel: draftMessagesSourceModel,
+    sourceEndpointFamily: 'messages',
+    upstreamModel: draftChatUpstreamModel,
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
   }
 }
 

@@ -63,9 +63,12 @@
 
 | 测试类型 | 测试项 | 验证方式 / 命令 | 预期结果 | 状态 | 实际结果或备注 |
 | --- | --- | --- | --- | --- | --- |
-| Mock 回归 | Anthropic Messages -> Chat bridge helper | `pnpm --dir backend test:anthropic-openai-chat-bridge-mock` | JSON / SSE / tool / image / guidance 全通过 | 已通过 | 2026-06-25 通过 |
+| Mock 回归 | Anthropic Messages -> Chat bridge helper | `pnpm --dir backend test:anthropic-openai-chat-bridge-mock` | JSON / SSE / tool / image / guidance 全通过 | 已通过 | 2026-06-25 通过；复查后补充覆盖 cache_control guidance、非流式 refusal、非法 Chat JSON error、SSE 尾部 usage |
 | Mock 回归 | Anthropic Messages -> Chat 网关 E2E | `pnpm --dir backend test:anthropic-openai-chat-gateway-mock` | OpenAI-compatible / GPT / DeepSeek / GLM 通过显式映射承接 `/v1/messages`，输出 Anthropic JSON / SSE，unsupported 能力返回 guidance | 已通过 | 2026-06-25 通过；覆盖请求体改写、上游路径、headers、usage / audit 映射 |
+| 真实联调 | Anthropic Messages -> OpenAI-compatible Chat | `pnpm --dir backend test:anthropic-openai-chat-real` | 真实上游下 Messages JSON / SSE、强制 function tool、unsupported guidance、usage / audit 通过 | 已通过 | 2026-06-25 使用 `https://vsllm.com`、source `claude-sonnet-4-6`、upstream `gpt-5.4-mini` 通过；可选图片用例在 `gpt-5.4-mini` 120 秒超时，记录为上游模型视觉路径待复测 |
 | Mock 回归 | 模型映射保存校验 | `pnpm --dir backend test:account-model-mapping` | `messages -> chat_completions` 可保存；`messages -> responses` 被拒绝 | 已通过 | 2026-06-25 通过；覆盖保存、关系表、候选窗口、导入预览和 Messages source 模型池 |
+| Mock 回归 | 草稿测试快照协议映射 | `pnpm --dir backend test:account-api-key-draft-activation` | 草稿测试任务记录读回后保留 `messages -> chat_completions` 映射 | 已通过 | 2026-06-25 通过 |
+| 前端回归 | 账户保存 / 草稿测试 payload | `pnpm --dir frontend test:account-edit-save-flow` | 保存 payload 与草稿测试 payload 保留 `messages -> chat_completions` 协议维度 | 已通过 | 2026-06-25 通过 |
 | 回归 | OpenAI -> Anthropic bridge | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 既有桥接不回归 | 已通过 | 2026-06-25 通过 |
 | 回归 | 候选账号模型映射窗口 | `pnpm --dir backend test:gateway-dispatch-candidate-window` | `requestedEndpointFamily=messages` 不破坏候选扫描窗口和映射过滤 | 已通过 | 2026-06-25 通过 |
 | 回归 | Responses -> Chat bridge | `pnpm --dir backend test:deepseek-gateway-mock-ai`、`pnpm --dir backend test:glm-gateway-mock-ai` | GLM / DeepSeek 现有 Codex Responses bridge 不回归 | 已通过 | 2026-06-25 通过 |
@@ -82,6 +85,7 @@
 | 2026-06-25 | 进行中 | AI | 复查发现后端 `account-model-mappings` 已支持 Messages 来源协议白名单，但前端模型映射仍屏蔽 Messages，且模型选项 API 只支持 OpenAI 协议池。本轮先补 UI / 模型池 / 保存校验，确保显式 `messages -> chat_completions` 可配置且非法 `messages -> responses` 不可保存。 |
 | 2026-06-25 | 进行中 | AI | 配置层已补齐：前端允许 OpenAI 协议账号选择左侧 Messages 并强制右侧 Chat；Anthropic 协议账号只允许右侧 Messages；模型选项 API 支持 Anthropic 协议模型池。响应侧 `messages -> chat_completions` bridge 仍需后续专项实现。 |
 | 2026-06-25 | 已完成 | AI | 完成共享 bridge、四个 OpenAI 协议供应商驱动接入、Anthropic guidance 渲染、网关级 mock E2E、模型映射回归和前后端类型检查。 |
+| 2026-06-25 | 已完成 | AI | 复查修复协议边界：`cache_control` 不再静默丢弃，非流式 Chat `refusal` 保真，非法 Chat JSON 转稳定 Anthropic error，SSE 等待尾部 usage；补齐草稿测试快照、custom model 协议白名单、前端保存 payload 和根脚本入口回归。 |
 
 ## 决策记录
 
@@ -102,9 +106,12 @@
 
 ## 验证记录
 
-- 2026-06-25 执行 `pnpm --dir backend test:account-model-mapping`，通过；覆盖 `messages -> chat_completions` 保存、运行时映射命中、`messages -> responses` 和 `messages -> messages` 拒绝、Messages source 必须来自 Anthropic 协议模型池、导入预览非法方向拒绝。
-- 2026-06-25 执行 `pnpm --dir backend test:anthropic-openai-chat-bridge-mock`，通过；覆盖 helper 层请求转换、JSON / SSE 响应转换、工具、图片、SSE error 和 unsupported guidance。
+- 2026-06-25 执行 `pnpm --dir backend test:account-model-mapping` 和根目录 `pnpm test:account-model-mapping`，通过；覆盖 `messages -> chat_completions` 保存、运行时映射命中、`messages -> responses` 和 `messages -> messages` 拒绝、Messages source 必须来自 Anthropic 协议模型池、custom model `messages/message_token_counting` 协议保真、导入预览非法方向拒绝。
+- 2026-06-25 执行 `pnpm --dir backend test:anthropic-openai-chat-bridge-mock` 和根目录 `pnpm test:anthropic-openai-chat-bridge-mock`，通过；覆盖 helper 层请求转换、JSON / SSE 响应转换、工具、图片、SSE error、unsupported guidance、`cache_control` guidance、非流式 refusal、非法 Chat JSON error 和 SSE 尾部 usage。
 - 2026-06-25 执行 `pnpm --dir backend test:anthropic-openai-chat-gateway-mock`，通过；覆盖 OpenAI-compatible / GPT / DeepSeek / GLM 显式 `messages -> chat_completions` 映射下的真实网关调度、上游 `/chat/completions` 路由、headers 清理、Anthropic JSON / SSE 输出、usage / audit 映射和 unsupported guidance。
+- 2026-06-25 执行 `pnpm --dir backend test:account-api-key-draft-activation`，通过；覆盖草稿测试任务快照读回后保留 `messages -> chat_completions` 映射。
+- 2026-06-25 执行 `pnpm --dir frontend test:account-edit-save-flow`，通过；覆盖账户保存 payload 与草稿测试 payload 保留 `messages -> chat_completions` 协议维度。
+- 2026-06-25 执行 `pnpm --dir backend test:anthropic-openai-chat-real`，通过；真实上游为 `https://vsllm.com` 的 `gpt-5.4-mini`，覆盖 Messages JSON、Messages SSE、强制 function tool、unsupported `thinking` guidance、usage 和 audit。额外开启 `JUHE_REAL_ANTHROPIC_OPENAI_CHAT_RUN_IMAGE=1` 时，`gpt-5.4-mini` 图片路径 120 秒超时；`gemini-3.5-flash` 文本探针可用但本脚本基础 JSON 返回空文本，暂不作为图片真实验收模型。
 - 2026-06-25 执行 `pnpm --dir frontend test:account-import-protocol`，通过；导入弹窗内置 Markdown 和正式协议文档均说明 `messages -> chat_completions` 与 `messages -> responses` 禁止方向。
 - 2026-06-25 执行 `pnpm --dir backend test:gateway-dispatch-candidate-window`，通过；确认候选窗口和模型映射过滤不回归。
 - 2026-06-25 执行 `pnpm --dir backend test:deepseek-gateway-mock-ai`、`pnpm --dir backend test:glm-gateway-mock-ai`，均通过；确认现有 Responses -> Chat bridge 和供应商能力边界不回归。
@@ -122,5 +129,5 @@
 
 - 完成时间：2026-06-25
 - 实际完成内容：落地 `messages -> chat_completions` 显式协议桥接；补齐模型映射、候选账号筛选、OpenAI-compatible / GPT / DeepSeek / GLM 驱动、Anthropic guidance、前端配置入口、导入协议和专项回归。
-- 主要改动位置：`backend/src/modules/providers/drivers/_shared/anthropic-openai-chat-bridge.ts`、`backend/src/modules/providers/drivers/{openai-compatible,gpt,deepseek,glm}/driver.ts`、`backend/src/modules/gateway/protocols/openai-v1/model-mapping.ts`、`backend/src/modules/gateway/request/error-response.ts`、`backend/src/storage/account-model-normalization.ts`、`frontend/src/views/accounts/AccountStrategySection.vue`、`docs/functions/AnthropicMessages转Chat协议转换设计.md`、`docs/develop/测试与验证说明.md`。
-- 验证结果：专项 helper、网关 mock E2E、模型映射、候选窗口、DeepSeek / GLM 供应商 mock、usage-pricing、前后端 typecheck、既有 OpenAI -> Anthropic bridge 和空白检查已通过。
+- 主要改动位置：`backend/src/modules/providers/drivers/_shared/anthropic-openai-chat-bridge.ts`、`backend/src/modules/providers/drivers/{openai-compatible,gpt,deepseek,glm}/driver.ts`、`backend/src/modules/gateway/protocols/openai-v1/model-mapping.ts`、`backend/src/modules/gateway/request/error-response.ts`、`backend/src/storage/account-model-normalization.ts`、`backend/src/scripts/regression/anthropic-openai-chat-real-e2e.ts`、`frontend/src/views/accounts/AccountStrategySection.vue`、`docs/functions/AnthropicMessages转Chat协议转换设计.md`、`docs/develop/测试与验证说明.md`。
+- 验证结果：专项 helper、网关 mock E2E、真实 `Messages -> Chat` 默认 E2E、模型映射、候选窗口、DeepSeek / GLM 供应商 mock、usage-pricing、前后端 typecheck、既有 OpenAI -> Anthropic bridge 和空白检查已通过；真实图片路径仍需可用视觉 Chat 模型复测。

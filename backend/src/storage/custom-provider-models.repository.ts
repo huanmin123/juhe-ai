@@ -8,6 +8,17 @@ type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocol
 export type CustomProviderModelScope = 'global' | 'personal'
 export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
 
+const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>([
+  'chat_completions',
+  'responses',
+  'messages',
+  'message_token_counting',
+  'completions',
+  'images',
+  'audio',
+  'realtime'
+])
+
 export interface CustomProviderModelRecord {
   id: string
   providerCode: string
@@ -401,18 +412,16 @@ function normalizeScope(scope: CustomProviderModelScope): CustomProviderModelSco
 }
 
 function normalizeProtocols(values: string[] | null | undefined): CustomProviderModelApiProtocol[] {
-  const allowed = new Set<CustomProviderModelApiProtocol>(['chat_completions', 'responses', 'completions', 'images', 'audio', 'realtime'])
   return [...new Set((values ?? [])
     .map((value) => value.trim())
-    .filter((value): value is CustomProviderModelApiProtocol => allowed.has(value as CustomProviderModelApiProtocol)))]
+    .filter((value): value is CustomProviderModelApiProtocol => customProviderModelApiProtocols.has(value as CustomProviderModelApiProtocol)))]
 }
 
 function parseStringArray(raw: string | null | undefined): CustomProviderModelApiProtocol[] {
   if (!raw) return []
-  const allowed = new Set<CustomProviderModelApiProtocol>(['chat_completions', 'responses', 'completions', 'images', 'audio', 'realtime'])
   try {
     const parsed = JSON.parse(raw) as unknown
-    return Array.isArray(parsed) ? parsed.filter((item): item is CustomProviderModelApiProtocol => typeof item === 'string' && allowed.has(item as CustomProviderModelApiProtocol)) : []
+    return Array.isArray(parsed) ? parsed.filter((item): item is CustomProviderModelApiProtocol => typeof item === 'string' && customProviderModelApiProtocols.has(item as CustomProviderModelApiProtocol)) : []
   } catch {
     return []
   }

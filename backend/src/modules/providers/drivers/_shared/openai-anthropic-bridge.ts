@@ -142,6 +142,7 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   chatStreamIncludeUsage?: boolean
   fileSearch?: OpenAIToAnthropicFileSearchPlan
   imageGeneration?: OpenAIToAnthropicImageGenerationPlan
+  responsesToolSearch?: OpenAIToAnthropicResponsesToolSearchPlan
 }
 
 interface OpenAIToAnthropicBridgeContentContext {
@@ -185,6 +186,26 @@ interface OpenAIToAnthropicImageGenerationPlan {
   tool: OpenAIToAnthropicImageGenerationToolConfig
   executor: OpenAIToAnthropicImageGenerationExecutor
   outputItemId?: string
+}
+
+interface OpenAIToAnthropicResponsesToolSearchPlan {
+  adapters: OpenAIToAnthropicResponsesToolAdapter[]
+  adaptersByAnthropicName: Map<string, OpenAIToAnthropicResponsesToolAdapter>
+  adaptersByResponsesKey: Map<string, OpenAIToAnthropicResponsesToolAdapter>
+  expandableToolCount: number
+}
+
+interface OpenAIToAnthropicResponsesToolAdapter {
+  anthropicName: string
+  responsesName: string
+  namespace: string
+  description: string
+  parameters: unknown
+}
+
+interface OpenAIAllowedFunctionTools {
+  directNames: Set<string>
+  qualifiedKeys: Set<string>
 }
 
 interface AnthropicMessage {
@@ -476,7 +497,7 @@ async function chatBodyToAnthropicMessages(
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
   const tools = chatToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
-  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false)
+  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false, requestPlan)
   validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
@@ -509,10 +530,10 @@ async function responsesBodyToAnthropicMessages(
     })
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, item, contentContext, toolHistory)
+      await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, item, contentContext, toolHistory, requestPlan)
     }
   } else if (isPlainObject(input)) {
-    await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, input, contentContext, toolHistory)
+    await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, input, contentContext, toolHistory, requestPlan)
   }
   if (!messages.length) {
     appendAnthropicMessage(messages, { role: 'user', content: [{ type: 'text', text: '' }] })
@@ -523,7 +544,7 @@ async function responsesBodyToAnthropicMessages(
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
   const tools = responsesToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
-  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false)
+  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false, requestPlan)
   validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
@@ -566,7 +587,8 @@ async function appendResponsesInputItemAsAnthropicMessage(
   systemParts: string[],
   item: unknown,
   contentContext: OpenAIToAnthropicBridgeContentContext,
-  toolHistory: OpenAIToolResultHistory
+  toolHistory: OpenAIToolResultHistory,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan
 ): Promise<void> {
   if (!isPlainObject(item)) return
   if (item.type === 'message') {
@@ -587,12 +609,13 @@ async function appendResponsesInputItemAsAnthropicMessage(
     const name = stringValue(item.name)
     const callId = stringValue(item.call_id) ?? stringValue(item.id)
     if (!name || !callId) return
+    const anthropicName = anthropicToolNameForResponsesFunctionCall(name, stringValue(item.namespace), requestPlan)
     appendAnthropicMessage(messages, {
       role: 'assistant',
       content: [{
         type: 'tool_use',
         id: callId,
-        name,
+        name: anthropicName,
         input: anthropicToolInputFromOpenAIArguments(item.arguments)
       }]
     })
@@ -1077,7 +1100,7 @@ function chatToolsToAnthropicTools(
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): JsonRecord[] {
   if (!Array.isArray(value)) return []
-  const allowedFunctionNames = allowedOpenAIFunctionToolNames(toolChoice)
+  const allowedFunctionTools = allowedOpenAIFunctionTools(toolChoice)
   const tools: JsonRecord[] = []
   for (const item of value) {
     if (!isPlainObject(item) || item.type !== 'function') {
@@ -1091,7 +1114,7 @@ function chatToolsToAnthropicTools(
     if (!name) {
       throw bridgeValidationError('function tool 缺少 name', 'openai_anthropic_bridge_invalid_tool')
     }
-    if (allowedFunctionNames && !allowedFunctionNames.has(name)) continue
+    if (!isOpenAIFunctionToolAllowed(allowedFunctionTools, name)) continue
     tools.push(anthropicToolFromFunctionDefinition(name, fn?.description, fn?.parameters))
   }
   return tools
@@ -1103,7 +1126,7 @@ function responsesToolsToAnthropicTools(
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): JsonRecord[] {
   if (!Array.isArray(value)) return []
-  const allowedFunctionNames = allowedOpenAIFunctionToolNames(toolChoice)
+  const allowedFunctionTools = allowedOpenAIFunctionTools(toolChoice)
   const tools: JsonRecord[] = []
   for (const item of value) {
     if (!isPlainObject(item) || item.type !== 'function') {
@@ -1113,16 +1136,178 @@ function responsesToolsToAnthropicTools(
       if (isOpenAIImageGenerationTool(item) && requestPlan?.imageGeneration) {
         continue
       }
+      if (isResponsesToolSearchTool(item) && requestPlan?.responsesToolSearch) {
+        continue
+      }
+      if (isResponsesNamespaceTool(item) && requestPlan?.responsesToolSearch) {
+        appendResponsesNamespaceToolToAnthropicTools(tools, item, allowedFunctionTools, requestPlan)
+        continue
+      }
       throw unsupportedOpenAIToolError(item, 'Responses')
     }
     const name = stringValue(item.name)
     if (!name) {
       throw bridgeValidationError('Responses function tool 缺少 name', 'openai_anthropic_bridge_invalid_tool')
     }
-    if (allowedFunctionNames && !allowedFunctionNames.has(name)) continue
+    if (!isOpenAIFunctionToolAllowed(allowedFunctionTools, name)) continue
     tools.push(anthropicToolFromFunctionDefinition(name, item.description, item.parameters))
   }
   return tools
+}
+
+function responsesToolSearchPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicResponsesToolSearchPlan | undefined {
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  if (!tools.some(isResponsesToolSearchTool)) return undefined
+
+  const plan: OpenAIToAnthropicResponsesToolSearchPlan = {
+    adapters: [],
+    adaptersByAnthropicName: new Map(),
+    adaptersByResponsesKey: new Map(),
+    expandableToolCount: 0
+  }
+  const usedAnthropicNames = new Set<string>()
+  for (const tool of tools) {
+    if (!isPlainObject(tool) || tool.type !== 'function') continue
+    const name = stringValue(tool.name)
+    if (name) {
+      usedAnthropicNames.add(name)
+      plan.expandableToolCount += 1
+    }
+  }
+  for (const tool of tools) {
+    if (isResponsesNamespaceTool(tool)) {
+      appendResponsesNamespaceAdapters(plan, usedAnthropicNames, tool)
+    }
+  }
+  return plan.expandableToolCount > 0 ? plan : undefined
+}
+
+function appendResponsesNamespaceAdapters(
+  plan: OpenAIToAnthropicResponsesToolSearchPlan,
+  usedAnthropicNames: Set<string>,
+  item: JsonRecord,
+  inheritedNamespace?: string
+): void {
+  const namespace = responsesNamespaceName(item, inheritedNamespace)
+  if (!namespace) return
+  const namespaceDescription = stringValue(item.description)
+  const tools = Array.isArray(item.tools) ? item.tools : []
+  for (const child of tools) {
+    if (!isPlainObject(child)) continue
+    if (child.type === 'function') {
+      const name = stringValue(child.name)
+      if (!name) continue
+      const key = responsesFunctionToolKey(name, namespace)
+      if (plan.adaptersByResponsesKey.has(key)) continue
+      const anthropicName = uniqueAnthropicToolName(
+        `${namespace}__${name}`,
+        usedAnthropicNames
+      )
+      const adapter: OpenAIToAnthropicResponsesToolAdapter = {
+        anthropicName,
+        responsesName: name,
+        namespace,
+        description: responsesNamespacedFunctionDescription({
+          namespace,
+          namespaceDescription,
+          functionDescription: stringValue(child.description)
+        }),
+        parameters: child.parameters
+      }
+      plan.adapters.push(adapter)
+      plan.adaptersByAnthropicName.set(anthropicName, adapter)
+      plan.adaptersByResponsesKey.set(key, adapter)
+      plan.expandableToolCount += 1
+      continue
+    }
+    if (child.type === 'namespace') {
+      appendResponsesNamespaceAdapters(plan, usedAnthropicNames, child, namespace)
+    }
+  }
+}
+
+function appendResponsesNamespaceToolToAnthropicTools(
+  tools: JsonRecord[],
+  item: JsonRecord,
+  allowedFunctionTools: OpenAIAllowedFunctionTools | undefined,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  inheritedNamespace?: string
+): void {
+  const namespace = responsesNamespaceName(item, inheritedNamespace)
+  if (!namespace) {
+    throw bridgeValidationError('Responses namespace tool 缺少 name', 'openai_anthropic_bridge_invalid_tool')
+  }
+  const children = Array.isArray(item.tools) ? item.tools : []
+  for (const child of children) {
+    if (!isPlainObject(child)) continue
+    if (child.type === 'function') {
+      const name = stringValue(child.name)
+      if (!name) {
+        throw bridgeValidationError('Responses namespace function tool 缺少 name', 'openai_anthropic_bridge_invalid_tool')
+      }
+      if (!isOpenAIFunctionToolAllowed(allowedFunctionTools, name, namespace)) continue
+      const adapter = requestPlan.responsesToolSearch?.adaptersByResponsesKey.get(responsesFunctionToolKey(name, namespace))
+      if (!adapter) continue
+      tools.push(anthropicToolFromFunctionDefinition(adapter.anthropicName, adapter.description, adapter.parameters))
+      continue
+    }
+    if (child.type === 'namespace') {
+      appendResponsesNamespaceToolToAnthropicTools(tools, child, allowedFunctionTools, requestPlan, namespace)
+      continue
+    }
+    throw unsupportedOpenAIToolError(child, 'Responses')
+  }
+}
+
+function isResponsesToolSearchTool(tool: unknown): tool is JsonRecord {
+  return isPlainObject(tool) && tool.type === 'tool_search'
+}
+
+function isResponsesNamespaceTool(tool: unknown): tool is JsonRecord {
+  return isPlainObject(tool) && tool.type === 'namespace'
+}
+
+function responsesNamespaceName(item: JsonRecord, inheritedNamespace?: string): string | undefined {
+  return stringValue(item.namespace) ?? stringValue(item.name) ?? inheritedNamespace
+}
+
+function responsesFunctionToolKey(name: string, namespace?: string): string {
+  return `${namespace ?? ''}\u0000${name}`
+}
+
+function responsesNamespacedFunctionDescription(input: {
+  namespace: string
+  namespaceDescription?: string
+  functionDescription?: string
+}): string {
+  return [
+    `OpenAI Responses namespace: ${input.namespace}.`,
+    input.namespaceDescription ? `Namespace description: ${input.namespaceDescription}` : undefined,
+    input.functionDescription
+  ].filter(Boolean).join('\n\n')
+}
+
+function uniqueAnthropicToolName(baseName: string, usedNames: Set<string>): string {
+  const base = truncateAnthropicToolName(sanitizeAnthropicToolName(baseName), 64)
+  let candidate = base
+  let suffixIndex = 2
+  while (usedNames.has(candidate)) {
+    const suffix = `_${suffixIndex++}`
+    candidate = `${truncateAnthropicToolName(base, 64 - suffix.length)}${suffix}`
+  }
+  usedNames.add(candidate)
+  return candidate
+}
+
+function sanitizeAnthropicToolName(name: string): string {
+  return name
+    .replace(/[^A-Za-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'tool'
+}
+
+function truncateAnthropicToolName(name: string, maxLength: number): string {
+  return name.length <= maxLength ? name : name.slice(0, Math.max(1, maxLength))
 }
 
 function anthropicToolFromFunctionDefinition(name: string, description: unknown, parameters: unknown): JsonRecord {
@@ -1137,11 +1322,12 @@ function applyTools(
   output: JsonRecord,
   tools: JsonRecord[],
   toolChoice: unknown,
-  disableParallelToolUse: boolean
+  disableParallelToolUse: boolean,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): void {
   if (!tools.length) return
   output.tools = tools
-  const anthropicToolChoice = anthropicToolChoiceFromOpenAI(toolChoice)
+  const anthropicToolChoice = anthropicToolChoiceFromOpenAI(toolChoice, requestPlan)
   if (anthropicToolChoice) {
     if (disableParallelToolUse && anthropicToolChoice.type !== 'none') {
       anthropicToolChoice.disable_parallel_tool_use = true
@@ -1157,10 +1343,11 @@ function applyStructuredOutputPlan(
   tools: JsonRecord[],
   toolChoice: unknown,
   structuredOutput: OpenAIToAnthropicStructuredOutputPlan | undefined,
-  disableParallelToolUse: boolean
+  disableParallelToolUse: boolean,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): void {
   if (!structuredOutput?.syntheticToolName) {
-    applyTools(output, tools, toolChoice, disableParallelToolUse)
+    applyTools(output, tools, toolChoice, disableParallelToolUse, requestPlan)
     return
   }
   if (tools.length) {
@@ -1184,7 +1371,10 @@ function applyStructuredOutputPlan(
   output.tool_choice = { type: 'tool', name: structuredOutput.syntheticToolName }
 }
 
-function anthropicToolChoiceFromOpenAI(value: unknown): JsonRecord | undefined {
+function anthropicToolChoiceFromOpenAI(
+  value: unknown,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): JsonRecord | undefined {
   if (value === undefined || value === null) return undefined
   if (value === 'auto') return { type: 'auto' }
   if (value === 'none') return { type: 'none' }
@@ -1194,7 +1384,14 @@ function anthropicToolChoiceFromOpenAI(value: unknown): JsonRecord | undefined {
   if (value.type === 'function') {
     const fn = objectValue(value.function)
     const name = stringValue(fn?.name) ?? stringValue(value.name)
-    return name ? { type: 'tool', name } : undefined
+    if (!name) return undefined
+    const namespace = stringValue(fn?.namespace) ?? stringValue(value.namespace)
+    return {
+      type: 'tool',
+      name: namespace
+        ? anthropicToolNameForResponsesFunctionCall(name, namespace, requestPlan)
+        : name
+    }
   }
   if (value.type === 'auto') return { type: 'auto' }
   if (value.type === 'none') return { type: 'none' }
@@ -1207,20 +1404,71 @@ function anthropicToolChoiceFromOpenAI(value: unknown): JsonRecord | undefined {
   return undefined
 }
 
-function allowedOpenAIFunctionToolNames(toolChoice: unknown): Set<string> | undefined {
+function allowedOpenAIFunctionTools(toolChoice: unknown): OpenAIAllowedFunctionTools | undefined {
   if (!isPlainObject(toolChoice) || toolChoice.type !== 'allowed_tools') return undefined
-  const names = new Set<string>()
+  const directNames = new Set<string>()
+  const qualifiedKeys = new Set<string>()
   const tools = Array.isArray(toolChoice.tools) ? toolChoice.tools : []
   for (const tool of tools) {
     if (typeof tool === 'string') {
-      names.add(tool)
+      directNames.add(tool)
       continue
     }
     if (!isPlainObject(tool) || tool.type !== 'function') continue
-    const name = stringValue(tool.name) ?? stringValue(objectValue(tool.function)?.name)
-    if (name) names.add(name)
+    const fn = objectValue(tool.function)
+    const name = stringValue(tool.name) ?? stringValue(fn?.name)
+    if (!name) continue
+    const namespace = stringValue(tool.namespace) ?? stringValue(fn?.namespace)
+    if (namespace) {
+      qualifiedKeys.add(responsesFunctionToolKey(name, namespace))
+      continue
+    }
+    directNames.add(name)
   }
-  return names
+  return { directNames, qualifiedKeys }
+}
+
+function isOpenAIFunctionToolAllowed(
+  allowed: OpenAIAllowedFunctionTools | undefined,
+  name: string,
+  namespace?: string
+): boolean {
+  if (!allowed) return true
+  if (namespace && allowed.qualifiedKeys.has(responsesFunctionToolKey(name, namespace))) return true
+  return allowed.directNames.has(name)
+}
+
+function anthropicToolNameForResponsesFunctionCall(
+  name: string,
+  namespace: string | undefined,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): string {
+  if (!namespace) return name
+  const adapter = requestPlan?.responsesToolSearch?.adaptersByResponsesKey.get(responsesFunctionToolKey(name, namespace))
+  return adapter?.anthropicName ?? name
+}
+
+function responsesFunctionCallItemFromAnthropicTool(
+  input: {
+    idSegment: string
+    callId: string
+    name: string
+    argumentsText: string
+    status: 'in_progress' | 'completed'
+  },
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): JsonRecord {
+  const adapter = requestPlan?.responsesToolSearch?.adaptersByAnthropicName.get(input.name)
+  const item: JsonRecord = {
+    id: `fc_${safeIdSegment(input.idSegment)}`,
+    type: 'function_call',
+    status: input.status,
+    call_id: input.callId,
+    name: adapter?.responsesName ?? input.name,
+    arguments: input.argumentsText
+  }
+  if (adapter?.namespace) item.namespace = adapter.namespace
+  return item
 }
 
 function validateAnthropicThinkingToolChoiceCompatibility(output: JsonRecord): void {
@@ -1255,6 +1503,9 @@ function createOpenAIToAnthropicBridgeRequestPlan(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   body: JsonRecord
 ): OpenAIToAnthropicBridgeRequestPlan {
+  const responsesToolSearch = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    ? responsesToolSearchPlanFromResponsesBody(body)
+    : undefined
   return {
     structuredOutput: sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
       ? structuredOutputPlanFromResponsesBody(body)
@@ -1263,7 +1514,8 @@ function createOpenAIToAnthropicBridgeRequestPlan(
     reasoningSummary: reasoningSummaryFromOpenAIBody(body),
     chatStreamIncludeUsage: sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
       ? objectValue(body.stream_options)?.include_usage === true
-      : undefined
+      : undefined,
+    responsesToolSearch
   }
 }
 
@@ -1943,6 +2195,12 @@ function unsupportedOpenAIHostedToolLabel(
       && !responsesBodyContainsImageGenerationEditContext(body)
     return supportedGenerate ? undefined : type
   }
+  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isResponsesNamespaceTool(tool) && requestPlan.responsesToolSearch) {
+    return undefined
+  }
+  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isResponsesToolSearchTool(tool) && requestPlan.responsesToolSearch) {
+    return undefined
+  }
   const runtimeDecision = resolveOpenAIHostedToolRuntimeDecision({ toolType: type, sourceEndpointFamily })
   if (runtimeDecision) return runtimeDecision.mode === 'reject' ? undefined : runtimeDecision.toolType
   return type
@@ -2273,14 +2531,14 @@ function anthropicContentBlocksToResponsesOutputItems(
         continue
       }
       if (block.type === 'tool_use') {
-        output.push({
-          id: `fc_${safeIdSegment(stringValue(block.id) ?? `${responseId}_${output.length}`)}`,
-          type: 'function_call',
+        const callId = stringValue(block.id) ?? `call_${output.length}`
+        output.push(responsesFunctionCallItemFromAnthropicTool({
+          idSegment: stringValue(block.id) ?? `${responseId}_${output.length}`,
           status: 'completed',
-          call_id: stringValue(block.id) ?? `call_${output.length}`,
+          callId,
           name: stringValue(block.name) ?? '',
-          arguments: JSON.stringify(isPlainObject(block.input) ? block.input : {})
-        })
+          argumentsText: JSON.stringify(isPlainObject(block.input) ? block.input : {})
+        }, requestPlan))
       }
     }
   }
@@ -2648,14 +2906,13 @@ function processAnthropicEventAsResponses(state: AnthropicStreamState, event: Pa
       output.push(sse('response.output_item.added', {
         type: 'response.output_item.added',
         output_index: block.outputIndex,
-        item: {
-          id: `fc_${safeIdSegment(block.id ?? `${index}`)}`,
-          type: 'function_call',
+        item: responsesFunctionCallItemFromAnthropicTool({
+          idSegment: block.id ?? `${index}`,
           status: 'in_progress',
-          call_id: block.id ?? `call_${index}`,
+          callId: block.id ?? `call_${index}`,
           name: block.name ?? '',
-          arguments: ''
-        }
+          argumentsText: ''
+        }, state.requestPlan)
       }))
     }
     return output
@@ -3038,14 +3295,13 @@ function completeResponsesBlock(state: AnthropicStreamState, block: AnthropicStr
     })]
   }
   if (block.type === 'tool_use') {
-    const item = {
-      id: `fc_${safeIdSegment(block.id ?? `${block.index}`)}`,
-      type: 'function_call',
+    const item = responsesFunctionCallItemFromAnthropicTool({
+      idSegment: block.id ?? `${block.index}`,
       status: 'completed',
-      call_id: block.id ?? `call_${block.index}`,
+      callId: block.id ?? `call_${block.index}`,
       name: block.name ?? '',
-      arguments: block.inputJson || '{}'
-    }
+      argumentsText: block.inputJson || '{}'
+    }, state.requestPlan)
     state.outputItems.push(item)
     return [sse('response.output_item.done', {
       type: 'response.output_item.done',

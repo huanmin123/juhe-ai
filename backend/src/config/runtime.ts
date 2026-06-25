@@ -57,6 +57,7 @@ export interface RuntimeConfig {
   imageGenerationProvider: {
     endpoint?: string
     apiKey?: string
+    api: ImageGenerationProviderApi
     model: string
     timeoutMs: number
     maxBodyBytes: number
@@ -99,6 +100,7 @@ export type WorkerRuntimeRole =
   | 'temporary-maintenance-worker'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export type HostedToolRuntimeMode = 'guidance' | 'reject'
+export type ImageGenerationProviderApi = 'images' | 'responses'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -154,6 +156,7 @@ export const runtimeConfig: RuntimeConfig = {
   imageGenerationProvider: {
     endpoint: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT'),
     apiKey: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY'),
+    api: imageGenerationProviderApiConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API', 'images'),
     model: stringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL', 'gpt-image-2'),
     timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 120000, 1000, 300000),
     maxBodyBytes: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB', 64, 1, 256) * 1024 * 1024
@@ -353,6 +356,12 @@ function trustProxyConfig(name: string): boolean | number {
 function hostedToolRuntimeModeConfig(name: string, fallback: HostedToolRuntimeMode): HostedToolRuntimeMode {
   const value = stringConfig(name, '').toLowerCase()
   if (value === 'guidance' || value === 'reject') return value
+  return fallback
+}
+
+function imageGenerationProviderApiConfig(name: string, fallback: ImageGenerationProviderApi): ImageGenerationProviderApi {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'images' || value === 'responses') return value
   return fallback
 }
 

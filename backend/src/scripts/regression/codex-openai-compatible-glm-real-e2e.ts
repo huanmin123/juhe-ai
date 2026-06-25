@@ -50,6 +50,8 @@ const hybridModel1To2 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_1_2') || envText('
 const hybridModel4To6 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_4_6') || 'gpt-5.4'
 const hybridModel7To10 = envText('JUHE_REAL_CODEX_HYBRID_MODEL_7_10') || 'gpt-5.5'
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_CODEX_CLI_TIMEOUT_MS') ?? 240_000
+const codexRequestMaxRetries = positiveIntegerEnv('JUHE_REAL_CODEX_REQUEST_MAX_RETRIES') ?? 0
+const codexStreamMaxRetries = positiveIntegerEnv('JUHE_REAL_CODEX_STREAM_MAX_RETRIES') ?? 0
 const streamRequestTimeoutSecondsOverride = positiveIntegerEnv('JUHE_REAL_CODEX_STREAM_REQUEST_TIMEOUT_SECONDS')
 const streamIdleTimeoutSecondsOverride = positiveIntegerEnv('JUHE_REAL_CODEX_STREAM_IDLE_TIMEOUT_SECONDS')
 const programmingTaskEnabled = booleanEnv('JUHE_REAL_CODEX_PROGRAMMING_TASK')
@@ -603,9 +605,9 @@ function runCodexCli(gatewayBaseUrl: string, localApiKey: string): Promise<CliRu
       '-c',
       'model_providers.local_gateway.requires_openai_auth=false',
       '-c',
-      'model_providers.local_gateway.request_max_retries=0',
+      `model_providers.local_gateway.request_max_retries=${codexRequestMaxRetries}`,
       '-c',
-      'model_providers.local_gateway.stream_max_retries=0',
+      `model_providers.local_gateway.stream_max_retries=${codexStreamMaxRetries}`,
       '-'
     ],
     cwd: cliRoot,
@@ -704,9 +706,9 @@ function runCodexProgrammingCli(gatewayBaseUrl: string, localApiKey: string, pro
       '-c',
       'model_providers.local_gateway.requires_openai_auth=false',
       '-c',
-      'model_providers.local_gateway.request_max_retries=0',
+      `model_providers.local_gateway.request_max_retries=${codexRequestMaxRetries}`,
       '-c',
-      'model_providers.local_gateway.stream_max_retries=0',
+      `model_providers.local_gateway.stream_max_retries=${codexStreamMaxRetries}`,
       '-'
     ],
     cwd: projectRoot,
@@ -923,11 +925,17 @@ function runProjectTests(projectRoot: string): Promise<CliRunResult> {
 
 function materializeProgrammingTextArtifacts(stdout: string, projectRoot: string): void {
   const text = latestCodexAgentMessageText(stdout)
-  const artifacts = parseDelimitedFileArtifacts(text)
   const requiredFiles = ['index.html', 'styles.css', 'game.js']
+  const delimitedArtifacts = parseDelimitedFileArtifacts(text)
+  const patchArtifacts = requiredFiles.every((file) => delimitedArtifacts.has(file))
+    ? delimitedArtifacts
+    : parseApplyPatchFileArtifacts(text)
+  const artifacts = requiredFiles.every((file) => patchArtifacts.has(file))
+    ? patchArtifacts
+    : parseHeaderDelimitedFileArtifacts(text)
   const missing = requiredFiles.filter((file) => !artifacts.has(file))
   if (missing.length > 0) {
-    throw new Error(`GLM 文本产物缺少文件块：${missing.join(', ')}；输出片段=${sanitizeSecretText(text).slice(0, 1200)}`)
+    throw new Error(`Codex 文本产物缺少文件块：${missing.join(', ')}；输出片段=${sanitizeSecretText(text).slice(0, 1200)}`)
   }
   mkdirSync(projectRoot, { recursive: true })
   for (const file of requiredFiles) {
@@ -965,6 +973,83 @@ function parseDelimitedFileArtifacts(text: string): Map<string, string> {
     files.set(filename, match[2] ?? '')
   }
   return files
+}
+
+function parseApplyPatchFileArtifacts(text: string): Map<string, string> {
+  const allowedFiles = new Set(['index.html', 'styles.css', 'game.js'])
+  const files = new Map<string, string>()
+  let currentFile: string | undefined
+  let currentLines: string[] = []
+  const flush = () => {
+    if (currentFile && allowedFiles.has(currentFile)) {
+      files.set(currentFile, currentLines.join('\n'))
+    }
+    currentFile = undefined
+    currentLines = []
+  }
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (rawLine.startsWith('*** Add File: ') || rawLine.startsWith('*** Update File: ')) {
+      flush()
+      const filename = rawLine.replace(/^\*\*\* (?:Add|Update) File:\s*/, '').trim()
+      currentFile = allowedFiles.has(filename) ? filename : undefined
+      currentLines = []
+      continue
+    }
+    if (rawLine.startsWith('*** End Patch') || rawLine.startsWith('*** Delete File: ') || rawLine.startsWith('*** Move to: ')) {
+      flush()
+      continue
+    }
+    if (!currentFile) continue
+    if (rawLine.startsWith('+') && !rawLine.startsWith('+++')) {
+      currentLines.push(rawLine.slice(1))
+    }
+  }
+  flush()
+  return files
+}
+
+function parseHeaderDelimitedFileArtifacts(text: string): Map<string, string> {
+  const allowedFiles = new Set(['index.html', 'styles.css', 'game.js'])
+  const files = new Map<string, string>()
+  let currentFile: string | undefined
+  let currentLines: string[] = []
+  const flush = () => {
+    if (currentFile && allowedFiles.has(currentFile)) {
+      files.set(currentFile, trimCodeFence(currentLines.join('\n')))
+    }
+    currentFile = undefined
+    currentLines = []
+  }
+  for (const rawLine of text.split(/\r?\n/)) {
+    const trimmed = rawLine.trim()
+    const header = /^-{3,}\s*(index\.html|styles\.css|game\.js)\s*-{3,}\s*$/i.exec(trimmed)
+    if (header) {
+      flush()
+      currentFile = header[1]
+      currentLines = []
+      continue
+    }
+    if (/^-{3,}.+-{3,}$/u.test(trimmed)) {
+      flush()
+      continue
+    }
+    if (currentFile) {
+      currentLines.push(rawLine)
+    }
+  }
+  flush()
+  return files
+}
+
+function trimCodeFence(value: string): string {
+  const lines = value.replace(/\s+$/u, '').split(/\r?\n/)
+  if (lines[0]?.trim().startsWith('```')) {
+    lines.shift()
+  }
+  if (lines.at(-1)?.trim() === '```') {
+    lines.pop()
+  }
+  return lines.join('\n')
 }
 
 async function runSnakeHtmlProjectChecks(projectRoot: string): Promise<CliRunResult> {

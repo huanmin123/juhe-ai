@@ -168,7 +168,7 @@ try {
 }
 
 function registerCustomModels(): void {
-  saveCustomProviderModel({
+  const sourceCatalogModel = saveCustomProviderModel({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     model: sourceModel,
     scope: 'global',
@@ -178,6 +178,7 @@ function registerCustomModels(): void {
     outputUsdPer1M: 2,
     actorSystemAccountId: access.systemAccountId
   })
+  assert.deepEqual(sourceCatalogModel.supportedApiProtocols, ['messages'], 'Messages source 模型目录应保留 messages 协议能力')
   for (const item of cases) {
     saveCustomProviderModel({
       providerCode: item.providerCode,

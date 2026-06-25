@@ -5,7 +5,7 @@
 - 编号：PLAN-0061
 - 状态：进行中
 - 创建时间：2026-06-24
-- 更新时间：2026-06-24
+- 更新时间：2026-06-25
 - 需求来源：用户对话
 - 执行者：AI
 - 关联模块：后端 / 网关 / Anthropic bridge / Responses / 图像生成 / 权限 / 审计 / 文档 / 验证
@@ -22,13 +22,14 @@
 
 - [x] 建立独立计划，明确 `image_generation` 不能由 Anthropic Messages 字段转换伪造。
 - [x] 更新高兼容能力矩阵和基础桥接设计，指向本计划的 provider 承接方式。
-- [x] 新增 runtime 配置：图像 provider endpoint、认证、默认模型、超时和最大响应体；provider streaming 仍复用同一 endpoint。
+- [x] 新增 runtime 配置：图像 provider endpoint、认证、API 形态、默认模型、超时和最大响应体；provider streaming 仍复用同一 endpoint。
 - [x] 新增本地图像 provider executor，支持 OpenAI Images API 兼容 JSON 响应中的 `data[0].b64_json`，并在 provider 返回 `text/event-stream` 时解析 `image_generation.partial_image` / `image_generation.completed`。
+- [x] 扩展本地图像 provider executor，支持 OpenAI Responses API 图像工具 provider：从 `output[].type=image_generation_call` 读取 `result`，从 Responses SSE 读取 `response.image_generation_call.partial_image` / completed / `response.completed`；mock、typecheck 和真实网关 E2E 已通过。
 - [x] Responses JSON 路径：配置 provider 后返回 OpenAI 形态 `image_generation_call`，使用 Anthropic revised prompt 调用 provider。
 - [x] Responses SSE 路径：返回 `response.output_item.added`、`response.image_generation_call.completed`、`response.output_item.done`、`response.completed`；当请求显式带 `partial_images` 且 provider 返回 OpenAI Images SSE 时，额外透出 `response.image_generation_call.partial_image`。
 - [x] 处理 `action=generate|edit|auto`、`size`、`quality`、`output_format`、`output_compression`、`partial_images`、`input_image_mask` 的支持矩阵；首批只支持无输入图片的 `generate|auto`，`edit` / mask / 历史图像复用已覆盖 guidance 回归。
 - [x] 无 provider、provider 错误、moderation blocked、强制 edit 或 mask 时返回 OpenAI 形态 guidance / failed response，不请求不支持的 Anthropic image tool，不伪造成功图片。
-- [~] 补 mock 回归和真实 provider 可选联调；mock 已覆盖首批路径，真实凭据只走临时环境变量；本轮真实 provider 探针已执行但当前账户不满足 OpenAI Images API 兼容 provider 接口。
+- [x] 补 mock 回归和真实 provider 可选联调；mock 已覆盖 Images provider 和 Responses provider 路径，真实凭据只走临时环境变量；本轮真实账户不满足 OpenAI Images API 兼容 provider 接口，但 Responses provider JSON / SSE 网关 E2E 已通过。
 
 ### 本次不包含
 
@@ -56,12 +57,13 @@
 
 ### Runtime 配置
 
-provider 首批支持 OpenAI Images API 兼容 JSON；Responses SSE 请求显式带 `partial_images` 时，会向同一 provider endpoint 发送 `stream: true` 和 `partial_images`，如果 provider 返回 `text/event-stream`，则按 OpenAI Images SSE 解析 partial / completed 事件：
+provider 支持两类 API 形态。默认 `images` 形态兼容 OpenAI Images API：Responses SSE 请求显式带 `partial_images` 时，会向同一 provider endpoint 发送 `stream: true` 和 `partial_images`，如果 provider 返回 `text/event-stream`，则按 OpenAI Images SSE 解析 partial / completed 事件。新增 `responses` 形态兼容 OpenAI Responses API：向 provider `/v1/responses` 发送 `tools=[{type:"image_generation"}]` 和强制 `tool_choice`，从 `image_generation_call.result` 或 Responses SSE 图像事件读取结果。
 
 | 环境变量 | 作用 | 默认值 / 边界 |
 | --- | --- | --- |
-| `JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT` | 图像生成 provider 的完整 `/v1/images/generations` 兼容地址；未配置时 `image_generation` 保持 L4 agent guidance | 未配置 |
+| `JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT` | 图像生成 provider 的完整地址；`images` 形态填写 `/v1/images/generations`，`responses` 形态填写 `/v1/responses`；未配置时 `image_generation` 保持 L4 agent guidance | 未配置 |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY` | provider Bearer token；本地 mock provider 可不配置 | 未配置 |
+| `JUHE_AI_IMAGE_GENERATION_PROVIDER_API` | provider API 形态，`images` 表示 OpenAI Images API，`responses` 表示 OpenAI Responses API 图像工具 | `images` |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL` | provider 图像模型 | `gpt-image-2` |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS` | 图像 provider 请求超时 | 默认 120000，范围 1000-300000 |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB` | provider JSON 响应读取上限 | 默认 64，范围 1-256 |
@@ -76,18 +78,19 @@ provider 首批支持 OpenAI Images API 兼容 JSON；Responses SSE 请求显式
 - [x] 实现 Responses JSON `image_generation_call` 渲染。
 - [x] 实现 Responses SSE 图像完成事件渲染。
 - [x] 补权限、错误、审计和大响应体边界。
-- [~] 补 mock 回归和真实 provider 可选联调；mock 已覆盖 JSON、completed-only SSE、provider partial SSE、失败和边界，真实 provider 仍受账户 Images API 401 阻塞。
+- [x] 补 mock 回归和真实 provider 可选联调；mock 已覆盖 Images JSON、completed-only SSE、provider partial SSE、失败和边界，以及 Responses provider JSON / partial SSE；真实账户 Images API 仍受 401 阻塞，Responses 图像 provider JSON / SSE 网关 E2E 已通过。
 - [~] 更新验证记录和完成总结。
 
 ## 测试项
 
 | 测试类型 | 测试项 | 验证方式 / 命令 | 预期结果 | 状态 | 实际结果或备注 |
 | --- | --- | --- | --- | --- | --- |
-| 命令类验证 | 后端类型检查 | `pnpm --dir backend typecheck` | 后端 TypeScript 类型检查通过 | 已通过 | 2026-06-24 已通过 |
+| 命令类验证 | 后端类型检查 | `pnpm --dir backend typecheck` | 后端 TypeScript 类型检查通过 | 已通过 | 2026-06-25 已通过 |
 | Mock 回归 | 无 provider guidance | `pnpm --dir backend test:openai-anthropic-bridge-mock` | `image_generation` 不请求 Anthropic 且返回 OpenAI 形态 guidance | 已通过 | 新增 Responses `image_generation` required 无 provider 断言；脚本通过 |
 | Mock 回归 | Responses JSON 图像生成 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 返回 `image_generation_call`、`result` 和 `revised_prompt` | 已通过 | mock provider 返回 `data[0].b64_json`；Anthropic 只生成 revised prompt，不接收 OpenAI image tool |
 | Mock 回归 | Responses SSE 图像生成 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 返回 OpenAI Responses 图像生成事件，不透出 provider 私有格式 | 已通过 | 覆盖 `response.output_item.added`、`response.image_generation_call.completed`、`response.output_item.done`、`response.completed` |
 | Mock 回归 | Responses SSE partial image | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 请求带 `partial_images` 时，provider SSE partial 转为 OpenAI Responses `response.image_generation_call.partial_image` | 已通过 | mock provider 收到 `stream=true` 和 `partial_images=2`，网关输出 partial、completed、done 和 completed response 事件 |
+| Mock 回归 | Responses provider JSON / SSE 图像生成 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | provider API 配置为 `responses` 时，从 `image_generation_call.result` 和 Responses SSE 事件读取图片结果 | 已通过 | mock provider `/v1/responses` 覆盖 JSON 和 partial SSE；网关仍统一渲染 OpenAI Responses `image_generation_call` |
 | Mock 回归 | Provider moderation blocked | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 返回 Responses `status=failed`，保留 `moderation_blocked`、`image_generation_user_error` 和 `moderation_details`，且不伪造图片 | 已通过 | mock provider 返回官方风格 400；桥接返回本地生成的 Responses failed 对象，响应检查不改写为 503 |
 | Mock 回归 | edit / mask 受控 guidance | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 不请求 Anthropic、不调用图像 provider，并返回 OpenAI 形态 guidance | 已通过 | provider 已配置时，`action=edit` 和 `input_image_mask` 均返回 guidance |
 | Mock 回归 | 历史图片复用受控 guidance | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 不请求 Anthropic、不调用图像 provider，并返回 OpenAI 形态 guidance | 已通过 | 历史 `image_generation_call` 作为输入上下文时返回 guidance |
@@ -97,7 +100,9 @@ provider 首批支持 OpenAI Images API 兼容 JSON；Responses SSE 请求显式
 | Mock 回归 | 审计图像正文省略 | `pnpm --dir backend test:gateway-audit-payload-storage` | 流式 `partial_image_b64` 和非流式 `image_generation_call.result` 不写入审计正文 | 已通过 | 审计记录保留请求 payload 和 omission 元数据，响应图片正文不落 payload body |
 | Mock 回归 | 图像生成权限 | `pnpm --dir backend test:api-key-image-permission` | 禁用图像生成时强制工具拒绝、auto 工具降级为文本、开启后同 Key 放行 | 已通过 | 默认禁用图片接口不上游；normal 路由后强制工具仍拦截；开启权限后立即放行 |
 | 安全检查 | 凭据与图片正文扫描 | 固定真实 key 短前缀扫描 | 仓库无真实 key；docs / 运行模块无真实图片正文 | 已通过 | 未命中真实 key 短前缀；mock 图片正文只以测试 base64 fixture 存在 |
-| 真实联调 | 真实 provider 可选探针 | 临时环境变量调用真实 `/v1/images/generations` | provider 可用时图像生成成功；不可用时记录原因 | 已执行未通过 | 当前真实账户调用 `https://vsllm.com/v1/images/generations` 返回 401 `invalid_api_key`，未返回 `data[0].b64_json`；该账户暂不能作为 OpenAI Images API 兼容 provider |
+| 真实联调 | 真实 Images provider 可选探针 | 临时环境变量调用真实 `/v1/images/generations` | provider 可用时图像生成成功；不可用时记录原因 | 已执行未通过 | 2026-06-25 当前真实账户调用 `https://vsllm.com/v1/images/generations` 返回 401 `invalid_api_key`，错误来自上游代理到官方 OpenAI 的 `sk-proj-*` key；该账户暂不能作为 OpenAI Images API 兼容 provider |
+| 真实联调 | 真实 Responses provider 可选探针 | 临时环境变量调用真实 `/v1/responses` | provider 可用时返回 `image_generation_call.result` | 已执行通过 | 2026-06-25 `gpt-image-2-chat` 返回 1 个 `image_generation_call`，`result` base64 长度约 1,064,900；`gpt-5.5` 返回 1 个 `image_generation_call`，`result` base64 长度约 1,035,328；未保存图片正文 |
+| 真实联调 | 真实 Responses provider 网关 E2E | `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER=1` / `RUN_IMAGE_PROVIDER_STREAM=1 pnpm --dir backend test:openai-anthropic-bridge-real` | Anthropic 主上游生成 revised prompt，再由 Responses provider 返回 JSON / SSE 图片结果 | 已通过 | 2026-06-25 `claude-sonnet-4-6` + `gpt-5.5` source + `gpt-image-2-chat` provider 通过 JSON 和 SSE；脚本只断言 base64 长度与事件，不保存图片正文 |
 
 ## 进度记录
 
@@ -113,6 +118,8 @@ provider 首批支持 OpenAI Images API 兼容 JSON；Responses SSE 请求显式
 | 2026-06-24 | 进行中 | AI | 已补图像审计正文省略：现有图像流 `partial_image_b64` 省略继续通过，新增非流式 `image_generation_call.result` 省略回归，客户端仍收到完整响应但审计不保存图片 base64。 |
 | 2026-06-24 | 进行中 | AI | 已用用户提供真实账户做 OpenAI Images API 兼容 provider 低成本探针；`/v1/images/generations` 返回 401 `invalid_api_key`，因此未执行网关 image_generation 真实 provider E2E。 |
 | 2026-06-24 | 进行中 | AI | 已补 provider partial image streaming：Responses SSE 请求带 `partial_images` 时，图像 provider 收到 `stream=true` / `partial_images`，provider `image_generation.partial_image` 转为 Responses `response.image_generation_call.partial_image`；mock 已通过，真实 provider partial 仍需可用 Images API key 后复测。 |
+| 2026-06-25 | 进行中 | AI | 已用真实账户复测图像能力：`/v1/images/generations` 仍返回 401 `invalid_api_key`，但 `/v1/responses` 使用 `gpt-image-2-chat` 和 `gpt-5.5` 均可返回 `image_generation_call.result`。决策：新增 `responses` provider API 形态，避免真实可用图像能力被 Images API 代理链路阻断。 |
+| 2026-06-25 | 进行中 | AI | 已实现 `JUHE_AI_IMAGE_GENERATION_PROVIDER_API=responses`：executor 构造 Responses provider 请求体，解析 `image_generation_call.result`、`response.image_generation_call.partial_image` 和 `response.completed`；mock、typecheck、真实 JSON 和真实 SSE 网关 E2E 均通过。 |
 
 ## 决策记录
 
@@ -121,6 +128,7 @@ provider 首批支持 OpenAI Images API 兼容 JSON；Responses SSE 请求显式
 | 2026-06-24 | `image_generation` 采用本地 provider，不直转 Anthropic Messages | Anthropic Messages 不产生 OpenAI 图像结果；文本伪装会破坏客户端语义 | provider 未配置时继续 L4 agent guidance；配置后由网关渲染 OpenAI Responses 图像 item |
 | 2026-06-24 | provider 兼容 OpenAI Images JSON 和 SSE partial 响应 | 复用现有 OpenAI 图像生态，便于接入 gpt-image 或第三方兼容图像服务；partial streaming 必须来自 provider 真实 SSE，不由桥接层伪造 | 后续仍可扩展编辑、多图和对象存储；真实 partial 需可用 provider key 复测 |
 | 2026-06-24 | 图像 provider 失败用本地生成 Responses failed 对象承接 | provider 审核失败是客户端可理解的图像生成结果状态，不应被响应检查改写成网关 503 | 仅对带内部标记的本地图像 provider failed response 跳过非流式响应检查；结构化输出 schema mismatch 仍维持现有 503 行为 |
+| 2026-06-25 | provider 增加 OpenAI Responses API 图像工具形态 | 真实账户暴露 `gpt-image-2-chat` / `gpt-5.5` 的 Responses 图像能力，但 Images API 代理链路返回 401；长期方案必须兼容两种上游图像 provider | 新增 `JUHE_AI_IMAGE_GENERATION_PROVIDER_API=responses`；executor 解析 `image_generation_call.result` 和 Responses SSE 图像事件，网关下游仍统一渲染 OpenAI Responses 图像 item |
 
 ## 验收标准
 
@@ -132,17 +140,17 @@ provider 首批支持 OpenAI Images API 兼容 JSON；Responses SSE 请求显式
 - [x] `action=edit`、`input_image_mask` 和历史 `image_generation_call` 复用首批不支持时返回 guidance，不请求 Anthropic 或图像 provider。
 - [x] provider 非 JSON / 缺失结果、超大响应体、请求超时时返回 Responses failed object，且不伪造图片。
 - [x] 权限、审计和大响应体边界不泄露图片正文或真实 provider 凭据；大响应体上限、审计图像正文省略和凭据扫描已覆盖。
-- [~] mock 回归、类型检查和真实 provider 可选联调完成或明确未验证原因；mock 与 typecheck 已通过，真实 provider 探针已执行但当前账户不满足 OpenAI Images API 兼容 provider 接口。
+- [x] mock 回归、类型检查和真实 provider 可选联调完成或明确未验证原因；mock 与 typecheck 已通过，真实 Images provider 探针已执行但当前账户不满足 OpenAI Images API 兼容 provider 接口；真实 Responses provider JSON / SSE 网关 E2E 已通过。
 
 ## 验证记录
 
-- 类型检查：`pnpm --dir backend typecheck` 已通过。
-- Mock 回归：`pnpm --dir backend test:openai-anthropic-bridge-mock` 已通过，覆盖 `image_generation` 无 provider guidance、JSON 成功路径、completed-only SSE 成功路径、provider partial image SSE 成功路径、provider `moderation_blocked` failed response、`action=edit` guidance、`input_image_mask` guidance、历史 `image_generation_call` 复用 guidance、provider 非 JSON / invalid response、provider 超大响应体和 provider timeout。
+- 类型检查：2026-06-25 `pnpm --dir backend typecheck` 已通过。
+- Mock 回归：2026-06-25 `pnpm --dir backend test:openai-anthropic-bridge-mock` 已通过，覆盖 `image_generation` 无 provider guidance、Images provider JSON 成功路径、completed-only SSE 成功路径、Images provider partial image SSE 成功路径、Responses provider JSON / partial SSE 成功路径、provider `moderation_blocked` failed response、`action=edit` guidance、`input_image_mask` guidance、历史 `image_generation_call` 复用 guidance、provider 非 JSON / invalid response、provider 超大响应体和 provider timeout。
 - 审计回归：`pnpm --dir backend test:gateway-audit-payload-storage` 已通过，覆盖图像流 `partial_image_b64` 和非流式 `image_generation_call.result` 审计正文省略。
 - 权限回归：`pnpm --dir backend test:api-key-image-permission` 已通过，覆盖图像权限默认禁用、auto `image_generation` 工具降级、强制图像工具拒绝和开启后放行。
-- 真实联调：已执行 OpenAI Images API 兼容 provider 低成本探针；当前真实账户调用 `https://vsllm.com/v1/images/generations` 返回 401 `invalid_api_key`，未返回 `data[0].b64_json`，因此没有继续跑网关 image_generation 真实 provider E2E。
+- 真实联调：已执行 OpenAI Images API 兼容 provider 低成本探针；当前真实账户调用 `https://vsllm.com/v1/images/generations` 返回 401 `invalid_api_key`，未返回 `data[0].b64_json`。同一账户调用 `https://vsllm.com/v1/responses` 时，`gpt-image-2-chat` 和 `gpt-5.5` 均能返回 `image_generation_call.result`。2026-06-25 已用 `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER=1` 和 `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER_STREAM=1` 跑通真实网关 E2E：`claude-sonnet-4-6` 作为 Anthropic 主上游，`gpt-image-2-chat` 作为 Responses provider，JSON 和 SSE 图像结果均通过。
 - 凭据检查：已用用户提供真实 key 的短前缀扫描 `backend`、`frontend`、`docs`、`package.json`、`pnpm-lock.yaml`，未命中；计划文档不记录真实前缀。
-- 未验证项：需要可用的 OpenAI Images API 兼容 provider endpoint / key 后复测真实 provider E2E，包括真实 partial image streaming；当前账户 Images API 返回 401，不能作为结论。
+- 未验证项：需要可用的 OpenAI Images API 兼容 provider endpoint / key 后复测 Images provider 真实 E2E，包括真实 partial image streaming；当前账户 Images API 返回 401，不能作为 Images provider 成功结论。Responses provider 已完成真实 JSON / SSE 网关 E2E。
 
 ## 风险与注意事项
 

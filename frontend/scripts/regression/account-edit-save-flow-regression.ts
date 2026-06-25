@@ -162,7 +162,13 @@ function assertApiKeyDraftActivationPayload(): void {
     clientCompatibility: 'codex_responses',
     supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
     supportedModels: ['gpt-5.5'],
-    modelMappings: [{ sourceModel: 'gpt-5.5', upstreamModel: 'gpt-5.5-chat-latest', enabled: true }],
+    modelMappings: [{
+      sourceModel: 'claude-sonnet-4-6',
+      sourceEndpointFamily: 'messages',
+      upstreamModel: 'gpt-5.5-chat-latest',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }],
     tags: ['回归'],
     proxyProfileId: undefined,
     availabilitySchedule: { enabled: false, mode: 'weekly', timezone: 'Asia/Shanghai', weekly: [] },
@@ -179,6 +185,20 @@ function assertApiKeyDraftActivationPayload(): void {
   const draftPayload = buildAccountDraftTestPayload(input)
   assert.equal(savePayload.clientCompatibility, 'codex_responses', '账号保存 payload 必须显式提交账号级客户端兼容字段')
   assert.equal(draftPayload.clientCompatibility, 'codex_responses', '草稿测试账号 payload 必须显式提交账号级客户端兼容字段')
+  assert.deepEqual(savePayload.modelMappings, [{
+    sourceModel: 'claude-sonnet-4-6',
+    sourceEndpointFamily: 'messages',
+    upstreamModel: 'gpt-5.5-chat-latest',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }], '账号保存 payload 应保留 Messages -> Chat Completions 协议映射')
+  assert.deepEqual(draftPayload.modelMappings, [{
+    sourceModel: 'claude-sonnet-4-6',
+    sourceEndpointFamily: 'messages',
+    upstreamModel: 'gpt-5.5-chat-latest',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }], '草稿测试 payload 应保留 Messages -> Chat Completions 协议映射')
   const activatedPayload = accountCreatePayloadWithActivationTest(savePayload, {
     taskId: 'accttest_api_key_activation',
     account: draftPayload

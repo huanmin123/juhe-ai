@@ -198,6 +198,9 @@ function validateAnthropicMessagesChatBridgeBody(
   if (unsupportedFields.length > 0) {
     throw anthropicMessagesGuidance(req, model, `当前${providerLabel(providerName)} Chat Completions 上游不支持 Anthropic Messages 的 ${unsupportedFields.join('、')} 字段。请客户端改用真实支持这些能力的上游，或在本地 agent / MCP 中提供对应能力后再发起请求。`, 'unsupported_anthropic_messages_chat_bridge_fields')
   }
+  if (hasAnthropicMessagesCacheControl(body)) {
+    throw anthropicMessagesGuidance(req, model, `当前${providerLabel(providerName)} Chat Completions 上游不能保真承载 Anthropic cache_control。请客户端改用支持 prompt caching 的 Anthropic Messages 上游，或移除 cache_control 后重试。`, 'unsupported_anthropic_messages_cache_control')
+  }
 }
 
 function anthropicMessagesBodyToChatCompletionsBody(
@@ -511,7 +514,13 @@ async function * transformChatCompletionsJsonToAnthropicMessagesJson(
   body: AsyncIterable<Uint8Array>,
   fallbackModel: string
 ): AsyncIterable<Uint8Array> {
-  const parsed = await readJsonBody(body)
+  let parsed: unknown
+  try {
+    parsed = await readJsonBody(body)
+  } catch (error) {
+    yield Buffer.from(JSON.stringify(anthropicChatBridgeResponseErrorJson(error)), 'utf8')
+    return
+  }
   const message = chatCompletionJsonToAnthropicMessage(parsed, fallbackModel)
   yield Buffer.from(JSON.stringify(message), 'utf8')
 }
@@ -536,6 +545,9 @@ function chatCompletionJsonToAnthropicMessage(value: unknown, fallbackModel: str
 function chatMessageToAnthropicContentBlocks(message: JsonRecord): JsonRecord[] {
   const output: JsonRecord[] = []
   const text = chatMessageTextContent(message.content)
+    || stringValue(message.reasoning_content)
+    || stringValue(message.refusal)
+    || ''
   if (text) output.push({ type: 'text', text })
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
   for (const item of toolCalls) {
@@ -577,7 +589,10 @@ async function * transformChatCompletionsSseToAnthropicMessagesSse(
     }
   }
   if (!state.completed && !state.failed) {
-    for (const output of failAnthropicStream(state, '上游 Chat Completions SSE 在 message_stop 前中断', 'upstream_stream_interrupted')) {
+    const outputs = state.stopReason
+      ? completeAnthropicStream(state)
+      : failAnthropicStream(state, '上游 Chat Completions SSE 在 message_stop 前中断', 'upstream_stream_interrupted')
+    for (const output of outputs) {
       yield Buffer.from(output, 'utf8')
     }
   }
@@ -641,7 +656,6 @@ function processChatCompletionsSseEvent(state: AnthropicChatStreamState, rawEven
     const finishReason = stringValue(choice.finish_reason)
     if (finishReason) {
       state.stopReason = chatFinishReasonToAnthropicStopReason(finishReason)
-      output.push(...completeAnthropicStream(state))
     }
   }
   return output
@@ -852,6 +866,25 @@ function chatMessageTextContent(value: unknown): string {
   }).join('')
 }
 
+function hasAnthropicMessagesCacheControl(body: JsonRecord): boolean {
+  if (contentBlocksHaveCacheControl(body.system)) return true
+  if (Array.isArray(body.tools) && body.tools.some((item) => objectValue(item)?.cache_control !== undefined)) return true
+  if (!Array.isArray(body.messages)) return false
+  return body.messages.some((item) => {
+    const message = objectValue(item)
+    return message?.cache_control !== undefined || contentBlocksHaveCacheControl(message?.content)
+  })
+}
+
+function contentBlocksHaveCacheControl(value: unknown): boolean {
+  if (!Array.isArray(value)) return false
+  return value.some((item) => {
+    const block = objectValue(item)
+    if (!block) return false
+    return block.cache_control !== undefined || contentBlocksHaveCacheControl(block.content)
+  })
+}
+
 function anthropicContentText(value: unknown): string {
   if (typeof value === 'string') return value
   if (!Array.isArray(value)) return ''
@@ -938,6 +971,20 @@ async function readJsonBody(body: AsyncIterable<Uint8Array>): Promise<unknown> {
   }
   const text = Buffer.concat(chunks).toString('utf8')
   return text.trim() ? JSON.parse(text) as unknown : {}
+}
+
+function anthropicChatBridgeResponseErrorJson(error: unknown): JsonRecord {
+  const tooLarge = error instanceof Error && error.message === 'anthropic_chat_bridge_response_too_large'
+  return {
+    type: 'error',
+    error: {
+      type: 'api_error',
+      code: tooLarge ? 'upstream_chat_completions_response_too_large' : 'upstream_chat_completions_invalid_json',
+      message: tooLarge
+        ? '上游 Chat Completions 响应过大，无法转换为 Anthropic Messages 响应'
+        : '上游 Chat Completions 返回了无法转换为 Anthropic Messages 响应的 JSON'
+    }
+  }
 }
 
 function takeCompleteSseEvents(input: string): { events: string[]; rest: string } {

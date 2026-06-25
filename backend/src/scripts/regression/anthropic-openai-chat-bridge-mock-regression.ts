@@ -13,8 +13,11 @@ type JsonRecord = Record<string, unknown>
 async function main(): Promise<void> {
   await testAnthropicMessagesRequestBodyToChat()
   await testChatJsonResponseToAnthropicMessage()
+  await testChatJsonRefusalToAnthropicText()
+  await testInvalidChatJsonResponseToAnthropicError()
   await testChatSseResponseToAnthropicMessagesSse()
   await testUnsupportedAnthropicThinkingGuidance()
+  await testUnsupportedAnthropicCacheControlGuidance()
   await testChatSseErrorToAnthropicErrorEvent()
   console.log('anthropic-openai-chat-bridge mock regression passed')
 }
@@ -130,12 +133,55 @@ async function testChatJsonResponseToAnthropicMessage(): Promise<void> {
   assert.deepEqual(content[1]?.input, { q: 'x' })
 }
 
+async function testChatJsonRefusalToAnthropicText(): Promise<void> {
+  const req = fakeRequest('/v1/messages', { model: 'claude-sonnet-4-6', messages: [], stream: false })
+  const response = transformAnthropicMessagesChatBridgeUpstreamResponse(req, {
+    status: 200,
+    ok: true,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: asyncChunks([JSON.stringify({
+      id: 'chatcmpl_refusal',
+      object: 'chat.completion',
+      created: 1,
+      model: 'glm-5.2',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: null,
+          refusal: '不能协助该请求。'
+        },
+        finish_reason: 'content_filter'
+      }],
+      usage: { prompt_tokens: 7, completion_tokens: 2 }
+    })])
+  }, { enabled: true, model: 'glm-5.2' })
+  const parsed = JSON.parse(Buffer.concat(await collect(response.body!)).toString('utf8')) as JsonRecord
+  assert.equal(parsed.stop_reason, 'refusal')
+  const content = parsed.content as JsonRecord[]
+  assert.deepEqual(content[0], { type: 'text', text: '不能协助该请求。' })
+}
+
+async function testInvalidChatJsonResponseToAnthropicError(): Promise<void> {
+  const req = fakeRequest('/v1/messages', { model: 'claude-sonnet-4-6', messages: [], stream: false })
+  const response = transformAnthropicMessagesChatBridgeUpstreamResponse(req, {
+    status: 200,
+    ok: true,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: asyncChunks(['{not-json'])
+  }, { enabled: true, model: 'glm-5.2' })
+  const parsed = JSON.parse(Buffer.concat(await collect(response.body!)).toString('utf8')) as JsonRecord
+  assert.equal(parsed.type, 'error')
+  assert.equal((parsed.error as JsonRecord).code, 'upstream_chat_completions_invalid_json')
+}
+
 async function testChatSseResponseToAnthropicMessagesSse(): Promise<void> {
   const req = fakeRequest('/v1/messages', { model: 'claude-sonnet-4-6', messages: [], stream: true })
   const upstream = [
     chatSse({ id: 'chatcmpl_sse', object: 'chat.completion.chunk', created: 1, model: 'glm-5.2', choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }),
     chatSse({ id: 'chatcmpl_sse', object: 'chat.completion.chunk', created: 1, model: 'glm-5.2', choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: null }] }),
-    chatSse({ id: 'chatcmpl_sse', object: 'chat.completion.chunk', created: 1, model: 'glm-5.2', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 4, completion_tokens: 1 } }),
+    chatSse({ id: 'chatcmpl_sse', object: 'chat.completion.chunk', created: 1, model: 'glm-5.2', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    chatSse({ id: 'chatcmpl_sse', object: 'chat.completion.chunk', created: 1, model: 'glm-5.2', choices: [], usage: { prompt_tokens: 4, completion_tokens: 1 } }),
     'data: [DONE]\n\n'
   ].join('')
   const response = transformAnthropicMessagesChatBridgeUpstreamResponse(req, {
@@ -151,6 +197,7 @@ async function testChatSseResponseToAnthropicMessagesSse(): Promise<void> {
   assert.match(text, /event: content_block_stop/)
   assert.match(text, /event: message_delta/)
   assert.match(text, /"stop_reason":"end_turn"/)
+  assert.match(text, /"usage":\{"output_tokens":1\}/)
   assert.match(text, /event: message_stop/)
   assert.doesNotMatch(text, /\[DONE\]/)
 }
@@ -170,6 +217,27 @@ async function testUnsupportedAnthropicThinkingGuidance(): Promise<void> {
       assert.equal(error.stream, false)
       assert.equal(error.code, 'unsupported_anthropic_messages_chat_bridge_fields')
       assert.match(error.message, /本地 agent \/ MCP|真实支持/)
+      return true
+    }
+  )
+}
+
+async function testUnsupportedAnthropicCacheControlGuidance(): Promise<void> {
+  const req = fakeRequest('/v1/messages', {
+    model: 'claude-sonnet-4-6',
+    messages: [{
+      role: 'user',
+      content: [{ type: 'text', text: 'cache me', cache_control: { type: 'ephemeral' } }]
+    }],
+    stream: false
+  })
+  await assert.rejects(
+    () => buildAnthropicMessagesChatBridgeBody(req, { defaultModel: 'glm-5.2', guidanceProviderName: 'GLM' }),
+    (error) => {
+      assert.ok(error instanceof GatewayAgentGuidanceResponse)
+      assert.equal(error.protocol, 'messages')
+      assert.equal(error.code, 'unsupported_anthropic_messages_cache_control')
+      assert.match(error.message, /cache_control|prompt caching/)
       return true
     }
   )

@@ -20,6 +20,12 @@ const upstreamBaseUrl = (process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_BASE_URL 
 const upstreamModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_MODEL ?? 'claude-sonnet-4-6'
 const sourceModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_SOURCE_MODEL ?? 'gpt-5.5'
 const realE2ERequestTimeoutMs = 45_000
+const runImageProviderE2E = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER === '1'
+const runImageProviderStreamE2E = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER_STREAM === '1'
+const imageProviderBaseUrl = (process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_IMAGE_PROVIDER_BASE_URL ?? upstreamBaseUrl).replace(/\/+$/, '')
+const imageProviderEndpoint = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_IMAGE_PROVIDER_ENDPOINT ?? `${imageProviderBaseUrl}/v1/responses`
+const imageProviderModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_IMAGE_PROVIDER_MODEL ?? 'gpt-image-2-chat'
+const imageProviderTimeoutMs = Number(process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_IMAGE_PROVIDER_TIMEOUT_MS ?? '180000')
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-anthropic-bridge-real-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'openai-anthropic-bridge-real.sqlite3')
@@ -140,14 +146,25 @@ try {
       await optionalCheck('responses_file_data_text', () => assertResponsesFileDataText(baseUrl, localKey.key)),
       await optionalCheck('responses_thinking', () => assertResponsesThinking(baseUrl, localKey.key)),
       await optionalCheck('responses_file_search_local', () => assertResponsesFileSearchLocal(baseUrl, localKey.key)),
+      await optionalCheck('responses_tool_search_namespace', () => assertResponsesToolSearchNamespace(baseUrl, localKey.key)),
       await optionalCheck('responses_compact', () => assertResponsesCompact(baseUrl, localKey.key))
     ]
+    if (runImageProviderE2E) {
+      configureRealResponsesImageGenerationProvider()
+      optionalChecks.push(await optionalCheck('responses_image_generation_provider', () => assertResponsesImageGenerationProvider(baseUrl, localKey.key)))
+      if (runImageProviderStreamE2E) {
+        optionalChecks.push(await optionalCheck('responses_image_generation_provider_sse', () => assertResponsesImageGenerationProviderSse(baseUrl, localKey.key)))
+      }
+    }
 
     console.log(JSON.stringify({
       ok: true,
       upstreamBaseUrl,
       upstreamModel,
       sourceModel,
+      imageProvider: runImageProviderE2E
+        ? { api: 'responses', endpoint: imageProviderEndpoint, model: imageProviderModel }
+        : undefined,
       checks: [
         'chat_json',
         'chat_sse',
@@ -169,6 +186,15 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function configureRealResponsesImageGenerationProvider(): void {
+  runtimeConfig.imageGenerationProvider.endpoint = imageProviderEndpoint
+  runtimeConfig.imageGenerationProvider.apiKey = apiKey
+  runtimeConfig.imageGenerationProvider.api = 'responses'
+  runtimeConfig.imageGenerationProvider.model = imageProviderModel
+  runtimeConfig.imageGenerationProvider.timeoutMs = Math.min(Math.max(Math.trunc(imageProviderTimeoutMs), 1000), 300000)
+  runtimeConfig.imageGenerationProvider.maxBodyBytes = 64 * 1024 * 1024
 }
 
 async function assertChatJson(baseUrl: string, localApiKey: string): Promise<void> {
@@ -254,6 +280,69 @@ async function assertResponsesSse(baseUrl: string, localApiKey: string): Promise
   assert.equal(response.status, 200, `真实 Responses SSE 桥接应成功，实际 HTTP ${response.status}: ${text.slice(0, 500)}`)
   assert.match(text, /event: response\.created/)
   assert.match(text, /event: response\.completed/)
+}
+
+async function assertResponsesImageGenerationProvider(baseUrl: string, localApiKey: string): Promise<void> {
+  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: sourceModel,
+      input: 'Generate a simple flat icon of a red square on a white background.',
+      tools: [{ type: 'image_generation', action: 'generate', size: '1024x1024', quality: 'low', output_format: 'png' }],
+      tool_choice: { type: 'image_generation' },
+      max_output_tokens: 256,
+      stream: false
+    })
+  }, Math.min(Math.max(Math.trunc(imageProviderTimeoutMs), 1000), 300000))
+  const text = await response.text()
+  assert.equal(response.status, 200, `真实 Responses image_generation provider E2E 应成功，HTTP ${response.status}: ${text.slice(0, 500)}`)
+  const body = JSON.parse(text) as {
+    object?: string
+    status?: string
+    output?: Array<{ type?: string; result?: string; revised_prompt?: string }>
+    output_text?: string
+  }
+  assert.equal(body.object, 'response')
+  assert.equal(body.status, 'completed')
+  const imageItem = body.output?.find((item) => item.type === 'image_generation_call')
+  assert(imageItem, `真实 Responses image_generation provider E2E 应返回 image_generation_call: ${text.slice(0, 500)}`)
+  assert((imageItem.result ?? '').length > 1000, '真实 image_generation_call.result 应包含非空 base64 图片')
+  assert.match(imageItem.result ?? '', /^[A-Za-z0-9+/]+={0,2}$/)
+  assert((imageItem.revised_prompt ?? '').length > 0, '真实 image_generation_call 应保留 revised_prompt')
+  assert.equal(body.output_text, '', '真实 image_generation 成功时不应把 revised prompt 当 output_text 暴露')
+}
+
+async function assertResponsesImageGenerationProviderSse(baseUrl: string, localApiKey: string): Promise<void> {
+  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: sourceModel,
+      input: 'Generate a simple flat icon of a blue circle on a white background.',
+      tools: [{ type: 'image_generation', action: 'generate', size: '1024x1024', quality: 'low', output_format: 'png', partial_images: 1 }],
+      tool_choice: { type: 'image_generation' },
+      max_output_tokens: 256,
+      stream: true
+    })
+  }, Math.min(Math.max(Math.trunc(imageProviderTimeoutMs), 1000), 300000))
+  const text = await response.text()
+  assert.equal(response.status, 200, `真实 Responses image_generation provider SSE E2E 应成功，HTTP ${response.status}: ${text.slice(0, 500)}`)
+  assert.match(text, /event: response\.created/)
+  assert.match(text, /event: response\.output_item\.added/)
+  assert.match(text, /event: response\.image_generation_call\.completed/)
+  assert.match(text, /event: response\.output_item\.done/)
+  assert.match(text, /event: response\.completed/)
+  assert.match(text, /"type":"image_generation_call"/)
+  assert.match(text, /"result":"[A-Za-z0-9+/]+={0,2}"/)
+  assert.doesNotMatch(text, /response\.output_text\.delta/, '真实 image_generation provider SSE 不应把 revised prompt 当文本增量输出')
 }
 
 async function assertResponsesCompact(baseUrl: string, localApiKey: string): Promise<void> {
@@ -590,6 +679,52 @@ async function assertResponsesFileSearchLocal(baseUrl: string, localApiKey: stri
   assert((body.output_text ?? '').length > 0, '真实 Responses file_search 应返回非空 output_text')
 }
 
+async function assertResponsesToolSearchNamespace(baseUrl: string, localApiKey: string): Promise<void> {
+  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: sourceModel,
+      input: 'Call the CRM tool to list open orders for customer CUST-12345. Do not answer in text.',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'crm',
+          description: 'CRM tools for customer lookup and order management.',
+          tools: [{
+            type: 'function',
+            name: 'list_open_orders',
+            description: 'List open orders for a customer ID.',
+            defer_loading: true,
+            parameters: {
+              type: 'object',
+              properties: { customer_id: { type: 'string' } },
+              required: ['customer_id'],
+              additionalProperties: false
+            }
+          }]
+        },
+        { type: 'tool_search' }
+      ],
+      tool_choice: { type: 'function', name: 'list_open_orders', namespace: 'crm' },
+      max_output_tokens: 96,
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `真实 Responses tool_search namespace 桥接失败，HTTP ${response.status}: ${text.slice(0, 500)}`)
+  const body = JSON.parse(text) as {
+    output?: Array<{ type?: string; name?: string; namespace?: string; arguments?: string }>
+  }
+  const functionCall = body.output?.find((item) => item.type === 'function_call')
+  assert.equal(functionCall?.name, 'list_open_orders', `真实 Responses tool_search namespace 应恢复 function name: ${text.slice(0, 500)}`)
+  assert.equal(functionCall?.namespace, 'crm', `真实 Responses tool_search namespace 应恢复 namespace: ${text.slice(0, 500)}`)
+  assert.doesNotThrow(() => JSON.parse(functionCall?.arguments ?? '{}'), '真实 Responses tool_search namespace arguments 应为合法 JSON 字符串')
+}
+
 async function waitForOpenAICompatibleRealVectorStoreFileStatus(
   baseUrl: string,
   localApiKey: string,
@@ -646,9 +781,9 @@ async function optionalCheck(name: string, run: () => Promise<void>): Promise<st
   }
 }
 
-async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = realE2ERequestTimeoutMs): Promise<Response> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), realE2ERequestTimeoutMs)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     return await fetch(input, { ...init, signal: controller.signal })
   } finally {

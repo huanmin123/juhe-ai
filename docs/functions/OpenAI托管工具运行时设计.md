@@ -11,6 +11,8 @@ OpenAI 到 Anthropic Messages 的高兼容桥接已经把普通 function tools�
 
 这些能力不能靠字段映射解决。没有执行器时，当前网关返回 OpenAI 形态 agent guidance，并且不请求 Anthropic 上游。后续要做到客户端更无感，必须先补本地或上游原生运行时，再把协议事件、权限、审计和失败语义固定下来。
 
+其中 `tool_search` 需要单独拆开看：OpenAI hosted tool search 会由 OpenAI 服务端加载 deferred tool，并在 Responses 输出里产生 `tool_search_call` / `tool_search_output`，再产生最终 `function_call`。Anthropic Messages 没有这个 hosted loading 生命周期。网关只能在“工具清单已经随请求提供”的场景下做本地展开：把 `namespace` 下的 function 预先转换成 Anthropic client tools，并在回包时恢复 Responses `function_call.namespace`。这属于客户端工具调用兼容，不等价于 OpenAI hosted tool search 事件复刻。
+
 ## 2. 目标
 
 - 客户端仍按 OpenAI Chat / Responses 形态声明工具。
@@ -35,7 +37,8 @@ OpenAI 到 Anthropic Messages 的高兼容桥接已经把普通 function tools�
 | `computer` | Anthropic computer use 原生能力或本地 computer adapter | 受控浏览器 / 桌面自动化 adapter，需显式人工授权 | OpenAI 形态 guidance，不请求 Anthropic |
 | `mcp` | 网关 MCP proxy，按 server allowlist、auth 和 approval 执行 | Anthropic MCP connector，需 beta / profile / 账号能力声明 | OpenAI 形态 guidance，不请求 Anthropic |
 | Codex `shell` | 受限本地命令 worker | 无 | OpenAI 形态 guidance，不请求 Anthropic |
-| Codex `skills` / `tool_search` | 网关本地工具目录和只读检索 | 无 | OpenAI 形态 guidance，不请求 Anthropic |
+| Responses `tool_search` + `namespace` functions | 请求内工具清单本地展开为 Anthropic client tools，回包恢复 `namespace` | 完整 hosted search 事件只能由原生 Responses 或后续本地检索运行时承接 | 无可展开工具时 guidance，不请求 Anthropic |
+| Codex `skills` / 本地 `tool_search` | 网关本地工具目录和只读检索 | 无 | OpenAI 形态 guidance，不请求 Anthropic |
 
 默认能力为 L4 guidance。只有配置、权限、执行器和 mock 回归都到位后，单项工具才能升级为 L2 / L3。
 
@@ -108,6 +111,19 @@ MCP 只允许访问 allowlist 中的 server：
 - 鼠标、键盘、导航和文件上传等动作必须按权限分级。
 - 默认禁止访问宿主桌面；首批更适合只接受受控浏览器环境。
 - 操作轨迹必须审计，图片 / 截图正文按图像 payload 省略策略处理。
+
+### 5.5 Tool Search / Namespace 本地展开
+
+OpenAI 官方 hosted tool search 支持把 function、namespace 或 MCP server 作为可搜索目录，模型决定加载 deferred tool 后会输出 `tool_search_call` 和 `tool_search_output`。Anthropic Messages 不能原生产生这两个 Responses item，因此 bridge 只实现安全的本地展开子集：
+
+- 仅适用于 Responses 入口。
+- 仅处理请求 `tools` 中已经声明的 `namespace` / `function`，不访问外部工具目录，不调用 MCP server，不执行本地命令。
+- 当请求包含 `{"type":"tool_search"}` 且同时包含 `namespace` 时，把 namespace 内的 function tool 展开成 Anthropic client tool。
+- Anthropic 工具名使用 `namespace__function` 形式并做字符清洗和去重，避免不同 namespace 下同名 function 冲突。
+- 回包时把 Anthropic `tool_use.name` 映射回 Responses `function_call.name`，并在有 namespace 时补 `function_call.namespace`。
+- 不输出伪造的 `tool_search_call` / `tool_search_output`。需要这些精确事件的客户端应直连原生 OpenAI Responses，或等待后续本地 tool search runtime。
+- `tool_choice.type=allowed_tools` 仍按展开后的函数集合过滤；强制指定 namespace function 时必须能映射到唯一 Anthropic 工具名。
+- `mcp`、远程 registry、权限化动态工具发现仍按 MCP Proxy / Runtime Registry 计划推进，不纳入本地展开。
 
 ## 6. 协议输出
 

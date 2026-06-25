@@ -41,6 +41,7 @@ sourceModel + sourceEndpointFamily=messages
 
 - `messages -> responses` 不支持，不保存、不路由、不合成 Responses。
 - Anthropic `top_k`、`thinking`、`mcp_servers`、`container`、`context_management` 没有 Chat Completions 等价语义，不伪造。
+- Anthropic `cache_control` 依赖原生 prompt caching 语义，Chat Completions 桥接不能静默丢弃；命中时返回 guidance，引导客户端移除或切换原生支持上游。
 - Anthropic server tool、web search、code execution、computer use、MCP 运行时不能靠字段转换实现。若客户端需要这些能力，应由客户端 agent 自行寻找本地 MCP / 工具执行器、切换到原生支持的上游，或移除该能力。
 - `document`、`audio`、未知 content block、未知 image source 不发送给 Chat 上游。
 - Chat 多候选 `n > 1` 不还原为多个 Anthropic message；Messages 语义只返回单条 assistant message。
@@ -87,6 +88,7 @@ sourceModel + sourceEndpointFamily=messages
 | `id` | `id` | 若缺失则生成 `msg_chat_bridge_*`。 |
 | `model` | `model` | 使用上游响应模型；缺失时回退映射目标模型。 |
 | `choices[0].message.content` | `content[].text` | 空字符串也保留为空文本块。 |
+| `choices[0].message.refusal` | `content[].text` + `stop_reason=refusal` | 当 Chat 上游用 refusal 字段承载拒答文本时转为 Anthropic 文本块。 |
 | `choices[0].message.tool_calls[]` | `content[].tool_use` | `function.arguments` 解析为对象；无法解析时放入 `_raw`。 |
 | `finish_reason=stop` | `stop_reason=end_turn` | 标准结束。 |
 | `finish_reason=length` | `stop_reason=max_tokens` | 输出上限。 |
@@ -102,17 +104,18 @@ Chat SSE 转 Anthropic SSE 的顺序固定为：
 1. `message_start`
 2. 首次文本 delta 时发 `content_block_start`，随后发 `content_block_delta` / `text_delta`
 3. 首次 tool call delta 时发 `content_block_start`，参数增量发 `content_block_delta` / `input_json_delta`
-4. Chat finish chunk 到达时关闭所有 content block，发送 `message_delta`
-5. 最后发送 `message_stop`
+4. Chat finish chunk 到达时记录 `stop_reason`，继续接收可能位于尾部的 `stream_options.include_usage` usage chunk
+5. Chat `[DONE]` 或上游正常结束时关闭所有 content block，发送 `message_delta`
+6. 最后发送 `message_stop`
 
-Chat `[DONE]` 不透传给 Anthropic 客户端；它只作为上游流结束信号。如果上游 SSE error 在尚未完成时出现，转换为 Anthropic `event: error`，不伪装成成功 message。
+Chat `[DONE]` 不透传给 Anthropic 客户端；它只作为上游流结束信号。如果上游 SSE error 在尚未完成时出现，转换为 Anthropic `event: error`，不伪装成成功 message。非流式上游如果返回非法 JSON 或过大 body，桥接层返回稳定 Anthropic error JSON，不让 body 转换异常扩散为网关 500。
 
 ## 不支持能力的返回策略
 
 不支持的上游能力缺口不能变成 500，也不能假装执行成功。桥接层按两类处理：
 
 - 请求结构非法、JSON 无效、必填字段缺失、role 顺序不合法：返回下游协议错误。
-- 上游不具备等价能力，例如 `thinking`、`mcp_servers`、server tool、未知 content block：返回 Anthropic message / stream 形态的正常 guidance，文本说明当前上游不支持该能力，并引导客户端 agent 改用本地工具执行器、MCP 或切换支持该能力的上游。
+- 上游不具备等价能力，例如 `thinking`、`cache_control`、`mcp_servers`、server tool、未知 content block：返回 Anthropic message / stream 形态的正常 guidance，文本说明当前上游不支持该能力，并引导客户端 agent 改用本地工具执行器、MCP 或切换支持该能力的上游。
 
 guidance 文本不写死具体客户端名称，只描述能力缺口和可执行下一步，便于任意 agent 消费。
 
@@ -133,7 +136,7 @@ guidance 文本不写死具体客户端名称，只描述能力缺口和可执�
 - SSE 文本流：Chat chunks 转 `message_start/content_block_delta/message_delta/message_stop`。
 - 工具调用：Anthropic `tools/tool_choice/tool_result` 与 Chat `tools/tool_calls/tool` 互转。
 - 图片输入：Anthropic base64 / URL image 转 Chat `image_url`。
-- error/guidance：`thinking`、`top_k`、`mcp_servers`、未知 content block 返回受控 guidance 或协议错误，不返回 500。
+- error/guidance：`thinking`、`cache_control`、`top_k`、`mcp_servers`、未知 content block、非法 Chat JSON body 返回受控 guidance 或协议错误，不返回 500。
 - 路由与能力：OpenAI-compatible、DeepSeek、GLM、GPT Chat 上游在显式映射下可承接 `/v1/messages`；无映射时仍不误接。
 - 回归：既有 `responses -> chat_completions`、`chat_completions -> responses`、`chat_completions|responses -> messages` 不受影响。
 
@@ -141,3 +144,4 @@ guidance 文本不写死具体客户端名称，只描述能力缺口和可执�
 
 - `pnpm --dir backend test:anthropic-openai-chat-bridge-mock`：验证 bridge helper 层的请求 / 响应 / SSE / guidance 转换。
 - `pnpm --dir backend test:anthropic-openai-chat-gateway-mock`：验证 OpenAI-compatible、GPT、DeepSeek、GLM 四类 OpenAI 协议账号通过显式映射承接 `/v1/messages`，并检查上游路径、headers、usage / audit 和 guidance。
+- `pnpm --dir backend test:anthropic-openai-chat-real`：使用真实 OpenAI-compatible 上游抽样验证 Messages JSON、Messages SSE、强制 function tool、unsupported `thinking` guidance、usage 和 audit；图片真实用例需确认上游模型支持后通过 `JUHE_REAL_ANTHROPIC_OPENAI_CHAT_RUN_IMAGE=1` 单独开启。

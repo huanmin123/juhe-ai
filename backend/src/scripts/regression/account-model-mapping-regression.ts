@@ -154,15 +154,16 @@ try {
     outputUsdPer1M: 9,
     actorSystemAccountId: ownerAccess.systemAccountId
   })
-  saveCustomProviderModel({
+  const anthropicMessagesModel = saveCustomProviderModel({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     model: anthropicMessagesSourceModel,
     scope: 'global',
-    supportedApiProtocols: ['messages'],
+    supportedApiProtocols: ['messages', 'message_token_counting'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
     actorSystemAccountId: ownerAccess.systemAccountId
   })
+  assert.deepEqual(anthropicMessagesModel.supportedApiProtocols, ['messages', 'message_token_counting'], 'Anthropic 自定义模型协议白名单应保留 messages 与 message_token_counting')
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: chatCompletionsUpstreamModel,

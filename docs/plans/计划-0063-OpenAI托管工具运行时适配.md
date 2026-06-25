@@ -5,7 +5,7 @@
 - 编号：PLAN-0063
 - 状态：进行中
 - 创建时间：2026-06-24
-- 更新时间：2026-06-24
+- 更新时间：2026-06-25
 - 需求来源：用户对话
 - 执行者：AI
 - 关联模块：后端 / 网关 / Anthropic bridge / OpenAI hosted tools / MCP / code execution / computer use / 审计 / 文档 / 验证
@@ -24,6 +24,7 @@
 - [x] 记录当前已完成的 guidance mock 覆盖：Responses `computer` / `code_interpreter` / `mcp`、Chat `code_interpreter` 均不请求 Anthropic。
 - [x] 定义后续真实运行时的权限、沙箱、allowlist、审计和 mock 优先验收门槛。
 - [x] 设计 Runtime Registry 和配置开关；首批只允许 `guidance` / `reject`，不允许未实现执行器的 local/native 模式。
+- [x] 实现 Responses `tool_search` + `namespace` function 本地展开，并补 JSON / SSE mock 回归。
 - [ ] 实现 MCP proxy 首批 allowlist + mock server。
 - [ ] 实现 code interpreter 受限沙箱首批 mock runtime。
 - [ ] 设计 computer adapter 的受控浏览器 / 屏幕状态协议。
@@ -59,6 +60,7 @@
 - [x] 新增 `docs/functions/OpenAI托管工具运行时设计.md`。
 - [x] 更新文档索引和高兼容矩阵。
 - [x] Runtime Registry 设计落地到后端类型和配置。
+- [x] Responses `tool_search` + `namespace` 本地展开：展开请求内 function、恢复 Responses `namespace`、不伪造 hosted search item。
 - [ ] MCP proxy：server allowlist、auth、approval mock、tool result 映射和审计。
 - [ ] Code interpreter：受限 worker、临时目录、超时、输出上限、stderr 和文件产物策略。
 - [ ] Computer adapter：受控浏览器状态、动作协议、截图省略和拒绝策略。
@@ -71,6 +73,7 @@
 | Mock 回归 | 当前 guidance | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 无执行器时返回 OpenAI 形态 guidance，且不请求 Anthropic | 已通过 | 已覆盖 Responses `computer` / `code_interpreter` / `mcp` 和 Chat `code_interpreter` |
 | Mock 回归 | Runtime Registry reject | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 显式配置 `code_interpreter=reject` 时返回本地 400，且不请求 Anthropic | 已通过 | 已覆盖临时切换 `runtimeConfig.hostedToolRuntimes.codeInterpreter='reject'` 后 Responses 本地拒绝 |
 | 设计检查 | 运行时边界 | 文档审查 | 不在主 Web 进程执行代码；MCP 需要 allowlist；computer 不能文本伪造 | 已完成 | 已写入运行时设计 |
+| Mock 回归 | Responses tool_search namespace 本地展开 | `pnpm --dir backend test:openai-anthropic-bridge-mock` | JSON / SSE 都能把 namespace function 展开给 Anthropic，并把 tool_use 恢复为 Responses `function_call.namespace` | 已通过 | 2026-06-25 已覆盖 JSON 强制 namespace function、SSE added / done namespace 恢复、Anthropic 展开工具名 `namespace__function` |
 | Mock 回归 | MCP proxy | 待实现 | allowlist / auth / approval / 输出超限均可诊断 | 未开始 | 待 Runtime Registry |
 | Mock 回归 | Code interpreter | 待实现 | 成功、stderr、超时、输出超限、网络禁止均可诊断 | 未开始 | 待沙箱 worker |
 | Mock 回归 | Computer adapter | 待实现 | 动作成功、动作拒绝、截图省略、超时均可诊断 | 未开始 | 待 adapter 设计 |
@@ -83,6 +86,8 @@
 | 2026-06-24 | 进行中 | AI | 已确认剩余 hosted runtime 不能靠协议字段映射解决；创建 PLAN-0063，并新增运行时设计文档。 |
 | 2026-06-24 | 进行中 | AI | 当前 guidance mock 已覆盖 Responses `computer` / `code_interpreter` / `mcp` 和 Chat `code_interpreter`，真实运行时仍需 Runtime Registry、权限、沙箱、allowlist 和审计后才能启用。 |
 | 2026-06-24 | 进行中 | AI | 已落地 Runtime Registry 首批骨架和环境配置：`code_interpreter`、`computer`、`mcp`、`shell`、`skills`、`tool_search` 默认 `guidance`，可显式切到 `reject`；mock 覆盖 reject 不上游。 |
+| 2026-06-25 | 进行中 | AI | 依据 OpenAI Responses tool_search 官方形态，确定本轮只做请求内 `namespace` / function 本地展开：不伪造 `tool_search_call` / `tool_search_output`，回包恢复 `function_call.namespace`。 |
+| 2026-06-25 | 进行中 | AI | 已实现 Responses `tool_search` + `namespace` 本地展开：请求内 namespace function 展开为 Anthropic client tool，`tool_choice` 映射为展开名，Responses JSON / SSE 回包恢复 `namespace`。 |
 
 ## 决策记录
 
@@ -93,20 +98,24 @@
 | 2026-06-24 | MCP 必须 allowlist + approval | remote MCP 可访问外部系统和敏感数据 | 未配置 allowlist 或 approval 时 guidance / 拒绝 |
 | 2026-06-24 | computer 首批只考虑受控 adapter | 宿主桌面暴露风险过高，纯文本模拟没有语义价值 | 首批优先受控浏览器或上游原生 computer use |
 | 2026-06-24 | Registry 首批只开放 `guidance` / `reject` | 真实 local/native 执行器尚未实现，开放 local/native 配置会让部署误以为工具可执行 | 后续每个 runtime 实现后再扩展对应模式枚举 |
+| 2026-06-25 | Responses `tool_search` 先做请求内 namespace function 本地展开 | OpenAI hosted search 的 `tool_search_call` / `tool_search_output` 是 OpenAI 服务端加载生命周期，Anthropic Messages 无等价事件；但请求内 function 工具可安全转为 Anthropic client tool | 客户端可收到标准 Responses `function_call.name` / `namespace`；需要完整 hosted search 事件时仍必须直连原生 Responses 或后续本地检索 runtime |
 
 ## 验收标准
 
 - [x] 运行时设计文档已创建并纳入索引。
 - [x] 当前无执行器 guidance mock 覆盖已记录。
 - [x] Runtime Registry 和配置开关完成。
+- [x] Responses `tool_search` / `namespace` 本地展开具备 JSON / SSE mock 回归。
 - [ ] MCP / code interpreter / computer 至少一个 runtime 具备 JSON / SSE mock 回归。
 - [ ] 每个启用 runtime 都有权限、审计、超时、输出大小和凭据扫描验证。
 
 ## 验证记录
 
-- 类型检查：2026-06-24 已复跑并通过 `pnpm --dir backend typecheck`。
-- Mock 回归：2026-06-24 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`，当前无执行器 guidance 覆盖 Responses `computer` / `code_interpreter` / `mcp` 和 Chat `code_interpreter`；Runtime Registry reject 覆盖 `code_interpreter=reject` 本地 400 且不请求 Anthropic。
-- 未验证项：MCP proxy、code interpreter 沙箱、computer adapter 真实运行时尚未实现；不得在生产配置中宣称可执行。
+- 类型检查：2026-06-25 已复跑并通过 `pnpm --dir backend typecheck`；2026-06-25 已复跑并通过 `pnpm --dir frontend typecheck`。
+- Mock 回归：2026-06-25 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`，当前无执行器 guidance 覆盖 Responses `computer` / `code_interpreter` / `mcp` 和 Chat `code_interpreter`；Runtime Registry reject 覆盖 `code_interpreter=reject` 本地 400 且不请求 Anthropic；Responses `tool_search` + `namespace` 本地展开覆盖 JSON / SSE。
+- 真实联调：2026-06-25 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-real`；真实上游 `https://vsllm.com`、模型 `claude-sonnet-4-6`、源模型 `gpt-5.5`，`responses_tool_search_namespace:passed`。
+- 凭据检查：2026-06-25 已扫描 `backend`、`frontend`、`docs`、`package.json`、`pnpm-lock.yaml` 中固定真实 key 前缀，无命中；`git diff --check` 无 whitespace error，仅有 LF/CRLF 提示。
+- 未验证项：MCP proxy、code interpreter 沙箱、computer adapter 真实运行时尚未实现；不得在生产配置中宣称可执行。Responses `tool_search` 仅验证请求内 namespace function 本地展开，不代表完整 OpenAI hosted `tool_search_call` / `tool_search_output` 生命周期。
 
 ## 风险与注意事项
 

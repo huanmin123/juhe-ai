@@ -71,6 +71,21 @@ function imageGenerationProviderRequestBody(prompt: string, tool: {
   moderation?: string
   background?: string
 }, options: { stream?: boolean } = {}): JsonRecord {
+  if (runtimeConfig.imageGenerationProvider.api === 'responses') {
+    return imageGenerationResponsesProviderRequestBody(prompt, tool, options)
+  }
+  return imageGenerationImagesProviderRequestBody(prompt, tool, options)
+}
+
+function imageGenerationImagesProviderRequestBody(prompt: string, tool: {
+  size?: string
+  quality?: string
+  outputFormat?: string
+  outputCompression?: number
+  partialImages?: number
+  moderation?: string
+  background?: string
+}, options: { stream?: boolean } = {}): JsonRecord {
   const body: JsonRecord = {
     model: runtimeConfig.imageGenerationProvider.model,
     prompt,
@@ -85,6 +100,50 @@ function imageGenerationProviderRequestBody(prompt: string, tool: {
   if (options.stream) {
     body.stream = true
     if (typeof tool.partialImages === 'number') body.partial_images = Math.max(0, Math.min(3, Math.trunc(tool.partialImages)))
+  }
+  return body
+}
+
+function imageGenerationResponsesProviderRequestBody(prompt: string, tool: {
+  size?: string
+  quality?: string
+  outputFormat?: string
+  outputCompression?: number
+  partialImages?: number
+  moderation?: string
+  background?: string
+}, options: { stream?: boolean } = {}): JsonRecord {
+  const body: JsonRecord = {
+    model: runtimeConfig.imageGenerationProvider.model,
+    input: prompt,
+    tools: [imageGenerationResponsesProviderTool(tool, options)],
+    tool_choice: { type: 'image_generation' }
+  }
+  if (options.stream) body.stream = true
+  return body
+}
+
+function imageGenerationResponsesProviderTool(tool: {
+  size?: string
+  quality?: string
+  outputFormat?: string
+  outputCompression?: number
+  partialImages?: number
+  moderation?: string
+  background?: string
+}, options: { stream?: boolean } = {}): JsonRecord {
+  const body: JsonRecord = {
+    type: 'image_generation',
+    action: 'generate'
+  }
+  setOptionalString(body, 'size', tool.size)
+  setOptionalString(body, 'quality', tool.quality)
+  setOptionalString(body, 'output_format', tool.outputFormat)
+  if (typeof tool.outputCompression === 'number') body.output_compression = tool.outputCompression
+  setOptionalString(body, 'moderation', tool.moderation)
+  setOptionalString(body, 'background', tool.background)
+  if (options.stream && typeof tool.partialImages === 'number') {
+    body.partial_images = Math.max(0, Math.min(3, Math.trunc(tool.partialImages)))
   }
   return body
 }
@@ -199,7 +258,7 @@ function imageGenerationProviderStreamEventFromSseFrame(
   const parsed = safeParseJson(parsedFrame.data)
   const record = isPlainObject(parsed) ? parsed : {}
   const eventType = parsedFrame.event ?? stringValue(record.type)
-  if (eventType === 'image_generation.partial_image') {
+  if (eventType === 'image_generation.partial_image' || eventType === 'response.image_generation_call.partial_image') {
     const imageBase64 = stringValue(record.b64_json) ?? stringValue(record.partial_image_b64)
     if (!imageBase64 || !looksLikeBase64(imageBase64)) {
       throw invalidProviderResponse('图像生成 provider partial image 响应缺少 b64_json')
@@ -212,14 +271,24 @@ function imageGenerationProviderStreamEventFromSseFrame(
       }
     }
   }
-  if (eventType === 'image_generation.completed') {
+  if (
+    eventType === 'image_generation.completed'
+    || eventType === 'response.image_generation_call.completed'
+    || eventType === 'response.completed'
+  ) {
     return {
       type: 'completed',
       result: imageGenerationResultFromProviderRecord(record, outputFormat)
     }
   }
-  if (eventType === 'error' || isPlainObject(record.error)) {
-    throw imageGenerationProviderErrorFromResponse({ status: 502 } as Response, objectValue(record.error) ?? record)
+  if (
+    eventType === 'error'
+    || eventType === 'response.failed'
+    || eventType === 'response.image_generation_call.failed'
+    || isPlainObject(record.error)
+  ) {
+    const response = objectValue(record.response)
+    throw imageGenerationProviderErrorFromResponse({ status: 502 } as Response, objectValue(record.error) ?? objectValue(response?.error) ?? record)
   }
   return undefined
 }
@@ -274,15 +343,28 @@ function imageGenerationDataItem(value: unknown): JsonRecord | undefined {
   return isPlainObject(first) ? first : undefined
 }
 
+function imageGenerationOutputItem(value: unknown): JsonRecord | undefined {
+  const record = isPlainObject(value) ? value : {}
+  const output = Array.isArray(record.output) ? record.output : []
+  return output.map(objectValue).find((item) => item?.type === 'image_generation_call')
+}
+
 function imageGenerationResultFromJson(value: unknown, outputFormat: string | undefined): OpenAIToAnthropicImageGenerationResult {
   return imageGenerationResultFromProviderRecord(objectValue(value) ?? {}, outputFormat)
 }
 
 function imageGenerationResultFromProviderRecord(record: JsonRecord, outputFormat: string | undefined): OpenAIToAnthropicImageGenerationResult {
   const first = imageGenerationDataItem(record)
+  const response = objectValue(record.response)
+  const item = objectValue(record.item)
+  const outputItem = imageGenerationOutputItem(record)
+    ?? imageGenerationOutputItem(response)
+    ?? (item?.type === 'image_generation_call' ? item : undefined)
   const imageBase64 = stringValue(record.b64_json)
     ?? stringValue(record.result)
     ?? stringValue(record.partial_image_b64)
+    ?? stringValue(item?.result)
+    ?? stringValue(outputItem?.result)
     ?? stringValue(first?.b64_json)
   if (!imageBase64 || !looksLikeBase64(imageBase64)) {
     throw invalidProviderResponse('图像生成 provider 响应缺少 data[0].b64_json')
@@ -291,6 +373,10 @@ function imageGenerationResultFromProviderRecord(record: JsonRecord, outputForma
     imageBase64,
     revisedPrompt: stringValue(record.revised_prompt)
       ?? stringValue(record.prompt)
+      ?? stringValue(item?.revised_prompt)
+      ?? stringValue(item?.prompt)
+      ?? stringValue(outputItem?.revised_prompt)
+      ?? stringValue(outputItem?.prompt)
       ?? stringValue(first?.revised_prompt)
       ?? stringValue(first?.prompt),
     outputFormat: stringValue(outputFormat)

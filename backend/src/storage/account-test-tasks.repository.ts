@@ -894,8 +894,8 @@ function accountModelMappingsValue(value: unknown): AccountSummary['modelMapping
   return output.length ? output : undefined
 }
 
-function accountModelMappingSourceEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | undefined {
-  return value === 'chat_completions' || value === 'responses' ? value : undefined
+function accountModelMappingSourceEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | 'messages' | undefined {
+  return value === 'chat_completions' || value === 'responses' || value === 'messages' ? value : undefined
 }
 
 function accountModelMappingUpstreamEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | 'messages' | undefined {
