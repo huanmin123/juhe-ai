@@ -69,8 +69,8 @@
 - [x] MCP proxy real 入口定义校验：重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、非 HTTPS `server_url`、`allowed_tools` / `require_approval` 形态错误、`authorization` 与 `headers.Authorization` 冲突均本地拒绝且不上游。
 - [x] MCP proxy real allowlist / executor 第一段：server allowlist 读取、真实 executor 接口落地、重复 label 和 server 标识冲突继续本地拒绝。
 - [x] MCP proxy real transport 第一段：Streamable HTTP JSON-RPC `initialize` / `notifications/initialized` / `tools/list` / `tools/call`、超时、输出上限和错误映射。
-- [x] MCP proxy JSON 免批模型驱动第一段：`require_approval=never` 或请求 `allowed_tools` 全部命中 `require_approval.never.tool_names` 时，`tools/list` 导入 Anthropic client tools，Anthropic `tool_use` 转 Responses `mcp_call` 并执行 MCP `tools/call`，同时保留本地完成摘要 `output_text`；默认 approval 返回本地 `mcp_approval_request` 且不上游、不调用 `tools/call`。
-- [ ] MCP proxy JSON 完整 tool loop：把 MCP `tools/call` 输出作为 Anthropic `tool_result` 回灌给同一上游，再生成最终 assistant answer。
+- [x] MCP proxy JSON 免批模型驱动工具循环：`require_approval=never` 或请求 `allowed_tools` 全部命中 `require_approval.never.tool_names` 时，`tools/list` 导入 Anthropic client tools，Anthropic `tool_use` 转 Responses `mcp_call` 并执行 MCP `tools/call`，再把 MCP 输出作为 Anthropic `tool_result` 回灌给同一上游生成最终 assistant answer；默认 approval 返回本地 `mcp_approval_request` 且不上游、不调用 `tools/call`。
+- [ ] MCP proxy JSON 多轮工具循环：第二轮 Anthropic 如果继续要求工具调用，按上限继续执行或受控返回需要后续调用的工具轨迹。
 - [ ] MCP proxy real transport 完整化：HTTP-SSE、重试、重定向审计和更完整的错误省略。
 - [ ] MCP proxy real approval：实现 approval request 持久化、跨 API Key / 分组边界校验、approve / reject / expired 状态流转。
 - [ ] Code interpreter：受限 worker、临时目录、超时、输出上限、stderr 和文件产物策略。
@@ -90,7 +90,7 @@
 | 设计检查 | MCP real proxy | 文档审查 | 真实 proxy 不混淆 remote MCP 和 OpenAI connector，明确 allowlist、auth、approval、transport、输出限制和审计边界 | 已完成 | 2026-06-25 已写入运行时设计；首批只承接 `server_url` 远程 MCP，`connector_id` 后置 |
 | Mock 回归 | MCP definition validation | `pnpm --dir backend test:openai-anthropic-bridge-mock` | MCP 工具定义错误本地 400，不进入 guidance、不请求 Anthropic | 已通过 | 2026-06-25 已覆盖重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、`authorization` 与 `headers.Authorization` 冲突 |
 | Mock 回归 | MCP local_runtime gate | `pnpm --dir backend test:openai-anthropic-bridge-mock` | `mcp=local_runtime` 但未配置 executor 时本地 503；`connector_id` 本地 400；均不请求 Anthropic | 已通过 | 2026-06-25 已覆盖未配置 executor 本地 503、`connector_id` 本地 400、authorization / prompt 不泄漏、零 Anthropic 上游命中 |
-| Mock 回归 | MCP real proxy mock server | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 本机 mock MCP server 覆盖 tools/list、tools/call、auth、approval、超时、输出超限和 JSON-RPC transport | 已通过 | 2026-06-25 已覆盖 allowlist 读取、authorization 仅入 allowlist server、JSON 免批路径一次 Anthropic 上游选择工具、默认 approval 本地 `mcp_approval_request` 且不上游不调用 `tools/call`、tools/list / tools/call、SSE 直返路径、输出截断 |
+| Mock 回归 | MCP real proxy mock server | `pnpm --dir backend test:openai-anthropic-bridge-mock` | 本机 mock MCP server 覆盖 tools/list、tools/call、auth、approval、超时、输出超限和 JSON-RPC transport | 已通过 | 2026-06-25 已覆盖 allowlist 读取、authorization 仅入 allowlist server、JSON 免批路径 Anthropic 选择工具 + MCP `tools/call` + Anthropic `tool_result` 回灌最终回答、默认 approval 本地 `mcp_approval_request` 且不上游不调用 `tools/call`、SSE 直返路径、输出截断 |
 | Mock 回归 | Code interpreter | 待实现 | 成功、stderr、超时、输出超限、网络禁止均可诊断 | 未开始 | 待沙箱 worker |
 | Mock 回归 | Computer adapter | 待实现 | 动作成功、动作拒绝、截图省略、超时均可诊断 | 未开始 | 待 adapter 设计 |
 | 安全检查 | 凭据与敏感输出 | 固定 key 前缀和工具输出扫描 | 不落真实 key、截图或大输出正文 | 待执行 | 每次实现后执行 |
@@ -112,7 +112,7 @@
 | 2026-06-25 | 进行中 | AI | 已补 MCP 入口定义校验骨架和 mock 回归：重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、凭据 header 冲突等错误本地 400，避免被 guidance 或 mock runtime 吞掉。 |
 | 2026-06-25 | 进行中 | AI | 已实现 MCP `local_runtime` 首段 gate：只用于 Responses MCP real proxy；`connector_id` 本地拒绝，未配置 executor 本地 503，避免误打 Anthropic 或远程 MCP。 |
 | 2026-06-25 | 进行中 | AI | 已实现 MCP real proxy allowlist / executor 第一段：本地 allowlist server、JSON-RPC `initialize` / `tools/list` / `tools/call`、authorization 白名单透传、`allowed_tools` 过滤、输出截断。 |
-| 2026-06-25 | 进行中 | AI | 已实现 MCP JSON 免批模型驱动第一段：非流式 Responses 在免批策略下先把 MCP 工具导入 Anthropic client tools，Anthropic `tool_use` 触发网关执行 `tools/call`，再返回 `mcp_list_tools` / `mcp_call` 和本地完成摘要；默认 approval 仍本地返回 `mcp_approval_request`，完整二次 Anthropic `tool_result` 回灌仍待网关管线改造。 |
+| 2026-06-25 | 进行中 | AI | 已实现 MCP JSON 免批模型驱动工具循环：非流式 Responses 在免批策略下先把 MCP 工具导入 Anthropic client tools，Anthropic `tool_use` 触发网关执行 `tools/call`，再把 `tool_result` 回灌给同一 Anthropic 上游生成最终回答；默认 approval 仍本地返回 `mcp_approval_request`。 |
 
 ## 决策记录
 
@@ -128,7 +128,7 @@
 | 2026-06-25 | MCP 首批采用固定 allowlist mock proxy | OpenAI MCP 会把上下文和授权数据发给第三方 server；没有 allowlist、approval 和审计前不能开放任意远程 MCP | 默认仍 guidance；只有显式 mock 且命中 `mock-mcp` allowlist 时返回固定 OpenAI Responses MCP item，用于 mockai 回归 |
 | 2026-06-25 | MCP real proxy 首批只做 remote `server_url` | OpenAI `connector_id` 是 OpenAI 维护连接器，不等价于任意远程 MCP server；网关没有 connector OAuth 和工具目录适配时不能伪装支持 | `connector_id` 请求继续 guidance / 本地错误；后续单独实现 connector adapter 后再升级 |
 | 2026-06-25 | MCP `local_runtime` 先作为 gate 而非完整 executor | 真实远程 MCP 还缺 allowlist 存储、transport、approval 持久化和输出省略；但需要先让配置层可区分“准备接真实 runtime”和普通 guidance | 未配置 executor 时返回本地 503；这证明链路已进入 real proxy 分支，但不会误宣称已完成真实执行 |
-| 2026-06-25 | MCP JSON 先落免批第一段模型驱动，不伪装最终模型回答 | 当前通用上游响应转换层不能再次发起 Anthropic 请求；直接把工具结果回灌给模型需要改造网关 continuation 管线；未持久化 approval 前不能让模型绕过审批触发工具调用 | 本阶段只对免批工具返回 OpenAI Responses 工具轨迹和本地完成摘要；默认 approval 本地返回 `mcp_approval_request`；后续必须补二次 Anthropic tool-result loop 才能声明完整 hosted MCP 等价 |
+| 2026-06-25 | MCP JSON 先落免批单轮模型驱动，不绕过 approval | 未持久化 approval 前不能让模型绕过审批触发工具调用；递归多轮工具循环需要调用次数上限和失败策略 | 本阶段只对免批工具执行单轮 Anthropic tool-result loop；默认 approval 本地返回 `mcp_approval_request`；第二轮继续要求工具调用时后续再补多轮策略 |
 
 ## 验收标准
 
@@ -142,10 +142,10 @@
 ## 验证记录
 
 - 类型检查：2026-06-25 已复跑并通过 `pnpm --dir backend typecheck`；2026-06-25 已复跑并通过 `pnpm --dir frontend typecheck`。
-- Mock 回归：2026-06-25 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`，当前无执行器 guidance 覆盖 Responses `computer` / `code_interpreter` / `mcp` 和 Chat `code_interpreter`；Runtime Registry reject 覆盖 `code_interpreter=reject` 本地 400 且不请求 Anthropic；Responses `tool_search` + `namespace` 本地展开覆盖 JSON / SSE；Responses `code_interpreter` mock runtime 覆盖 JSON / SSE、`include=code_interpreter_call.outputs`、固定 logs marker、用户 prompt 不进入工具输出且不上游；Responses MCP mock proxy 覆盖 JSON / SSE、`allowed_tools` 过滤、approval request、未授权 server 本地拒绝、authorization 不回显、用户 prompt 不进入工具输出且不上游；MCP definition validation 覆盖重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、凭据 header 冲突本地 400 且不上游；MCP `local_runtime` gate 覆盖未配置 executor 本地 503、`connector_id` 本地 400、authorization / prompt 不泄漏且不上游；MCP real proxy mock server 覆盖 allowlist 读取、authorization 仅入 allowlist server、JSON 免批路径一次 Anthropic 上游选择工具、默认 approval 本地 `mcp_approval_request` 且不上游不调用 `tools/call`、tools/list / tools/call、output 截断和 SSE 直返路径。
+- Mock 回归：2026-06-25 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-mock`，当前无执行器 guidance 覆盖 Responses `computer` / `code_interpreter` / `mcp` 和 Chat `code_interpreter`；Runtime Registry reject 覆盖 `code_interpreter=reject` 本地 400 且不请求 Anthropic；Responses `tool_search` + `namespace` 本地展开覆盖 JSON / SSE；Responses `code_interpreter` mock runtime 覆盖 JSON / SSE、`include=code_interpreter_call.outputs`、固定 logs marker、用户 prompt 不进入工具输出且不上游；Responses MCP mock proxy 覆盖 JSON / SSE、`allowed_tools` 过滤、approval request、未授权 server 本地拒绝、authorization 不回显、用户 prompt 不进入工具输出且不上游；MCP definition validation 覆盖重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、凭据 header 冲突本地 400 且不上游；MCP `local_runtime` gate 覆盖未配置 executor 本地 503、`connector_id` 本地 400、authorization / prompt 不泄漏且不上游；MCP real proxy mock server 覆盖 allowlist 读取、authorization 仅入 allowlist server、JSON 免批路径 Anthropic 选择工具 + MCP `tools/call` + Anthropic `tool_result` 回灌最终回答、默认 approval 本地 `mcp_approval_request` 且不上游不调用 `tools/call`、output 截断和 SSE 直返路径。
 - 真实联调：2026-06-25 已复跑并通过 `pnpm --dir backend test:openai-anthropic-bridge-real`；真实上游 `https://vsllm.com`、模型 `claude-sonnet-4-6`、源模型 `gpt-5.5`，`responses_tool_search_namespace:passed`。
 - 凭据检查：2026-06-25 已扫描 `backend`、`frontend`、`docs`、`package.json`、`pnpm-lock.yaml` 中固定真实 key 前缀，无命中；`git diff --check` 无 whitespace error，仅有 LF/CRLF 提示。
-- 未验证项：MCP real proxy 的完整多轮模型工具调用循环、二次 Anthropic `tool_result` 回灌、approval 持久化、HTTP-SSE 远程 transport、重试、重定向审计和 server 存储尚未实现；code interpreter 真实沙箱、computer adapter 真实运行时尚未实现；不得在生产配置中宣称可执行。Responses `mcp` 当前已具备本地 allowlist executor 第一段和 JSON 免批模型驱动工具选择，但最终回答仍是网关本地完成摘要，不是 Anthropic 基于工具结果生成的回答；Responses `code_interpreter` 当前只有 mock runtime，不运行 Python / shell，不产生真实文件产物；Responses `tool_search` 仅验证请求内 namespace function 本地展开，不代表完整 OpenAI hosted `tool_search_call` / `tool_search_output` 生命周期。
+- 未验证项：MCP real proxy 的多轮模型工具调用循环、approval 持久化、HTTP-SSE 远程 transport、重试、重定向审计和 server 存储尚未实现；code interpreter 真实沙箱、computer adapter 真实运行时尚未实现；不得在生产配置中宣称可执行。Responses `mcp` 当前已具备本地 allowlist executor 第一段和 JSON 免批单轮 tool-result 回灌；Responses `code_interpreter` 当前只有 mock runtime，不运行 Python / shell，不产生真实文件产物；Responses `tool_search` 仅验证请求内 namespace function 本地展开，不代表完整 OpenAI hosted `tool_search_call` / `tool_search_output` 生命周期。
 
 ## 风险与注意事项
 

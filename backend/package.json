@@ -55,6 +55,8 @@
     "test:account-name-uniqueness": "tsx src/scripts/regression/account-name-uniqueness-regression.ts",
     "test:account-credential-duplicates": "tsx src/scripts/regression/account-credential-duplicates-regression.ts",
     "test:gemini-gateway-mock-ai": "tsx src/scripts/regression/gemini-gateway-mock-ai-regression.ts",
+    "test:gemini-openai-chat-real": "tsx src/scripts/regression/gemini-openai-chat-real-e2e.ts",
+    "test:gemini-cli-real-gateway": "tsx src/scripts/regression/gemini-cli-real-gateway-e2e.ts",
     "test:anthropic-gateway-mock-ai": "tsx src/scripts/regression/anthropic-gateway-mock-ai-regression.ts",
     "test:openai-anthropic-bridge-mock": "tsx src/scripts/regression/openai-anthropic-bridge-mock-regression.ts",
     "test:anthropic-openai-chat-bridge-mock": "tsx src/scripts/regression/anthropic-openai-chat-bridge-mock-regression.ts",

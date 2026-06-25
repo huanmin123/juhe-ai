@@ -174,6 +174,7 @@ interface OpenAIToAnthropicBridgeTransformOptions {
   model?: string
   previousResponseId?: string
   onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
+  continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
 }
 
 interface OpenAIToAnthropicBridgeRequestPlan {
@@ -187,6 +188,7 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   codeInterpreterMock?: OpenAIToAnthropicCodeInterpreterMockPlan
   mcpMock?: OpenAIToAnthropicMcpMockPlan
   mcpProxy?: OpenAIToAnthropicMcpProxyPlan
+  anthropicRequestBody?: JsonRecord
 }
 
 interface OpenAIToAnthropicBridgeContentContext {
@@ -247,6 +249,11 @@ interface OpenAIToAnthropicMcpProxyPlan {
   prepared?: OpenAIToAnthropicMcpProxyPreparedServer
   adaptersByAnthropicName?: Map<string, OpenAIToAnthropicMcpProxyToolAdapter>
   emittedListTools?: boolean
+}
+
+interface OpenAIToAnthropicMcpProxyToolLoopResult {
+  responseItems: JsonRecord[]
+  toolResultBlocks: JsonRecord[]
 }
 
 interface OpenAIToAnthropicMcpProxyToolAdapter {
@@ -476,6 +483,7 @@ export async function buildOpenAIToAnthropicBridgeBody(
   const anthropicBody = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
     ? await responsesBodyToAnthropicMessages(body, model, options, requestPlan, contentContext)
     : await chatBodyToAnthropicMessages(body, model, options, requestPlan, contentContext)
+  requestPlan.anthropicRequestBody = anthropicBody
   return Buffer.from(JSON.stringify(anthropicBody), 'utf8')
 }
 
@@ -514,7 +522,8 @@ export function transformOpenAIToAnthropicBridgeUpstreamResponse(
           model,
           requestPlan,
           previousResponseId: options.previousResponseId,
-          onResponsesCompleted: options.onResponsesCompleted
+          onResponsesCompleted: options.onResponsesCompleted,
+          continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
         })
         : transformAnthropicMessagesSseToChatSse(response.body, { model, requestPlan })
     }
@@ -531,7 +540,8 @@ export function transformOpenAIToAnthropicBridgeUpstreamResponse(
         model,
         requestPlan,
         previousResponseId: options.previousResponseId,
-        onResponsesCompleted: options.onResponsesCompleted
+        onResponsesCompleted: options.onResponsesCompleted,
+        continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
       })
       : transformAnthropicMessagesJsonToChatJson(response.body, { model, requestPlan })
   }
@@ -2688,8 +2698,7 @@ async function openAIToAnthropicMcpProxyRuntimeResponse(
   if (!requestPlan.mcpProxy) return undefined
   validateMcpProxyRuntimeDefinitions(body)
   if (
-    !response.stream
-    && requestPlan.mcpProxy.prepared
+    requestPlan.mcpProxy.prepared
     && requestPlan.mcpProxy.executor?.callTool
     && mcpProxyPreparedToolsAreApprovalFree(requestPlan.mcpProxy.tool, requestPlan.mcpProxy.prepared.tools)
   ) {
@@ -2721,7 +2730,7 @@ async function prepareOpenAIToAnthropicMcpProxyTools(
   signal?: AbortSignal
 ): Promise<void> {
   const mcpProxy = requestPlan.mcpProxy
-  if (!mcpProxy || sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY || response.stream) return
+  if (!mcpProxy || sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
   validateMcpProxyRuntimeDefinitions(body)
   if (!executor?.prepare || !executor.callTool) return
   if (!mcpProxyRequestDeclaresModelDrivenApprovalFree(mcpProxy.tool)) return
@@ -2913,7 +2922,10 @@ function responsesMcpMockResponsePayload(
 }
 
 function responsesMcpMockSse(input: { response: JsonRecord; items: JsonRecord[]; text: string }): string {
-  const response = input.response
+  return responsesResponseSse(input.response)
+}
+
+function responsesResponseSse(response: JsonRecord): string {
   const inProgressResponse: JsonRecord = {
     ...response,
     status: 'in_progress',
@@ -2933,11 +2945,12 @@ function responsesMcpMockSse(input: { response: JsonRecord; items: JsonRecord[];
     })
   ]
 
-  for (const [index, item] of input.items.entries()) {
+  const items = Array.isArray(response.output) ? response.output.filter(isPlainObject) : []
+  for (const [index, item] of items.entries()) {
     output.push(sse('response.output_item.added', {
       type: 'response.output_item.added',
       output_index: index,
-      item: mcpMockInProgressItem(item)
+      item: responsesInProgressOutputItem(item)
     }))
     if (item.type === 'message') {
       const itemId = stringValue(item.id) ?? ''
@@ -2987,6 +3000,15 @@ function responsesMcpMockSse(input: { response: JsonRecord; items: JsonRecord[];
     response
   }))
   return output.join('')
+}
+
+function responsesInProgressOutputItem(item: JsonRecord): JsonRecord {
+  if (item.type !== 'message') return item
+  return {
+    ...item,
+    status: 'in_progress',
+    content: []
+  }
 }
 
 function validateMcpMockAllowlist(tool: JsonRecord): void {
@@ -3280,14 +3302,16 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
+    continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
   }
 ): AsyncIterable<Uint8Array> {
   const parsed = await readJsonBody(body)
   const message = isPlainObject(parsed) ? parsed : {}
-  const payload = await anthropicMessageToResponsesResponse(message, {
+  const payload = await anthropicMessageToResponsesResponseWithMcpToolLoop(message, {
     model: options.model,
     requestPlan: options.requestPlan,
-    previousResponseId: options.previousResponseId
+    previousResponseId: options.previousResponseId,
+    continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
   })
   if (options.onResponsesCompleted && payload.status === 'completed') {
     await options.onResponsesCompleted({
@@ -3339,10 +3363,15 @@ async function * transformAnthropicMessagesSseToResponsesSse(
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
+    continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
   }
 ): AsyncIterable<Uint8Array> {
   if (options.requestPlan?.imageGeneration) {
     yield * transformAnthropicMessagesSseToResponsesImageGenerationSse(body, options)
+    return
+  }
+  if (options.requestPlan?.mcpProxy?.prepared) {
+    yield * transformAnthropicMessagesSseToResponsesMcpToolLoopSse(body, options)
     return
   }
   const state = createAnthropicStreamState(OPENAI_RESPONSES_FAMILY, options.model, options.previousResponseId, options.requestPlan)
@@ -3362,6 +3391,48 @@ async function * transformAnthropicMessagesSseToResponsesSse(
     }
     await notifyResponsesCompletion(state, options.onResponsesCompleted)
   }
+}
+
+async function * transformAnthropicMessagesSseToResponsesMcpToolLoopSse(
+  body: AsyncIterable<Uint8Array>,
+  options: {
+    model: string
+    requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+    previousResponseId?: string
+    onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
+    continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
+  }
+): AsyncIterable<Uint8Array> {
+  const state = createAnthropicStreamState(OPENAI_RESPONSES_FAMILY, options.model, options.previousResponseId, options.requestPlan)
+  let payload: JsonRecord
+  try {
+    const message = await anthropicMessageFromSseBody(body, options.model)
+    state.id = stringValue(message.id) ?? state.id
+    state.responseId = responseIdFromAnthropicId(state.id)
+    state.responseMessageId = `msg_${safeIdSegment(state.responseId)}`
+    state.model = stringValue(message.model) ?? state.model
+    payload = await anthropicMessageToResponsesResponseWithMcpToolLoop(message, {
+      model: options.model,
+      requestPlan: options.requestPlan,
+      previousResponseId: options.previousResponseId,
+      continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
+    })
+  } catch (error) {
+    for (const output of failResponsesStream(state, openAIErrorObjectFromBridgeError(error, 'MCP proxy SSE tool loop 执行失败'))) {
+      yield Buffer.from(output, 'utf8')
+    }
+    return
+  }
+  if (options.onResponsesCompleted && payload.status === 'completed') {
+    await options.onResponsesCompleted({
+      responseId: stringValue(payload.id) ?? '',
+      createdAt: integerValue(payload.created_at) ?? Math.floor(Date.now() / 1000),
+      model: stringValue(payload.model) ?? options.model,
+      outputItems: Array.isArray(payload.output) ? payload.output.filter(isPlainObject).map((item) => ({ ...item })) : [],
+      response: { ...payload }
+    })
+  }
+  yield Buffer.from(responsesResponseSse(payload), 'utf8')
 }
 
 async function * transformAnthropicMessagesSseToResponsesImageGenerationSse(
@@ -3486,11 +3557,7 @@ async function anthropicMessageToResponsesResponse(
     structuredOutput?.text
   )
   prependResponsesLocalToolOutputItems(output, options.requestPlan, responseId)
-  const outputText = output
-    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
-    .filter(isPlainObject)
-    .map((part) => stringValue(part.text) ?? '')
-    .join('')
+  const outputText = responsesOutputTextFromItems(output)
   return {
     id: responseId,
     object: 'response',
@@ -3521,6 +3588,205 @@ async function anthropicMessageToResponsesResponse(
     user: null,
     metadata: responsesBridgeMetadata(options.requestPlan)
   }
+}
+
+async function anthropicMessageToResponsesResponseWithMcpToolLoop(
+  message: JsonRecord,
+  options: {
+    model: string
+    requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+    previousResponseId?: string
+    continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
+  }
+): Promise<JsonRecord> {
+  if (!options.continueAnthropicMessagesRequest) {
+    return anthropicMessageToResponsesResponse(message, options)
+  }
+  const loopResult = await mcpProxyToolLoopResultFromAnthropicMessage(message, options.requestPlan)
+  if (!loopResult) {
+    return anthropicMessageToResponsesResponse(message, options)
+  }
+  const nextBody = mcpProxyContinuationAnthropicBody(message, loopResult, options.requestPlan)
+  if (!nextBody) {
+    return mcpProxyToolLoopFallbackResponsesResponse(message, options, loopResult, 'continuation_unavailable')
+  }
+  let nextResponse: GatewayUpstreamResponse
+  try {
+    nextResponse = await options.continueAnthropicMessagesRequest(nextBody)
+  } catch {
+    return mcpProxyToolLoopFallbackResponsesResponse(message, options, loopResult, 'continuation_failed')
+  }
+  if (!nextResponse.ok || !nextResponse.body) {
+    return mcpProxyToolLoopFallbackResponsesResponse(message, options, loopResult, 'continuation_failed')
+  }
+  let parsed: unknown
+  try {
+    parsed = await readJsonBody(nextResponse.body)
+  } catch {
+    return mcpProxyToolLoopFallbackResponsesResponse(message, options, loopResult, 'continuation_invalid_json')
+  }
+  const nextMessage = isPlainObject(parsed) ? parsed : {}
+  const payload = await anthropicMessageToResponsesResponse(nextMessage, options)
+  const output = Array.isArray(payload.output) ? payload.output.filter(isPlainObject) : []
+  insertResponsesMcpToolLoopItems(output, loopResult.responseItems)
+  payload.output = output
+  payload.output_text = responsesOutputTextFromItems(output)
+  payload.usage = combineResponsesUsage(
+    anthropicUsageToResponsesUsage(objectValue(message.usage)),
+    objectValue(payload.usage)
+  )
+  payload.metadata = {
+    ...(objectValue(payload.metadata) ?? {}),
+    gateway_mcp_tool_loop: 'completed'
+  }
+  return payload
+}
+
+function mcpProxyToolLoopFallbackResponsesResponse(
+  message: JsonRecord,
+  options: { model: string; requestPlan?: OpenAIToAnthropicBridgeRequestPlan; previousResponseId?: string },
+  loopResult: OpenAIToAnthropicMcpProxyToolLoopResult,
+  fallbackReason: string
+): JsonRecord {
+  const model = stringValue(message.model) ?? options.model
+  const responseId = responseIdFromAnthropicId(stringValue(message.id))
+  const createdAt = Math.floor(Date.now() / 1000)
+  const output: JsonRecord[] = [...loopResult.responseItems, {
+    id: `msg_${safeIdSegment(responseId)}_mcp_fallback`,
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    content: [{
+      type: 'output_text',
+      text: 'MCP proxy completed remote tool call.',
+      annotations: []
+    }]
+  }]
+  prependResponsesLocalToolOutputItems(output, options.requestPlan, responseId)
+  return {
+    id: responseId,
+    object: 'response',
+    created_at: createdAt,
+    status: 'completed',
+    completed_at: createdAt,
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    max_output_tokens: null,
+    model,
+    output,
+    output_text: responsesOutputTextFromItems(output),
+    parallel_tool_calls: false,
+    previous_response_id: options.previousResponseId ?? null,
+    reasoning: {
+      effort: options.requestPlan?.reasoningEffort ?? null,
+      summary: options.requestPlan?.reasoningSummary ?? null
+    },
+    store: false,
+    temperature: null,
+    text: { format: { type: 'text' } },
+    tool_choice: 'auto',
+    tools: [],
+    top_p: null,
+    truncation: 'disabled',
+    usage: anthropicUsageToResponsesUsage(objectValue(message.usage)),
+    user: null,
+    metadata: {
+      ...responsesBridgeMetadata(options.requestPlan),
+      gateway_mcp_tool_loop: fallbackReason
+    }
+  }
+}
+
+async function mcpProxyToolLoopResultFromAnthropicMessage(
+  message: JsonRecord,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): Promise<OpenAIToAnthropicMcpProxyToolLoopResult | undefined> {
+  const blocks = Array.isArray(message.content) ? message.content : []
+  const responseId = responseIdFromAnthropicId(stringValue(message.id))
+  const responseItems: JsonRecord[] = []
+  const toolResultBlocks: JsonRecord[] = []
+  for (const block of blocks) {
+    if (!isPlainObject(block) || block.type !== 'tool_use') continue
+    const callId = stringValue(block.id)
+    const name = stringValue(block.name)
+    if (!callId || !name || !requestPlan?.mcpProxy?.adaptersByAnthropicName?.has(name)) continue
+    const item = await responsesOutputItemFromAnthropicToolUseBlock({
+      responseId,
+      idSegment: callId,
+      status: 'completed',
+      callId,
+      name,
+      input: isPlainObject(block.input) ? block.input : {}
+    }, requestPlan)
+    responseItems.push(item)
+    toolResultBlocks.push({
+      type: 'tool_result',
+      tool_use_id: callId,
+      content: stringValue(item.output) ?? ''
+    })
+  }
+  return responseItems.length ? { responseItems, toolResultBlocks } : undefined
+}
+
+function mcpProxyContinuationAnthropicBody(
+  message: JsonRecord,
+  loopResult: OpenAIToAnthropicMcpProxyToolLoopResult,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): JsonRecord | undefined {
+  const originalBody = requestPlan?.anthropicRequestBody
+  if (!originalBody) return undefined
+  const originalMessages = Array.isArray(originalBody.messages)
+    ? originalBody.messages.filter(isPlainObject).map((item) => jsonRecordClone(item))
+    : []
+  const content = Array.isArray(message.content)
+    ? message.content.filter(isPlainObject).map((item) => jsonRecordClone(item))
+    : []
+  if (!content.length || !loopResult.toolResultBlocks.length) return undefined
+  return {
+    ...jsonRecordClone(originalBody),
+    stream: false,
+    tool_choice: { type: 'none' },
+    messages: [
+      ...originalMessages,
+      { role: 'assistant', content },
+      { role: 'user', content: loopResult.toolResultBlocks.map((item) => jsonRecordClone(item)) }
+    ]
+  }
+}
+
+function insertResponsesMcpToolLoopItems(output: JsonRecord[], items: JsonRecord[]): void {
+  if (!items.length) return
+  const listToolsIndex = output.findIndex((item) => item.type === 'mcp_list_tools')
+  output.splice(listToolsIndex >= 0 ? listToolsIndex + 1 : 0, 0, ...items)
+}
+
+function responsesOutputTextFromItems(output: JsonRecord[]): string {
+  return output
+    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+    .filter(isPlainObject)
+    .map((part) => stringValue(part.text) ?? '')
+    .join('')
+}
+
+function combineResponsesUsage(first: JsonRecord, second: JsonRecord | undefined): JsonRecord {
+  const inputTokens = (integerValue(first.input_tokens) ?? 0) + (integerValue(second?.input_tokens) ?? 0)
+  const outputTokens = (integerValue(first.output_tokens) ?? 0) + (integerValue(second?.output_tokens) ?? 0)
+  const cachedTokens = (integerValue(objectValue(first.input_tokens_details)?.cached_tokens) ?? 0)
+    + (integerValue(objectValue(second?.input_tokens_details)?.cached_tokens) ?? 0)
+  const reasoningTokens = (integerValue(objectValue(first.output_tokens_details)?.reasoning_tokens) ?? 0)
+    + (integerValue(objectValue(second?.output_tokens_details)?.reasoning_tokens) ?? 0)
+  return {
+    input_tokens: inputTokens,
+    input_tokens_details: { cached_tokens: cachedTokens },
+    output_tokens: outputTokens,
+    output_tokens_details: { reasoning_tokens: reasoningTokens },
+    total_tokens: inputTokens + outputTokens
+  }
+}
+
+function jsonRecordClone(value: JsonRecord): JsonRecord {
+  return JSON.parse(JSON.stringify(value)) as JsonRecord
 }
 
 function responsesBridgeMetadata(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): JsonRecord {
@@ -4564,6 +4830,102 @@ function initialToolInputJsonFromContentBlock(block: JsonRecord): string {
 function assignToolCallIndex(state: AnthropicStreamState, block: AnthropicStreamBlockState): void {
   if (block.type !== 'tool_use') return
   block.toolCallIndex = state.nextToolCallIndex++
+}
+
+async function anthropicMessageFromSseBody(
+  body: AsyncIterable<Uint8Array>,
+  fallbackModel: string
+): Promise<JsonRecord> {
+  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  let id = `msg_bridge_sse_${suffix}`
+  let model = fallbackModel
+  let usage: JsonRecord = {}
+  let stopReason = 'end_turn'
+  const blocks = new Map<number, AnthropicStreamBlockState>()
+
+  for await (const event of iterateAnthropicSseEvents(body)) {
+    if (event.eventName === 'error' || event.data?.type === 'error') {
+      const error = objectValue(openAIErrorFromAnthropicPayload(event.data).error)
+      throw new Error(stringValue(error?.message) ?? '上游 Anthropic Messages SSE 返回错误事件')
+    }
+    if (event.dataParseError) {
+      throw new Error('上游 Anthropic Messages SSE 返回了无法解析的事件')
+    }
+    const data = event.data
+    if (!data) continue
+    if (data.type === 'message_start') {
+      const message = objectValue(data.message) ?? {}
+      id = stringValue(message.id) ?? id
+      model = stringValue(message.model) ?? model
+      usage = objectValue(message.usage) ?? usage
+      continue
+    }
+    if (data.type === 'content_block_start') {
+      const index = integerValue(data.index) ?? 0
+      const contentBlock = objectValue(data.content_block) ?? {}
+      blocks.set(index, streamBlockFromContentBlock(index, contentBlock))
+      continue
+    }
+    if (data.type === 'content_block_delta') {
+      const index = integerValue(data.index) ?? 0
+      const block = blocks.get(index)
+      const delta = objectValue(data.delta) ?? {}
+      if (!block) continue
+      if (delta.type === 'text_delta') {
+        block.text += stringValue(delta.text) ?? ''
+      } else if (delta.type === 'input_json_delta') {
+        block.inputJson += stringValue(delta.partial_json) ?? ''
+      } else if (delta.type === 'thinking_delta') {
+        block.text += stringValue(delta.thinking) ?? stringValue(delta.text) ?? ''
+      }
+      continue
+    }
+    if (data.type === 'message_delta') {
+      const delta = objectValue(data.delta) ?? {}
+      stopReason = stringValue(delta.stop_reason) ?? stopReason
+      usage = {
+        ...usage,
+        ...(objectValue(data.usage) ?? {})
+      }
+      continue
+    }
+    if (data.type === 'message_stop') break
+  }
+
+  return {
+    id,
+    type: 'message',
+    role: 'assistant',
+    model,
+    content: anthropicContentBlocksFromStreamBlocks(blocks),
+    stop_reason: stopReason,
+    usage
+  }
+}
+
+function anthropicContentBlocksFromStreamBlocks(blocks: Map<number, AnthropicStreamBlockState>): JsonRecord[] {
+  return [...blocks.values()]
+    .sort((left, right) => left.index - right.index)
+    .map((block) => {
+      if (block.type === 'tool_use') {
+        return {
+          type: 'tool_use',
+          id: block.id ?? `toolu_${block.index}`,
+          name: block.name ?? '',
+          input: anthropicToolInputFromOpenAIArguments(block.inputJson || '{}')
+        }
+      }
+      if (block.type === 'thinking') {
+        return {
+          type: 'thinking',
+          thinking: block.text
+        }
+      }
+      return {
+        type: 'text',
+        text: block.text
+      }
+    })
 }
 
 async function * iterateAnthropicSseEvents(body: AsyncIterable<Uint8Array>): AsyncIterable<ParsedSseEvent> {

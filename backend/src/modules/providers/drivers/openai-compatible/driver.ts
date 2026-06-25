@@ -69,12 +69,24 @@ function isOpenAICompatibleDriverProfile(profile: ProviderDriverAccount | undefi
 function buildOpenAICompatibleDriverUpstreamUrl(account: DispatchAccountSecret, pathAndQuery: string): string {
   if (account.providerCode === GEMINI_PROVIDER_CODE && account.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) {
     const normalizedBase = account.baseUrl.trim().replace(/\/+$/, '')
+    if (!geminiOpenAIChatBaseUrlOwnsOpenAIPath(normalizedBase)) {
+      return buildUpstreamUrl(account.baseUrl, pathAndQuery)
+    }
     const { path, query } = splitPathAndQuery(pathAndQuery)
     const requestPath = path.startsWith('/') ? path : `/${path}`
     const pathWithoutVersion = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
     return `${normalizedBase}${pathWithoutVersion === '/' ? '' : pathWithoutVersion}${query}`
   }
   return buildUpstreamUrl(account.baseUrl, pathAndQuery)
+}
+
+function geminiOpenAIChatBaseUrlOwnsOpenAIPath(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl)
+    return url.pathname.replace(/\/+$/, '').toLowerCase().endsWith('/v1beta/openai')
+  } catch {
+    return baseUrl.toLowerCase().endsWith('/v1beta/openai')
+  }
 }
 
 function buildOpenAICompatibleDriverUpstreamUrls(account: DispatchAccountSecret, pathAndQuery: string): string[] {

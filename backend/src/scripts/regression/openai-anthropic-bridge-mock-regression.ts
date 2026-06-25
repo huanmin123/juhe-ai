@@ -3034,12 +3034,15 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert(callItem, `MCP local_runtime proxy JSON 应返回 mcp_call: ${text}`)
     assert.equal(callItem.name, 'echo')
     assert.match(callItem.output ?? '', /mock MCP echo: responses mcp local runtime proxy json/)
-    assert.match(body.output_text ?? '', /MCP proxy completed remote tool call/)
+    assert.match(body.output_text ?? '', /MCP proxy final answer: mock MCP echo: responses mcp local runtime proxy json/)
     assert.equal(body.tools?.[0]?.authorization, undefined, 'MCP local_runtime proxy response 不应回显 authorization')
     assert.doesNotMatch(text, /mcp-proxy-request-token/, 'MCP local_runtime proxy JSON 不应泄漏 authorization')
-    assert.equal(upstreamHits.length, 1, 'MCP local_runtime proxy JSON 应先请求 Anthropic 让模型选择 MCP 工具')
+    assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy JSON 应请求 Anthropic 选择工具并回灌 tool_result 生成最终回答')
     assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__echo'])
     assert.doesNotMatch(JSON.stringify(upstreamHits[0]?.body ?? {}), /mcp-proxy-request-token/, 'MCP local_runtime proxy 不应把 authorization 发给 Anthropic 上游')
+    assert.doesNotMatch(JSON.stringify(upstreamHits[1]?.body ?? {}), /mcp-proxy-request-token/, 'MCP local_runtime proxy tool_result 回灌不应把 authorization 发给 Anthropic 上游')
+    assert.match(JSON.stringify(upstreamHits[1]?.body ?? {}), /"type":"tool_result"/, 'MCP local_runtime proxy 第二轮应回灌 Anthropic tool_result')
+    assert.deepEqual(upstreamHits[1]?.body.tool_choice, { type: 'none' }, 'MCP local_runtime proxy 第二轮应关闭继续工具调用')
     assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
       'initialize',
       'notifications/initialized',
@@ -3117,8 +3120,17 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert.match(sseText, /"type":"mcp_list_tools"/)
     assert.match(sseText, /"type":"mcp_call"/)
     assert.match(sseText, /mock MCP echo: responses mcp local runtime proxy sse/)
+    assert.match(sseText, /MCP proxy final answer: mock MCP echo: responses mcp local runtime proxy sse/)
     assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses MCP local_runtime proxy SSE 不应使用 Chat [DONE]')
-    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy SSE 不应请求 Anthropic 上游')
+    assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy SSE 应请求 Anthropic 选择工具并回灌 tool_result')
+    assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__echo'])
+    assert.match(JSON.stringify(upstreamHits[1]?.body ?? {}), /"type":"tool_result"/, 'MCP local_runtime proxy SSE 第二轮应回灌 Anthropic tool_result')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'tools/call'
+    ])
 
     upstreamHits.length = 0
     mcpProxyHits.length = 0
@@ -3149,7 +3161,7 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert(largeCall, `MCP local_runtime proxy 大输出应返回 mcp_call: ${largeText}`)
     assert.match(largeCall.output ?? '', /truncated by juhe-ai MCP proxy output limit/)
     assert.equal(largeCall.metadata?.output_truncated, true, 'MCP local_runtime proxy 大输出应标记 output_truncated')
-    assert.equal(upstreamHits.length, 1, 'MCP local_runtime proxy 大输出 JSON 应先请求 Anthropic 让模型选择 MCP 工具')
+    assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy 大输出 JSON 应请求 Anthropic 选择工具并回灌 tool_result')
     assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__large'])
   } finally {
     runtimeConfig.hostedToolRuntimes.mcp = previousMode
@@ -4606,6 +4618,8 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         && (bodyText.includes('chat multi tool sse bridge') || bodyText.includes('responses multi tool sse bridge'))
       ) {
         sendAnthropicMultiToolSse(res, `msg_openai_anthropic_bridge_multi_tool_sse_${hitIndex}`)
+      } else if (body.stream === true && bodyText.includes('responses mcp local runtime proxy sse') && anthropicRequestHasTool(body)) {
+        sendAnthropicMcpToolSse(res, body, `msg_openai_anthropic_bridge_mcp_tool_sse_${hitIndex}`)
       } else if (body.stream === true) {
         sendAnthropicSse(res, `msg_openai_anthropic_bridge_sse_${hitIndex}`)
       } else if (anthropicRequestHasStructuredOutputTool(body) && bodyText.includes('structured schema invalid bridge')) {
@@ -4626,6 +4640,8 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         sendAnthropicFileSearchJson(res)
       } else if (bodyText.includes('responses thinking bridge')) {
         sendAnthropicThinkingJson(res)
+      } else if (bodyText.includes('responses mcp local runtime proxy') && anthropicRequestHasToolResult(body)) {
+        sendAnthropicMcpToolResultJson(res, body)
       } else if (anthropicRequestHasTool(body)) {
         sendAnthropicToolJson(res, body)
       } else {
@@ -4976,6 +4992,23 @@ function sendAnthropicToolJson(res: http.ServerResponse, body: Record<string, un
   }))
 }
 
+function sendAnthropicMcpToolResultJson(res: http.ServerResponse, body: Record<string, unknown>): void {
+  const toolResultText = anthropicToolResultText(body)
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_mcp_tool_result',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text: `MCP proxy final answer: ${toolResultText}` }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 17,
+      output_tokens: 9
+    }
+  }))
+}
+
 function sendAnthropicStructuredOutputJson(res: http.ServerResponse): void {
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({
@@ -5269,6 +5302,53 @@ function sendAnthropicMultiToolSse(res: http.ServerResponse, messageId: string):
   res.end()
 }
 
+function sendAnthropicMcpToolSse(res: http.ServerResponse, body: Record<string, unknown>, messageId: string): void {
+  const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'real-mcp__echo'
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  writeSse(res, 'message_start', {
+    type: 'message_start',
+    message: {
+      id: messageId,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-haiku-4-5',
+      content: [],
+      usage: { input_tokens: 12, output_tokens: 0 }
+    }
+  })
+  writeSse(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: 0,
+    content_block: {
+      type: 'tool_use',
+      id: 'toolu_mcp_echo_sse',
+      name: toolName,
+      input: {}
+    }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'input_json_delta', partial_json: '{"query"' }
+  })
+  writeSse(res, 'content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'input_json_delta', partial_json: ':"responses mcp local runtime proxy sse"}' }
+  })
+  writeSse(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: 0
+  })
+  writeSse(res, 'message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use' },
+    usage: { output_tokens: 8 }
+  })
+  writeSse(res, 'message_stop', { type: 'message_stop' })
+  res.end()
+}
+
 function sendAnthropicNamespaceToolSse(res: http.ServerResponse, messageId: string): void {
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   writeSse(res, 'message_start', {
@@ -5362,6 +5442,27 @@ function sendAnthropicThinkingSse(res: http.ServerResponse, messageId: string): 
 
 function anthropicRequestHasTool(body: Record<string, unknown>): boolean {
   return upstreamToolNames({ body } as UpstreamHit).length > 0
+}
+
+function anthropicRequestHasToolResult(body: Record<string, unknown>): boolean {
+  return anthropicToolResultText(body) !== ''
+}
+
+function anthropicToolResultText(body: Record<string, unknown>): string {
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  for (const message of messages) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) continue
+    const content = Array.isArray((message as Record<string, unknown>).content)
+      ? (message as Record<string, unknown>).content as unknown[]
+      : []
+    for (const block of content) {
+      if (!block || typeof block !== 'object' || Array.isArray(block)) continue
+      const item = block as Record<string, unknown>
+      if (item.type !== 'tool_result') continue
+      return String(item.content ?? '')
+    }
+  }
+  return ''
 }
 
 function anthropicRequestHasStructuredOutputTool(body: Record<string, unknown>): boolean {

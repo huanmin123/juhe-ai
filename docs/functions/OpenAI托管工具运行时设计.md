@@ -160,18 +160,19 @@ mock proxy 的目的只是固定 MCP 输出 item、approval 和 allowlist 边界
 - 请求仍先执行 MCP 定义校验；重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、非 HTTPS `server_url`、凭据 header 冲突等错误本地拒绝。
 - `connector_id` 在 local runtime 下固定返回本地错误，直到 connector adapter 独立实现。
 - 如果未配置 MCP proxy executor，返回本地 OpenAI 风格 `service_unavailable` / `openai_anthropic_bridge_mcp_proxy_unavailable`，并且不请求 Anthropic、不连接远程 MCP。
-- JSON 非流式免批路径已经完成第一段模型驱动工具选择：仅当 `require_approval=never`，或请求 `allowed_tools` 全部命中 `require_approval.never.tool_names` 时，`tools/list` 结果才会导入 Anthropic client tools；Anthropic 返回 `tool_use` 后，网关执行 MCP `tools/call` 并输出 OpenAI Responses `mcp_list_tools` / `mcp_call`。
+- JSON 非流式免批路径已经完成模型驱动工具循环：仅当 `require_approval=never`，或请求 `allowed_tools` 全部命中 `require_approval.never.tool_names` 时，`tools/list` 结果才会导入 Anthropic client tools；Anthropic 返回 `tool_use` 后，网关执行 MCP `tools/call`，把结果作为 Anthropic `tool_result` 二次回灌，并输出 OpenAI Responses `mcp_list_tools` / `mcp_call` / 最终 assistant message。
 - `runtimeConfig.mcpProxy.servers` 命中 allowlist 后，executor 使用 MCP JSON-RPC POST 顺序执行 `initialize`、`notifications/initialized`、`tools/list` 和 `tools/call`。
 - allowlist server 字段包含 `label`、`serverUrl`、`enabled`、`allowedTools`、可选 `authorization` 和 `allowRequestAuthorization`；请求里的 `authorization` 只有在 allowlist 明确允许时才发给 MCP server，不写响应。
 - `allowed_tools` 会同时受 server allowlist 和请求字段过滤；没有可用工具时返回普通 assistant message，不调用 `tools/call`。
 - `require_approval` 省略或为 `always` 时返回 `mcp_approval_request`；`require_approval=never` 或免批工具命中时才执行 `tools/call`。
 - `tools/call` 输出按 `mcpProxy.maxOutputBytes` 截断，并在 `mcp_call.metadata.output_truncated` 标记省略。
-- 当前 JSON 非流式完成消息是网关本地摘要，用于保证 OpenAI Responses `output_text` 可消费；还没有把 MCP `tool_result` 回灌给 Anthropic 做第二次模型生成。
+- 当前 JSON 非流式免批路径会把 MCP `tool_result` 回灌给 Anthropic 生成最终 `output_text`；默认 approval 或非免批工具仍只返回本地 `mcp_approval_request`。
 - mockai 可在显式开启私有上游 allowlist 时使用 loopback HTTP MCP server；生产路径仍要求 HTTPS。
 
 当前首批 executor 仍不是完整 hosted MCP 等价实现：
 
-- JSON 非流式免批路径已完成“模型选择工具 + 网关执行工具 + OpenAI Responses 工具轨迹”第一段；默认 approval 或非免批工具仍返回本地 `mcp_approval_request`，不请求 Anthropic，也不执行 `tools/call`。完整等价还需要二次 Anthropic 请求，把 MCP 输出作为 `tool_result` 回灌后生成最终 assistant answer。
+- JSON 非流式免批路径已完成“模型选择工具 + 网关执行工具 + Anthropic tool_result 回灌 + OpenAI Responses 工具轨迹”第一段；默认 approval 或非免批工具仍返回本地 `mcp_approval_request`，不请求 Anthropic，也不执行 `tools/call`。
+- JSON 非流式当前只做单轮 MCP 工具循环；如果第二轮 Anthropic 仍要求继续调用工具，暂不继续递归执行。
 - 流式路径暂时仍采用本地 Responses 直返 runtime；SSE 中异步执行 MCP `tools/call`、输出 `mcp_call` 增量和 terminal snapshot 需要单独实现。
 - approval request 尚未持久化，不做跨 API Key / 分组边界校验。
 - 远程 Streamable HTTP / HTTP-SSE 已按响应解析预留，但 mock 回归当前只覆盖 JSON-RPC JSON 响应。

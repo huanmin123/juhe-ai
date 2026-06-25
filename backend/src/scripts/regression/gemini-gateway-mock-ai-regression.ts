@@ -183,6 +183,32 @@ try {
     }, access)
     assert(openAIChatApiKey.key, 'Gemini OpenAI Chat 回归 API Key 未返回明文密钥')
 
+    const openAIChatRootGroup = repositories.createGroup({
+      name: 'Gemini OpenAI Chat NewAPI 根地址回归分组',
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+      enabled: true
+    }, access)
+    repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+      name: 'Gemini OpenAI Chat NewAPI 根地址回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-openai-root-upstream',
+        base_url: upstreamOrigin
+      },
+      groupId: openAIChatRootGroup.id,
+      status: 'active',
+      schedulable: true
+    }, access)
+    const openAIChatRootApiKey = repositories.createApiKeyRecord({
+      name: 'Gemini OpenAI Chat NewAPI 根地址回归 Key',
+      groupBindings: [{ groupId: openAIChatRootGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(openAIChatRootApiKey.key, 'Gemini OpenAI Chat 根地址回归 API Key 未返回明文密钥')
+
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
@@ -198,6 +224,7 @@ try {
     await assertGeminiLocalAuthError(baseUrl)
     await assertGeminiOpenAIChatPathRejected(baseUrl, apiKey.key)
     await assertGeminiOpenAIChatDirect(baseUrl, openAIChatApiKey.key)
+    await assertGeminiOpenAIChatRootBaseUrl(baseUrl, openAIChatRootApiKey.key)
     await assertGeminiCodexResponsesMapping(baseUrl, openAIChatApiKey.key)
     assertGeminiPolicyDefaults()
 
@@ -495,6 +522,29 @@ async function assertGeminiOpenAIChatDirect(baseUrl: string, localApiKey: string
   assert.equal(JSON.parse(upstreamHits[0]?.bodyText ?? '{}').model, 'gemini-3.5-flash')
 }
 
+async function assertGeminiOpenAIChatRootBaseUrl(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/chat/completions?trace=gemini-openai-chat-root', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gemini-3.5-flash',
+      messages: [{ role: 'user', content: 'reply with gemini openai direct ok' }],
+      stream: false
+    })
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+  assert.equal(body.choices?.[0]?.message?.content, 'gemini openai direct ok')
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/v1/chat/completions?trace=gemini-openai-chat-root')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-gemini-openai-root-upstream', 'Gemini OpenAI Chat 根地址上游必须使用账号 Bearer API Key')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, '', 'Gemini OpenAI Chat 根地址上游不应使用 Gemini 原生 x-goog-api-key')
+}
+
 async function assertGeminiCodexResponsesMapping(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(new URL('/v1/responses?trace=gemini-codex-bridge', baseUrl), {
@@ -611,7 +661,7 @@ function createGeminiMockUpstream(): http.Server {
       return
     }
 
-    if (req.method === 'POST' && url.pathname === '/v1beta/openai/chat/completions') {
+    if (req.method === 'POST' && (url.pathname === '/v1beta/openai/chat/completions' || url.pathname === '/v1/chat/completions')) {
       const body = parseJsonObject(bodyText)
       if (body.stream === true) {
         res.writeHead(200, {

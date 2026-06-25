@@ -143,7 +143,8 @@ export const anthropicProviderDriver: ProviderDriver = {
     return transformOpenAIToAnthropicBridgeUpstreamResponse(req, response, {
       model: openAIToAnthropicBridgeUpstreamModel(req, account),
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
-      onResponsesCompleted: context?.codexResponsesChatBridgeCompletionHandler
+      onResponsesCompleted: context?.codexResponsesChatBridgeCompletionHandler,
+      continueAnthropicMessagesRequest: context?.continueUpstreamJsonRequest
     })
   },
   endpointModeForRequest: anthropicEndpointModeForGatewayRequest,
