@@ -3,6 +3,7 @@ import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-conc
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
 import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
 import { hashSecret } from '../../../storage/crypto.js'
 import {
@@ -60,7 +61,7 @@ interface ProviderModelRouteIndexCacheEntry {
 
 interface CachedOpenAIAccountsForGroupOptions {
   requestedModel?: string
-  requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
+  requestedEndpointFamily?: GatewayRequestEndpointFamily
 }
 
 export type ProviderModelRouteResolution =
@@ -893,7 +894,7 @@ function refreshOpenAIAccountsForGroupInBackground(
   systemAccountId: string,
   cacheKey: string,
   requestedModel?: string,
-  requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
+  requestedEndpointFamily?: GatewayRequestEndpointFamily
 ): void {
   if (pendingOpenAIAccountsRefreshes.has(cacheKey)) {
     return

@@ -6,6 +6,7 @@ import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProviders } from '../../storage/repositories.js'
 import {
   listAnthropicProtocolProviderCodes,
+  listGeminiProtocolProviderCodes,
   listOpenAIProtocolProviderCodes
 } from '../../storage/provider.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
@@ -63,6 +64,9 @@ function providerModelOptionProviderCodes(protocol: unknown): Set<string> {
   if (value === 'anthropic') {
     return new Set(listAnthropicProtocolProviderCodes())
   }
+  if (value === 'gemini') {
+    return new Set(listGeminiProtocolProviderCodes())
+  }
   return new Set(listProviders().filter((provider) => provider.enabled).map((provider) => provider.code))
 }
 
@@ -95,7 +99,20 @@ const customModelSchema = z.object({
   scope: z.enum(['global', 'personal']).default('personal'),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
   mode: nullableModelModeSchema,
-  supportedApiProtocols: z.array(z.enum(['chat_completions', 'responses', 'messages', 'message_token_counting', 'completions', 'images', 'audio', 'realtime'])).optional(),
+  supportedApiProtocols: z.array(z.enum([
+    'chat_completions',
+    'responses',
+    'messages',
+    'message_token_counting',
+    'generate_content',
+    'stream_generate_content',
+    'count_tokens',
+    'embed_content',
+    'completions',
+    'images',
+    'audio',
+    'realtime'
+  ])).optional(),
   pricingModel: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,

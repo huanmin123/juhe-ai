@@ -9,15 +9,21 @@ import {
   ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
   ANTHROPIC_MESSAGES_FAMILY,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GEMINI_COUNT_TOKENS_FAMILY,
+  GEMINI_EMBED_CONTENT_FAMILY,
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
   isGptVendorCode,
   isAnthropicProtocolProfile,
+  isGeminiProtocolProfile,
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
 
-export type AccountProviderProtocolKind = 'openai_v1' | 'anthropic_v1' | 'unknown'
+export type AccountProviderProtocolKind = 'openai_v1' | 'anthropic_v1' | 'gemini_v1beta' | 'unknown'
 export type ClientCompatibilityCapability = 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
 
 export type AccountProviderProfileLike = {
@@ -44,14 +50,17 @@ export const chatEndpointModes: AccountSupportedEndpointMode[] = ['chat_json', '
 export const responsesEndpointModes: AccountSupportedEndpointMode[] = ['responses_json', 'responses_sse']
 export const openAIEndpointModes: AccountSupportedEndpointMode[] = [...chatEndpointModes, ...responsesEndpointModes]
 export const anthropicAccountEndpointModes: AccountSupportedEndpointMode[] = ['messages_json', 'messages_sse', 'message_token_counting']
+export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content']
 export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
   ...openAIEndpointModes,
-  ...anthropicAccountEndpointModes
+  ...anthropicAccountEndpointModes,
+  ...geminiAccountEndpointModes
 ]
 
 export function accountProviderProtocolKind(profile?: AccountProviderProfileLike): AccountProviderProtocolKind {
   if (isOpenAIProtocolProfile(profile)) return 'openai_v1'
   if (isAnthropicProtocolProfile(profile)) return 'anthropic_v1'
+  if (isGeminiProtocolProfile(profile)) return 'gemini_v1beta'
   return 'unknown'
 }
 
@@ -114,6 +123,9 @@ export function accountClientCompatibilityCapabilities(account: AccountProviderP
       ? ['anthropic_native', 'claude_code']
       : ['anthropic_native']
   }
+  if (protocolKind === 'gemini_v1beta') {
+    return ['openai_standard']
+  }
   if (protocolKind !== 'openai_v1') {
     return ['openai_standard']
   }
@@ -136,6 +148,9 @@ export function fixedCompatibilityLabel(accounts: AccountProviderProfileLike[]):
 }
 
 export function fixedCompatibilityText(accounts: AccountProviderProfileLike[]): string {
+  if (accounts.some((account) => accountProviderProtocolKind(account) === 'gemini_v1beta')) {
+    return 'Gemini API 请求'
+  }
   if (accounts.some((account) => accountProviderProtocolKind(account) === 'anthropic_v1')) {
     return 'Anthropic API 请求'
   }
@@ -155,6 +170,7 @@ export function defaultEndpointModesForAccount(input: {
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
   if (input.type === 'oauth') return [...responsesEndpointModes]
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
+  if (protocolKind === 'gemini_v1beta') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'openai_v1') {
     if (input.clientCompatibility === 'codex_responses' && profileSupportsCodexResponsesChatBridge(input.profile ?? input.provider)) {
       return [...chatEndpointModes]
@@ -171,6 +187,7 @@ export function profileSupportsCodexResponsesChatBridge(profile?: AccountProvide
   const profileId = profile?.providerProtocolProfileId ?? profile?.id
   return profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
     || profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
+    || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }
 
 export function endpointModesForProfile(profile?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
@@ -178,6 +195,12 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
   if (protocolKind === 'anthropic_v1') return endpointModesForFamilies(profile, anthropicAccountEndpointModes, [
     { family: ANTHROPIC_MESSAGES_FAMILY, modes: ['messages_json', 'messages_sse'] },
     { family: ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY, modes: ['message_token_counting'] }
+  ])
+  if (protocolKind === 'gemini_v1beta') return endpointModesForFamilies(profile, geminiAccountEndpointModes, [
+    { family: GEMINI_GENERATE_CONTENT_FAMILY, modes: ['generate_content_json'] },
+    { family: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, modes: ['generate_content_sse'] },
+    { family: GEMINI_COUNT_TOKENS_FAMILY, modes: ['count_tokens'] },
+    { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] }
   ])
   if (protocolKind === 'openai_v1') return endpointModesForFamilies(profile, openAIEndpointModes, [
     { family: OPENAI_CHAT_COMPLETIONS_FAMILY, modes: chatEndpointModes },

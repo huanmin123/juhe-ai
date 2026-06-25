@@ -42,7 +42,8 @@ import {
   gatewayErrorPayloadForProtocol,
   isOpenAIJsonResponseContentType,
   sendGatewayErrorResponse,
-  writeGatewayStreamFailureEvent
+  writeGatewayStreamFailureEvent,
+  type GatewayErrorProtocol
 } from './responses.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
@@ -478,7 +479,7 @@ function writePreCommitStreamFailureToClient(
   res: Response,
   upstreamResponse: GatewayUpstreamResponse,
   streamResult: GatewayStreamPipeResult,
-  protocol: 'openai' | 'anthropic'
+  protocol: GatewayErrorProtocol
 ): Buffer | undefined {
   if (
     streamResult.downstreamBytesWritten !== 0

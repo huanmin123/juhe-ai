@@ -2,6 +2,10 @@ import type { AccountType, ProviderCode, ProviderDefinition, ProviderProtocolPro
 import {
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_PROVIDER_CODE,
+  GEMINI_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_VERSION,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION
 } from '../domain/provider-protocol.js'
@@ -69,6 +73,10 @@ export function listOpenAIProtocolProviderCodes(): ProviderCode[] {
 
 export function listAnthropicProtocolProviderCodes(): ProviderCode[] {
   return listProtocolProviderCodes(ANTHROPIC_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_VERSION)
+}
+
+export function listGeminiProtocolProviderCodes(): ProviderCode[] {
+  return listProtocolProviderCodes(GEMINI_PROTOCOL_CODE, GEMINI_PROTOCOL_VERSION)
 }
 
 function listProtocolProviderCodes(protocolCode: string, protocolVersion: string): ProviderCode[] {
@@ -273,7 +281,7 @@ function providerEndpointFamiliesByProfileId(profileIds: string[]): Map<string, 
 }
 
 function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinition[]): Omit<ProviderDefinition, 'id' | 'code' | 'name' | 'description' | 'enabled' | 'protocolProfiles'> {
-  const defaultProfile = profiles.find((profile) => profile.enabled) ?? profiles[0]
+  const defaultProfile = preferredDefaultProtocolProfile(profiles)
   if (!defaultProfile) {
     return {
       defaultProtocolProfileId: '',
@@ -294,4 +302,14 @@ function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinitio
     accountTypes: defaultProfile.accountTypes,
     capabilities: defaultProfile.capabilities
   }
+}
+
+function preferredDefaultProtocolProfile(profiles: ProviderProtocolProfileDefinition[]): ProviderProtocolProfileDefinition | undefined {
+  const enabledProfiles = profiles.filter((profile) => profile.enabled)
+  const candidates = enabledProfiles.length ? enabledProfiles : profiles
+  const geminiNativeProfile = candidates.find((profile) => (
+    profile.providerCode === GEMINI_PROVIDER_CODE
+    && profile.id === GEMINI_NATIVE_V1BETA_PROFILE_ID
+  ))
+  return geminiNativeProfile ?? candidates[0]
 }

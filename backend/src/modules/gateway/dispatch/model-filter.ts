@@ -1,5 +1,5 @@
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
-import type { AccountModelMappingSourceEndpointFamily } from '../../../domain/types.js'
+import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
 import { resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 
 export interface GatewayModelAccountFilterResult {
@@ -10,14 +10,14 @@ export interface GatewayModelAccountFilterResult {
   directMatchedCount: number
   mappingMatchedCount: number
   requestedModel?: string
-  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  sourceEndpointFamily?: GatewayRequestEndpointFamily
   modelPriority: GatewayAccountModelPriority
   reason?: 'missing_model' | 'unsupported_model'
 }
 
 export interface GatewayAccountModelPriority {
   requestedModel?: string
-  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  sourceEndpointFamily?: GatewayRequestEndpointFamily
   rankByAccountId: ReadonlyMap<string, number>
 }
 
@@ -31,7 +31,7 @@ export const gatewayAccountModelPriorityRank = {
 export function filterGatewayAccountsByRequestedModel(
   accounts: UpstreamAccount[],
   requestedModel?: string,
-  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  sourceEndpointFamily?: GatewayRequestEndpointFamily
 ): GatewayModelAccountFilterResult {
   const model = requestedModel?.trim()
   let skippedCount = 0

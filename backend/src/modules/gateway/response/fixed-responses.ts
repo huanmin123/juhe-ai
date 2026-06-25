@@ -5,6 +5,7 @@ import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capt
 import { gatewayErrorPayload } from './responses.js'
 import { buildOpenAIModelsResponse } from '../protocols/openai-v1/route-helpers.js'
 import { buildAnthropicModelsResponse } from '../protocols/anthropic-v1/route-helpers.js'
+import { buildGeminiModelsResponse } from '../protocols/gemini-v1beta/route-helpers.js'
 import { listCachedProviderModelCatalogAsync } from '../runtime/runtime-cache.service.js'
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
@@ -75,7 +76,11 @@ export async function sendAnthropicModelsGatewayResponse(input: SendOpenAIModels
   await sendModelsGatewayResponse(input, 'anthropic')
 }
 
-async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic'): Promise<void> {
+export async function sendGeminiModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
+  await sendModelsGatewayResponse(input, 'gemini')
+}
+
+async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic' | 'gemini'): Promise<void> {
   const { req, res, auditCapture, usageContext, startedAt } = input
   const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
   const catalog = await listCachedProviderModelCatalogAsync({
@@ -84,7 +89,9 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
   })
   const responsePayload = protocol === 'anthropic'
     ? buildAnthropicModelsResponse(catalog)
-    : buildOpenAIModelsResponse(catalog, req)
+    : protocol === 'gemini'
+      ? buildGeminiModelsResponse(catalog)
+      : buildOpenAIModelsResponse(catalog, req)
   res.status(200).json(responsePayload)
   enqueueUsageRecord({
     ...usageContext,

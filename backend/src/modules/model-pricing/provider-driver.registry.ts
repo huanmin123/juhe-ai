@@ -1,12 +1,14 @@
 import {
   ANTHROPIC_PROVIDER_CODE,
   DEEPSEEK_PROVIDER_CODE,
+  GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
   isOpenAICompatibleProviderCode,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
 import { anthropicModelPricingData } from './anthropic-model-pricing.data.js'
 import { deepSeekModelPricingData } from './deepseek-model-pricing.data.js'
+import { geminiModelPricingData } from './gemini-model-pricing.data.js'
 import { glmModelPricingData } from './glm-model-pricing.data.js'
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
 import type {
@@ -19,6 +21,7 @@ import type {
 const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
 const anthropicModels = anthropicModelPricingData as readonly RawModelPricing[]
 const deepSeekModels = deepSeekModelPricingData as readonly RawModelPricing[]
+const geminiModels = geminiModelPricingData as readonly RawModelPricing[]
 const glmModels = glmModelPricingData as readonly RawModelPricing[]
 
 const openAIModelPricingDriver: ModelPricingProviderDriver = {
@@ -90,11 +93,29 @@ const glmModelPricingDriver: ModelPricingProviderDriver = {
   }
 }
 
+const geminiModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'gemini',
+  pricingSource: 'gemini-pricing-snapshot',
+  rawModels: geminiModels,
+  usesIncludedCacheReadUsage: true,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === GEMINI_PROVIDER_CODE
+  },
+  buildModelCandidates: buildGeminiModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : ['generate_content', 'stream_generate_content', 'count_tokens']
+  }
+}
+
 const modelPricingProviderDrivers: readonly ModelPricingProviderDriver[] = [
   openAIModelPricingDriver,
   deepSeekModelPricingDriver,
   glmModelPricingDriver,
-  anthropicModelPricingDriver
+  anthropicModelPricingDriver,
+  geminiModelPricingDriver
 ]
 
 export function listModelPricingProviderDrivers(): readonly ModelPricingProviderDriver[] {
@@ -167,6 +188,22 @@ function buildGlmModelCandidates(model: string): string[] {
   return Array.from(candidates)
 }
 
+function buildGeminiModelCandidates(model: string): string[] {
+  const candidates = new Set<string>()
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  if (withoutDate !== model) candidates.add(withoutDate)
+  const withoutModelsPrefix = model.replace(/^models\//, '')
+  if (withoutModelsPrefix !== model) candidates.add(withoutModelsPrefix)
+
+  for (const base of geminiModelCandidateBasesBySpecificity) {
+    if (model === base || withoutModelsPrefix === base || model.startsWith(`${base}-`) || withoutModelsPrefix.startsWith(`${base}-`)) {
+      candidates.add(base)
+    }
+  }
+
+  return Array.from(candidates)
+}
+
 const modelDateSuffixPattern = /-(?:\d{4}-\d{2}-\d{2}|\d{8})$/
 
 const glmModelCandidateBases = [
@@ -190,6 +227,16 @@ const glmModelCandidateBases = [
   'glm-4-flash-250414'
 ]
 const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]
+  .sort((left, right) => right.length - left.length)
+
+const geminiModelCandidateBases = [
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-embedding-001'
+]
+const geminiModelCandidateBasesBySpecificity = [...geminiModelCandidateBases]
   .sort((left, right) => right.length - left.length)
 
 const unavailableOpenAIModels = new Set([

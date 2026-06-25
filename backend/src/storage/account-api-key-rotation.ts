@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto'
 import { runtimeConfig } from '../config/runtime.js'
 import {
   ANTHROPIC_PROVIDER_CODE,
+  isGeminiProviderCode,
   isAnthropicProtocolProfile,
   isDeepSeekProviderCode,
   isGlmProviderCode,
@@ -119,6 +120,7 @@ function isAccountApiKeyPoolProviderSupported(input: {
   return isOpenAICompatibleProviderCode(input.providerCode)
     || isDeepSeekProviderCode(input.providerCode)
     || isGlmProviderCode(input.providerCode)
+    || isGeminiProviderCode(input.providerCode)
     || isAnthropicProtocolProfile({
       protocolCode: normalizeProviderToken(input.protocolCode),
       protocolVersion: normalizeProviderToken(input.protocolVersion)

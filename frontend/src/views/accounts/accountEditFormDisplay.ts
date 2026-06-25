@@ -6,7 +6,10 @@ import {
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   isDeepSeekProviderCode,
+  isGeminiProviderCode,
   isGlmProviderCode
 } from '@/shared/providerProtocol'
 
@@ -168,6 +171,10 @@ function accountTypeChoiceLabel(
     if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'GLM Coding Plan Key'
     if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用 GLM API Key'
   }
+  if (isGeminiProviderCode(providerCode) && type === 'api_key') {
+    if (providerProtocolProfileId === GEMINI_NATIVE_V1BETA_PROFILE_ID) return 'Gemini 原生 API Key'
+    if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'Gemini OpenAI Chat API Key'
+  }
   return accountEditAccountTypeTitle(providerCode, type, providers)
 }
 
@@ -184,6 +191,10 @@ function accountTypeChoiceTag(
     if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Claude Code'
     if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'Coding'
     if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用'
+  }
+  if (isGeminiProviderCode(providerCode) && type === 'api_key') {
+    if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'OpenAI Chat'
+    return 'Gemini API'
   }
   return accountTypeText(type)
 }

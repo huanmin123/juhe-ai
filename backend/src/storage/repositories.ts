@@ -360,7 +360,7 @@ export {
   listAuthorizationGranteeGroups,
   listAuthorizationGranteeTeams
 } from './authorization-options.repository.js'
-export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
+export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listGeminiProtocolProviderCodes, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
 export {
   createSession,
   createSystemAccount,

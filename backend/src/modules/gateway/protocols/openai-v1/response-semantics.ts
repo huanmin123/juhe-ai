@@ -13,9 +13,17 @@ import {
 } from './stream-events.js'
 
 export type OpenAIResponseEndpointFamily = 'chat_completions' | 'responses' | 'unknown'
-export type ResponseEndpointFamily = OpenAIResponseEndpointFamily | 'messages' | 'models' | 'message_token_counting'
+export type ResponseEndpointFamily =
+  | OpenAIResponseEndpointFamily
+  | 'messages'
+  | 'models'
+  | 'message_token_counting'
+  | 'generate_content'
+  | 'stream_generate_content'
+  | 'count_tokens'
+  | 'embed_content'
 export type OpenAIResponseTransport = 'json' | 'sse'
-export type ResponseProtocolCode = 'openai_v1' | 'anthropic_v1'
+export type ResponseProtocolCode = 'openai_v1' | 'anthropic_v1' | 'gemini_v1beta'
 export type ResponseSemanticFrameType = 'output_text_delta' | 'output_text_done' | 'error' | 'completed' | 'usage' | 'raw_json_path'
 
 export interface ResponseSemanticFrame {

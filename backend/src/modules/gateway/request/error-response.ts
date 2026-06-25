@@ -6,7 +6,7 @@ import { gatewayErrorPayload, gatewayErrorPayloadForProtocol, sendGatewayErrorRe
 import { isUpstreamRequestAbortedError } from '../upstream/request.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
-import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from './validation-error.js'
+import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from './validation-error.js'
 
 interface HandleGatewayRequestKnownErrorResponseInput {
   req: Request
@@ -42,6 +42,27 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
       statusCode: 200,
       responseHeaders: responseHeadersToObject(res),
       responseBody,
+      responsePartType: 'gateway_response',
+      errorPhase: 'request_validation',
+      errorCode: error.code,
+      errorMessage: error.message
+    })
+    return true
+  }
+
+  if (error instanceof GatewayLocalProtocolResponse) {
+    res.status(error.statusCode)
+    res.setHeader('content-type', error.contentType)
+    if (error.contentType.startsWith('text/event-stream')) {
+      res.setHeader('cache-control', 'no-cache')
+    }
+    res.end(error.body)
+    auditCapture.finalize({
+      outcome: 'success',
+      success: true,
+      statusCode: error.statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: error.body,
       responsePartType: 'gateway_response',
       errorPhase: 'request_validation',
       errorCode: error.code,

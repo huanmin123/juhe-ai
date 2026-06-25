@@ -12,6 +12,8 @@ import {
   allAccountEndpointModes,
   anthropicAccountEndpointModes,
   defaultEndpointModesForAccount,
+  geminiAccountEndpointModes,
+  openAIEndpointModes,
   profileSupportsCodexResponsesChatBridge,
   responsesEndpointModes
 } from './accountProviderCapabilities'
@@ -26,7 +28,11 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'Responses API (Streaming)', value: 'responses_sse' },
   { label: 'Messages API (JSON)', value: 'messages_json' },
   { label: 'Messages API (Streaming)', value: 'messages_sse' },
-  { label: 'Count tokens', value: 'message_token_counting' }
+  { label: 'Count tokens', value: 'message_token_counting' },
+  { label: 'generateContent (JSON)', value: 'generate_content_json' },
+  { label: 'streamGenerateContent (SSE)', value: 'generate_content_sse' },
+  { label: 'countTokens', value: 'count_tokens' },
+  { label: 'embedContent', value: 'embed_content' }
 ]
 
 export function defaultAccountEndpointModes(
@@ -83,12 +89,21 @@ export function validateAccountEndpointModes(input: {
     }
   }
   const hasAnthropicMode = input.modes.some((mode) => anthropicAccountEndpointModes.includes(mode))
-  const hasOpenAIMode = input.modes.some((mode) => !anthropicAccountEndpointModes.includes(mode))
-  if (hasAnthropicMode && hasOpenAIMode) {
-    return 'Anthropic Messages 能力不能与 OpenAI Chat/Responses 能力混选'
+  const hasGeminiMode = input.modes.some((mode) => geminiAccountEndpointModes.includes(mode))
+  const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode))
+  const protocolModeCount = [hasOpenAIMode, hasAnthropicMode, hasGeminiMode].filter(Boolean).length
+  if (protocolModeCount > 1) {
+    return '不同协议的接口能力不能混选'
   }
   if (hasAnthropicMode && !input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
     return `Anthropic API Key 至少需要启用 ${accountEndpointModeLabel('messages_json', input.profile)} 或 ${accountEndpointModeLabel('messages_sse', input.profile)}`
+  }
+  if (hasGeminiMode) {
+    if (input.type !== 'api_key') return 'Gemini 原生协议当前仅支持 API Key 账户'
+    if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')) {
+      return `Gemini API Key 至少需要启用 ${accountEndpointModeLabel('generate_content_json', input.profile)} 或 ${accountEndpointModeLabel('generate_content_sse', input.profile)}`
+    }
+    return undefined
   }
   if (input.type === 'oauth') {
     if (input.modes.some((mode) => !responsesEndpointModes.includes(mode))) {
@@ -139,6 +154,14 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
       return 'Messages API (Streaming)'
     case 'message_token_counting':
       return 'Count tokens'
+    case 'generate_content_json':
+      return 'generateContent (JSON)'
+    case 'generate_content_sse':
+      return 'streamGenerateContent (SSE)'
+    case 'count_tokens':
+      return 'countTokens'
+    case 'embed_content':
+      return 'embedContent'
     default:
       return accountEndpointModeOptions.find((item) => item.value === mode)?.label ?? mode
   }

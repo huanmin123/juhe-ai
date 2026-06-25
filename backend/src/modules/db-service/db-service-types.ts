@@ -1,5 +1,4 @@
-import type { AccountSummary } from '../../domain/types.js'
-import type { AccountTestResult } from '../../domain/types.js'
+import type { AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
@@ -378,21 +377,21 @@ export type DbServiceOperation =
     groupId: string
     systemAccountId: string
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
+    requestedEndpointFamily?: GatewayRequestEndpointFamily
   }
   | {
     type: 'list_openai_accounts_for_group_result'
     groupId: string
     systemAccountId: string
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
+    requestedEndpointFamily?: GatewayRequestEndpointFamily
   }
   | {
     type: 'list_recoverable_unavailable_openai_accounts_for_group'
     groupId: string
     systemAccountId: string
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
+    requestedEndpointFamily?: GatewayRequestEndpointFamily
     windowMs?: number
   }
   | {

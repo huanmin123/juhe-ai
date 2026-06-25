@@ -8,12 +8,16 @@ import type {
 } from '../../../../domain/types.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
 } from '../../../../domain/provider-protocol.js'
 import {
   openAIEndpointFamilyFromPath
 } from '../../../../domain/openai-endpoint-modes.js'
+import {
+  geminiEndpointFamilyFromPath
+} from '../../../../domain/gemini-endpoint-modes.js'
 import {
   getGatewayRequestBodyState,
   gatewayJsonBodyInlineParseMaxBytes,
@@ -29,6 +33,7 @@ import { splitPathAndQuery } from './route-helpers.js'
 
 export interface OpenAIModelMappingRuntimeAccount {
   modelMappings?: AccountModelMapping[]
+  providerProtocolProfileId?: string
 }
 
 export interface ResolvedOpenAIModelMapping {
@@ -41,10 +46,14 @@ export interface ResolvedOpenAIModelMapping {
 export function resolveOpenAIAccountModelMapping(
   account: OpenAIModelMappingRuntimeAccount | undefined,
   requestedModel: string | undefined,
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily | undefined
+  sourceEndpointFamily: GatewayRequestEndpointFamily | undefined
 ): ResolvedOpenAIModelMapping | undefined {
   const model = requestedModel?.trim()
   if (!model || !sourceEndpointFamily) return undefined
+  if (!isAccountModelMappingSourceEndpointFamily(sourceEndpointFamily)) return undefined
+  if (account?.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID && sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    return undefined
+  }
   const mapping = (account?.modelMappings ?? []).find((item) => (
     item.enabled !== false
     && item.sourceModel === model
@@ -67,7 +76,7 @@ export function resolveOpenAIRequestModelMapping(
 }
 
 export function gatewayRequestEndpointFamily(req: Request): GatewayRequestEndpointFamily | undefined {
-  return openAIRequestEndpointFamily(req) ?? anthropicMessagesRequestEndpointFamily(req)
+  return openAIRequestEndpointFamily(req) ?? anthropicMessagesRequestEndpointFamily(req) ?? geminiRequestEndpointFamily(req)
 }
 
 export function openAIRequestEndpointFamily(req: Request): Extract<AccountModelMappingSourceEndpointFamily, 'chat_completions' | 'responses'> | undefined {
@@ -80,6 +89,13 @@ export function anthropicMessagesRequestEndpointFamily(req: Request): typeof ANT
   const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
   const normalizedPath = (endpoint.startsWith('/') ? endpoint : `/${endpoint}`).replace(/^\/v1(?=\/|$)/, '') || '/'
   return normalizedPath === '/messages' ? ANTHROPIC_MESSAGES_FAMILY : undefined
+}
+
+export function geminiRequestEndpointFamily(req: Request): Exclude<Extract<GatewayRequestEndpointFamily, 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content'>, never> | undefined {
+  if (req.method.toUpperCase() !== 'POST') return undefined
+  const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
+  const family = geminiEndpointFamilyFromPath(endpoint)
+  return family === 'models' ? undefined : family
 }
 
 export function isOpenAIResponsesToChatCompletionsModelMapping(
@@ -180,4 +196,10 @@ function modelMappingRequestError(message: string): OpenAIOAuthCodexAdapterError
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isAccountModelMappingSourceEndpointFamily(value: GatewayRequestEndpointFamily): value is AccountModelMappingSourceEndpointFamily {
+  return value === OPENAI_CHAT_COMPLETIONS_FAMILY
+    || value === OPENAI_RESPONSES_FAMILY
+    || value === ANTHROPIC_MESSAGES_FAMILY
 }

@@ -48,6 +48,8 @@
 - [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
 - [DeepSeek 账号接入](DeepSeek账号接入.md)
+- [Gemini 账号接入](Gemini账号接入.md)
+- [Gemini 协议兼容设计](Gemini协议兼容设计.md)
 - [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)
 - [账号健康检测设计](账号健康检测设计.md)
 - [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md)
@@ -86,6 +88,7 @@
 - 新增或调整 Codex `/v1/responses` 到 OpenAI-compatible Chat Completions 的协议转换、Chat SSE 到 Responses SSE 事件映射、工具调用映射、reasoning 字段处理或供应商桥接启用条件时，优先更新 [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)，再按影响同步具体供应商接入文档。
 - 新增或调整智谱 GLM 通用 API、GLM Coding Plan、GLM OpenAI 兼容档案、GLM Anthropic / Claude Code 兼容档案、GLM Codex bridge、GLM 模型目录、GLM 价格口径或 GLM 账户测试时，优先更新 [智谱 GLM 账号接入](智谱GLM账号接入.md)、[Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 DeepSeek OpenAI-compatible、DeepSeek Anthropic / Claude Code 兼容档案、DeepSeek 协议档案、DeepSeek 特殊参数、DeepSeek 模型目录、DeepSeek 价格口径或 DeepSeek 账户测试时，优先更新 [DeepSeek 账号接入](DeepSeek账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
+- 新增或调整 Gemini API Key、Gemini native `generateContent` / `streamGenerateContent` / `countTokens`、`gemini-cli` 网关兼容、Gemini OpenAI compatibility 边界、Gemini 模型目录、Gemini usage / price 口径或 Gemini 账户测试时，优先更新 [Gemini 账号接入](Gemini账号接入.md)、[Gemini 协议兼容设计](Gemini协议兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整正常账户周期健康检测、长期空闲账户探活、健康检测字段、后台检测队列、健康检测前端展示或与真实成功流量的健康信号关系时，优先更新 [账号健康检测设计](账号健康检测设计.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[网关异常重试与兜底策略](网关异常重试与兜底策略.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
 - 新增或调整管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，优先更新 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
 - 新增或调整面向第三方后端调用的受保护来源系统鉴权、来源 token、外部接口前缀或 demo 接口时，优先更新 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，再同步 [接口契约与权限矩阵](接口契约与权限矩阵.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [安全与日志策略](安全与日志策略.md)。

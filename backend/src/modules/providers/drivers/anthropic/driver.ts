@@ -26,6 +26,7 @@ import {
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import { openAICompatibleFilesResolverForGatewayRequest } from '../../../openai-compatible-files/file-resolver.js'
 import { openAICompatibleImageGenerationExecutorForGatewayRequest } from '../../../openai-compatible-images/image-generation-executor.js'
+import { openAICompatibleMcpProxyExecutorForGatewayRequest } from '../../../openai-compatible-mcp/mcp-proxy-executor.js'
 import { openAICompatibleFileSearchExecutorForGatewayRequest } from '../../../openai-compatible-vector-stores/file-search-executor.js'
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
@@ -122,7 +123,8 @@ export const anthropicProviderDriver: ProviderDriver = {
           modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
           fileResolver: openAICompatibleFilesResolverForGatewayRequest(req),
           fileSearchExecutor: openAICompatibleFileSearchExecutorForGatewayRequest(req),
-          imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest()
+          imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest(),
+          mcpProxyExecutor: openAICompatibleMcpProxyExecutorForGatewayRequest()
         }, signal)
       }
     }

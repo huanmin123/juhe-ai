@@ -2,6 +2,7 @@ import type { AccountModelMapping, AccountSupportedEndpointMode } from '../domai
 import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   OPENAI_PROTOCOL_CODE,
@@ -47,12 +48,20 @@ export function normalizeAccountModelMappingsForProvider(
     protocolCode: OPENAI_PROTOCOL_CODE,
     protocolVersion: OPENAI_PROTOCOL_VERSION
   }
+  const profileId = normalizedProfile.providerProtocolProfileId ?? normalizedProfile.id
+  const geminiOpenAIChatProfile = profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
   const openAIProfile = isOpenAIProtocolProfile(normalizedProfile)
   const anthropicProfile = isAnthropicProtocolProfile(normalizedProfile)
   if (!openAIProfile && !anthropicProfile) {
     throw new Error('当前供应商协议不支持模型映射')
   }
   for (const mapping of mappings) {
+    if (geminiOpenAIChatProfile && mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+      throw new Error('Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射；Codex 使用 Gemini 时只配置 Responses 到 Chat Completions')
+    }
+    if (geminiOpenAIChatProfile && mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+      throw new Error('Gemini OpenAI Chat 档案的模型映射上游协议只能是 Chat Completions')
+    }
     if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
       if (mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
         throw new Error('Anthropic Messages 下游协议当前只支持显式桥接到 Chat Completions 上游')

@@ -14,6 +14,7 @@ import {
 } from '../upstream/request.js'
 import {
   gatewayStreamFailureCode,
+  type GatewayErrorProtocol,
   writeGatewayStreamFailureEvent
 } from './responses.js'
 import { buildStreamReadPlan } from './stream-read-plan.js'
@@ -1166,7 +1167,7 @@ async function writeGatewayStreamFailureEventWithBackpressure(
   res: Response,
   message: string,
   code?: string,
-  protocol: 'openai' | 'anthropic' = 'openai'
+  protocol: GatewayErrorProtocol = 'openai'
 ): Promise<Buffer | undefined> {
   const buffer = writeGatewayStreamFailureEvent(res, message, code, protocol)
   if (!buffer) {

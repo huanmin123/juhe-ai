@@ -7,7 +7,18 @@ export const ACCOUNT_CLIENT_COMPATIBILITIES = ['openai_standard', 'codex_respons
 export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[number]
 export const CLIENT_COMPATIBILITY_CAPABILITIES = ['openai_standard', 'codex_responses', 'anthropic_native', 'claude_code'] as const
 export type ClientCompatibilityCapability = typeof CLIENT_COMPATIBILITY_CAPABILITIES[number]
-export type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'messages_json' | 'messages_sse' | 'message_token_counting'
+export type AccountSupportedEndpointMode =
+  | 'chat_json'
+  | 'chat_sse'
+  | 'responses_json'
+  | 'responses_sse'
+  | 'messages_json'
+  | 'messages_sse'
+  | 'message_token_counting'
+  | 'generate_content_json'
+  | 'generate_content_sse'
+  | 'count_tokens'
+  | 'embed_content'
 export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
 export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
 export type ManagementSystemAccountRole = Extract<SystemAccountRole, 'super_admin' | 'admin'>
@@ -181,7 +192,7 @@ export interface ProviderModelPricing {
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number
-  supportedApiProtocols: Array<'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'completions' | 'images' | 'audio' | 'realtime'>
+  supportedApiProtocols: Array<'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content' | 'completions' | 'images' | 'audio' | 'realtime'>
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
@@ -407,8 +418,15 @@ export interface AccountEffectiveAvailability {
   retryAt?: string
 }
 
-export type GatewayRequestEndpointFamily = 'chat_completions' | 'responses' | 'messages'
-export type AccountModelMappingSourceEndpointFamily = GatewayRequestEndpointFamily
+export type GatewayRequestEndpointFamily =
+  | 'chat_completions'
+  | 'responses'
+  | 'messages'
+  | 'generate_content'
+  | 'stream_generate_content'
+  | 'count_tokens'
+  | 'embed_content'
+export type AccountModelMappingSourceEndpointFamily = 'chat_completions' | 'responses' | 'messages'
 export type AccountModelMappingUpstreamEndpointFamily = 'chat_completions' | 'responses' | 'messages'
 export type AccountModelMappingEndpointFamily = AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
 

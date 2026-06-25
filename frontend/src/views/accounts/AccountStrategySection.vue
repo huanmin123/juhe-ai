@@ -145,7 +145,7 @@ import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
-import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID, isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
@@ -210,6 +210,7 @@ const sourceEndpointFamilyOptions = computed(() => endpointFamilyOptions.map((op
 const nativeResponsesUpstreamAvailable = computed(() => props.form.supportedEndpointModes.some((mode) => responsesEndpointModes.includes(mode)))
 const openAIUpstreamProfile = computed(() => isOpenAIProtocolProfile(props.selectedProtocolProfile))
 const anthropicUpstreamProfile = computed(() => isAnthropicProtocolProfile(props.selectedProtocolProfile))
+const geminiOpenAIChatUpstreamProfile = computed(() => activeProfileId() === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
 
 watch(() => [
   props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'),
@@ -245,7 +246,7 @@ function canSelectResponsesUpstream(): boolean {
 }
 
 function canSelectMessagesSource(): boolean {
-  return openAIUpstreamProfile.value
+  return openAIUpstreamProfile.value && !geminiOpenAIChatUpstreamProfile.value
 }
 
 function canSelectMessagesUpstream(): boolean {

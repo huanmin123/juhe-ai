@@ -42,3 +42,26 @@ export class GatewayAgentGuidanceResponse extends Error {
     this.model = input.model
   }
 }
+
+export class GatewayLocalProtocolResponse extends Error {
+  readonly statusCode: number
+  readonly type = 'local_protocol_response'
+  readonly code: string
+  readonly accountScoped = false
+  readonly body: string
+  readonly contentType: string
+
+  constructor(input: {
+    message: string
+    code: string
+    body: string
+    contentType: string
+    statusCode?: number
+  }) {
+    super(input.message)
+    this.code = input.code
+    this.body = input.body
+    this.contentType = input.contentType
+    this.statusCode = input.statusCode ?? 200
+  }
+}

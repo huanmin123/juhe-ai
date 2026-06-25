@@ -1,0 +1,735 @@
+import { strict as assert } from 'node:assert'
+import { mkdirSync, rmSync } from 'node:fs'
+import http from 'node:http'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import express from 'express'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import {
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_PROTOCOL_CODE,
+  GEMINI_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
+import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import { inspectGeminiStreamText } from '../../modules/gateway/protocols/gemini-v1beta/stream-inspection.js'
+import {
+  extractGeminiJsonSemanticFrames,
+  extractGeminiSseSemanticFrames,
+  geminiResponseEndpointFamilyFromPath
+} from '../../modules/gateway/protocols/gemini-v1beta/response-semantics.js'
+import { parseGeminiUsageFromJsonBuffer } from '../../modules/gateway/protocols/gemini-v1beta/usage.js'
+import { parseGeminiErrorPayload } from '../../modules/gateway/protocols/gemini-v1beta/error-payload.js'
+import { parseOpenAISseEventText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
+import { listResponseInspectionPolicyDefaultRules } from '../../storage/response-inspection-policy.repository.js'
+import { logger } from '../../shared/logger.js'
+
+interface GeminiUpstreamHit {
+  rawUrl: string
+  path: string
+  method: string
+  authorization: string
+  xGoogApiKey: string
+  xApiKey: string
+  accept: string
+  bodyText: string
+}
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-gemini-gateway-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'gemini-gateway-mock-ai.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.secret = 'gemini-gateway-mock-ai-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'db-service'
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [
+  { openAIGatewayRouter },
+  { requestContextMiddleware },
+  databaseModule,
+  repositories,
+  modelCatalog,
+  gatewayCache,
+  usageRecordQueue,
+  auditLogQueue
+] = await Promise.all([
+  import('../../modules/gateway/routes.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../modules/model-pricing/model-catalog.service.js'),
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js')
+])
+
+const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const upstreamHits: GeminiUpstreamHit[] = []
+
+const app = express()
+app.use(requestContextMiddleware)
+app.use('/v1beta', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+
+try {
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+  gatewayCache.clearGatewayRuntimeCache()
+
+  let upstreamServer: http.Server | undefined
+  let appServer: http.Server | undefined
+  try {
+    upstreamServer = createGeminiMockUpstream()
+    await listen(upstreamServer)
+    const upstreamOrigin = `http://127.0.0.1:${serverAddress(upstreamServer).port}`
+
+    assertGeminiSeeds()
+
+    const group = repositories.createGroup({
+      name: 'Gemini Mock AI 回归分组',
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      enabled: true
+    }, access)
+    const account = repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: 'Gemini Mock AI 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-upstream',
+        base_url: upstreamOrigin
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true
+    }, access)
+    assert.equal(account.providerCode, GEMINI_PROVIDER_CODE)
+    assert.equal(account.providerProtocolProfileId, GEMINI_NATIVE_V1BETA_PROFILE_ID)
+    assert.deepEqual(account.credentials.supported_endpoint_modes, ['generate_content_json', 'generate_content_sse', 'count_tokens'])
+    const apiKey = repositories.createApiKeyRecord({
+      name: 'Gemini Mock AI 回归 Key',
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(apiKey.key, '回归 API Key 未返回明文密钥')
+
+    const openAIChatGroup = repositories.createGroup({
+      name: 'Gemini OpenAI Chat Mock AI 回归分组',
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+      enabled: true
+    }, access)
+    const openAIChatAccount = repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+      name: 'Gemini OpenAI Chat Mock AI 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-openai-upstream',
+        base_url: `${upstreamOrigin}/v1beta/openai`
+      },
+      groupId: openAIChatGroup.id,
+      modelMappings: [
+        {
+          sourceModel: 'gpt-5.5',
+          sourceEndpointFamily: 'responses',
+          upstreamModel: 'gemini-3.5-flash',
+          upstreamEndpointFamily: 'chat_completions',
+          enabled: true
+        }
+      ],
+      status: 'active',
+      schedulable: true
+    }, access)
+    assert.equal(openAIChatAccount.providerProtocolProfileId, GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
+    assert.deepEqual(openAIChatAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
+    assert.throws(
+      () => repositories.createAccount({
+        providerCode: GEMINI_PROVIDER_CODE,
+        providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+        name: 'Gemini OpenAI Chat 禁止 Messages 映射账户',
+        type: 'api_key',
+        credentials: {
+          api_key: 'sk-gemini-openai-invalid-mapping',
+          base_url: `${upstreamOrigin}/v1beta/openai`
+        },
+        groupId: openAIChatGroup.id,
+        modelMappings: [
+          {
+            sourceModel: 'claude-haiku-4-5',
+            sourceEndpointFamily: 'messages',
+            upstreamModel: 'gemini-3.5-flash',
+            upstreamEndpointFamily: 'chat_completions',
+            enabled: true
+          }
+        ],
+        status: 'active',
+        schedulable: true
+      }, access),
+      /Gemini OpenAI Chat.*Messages/,
+      'Gemini OpenAI Chat 不应支持 Anthropic Messages 来源映射'
+    )
+    const openAIChatApiKey = repositories.createApiKeyRecord({
+      name: 'Gemini OpenAI Chat Mock AI 回归 Key',
+      groupBindings: [{ groupId: openAIChatGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(openAIChatApiKey.key, 'Gemini OpenAI Chat 回归 API Key 未返回明文密钥')
+
+    appServer = http.createServer(app)
+    await listen(appServer)
+    const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
+
+    assertGeminiProtocolHelpers()
+    await assertGeminiModels(baseUrl, apiKey.key)
+    await assertGeminiGenerateContentJson(baseUrl, apiKey.key)
+    await assertGeminiGenerateContentXGoogApiKey(baseUrl, apiKey.key)
+    await assertGeminiGenerateContentKeyQuery(baseUrl, apiKey.key)
+    await assertGeminiStreamGenerateContent(baseUrl, apiKey.key)
+    await assertGeminiCountTokens(baseUrl, apiKey.key)
+    await assertGeminiUpstreamError(baseUrl, apiKey.key)
+    await assertGeminiLocalAuthError(baseUrl)
+    await assertGeminiOpenAIChatPathRejected(baseUrl, apiKey.key)
+    await assertGeminiOpenAIChatDirect(baseUrl, openAIChatApiKey.key)
+    await assertGeminiCodexResponsesMapping(baseUrl, openAIChatApiKey.key)
+    assertGeminiPolicyDefaults()
+
+    console.log('gemini gateway mock ai regression passed')
+  } finally {
+    await closeServer(appServer)
+    await closeServer(upstreamServer)
+  }
+} finally {
+  usageRecordQueue.clearUsageRecordQueueForTest()
+  auditLogQueue.clearAuditLogQueueForTest()
+  auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  databaseModule.closeStorageDatabases()
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertGeminiSeeds(): void {
+  const providers = repositories.listProviders()
+  const geminiProvider = providers.find((provider) => provider.code === GEMINI_PROVIDER_CODE)
+  assert(geminiProvider, 'Gemini 供应商种子必须存在')
+  assert.equal(geminiProvider.defaultProtocolProfileId, GEMINI_NATIVE_V1BETA_PROFILE_ID, 'Gemini 默认协议档案必须指向 v1beta 原生协议')
+  assert(geminiProvider.protocolProfiles.some((profile) => profile.id === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID), 'Gemini 必须内置 OpenAI Chat 兼容协议档案')
+  const catalog = modelCatalog.listProviderModelCatalog({ providerCode: GEMINI_PROVIDER_CODE })
+  const geminiFlash = catalog.find((item) => item.model === 'gemini-3.5-flash')
+  assert(geminiFlash, 'Gemini 模型目录必须包含 gemini-3.5-flash')
+  assert(geminiFlash.supportedApiProtocols.includes('chat_completions'), 'Gemini 文本模型必须可作为 OpenAI Chat 映射上游')
+}
+
+function assertGeminiProtocolHelpers(): void {
+  const jsonUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
+    usageMetadata: {
+      promptTokenCount: 12,
+      candidatesTokenCount: 7,
+      cachedContentTokenCount: 3
+    }
+  }), 'utf8'))
+  assert.equal(jsonUsage.inputTokens, 12)
+  assert.equal(jsonUsage.outputTokens, 7)
+  assert.equal(jsonUsage.cacheReadTokens, 3)
+
+  const jsonFrames = extractGeminiJsonSemanticFrames({
+    candidates: [
+      {
+        content: {
+          parts: [{ text: 'gemini helper ok' }]
+        },
+        finishReason: 'STOP'
+      }
+    ],
+    usageMetadata: {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2
+    }
+  }, 'generate_content')
+  assert(jsonFrames.some((frame) => frame.frameType === 'output_text_done'), 'Gemini JSON 语义帧必须识别输出文本')
+  assert(jsonFrames.some((frame) => frame.frameType === 'usage'), 'Gemini JSON 语义帧必须识别 usageMetadata')
+
+  const sseText = 'data: {"candidates":[{"content":{"parts":[{"text":"gemini stream helper"}]}}]}\n\n'
+  const sseFrames = extractGeminiSseSemanticFrames(parseOpenAISseEventText(sseText), geminiResponseEndpointFamilyFromPath('/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse'))
+  assert(sseFrames.some((frame) => frame.frameType === 'output_text_delta'), 'Gemini SSE 语义帧必须识别增量输出')
+
+  const inspection = inspectGeminiStreamText(sseText)
+  assert.equal(inspection.outputReceived, true, 'Gemini 流检查必须识别可见输出')
+  assert.equal(inspection.terminalReceived, true, 'Gemini 流检查在 EOF 时必须视为终止成功')
+
+  const parsedError = parseGeminiErrorPayload(JSON.stringify({
+    error: {
+      code: 429,
+      message: 'quota exhausted',
+      status: 'RESOURCE_EXHAUSTED'
+    }
+  }), new Headers({ 'content-type': 'application/json' }))
+  assert.equal(parsedError.code, '429')
+  assert.equal(parsedError.type, 'RESOURCE_EXHAUSTED')
+  assert.equal(parsedError.message, 'quota exhausted')
+}
+
+async function assertGeminiModels(baseUrl: string, localApiKey: string): Promise<void> {
+  const before = upstreamHits.length
+  const response = await fetch(new URL('/v1beta/models', baseUrl), {
+    method: 'GET',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { models?: Array<{ name?: string }> }
+  assert(body.models?.some((item) => item.name === 'models/gemini-3.5-flash'), 'Gemini models 响应必须包含内置模型')
+  assert.equal(upstreamHits.length, before, 'Gemini models 请求不应命中上游')
+}
+
+async function assertGeminiGenerateContentJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with gemini json ok' }] }
+      ]
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
+  }
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'gemini json ok')
+  assert.equal(body.usageMetadata?.promptTokenCount, 11)
+  assert.equal(body.usageMetadata?.candidatesTokenCount, 4)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.authorization, '', 'Gemini 上游请求不应透传本地 Authorization')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream', 'Gemini 上游请求必须使用账号 API Key')
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:generateContent')
+}
+
+async function assertGeminiGenerateContentXGoogApiKey(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent', baseUrl), {
+    method: 'POST',
+    headers: {
+      'x-goog-api-key': localApiKey,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with gemini json ok' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'gemini json ok')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
+}
+
+async function assertGeminiGenerateContentKeyQuery(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL(`/v1beta/models/gemini-3.5-flash:generateContent?key=${encodeURIComponent(localApiKey)}&alt=json`, baseUrl), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with gemini json ok' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'gemini json ok')
+  assert.equal(upstreamHits[0]?.rawUrl.includes('key='), false, 'Gemini 上游请求不应保留本地 key 查询参数')
+  assert.equal(upstreamHits[0]?.rawUrl.includes('alt=json'), true, 'Gemini 上游请求应保留非认证查询参数')
+}
+
+async function assertGeminiStreamGenerateContent(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with gemini sse ok' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('content-type')?.includes('text/event-stream'), true)
+  const text = await response.text()
+  assert.match(text, /gemini /)
+  assert.match(text, /sse ok/)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:streamGenerateContent')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
+}
+
+async function assertGeminiCountTokens(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:countTokens', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'count these tokens' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { totalTokens?: number }
+  assert.equal(body.totalTokens, 17)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:countTokens')
+}
+
+async function assertGeminiUpstreamError(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?case=quota', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'force quota error' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 503)
+  const body = await response.json() as { error?: { status?: string; message?: string } }
+  assert.equal(body.error?.status, 'UNAVAILABLE')
+  assert.match(body.error?.message ?? '', /没有可用的上游账户/)
+  assert(upstreamHits.length >= 1, 'Gemini 上游错误用例必须命中 mock upstream')
+  assert(upstreamHits.every((hit) => hit.rawUrl.includes('case=quota')), 'Gemini 上游错误重试必须保持原始查询参数')
+}
+
+async function assertGeminiLocalAuthError(baseUrl: string): Promise<void> {
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent', baseUrl), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'missing auth' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 401)
+  const body = await response.json() as { error?: { status?: string; message?: string } }
+  assert.equal(body.error?.status, 'UNAUTHENTICATED')
+  assert.match(body.error?.message ?? '', /缺少访问令牌/)
+}
+
+async function assertGeminiOpenAIChatPathRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/chat/completions', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'should not route to Gemini' }]
+    })
+  })
+  assert.notEqual(response.status, 200, 'Gemini 分组不应直接承接 OpenAI Chat 路径')
+  assert.equal(upstreamHits.length, 0, 'OpenAI Chat 路径不应命中 Gemini 上游')
+}
+
+async function assertGeminiOpenAIChatDirect(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/chat/completions?trace=gemini-openai-chat', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gemini-3.5-flash',
+      messages: [{ role: 'user', content: 'reply with gemini openai direct ok' }],
+      stream: false
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as { choices?: Array<{ message?: { content?: string } }> }
+  assert.equal(body.choices?.[0]?.message?.content, 'gemini openai direct ok')
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/v1beta/openai/chat/completions?trace=gemini-openai-chat')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-gemini-openai-upstream', 'Gemini OpenAI Chat 上游必须使用账号 Bearer API Key')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, '', 'Gemini OpenAI Chat 上游不应使用 Gemini 原生 x-goog-api-key')
+  assert.equal(JSON.parse(upstreamHits[0]?.bodyText ?? '{}').model, 'gemini-3.5-flash')
+}
+
+async function assertGeminiCodexResponsesMapping(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/responses?trace=gemini-codex-bridge', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'reply with gemini openai bridge ok',
+      stream: true
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(responseText, /response\.completed/, 'Codex Responses 桥接必须返回 Responses SSE 完成事件')
+  assert.match(responseText, /gemini openai bridge ok/, 'Codex Responses 桥接必须透出 Gemini OpenAI Chat 文本')
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/v1beta/openai/chat/completions?trace=gemini-codex-bridge')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-gemini-openai-upstream')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { model?: string; stream?: boolean; messages?: unknown[] }
+  assert.equal(upstreamBody.model, 'gemini-3.5-flash', 'Responses -> Chat 显式模型映射必须改写上游 Gemini 模型')
+  assert.equal(upstreamBody.stream, true, 'Codex Responses -> Chat 桥接必须使用上游 Chat SSE')
+  assert(Array.isArray(upstreamBody.messages) && upstreamBody.messages.length > 0, 'Codex Responses -> Chat 桥接必须生成 Chat messages')
+}
+
+function assertGeminiPolicyDefaults(): void {
+  const defaultRules = listResponseInspectionPolicyDefaultRules()
+  assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.id === 'default_gemini_error_object'), 'Gemini 默认响应检查策略必须存在')
+}
+
+function createGeminiMockUpstream(): http.Server {
+  return http.createServer(async (req, res) => {
+    const rawUrl = req.url ?? '/'
+    const url = new URL(rawUrl, 'http://127.0.0.1')
+    const bodyText = await readRequestBody(req)
+    upstreamHits.push({
+      rawUrl,
+      path: url.pathname,
+      method: req.method ?? 'GET',
+      authorization: headerText(req, 'authorization'),
+      xGoogApiKey: headerText(req, 'x-goog-api-key'),
+      xApiKey: headerText(req, 'x-api-key'),
+      accept: headerText(req, 'accept'),
+      bodyText
+    })
+
+    if (req.method === 'GET' && url.pathname === '/v1beta/models') {
+      sendJson(res, 200, {
+        models: [
+          {
+            name: 'models/gemini-3.5-flash',
+            version: 'gemini-3.5-flash',
+            displayName: 'gemini-3.5-flash',
+            supportedGenerationMethods: ['generateContent', 'countTokens']
+          },
+          {
+            name: 'models/gemini-embedding-001',
+            version: 'gemini-embedding-001',
+            displayName: 'gemini-embedding-001',
+            supportedGenerationMethods: ['embedContent']
+          }
+        ]
+      })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1beta/models/gemini-3.5-flash:generateContent') {
+      if (url.searchParams.get('case') === 'quota') {
+        sendJson(res, 429, {
+          error: {
+            code: 429,
+            message: 'quota exhausted',
+            status: 'RESOURCE_EXHAUSTED'
+          }
+        })
+        return
+      }
+      sendJson(res, 200, {
+        candidates: [
+          {
+            content: {
+              parts: [{ text: 'gemini json ok' }]
+            },
+            finishReason: 'STOP'
+          }
+        ],
+        usageMetadata: {
+          promptTokenCount: 11,
+          candidatesTokenCount: 4,
+          cachedContentTokenCount: 2
+        }
+      })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1beta/models/gemini-3.5-flash:streamGenerateContent') {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive'
+      })
+      res.write('data: {"candidates":[{"content":{"parts":[{"text":"gemini "}]}}]}\n\n')
+      res.write('data: {"candidates":[{"content":{"parts":[{"text":"sse ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":6,"candidatesTokenCount":5}}\n\n')
+      res.end()
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1beta/models/gemini-3.5-flash:countTokens') {
+      sendJson(res, 200, { totalTokens: 17 })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1beta/openai/chat/completions') {
+      const body = parseJsonObject(bodyText)
+      if (body.stream === true) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive'
+        })
+        res.write(`data: ${JSON.stringify({
+          id: 'chatcmpl-gemini-openai',
+          object: 'chat.completion.chunk',
+          created: 0,
+          model: 'gemini-3.5-flash',
+          choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]
+        })}\n\n`)
+        res.write(`data: ${JSON.stringify({
+          id: 'chatcmpl-gemini-openai',
+          object: 'chat.completion.chunk',
+          created: 0,
+          model: 'gemini-3.5-flash',
+          choices: [{ index: 0, delta: { content: 'gemini openai bridge ok' }, finish_reason: null }]
+        })}\n\n`)
+        res.write(`data: ${JSON.stringify({
+          id: 'chatcmpl-gemini-openai',
+          object: 'chat.completion.chunk',
+          created: 0,
+          model: 'gemini-3.5-flash',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 }
+        })}\n\n`)
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+      sendJson(res, 200, {
+        id: 'chatcmpl-gemini-openai',
+        object: 'chat.completion',
+        created: 0,
+        model: body.model ?? 'gemini-3.5-flash',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'gemini openai direct ok' },
+            finish_reason: 'stop'
+          }
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 }
+      })
+      return
+    }
+
+    sendJson(res, 404, {
+      error: {
+        code: 404,
+        message: `not found: ${url.pathname}`,
+        status: 'NOT_FOUND'
+      }
+    })
+  })
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function sendJson(res: http.ServerResponse, statusCode: number, body: unknown): void {
+  const text = JSON.stringify(body)
+  res.writeHead(statusCode, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(text)
+  })
+  res.end(text)
+}
+
+function readRequestBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    })
+    req.on('end', () => {
+      resolve(Buffer.concat(chunks).toString('utf8'))
+    })
+    req.on('error', () => resolve(''))
+  })
+}
+
+function headerText(req: http.IncomingMessage, name: string): string {
+  const value = req.headers[name.toLowerCase()]
+  if (Array.isArray(value)) {
+    return value[0] ?? ''
+  }
+  return typeof value === 'string' ? value : ''
+}
+
+async function listen(server: http.Server): Promise<void> {
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve)
+  })
+}
+
+async function closeServer(server: http.Server | undefined): Promise<void> {
+  if (!server) return
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve())
+  })
+}
+
+function serverAddress(server: http.Server): { port: number } {
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('服务器未启动')
+  }
+  return address
+}

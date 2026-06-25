@@ -2,6 +2,8 @@ import type { AccountClientCompatibility, AccountSupportedEndpointMode } from '.
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_PROVIDER_CODE,
   GPT_VENDOR_CODE,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
@@ -49,7 +51,7 @@ export function defaultOpenAIEndpointModes(input: OpenAIEndpointModeDefaultConte
   if (providerCode === GPT_VENDOR_CODE || input.clientCompatibility === 'codex_responses') {
     return [...OPENAI_ENDPOINT_MODE_VALUES]
   }
-  if (providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE || providerCode === DEEPSEEK_PROVIDER_CODE || providerCode === GLM_PROVIDER_CODE) {
+  if (providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE || providerCode === DEEPSEEK_PROVIDER_CODE || providerCode === GLM_PROVIDER_CODE || providerCode === GEMINI_PROVIDER_CODE) {
     return [...OPENAI_CHAT_ENDPOINT_MODES]
   }
   return [...OPENAI_ENDPOINT_MODE_VALUES]
@@ -162,6 +164,12 @@ export function assertOpenAIEndpointModesCompatible(input: {
       throw new Error(`OAuth 账户必须支持 ${openAIEndpointModeLabel('responses_sse', input)}`)
     }
   }
+  if (input.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) {
+    const unsupported = input.modes.filter((mode) => !OPENAI_CHAT_ENDPOINT_MODES.includes(mode))
+    if (unsupported.length) {
+      throw new Error(`Gemini OpenAI Chat 账户接口能力只能选择 ${openAIEndpointModeLabel('chat_json', input)} 或 ${openAIEndpointModeLabel('chat_sse', input)}`)
+    }
+  }
   if (input.clientCompatibility === 'codex_responses' && supportsCodexResponsesChatBridge(input)) {
     if (!input.modes.includes('chat_sse')) {
       throw new Error(`Codex Responses 桥接能力必须启用 ${openAIEndpointModeLabel('chat_sse', input)}`)
@@ -178,6 +186,7 @@ export function supportsCodexResponsesChatBridge(input: {
 }): boolean {
   return input.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID
     || input.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
+    || input.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }
 
 function openAIEndpointModeLabel(

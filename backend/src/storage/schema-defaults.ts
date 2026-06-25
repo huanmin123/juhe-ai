@@ -13,6 +13,16 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
+  GEMINI_COUNT_TOKENS_FAMILY,
+  GEMINI_EMBED_CONTENT_FAMILY,
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_MODELS_FAMILY,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_VERSION,
+  GEMINI_PROVIDER_CODE,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -54,6 +64,28 @@ export const DEFAULT_ANTHROPIC_GROUP = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   description: ''
+} as const
+
+export const DEFAULT_GEMINI_GROUP = {
+  id: 'grp_default_gemini_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 Gemini 分组',
+  providerCode: GEMINI_PROVIDER_CODE,
+  providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  protocolCode: GEMINI_PROTOCOL_CODE,
+  protocolVersion: GEMINI_PROTOCOL_VERSION,
+  description: ''
+} as const
+
+export const DEFAULT_GEMINI_OPENAI_CHAT_GROUP = {
+  id: 'grp_default_gemini_openai_chat_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 Gemini OpenAI Chat 分组',
+  providerCode: GEMINI_PROVIDER_CODE,
+  providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  description: '用于 Codex / OpenAI Responses 显式映射到 Gemini OpenAI Chat'
 } as const
 
 export const DEFAULT_DEEPSEEK_GROUP = {
@@ -117,6 +149,8 @@ export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_DEEPSEEK_GROUP,
   DEFAULT_DEEPSEEK_ANTHROPIC_GROUP,
   DEFAULT_ANTHROPIC_GROUP,
+  DEFAULT_GEMINI_GROUP,
+  DEFAULT_GEMINI_OPENAI_CHAT_GROUP,
   DEFAULT_GLM_GENERAL_GROUP,
   DEFAULT_GLM_CODING_GROUP,
   DEFAULT_GLM_CODING_ANTHROPIC_GROUP
@@ -154,6 +188,15 @@ export const ANTHROPIC_PROVIDER_SEED = {
   enabled: 1
 } as const
 
+export const GEMINI_PROVIDER_SEED = {
+  id: GEMINI_PROVIDER_CODE,
+  code: GEMINI_PROVIDER_CODE,
+  name: 'Gemini',
+  parentCode: null,
+  description: 'Google Gemini 官方供应商，默认使用 Gemini v1beta 原生协议；Codex / OpenAI 客户端通过 Gemini OpenAI Chat 兼容档案接入',
+  enabled: 1
+} as const
+
 export const DEEPSEEK_PROVIDER_SEED = {
   id: DEEPSEEK_PROVIDER_CODE,
   code: DEEPSEEK_PROVIDER_CODE,
@@ -187,6 +230,15 @@ export const ANTHROPIC_PROTOCOL_SEED = {
   version: ANTHROPIC_PROTOCOL_VERSION,
   name: 'Anthropic v1',
   description: 'Anthropic 官方 v1 协议；接口族包含 Messages、Models 与 Message Token Counting',
+  enabled: 1
+} as const
+
+export const GEMINI_PROTOCOL_SEED = {
+  id: `${GEMINI_PROTOCOL_CODE}_${GEMINI_PROTOCOL_VERSION}`,
+  code: GEMINI_PROTOCOL_CODE,
+  version: GEMINI_PROTOCOL_VERSION,
+  name: 'Gemini v1beta',
+  description: 'Google Gemini v1beta 原生协议；接口族包含 Models、generateContent、streamGenerateContent、countTokens 与 embedContent',
   enabled: 1
 } as const
 
@@ -241,6 +293,54 @@ export const ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS = [
   }
 ] as const
 
+export const GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS = [
+  {
+    id: `${GEMINI_PROTOCOL_CODE}_${GEMINI_PROTOCOL_VERSION}_${GEMINI_MODELS_FAMILY}`,
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    code: GEMINI_MODELS_FAMILY,
+    name: 'Models',
+    description: 'Gemini v1beta /models 接口族',
+    enabled: 1
+  },
+  {
+    id: `${GEMINI_PROTOCOL_CODE}_${GEMINI_PROTOCOL_VERSION}_${GEMINI_GENERATE_CONTENT_FAMILY}`,
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    code: GEMINI_GENERATE_CONTENT_FAMILY,
+    name: 'generateContent',
+    description: 'Gemini v1beta :generateContent 接口族',
+    enabled: 1
+  },
+  {
+    id: `${GEMINI_PROTOCOL_CODE}_${GEMINI_PROTOCOL_VERSION}_${GEMINI_STREAM_GENERATE_CONTENT_FAMILY}`,
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    code: GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+    name: 'streamGenerateContent',
+    description: 'Gemini v1beta :streamGenerateContent SSE 接口族',
+    enabled: 1
+  },
+  {
+    id: `${GEMINI_PROTOCOL_CODE}_${GEMINI_PROTOCOL_VERSION}_${GEMINI_COUNT_TOKENS_FAMILY}`,
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    code: GEMINI_COUNT_TOKENS_FAMILY,
+    name: 'countTokens',
+    description: 'Gemini v1beta :countTokens 接口族',
+    enabled: 1
+  },
+  {
+    id: `${GEMINI_PROTOCOL_CODE}_${GEMINI_PROTOCOL_VERSION}_${GEMINI_EMBED_CONTENT_FAMILY}`,
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    code: GEMINI_EMBED_CONTENT_FAMILY,
+    name: 'embedContent',
+    description: 'Gemini v1beta :embedContent 接口族',
+    enabled: 1
+  }
+] as const
+
 export const GPT_OPENAI_V1_PROFILE_SEED = {
   id: GPT_OPENAI_V1_PROFILE_ID,
   providerCode: GPT_VENDOR_CODE,
@@ -284,6 +384,42 @@ export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
+} as const
+
+export const GEMINI_NATIVE_V1BETA_PROFILE_SEED = {
+  id: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  providerCode: GEMINI_PROVIDER_CODE,
+  name: 'Gemini / Gemini v1beta',
+  description: 'Gemini 官方 API Key 协议档案，承载 x-goog-api-key 与 Gemini v1beta 原生协议直连',
+  enabled: 1,
+  protocolCode: GEMINI_PROTOCOL_CODE,
+  protocolVersion: GEMINI_PROTOCOL_VERSION,
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  defaultTestModel: 'gemini-3.5-flash',
+  accountTypes: ['api_key'],
+  capabilities: ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'models', 'passthrough'],
+  endpointFamilies: [
+    GEMINI_MODELS_FAMILY,
+    GEMINI_GENERATE_CONTENT_FAMILY,
+    GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+    GEMINI_COUNT_TOKENS_FAMILY,
+    GEMINI_EMBED_CONTENT_FAMILY
+  ]
+} as const
+
+export const GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED = {
+  id: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  providerCode: GEMINI_PROVIDER_CODE,
+  name: 'Gemini / OpenAI Chat',
+  description: 'Gemini 官方 OpenAI Chat Completions 兼容档案，仅用于 OpenAI Chat 直连和 Codex Responses 显式模型映射，不承载 Gemini 原生协议',
+  enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+  defaultTestModel: 'gemini-3.5-flash',
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'passthrough'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
 } as const
 
 export const DEEPSEEK_OPENAI_V1_PROFILE_SEED = {

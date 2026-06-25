@@ -4,8 +4,8 @@ import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.
 import type {
   AccountClientCompatibility,
   AccountModelMapping,
-  AccountModelMappingSourceEndpointFamily,
   ClientCompatibilityCapability,
+  GatewayRequestEndpointFamily,
   AccountSupportedEndpointMode,
   AccountType,
   ProviderCode
@@ -67,7 +67,7 @@ export interface ProviderDriver {
   usageSemantic: string
   profileIds: readonly string[]
   supportsProfile(profile: ProviderProtocolProfileDefinition | undefined): boolean
-  resolveUsageModel(account: ProviderDriverAccount, requestedModel?: string, sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily): ProviderUsageModelResolution
+  resolveUsageModel(account: ProviderDriverAccount, requestedModel?: string, sourceEndpointFamily?: GatewayRequestEndpointFamily): ProviderUsageModelResolution
   prepareAccountBeforeDispatch?(
     account: DispatchAccountSecret,
     context: ProviderAccountPreparationContext

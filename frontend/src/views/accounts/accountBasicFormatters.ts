@@ -2,10 +2,12 @@ import { serverDateTimeTimestamp } from '@/shared/formatters'
 import {
   DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   isDeepSeekProviderCode,
+  isGeminiProviderCode,
   isGlmProviderCode,
   isGptVendorCode
 } from '@/shared/providerProtocol'
@@ -62,6 +64,8 @@ export function accountTypeDescription(providerCode: string, type: AccountType, 
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return '适合 DeepSeek API Key 直连 Claude Code；使用 Anthropic v1 Messages 协议，默认只启用 Messages (JSON/Streaming)。'
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key' && (!providerProtocolProfileId || providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID)) return '适合 DeepSeek OpenAI-compatible Chat Completion 直连；默认只启用 Chat Completion (JSON/Streaming)。'
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key') return '适合 DeepSeek API Key；OpenAI-compatible 与 Claude Code 需要选择对应接入档案。'
+  if (isGeminiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return '适合 Gemini OpenAI Chat 兼容入口；可用显式模型映射承接 Codex Responses 到 Chat Completions。'
+  if (isGeminiProviderCode(providerCode) && type === 'api_key') return '适合 Gemini 原生 API Key；默认启用 generateContent、streamGenerateContent 和 countTokens，不承接 Responses 或 Anthropic 协议转换。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 

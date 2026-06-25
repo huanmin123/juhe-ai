@@ -8,6 +8,7 @@ import type {
   OpenAIAccountsForGroupDiagnostics,
   OpenAIGroupAccountSelectionRow
 } from './openai-account-selector.types.js'
+import type { GatewayRequestEndpointFamily } from '../domain/types.js'
 import {
   gatewayDispatchAccountCandidateLimit,
   gatewayDispatchAccountCandidateScanLimit
@@ -220,7 +221,7 @@ export function listGatewayDispatchModelCandidateRows(
   groupAccess: GroupUsageAccessMetadata,
   now: string,
   requestedModel: string,
-  requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages',
+  requestedEndpointFamily?: GatewayRequestEndpointFamily,
   options: GatewayDispatchCandidateWindowOptions = {}
 ): GatewayDispatchModelCandidateRowsResult {
   const model = requestedModel.trim()

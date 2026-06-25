@@ -30,6 +30,14 @@ interface ImageGenerationHit {
   body: Record<string, unknown>
 }
 
+interface McpProxyHit {
+  path: string
+  method: string
+  authorization: string
+  sessionId: string
+  body: Record<string, unknown>
+}
+
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-anthropic-bridge-mock-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'openai-anthropic-bridge-mock.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
@@ -76,6 +84,7 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: UpstreamHit[] = []
 const imageGenerationHits: ImageGenerationHit[] = []
+const mcpProxyHits: McpProxyHit[] = []
 const mockImageBase64 = Buffer.from('mock image generation result', 'utf8').toString('base64')
 const mockPartialImageBase64 = Buffer.from('mock partial image generation result', 'utf8').toString('base64')
 
@@ -98,15 +107,19 @@ try {
   gatewayCache.clearGatewayRuntimeCache()
   let upstreamServer: http.Server | undefined
   let imageGenerationServer: http.Server | undefined
+  let mcpProxyServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
     upstreamServer = createAnthropicBridgeMockUpstream()
     imageGenerationServer = createImageGenerationMockProvider()
+    mcpProxyServer = createMcpProxyMockServer()
     await listen(upstreamServer)
     await listen(imageGenerationServer)
+    await listen(mcpProxyServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
     const imageGenerationEndpoint = `http://127.0.0.1:${serverAddress(imageGenerationServer).port}/v1/images/generations`
     const imageGenerationResponsesEndpoint = `http://127.0.0.1:${serverAddress(imageGenerationServer).port}/v1/responses`
+    const mcpProxyEndpoint = `http://127.0.0.1:${serverAddress(mcpProxyServer).port}/mcp`
 
     const group = repositories.createGroup({
       name: 'OpenAI 到 Anthropic 桥接 mock 分组',
@@ -233,6 +246,15 @@ try {
     await assertResponsesReasoningSummaryNoneSseBridge(baseUrl, apiKey.key)
     await assertResponsesHostedToolUnsupported(baseUrl, apiKey.key)
     await assertHostedToolRuntimeRejectMode(baseUrl, apiKey.key)
+    await assertHostedToolRuntimeMockMode(baseUrl, apiKey.key)
+    await assertMcpMockProxyMode(baseUrl, apiKey.key)
+    await assertMcpLocalRuntimeGate(baseUrl, apiKey.key)
+    configureMockMcpProxy(mcpProxyEndpoint)
+    try {
+      await assertMcpLocalRuntimeProxyMode(baseUrl, apiKey.key)
+    } finally {
+      clearMockMcpProxy()
+    }
     configureMockImageGenerationProvider(imageGenerationEndpoint)
     await assertResponsesImageGenerationJsonBridge(baseUrl, apiKey.key)
     await assertResponsesImageGenerationSseBridge(baseUrl, apiKey.key)
@@ -265,6 +287,7 @@ try {
   } finally {
     clearMockImageGenerationProvider()
     await closeServer(appServer)
+    await closeServer(mcpProxyServer)
     await closeServer(imageGenerationServer)
     await closeServer(upstreamServer)
   }
@@ -297,6 +320,26 @@ function clearMockImageGenerationProvider(): void {
   runtimeConfig.imageGenerationProvider.apiKey = undefined
   runtimeConfig.imageGenerationProvider.api = 'images'
   runtimeConfig.imageGenerationProvider.model = 'gpt-image-2'
+}
+
+function configureMockMcpProxy(endpoint: string): void {
+  runtimeConfig.mcpProxy.servers = [{
+    label: 'real-mcp',
+    serverUrl: endpoint,
+    enabled: true,
+    allowedTools: ['echo', 'large'],
+    allowRequestAuthorization: true
+  }]
+  runtimeConfig.mcpProxy.timeoutMs = 30000
+  runtimeConfig.mcpProxy.maxBodyBytes = 1024 * 1024
+  runtimeConfig.mcpProxy.maxOutputBytes = 128
+}
+
+function clearMockMcpProxy(): void {
+  runtimeConfig.mcpProxy.servers = []
+  runtimeConfig.mcpProxy.timeoutMs = 10000
+  runtimeConfig.mcpProxy.maxBodyBytes = 512 * 1024
+  runtimeConfig.mcpProxy.maxOutputBytes = 64 * 1024
 }
 
 async function assertChatJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -2548,6 +2591,571 @@ async function assertHostedToolRuntimeRejectMode(baseUrl: string, localApiKey: s
   }
 }
 
+async function assertHostedToolRuntimeMockMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.codeInterpreter
+  runtimeConfig.hostedToolRuntimes.codeInterpreter = 'mock'
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses code_interpreter hosted runtime mock json',
+        tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+        tool_choice: { type: 'code_interpreter' },
+        include: ['code_interpreter_call.outputs'],
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `code_interpreter mock JSON 应返回本地 Responses，实际 HTTP ${response.status}: ${text}`)
+    const body = JSON.parse(text) as {
+      status?: string
+      output?: Array<{ type?: string; outputs?: Array<{ type?: string; logs?: string }>; code?: string }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string }
+      usage?: { total_tokens?: number }
+    }
+    assert.equal(body.status, 'completed')
+    assert.equal(body.metadata?.gateway_runtime, 'mock')
+    assert.equal(body.metadata?.gateway_tool, 'code_interpreter')
+    assert.equal(body.usage?.total_tokens, 0)
+    const codeItem = body.output?.find((item) => item.type === 'code_interpreter_call')
+    assert(codeItem, `code_interpreter mock JSON 应返回 code_interpreter_call: ${text}`)
+    assert.match(codeItem.code ?? '', /juhe-ai code_interpreter mock runtime/)
+    assert.equal(codeItem.outputs?.[0]?.type, 'logs')
+    assert.match(codeItem.outputs?.[0]?.logs ?? '', /execution skipped/)
+    assert.match(body.output_text ?? '', /mock runtime completed without executing code/i)
+    assert.doesNotMatch(text, /responses code_interpreter hosted runtime mock json/, 'mock 输出不能泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'code_interpreter mock JSON 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const sseResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses code_interpreter hosted runtime mock sse',
+        tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+        tool_choice: { type: 'code_interpreter' },
+        include: ['code_interpreter_call.outputs'],
+        stream: true
+      })
+    })
+    const sseText = await sseResponse.text()
+    assert.equal(sseResponse.status, 200, `code_interpreter mock SSE 应返回本地 Responses SSE，实际 HTTP ${sseResponse.status}: ${sseText}`)
+    assert.match(sseText, /event: response\.created/)
+    assert.match(sseText, /event: response\.output_item\.added/)
+    assert.match(sseText, /event: response\.output_item\.done/)
+    assert.match(sseText, /event: response\.output_text\.delta/)
+    assert.match(sseText, /event: response\.completed/)
+    assert.match(sseText, /"type":"code_interpreter_call"/)
+    assert.match(sseText, /juhe-ai code_interpreter mock runtime/)
+    assert.match(sseText, /execution skipped/)
+    assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses mock SSE 不应使用 Chat [DONE]')
+    assert.doesNotMatch(sseText, /responses code_interpreter hosted runtime mock sse/, 'mock SSE 输出不能泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'code_interpreter mock SSE 不应请求 Anthropic 上游')
+  } finally {
+    runtimeConfig.hostedToolRuntimes.codeInterpreter = previousMode
+  }
+}
+
+async function assertMcpMockProxyMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.mcp
+  runtimeConfig.hostedToolRuntimes.mcp = 'mock'
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock json',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp',
+          authorization: 'Bearer should-not-leak',
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `MCP mock JSON 应返回本地 Responses，实际 HTTP ${response.status}: ${text}`)
+    const body = JSON.parse(text) as {
+      status?: string
+      output?: Array<{ type?: string; tools?: Array<{ name?: string }>; name?: string; output?: string }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string }
+      tools?: Array<{ authorization?: string }>
+    }
+    assert.equal(body.status, 'completed')
+    assert.equal(body.metadata?.gateway_runtime, 'mock')
+    assert.equal(body.metadata?.gateway_tool, 'mcp')
+    const listToolsItem = body.output?.find((item) => item.type === 'mcp_list_tools')
+    assert(listToolsItem, `MCP mock JSON 应返回 mcp_list_tools: ${text}`)
+    assert.deepEqual(listToolsItem.tools?.map((tool) => tool.name), ['echo'])
+    const callItem = body.output?.find((item) => item.type === 'mcp_call')
+    assert(callItem, `MCP mock JSON 应返回 mcp_call: ${text}`)
+    assert.equal(callItem.name, 'echo')
+    assert.match(callItem.output ?? '', /juhe-ai mcp mock runtime/)
+    assert.match(body.output_text ?? '', /MCP mock proxy completed/)
+    assert.equal(body.tools?.[0]?.authorization, undefined, 'MCP mock response 不应回显 authorization')
+    assert.doesNotMatch(text, /should-not-leak/, 'MCP mock JSON 不应泄漏 authorization')
+    assert.doesNotMatch(text, /responses mcp hosted runtime mock json/, 'MCP mock JSON 不应泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'MCP mock JSON 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const sseResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock sse',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp',
+          authorization: 'Bearer should-not-leak-sse',
+          require_approval: 'never',
+          allowed_tools: ['status']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: true
+      })
+    })
+    const sseText = await sseResponse.text()
+    assert.equal(sseResponse.status, 200, `MCP mock SSE 应返回本地 Responses SSE，实际 HTTP ${sseResponse.status}: ${sseText}`)
+    assert.match(sseText, /event: response\.created/)
+    assert.match(sseText, /event: response\.output_item\.added/)
+    assert.match(sseText, /event: response\.output_item\.done/)
+    assert.match(sseText, /event: response\.completed/)
+    assert.match(sseText, /"type":"mcp_list_tools"/)
+    assert.match(sseText, /"type":"mcp_call"/)
+    assert.match(sseText, /"name":"status"/)
+    assert.match(sseText, /juhe-ai mcp mock runtime/)
+    assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses MCP mock SSE 不应使用 Chat [DONE]')
+    assert.doesNotMatch(sseText, /should-not-leak-sse/, 'MCP mock SSE 不应泄漏 authorization')
+    assert.doesNotMatch(sseText, /responses mcp hosted runtime mock sse/, 'MCP mock SSE 不应泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'MCP mock SSE 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const approvalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock approval',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const approvalText = await approvalResponse.text()
+    assert.equal(approvalResponse.status, 200, `MCP mock approval 应返回本地 Responses，实际 HTTP ${approvalResponse.status}: ${approvalText}`)
+    const approvalBody = JSON.parse(approvalText) as { output?: Array<{ type?: string }> }
+    assert(approvalBody.output?.some((item) => item.type === 'mcp_list_tools'), `MCP mock approval 应返回 mcp_list_tools: ${approvalText}`)
+    assert(approvalBody.output?.some((item) => item.type === 'mcp_approval_request'), `MCP mock approval 应返回 mcp_approval_request: ${approvalText}`)
+    assert.equal(approvalBody.output?.some((item) => item.type === 'mcp_call'), false, 'approval required 时不应直接返回 mcp_call')
+    assert.equal(upstreamHits.length, 0, 'MCP mock approval 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const duplicateLabelResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock duplicate label',
+        tools: [
+          {
+            type: 'mcp',
+            server_label: 'mock-mcp',
+            server_url: 'https://mock.mcp.local/mcp',
+            require_approval: 'never'
+          },
+          {
+            type: 'mcp',
+            server_label: 'mock-mcp',
+            server_url: 'https://mock.mcp.local/mcp',
+            require_approval: 'never'
+          }
+        ],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const duplicateLabelText = await duplicateLabelResponse.text()
+    assert.equal(duplicateLabelResponse.status, 400, `MCP mock 重复 server_label 应本地 400，实际 HTTP ${duplicateLabelResponse.status}: ${duplicateLabelText}`)
+    assert.match(duplicateLabelText, /openai_anthropic_bridge_mcp_definition_invalid/)
+    assert.equal(upstreamHits.length, 0, 'MCP mock 重复 server_label 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const mixedDefinitionResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock mixed definition',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp',
+          connector_id: 'connector_dropbox',
+          require_approval: 'never'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const mixedDefinitionText = await mixedDefinitionResponse.text()
+    assert.equal(mixedDefinitionResponse.status, 400, `MCP mock 同时设置 server_url / connector_id 应本地 400，实际 HTTP ${mixedDefinitionResponse.status}: ${mixedDefinitionText}`)
+    assert.match(mixedDefinitionText, /openai_anthropic_bridge_mcp_definition_invalid/)
+    assert.equal(upstreamHits.length, 0, 'MCP mock mixed definition 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const missingDefinitionResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock missing definition',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          require_approval: 'never'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const missingDefinitionText = await missingDefinitionResponse.text()
+    assert.equal(missingDefinitionResponse.status, 400, `MCP mock 缺少 server 标识应本地 400，实际 HTTP ${missingDefinitionResponse.status}: ${missingDefinitionText}`)
+    assert.match(missingDefinitionText, /openai_anthropic_bridge_mcp_definition_invalid/)
+    assert.equal(upstreamHits.length, 0, 'MCP mock missing definition 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const authConflictResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock auth conflict',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp',
+          authorization: 'Bearer should-not-leak',
+          headers: { Authorization: 'Bearer should-not-leak-too' },
+          require_approval: 'never'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const authConflictText = await authConflictResponse.text()
+    assert.equal(authConflictResponse.status, 400, `MCP mock authorization 冲突应本地 400，实际 HTTP ${authConflictResponse.status}: ${authConflictText}`)
+    assert.match(authConflictText, /openai_anthropic_bridge_mcp_definition_invalid/)
+    assert.equal(upstreamHits.length, 0, 'MCP mock auth conflict 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const rejectedResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp hosted runtime mock rejected server',
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://example.invalid/mcp',
+          require_approval: 'never'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const rejectedText = await rejectedResponse.text()
+    assert.equal(rejectedResponse.status, 400, `MCP mock 未授权 server 应本地 400，实际 HTTP ${rejectedResponse.status}: ${rejectedText}`)
+    assert.match(rejectedText, /openai_anthropic_bridge_mcp_mock_server_not_allowed/)
+    assert.equal(upstreamHits.length, 0, 'MCP mock 未授权 server 不应请求 Anthropic 上游')
+  } finally {
+    runtimeConfig.hostedToolRuntimes.mcp = previousMode
+  }
+}
+
+async function assertMcpLocalRuntimeGate(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.mcp
+  runtimeConfig.hostedToolRuntimes.mcp = 'local_runtime'
+  try {
+    const unavailableResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime unavailable should not leak',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: 'https://real-mcp.example/mcp',
+          authorization: 'Bearer should-not-leak-local-runtime',
+          require_approval: 'never'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const unavailableText = await unavailableResponse.text()
+    assert.equal(unavailableResponse.status, 503, `MCP local_runtime 未配置 executor 应本地 503，实际 HTTP ${unavailableResponse.status}: ${unavailableText}`)
+    const unavailableBody = JSON.parse(unavailableText) as { error?: { type?: string; code?: string; message?: string } }
+    assert.equal(unavailableBody.error?.type, 'service_unavailable')
+    assert.equal(unavailableBody.error?.code, 'openai_anthropic_bridge_mcp_proxy_unavailable')
+    assert.match(unavailableBody.error?.message ?? '', /MCP proxy executor/)
+    assert.doesNotMatch(unavailableText, /should-not-leak-local-runtime/, 'MCP local_runtime 503 不应泄漏 authorization')
+    assert.doesNotMatch(unavailableText, /responses mcp local runtime unavailable should not leak/, 'MCP local_runtime 503 不应泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime 未配置 executor 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const connectorResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime connector unsupported',
+        tools: [{
+          type: 'mcp',
+          server_label: 'dropbox',
+          connector_id: 'connector_dropbox',
+          require_approval: 'never'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const connectorText = await connectorResponse.text()
+    assert.equal(connectorResponse.status, 400, `MCP local_runtime connector_id 应本地 400，实际 HTTP ${connectorResponse.status}: ${connectorText}`)
+    const connectorBody = JSON.parse(connectorText) as { error?: { type?: string; code?: string; message?: string } }
+    assert.equal(connectorBody.error?.type, 'invalid_request_error')
+    assert.equal(connectorBody.error?.code, 'openai_anthropic_bridge_mcp_connector_unsupported')
+    assert.match(connectorBody.error?.message ?? '', /connector adapter/)
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime connector_id 不应请求 Anthropic 上游')
+  } finally {
+    runtimeConfig.hostedToolRuntimes.mcp = previousMode
+  }
+}
+
+async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  mcpProxyHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.mcp
+  runtimeConfig.hostedToolRuntimes.mcp = 'local_runtime'
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy json',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          authorization: 'Bearer mcp-proxy-request-token',
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `MCP local_runtime proxy JSON 应成功，实际 HTTP ${response.status}: ${text}`)
+    const body = JSON.parse(text) as {
+      status?: string
+      output?: Array<{ type?: string; tools?: Array<{ name?: string }>; name?: string; output?: string; metadata?: { output_truncated?: boolean } }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string }
+      tools?: Array<{ authorization?: string }>
+    }
+    assert.equal(body.status, 'completed')
+    assert.equal(body.metadata?.gateway_runtime, 'local_runtime')
+    assert.equal(body.metadata?.gateway_tool, 'mcp')
+    const listToolsItem = body.output?.find((item) => item.type === 'mcp_list_tools')
+    assert(listToolsItem, `MCP local_runtime proxy JSON 应返回 mcp_list_tools: ${text}`)
+    assert.deepEqual(listToolsItem.tools?.map((tool) => tool.name), ['echo'])
+    const callItem = body.output?.find((item) => item.type === 'mcp_call')
+    assert(callItem, `MCP local_runtime proxy JSON 应返回 mcp_call: ${text}`)
+    assert.equal(callItem.name, 'echo')
+    assert.match(callItem.output ?? '', /mock MCP echo: responses mcp local runtime proxy json/)
+    assert.match(body.output_text ?? '', /MCP proxy completed remote tool call/)
+    assert.equal(body.tools?.[0]?.authorization, undefined, 'MCP local_runtime proxy response 不应回显 authorization')
+    assert.doesNotMatch(text, /mcp-proxy-request-token/, 'MCP local_runtime proxy JSON 不应泄漏 authorization')
+    assert.equal(upstreamHits.length, 1, 'MCP local_runtime proxy JSON 应先请求 Anthropic 让模型选择 MCP 工具')
+    assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__echo'])
+    assert.doesNotMatch(JSON.stringify(upstreamHits[0]?.body ?? {}), /mcp-proxy-request-token/, 'MCP local_runtime proxy 不应把 authorization 发给 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'tools/call'
+    ])
+    assert.equal(mcpProxyHits[0]?.authorization, 'Bearer mcp-proxy-request-token', 'MCP proxy 应只把 authorization 发给 allowlist server')
+    assert.match(mcpProxyHits[2]?.sessionId ?? '', /^mcp_session_/, 'MCP proxy tools/list 应带 initialize session id')
+    const callParams = mcpProxyHits[3]?.body.params as Record<string, unknown> | undefined
+    assert.equal(callParams?.name, 'echo', 'MCP proxy tools/call 应使用原始 MCP tool name')
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const approvalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy approval required',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const approvalText = await approvalResponse.text()
+    assert.equal(approvalResponse.status, 200, `MCP local_runtime proxy 默认 approval 应返回审批请求，实际 HTTP ${approvalResponse.status}: ${approvalText}`)
+    const approvalBody = JSON.parse(approvalText) as { output?: Array<{ type?: string; name?: string }> }
+    const approvalItem = approvalBody.output?.find((item) => item.type === 'mcp_approval_request')
+    assert(approvalItem, `MCP local_runtime proxy 默认 approval 应返回 mcp_approval_request: ${approvalText}`)
+    assert.equal(approvalItem.name, 'echo')
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy 默认 approval 不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const sseResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy sse',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: true
+      })
+    })
+    const sseText = await sseResponse.text()
+    assert.equal(sseResponse.status, 200, `MCP local_runtime proxy SSE 应成功，实际 HTTP ${sseResponse.status}: ${sseText}`)
+    assert.match(sseResponse.headers.get('content-type') ?? '', /text\/event-stream/)
+    assert.match(sseText, /event: response\.created/)
+    assert.match(sseText, /event: response\.output_item\.added/)
+    assert.match(sseText, /event: response\.output_item\.done/)
+    assert.match(sseText, /event: response\.completed/)
+    assert.match(sseText, /"type":"mcp_list_tools"/)
+    assert.match(sseText, /"type":"mcp_call"/)
+    assert.match(sseText, /mock MCP echo: responses mcp local runtime proxy sse/)
+    assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses MCP local_runtime proxy SSE 不应使用 Chat [DONE]')
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy SSE 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const largeResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy large output',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['large']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const largeText = await largeResponse.text()
+    assert.equal(largeResponse.status, 200, `MCP local_runtime proxy 大输出应截断后成功，实际 HTTP ${largeResponse.status}: ${largeText}`)
+    const largeBody = JSON.parse(largeText) as { output?: Array<{ type?: string; output?: string; metadata?: { output_truncated?: boolean } }> }
+    const largeCall = largeBody.output?.find((item) => item.type === 'mcp_call')
+    assert(largeCall, `MCP local_runtime proxy 大输出应返回 mcp_call: ${largeText}`)
+    assert.match(largeCall.output ?? '', /truncated by juhe-ai MCP proxy output limit/)
+    assert.equal(largeCall.metadata?.output_truncated, true, 'MCP local_runtime proxy 大输出应标记 output_truncated')
+    assert.equal(upstreamHits.length, 1, 'MCP local_runtime proxy 大输出 JSON 应先请求 Anthropic 让模型选择 MCP 工具')
+    assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__large'])
+  } finally {
+    runtimeConfig.hostedToolRuntimes.mcp = previousMode
+  }
+}
+
 async function assertResponsesImageGenerationJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   imageGenerationHits.length = 0
@@ -4118,6 +4726,126 @@ function createImageGenerationMockProvider(): http.Server {
   })
 }
 
+function createMcpProxyMockServer(): http.Server {
+  return http.createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      const bodyText = Buffer.concat(chunks).toString('utf8')
+      const body = safeParseJson(bodyText)
+      const sessionId = String(req.headers['mcp-session-id'] ?? '')
+      mcpProxyHits.push({
+        path: req.url?.split('?', 1)[0] ?? '',
+        method: req.method ?? '',
+        authorization: String(req.headers.authorization ?? ''),
+        sessionId,
+        body
+      })
+      if ((req.url?.split('?', 1)[0] ?? '') !== '/mcp') {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { type: 'not_found_error', message: 'mock mcp path not found' } }))
+        return
+      }
+      const jsonRpcMethod = String(body.method ?? '')
+      if (jsonRpcMethod === 'notifications/initialized') {
+        res.writeHead(202, { 'content-type': 'application/json; charset=utf-8' })
+        res.end('{}')
+        return
+      }
+      if (jsonRpcMethod === 'initialize') {
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'mcp-session-id': 'mcp_session_mock'
+        })
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: {
+              tools: {}
+            },
+            serverInfo: {
+              name: 'juhe-ai mock mcp',
+              version: '0.1.0'
+            }
+          }
+        }))
+        return
+      }
+      if (jsonRpcMethod === 'tools/list') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            tools: [
+              {
+                name: 'echo',
+                description: 'Mock MCP echo tool for local runtime regression.',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    query: { type: 'string' }
+                  },
+                  required: ['query'],
+                  additionalProperties: false
+                },
+                annotations: null
+              },
+              {
+                name: 'large',
+                description: 'Mock MCP large output tool for truncation regression.',
+                inputSchema: {
+                  type: 'object',
+                  properties: {},
+                  additionalProperties: false
+                },
+                annotations: null
+              }
+            ]
+          }
+        }))
+        return
+      }
+      if (jsonRpcMethod === 'tools/call') {
+        const params = body.params && typeof body.params === 'object' && !Array.isArray(body.params)
+          ? body.params as Record<string, unknown>
+          : {}
+        const name = String(params.name ?? '')
+        const args = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
+          ? params.arguments as Record<string, unknown>
+          : {}
+        const text = name === 'large'
+          ? `mock MCP large output ${'x'.repeat(2048)}`
+          : `mock MCP echo: ${String(args.query ?? '')}`
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            content: [{
+              type: 'text',
+              text
+            }],
+            isError: false
+          }
+        }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id,
+        error: {
+          code: 'method_not_found',
+          message: `unsupported mock mcp method: ${jsonRpcMethod}`
+        }
+      }))
+    })
+  })
+}
+
 function sendImageGenerationResponsesProviderResponse(res: http.ServerResponse, body: Record<string, unknown>): void {
   const input = String(body.input ?? '')
   const imageItem = {
@@ -4223,9 +4951,11 @@ function sendAnthropicImageGenerationCustomPromptJson(res: http.ServerResponse, 
 
 function sendAnthropicToolJson(res: http.ServerResponse, body: Record<string, unknown>): void {
   const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'lookup_weather'
-  const input = toolName.includes('list_open_orders')
-    ? { customer_id: 'CUST-12345' }
-    : { city: 'Shanghai' }
+  const input = toolName.includes('real-mcp__echo')
+    ? { query: 'responses mcp local runtime proxy json' }
+    : toolName.includes('list_open_orders')
+      ? { customer_id: 'CUST-12345' }
+      : { city: 'Shanghai' }
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({
     id: 'msg_openai_anthropic_bridge_tool',

@@ -4,6 +4,7 @@ import { openAIEndpointFamilyFromPath } from '../../../domain/openai-endpoint-mo
 import type { ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
 import type { ParsedUsage } from '../usage/types.js'
 import { anthropicV1ProtocolDriver } from './anthropic-v1/driver.js'
+import { geminiV1BetaProtocolDriver } from './gemini-v1beta/driver.js'
 import { openAIV1ProtocolDriver } from './openai-v1/driver.js'
 import type {
   GatewayProtocolErrorPayload,
@@ -21,7 +22,8 @@ import type {
 
 const gatewayProtocolDrivers: readonly GatewayProtocolDriver[] = [
   openAIV1ProtocolDriver,
-  anthropicV1ProtocolDriver
+  anthropicV1ProtocolDriver,
+  geminiV1BetaProtocolDriver
 ] as const
 
 export function listGatewayProtocolDrivers(): readonly GatewayProtocolDriver[] {

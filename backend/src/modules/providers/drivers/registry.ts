@@ -1,6 +1,6 @@
 import type { Request } from 'express'
 
-import type { AccountModelMappingSourceEndpointFamily, ProviderCode } from '../../../domain/types.js'
+import type { GatewayRequestEndpointFamily, ProviderCode } from '../../../domain/types.js'
 import { openAIEndpointModeForRequestShape } from '../../../domain/openai-endpoint-modes.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken, type ProviderProtocolProfileDefinition } from '../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../storage/openai-account-selector.types.js'
@@ -13,6 +13,7 @@ import type {
   ProviderRequestCapabilityMismatchReason,
   ProviderUsageModelResolution
 } from './_shared/types.js'
+import { geminiProviderDriver } from './gemini/driver.js'
 import { glmProviderDriver } from './glm/driver.js'
 import { gptProviderDriver } from './gpt/driver.js'
 import { openAICompatibleProviderDriver } from './openai-compatible/driver.js'
@@ -22,6 +23,7 @@ const providerDrivers: readonly ProviderDriver[] = [
   gptProviderDriver,
   deepSeekProviderDriver,
   anthropicProviderDriver,
+  geminiProviderDriver,
   glmProviderDriver
 ] as const
 
@@ -60,7 +62,7 @@ export function usageSemanticForProfile(profile: ProviderProtocolProfileDefiniti
 export function resolveGatewayUsageModel(
   account: DispatchAccountSecret,
   requestedModel?: string,
-  sourceEndpointFamily?: AccountModelMappingSourceEndpointFamily
+  sourceEndpointFamily?: GatewayRequestEndpointFamily
 ): ProviderUsageModelResolution {
   return providerDriverForAccount(account)?.resolveUsageModel(account, requestedModel, sourceEndpointFamily) ?? {
     upstreamModel: requestedModel,

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { ANTHROPIC_PROTOCOL_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
   createResponseInspectionPolicy,
@@ -41,7 +41,7 @@ const policyBodySchema = z.object({
     required_error: '请选择响应检查策略作用层级',
     invalid_type_error: '响应检查策略作用层级无效'
   }),
-  protocolCode: z.enum([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE], {
+  protocolCode: z.enum([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE], {
     required_error: '请选择响应检查策略协议',
     invalid_type_error: '响应检查策略协议无效'
   }),

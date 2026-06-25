@@ -25,13 +25,17 @@ import {
   isImageGenerationDisabledForApiKey
 } from './image-permission.js'
 import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
+import { GEMINI_PROTOCOL_CODE } from '../../../domain/provider-protocol.js'
 import {
   inspectGatewayPreAuthCircuit,
   recordGatewayPreAuthFailure,
   type GatewayCircuitDecision,
   type GatewayPreAuthFailureReason
 } from '../runtime/client-ip-error-circuit.service.js'
-import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
+import {
+  gatewayProtocolClientErrorProtocolForRequest,
+  isGatewayProtocolNativeRequest
+} from '../protocols/registry.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -203,18 +207,38 @@ function recordPreAuthFailure(
 }
 
 function extractGatewayApiKey(req: Request, authorization?: string): string | undefined {
-  return extractBearerToken(authorization) ?? headerToken(req, 'x-api-key')
+  return extractBearerToken(authorization)
+    ?? headerToken(req, 'x-api-key')
+    ?? geminiNativeGatewayApiKey(req)
 }
 
 function gatewayPreAuthSource(req: Request, authorization?: string): string | undefined {
   const bearer = extractBearerToken(authorization)
   if (bearer) return authorization
   const apiKey = headerToken(req, 'x-api-key')
-  return apiKey ? `x-api-key ${apiKey}` : authorization
+  if (apiKey) return `x-api-key ${apiKey}`
+  const geminiKey = geminiNativeGatewayApiKey(req)
+  if (geminiKey) return `gemini-key ${geminiKey}`
+  return authorization
 }
 
 function headerToken(req: Request, name: string): string | undefined {
   const value = req.header(name)
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text || undefined
+}
+
+function geminiNativeGatewayApiKey(req: Request): string | undefined {
+  if (!isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) {
+    return undefined
+  }
+  return headerToken(req, 'x-goog-api-key') ?? queryToken(req, 'key')
+}
+
+function queryToken(req: Request, name: string): string | undefined {
+  const queryIndex = req.originalUrl.indexOf('?')
+  if (queryIndex < 0) return undefined
+  const value = new URLSearchParams(req.originalUrl.slice(queryIndex + 1)).get(name)
   const text = typeof value === 'string' ? value.trim() : ''
   return text || undefined
 }
@@ -326,6 +350,6 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
   })
 }
 
-function gatewayErrorProtocolForRequest(req: Request): 'openai' | 'anthropic' {
+function gatewayErrorProtocolForRequest(req: Request): 'openai' | 'anthropic' | 'gemini' {
   return gatewayProtocolClientErrorProtocolForRequest(req)
 }

@@ -68,7 +68,7 @@ function runtimeCompatibilityDetailForTool(toolType: OpenAIHostedToolRuntimeType
     return '需要 Anthropic computer use 或网关本地 computer adapter；当前未启用执行器'
   }
   if (toolType === 'mcp') {
-    return '需要 MCP server allowlist、认证、审批和审计映射；当前未启用 MCP proxy'
+    return '需要 MCP server allowlist、认证、审批和审计映射；未配置 MCP proxy executor 时不会连接远程 MCP'
   }
   if (toolType === 'shell' || toolType === 'skills' || toolType === 'tool_search') {
     return '需要调用方本地工具运行时；当前不能由 Anthropic Messages 字段转换凭空执行'

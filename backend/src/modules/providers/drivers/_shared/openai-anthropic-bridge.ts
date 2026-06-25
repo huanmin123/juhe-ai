@@ -5,6 +5,7 @@ import type {
   AccountModelMappingSourceEndpointFamily,
   AccountSupportedEndpointMode
 } from '../../../../domain/types.js'
+import { runtimeConfig } from '../../../../config/runtime.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
@@ -16,7 +17,7 @@ import {
   gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../../gateway/request/body.js'
-import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayJsonBodyInWorker
@@ -46,6 +47,7 @@ export interface OpenAIToAnthropicBridgeBodyOptions {
   fileResolver?: OpenAIToAnthropicFileResolver
   fileSearchExecutor?: OpenAIToAnthropicFileSearchExecutor
   imageGenerationExecutor?: OpenAIToAnthropicImageGenerationExecutor
+  mcpProxyExecutor?: OpenAIToAnthropicMcpProxyExecutor
 }
 
 export interface OpenAIToAnthropicFileResolveInput {
@@ -129,6 +131,45 @@ export interface OpenAIToAnthropicImageGenerationExecutor {
   generateStream?(input: OpenAIToAnthropicImageGenerationInput): AsyncIterable<OpenAIToAnthropicImageGenerationStreamEvent>
 }
 
+export interface OpenAIToAnthropicMcpProxyInput {
+  body: JsonRecord
+  tool: JsonRecord
+  model: string
+  stream: boolean
+  signal?: AbortSignal
+}
+
+export interface OpenAIToAnthropicMcpProxyToolDefinition {
+  name: string
+  description?: string
+  inputSchema: JsonRecord
+  annotations?: unknown
+}
+
+export interface OpenAIToAnthropicMcpProxyPreparedServer {
+  serverLabel: string
+  serverUrl: string
+  tools: OpenAIToAnthropicMcpProxyToolDefinition[]
+  context?: unknown
+}
+
+export interface OpenAIToAnthropicMcpProxyToolCallResult {
+  outputText: string
+  truncated?: boolean
+  metadata?: JsonRecord
+}
+
+export interface OpenAIToAnthropicMcpProxyExecutor {
+  prepare?(input: Omit<OpenAIToAnthropicMcpProxyInput, 'model' | 'stream'>): Promise<OpenAIToAnthropicMcpProxyPreparedServer>
+  callTool?(input: {
+    prepared: OpenAIToAnthropicMcpProxyPreparedServer
+    toolName: string
+    arguments: JsonRecord
+    signal?: AbortSignal
+  }): Promise<OpenAIToAnthropicMcpProxyToolCallResult>
+  run(input: OpenAIToAnthropicMcpProxyInput): Promise<GatewayLocalProtocolResponse>
+}
+
 interface OpenAIToAnthropicBridgeTransformOptions {
   model?: string
   previousResponseId?: string
@@ -143,6 +184,9 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   fileSearch?: OpenAIToAnthropicFileSearchPlan
   imageGeneration?: OpenAIToAnthropicImageGenerationPlan
   responsesToolSearch?: OpenAIToAnthropicResponsesToolSearchPlan
+  codeInterpreterMock?: OpenAIToAnthropicCodeInterpreterMockPlan
+  mcpMock?: OpenAIToAnthropicMcpMockPlan
+  mcpProxy?: OpenAIToAnthropicMcpProxyPlan
 }
 
 interface OpenAIToAnthropicBridgeContentContext {
@@ -186,6 +230,32 @@ interface OpenAIToAnthropicImageGenerationPlan {
   tool: OpenAIToAnthropicImageGenerationToolConfig
   executor: OpenAIToAnthropicImageGenerationExecutor
   outputItemId?: string
+}
+
+interface OpenAIToAnthropicCodeInterpreterMockPlan {
+  tool: JsonRecord
+  includeOutputs: boolean
+}
+
+interface OpenAIToAnthropicMcpMockPlan {
+  tool: JsonRecord
+}
+
+interface OpenAIToAnthropicMcpProxyPlan {
+  tool: JsonRecord
+  executor?: OpenAIToAnthropicMcpProxyExecutor
+  prepared?: OpenAIToAnthropicMcpProxyPreparedServer
+  adaptersByAnthropicName?: Map<string, OpenAIToAnthropicMcpProxyToolAdapter>
+  emittedListTools?: boolean
+}
+
+interface OpenAIToAnthropicMcpProxyToolAdapter {
+  anthropicName: string
+  toolName: string
+  serverLabel: string
+  description: string
+  inputSchema: JsonRecord
+  annotations?: unknown
 }
 
 interface OpenAIToAnthropicResponsesToolSearchPlan {
@@ -355,7 +425,8 @@ export async function buildOpenAIToAnthropicBridgeBody(
     throw bridgeValidationError('OpenAI 到 Anthropic 桥接请求缺少 model', 'openai_anthropic_bridge_missing_model')
   }
   const requestPlan = createOpenAIToAnthropicBridgeRequestPlan(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicUnsupportedIncludes(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicMcpToolDefinitions(sourceEndpointFamily, body)
+  validateOpenAIToAnthropicUnsupportedIncludes(sourceEndpointFamily, body, requestPlan)
   validateOpenAIToAnthropicReasoningOptions(body)
   validateOpenAIToAnthropicToolCallControlOptions(sourceEndpointFamily, body)
   validateOpenAIToAnthropicResponseStateOptions(sourceEndpointFamily, body)
@@ -363,12 +434,37 @@ export async function buildOpenAIToAnthropicBridgeBody(
   validateOpenAIToAnthropicOutputShapeOptions(sourceEndpointFamily, body)
   validateOpenAIToAnthropicSemanticControlOptions(body)
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
+  await prepareOpenAIToAnthropicMcpProxyTools(sourceEndpointFamily, body, requestPlan, options.mcpProxyExecutor, {
+    model,
+    stream: requestStream(req)
+  }, signal)
   const guidance = openAIToAnthropicUnsupportedToolGuidance(sourceEndpointFamily, body, requestPlan, options, {
     model,
     stream: requestStream(req)
   })
   if (guidance) {
     throw guidance
+  }
+  const localMcpProxyResponse = await openAIToAnthropicMcpProxyRuntimeResponse(body, requestPlan, options.mcpProxyExecutor, {
+    model,
+    stream: requestStream(req)
+  }, signal)
+  if (localMcpProxyResponse) {
+    throw localMcpProxyResponse
+  }
+  const localCodeInterpreterMockResponse = openAIToAnthropicCodeInterpreterMockResponse(body, requestPlan, {
+    model,
+    stream: requestStream(req)
+  })
+  if (localCodeInterpreterMockResponse) {
+    throw localCodeInterpreterMockResponse
+  }
+  const localMcpMockResponse = openAIToAnthropicMcpMockResponse(body, requestPlan, {
+    model,
+    stream: requestStream(req)
+  })
+  if (localMcpMockResponse) {
+    throw localMcpMockResponse
   }
   await applyOpenAIToAnthropicImageGenerationEmulation(sourceEndpointFamily, body, requestPlan, options.imageGenerationExecutor)
   setOpenAIToAnthropicBridgeRequestPlan(req, requestPlan)
@@ -1143,6 +1239,10 @@ function responsesToolsToAnthropicTools(
         appendResponsesNamespaceToolToAnthropicTools(tools, item, allowedFunctionTools, requestPlan)
         continue
       }
+      if (isOpenAIMcpTool(item) && requestPlan?.mcpProxy?.prepared) {
+        appendMcpProxyToolsToAnthropicTools(tools, requestPlan)
+        continue
+      }
       throw unsupportedOpenAIToolError(item, 'Responses')
     }
     const name = stringValue(item.name)
@@ -1153,6 +1253,17 @@ function responsesToolsToAnthropicTools(
     tools.push(anthropicToolFromFunctionDefinition(name, item.description, item.parameters))
   }
   return tools
+}
+
+function appendMcpProxyToolsToAnthropicTools(
+  tools: JsonRecord[],
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan
+): void {
+  const adapters = requestPlan.mcpProxy?.adaptersByAnthropicName
+  if (!adapters) return
+  for (const adapter of adapters.values()) {
+    tools.push(anthropicToolFromFunctionDefinition(adapter.anthropicName, adapter.description, adapter.inputSchema))
+  }
 }
 
 function responsesToolSearchPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicResponsesToolSearchPlan | undefined {
@@ -1506,6 +1617,15 @@ function createOpenAIToAnthropicBridgeRequestPlan(
   const responsesToolSearch = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
     ? responsesToolSearchPlanFromResponsesBody(body)
     : undefined
+  const codeInterpreterMock = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    ? codeInterpreterMockPlanFromResponsesBody(body)
+    : undefined
+  const mcpMock = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    ? mcpMockPlanFromResponsesBody(body)
+    : undefined
+  const mcpProxy = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    ? mcpProxyPlanFromResponsesBody(body)
+    : undefined
   return {
     structuredOutput: sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
       ? structuredOutputPlanFromResponsesBody(body)
@@ -1515,13 +1635,17 @@ function createOpenAIToAnthropicBridgeRequestPlan(
     chatStreamIncludeUsage: sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
       ? objectValue(body.stream_options)?.include_usage === true
       : undefined,
-    responsesToolSearch
+    responsesToolSearch,
+    codeInterpreterMock,
+    mcpMock,
+    mcpProxy
   }
 }
 
 function validateOpenAIToAnthropicUnsupportedIncludes(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan
 ): void {
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
   if (!hasMeaningfulField(body, 'include')) return
@@ -1543,6 +1667,7 @@ function validateOpenAIToAnthropicUnsupportedIncludes(
   const unsupportedIncludes = include.filter((item) => {
     if (typeof item !== 'string' || !item.trim()) return true
     const normalized = item.trim()
+    if (normalized === 'code_interpreter_call.outputs' && requestPlan.codeInterpreterMock) return false
     return !supportedOpenAIResponsesIncludesForAnthropicBridge.has(normalized)
       && !openAIResponsesIncludesHandledByDedicatedValidators.has(normalized)
   })
@@ -1584,6 +1709,129 @@ function validateOpenAIToAnthropicToolCallControlOptions(
     'Anthropic Messages 不能等价承接 OpenAI Responses max_tool_calls 工具调用次数上限；请移除 max_tool_calls，或改用原生 Responses 上游',
     'openai_anthropic_bridge_max_tool_calls_unsupported'
   )
+}
+
+function validateOpenAIToAnthropicMcpToolDefinitions(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord
+): void {
+  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY && sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) return
+  const tools = Array.isArray(body.tools) ? body.tools.filter(isOpenAIMcpTool) : []
+  if (!tools.length) return
+
+  const seenLabels = new Set<string>()
+  for (const tool of tools) {
+    const serverLabel = stringValue(tool.server_label)
+    if (!serverLabel) {
+      throw bridgeValidationError(
+        'MCP tool 缺少 server_label；请为每个 MCP server 配置唯一 server_label',
+        'openai_anthropic_bridge_mcp_definition_invalid'
+      )
+    }
+    if (seenLabels.has(serverLabel)) {
+      throw bridgeValidationError(
+        `MCP tool server_label 重复：${serverLabel}；同一请求中每个 MCP server_label 必须唯一`,
+        'openai_anthropic_bridge_mcp_definition_invalid'
+      )
+    }
+    seenLabels.add(serverLabel)
+
+    const hasServerUrl = hasMeaningfulField(tool, 'server_url')
+    const hasConnectorId = hasMeaningfulField(tool, 'connector_id')
+    if (hasServerUrl && hasConnectorId) {
+      throw bridgeValidationError(
+        `MCP tool ${serverLabel} 不能同时设置 server_url 和 connector_id；远程 MCP server 与 OpenAI connector 需要二选一`,
+        'openai_anthropic_bridge_mcp_definition_invalid'
+      )
+    }
+    if (!hasServerUrl && !hasConnectorId) {
+      throw bridgeValidationError(
+        `MCP tool ${serverLabel} 缺少 server_url 或 connector_id；当前网关不会猜测远程 MCP server`,
+        'openai_anthropic_bridge_mcp_definition_invalid'
+      )
+    }
+    if (hasServerUrl) {
+      const serverUrl = stringValue(tool.server_url)
+      if (!serverUrl || !isAllowedMcpServerUrlForBridge(serverUrl)) {
+        throw bridgeValidationError(
+          `MCP tool ${serverLabel} 的 server_url 必须是 HTTPS URL；仅 mockai / 本地回归可在私有上游 allowlist 开启时使用 loopback HTTP`,
+          'openai_anthropic_bridge_mcp_definition_invalid'
+        )
+      }
+    }
+    validateMcpAllowedToolsDefinition(serverLabel, tool.allowed_tools)
+    validateMcpRequireApprovalDefinition(serverLabel, tool.require_approval)
+    validateMcpAuthorizationDefinition(serverLabel, tool)
+  }
+}
+
+function validateMcpAllowedToolsDefinition(serverLabel: string, value: unknown): void {
+  if (!hasMeaningfulValue(value)) return
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
+    throw bridgeValidationError(
+      `MCP tool ${serverLabel} 的 allowed_tools 必须是字符串数组`,
+      'openai_anthropic_bridge_mcp_definition_invalid'
+    )
+  }
+}
+
+function validateMcpRequireApprovalDefinition(serverLabel: string, value: unknown): void {
+  if (!hasMeaningfulValue(value)) return
+  if (value === 'always' || value === 'never') return
+  const config = objectValue(value)
+  const never = objectValue(config?.never)
+  const always = objectValue(config?.always)
+  if (never && always) {
+    throw bridgeValidationError(
+      `MCP tool ${serverLabel} 的 require_approval 不能同时设置 always 和 never 策略`,
+      'openai_anthropic_bridge_mcp_definition_invalid'
+    )
+  }
+  const neverToolNames = never ? never.tool_names : undefined
+  const alwaysToolNames = always ? always.tool_names : undefined
+  const validNever = never === undefined || stringArrayValue(neverToolNames).length === arrayLength(neverToolNames)
+  const validAlways = always === undefined || stringArrayValue(alwaysToolNames).length === arrayLength(alwaysToolNames)
+  if (config && validNever && validAlways && (never !== undefined || always !== undefined)) return
+  throw bridgeValidationError(
+    `MCP tool ${serverLabel} 的 require_approval 只支持 always、never，或包含 always/never.tool_names 的对象`,
+    'openai_anthropic_bridge_mcp_definition_invalid'
+  )
+}
+
+function validateMcpAuthorizationDefinition(serverLabel: string, tool: JsonRecord): void {
+  if (!hasMeaningfulField(tool, 'authorization')) return
+  const headers = objectValue(tool.headers)
+  if (!headers) return
+  if (hasMeaningfulField(headers, 'Authorization') || hasMeaningfulField(headers, 'authorization')) {
+    throw bridgeValidationError(
+      `MCP tool ${serverLabel} 不能同时设置 authorization 和 headers.Authorization；请只保留一个凭据来源`,
+      'openai_anthropic_bridge_mcp_definition_invalid'
+    )
+  }
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : -1
+}
+
+function isAllowedMcpServerUrlForBridge(value: string): boolean {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  if (url.protocol === 'https:') return true
+  if (url.protocol !== 'http:' || !runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls) return false
+  return isLoopbackMcpHost(url.hostname)
+}
+
+function isLoopbackMcpHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase()
+  return normalized === 'localhost'
+    || normalized === '127.0.0.1'
+    || normalized === '::1'
+    || normalized === '[::1]'
 }
 
 function validateOpenAIToAnthropicResponseStateOptions(
@@ -1881,6 +2129,42 @@ function structuredOutputPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthro
   }
 }
 
+function codeInterpreterMockPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicCodeInterpreterMockPlan | undefined {
+  const tool = responsesCodeInterpreterToolFromBody(body) ?? responsesCodeInterpreterToolChoiceFromBody(body)
+  if (!tool) return undefined
+  const decision = resolveOpenAIHostedToolRuntimeDecision({
+    toolType: stringValue(tool.type) ?? 'code_interpreter',
+    sourceEndpointFamily: OPENAI_RESPONSES_FAMILY
+  })
+  if (decision?.mode !== 'mock') return undefined
+  return {
+    tool,
+    includeOutputs: responseIncludesCodeInterpreterOutputs(body)
+  }
+}
+
+function mcpMockPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicMcpMockPlan | undefined {
+  const tool = responsesMcpToolFromBody(body)
+  if (!tool) return undefined
+  const decision = resolveOpenAIHostedToolRuntimeDecision({
+    toolType: 'mcp',
+    sourceEndpointFamily: OPENAI_RESPONSES_FAMILY
+  })
+  if (decision?.mode !== 'mock') return undefined
+  return { tool }
+}
+
+function mcpProxyPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicMcpProxyPlan | undefined {
+  const tool = responsesMcpToolFromBody(body)
+  if (!tool) return undefined
+  const decision = resolveOpenAIHostedToolRuntimeDecision({
+    toolType: 'mcp',
+    sourceEndpointFamily: OPENAI_RESPONSES_FAMILY
+  })
+  if (decision?.mode !== 'local_runtime') return undefined
+  return { tool }
+}
+
 function reasoningEffortFromOpenAIBody(body: JsonRecord): string | undefined {
   const reasoning = objectValue(body.reasoning)
   return normalizedOpenAIEnumValue(reasoning?.effort) ?? normalizedOpenAIEnumValue(body.reasoning_effort)
@@ -1942,6 +2226,21 @@ function responsesImageGenerationToolFromBody(body: JsonRecord): OpenAIToAnthrop
   return tool ? imageGenerationToolConfig(tool) : undefined
 }
 
+function responsesCodeInterpreterToolFromBody(body: JsonRecord): JsonRecord | undefined {
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  return tools.find(isOpenAICodeInterpreterTool)
+}
+
+function responsesCodeInterpreterToolChoiceFromBody(body: JsonRecord): JsonRecord | undefined {
+  const toolChoice = objectValue(body.tool_choice)
+  return isOpenAICodeInterpreterTool(toolChoice) ? toolChoice : undefined
+}
+
+function responsesMcpToolFromBody(body: JsonRecord): JsonRecord | undefined {
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  return tools.find(isOpenAIMcpTool)
+}
+
 function chatFileSearchToolFromBody(body: JsonRecord): OpenAIToAnthropicFileSearchToolConfig | undefined {
   const tools = Array.isArray(body.tools) ? body.tools : []
   const tool = tools.find(isOpenAIFileSearchTool)
@@ -1954,6 +2253,16 @@ function isOpenAIFileSearchTool(value: unknown): value is JsonRecord {
 
 function isOpenAIImageGenerationTool(value: unknown): value is JsonRecord {
   return isPlainObject(value) && stringValue(value.type) === 'image_generation'
+}
+
+function isOpenAICodeInterpreterTool(value: unknown): value is JsonRecord {
+  if (!isPlainObject(value)) return false
+  const type = stringValue(value.type)
+  return type === 'code_interpreter' || type === 'container'
+}
+
+function isOpenAIMcpTool(value: unknown): value is JsonRecord {
+  return isPlainObject(value) && stringValue(value.type) === 'mcp'
 }
 
 function fileSearchToolConfig(value: JsonRecord): OpenAIToAnthropicFileSearchToolConfig {
@@ -1993,6 +2302,11 @@ function responsesInputContainsType(value: unknown, type: string): boolean {
 
 function responseIncludesFileSearchResults(body: JsonRecord): boolean {
   return Array.isArray(body.include) && body.include.includes('file_search_call.results')
+}
+
+function responseIncludesCodeInterpreterOutputs(body: JsonRecord): boolean {
+  return Array.isArray(body.include)
+    && body.include.some((item) => typeof item === 'string' && item.trim() === 'code_interpreter_call.outputs')
 }
 
 function responsesUserQueryFromBody(body: JsonRecord): string | undefined {
@@ -2111,6 +2425,695 @@ function openAIToAnthropicUnsupportedToolGuidance(
   })
 }
 
+function openAIToAnthropicCodeInterpreterMockResponse(
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  response: { model: string; stream: boolean }
+): GatewayLocalProtocolResponse | undefined {
+  if (!requestPlan.codeInterpreterMock) return undefined
+  const payload = responsesCodeInterpreterMockResponsePayload(body, requestPlan, response.model)
+  return new GatewayLocalProtocolResponse({
+    code: 'openai_anthropic_bridge_code_interpreter_mock_runtime',
+    message: 'Responses code_interpreter mock runtime completed',
+    body: response.stream ? responsesCodeInterpreterMockSse(payload) : JSON.stringify(payload.response),
+    contentType: response.stream
+      ? 'text/event-stream; charset=utf-8'
+      : 'application/json; charset=utf-8'
+  })
+}
+
+function responsesCodeInterpreterMockResponsePayload(
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  model: string
+): { response: JsonRecord; codeItem: JsonRecord; messageItem: JsonRecord; text: string } {
+  const codeInterpreterMock = requestPlan.codeInterpreterMock
+  if (!codeInterpreterMock) {
+    throw new Error('code interpreter mock plan is required')
+  }
+  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const responseId = `resp_ci_mock_${suffix}`
+  const createdAt = Math.floor(Date.now() / 1000)
+  const text = 'Code interpreter mock runtime completed without executing code. Configure a real sandbox runtime for production code execution.'
+  const codeItem: JsonRecord = {
+    id: `ci_${safeIdSegment(responseId)}`,
+    type: 'code_interpreter_call',
+    status: 'completed',
+    container_id: mockCodeInterpreterContainerId(codeInterpreterMock.tool),
+    code: 'print("juhe-ai code_interpreter mock runtime")',
+    outputs: codeInterpreterMock.includeOutputs
+      ? [{
+          type: 'logs',
+          logs: 'juhe-ai code_interpreter mock runtime: execution skipped'
+        }]
+      : []
+  }
+  const messageItem: JsonRecord = {
+    id: `msg_${safeIdSegment(responseId)}`,
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    content: [{
+      type: 'output_text',
+      text,
+      annotations: []
+    }]
+  }
+  return {
+    response: {
+      id: responseId,
+      object: 'response',
+      created_at: createdAt,
+      status: 'completed',
+      completed_at: createdAt,
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      max_output_tokens: null,
+      model,
+      output: [codeItem, messageItem],
+      output_text: text,
+      parallel_tool_calls: false,
+      previous_response_id: stringValue(body.previous_response_id) ?? null,
+      reasoning: {
+        effort: requestPlan.reasoningEffort ?? null,
+        summary: requestPlan.reasoningSummary ?? null
+      },
+      store: false,
+      temperature: null,
+      text: { format: { type: 'text' } },
+      tool_choice: 'auto',
+      tools: [responsesCodeInterpreterToolSnapshot(codeInterpreterMock.tool)],
+      top_p: null,
+      truncation: 'disabled',
+      usage: zeroResponsesUsage(),
+      user: null,
+      metadata: {
+        gateway_runtime: 'mock',
+        gateway_tool: 'code_interpreter'
+      }
+    },
+    codeItem,
+    messageItem,
+    text
+  }
+}
+
+function responsesCodeInterpreterMockSse(input: {
+  response: JsonRecord
+  codeItem: JsonRecord
+  messageItem: JsonRecord
+  text: string
+}): string {
+  const response = input.response
+  const responseId = stringValue(response.id) ?? ''
+  const createdAt = integerValue(response.created_at) ?? Math.floor(Date.now() / 1000)
+  const inProgressResponse: JsonRecord = {
+    ...response,
+    status: 'in_progress',
+    completed_at: null,
+    output: [],
+    output_text: '',
+    usage: null
+  }
+  const codeInProgress: JsonRecord = {
+    ...input.codeItem,
+    status: 'in_progress',
+    outputs: []
+  }
+  const messageInProgress: JsonRecord = {
+    ...input.messageItem,
+    status: 'in_progress',
+    content: []
+  }
+  const messageId = stringValue(input.messageItem.id) ?? `msg_${safeIdSegment(responseId)}`
+  const outputTextPart: JsonRecord = {
+    type: 'output_text',
+    text: input.text,
+    annotations: []
+  }
+  return [
+    sse('response.created', {
+      type: 'response.created',
+      response: inProgressResponse
+    }),
+    sse('response.in_progress', {
+      type: 'response.in_progress',
+      response: inProgressResponse
+    }),
+    sse('response.output_item.added', {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: codeInProgress
+    }),
+    sse('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: input.codeItem
+    }),
+    sse('response.output_item.added', {
+      type: 'response.output_item.added',
+      output_index: 1,
+      item: messageInProgress
+    }),
+    sse('response.content_part.added', {
+      type: 'response.content_part.added',
+      item_id: messageId,
+      output_index: 1,
+      content_index: 0,
+      part: { type: 'output_text', text: '', annotations: [] }
+    }),
+    sse('response.output_text.delta', {
+      type: 'response.output_text.delta',
+      item_id: messageId,
+      output_index: 1,
+      content_index: 0,
+      delta: input.text
+    }),
+    sse('response.output_text.done', {
+      type: 'response.output_text.done',
+      item_id: messageId,
+      output_index: 1,
+      content_index: 0,
+      text: input.text
+    }),
+    sse('response.content_part.done', {
+      type: 'response.content_part.done',
+      item_id: messageId,
+      output_index: 1,
+      content_index: 0,
+      part: outputTextPart
+    }),
+    sse('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: 1,
+      item: input.messageItem
+    }),
+    sse('response.completed', {
+      type: 'response.completed',
+      response: {
+        ...response,
+        completed_at: integerValue(response.completed_at) ?? createdAt
+      }
+    })
+  ].join('')
+}
+
+function responsesCodeInterpreterToolSnapshot(tool: JsonRecord): JsonRecord {
+  const snapshot: JsonRecord = { type: 'code_interpreter' }
+  const container = tool.container
+  if (typeof container === 'string' && container.trim()) {
+    snapshot.container = container.trim() === 'auto' ? { type: 'auto' } : container.trim()
+    return snapshot
+  }
+  snapshot.container = { type: 'auto' }
+  return snapshot
+}
+
+function mockCodeInterpreterContainerId(tool: JsonRecord): string {
+  const container = tool.container
+  const base = typeof container === 'string'
+    ? container
+    : isPlainObject(container)
+      ? stringValue(container.id) ?? stringValue(container.container_id) ?? stringValue(container.type) ?? 'auto'
+      : 'auto'
+  return `cntr_mock_${safeIdSegment(base).slice(0, 32)}`
+}
+
+function zeroResponsesUsage(): JsonRecord {
+  return {
+    input_tokens: 0,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens: 0,
+    output_tokens_details: { reasoning_tokens: 0 },
+    total_tokens: 0
+  }
+}
+
+const mcpMockServerLabel = 'mock-mcp'
+const mcpMockServerUrl = 'https://mock.mcp.local/mcp'
+const mcpMockToolDefinitions: JsonRecord[] = [
+  {
+    annotations: null,
+    description: 'Mock MCP echo tool for juhe-ai protocol regression.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' }
+      },
+      required: ['query'],
+      additionalProperties: false
+    },
+    name: 'echo'
+  },
+  {
+    annotations: null,
+    description: 'Mock MCP status tool for juhe-ai protocol regression.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false
+    },
+    name: 'status'
+  }
+]
+
+async function openAIToAnthropicMcpProxyRuntimeResponse(
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  executor: OpenAIToAnthropicMcpProxyExecutor | undefined,
+  response: { model: string; stream: boolean },
+  signal?: AbortSignal
+): Promise<GatewayLocalProtocolResponse | undefined> {
+  if (!requestPlan.mcpProxy) return undefined
+  validateMcpProxyRuntimeDefinitions(body)
+  if (
+    !response.stream
+    && requestPlan.mcpProxy.prepared
+    && requestPlan.mcpProxy.executor?.callTool
+    && mcpProxyPreparedToolsAreApprovalFree(requestPlan.mcpProxy.tool, requestPlan.mcpProxy.prepared.tools)
+  ) {
+    return undefined
+  }
+  if (!executor) {
+    throw bridgeValidationError(
+      'MCP local_runtime 已启用，但当前网关未配置 MCP proxy executor；请求不会转发给 Anthropic，也不会连接远程 MCP server',
+      'openai_anthropic_bridge_mcp_proxy_unavailable',
+      503,
+      'service_unavailable'
+    )
+  }
+  return executor.run({
+    body,
+    tool: requestPlan.mcpProxy.tool,
+    model: response.model,
+    stream: response.stream,
+    signal
+  })
+}
+
+async function prepareOpenAIToAnthropicMcpProxyTools(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  executor: OpenAIToAnthropicMcpProxyExecutor | undefined,
+  response: { model: string; stream: boolean },
+  signal?: AbortSignal
+): Promise<void> {
+  const mcpProxy = requestPlan.mcpProxy
+  if (!mcpProxy || sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY || response.stream) return
+  validateMcpProxyRuntimeDefinitions(body)
+  if (!executor?.prepare || !executor.callTool) return
+  if (!mcpProxyRequestDeclaresModelDrivenApprovalFree(mcpProxy.tool)) return
+  const prepared = await executor.prepare({
+    body,
+    tool: mcpProxy.tool,
+    signal
+  })
+  if (!mcpProxyPreparedToolsAreApprovalFree(mcpProxy.tool, prepared.tools)) return
+  const usedNames = existingAnthropicToolNamesFromResponsesBody(body)
+  const adaptersByAnthropicName = new Map<string, OpenAIToAnthropicMcpProxyToolAdapter>()
+  for (const tool of prepared.tools) {
+    const anthropicName = uniqueAnthropicToolName(
+      `${prepared.serverLabel}__${tool.name}`,
+      usedNames
+    )
+    adaptersByAnthropicName.set(anthropicName, {
+      anthropicName,
+      toolName: tool.name,
+      serverLabel: prepared.serverLabel,
+      description: mcpProxyToolDescription(prepared, tool),
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations
+    })
+  }
+  mcpProxy.executor = executor
+  mcpProxy.prepared = prepared
+  mcpProxy.adaptersByAnthropicName = adaptersByAnthropicName
+}
+
+function mcpProxyRequestDeclaresModelDrivenApprovalFree(tool: JsonRecord): boolean {
+  if (tool.require_approval === 'never') return true
+  const requireApproval = objectValue(tool.require_approval)
+  const never = objectValue(requireApproval?.never)
+  const approvalFreeTools = new Set(stringArrayValue(never?.tool_names))
+  const allowedTools = stringArrayValue(tool.allowed_tools)
+  return allowedTools.length > 0 && allowedTools.every((toolName) => approvalFreeTools.has(toolName))
+}
+
+function mcpProxyPreparedToolsAreApprovalFree(
+  tool: JsonRecord,
+  tools: OpenAIToAnthropicMcpProxyToolDefinition[]
+): boolean {
+  return tools.length > 0 && tools.every((item) => !mcpProxyRequiresApproval(tool, item.name))
+}
+
+function mcpProxyRequiresApproval(tool: JsonRecord, toolName: string): boolean {
+  const requireApproval = tool.require_approval
+  if (requireApproval === 'never') return false
+  if (requireApproval === 'always') return true
+  const requireApprovalObject = objectValue(requireApproval)
+  const never = objectValue(requireApprovalObject?.never)
+  if (stringArrayValue(never?.tool_names).includes(toolName)) return false
+  return true
+}
+
+function existingAnthropicToolNamesFromResponsesBody(body: JsonRecord): Set<string> {
+  const usedNames = new Set<string>()
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  for (const tool of tools) {
+    if (!isPlainObject(tool)) continue
+    if (tool.type === 'function') {
+      const name = stringValue(tool.name)
+      if (name) usedNames.add(name)
+    }
+  }
+  return usedNames
+}
+
+function mcpProxyToolDescription(
+  prepared: OpenAIToAnthropicMcpProxyPreparedServer,
+  tool: OpenAIToAnthropicMcpProxyToolDefinition
+): string {
+  return [
+    `OpenAI Responses MCP server: ${prepared.serverLabel}.`,
+    tool.description
+  ].filter(Boolean).join('\n\n')
+}
+
+function validateMcpProxyRuntimeDefinitions(body: JsonRecord): void {
+  const tools = Array.isArray(body.tools) ? body.tools.filter(isOpenAIMcpTool) : []
+  for (const tool of tools) {
+    if (!hasMeaningfulField(tool, 'connector_id')) continue
+    const serverLabel = stringValue(tool.server_label) ?? '<missing_server_label>'
+    throw bridgeValidationError(
+      `MCP tool ${serverLabel} 使用 connector_id；OpenAI connector 需要独立 connector adapter，不能由 remote MCP proxy 伪装支持`,
+      'openai_anthropic_bridge_mcp_connector_unsupported'
+    )
+  }
+}
+
+function openAIToAnthropicMcpMockResponse(
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  response: { model: string; stream: boolean }
+): GatewayLocalProtocolResponse | undefined {
+  if (!requestPlan.mcpMock) return undefined
+  validateMcpMockAllowlistForBody(body)
+  const payload = responsesMcpMockResponsePayload(body, requestPlan, response.model)
+  return new GatewayLocalProtocolResponse({
+    code: 'openai_anthropic_bridge_mcp_mock_runtime',
+    message: 'Responses MCP mock proxy completed',
+    body: response.stream ? responsesMcpMockSse(payload) : JSON.stringify(payload.response),
+    contentType: response.stream
+      ? 'text/event-stream; charset=utf-8'
+      : 'application/json; charset=utf-8'
+  })
+}
+
+function responsesMcpMockResponsePayload(
+  body: JsonRecord,
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  model: string
+): { response: JsonRecord; items: JsonRecord[]; text: string } {
+  const mcpMock = requestPlan.mcpMock
+  if (!mcpMock) {
+    throw new Error('mcp mock plan is required')
+  }
+  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const responseId = `resp_mcp_mock_${suffix}`
+  const createdAt = Math.floor(Date.now() / 1000)
+  const toolDefinitions = filteredMcpMockToolDefinitions(mcpMock.tool)
+  const listToolsItem: JsonRecord = {
+    id: `mcpl_${safeIdSegment(responseId)}`,
+    type: 'mcp_list_tools',
+    server_label: mcpMockServerLabel,
+    tools: toolDefinitions
+  }
+  const items: JsonRecord[] = [listToolsItem]
+  let text = ''
+
+  const selectedTool = toolDefinitions[0]
+  const selectedToolName = stringValue(selectedTool?.name)
+  if (!selectedToolName) {
+    text = 'MCP mock proxy found no allowed mock tools.'
+    items.push(responsesMcpMockMessageItem(responseId, text))
+  } else {
+    const approval = mcpApprovalResponseFromResponsesInput(body.input)
+    if (approval?.approved === false) {
+      text = 'MCP mock proxy tool call was not approved.'
+      items.push(responsesMcpMockMessageItem(responseId, text))
+    } else if (mcpMockRequiresApproval(mcpMock.tool, selectedToolName) && !approval?.approved) {
+      items.push(responsesMcpMockApprovalRequestItem(responseId, selectedToolName))
+    } else {
+      const callItem = responsesMcpMockCallItem(responseId, selectedToolName, approval?.approvalRequestId)
+      items.push(callItem)
+      text = 'MCP mock proxy completed without contacting a remote MCP server.'
+      items.push(responsesMcpMockMessageItem(responseId, text))
+    }
+  }
+
+  return {
+    response: {
+      id: responseId,
+      object: 'response',
+      created_at: createdAt,
+      status: 'completed',
+      completed_at: createdAt,
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      max_output_tokens: null,
+      model,
+      output: items,
+      output_text: text,
+      parallel_tool_calls: false,
+      previous_response_id: stringValue(body.previous_response_id) ?? null,
+      reasoning: {
+        effort: requestPlan.reasoningEffort ?? null,
+        summary: requestPlan.reasoningSummary ?? null
+      },
+      store: false,
+      temperature: null,
+      text: { format: { type: 'text' } },
+      tool_choice: 'auto',
+      tools: [responsesMcpToolSnapshot(mcpMock.tool)],
+      top_p: null,
+      truncation: 'disabled',
+      usage: zeroResponsesUsage(),
+      user: null,
+      metadata: {
+        gateway_runtime: 'mock',
+        gateway_tool: 'mcp'
+      }
+    },
+    items,
+    text
+  }
+}
+
+function responsesMcpMockSse(input: { response: JsonRecord; items: JsonRecord[]; text: string }): string {
+  const response = input.response
+  const inProgressResponse: JsonRecord = {
+    ...response,
+    status: 'in_progress',
+    completed_at: null,
+    output: [],
+    output_text: '',
+    usage: null
+  }
+  const output: string[] = [
+    sse('response.created', {
+      type: 'response.created',
+      response: inProgressResponse
+    }),
+    sse('response.in_progress', {
+      type: 'response.in_progress',
+      response: inProgressResponse
+    })
+  ]
+
+  for (const [index, item] of input.items.entries()) {
+    output.push(sse('response.output_item.added', {
+      type: 'response.output_item.added',
+      output_index: index,
+      item: mcpMockInProgressItem(item)
+    }))
+    if (item.type === 'message') {
+      const itemId = stringValue(item.id) ?? ''
+      const content = Array.isArray(item.content) ? item.content.filter(isPlainObject) : []
+      const part = content[0] ?? { type: 'output_text', text: '', annotations: [] }
+      const text = stringValue(part.text) ?? ''
+      output.push(
+        sse('response.content_part.added', {
+          type: 'response.content_part.added',
+          item_id: itemId,
+          output_index: index,
+          content_index: 0,
+          part: { type: 'output_text', text: '', annotations: [] }
+        }),
+        sse('response.output_text.delta', {
+          type: 'response.output_text.delta',
+          item_id: itemId,
+          output_index: index,
+          content_index: 0,
+          delta: text
+        }),
+        sse('response.output_text.done', {
+          type: 'response.output_text.done',
+          item_id: itemId,
+          output_index: index,
+          content_index: 0,
+          text
+        }),
+        sse('response.content_part.done', {
+          type: 'response.content_part.done',
+          item_id: itemId,
+          output_index: index,
+          content_index: 0,
+          part
+        })
+      )
+    }
+    output.push(sse('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: index,
+      item
+    }))
+  }
+
+  output.push(sse('response.completed', {
+    type: 'response.completed',
+    response
+  }))
+  return output.join('')
+}
+
+function validateMcpMockAllowlist(tool: JsonRecord): void {
+  const serverLabel = stringValue(tool.server_label)
+  const serverUrl = stringValue(tool.server_url)
+  if (serverLabel === mcpMockServerLabel && serverUrl === mcpMockServerUrl && !hasMeaningfulField(tool, 'connector_id')) {
+    return
+  }
+  throw bridgeValidationError(
+    `MCP mock proxy 只允许 server_label=${mcpMockServerLabel} 且 server_url=${mcpMockServerUrl}；真实远程 MCP 需要后续 allowlist / auth / approval runtime`,
+    'openai_anthropic_bridge_mcp_mock_server_not_allowed'
+  )
+}
+
+function validateMcpMockAllowlistForBody(body: JsonRecord): void {
+  const tools = Array.isArray(body.tools) ? body.tools.filter(isOpenAIMcpTool) : []
+  for (const tool of tools) {
+    validateMcpMockAllowlist(tool)
+  }
+}
+
+function filteredMcpMockToolDefinitions(tool: JsonRecord): JsonRecord[] {
+  const allowed = stringArrayValue(tool.allowed_tools)
+  if (!allowed.length) return mcpMockToolDefinitions.map((definition) => ({ ...definition }))
+  const allowedSet = new Set(allowed)
+  return mcpMockToolDefinitions
+    .filter((definition) => {
+      const name = stringValue(definition.name)
+      return name ? allowedSet.has(name) : false
+    })
+    .map((definition) => ({ ...definition }))
+}
+
+function responsesMcpMockCallItem(
+  responseId: string,
+  toolName: string,
+  approvalRequestId?: string
+): JsonRecord {
+  return {
+    id: `mcp_${safeIdSegment(responseId)}`,
+    type: 'mcp_call',
+    approval_request_id: approvalRequestId ?? null,
+    arguments: JSON.stringify({ query: 'juhe-ai mcp mock runtime' }),
+    error: null,
+    name: toolName,
+    output: JSON.stringify({
+      ok: true,
+      message: 'juhe-ai mcp mock runtime: remote MCP call skipped'
+    }),
+    server_label: mcpMockServerLabel
+  }
+}
+
+function responsesMcpMockApprovalRequestItem(responseId: string, toolName: string): JsonRecord {
+  return {
+    id: `mcpr_${safeIdSegment(responseId)}`,
+    type: 'mcp_approval_request',
+    arguments: JSON.stringify({ query: 'juhe-ai mcp mock runtime' }),
+    name: toolName,
+    server_label: mcpMockServerLabel
+  }
+}
+
+function responsesMcpMockMessageItem(responseId: string, text: string): JsonRecord {
+  return {
+    id: `msg_${safeIdSegment(responseId)}`,
+    type: 'message',
+    status: 'completed',
+    role: 'assistant',
+    content: [{
+      type: 'output_text',
+      text,
+      annotations: []
+    }]
+  }
+}
+
+function mcpMockInProgressItem(item: JsonRecord): JsonRecord {
+  if (item.type !== 'message') return item
+  return {
+    ...item,
+    status: 'in_progress',
+    content: []
+  }
+}
+
+function mcpMockRequiresApproval(tool: JsonRecord, toolName: string): boolean {
+  const requireApproval = tool.require_approval
+  if (requireApproval === 'never') return false
+  if (requireApproval === 'always') return true
+  const requireApprovalObject = objectValue(requireApproval)
+  const never = objectValue(requireApprovalObject?.never)
+  if (stringArrayValue(never?.tool_names).includes(toolName)) return false
+  return true
+}
+
+function mcpApprovalResponseFromResponsesInput(value: unknown): { approved: boolean; approvalRequestId?: string } | undefined {
+  const items = Array.isArray(value)
+    ? value
+    : isPlainObject(value) ? [value] : []
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (!isPlainObject(item)) continue
+    if (stringValue(item.type) !== 'mcp_approval_response') continue
+    return {
+      approved: item.approve === true,
+      approvalRequestId: stringValue(item.approval_request_id)
+    }
+  }
+  return undefined
+}
+
+function responsesMcpToolSnapshot(tool: JsonRecord): JsonRecord {
+  const snapshot: JsonRecord = {
+    type: 'mcp',
+    server_label: mcpMockServerLabel,
+    server_url: mcpMockServerUrl
+  }
+  const serverDescription = stringValue(tool.server_description)
+  if (serverDescription) snapshot.server_description = serverDescription
+  const allowedTools = stringArrayValue(tool.allowed_tools)
+  if (allowedTools.length) snapshot.allowed_tools = allowedTools
+  if (tool.require_approval !== undefined) snapshot.require_approval = tool.require_approval
+  if (tool.defer_loading === true) snapshot.defer_loading = true
+  return snapshot
+}
+
 function rejectedOpenAIHostedRuntimeLabels(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   body: JsonRecord,
@@ -2199,6 +3202,19 @@ function unsupportedOpenAIHostedToolLabel(
     return undefined
   }
   if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isResponsesToolSearchTool(tool) && requestPlan.responsesToolSearch) {
+    return undefined
+  }
+  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isOpenAICodeInterpreterTool(tool) && requestPlan.codeInterpreterMock) {
+    return undefined
+  }
+  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isOpenAIMcpTool(tool) && requestPlan.mcpMock) {
+    const isSelectedMockTool = requestPlan.mcpMock.tool === tool
+    const isMcpToolChoice = !hasMeaningfulField(tool, 'server_label')
+      && !hasMeaningfulField(tool, 'server_url')
+      && !hasMeaningfulField(tool, 'connector_id')
+    if (isSelectedMockTool || isMcpToolChoice) return undefined
+  }
+  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isOpenAIMcpTool(tool) && requestPlan.mcpProxy) {
     return undefined
   }
   const runtimeDecision = resolveOpenAIHostedToolRuntimeDecision({ toolType: type, sourceEndpointFamily })
@@ -2463,7 +3479,7 @@ async function anthropicMessageToResponsesResponse(
       error: structuredOutput.error
     })
   }
-  const output = anthropicContentBlocksToResponsesOutputItems(
+  const output = await anthropicContentBlocksToResponsesOutputItems(
     contentBlocks,
     responseId,
     options.requestPlan,
@@ -2503,16 +3519,26 @@ async function anthropicMessageToResponsesResponse(
     truncation: 'disabled',
     usage: anthropicUsageToResponsesUsage(objectValue(message.usage)),
     user: null,
-    metadata: {}
+    metadata: responsesBridgeMetadata(options.requestPlan)
   }
 }
 
-function anthropicContentBlocksToResponsesOutputItems(
+function responsesBridgeMetadata(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): JsonRecord {
+  if (requestPlan?.mcpProxy?.prepared) {
+    return {
+      gateway_runtime: 'local_runtime',
+      gateway_tool: 'mcp'
+    }
+  }
+  return {}
+}
+
+async function anthropicContentBlocksToResponsesOutputItems(
   blocks: unknown[],
   responseId: string,
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan,
   structuredOutputText?: string
-): JsonRecord[] {
+): Promise<JsonRecord[]> {
   const output: JsonRecord[] = []
   let messageText = structuredOutputText ?? structuredOutputResultFromAnthropicBlocks(blocks, requestPlan)?.text ?? ''
   let textIndex = 0
@@ -2532,30 +3558,89 @@ function anthropicContentBlocksToResponsesOutputItems(
       }
       if (block.type === 'tool_use') {
         const callId = stringValue(block.id) ?? `call_${output.length}`
-        output.push(responsesFunctionCallItemFromAnthropicTool({
+        output.push(await responsesOutputItemFromAnthropicToolUseBlock({
+          responseId,
           idSegment: stringValue(block.id) ?? `${responseId}_${output.length}`,
           status: 'completed',
           callId,
           name: stringValue(block.name) ?? '',
-          argumentsText: JSON.stringify(isPlainObject(block.input) ? block.input : {})
+          input: isPlainObject(block.input) ? block.input : {}
         }, requestPlan))
       }
     }
   }
-  if (messageText || output.length === 0) {
-    output.unshift({
+  const shouldAppendMessage = messageText || output.length === 0 || responsesOutputHasMcpProxyCall(output)
+  if (shouldAppendMessage) {
+    const text = messageText || 'MCP proxy completed remote tool call.'
+    const item: JsonRecord = {
       id: `msg_${safeIdSegment(responseId)}_${textIndex++}`,
       type: 'message',
       status: 'completed',
       role: 'assistant',
       content: [{
         type: 'output_text',
-        text: messageText,
-        annotations: localToolAnnotationsForText(messageText, requestPlan)
+        text,
+        annotations: localToolAnnotationsForText(text, requestPlan)
       }]
-    })
+    }
+    if (messageText) {
+      output.unshift(item)
+    } else {
+      output.push(item)
+    }
   }
   return output
+}
+
+function responsesOutputHasMcpProxyCall(output: JsonRecord[]): boolean {
+  return output.some((item) => item.type === 'mcp_call')
+}
+
+async function responsesOutputItemFromAnthropicToolUseBlock(
+  input: {
+    responseId: string
+    idSegment: string
+    callId: string
+    name: string
+    input: JsonRecord
+    status: 'in_progress' | 'completed'
+  },
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): Promise<JsonRecord> {
+  const mcpAdapter = requestPlan?.mcpProxy?.adaptersByAnthropicName?.get(input.name)
+  const mcpPrepared = requestPlan?.mcpProxy?.prepared
+  const mcpExecutor = requestPlan?.mcpProxy?.executor
+  if (mcpAdapter && mcpPrepared && mcpExecutor?.callTool) {
+    const callResult = await mcpExecutor.callTool({
+      prepared: mcpPrepared,
+      toolName: mcpAdapter.toolName,
+      arguments: input.input
+    })
+    const item: JsonRecord = {
+      id: `mcp_${safeIdSegment(input.idSegment)}`,
+      type: 'mcp_call',
+      approval_request_id: null,
+      arguments: JSON.stringify(input.input),
+      error: null,
+      name: mcpAdapter.toolName,
+      output: callResult.outputText,
+      server_label: mcpAdapter.serverLabel
+    }
+    if (callResult.truncated || callResult.metadata) {
+      item.metadata = {
+        ...(callResult.metadata ?? {}),
+        ...(callResult.truncated ? { output_truncated: true } : {})
+      }
+    }
+    return item
+  }
+  return responsesFunctionCallItemFromAnthropicTool({
+    idSegment: input.idSegment,
+    status: input.status,
+    callId: input.callId,
+    name: input.name,
+    argumentsText: JSON.stringify(input.input)
+  }, requestPlan)
 }
 
 function shouldEmitResponsesReasoningItem(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): boolean {
@@ -3634,8 +4719,29 @@ function responsesLocalToolCallItems(
   responseId: string
 ): JsonRecord[] {
   return [
+    responsesMcpProxyListToolsItem(requestPlan, responseId),
     responsesFileSearchCallItem(requestPlan, responseId)
   ].filter((item): item is JsonRecord => Boolean(item))
+}
+
+function responsesMcpProxyListToolsItem(
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan | undefined,
+  responseId: string
+): JsonRecord | undefined {
+  const mcpProxy = requestPlan?.mcpProxy
+  if (!mcpProxy?.prepared || mcpProxy.emittedListTools) return undefined
+  mcpProxy.emittedListTools = true
+  return {
+    id: `mcpl_${safeIdSegment(responseId)}`,
+    type: 'mcp_list_tools',
+    server_label: mcpProxy.prepared.serverLabel,
+    tools: mcpProxy.prepared.tools.map((tool) => ({
+      annotations: tool.annotations ?? null,
+      description: tool.description ?? '',
+      input_schema: tool.inputSchema,
+      name: tool.name
+    }))
+  }
 }
 
 function responsesFileSearchCallItem(
@@ -4360,6 +5466,10 @@ function requestedPositiveInteger(value: unknown): boolean {
 
 function hasMeaningfulField(value: JsonRecord, key: string): boolean {
   return hasOwn(value, key) && value[key] !== undefined && value[key] !== null
+}
+
+function hasMeaningfulValue(value: unknown): boolean {
+  return value !== undefined && value !== null
 }
 
 function hasOwn(value: JsonRecord, key: string): boolean {

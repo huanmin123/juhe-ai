@@ -21,8 +21,18 @@ export interface AnthropicGatewayErrorPayload {
   }
 }
 
-export type GatewayClientErrorPayload = GatewayErrorPayload | AnthropicGatewayErrorPayload
-export type GatewayErrorProtocol = 'openai' | 'anthropic'
+export interface GeminiGatewayErrorPayload {
+  [key: string]: unknown
+  error: {
+    message: string
+    status: string
+    code?: string
+    [key: string]: unknown
+  }
+}
+
+export type GatewayClientErrorPayload = GatewayErrorPayload | AnthropicGatewayErrorPayload | GeminiGatewayErrorPayload
+export type GatewayErrorProtocol = 'openai' | 'anthropic' | 'gemini'
 
 export function gatewayErrorPayload(message: string, type: string, code?: string): GatewayErrorPayload {
   return { error: { message, type, ...(code ? { code } : {}) } }
@@ -32,17 +42,26 @@ export function gatewayErrorPayloadForProtocol(
   payload: GatewayErrorPayload,
   protocol: GatewayErrorProtocol = 'openai'
 ): GatewayClientErrorPayload {
-  if (protocol !== 'anthropic') {
-    return payload
-  }
-  return {
-    type: 'error',
-    error: {
-      type: anthropicGatewayErrorType(payload),
-      message: payload.error.message,
-      ...(payload.error.code ? { code: payload.error.code } : {})
+  if (protocol === 'anthropic') {
+    return {
+      type: 'error',
+      error: {
+        type: anthropicGatewayErrorType(payload),
+        message: payload.error.message,
+        ...(payload.error.code ? { code: payload.error.code } : {})
+      }
     }
   }
+  if (protocol === 'gemini') {
+    return {
+      error: {
+        message: payload.error.message,
+        status: geminiGatewayErrorStatus(payload),
+        ...(payload.error.code ? { code: payload.error.code } : {})
+      }
+    }
+  }
+  return payload
 }
 
 export function sendGatewayJsonError(
@@ -69,9 +88,12 @@ export function sendGatewayErrorResponse(
   }
   const contentType = String(res.getHeader('content-type') ?? '')
   if (isOpenAIStreamContentType(contentType)) {
-    const failureEvent = options.protocol === 'anthropic'
-      ? buildAnthropicGatewayStreamFailureEvent(payload)
-      : writeGatewayStreamFailureEvent(res, payload.error.message)
+    const failureEvent = writeGatewayStreamFailureEvent(
+      res,
+      payload.error.message,
+      payload.error.code,
+      options.protocol
+    )
     if (failureEvent) {
       res.write(failureEvent)
     }
@@ -151,6 +173,9 @@ export function buildGatewayStreamFailureEventForProtocol(
   if (protocol === 'anthropic') {
     return buildAnthropicGatewayStreamFailureEvent(gatewayErrorPayload(message, 'api_error', code))
   }
+  if (protocol === 'gemini') {
+    return buildGeminiGatewayStreamFailureEvent(gatewayErrorPayload(message, 'api_error', code))
+  }
   return buildGatewayStreamFailureEvent(message, code)
 }
 
@@ -170,6 +195,11 @@ export function buildGatewayStreamFailureEvent(message: string, code = gatewaySt
 
 export function buildAnthropicGatewayStreamFailureEvent(payload: GatewayErrorPayload): Buffer {
   const errorPayload = gatewayErrorPayloadForProtocol(payload, 'anthropic')
+  return Buffer.from(`event: error\ndata: ${JSON.stringify(errorPayload)}\n\n`, 'utf8')
+}
+
+export function buildGeminiGatewayStreamFailureEvent(payload: GatewayErrorPayload): Buffer {
+  const errorPayload = gatewayErrorPayloadForProtocol(payload, 'gemini')
   return Buffer.from(`event: error\ndata: ${JSON.stringify(errorPayload)}\n\n`, 'utf8')
 }
 
@@ -197,4 +227,22 @@ function anthropicGatewayErrorType(payload: GatewayErrorPayload): string {
   if (type === 'not_found_error') return 'not_found_error'
   if (type === 'billing_error') return 'billing_error'
   return 'api_error'
+}
+
+function geminiGatewayErrorStatus(payload: GatewayErrorPayload): string {
+  const type = payload.error.type
+  const code = payload.error.code
+  const message = payload.error.message
+  if (type === 'rate_limit_exceeded') return 'RESOURCE_EXHAUSTED'
+  if ((type === 'invalid_request_error' || code === 'invalid_request_error') && /令牌|api key|authentication|auth/i.test(message)) return 'UNAUTHENTICATED'
+  if (type === 'invalid_request_error') return 'INVALID_ARGUMENT'
+  if (type === 'authentication_error') return 'UNAUTHENTICATED'
+  if (type === 'permission_error' || type === 'forbidden') return 'PERMISSION_DENIED'
+  if (type === 'not_found_error') return 'NOT_FOUND'
+  if (type === 'billing_error') return 'RESOURCE_EXHAUSTED'
+  if (type === 'server_overloaded' || type === 'service_unavailable' || code === 'server_overloaded') return 'UNAVAILABLE'
+  if (typeof code === 'string' && (code.includes('timeout') || code.includes('deadline'))) {
+    return 'DEADLINE_EXCEEDED'
+  }
+  return 'INTERNAL'
 }

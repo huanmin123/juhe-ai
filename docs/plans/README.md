@@ -134,6 +134,7 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-0065 | Gemini 原生协议接入 | 进行中 | 2026-06-25 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / Gemini native / gemini-cli / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0065-Gemini原生协议接入.md` |
 | PLAN-0064 | Anthropic Messages 转 Chat 协议桥接 | 已完成 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接 / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0064-AnthropicMessages转Chat协议桥接.md` |
 | PLAN-0063 | OpenAI 托管工具运行时适配 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / OpenAI hosted tools / MCP / code execution / computer use / 审计 / 文档 / 验证 | `docs/plans/计划-0063-OpenAI托管工具运行时适配.md` |
 | PLAN-0062 | 协议互转矩阵与模型映射约束 | 进行中 | 2026-06-24 | 前端 / 后端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 真实联调 / 文档 / 验证 | `docs/plans/计划-0062-协议互转矩阵与模型映射约束.md` |

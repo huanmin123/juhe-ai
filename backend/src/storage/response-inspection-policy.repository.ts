@@ -1,5 +1,5 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { ANTHROPIC_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
+import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
 import { isProtocolProviderCode } from './provider.repository.js'
 import {
@@ -111,7 +111,7 @@ const inputKeys = new Set([
 const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
 const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
 const accountClientCompatibilityValues = new Set<AccountClientCompatibility>(ACCOUNT_CLIENT_COMPATIBILITIES)
-const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE])
+const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE])
 const codexCompactionContractMismatchErrorCode = 'codex_compaction_contract_mismatch'
 
 const matchKeys = [
@@ -246,6 +246,21 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     },
     action: 'retry_no_avoidance',
     notes: 'Anthropic Messages JSON / SSE event:error 默认检查规则；错误类型只作为响应语义输入，不直接写账号状态。'
+  },
+  {
+    id: 'default_gemini_error_object',
+    defaultRule: true,
+    editable: false,
+    name: 'Gemini error 对象',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    match: {
+      jsonPathsExists: ['error']
+    },
+    action: 'retry_no_avoidance',
+    notes: 'Gemini JSON / SSE error 默认检查规则；错误状态只作为响应语义输入，不直接写账号状态。'
   }
 ]
 
@@ -546,7 +561,7 @@ function normalizeScopeType(value: unknown): ResponseInspectionPolicyScopeType {
 function normalizeProtocolCode(value: unknown): string {
   const text = requiredText(value, '协议编码', 80)
   if (!supportedResponseInspectionProtocolCodes.has(text)) {
-    throw new Error('当前响应检查策略只支持 OpenAI v1 或 Anthropic v1 协议')
+    throw new Error('当前响应检查策略只支持 OpenAI v1、Anthropic v1 或 Gemini v1beta 协议')
   }
   return text
 }

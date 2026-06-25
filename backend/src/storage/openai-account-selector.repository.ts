@@ -1,9 +1,10 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountClientCompatibility, AccountType, GroupType, ProviderCode } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountType, GatewayRequestEndpointFamily, GroupType, ProviderCode } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../domain/anthropic-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile } from '../domain/provider-protocol.js'
+import { normalizeGeminiEndpointModesForRuntime } from '../domain/gemini-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile } from '../domain/provider-protocol.js'
 import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
@@ -189,7 +190,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 export function listOpenAIAccountsForGroup(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'; includeUnavailable?: boolean } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: GatewayRequestEndpointFamily; includeUnavailable?: boolean } = {}
 ): OpenAIAccountSecret[] {
   return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options).accounts
 }
@@ -199,7 +200,7 @@ export function listRecoverableUnavailableOpenAIAccountsForGroup(
   systemAccountId: string,
   options: {
     requestedModel?: string
-    requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'
+    requestedEndpointFamily?: GatewayRequestEndpointFamily
     windowMs?: number
   } = {}
 ): OpenAIAccountSecret[] {
@@ -236,7 +237,7 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
 export function listOpenAIAccountsForGroupResult(
   groupId: string,
   systemAccountId: string,
-  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: 'chat_completions' | 'responses' | 'messages'; includeUnavailable?: boolean } = {}
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: GatewayRequestEndpointFamily; includeUnavailable?: boolean } = {}
 ): OpenAIAccountsForGroupResult {
   const database = getBusinessDatabase()
   const now = nowIso()
@@ -535,6 +536,15 @@ function normalizeGatewayEndpointModesForRuntime(
       providerProtocolProfileId: input.providerProtocolProfileId
     })
   }
+  if (isGeminiProtocolProfile(input)) {
+    return normalizeGeminiEndpointModesForRuntime(value, {
+      providerCode: input.providerCode,
+      accountType: input.accountType,
+      protocolCode: input.protocolCode,
+      protocolVersion: input.protocolVersion,
+      providerProtocolProfileId: input.providerProtocolProfileId
+    })
+  }
   return normalizeOpenAIEndpointModesForRuntime(value, {
     providerCode: input.providerCode,
     accountType: input.accountType,
@@ -543,9 +553,13 @@ function normalizeGatewayEndpointModesForRuntime(
 }
 
 function defaultBaseUrlForProtocol(protocolCode: string, protocolVersion: string): string {
-  return isAnthropicProtocolProfile({ protocolCode, protocolVersion })
-    ? 'https://api.anthropic.com/v1'
-    : 'https://api.openai.com/v1'
+  if (isAnthropicProtocolProfile({ protocolCode, protocolVersion })) {
+    return 'https://api.anthropic.com/v1'
+  }
+  if (isGeminiProtocolProfile({ protocolCode, protocolVersion })) {
+    return 'https://generativelanguage.googleapis.com'
+  }
+  return 'https://api.openai.com/v1'
 }
 
 function copyRuntimeCredentialText(input: Record<string, unknown>, output: Record<string, unknown>, key: string): void {

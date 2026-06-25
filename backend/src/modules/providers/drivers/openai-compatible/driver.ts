@@ -7,6 +7,8 @@ import {
 } from '../../../../domain/openai-endpoint-modes.js'
 import {
   ANTHROPIC_PROTOCOL_CODE,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   OPENAI_PROTOCOL_CODE,
@@ -25,7 +27,7 @@ import {
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
-import { buildUpstreamUrl, buildUpstreamUrls } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import { buildUpstreamUrl, buildUpstreamUrls, splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamRequestBody,
@@ -58,18 +60,42 @@ function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriv
   })
 }
 
+function isOpenAICompatibleDriverProfile(profile: ProviderDriverAccount | undefined): boolean {
+  const profileId = profile?.providerProtocolProfileId ?? profile?.id
+  return profile?.providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE
+    || (profile?.providerCode === GEMINI_PROVIDER_CODE && profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
+}
+
+function buildOpenAICompatibleDriverUpstreamUrl(account: DispatchAccountSecret, pathAndQuery: string): string {
+  if (account.providerCode === GEMINI_PROVIDER_CODE && account.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) {
+    const normalizedBase = account.baseUrl.trim().replace(/\/+$/, '')
+    const { path, query } = splitPathAndQuery(pathAndQuery)
+    const requestPath = path.startsWith('/') ? path : `/${path}`
+    const pathWithoutVersion = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
+    return `${normalizedBase}${pathWithoutVersion === '/' ? '' : pathWithoutVersion}${query}`
+  }
+  return buildUpstreamUrl(account.baseUrl, pathAndQuery)
+}
+
+function buildOpenAICompatibleDriverUpstreamUrls(account: DispatchAccountSecret, pathAndQuery: string): string[] {
+  if (account.providerCode === GEMINI_PROVIDER_CODE && account.providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) {
+    return [buildOpenAICompatibleDriverUpstreamUrl(account, pathAndQuery)]
+  }
+  return buildUpstreamUrls(account.baseUrl, pathAndQuery)
+}
+
 export const openAICompatibleProviderDriver: ProviderDriver = {
   id: 'openai-compatible',
   providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   usageSemantic: 'openai',
-  profileIds: [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID],
+  profileIds: [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID, GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID],
   supportsProfile(profile) {
     const profileId = profile?.providerProtocolProfileId ?? profile?.id
-    return profile?.providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE
+    return isOpenAICompatibleDriverProfile(profile)
       && isOpenAIProtocolProfile(profile)
-      && profileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+      && (profileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
   },
   resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
@@ -85,9 +111,9 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       return []
     }
     if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
-      return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
+      return [buildOpenAICompatibleDriverUpstreamUrl(account, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
     }
-    return buildUpstreamUrls(account.baseUrl, req.originalUrl)
+    return buildOpenAICompatibleDriverUpstreamUrls(account, req.originalUrl)
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)

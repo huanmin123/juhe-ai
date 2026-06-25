@@ -31,7 +31,7 @@ import {
   inspectClientIpErrorCircuit,
   recordClientIpErrorCircuitSuccess
 } from '../runtime/client-ip-error-circuit.service.js'
-import { finalizeGatewayAuthFailureAudit, sendAnthropicModelsGatewayResponse, sendOpenAIModelsGatewayResponse } from '../response/fixed-responses.js'
+import { finalizeGatewayAuthFailureAudit, sendAnthropicModelsGatewayResponse, sendGeminiModelsGatewayResponse, sendOpenAIModelsGatewayResponse } from '../response/fixed-responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { resolveGatewayRuntimeAsync } from './pre-auth.js'
@@ -540,9 +540,12 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp,
       endpoint
     })
-    const sender = gatewayProtocolResponseProtocolForProfile(groupAccess) === 'anthropic_v1'
+    const responseProtocol = gatewayProtocolResponseProtocolForProfile(groupAccess)
+    const sender = responseProtocol === 'anthropic_v1'
       ? sendAnthropicModelsGatewayResponse
-      : sendOpenAIModelsGatewayResponse
+      : responseProtocol === 'gemini_v1beta'
+        ? sendGeminiModelsGatewayResponse
+        : sendOpenAIModelsGatewayResponse
     await sender({
       req,
       res,

@@ -62,6 +62,12 @@ export interface RuntimeConfig {
     timeoutMs: number
     maxBodyBytes: number
   }
+  mcpProxy: {
+    servers: McpProxyServerRuntimeConfig[]
+    timeoutMs: number
+    maxBodyBytes: number
+    maxOutputBytes: number
+  }
   hostedToolRuntimes: {
     codeInterpreter: HostedToolRuntimeMode
     computer: HostedToolRuntimeMode
@@ -99,8 +105,16 @@ export type WorkerRuntimeRole =
   | 'ops-worker'
   | 'temporary-maintenance-worker'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
-export type HostedToolRuntimeMode = 'guidance' | 'reject'
+export type HostedToolRuntimeMode = 'guidance' | 'reject' | 'mock' | 'local_runtime'
 export type ImageGenerationProviderApi = 'images' | 'responses'
+export interface McpProxyServerRuntimeConfig {
+  label: string
+  serverUrl: string
+  enabled: boolean
+  allowedTools: string[]
+  authorization?: string
+  allowRequestAuthorization: boolean
+}
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -160,6 +174,12 @@ export const runtimeConfig: RuntimeConfig = {
     model: stringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL', 'gpt-image-2'),
     timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 120000, 1000, 300000),
     maxBodyBytes: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB', 64, 1, 256) * 1024 * 1024
+  },
+  mcpProxy: {
+    servers: mcpProxyServersConfig('JUHE_AI_MCP_PROXY_SERVERS_JSON'),
+    timeoutMs: numberConfig('JUHE_AI_MCP_PROXY_TIMEOUT_MS', 10000, 1000, 120000),
+    maxBodyBytes: numberConfig('JUHE_AI_MCP_PROXY_MAX_BODY_KB', 512, 16, 4096) * 1024,
+    maxOutputBytes: numberConfig('JUHE_AI_MCP_PROXY_MAX_OUTPUT_KB', 64, 4, 1024) * 1024
   },
   hostedToolRuntimes: {
     codeInterpreter: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE', 'guidance'),
@@ -355,7 +375,7 @@ function trustProxyConfig(name: string): boolean | number {
 
 function hostedToolRuntimeModeConfig(name: string, fallback: HostedToolRuntimeMode): HostedToolRuntimeMode {
   const value = stringConfig(name, '').toLowerCase()
-  if (value === 'guidance' || value === 'reject') return value
+  if (value === 'guidance' || value === 'reject' || value === 'mock' || value === 'local_runtime') return value
   return fallback
 }
 
@@ -363,6 +383,62 @@ function imageGenerationProviderApiConfig(name: string, fallback: ImageGeneratio
   const value = stringConfig(name, '').toLowerCase()
   if (value === 'images' || value === 'responses') return value
   return fallback
+}
+
+function mcpProxyServersConfig(name: string): McpProxyServerRuntimeConfig[] {
+  const rawValue = rawStringConfig(name)
+  if (!rawValue) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawValue)
+  } catch {
+    throw new Error(`${name} 必须是 JSON 数组`)
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${name} 必须是 JSON 数组`)
+  }
+  return parsed.map((item, index) => normalizeMcpProxyServerConfig(name, item, index))
+}
+
+function normalizeMcpProxyServerConfig(name: string, item: unknown, index: number): McpProxyServerRuntimeConfig {
+  if (!isRecord(item)) {
+    throw new Error(`${name}[${index}] 必须是对象`)
+  }
+  const label = stringFromRecord(item, 'label')
+  const serverUrl = stringFromRecord(item, 'server_url') ?? stringFromRecord(item, 'serverUrl')
+  if (!label) {
+    throw new Error(`${name}[${index}].label 不能为空`)
+  }
+  if (!serverUrl) {
+    throw new Error(`${name}[${index}].server_url 不能为空`)
+  }
+  const enabled = item.enabled === undefined ? true : item.enabled === true
+  const allowedTools = arrayStringFromRecord(item, 'allowed_tools')
+    ?? arrayStringFromRecord(item, 'allowedTools')
+    ?? []
+  return {
+    label,
+    serverUrl,
+    enabled,
+    allowedTools,
+    authorization: stringFromRecord(item, 'authorization'),
+    allowRequestAuthorization: item.allow_request_authorization === true || item.allowRequestAuthorization === true
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringFromRecord(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function arrayStringFromRecord(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key]
+  if (!Array.isArray(value)) return undefined
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
 }
 
 function upstreamUrlSecurityConfig(): RuntimeConfig['upstreamUrlSecurity'] {

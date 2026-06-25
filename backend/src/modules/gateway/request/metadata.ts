@@ -15,7 +15,9 @@ export function extractClientIp(req: Request): string | undefined {
 
 export function requestModel(req: Request): string | undefined {
   const bodyState = getGatewayRequestBodyState(req)
-  return bodyState?.model ?? (typeof req.body?.model === 'string' ? req.body.model : undefined)
+  return requestModelFromGeminiPath(req)
+    ?? bodyState?.model
+    ?? (typeof req.body?.model === 'string' ? req.body.model : undefined)
 }
 
 export function requestStream(req: Request): boolean {
@@ -42,4 +44,15 @@ function normalizeClientIp(value?: string): string | undefined {
     ip = ip.slice('::ffff:'.length)
   }
   return isIP(ip) === 4 ? ip : undefined
+}
+
+function requestModelFromGeminiPath(req: Request): string | undefined {
+  const path = req.originalUrl.split('?', 1)[0] || req.path || ''
+  const match = /\/models\/([^/:?#]+):(?:generateContent|streamGenerateContent|countTokens|embedContent)$/i.exec(path)
+  if (!match?.[1]) return undefined
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return match[1]
+  }
 }

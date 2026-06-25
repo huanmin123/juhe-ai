@@ -5,6 +5,7 @@ import type {
   ProviderAccountCredentialContext,
   ProviderAccountCredentialDriver
 } from './_shared/account-credentials.js'
+import { geminiAccountCredentialDriver } from './gemini/account-credentials.js'
 import { glmAccountCredentialDriver } from './glm/account-credentials.js'
 import { gptAccountCredentialDriver } from './gpt/account-credentials.js'
 import { openAICompatibleAccountCredentialDriver } from './openai-compatible/account-credentials.js'
@@ -14,6 +15,7 @@ const providerAccountCredentialDrivers: readonly ProviderAccountCredentialDriver
   gptAccountCredentialDriver,
   deepSeekAccountCredentialDriver,
   anthropicAccountCredentialDriver,
+  geminiAccountCredentialDriver,
   glmAccountCredentialDriver
 ] as const
 

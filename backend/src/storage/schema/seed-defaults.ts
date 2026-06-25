@@ -18,6 +18,11 @@ import {
   ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
   ANTHROPIC_PROTOCOL_SEED,
   ANTHROPIC_PROVIDER_SEED,
+  GEMINI_NATIVE_V1BETA_PROFILE_SEED,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED,
+  GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
+  GEMINI_PROTOCOL_SEED,
+  GEMINI_PROVIDER_SEED,
   DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
   DEEPSEEK_OPENAI_V1_PROFILE_SEED,
   DEEPSEEK_PROVIDER_SEED,
@@ -80,7 +85,7 @@ export function seedDefaults(database: DatabaseSync): void {
       id, code, name, description, parent_code, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, DEEPSEEK_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED, GLM_PROVIDER_SEED]) {
+  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, DEEPSEEK_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED, GEMINI_PROVIDER_SEED, GLM_PROVIDER_SEED]) {
     providerStatement.run(
       provider.id,
       provider.code,
@@ -98,7 +103,7 @@ export function seedDefaults(database: DatabaseSync): void {
         id, code, version, name, description, enabled, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const protocol of [OPENAI_PROTOCOL_SEED, ANTHROPIC_PROTOCOL_SEED]) {
+  for (const protocol of [OPENAI_PROTOCOL_SEED, ANTHROPIC_PROTOCOL_SEED, GEMINI_PROTOCOL_SEED]) {
     protocolStatement.run(
       protocol.id,
       protocol.code,
@@ -116,7 +121,7 @@ export function seedDefaults(database: DatabaseSync): void {
       id, protocol_code, protocol_version, family_code, name, description, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const family of [...OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS]) {
+  for (const family of [...OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS]) {
     endpointFamilyStatement.run(
       family.id,
       family.protocolCode,
@@ -142,6 +147,8 @@ export function seedDefaults(database: DatabaseSync): void {
     DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
     DEEPSEEK_OPENAI_V1_PROFILE_SEED,
     ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
+    GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED,
+    GEMINI_NATIVE_V1BETA_PROFILE_SEED,
     GLM_CODING_OPENAI_V1_PROFILE_SEED,
     GLM_CODING_ANTHROPIC_V1_PROFILE_SEED,
     GLM_GENERAL_OPENAI_V1_PROFILE_SEED
