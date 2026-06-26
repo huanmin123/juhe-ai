@@ -26,6 +26,8 @@ export {
 
 export {
   createOperationLog,
+  createOperationLogAsync,
+  createOperationLogsBatchAsync,
   createOperationLogsBatch
 } from './operation-log-write.repository.js'
 

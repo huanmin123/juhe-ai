@@ -6,6 +6,9 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString, optionalServerDateTimeIso } from './value-utils.js'
 
@@ -104,11 +107,22 @@ const publicApiLogMaxPageSize = 100
 const publicApiLogMaxListWindowRows = 1001
 
 export function createPublicApiLog(input: PublicApiLogInput): PublicApiLogSummary {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 模式下公开接口日志写入必须使用 createPublicApiLogAsync')
+  }
   return createPublicApiLogsBatch([input])[0]
+}
+
+export async function createPublicApiLogAsync(input: PublicApiLogInput): Promise<PublicApiLogSummary> {
+  const [summary] = await createPublicApiLogsBatchAsync([input])
+  return summary
 }
 
 export function createPublicApiLogsBatch(inputs: PublicApiLogInput[]): PublicApiLogSummary[] {
   if (inputs.length === 0) return []
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 模式下公开接口日志批量写入必须使用 createPublicApiLogsBatchAsync')
+  }
   const database = getDatasetDatabase()
   const insert = database.prepare(`
     INSERT INTO public_api_logs (
@@ -158,6 +172,65 @@ export function createPublicApiLogsBatch(inputs: PublicApiLogInput[]): PublicApi
     throw error
   }
   return normalizedLogs.map(publicApiLogSummaryFromNormalizedInput)
+}
+
+export async function createPublicApiLogsBatchAsync(inputs: PublicApiLogInput[]): Promise<PublicApiLogSummary[]> {
+  if (inputs.length === 0) return []
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createPublicApiLogsBatch(inputs)
+  }
+  const normalizedLogs = inputs.map(normalizePublicApiLogInput)
+  await createPublicApiLogsBatchPostgres(normalizedLogs)
+  return normalizedLogs.map(publicApiLogSummaryFromNormalizedInput)
+}
+
+async function createPublicApiLogsBatchPostgres(normalizedLogs: NormalizedPublicApiLogInput[]): Promise<void> {
+  if (normalizedLogs.length === 0) return
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.transaction(async (tx) => {
+    for (const log of normalizedLogs) {
+      await insertPublicApiLogPostgres(tx, log)
+    }
+  })
+}
+
+async function insertPublicApiLogPostgres(client: DatabaseClient, log: NormalizedPublicApiLogInput): Promise<void> {
+  await client.execute(`
+    INSERT INTO juhe_dataset.public_api_logs (
+      id, trace_id, source_ref_id, source_name, token_id, token_name, token_prefix, is_test_token,
+      method, path, query_string, client_ip, user_agent, status_code, success, duration_ms,
+      request_size_bytes, response_size_bytes, request_capture_status, response_capture_status,
+      request_data_json, response_data_json, error_code, error_message, started_at, ended_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    log.id,
+    log.traceId ?? null,
+    log.sourceRefId ?? null,
+    log.sourceName ?? null,
+    log.tokenId ?? null,
+    log.tokenName ?? null,
+    log.tokenPrefix ?? null,
+    log.isTestToken ? 1 : 0,
+    log.method,
+    log.path,
+    log.queryString ?? null,
+    log.clientIp ?? null,
+    log.userAgent ?? null,
+    log.statusCode,
+    log.success,
+    log.durationMs,
+    log.requestSizeBytes,
+    log.responseSizeBytes,
+    log.requestCaptureStatus,
+    log.responseCaptureStatus,
+    log.requestDataJson,
+    log.responseDataJson,
+    log.errorCode ?? null,
+    log.errorMessage ?? null,
+    log.startedAt,
+    log.endedAt,
+    log.createdAt
+  ])
 }
 
 interface NormalizedPublicApiLogInput {

@@ -3,12 +3,15 @@ import type { DatabaseSync } from 'node:sqlite'
 import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { refreshSystemMetricsTrendWindowSnapshotsStage } from './system-metrics.repository.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
-import { averageFromSum, dateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { averageFromSum, dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { refreshUsageOverviewWindowSnapshots, usageOverviewSnapshotScopes } from './usage-overview-windows.repository.js'
 import {
@@ -26,6 +29,8 @@ import {
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
 import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
+import { shouldAggregateUsageStatsRecord, usageStatsEntries } from './usage-stats-aggregation.js'
+import { usageStatsTimeBuckets } from './usage-stats-time-buckets.js'
 import {
   aggregateUsageRowsForRange,
   type UsageStatsDailyWindowRow
@@ -43,9 +48,12 @@ import {
   type AccountUsageAggregateRow,
   type StatsAggregateMathRow,
   type StatsJobStateRow,
+  type UsageStatsAccumulator,
+  type UsageStatsEntry,
   type UsageStatsOverview,
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
+import { statsParamsTail } from './usage-stats-writer-params.js'
 
 export type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
 export { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usage-stats-ai-performance.repository.js'
@@ -172,6 +180,398 @@ export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride
   }
 
   return processedRows
+}
+
+export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBeforeOverride?: string): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return aggregateUsageStatsBatch(limit, safeCreatedBeforeOverride)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const batchLimit = Math.max(1, Math.trunc(limit))
+  const safeCreatedBefore = safeCreatedBeforeOverride?.trim() || usageStatsSafeCreatedBefore()
+  const updatedAt = nowIso()
+  try {
+    return await client.transaction(async (tx) => {
+      const state = await postgresStatsJobState(tx)
+      const rows = (await tx.query<UsageStatsRecordRow>(`
+        SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+        FROM juhe_usage.usage_records
+        WHERE created_at <= ?
+          AND (created_at > ? OR (created_at = ? AND id > ?))
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `, [safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit]))
+        .map(normalizePostgresUsageStatsRecordRow)
+
+      if (rows.length === 0) {
+        const lagSeconds = await latestPostgresUsageRecordLagSeconds(tx, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
+        await updatePostgresStatsJobState(tx, {
+          lastSuccessAt: updatedAt,
+          lagSeconds
+        })
+        return 0
+      }
+
+      await aggregatePostgresUsageStatsRows(tx, rows, updatedAt)
+      const last = rows[rows.length - 1]
+      await updatePostgresStatsJobState(tx, {
+        cursorCreatedAt: last.created_at,
+        cursorId: last.id,
+        lastSuccessAt: updatedAt,
+        lagSeconds: statsLagSecondsFromCursor(last.created_at)
+      })
+      return rows.length
+    })
+  } catch (error) {
+    await updatePostgresStatsJobState(client, {
+      lastErrorMessage: error instanceof Error ? error.message : '用量统计 PG 聚合失败'
+    }).catch(() => undefined)
+    throw error
+  }
+}
+
+interface PostgresAggregatedUsageStatsEntry {
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  accumulator: UsageStatsAccumulator
+}
+
+interface PostgresAggregatedUsageStatsTimeEntry extends PostgresAggregatedUsageStatsEntry {
+  bucket: { tableName: string; columnName: string; valueKey: keyof PostgresUsageStatsTimeKeys }
+  timeValue: string
+}
+
+interface PostgresUsageStatsTimeKeys {
+  statMinute: string
+  statHour: string
+  statDate: string
+  statWeek: string
+  statMonth: string
+}
+
+async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: UsageStatsRecordRow[], updatedAt: string): Promise<void> {
+  if (rows.length === 0) return
+  const timezone = await usageStatsTimezoneAsync()
+  const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
+  const totalEntries = new Map<string, PostgresAggregatedUsageStatsEntry>()
+  const timeEntries = new Map<string, PostgresAggregatedUsageStatsTimeEntry>()
+
+  for (const row of rows) {
+    if (!shouldAggregateUsageStatsRecord(row)) {
+      continue
+    }
+    const timeKeys = postgresUsageStatsTimeKeys(row, timezone)
+    for (const entry of usageStatsEntries(row, lookup)) {
+      addPostgresAggregatedUsageStatsEntry(totalEntries, entry)
+      for (const bucket of usageStatsTimeBuckets) {
+        addPostgresAggregatedUsageStatsTimeEntry(timeEntries, bucket, timeKeys[bucket.valueKey], entry)
+      }
+    }
+  }
+
+  await upsertPostgresUsageStatsTotals(client, [...totalEntries.values()], updatedAt)
+  for (const bucket of usageStatsTimeBuckets) {
+    await upsertPostgresUsageStatsTimeBucket(
+      client,
+      bucket,
+      [...timeEntries.values()].filter((entry) => entry.bucket.tableName === bucket.tableName),
+      updatedAt
+    )
+  }
+}
+
+async function createPostgresUsageStatsAuthorizationLookup(
+  client: DatabaseClient,
+  rows: UsageStatsRecordRow[]
+): Promise<{ accountAuthorizationInstanceAccountIds: Map<string, string> }> {
+  const accountAuthorizationInstanceAccountIds = new Map<string, string>()
+  const ids = uniqueNonEmptyIds(rows.map((row) => row.account_authorization_id))
+  if (ids.length === 0) {
+    return { accountAuthorizationInstanceAccountIds }
+  }
+  for (const chunk of chunkValues(ids, 900)) {
+    const lookupRows = await client.query<{ id?: string | null; instance_account_id?: string | null }>(`
+      SELECT
+        authorizations.id,
+        instance_accounts.id AS instance_account_id
+      FROM juhe_business.resource_authorizations authorizations
+      LEFT JOIN juhe_business.accounts instance_accounts
+        ON instance_accounts.authorization_instance_authorization_id = authorizations.id
+        AND instance_accounts.system_account_id = authorizations.grantee_system_account_id
+      WHERE authorizations.resource_type = 'account'
+        AND authorizations.id = ANY(?)
+    `, [chunk])
+    for (const row of lookupRows) {
+      if (row.id && row.instance_account_id) {
+        accountAuthorizationInstanceAccountIds.set(row.id, row.instance_account_id)
+      }
+    }
+  }
+  return { accountAuthorizationInstanceAccountIds }
+}
+
+function addPostgresAggregatedUsageStatsEntry(target: Map<string, PostgresAggregatedUsageStatsEntry>, entry: UsageStatsEntry): void {
+  const key = postgresUsageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId)
+  const existing = target.get(key)
+  if (existing) {
+    mergePostgresUsageStatsAccumulator(existing.accumulator, entry.accumulator)
+    return
+  }
+  target.set(key, {
+    systemAccountId: entry.systemAccountId,
+    scopeType: entry.scopeType,
+    scopeId: entry.scopeId,
+    accumulator: { ...entry.accumulator }
+  })
+}
+
+function addPostgresAggregatedUsageStatsTimeEntry(
+  target: Map<string, PostgresAggregatedUsageStatsTimeEntry>,
+  bucket: PostgresAggregatedUsageStatsTimeEntry['bucket'],
+  timeValue: string,
+  entry: UsageStatsEntry
+): void {
+  const key = `${bucket.tableName}\u0000${timeValue}\u0000${postgresUsageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId)}`
+  const existing = target.get(key)
+  if (existing) {
+    mergePostgresUsageStatsAccumulator(existing.accumulator, entry.accumulator)
+    return
+  }
+  target.set(key, {
+    bucket,
+    timeValue,
+    systemAccountId: entry.systemAccountId,
+    scopeType: entry.scopeType,
+    scopeId: entry.scopeId,
+    accumulator: { ...entry.accumulator }
+  })
+}
+
+async function upsertPostgresUsageStatsTotals(client: DatabaseClient, entries: PostgresAggregatedUsageStatsEntry[], updatedAt: string): Promise<void> {
+  if (entries.length === 0) return
+  const columns = [
+    'system_account_id',
+    'scope_type',
+    'scope_id',
+    'request_count',
+    'success_count',
+    'error_count',
+    'input_tokens',
+    'output_tokens',
+    'cache_read_tokens',
+    'cache_read_cost_usd',
+    'total_cost_usd',
+    'duration_ms_sum',
+    'duration_ms_count',
+    'duration_ms_max',
+    'first_token_ms_sum',
+    'first_token_ms_count',
+    'first_token_ms_max',
+    'last_used_at',
+    'last_error_at',
+    'updated_at'
+  ]
+  for (const chunk of chunkValues(entries, 500)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.usage_stats_totals (${columns.join(', ')})
+      VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+        request_count = usage_stats_totals.request_count + EXCLUDED.request_count,
+        success_count = usage_stats_totals.success_count + EXCLUDED.success_count,
+        error_count = usage_stats_totals.error_count + EXCLUDED.error_count,
+        input_tokens = usage_stats_totals.input_tokens + EXCLUDED.input_tokens,
+        output_tokens = usage_stats_totals.output_tokens + EXCLUDED.output_tokens,
+        cache_read_tokens = usage_stats_totals.cache_read_tokens + EXCLUDED.cache_read_tokens,
+        cache_read_cost_usd = usage_stats_totals.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        total_cost_usd = usage_stats_totals.total_cost_usd + EXCLUDED.total_cost_usd,
+        duration_ms_sum = usage_stats_totals.duration_ms_sum + EXCLUDED.duration_ms_sum,
+        duration_ms_count = usage_stats_totals.duration_ms_count + EXCLUDED.duration_ms_count,
+        duration_ms_max = GREATEST(usage_stats_totals.duration_ms_max, EXCLUDED.duration_ms_max),
+        first_token_ms_sum = usage_stats_totals.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+        first_token_ms_count = usage_stats_totals.first_token_ms_count + EXCLUDED.first_token_ms_count,
+        first_token_ms_max = GREATEST(usage_stats_totals.first_token_ms_max, EXCLUDED.first_token_ms_max),
+        last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN usage_stats_totals.last_used_at WHEN usage_stats_totals.last_used_at IS NULL OR EXCLUDED.last_used_at > usage_stats_totals.last_used_at THEN EXCLUDED.last_used_at ELSE usage_stats_totals.last_used_at END,
+        last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN usage_stats_totals.last_error_at WHEN usage_stats_totals.last_error_at IS NULL OR EXCLUDED.last_error_at > usage_stats_totals.last_error_at THEN EXCLUDED.last_error_at ELSE usage_stats_totals.last_error_at END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((entry) => [
+      entry.systemAccountId,
+      entry.scopeType,
+      entry.scopeId,
+      ...statsParamsTail(entry.accumulator, updatedAt)
+    ]))
+  }
+}
+
+async function upsertPostgresUsageStatsTimeBucket(
+  client: DatabaseClient,
+  bucket: PostgresAggregatedUsageStatsTimeEntry['bucket'],
+  entries: PostgresAggregatedUsageStatsTimeEntry[],
+  updatedAt: string
+): Promise<void> {
+  if (entries.length === 0) return
+  const columns = [
+    'system_account_id',
+    'scope_type',
+    'scope_id',
+    bucket.columnName,
+    'request_count',
+    'success_count',
+    'error_count',
+    'input_tokens',
+    'output_tokens',
+    'cache_read_tokens',
+    'cache_read_cost_usd',
+    'total_cost_usd',
+    'duration_ms_sum',
+    'duration_ms_count',
+    'duration_ms_max',
+    'first_token_ms_sum',
+    'first_token_ms_count',
+    'first_token_ms_max',
+    'last_used_at',
+    'last_error_at',
+    'updated_at'
+  ]
+  for (const chunk of chunkValues(entries, 450)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.${bucket.tableName} (${columns.join(', ')})
+      VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(system_account_id, scope_type, scope_id, ${bucket.columnName}) DO UPDATE SET
+        request_count = ${bucket.tableName}.request_count + EXCLUDED.request_count,
+        success_count = ${bucket.tableName}.success_count + EXCLUDED.success_count,
+        error_count = ${bucket.tableName}.error_count + EXCLUDED.error_count,
+        input_tokens = ${bucket.tableName}.input_tokens + EXCLUDED.input_tokens,
+        output_tokens = ${bucket.tableName}.output_tokens + EXCLUDED.output_tokens,
+        cache_read_tokens = ${bucket.tableName}.cache_read_tokens + EXCLUDED.cache_read_tokens,
+        cache_read_cost_usd = ${bucket.tableName}.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        total_cost_usd = ${bucket.tableName}.total_cost_usd + EXCLUDED.total_cost_usd,
+        duration_ms_sum = ${bucket.tableName}.duration_ms_sum + EXCLUDED.duration_ms_sum,
+        duration_ms_count = ${bucket.tableName}.duration_ms_count + EXCLUDED.duration_ms_count,
+        duration_ms_max = GREATEST(${bucket.tableName}.duration_ms_max, EXCLUDED.duration_ms_max),
+        first_token_ms_sum = ${bucket.tableName}.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+        first_token_ms_count = ${bucket.tableName}.first_token_ms_count + EXCLUDED.first_token_ms_count,
+        first_token_ms_max = GREATEST(${bucket.tableName}.first_token_ms_max, EXCLUDED.first_token_ms_max),
+        last_used_at = CASE WHEN EXCLUDED.last_used_at IS NULL THEN ${bucket.tableName}.last_used_at WHEN ${bucket.tableName}.last_used_at IS NULL OR EXCLUDED.last_used_at > ${bucket.tableName}.last_used_at THEN EXCLUDED.last_used_at ELSE ${bucket.tableName}.last_used_at END,
+        last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN ${bucket.tableName}.last_error_at WHEN ${bucket.tableName}.last_error_at IS NULL OR EXCLUDED.last_error_at > ${bucket.tableName}.last_error_at THEN EXCLUDED.last_error_at ELSE ${bucket.tableName}.last_error_at END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((entry) => [
+      entry.systemAccountId,
+      entry.scopeType,
+      entry.scopeId,
+      entry.timeValue,
+      ...statsParamsTail(entry.accumulator, updatedAt)
+    ]))
+  }
+}
+
+async function postgresStatsJobState(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string }> {
+  const row = await client.one<StatsJobStateRow>(`
+    SELECT cursor_created_at, cursor_id, lag_seconds
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'
+    LIMIT 1
+  `)
+  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+}
+
+async function updatePostgresStatsJobState(
+  client: DatabaseClient,
+  input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }
+): Promise<void> {
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = COALESCE(EXCLUDED.cursor_created_at, stats_job_state.cursor_created_at),
+      cursor_id = COALESCE(EXCLUDED.cursor_id, stats_job_state.cursor_id),
+      last_success_at = COALESCE(EXCLUDED.last_success_at, stats_job_state.last_success_at),
+      last_error_message = EXCLUDED.last_error_message,
+      lag_seconds = EXCLUDED.lag_seconds,
+      updated_at = EXCLUDED.updated_at
+  `, [input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso()])
+}
+
+async function latestPostgresUsageRecordLagSeconds(client: DatabaseClient, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): Promise<number> {
+  const latest = await client.one<{ created_at?: string }>(`
+    SELECT created_at
+    FROM juhe_usage.usage_records
+    WHERE created_at <= ?
+      AND (created_at > ? OR (created_at = ? AND id > ?))
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `, [safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId])
+  return latest?.created_at ? statsLagSecondsFromCursor(latest.created_at) : 0
+}
+
+function postgresUsageStatsTimeKeys(row: UsageStatsRecordRow, timezone: string): PostgresUsageStatsTimeKeys {
+  const createdAt = new Date(row.created_at)
+  return {
+    statMinute: minuteKey(createdAt, timezone),
+    statHour: hourKey(createdAt, timezone),
+    statDate: dateKey(createdAt, timezone),
+    statWeek: weekKey(createdAt, timezone),
+    statMonth: monthKey(createdAt, timezone)
+  }
+}
+
+function normalizePostgresUsageStatsRecordRow(row: UsageStatsRecordRow): UsageStatsRecordRow {
+  return {
+    ...row,
+    status_code: nullableNumber(row.status_code),
+    success: Number(row.success ?? 0),
+    first_token_ms: nullableNumber(row.first_token_ms),
+    duration_ms: nullableNumber(row.duration_ms),
+    input_tokens: nullableNumber(row.input_tokens),
+    output_tokens: nullableNumber(row.output_tokens),
+    cache_read_tokens: nullableNumber(row.cache_read_tokens),
+    cache_read_cost_usd: nullableNumber(row.cache_read_cost_usd),
+    cost_usd: nullableNumber(row.cost_usd)
+  }
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function mergePostgresUsageStatsAccumulator(target: UsageStatsAccumulator, source: UsageStatsAccumulator): void {
+  target.requestCount += source.requestCount
+  target.successCount += source.successCount
+  target.errorCount += source.errorCount
+  target.inputTokens += source.inputTokens
+  target.outputTokens += source.outputTokens
+  target.cacheReadTokens += source.cacheReadTokens
+  target.cacheReadCostUsd += source.cacheReadCostUsd
+  target.totalCostUsd += source.totalCostUsd
+  target.durationMsSum += source.durationMsSum
+  target.durationMsCount += source.durationMsCount
+  target.durationMsMax = Math.max(target.durationMsMax, source.durationMsMax)
+  target.firstTokenMsSum += source.firstTokenMsSum
+  target.firstTokenMsCount += source.firstTokenMsCount
+  target.firstTokenMsMax = Math.max(target.firstTokenMsMax, source.firstTokenMsMax)
+  target.lastUsedAt = maxOptionalIso(target.lastUsedAt, source.lastUsedAt)
+  target.lastErrorAt = maxOptionalIso(target.lastErrorAt, source.lastErrorAt)
+}
+
+function maxOptionalIso(left?: string, right?: string): string | undefined {
+  if (!left) return right
+  if (!right) return left
+  return left >= right ? left : right
+}
+
+function postgresUsageStatsEntryKey(systemAccountId: string, scopeType: string, scopeId: string): string {
+  return `${systemAccountId}\u0000${scopeType}\u0000${scopeId}`
+}
+
+function uniqueNonEmptyIds(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
+}
+
+function postgresMultiRowPlaceholders(rowCount: number, columnCount: number): string {
+  const row = `(${Array.from({ length: columnCount }, () => '?').join(', ')})`
+  return Array.from({ length: rowCount }, () => row).join(', ')
 }
 
 function usageStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof listUsageRecordShardLocationsPage> {

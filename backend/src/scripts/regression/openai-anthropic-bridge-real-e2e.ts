@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_ANTHROPIC_V1_PROFILE_ID, ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import {
   captureGatewayRawBody,
   rejectGatewayRawBodyByContentLength
@@ -20,6 +20,10 @@ const upstreamBaseUrl = (process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_BASE_URL 
 const upstreamModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_MODEL ?? 'claude-sonnet-4-6'
 const sourceModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_SOURCE_MODEL ?? 'gpt-5.5'
 const realE2ERequestTimeoutMs = positiveIntegerEnv('JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_REQUEST_TIMEOUT_MS') ?? 45_000
+const streamRequestTimeoutSecondsOverride = positiveIntegerEnv('JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_STREAM_REQUEST_TIMEOUT_SECONDS')
+const streamIdleTimeoutSecondsOverride = positiveIntegerEnv('JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_STREAM_IDLE_TIMEOUT_SECONDS')
+const progressEnabled = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_PROGRESS !== '0'
+const requiredOnly = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_REQUIRED_ONLY === '1'
 const runImageProviderE2E = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER === '1'
 const runImageProviderStreamE2E = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER_STREAM === '1'
 const imageProviderBaseUrl = (process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_IMAGE_PROVIDER_BASE_URL ?? upstreamBaseUrl).replace(/\/+$/, '')
@@ -84,15 +88,18 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
+  applyGatewayStreamTimeoutOverrides()
   let appServer: http.Server | undefined
   try {
     const group = repositories.createGroup({
       name: 'OpenAI 到 Anthropic 桥接真实 E2E 分组',
       providerCode: ANTHROPIC_PROVIDER_CODE,
+      providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
       enabled: true
     }, access)
     const account = repositories.createAccount({
       providerCode: ANTHROPIC_PROVIDER_CODE,
+      providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
       name: 'OpenAI 到 Anthropic 桥接真实 E2E 账户',
       type: 'api_key',
       credentials: {
@@ -148,24 +155,26 @@ try {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    await assertChatJson(baseUrl, localKey.key)
-    await assertChatSse(baseUrl, localKey.key)
-    await assertResponsesJson(baseUrl, localKey.key)
-    await assertResponsesSse(baseUrl, localKey.key)
-    await assertFileSearchVectorStoreNotFound(baseUrl, localKey.key)
-    await assertChatWebSearchGuidance(baseUrl, localKey.key)
-    const optionalChecks = [
-      await optionalCheck('chat_structured_output', () => assertChatStructuredOutput(baseUrl, localKey.key)),
-      await optionalCheck('chat_image_data_url', () => assertChatImageDataUrl(baseUrl, localKey.key)),
-      await optionalCheck('chat_file_data_text', () => assertChatFileDataText(baseUrl, localKey.key)),
-      await optionalCheck('responses_file_data_text', () => assertResponsesFileDataText(baseUrl, localKey.key)),
-      await optionalCheck('responses_thinking', () => assertResponsesThinking(baseUrl, localKey.key)),
-      await optionalCheck('responses_file_search_local', () => assertResponsesFileSearchLocal(baseUrl, localKey.key)),
-      await optionalCheck('responses_tool_search_namespace', () => assertResponsesToolSearchNamespace(baseUrl, localKey.key)),
-      await optionalCheck('responses_previous_response_id_json', () => assertResponsesPreviousResponseIdJson(baseUrl, localKey.key)),
-      await optionalCheck('responses_compact', () => assertResponsesCompact(baseUrl, localKey.key))
-    ]
-    if (runImageProviderE2E) {
+    await runRequiredCheck('chat_json', () => assertChatJson(baseUrl, localKey.key))
+    await runRequiredCheck('chat_sse', () => assertChatSse(baseUrl, localKey.key))
+    await runRequiredCheck('responses_json', () => assertResponsesJson(baseUrl, localKey.key))
+    await runRequiredCheck('responses_sse', () => assertResponsesSse(baseUrl, localKey.key))
+    await runRequiredCheck('file_search_vector_store_not_found', () => assertFileSearchVectorStoreNotFound(baseUrl, localKey.key))
+    await runRequiredCheck('chat_web_search_guidance', () => assertChatWebSearchGuidance(baseUrl, localKey.key))
+    const optionalChecks = requiredOnly
+      ? ['optional_checks:skipped:required_only']
+      : [
+        await optionalCheck('chat_structured_output', () => assertChatStructuredOutput(baseUrl, localKey.key)),
+        await optionalCheck('chat_image_data_url', () => assertChatImageDataUrl(baseUrl, localKey.key)),
+        await optionalCheck('chat_file_data_text', () => assertChatFileDataText(baseUrl, localKey.key)),
+        await optionalCheck('responses_file_data_text', () => assertResponsesFileDataText(baseUrl, localKey.key)),
+        await optionalCheck('responses_thinking', () => assertResponsesThinking(baseUrl, localKey.key)),
+        await optionalCheck('responses_file_search_local', () => assertResponsesFileSearchLocal(baseUrl, localKey.key)),
+        await optionalCheck('responses_tool_search_namespace', () => assertResponsesToolSearchNamespace(baseUrl, localKey.key)),
+        await optionalCheck('responses_previous_response_id_json', () => assertResponsesPreviousResponseIdJson(baseUrl, localKey.key)),
+        await optionalCheck('responses_compact', () => assertResponsesCompact(baseUrl, localKey.key))
+      ]
+    if (!requiredOnly && runImageProviderE2E) {
       configureRealResponsesImageGenerationProvider()
       optionalChecks.push(await optionalCheck('responses_image_generation_provider', () => assertResponsesImageGenerationProvider(baseUrl, localKey.key)))
       if (runImageProviderStreamE2E) {
@@ -211,6 +220,19 @@ function configureRealResponsesImageGenerationProvider(): void {
   runtimeConfig.imageGenerationProvider.model = imageProviderModel
   runtimeConfig.imageGenerationProvider.timeoutMs = Math.min(Math.max(Math.trunc(imageProviderTimeoutMs), 1000), 300000)
   runtimeConfig.imageGenerationProvider.maxBodyBytes = 64 * 1024 * 1024
+}
+
+function applyGatewayStreamTimeoutOverrides(): void {
+  const update: Record<string, unknown> = {}
+  if (streamRequestTimeoutSecondsOverride) {
+    update.streamRequestTimeoutSeconds = streamRequestTimeoutSecondsOverride
+  }
+  if (streamIdleTimeoutSecondsOverride) {
+    update.streamIdleTimeoutSeconds = streamIdleTimeoutSecondsOverride
+  }
+  if (Object.keys(update).length > 0) {
+    repositories.updateSettings(update)
+  }
 }
 
 async function assertChatJson(baseUrl: string, localApiKey: string): Promise<void> {
@@ -834,23 +856,66 @@ async function uploadOpenAICompatibleRealFile(input: {
 }
 
 async function optionalCheck(name: string, run: () => Promise<void>): Promise<string> {
+  const startedAt = Date.now()
+  logProgress(`${name}:start`)
   try {
     await run()
+    logProgress(`${name}:passed:${Date.now() - startedAt}ms`)
     return `${name}:passed`
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    logProgress(`${name}:failed:${message.slice(0, 180).replace(/\s+/g, ' ')}`)
     return `${name}:failed:${message.slice(0, 180).replace(/\s+/g, ' ')}`
+  }
+}
+
+async function runRequiredCheck(name: string, run: () => Promise<void>): Promise<void> {
+  const startedAt = Date.now()
+  logProgress(`${name}:start`)
+  try {
+    await run()
+    logProgress(`${name}:passed:${Date.now() - startedAt}ms`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logProgress(`${name}:failed:${message.slice(0, 180).replace(/\s+/g, ' ')}`)
+    throw error
   }
 }
 
 async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs = realE2ERequestTimeoutMs): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(input, { ...init, signal: controller.signal })
-  } finally {
+  let cleared = false
+  const clear = () => {
+    if (cleared) return
+    cleared = true
     clearTimeout(timeout)
   }
+  try {
+    const response = await fetch(input, { ...init, signal: controller.signal })
+    const originalText = response.text.bind(response)
+    Object.defineProperty(response, 'text', {
+      value: async () => {
+        try {
+          return await originalText()
+        } finally {
+          clear()
+        }
+      }
+    })
+    return response
+  } catch (error) {
+    clear()
+    throw error
+  }
+}
+
+function logProgress(message: string): void {
+  if (!progressEnabled) return
+  console.log(JSON.stringify({
+    progress: message,
+    elapsed_ms: Date.now()
+  }))
 }
 
 function delay(ms: number): Promise<void> {

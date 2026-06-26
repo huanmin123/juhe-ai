@@ -535,6 +535,7 @@ export {
   listUsageRecords,
   type RecentOpenAIRequestShape,
   type UsageRecordInput,
+  type UsageFailureAttribution,
   type UsageRecordListResult,
   type UsageRecordListOptions,
   type UsageRecordLogSnapshot,
@@ -585,7 +586,9 @@ export {
 export {
   cleanupOperationLogsBefore,
   createOperationLog,
+  createOperationLogAsync,
   createOperationLogsBatch,
+  createOperationLogsBatchAsync,
   getOperationLogDetail,
   getOperationLogDetailForViewer,
   listOperationLogs,
@@ -609,7 +612,9 @@ export {
 export {
   cleanupPublicApiLogsBefore,
   createPublicApiLog,
+  createPublicApiLogAsync,
   createPublicApiLogsBatch,
+  createPublicApiLogsBatchAsync,
   getPublicApiLogDetail,
   listPublicApiLogs,
   type PublicApiLogCaptureStatus,

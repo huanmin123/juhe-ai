@@ -46,6 +46,7 @@ interface UpstreamRequestOptions {
   timeoutMs?: number
   requestTimeoutMs?: number
   signal?: AbortSignal
+  transport?: 'node' | 'fetch'
 }
 
 interface UpstreamHeaderAccount {
@@ -111,6 +112,9 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
 
 export async function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
   const safeRequest = await prepareSafeUpstreamRequestUrl(upstreamUrl)
+  if (options.transport === 'fetch') {
+    return requestUpstreamWithFetch(safeRequest.url, options)
+  }
   return new Promise((resolve, reject) => {
     let settled = false
     const settleResolve = (response: GatewayUpstreamResponse) => {
@@ -215,6 +219,134 @@ function cachedProxyAgent(proxyUrl: string): http.Agent {
   const agent = createProxyAgent(proxyUrl, gatewayUpstreamAgentOptions) as http.Agent
   proxyAgents.set(proxyUrl, agent, { ttlMs: gatewayProxyAgentCacheTtlMs })
   return agent
+}
+
+async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
+  const headers = upstreamRequestHeaders(options.headers, options.body)
+  const controller = new AbortController()
+  let requestTimeout: NodeJS.Timeout | undefined
+  let socketTimeout: NodeJS.Timeout | undefined
+  const abortBySignal = () => controller.abort(new UpstreamRequestAbortedError('请求已取消', true))
+  if (options.signal?.aborted) {
+    throw new UpstreamRequestAbortedError('请求已取消')
+  }
+  options.signal?.addEventListener('abort', abortBySignal, { once: true })
+  try {
+    if (options.requestTimeoutMs !== undefined) {
+      const seconds = Math.ceil(options.requestTimeoutMs / 1000)
+      requestTimeout = setTimeout(() => {
+        controller.abort(new UpstreamRequestTimeoutError(`上游请求 ${seconds}s 后仍未返回首个响应`))
+      }, options.requestTimeoutMs)
+    }
+    if (options.timeoutMs !== undefined) {
+      socketTimeout = setTimeout(() => controller.abort(new Error('上游请求超时')), options.timeoutMs)
+    }
+    const fetchBody = typeof options.body === 'string' || options.body === undefined
+      ? options.body
+      : bufferToArrayBuffer(options.body)
+    const response = await fetch(url, {
+      method: options.method,
+      headers,
+      body: fetchBody,
+      signal: controller.signal
+    })
+    if (requestTimeout) {
+      clearTimeout(requestTimeout)
+      requestTimeout = undefined
+    }
+    return new FetchGatewayUpstreamResponse(response, {
+      timeoutMs: options.timeoutMs,
+      signal: options.signal
+    })
+  } catch (error) {
+    const reason = controller.signal.reason
+    if (reason instanceof Error) {
+      throw reason
+    }
+    throw error
+  } finally {
+    if (requestTimeout) clearTimeout(requestTimeout)
+    if (socketTimeout) clearTimeout(socketTimeout)
+    options.signal?.removeEventListener('abort', abortBySignal)
+  }
+}
+
+function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
+  const copy = new Uint8Array(buffer.byteLength)
+  copy.set(buffer)
+  return copy.buffer
+}
+
+class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
+  constructor(
+    private readonly response: Response,
+    private readonly options: { timeoutMs?: number; signal?: AbortSignal }
+  ) {}
+
+  get status(): number {
+    return this.response.status
+  }
+
+  get ok(): boolean {
+    return this.response.ok
+  }
+
+  get headers(): Headers {
+    return this.response.headers
+  }
+
+  get body(): AsyncIterable<Uint8Array> | null {
+    return this.response.body
+      ? fetchReadableStreamBody(this.response.body, this.options)
+      : null
+  }
+}
+
+async function* fetchReadableStreamBody(
+  body: ReadableStream<Uint8Array>,
+  options: { timeoutMs?: number; signal?: AbortSignal }
+): AsyncIterable<Uint8Array> {
+  const reader = body.getReader()
+  try {
+    while (true) {
+      const result = await readFetchBodyChunk(reader, options)
+      if (result.done) return
+      if (result.value) yield result.value
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function readFetchBodyChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  options: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timeout: NodeJS.Timeout | undefined
+  let abortListener: (() => void) | undefined
+  try {
+    const races: Array<Promise<ReadableStreamReadResult<Uint8Array>>> = [reader.read()]
+    if (options.timeoutMs !== undefined) {
+      races.push(new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('上游请求超时')), options.timeoutMs)
+      }))
+    }
+    if (options.signal) {
+      if (options.signal.aborted) {
+        throw new UpstreamRequestAbortedError('请求已取消', true)
+      }
+      races.push(new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) => {
+        abortListener = () => reject(new UpstreamRequestAbortedError('请求已取消', true))
+        options.signal!.addEventListener('abort', abortListener, { once: true })
+      }))
+    }
+    return await Promise.race(races)
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    if (options.signal && abortListener) {
+      options.signal.removeEventListener('abort', abortListener)
+    }
+  }
 }
 
 export function isUpstreamRequestAbortedError(error: unknown): boolean {

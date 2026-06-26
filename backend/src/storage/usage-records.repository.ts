@@ -28,6 +28,9 @@ import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes } from './provider.repository.js'
 import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -58,6 +61,7 @@ export interface UsageRecordSummary {
   stream: boolean
   statusCode?: number
   success: boolean
+  failureAttribution?: UsageFailureAttribution
   firstTokenMs?: number
   durationMs?: number
   inputTokens?: number
@@ -79,6 +83,7 @@ export interface UsageRecordSummary {
 }
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
@@ -145,6 +150,7 @@ export interface UsageRecordInput {
   stream?: boolean
   statusCode?: number
   success: boolean
+  failureAttribution?: UsageFailureAttribution
   firstTokenMs?: number
   durationMs?: number
   inputTokens?: number
@@ -350,6 +356,10 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
   if (inputs.length === 0) {
     return
   }
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    await createUsageRecordsBatchPostgres(inputs)
+    return
+  }
 
   const businessDatabase = getBusinessDatabase()
   const accountLastUsedAt = new Map<string, string>()
@@ -383,6 +393,23 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
   }
 }
 
+async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Promise<void> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const accountLastUsedAt = new Map<string, string>()
+  const accountHealthSuccessAt = new Map<string, string>()
+  const writePlan = buildUsageRecordBatchWritePlan(inputs, { accessLookupMode: 'provided' })
+  if (writePlan.shardEntries.length === 0) return
+
+  await client.transaction(async (tx) => {
+    for (const shardRows of writePlan.rowsByShard.values()) {
+      await insertPostgresUsageRecordRows(tx, shardRows.rows)
+      collectPostgresUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, shardRows.rows)
+    }
+    await recordPostgresUsageRecordShardEntries(tx, writePlan.shardEntries, writePlan.locations)
+    await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt)
+  })
+}
+
 function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {
   const first = errors[0]
   if (first instanceof Error) {
@@ -397,20 +424,27 @@ interface UsageRecordBatchWritePlan {
   locations: UsageRecordShardLocation[]
 }
 
-function buildUsageRecordBatchWritePlan(inputs: UsageRecordInput[]): UsageRecordBatchWritePlan {
-  const accessLookupContext = buildUsageAccessLookupContext(inputs)
+function buildUsageRecordBatchWritePlan(
+  inputs: UsageRecordInput[],
+  options: { accessLookupMode?: 'database' | 'provided' } = {}
+): UsageRecordBatchWritePlan {
+  const providedOnly = options.accessLookupMode === 'provided'
+  const accessLookupContext = providedOnly ? undefined : buildUsageAccessLookupContext(inputs)
   const rowsByShard = new Map<string, { location: UsageRecordShardLocation; rows: UsageRecordShardWriteRow[] }>()
   const shardEntries: UsageRecordShardEntryInput[] = []
 
   for (const input of inputs) {
-    if (input.apiKeyId && !usageApiKeyExists(input.apiKeyId, accessLookupContext)) {
+    if (!providedOnly && input.apiKeyId && !usageApiKeyExists(input.apiKeyId, accessLookupContext)) {
       continue
     }
     const now = input.createdAt ?? nowIso()
     const id = input.id ?? generateUsageRecordId(now, newId('usage'))
-    const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input, accessLookupContext)
-    const accessMetadata = usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
+    const systemAccountId = input.systemAccountId ?? systemAccountIdFromUsageInput(input, accessLookupContext, providedOnly)
+    const accessMetadata = providedOnly
+      ? usageAccessMetadataFromProvidedInput({ ...input, systemAccountId })
+      : usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
     const trafficSource = normalizeUsageRecordTrafficSource(input.trafficSource)
+    const failureAttribution = usageFailureAttributionForInput(input)
     const row: UsageRecordShardWriteRow = {
       id,
       params: [
@@ -434,6 +468,7 @@ function buildUsageRecordBatchWritePlan(inputs: UsageRecordInput[]): UsageRecord
         input.stream ? 1 : 0,
         input.statusCode ?? null,
         input.success ? 1 : 0,
+        failureAttribution,
         input.firstTokenMs ?? null,
         input.durationMs ?? null,
         input.inputTokens ?? null,
@@ -483,6 +518,7 @@ function buildUsageRecordBatchWritePlan(inputs: UsageRecordInput[]): UsageRecord
       model: input.model ?? null,
       trafficSource,
       success: input.success,
+      failureAttribution,
       statusCode: input.statusCode ?? null,
       clientIp: input.clientIp ?? null,
       firstTokenMs: input.firstTokenMs ?? null,
@@ -497,6 +533,345 @@ function buildUsageRecordBatchWritePlan(inputs: UsageRecordInput[]): UsageRecord
     shardEntries,
     locations: [...rowsByShard.values()].map((entry) => entry.location)
   }
+}
+
+function systemAccountIdFromUsageInput(
+  input: UsageRecordInput,
+  accessLookupContext: ReturnType<typeof buildUsageAccessLookupContext> | undefined,
+  providedOnly: boolean
+): string {
+  if (input.systemAccountId) return input.systemAccountId
+  if (providedOnly) {
+    throw new Error('PostgreSQL 使用记录写入必须提供 systemAccountId')
+  }
+  return systemAccountIdForUsage(input, accessLookupContext)
+}
+
+function usageAccessMetadataFromProvidedInput(input: UsageRecordInput & { systemAccountId: string }): ReturnType<typeof usageAccessMetadata> {
+  return {
+    accountOwnerSystemAccountId: input.accountOwnerSystemAccountId,
+    groupOwnerSystemAccountId: input.groupOwnerSystemAccountId,
+    accountAccessType: input.accountAccessType,
+    groupAccessType: input.groupAccessType,
+    accountAuthorizationId: input.accountAccessType === 'account_authorized' ? input.accountAuthorizationId : undefined,
+    accountAuthorizationSourceType: input.accountAccessType === 'account_authorized' ? input.accountAuthorizationSourceType : undefined,
+    accountAuthorizationSourceTeamId: input.accountAccessType === 'account_authorized' ? input.accountAuthorizationSourceTeamId : undefined,
+    groupAuthorizationId: input.groupAuthorizationId,
+    groupAuthorizationSourceType: input.groupAuthorizationId ? input.groupAuthorizationSourceType : undefined,
+    groupAuthorizationSourceTeamId: input.groupAuthorizationId ? input.groupAuthorizationSourceTeamId : undefined
+  }
+}
+
+const postgresUsageRecordColumns = [
+  'id',
+  'system_account_id',
+  'trace_id',
+  'traffic_source',
+  'client_ip',
+  'api_key_id',
+  'group_id',
+  'account_id',
+  'endpoint',
+  'provider_code',
+  'provider_protocol_profile_id',
+  'usage_semantic',
+  'model',
+  'upstream_model',
+  'pricing_model',
+  'model_mapping_applied',
+  'model_mapping_source',
+  'stream',
+  'status_code',
+  'success',
+  'failure_attribution',
+  'first_token_ms',
+  'duration_ms',
+  'input_tokens',
+  'output_tokens',
+  'cache_read_tokens',
+  'cache_read_cost_usd',
+  'cache_write_tokens',
+  'cache_write_1h_tokens',
+  'cache_write_cost_usd',
+  'thinking_tokens',
+  'input_image_tokens',
+  'output_image_tokens',
+  'cost_usd',
+  'error_code',
+  'error_message',
+  'request_snapshot_json',
+  'response_snapshot_json',
+  'account_owner_system_account_id',
+  'group_owner_system_account_id',
+  'account_access_type',
+  'group_access_type',
+  'account_authorization_id',
+  'account_authorization_source_type',
+  'account_authorization_source_team_id',
+  'group_authorization_id',
+  'group_authorization_source_type',
+  'group_authorization_source_team_id',
+  'created_at'
+] as const
+
+async function insertPostgresUsageRecordRows(client: DatabaseClient, rows: UsageRecordShardWriteRow[]): Promise<void> {
+  if (rows.length === 0) return
+  const placeholders = rows.map(() => `(${postgresUsageRecordColumns.map(() => '?').join(', ')})`).join(', ')
+  await client.execute(`
+    INSERT INTO juhe_usage.usage_records (${postgresUsageRecordColumns.join(', ')})
+    VALUES ${placeholders}
+    ON CONFLICT(id) DO NOTHING
+  `, rows.flatMap((row) => row.params))
+}
+
+async function recordPostgresUsageRecordShardEntries(
+  client: DatabaseClient,
+  entries: UsageRecordShardEntryInput[],
+  locations: UsageRecordShardLocation[]
+): Promise<void> {
+  const uniqueEntries = uniquePostgresUsageRecordShardEntries(entries)
+  if (uniqueEntries.length === 0) return
+  const timestamp = nowIso()
+  await registerPostgresUsageRecordShardLocations(client, uniquePostgresUsageRecordShardLocations([
+    ...locations,
+    ...uniqueEntries
+      .map((entry) => usageRecordShardLocationForRecord(entry.id, entry.createdAt))
+  ]), timestamp)
+  await upsertPostgresUsageRecordShardEntries(client, uniqueEntries, timestamp)
+  await upsertPostgresUsageRecordScopeShardCatalog(client, uniqueEntries)
+}
+
+async function registerPostgresUsageRecordShardLocations(
+  client: DatabaseClient,
+  locations: UsageRecordShardLocation[],
+  timestamp: string
+): Promise<void> {
+  if (locations.length === 0) return
+  const columns = ['shard_key', 'bucket_date', 'shard_id', 'file_path', 'schema_version', 'status', 'first_seen_at', 'last_write_at', 'created_at', 'updated_at']
+  const params = locations.flatMap((location) => [
+    location.shardKey,
+    location.bucketDate,
+    location.shardId,
+    location.filePath,
+    2,
+    'active',
+    timestamp,
+    timestamp,
+    timestamp,
+    timestamp
+  ])
+  await client.execute(`
+    INSERT INTO juhe_usage.usage_record_shards (${columns.join(', ')})
+    VALUES ${multiRowPlaceholders(locations.length, columns.length)}
+    ON CONFLICT(shard_key) DO UPDATE SET
+      last_write_at = EXCLUDED.last_write_at,
+      updated_at = EXCLUDED.updated_at,
+      status = 'active'
+  `, params)
+}
+
+async function upsertPostgresUsageRecordShardEntries(
+  client: DatabaseClient,
+  entries: UsageRecordShardEntryInput[],
+  timestamp: string
+): Promise<void> {
+  const columns = [
+    'usage_id',
+    'shard_key',
+    'system_account_id',
+    'trace_id',
+    'api_key_id',
+    'account_id',
+    'group_id',
+    'model',
+    'traffic_source',
+    'success',
+    'status_code',
+    'client_ip',
+    'first_token_ms',
+    'duration_ms',
+    'cost_usd',
+    'created_at',
+    'indexed_at'
+  ]
+  const params = entries.flatMap((entry) => [
+    entry.id,
+    entry.shardKey,
+    entry.systemAccountId,
+    entry.traceId,
+    entry.apiKeyId ?? null,
+    entry.accountId ?? null,
+    entry.groupId ?? null,
+    entry.model ?? null,
+    entry.trafficSource,
+    entry.success ? 1 : 0,
+    entry.statusCode ?? null,
+    entry.clientIp ?? null,
+    entry.firstTokenMs ?? null,
+    entry.durationMs ?? null,
+    entry.costUsd ?? null,
+    entry.createdAt,
+    timestamp
+  ])
+  await client.execute(`
+    INSERT INTO juhe_usage.usage_record_shard_entries (${columns.join(', ')})
+    VALUES ${multiRowPlaceholders(entries.length, columns.length)}
+    ON CONFLICT(usage_id) DO UPDATE SET
+      shard_key = EXCLUDED.shard_key,
+      system_account_id = EXCLUDED.system_account_id,
+      trace_id = EXCLUDED.trace_id,
+      api_key_id = EXCLUDED.api_key_id,
+      account_id = EXCLUDED.account_id,
+      group_id = EXCLUDED.group_id,
+      model = EXCLUDED.model,
+      traffic_source = EXCLUDED.traffic_source,
+      success = EXCLUDED.success,
+      status_code = EXCLUDED.status_code,
+      client_ip = EXCLUDED.client_ip,
+      first_token_ms = EXCLUDED.first_token_ms,
+      duration_ms = EXCLUDED.duration_ms,
+      cost_usd = EXCLUDED.cost_usd,
+      created_at = EXCLUDED.created_at,
+      indexed_at = EXCLUDED.indexed_at
+  `, params)
+}
+
+async function upsertPostgresUsageRecordScopeShardCatalog(client: DatabaseClient, entries: UsageRecordShardEntryInput[]): Promise<void> {
+  const accountRows = new Map<string, { accountId: string; shardKey: string; firstCreatedAt: string; lastSeenAt: string }>()
+  const apiKeyRows = new Map<string, { apiKeyId: string; systemAccountId: string; shardKey: string; firstCreatedAt: string; lastSeenAt: string }>()
+  for (const entry of entries) {
+    const accountId = entry.accountId?.trim()
+    if (accountId) {
+      const key = `${accountId}\u0000${entry.shardKey}`
+      const existing = accountRows.get(key)
+      if (existing) {
+        if (entry.createdAt < existing.firstCreatedAt) existing.firstCreatedAt = entry.createdAt
+        if (entry.createdAt > existing.lastSeenAt) existing.lastSeenAt = entry.createdAt
+      } else {
+        accountRows.set(key, {
+          accountId,
+          shardKey: entry.shardKey,
+          firstCreatedAt: entry.createdAt,
+          lastSeenAt: entry.createdAt
+        })
+      }
+    }
+    const apiKeyId = entry.apiKeyId?.trim()
+    const systemAccountId = entry.systemAccountId.trim()
+    if (apiKeyId && systemAccountId) {
+      const key = `${apiKeyId}\u0000${systemAccountId}\u0000${entry.shardKey}`
+      const existing = apiKeyRows.get(key)
+      if (existing) {
+        if (entry.createdAt < existing.firstCreatedAt) existing.firstCreatedAt = entry.createdAt
+        if (entry.createdAt > existing.lastSeenAt) existing.lastSeenAt = entry.createdAt
+      } else {
+        apiKeyRows.set(key, {
+          apiKeyId,
+          systemAccountId,
+          shardKey: entry.shardKey,
+          firstCreatedAt: entry.createdAt,
+          lastSeenAt: entry.createdAt
+        })
+      }
+    }
+  }
+
+  if (accountRows.size > 0) {
+    const columns = ['account_id', 'shard_key', 'first_created_at', 'last_seen_at']
+    await client.execute(`
+      INSERT INTO juhe_usage.usage_record_account_shards (${columns.join(', ')})
+      VALUES ${multiRowPlaceholders(accountRows.size, columns.length)}
+      ON CONFLICT(account_id, shard_key) DO UPDATE SET
+        first_created_at = LEAST(usage_record_account_shards.first_created_at, EXCLUDED.first_created_at),
+        last_seen_at = GREATEST(usage_record_account_shards.last_seen_at, EXCLUDED.last_seen_at)
+    `, [...accountRows.values()].flatMap((row) => [row.accountId, row.shardKey, row.firstCreatedAt, row.lastSeenAt]))
+  }
+
+  if (apiKeyRows.size > 0) {
+    const columns = ['api_key_id', 'system_account_id', 'shard_key', 'first_created_at', 'last_seen_at']
+    await client.execute(`
+      INSERT INTO juhe_usage.usage_record_api_key_shards (${columns.join(', ')})
+      VALUES ${multiRowPlaceholders(apiKeyRows.size, columns.length)}
+      ON CONFLICT(api_key_id, system_account_id, shard_key) DO UPDATE SET
+        first_created_at = LEAST(usage_record_api_key_shards.first_created_at, EXCLUDED.first_created_at),
+        last_seen_at = GREATEST(usage_record_api_key_shards.last_seen_at, EXCLUDED.last_seen_at)
+    `, [...apiKeyRows.values()].flatMap((row) => [row.apiKeyId, row.systemAccountId, row.shardKey, row.firstCreatedAt, row.lastSeenAt]))
+  }
+}
+
+function collectPostgresUsageRecordBusinessSideEffects(
+  accountLastUsedAt: Map<string, string>,
+  accountHealthSuccessAt: Map<string, string>,
+  rows: UsageRecordShardWriteRow[]
+): void {
+  for (const row of rows) {
+    if (!row.accountId) continue
+    if (row.accountLastUsedAt) {
+      mergePostgresMaxIsoValue(accountLastUsedAt, row.accountId, row.accountLastUsedAt)
+    }
+    if (row.accountHealthSuccessAt) {
+      mergePostgresMaxIsoValue(accountHealthSuccessAt, row.accountId, row.accountHealthSuccessAt)
+    }
+  }
+}
+
+function mergePostgresMaxIsoValue(target: Map<string, string>, key: string, value: string): void {
+  const previous = target.get(key)
+  if (!previous || value > previous) {
+    target.set(key, value)
+  }
+}
+
+async function flushPostgresUsageRecordBusinessSideEffects(
+  client: DatabaseClient,
+  accountLastUsedAt: Map<string, string>,
+  accountHealthSuccessAt: Map<string, string>
+): Promise<void> {
+  for (const [accountId, lastUsedAt] of accountLastUsedAt) {
+    await client.execute(`
+      UPDATE juhe_business.accounts
+      SET last_used_at = ?, updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND (last_used_at IS NULL OR last_used_at < ?)
+    `, [lastUsedAt, lastUsedAt, accountId, lastUsedAt])
+  }
+  for (const [accountId, successAt] of accountHealthSuccessAt) {
+    await client.execute(`
+      UPDATE juhe_business.accounts
+      SET last_health_success_at = ?,
+          health_check_failure_count = 0,
+          last_health_check_error_code = NULL,
+          last_health_check_error_message = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND health_check_enabled = 1
+        AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
+    `, [successAt, successAt, accountId, successAt])
+  }
+}
+
+function multiRowPlaceholders(rowCount: number, columnCount: number): string {
+  return Array.from({ length: rowCount }, () => `(${Array.from({ length: columnCount }, () => '?').join(', ')})`).join(', ')
+}
+
+function uniquePostgresUsageRecordShardEntries(entries: UsageRecordShardEntryInput[]): UsageRecordShardEntryInput[] {
+  const unique = new Map<string, UsageRecordShardEntryInput>()
+  for (const entry of entries) {
+    const id = entry.id.trim()
+    if (!id) continue
+    unique.set(id, entry)
+  }
+  return [...unique.values()]
+}
+
+function uniquePostgresUsageRecordShardLocations(locations: UsageRecordShardLocation[]): UsageRecordShardLocation[] {
+  const unique = new Map<string, UsageRecordShardLocation>()
+  for (const location of locations) {
+    unique.set(location.shardKey, location)
+  }
+  return [...unique.values()]
 }
 
 function mergeUsageRecordShardWriteResult(
@@ -566,6 +941,7 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.stream,
             ur.status_code,
             ur.success,
+            ${optionalColumns.failureAttribution},
             ur.first_token_ms,
             ur.duration_ms,
             ur.input_tokens,
@@ -629,6 +1005,7 @@ function listUsageRecordRowsFromShards(
           ur.stream,
           ur.status_code,
           ur.success,
+          ${optionalColumns.failureAttribution},
           ur.first_token_ms,
           ur.duration_ms,
           ur.input_tokens,
@@ -662,6 +1039,7 @@ function usageRecordOptionalColumnSelects(database: ReturnType<typeof getUsageRe
   cacheWrite1hTokens: string
   cacheWriteCostUsd: string
   thinkingTokens: string
+  failureAttribution: string
 } {
   const columns = usageRecordColumnSet(database)
   return {
@@ -670,7 +1048,8 @@ function usageRecordOptionalColumnSelects(database: ReturnType<typeof getUsageRe
     cacheWriteTokens: columns.has('cache_write_tokens') ? 'ur.cache_write_tokens' : 'NULL AS cache_write_tokens',
     cacheWrite1hTokens: columns.has('cache_write_1h_tokens') ? 'ur.cache_write_1h_tokens' : 'NULL AS cache_write_1h_tokens',
     cacheWriteCostUsd: columns.has('cache_write_cost_usd') ? 'ur.cache_write_cost_usd' : 'NULL AS cache_write_cost_usd',
-    thinkingTokens: columns.has('thinking_tokens') ? 'ur.thinking_tokens' : 'NULL AS thinking_tokens'
+    thinkingTokens: columns.has('thinking_tokens') ? 'ur.thinking_tokens' : 'NULL AS thinking_tokens',
+    failureAttribution: columns.has('failure_attribution') ? 'ur.failure_attribution' : 'NULL AS failure_attribution'
   }
 }
 
@@ -796,6 +1175,29 @@ function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSo
     return value
   }
   throw new Error('使用记录来源无效')
+}
+
+function usageFailureAttributionForInput(input: UsageRecordInput): UsageFailureAttribution | null {
+  if (input.success) {
+    return null
+  }
+  if (input.failureAttribution) {
+    return normalizeUsageFailureAttribution(input.failureAttribution)
+  }
+  return input.accountId ? 'account_upstream' : 'gateway_policy'
+}
+
+function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttribution {
+  if (
+    value === 'account_upstream'
+    || value === 'account_dependency'
+    || value === 'gateway_capacity'
+    || value === 'gateway_policy'
+    || value === 'client_lifecycle'
+  ) {
+    return value
+  }
+  throw new Error('使用记录失败归因无效')
 }
 
 function shouldRecordAccountUsageSideEffects(trafficSource: UsageRecordTrafficSource): boolean {

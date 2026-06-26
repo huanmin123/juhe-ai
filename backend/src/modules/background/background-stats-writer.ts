@@ -14,7 +14,7 @@ import type {
 } from '../../storage/table-monitor.repository.js'
 import { cleanupTableStorageSnapshotsBefore, collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import {
-  aggregateUsageStatsBatch,
+  aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
   insertProcessEventLoopSample,
   insertSystemMetricsSample,
@@ -252,7 +252,7 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
       stoppedByTimeBudget = true
       break
     }
-    const batchProcessed = aggregateUsageStatsBatch(normalizedBatchSize, safeCreatedBefore)
+    const batchProcessed = await aggregateUsageStatsBatchAsync(normalizedBatchSize, safeCreatedBefore)
     processed += batchProcessed
     if (batchProcessed < normalizedBatchSize) break
     if (Date.now() - startedAtMs >= normalizedMaxRunMs) {
@@ -263,6 +263,9 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
     await pauseBetweenStatsAggregationBatches()
   }
   if (processed > 0) {
+    if (runtimeConfig.databaseDriver === 'postgres') {
+      return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
+    }
     refreshUsageQuotaHourlyWindowsCache()
     sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())
     return { processed, quotaSnapshotSent: true, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }

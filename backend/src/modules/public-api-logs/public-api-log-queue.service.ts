@@ -1,7 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { runtimeConfig } from '../../config/runtime.js'
-import { createPublicApiLogsBatch, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
+import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
 
 const publicApiLogQueueMaxSize = 5000
@@ -130,6 +130,10 @@ function clearPublicApiLogFlushTimers(): void {
 }
 
 function flushPublicApiLogQueueBatches(options: { drain?: boolean; maxBatches?: number } = {}): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    void flushPublicApiLogQueueBatchesAsync(options)
+    return
+  }
   const maxBatches = typeof options.maxBatches === 'number' && Number.isFinite(options.maxBatches)
     ? Math.max(1, Math.trunc(options.maxBatches))
     : Number.POSITIVE_INFINITY
@@ -137,6 +141,22 @@ function flushPublicApiLogQueueBatches(options: { drain?: boolean; maxBatches?: 
   while (publicApiLogQueue.length > 0 && flushedBatches < maxBatches) {
     flushedBatches += 1
     if (!flushPublicApiLogQueueBatch()) {
+      break
+    }
+    if (!options.drain) {
+      break
+    }
+  }
+}
+
+async function flushPublicApiLogQueueBatchesAsync(options: { drain?: boolean; maxBatches?: number } = {}): Promise<void> {
+  const maxBatches = typeof options.maxBatches === 'number' && Number.isFinite(options.maxBatches)
+    ? Math.max(1, Math.trunc(options.maxBatches))
+    : Number.POSITIVE_INFINITY
+  let flushedBatches = 0
+  while (publicApiLogQueue.length > 0 && flushedBatches < maxBatches) {
+    flushedBatches += 1
+    if (!(await flushPublicApiLogQueueBatchAsync())) {
       break
     }
     if (!options.drain) {
@@ -162,6 +182,10 @@ function schedulePublicApiLogFlush(delayMs: number): void {
 }
 
 function flushPublicApiLogQueue(): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    void flushPublicApiLogQueueAsync()
+    return
+  }
   flushScheduled = false
   if (flushing) {
     return
@@ -178,6 +202,23 @@ function flushPublicApiLogQueue(): void {
   }
 }
 
+async function flushPublicApiLogQueueAsync(): Promise<void> {
+  flushScheduled = false
+  if (flushing) {
+    return
+  }
+  flushing = true
+  let success = false
+  try {
+    success = await flushPublicApiLogQueueBatchAsync()
+  } finally {
+    flushing = false
+  }
+  if (publicApiLogQueue.length > 0) {
+    schedulePublicApiLogFlush(success ? 0 : publicApiLogRetryDelayMs)
+  }
+}
+
 function flushPublicApiLogQueueBatch(): boolean {
   const batch = publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)
   if (batch.length === 0) {
@@ -186,6 +227,36 @@ function flushPublicApiLogQueueBatch(): boolean {
   const batchBytes = sumQueuedPublicApiLogBytes(batch)
   try {
     createPublicApiLogsBatch(batch.map((item) => item.input))
+    publicApiLogQueue.splice(0, batch.length)
+    publicApiLogQueueBytes = Math.max(0, publicApiLogQueueBytes - batchBytes)
+    return true
+  } catch (error) {
+    publicApiLogFlushFailureCount += 1
+    const first = batch[0]?.input
+    logger.warn(errorLogFields(error, {
+      event: 'public_api_log_batch_write_failed',
+      batchSize: batch.length,
+      batchBytes,
+      pendingCount: publicApiLogQueue.length,
+      pendingBytes: publicApiLogQueueBytes,
+      flushFailureCount: publicApiLogFlushFailureCount,
+      method: first?.method,
+      path: first?.path,
+      statusCode: first?.statusCode,
+      traceId: first?.traceId
+    }), '公开接口日志批量写入失败，已保留批次等待重试')
+    return false
+  }
+}
+
+async function flushPublicApiLogQueueBatchAsync(): Promise<boolean> {
+  const batch = publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)
+  if (batch.length === 0) {
+    return true
+  }
+  const batchBytes = sumQueuedPublicApiLogBytes(batch)
+  try {
+    await createPublicApiLogsBatchAsync(batch.map((item) => item.input))
     publicApiLogQueue.splice(0, batch.length)
     publicApiLogQueueBytes = Math.max(0, publicApiLogQueueBytes - batchBytes)
     return true

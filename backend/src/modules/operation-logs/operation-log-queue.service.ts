@@ -3,7 +3,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
-import { createOperationLogsBatch, type OperationLogInput } from '../../storage/repositories.js'
+import { createOperationLogsBatch, createOperationLogsBatchAsync, type OperationLogInput } from '../../storage/repositories.js'
 import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 
 const operationLogFlushIntervalMs = 100
@@ -75,6 +75,10 @@ export function enqueueOperationLogsLocal(inputs: OperationLogInput[]): void {
 }
 
 export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    void flushOperationLogQueueAsync(options)
+    return
+  }
   if (!isOperationLogIngestWorker()) {
     return
   }
@@ -103,6 +107,60 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
 
       try {
         createOperationLogsBatch(batch.map((item) => item.input))
+        pendingOperationLogs.splice(0, batch.length)
+        pendingOperationLogBytes = Math.max(0, pendingOperationLogBytes - batchBytes)
+      } catch (error) {
+        failed = true
+        flushFailureCount += 1
+        logger.error(errorLogFields(error, {
+          event: 'operation_log_queue_flush_failed',
+          batchSize: batch.length,
+          pendingCount: pendingOperationLogs.length,
+          pendingBytes: pendingOperationLogBytes,
+          flushFailureCount
+        }), '操作日志队列写入失败，已保留记录等待重试')
+        shouldRetry = options.retryOnFailure !== false
+        break
+      }
+    } while (options.drain && pendingOperationLogs.length > 0 && flushedBatches < maxBatches)
+  } finally {
+    flushing = false
+  }
+
+  if (pendingOperationLogs.length > 0 && (!failed || shouldRetry)) {
+    scheduleOperationLogFlush(shouldRetry ? retryDelayMs(operationLogRetryPolicy) : 0)
+  }
+}
+
+async function flushOperationLogQueueAsync(options: OperationLogFlushOptions = {}): Promise<void> {
+  if (!isOperationLogIngestWorker()) {
+    return
+  }
+  if (flushing || pendingOperationLogs.length === 0) {
+    return
+  }
+
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+
+  flushing = true
+  let shouldRetry = false
+  let failed = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
+  try {
+    do {
+      const batch = pendingOperationLogs.slice(0, operationLogBatchSize)
+      if (batch.length === 0) {
+        break
+      }
+      flushedBatches += 1
+      const batchBytes = sumQueuedOperationLogBytes(batch)
+
+      try {
+        await createOperationLogsBatchAsync(batch.map((item) => item.input))
         pendingOperationLogs.splice(0, batch.length)
         pendingOperationLogBytes = Math.max(0, pendingOperationLogBytes - batchBytes)
       } catch (error) {

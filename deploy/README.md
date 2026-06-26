@@ -1,6 +1,6 @@
 # 发布包快速运行说明
 
-> 这是发布包根目录内置的快速说明。构建发布包见 `docs/deploy/构建指南.md`，完整部署、常驻运行、反向代理、备份迁移和排障见 `docs/deploy/部署指南.md`。
+> 这是发布包根目录内置的快速说明。构建发布包见 `docs/deploy/构建指南.md`。完整部署先按场景选择：服务器看 `docs/deploy/scenarios/服务器部署方案.md`，家庭宽带反代看 `docs/deploy/scenarios/家庭宽带反向代理方案.md`；通用启动、HTTPS 证书、状态检测、常驻运行、反向代理、备份迁移和排障再看 `docs/deploy/部署指南.md`。
 
 ## 启动脚本
 
@@ -9,6 +9,7 @@
 | Windows | `pwsh ./start.ps1` |
 | macOS | `bash ./start.sh` |
 | Linux | `bash ./start.sh` |
+
 
 发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。
 
@@ -28,7 +29,7 @@ Copy-Item .\backend\.env.example .\backend\.env -ErrorAction SilentlyContinue
 notepad .\backend\.env
 ```
 
-如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动从 example 创建 `backend/.env`，生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。
+如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动从 example 创建 `backend/.env`，生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/Caddy自动HTTPS部署指南.md`。
 
 最低配置：
 
@@ -39,6 +40,7 @@ JUHE_AI_DB_SERVICE_HTTP_HOST=127.0.0.1
 JUHE_AI_DB_SERVICE_HTTP_PORT=0
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
+JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
@@ -48,7 +50,7 @@ JUHE_AI_OAUTH_PROXY_URL=
 JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false
 ```
 
-新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和 usage shard catalog 在数据集目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。三个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和清理目标在数据集目录库；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。四个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false` 时仍保留审计元数据和 attempt 摘要，不保存请求 / 响应正文 payload。
 
 ## 启动与验证
 
@@ -79,9 +81,9 @@ backend/.env
 核心业务表数据
 ```
 
-默认备份只需要 `.env` 和业务表导出；数据集目录库、usage shard 目录和统计结果库通常可丢弃、清空或重建。只有做离线取证、迁移完整历史明细或保留审计 payload 时，才停服务后额外备份 `backend/data/juhe-ai-dataset.sqlite3`、`backend/data/usage-shards/` 或 `JUHE_AI_USAGE_SHARD_ROOT` 指向的目录，以及 `backend/data/juhe-ai-stats.sqlite3`。
+默认备份只需要 `.env` 和业务表导出；数据集目录库、使用记录目录库、usage shard 目录和统计结果库通常可丢弃、清空或重建。只有做离线取证、迁移完整历史明细或保留审计 payload 时，才停服务后额外备份 `backend/data/juhe-ai-dataset.sqlite3`、`backend/data/juhe-ai-usage-catalog.sqlite3`、`backend/data/usage-shards/` 或 `JUHE_AI_USAGE_SHARD_ROOT` 指向的目录，以及 `backend/data/juhe-ai-stats.sqlite3`。
 
-常驻运行、反向代理、端口开放、数据迁移和常见排障请继续查看 `docs/deploy/部署指南.md`。
+部署方式先看 `docs/deploy/scenarios/`。状态检测和自动恢复看 `docs/deploy/watchdog/README.md`。HTTPS 证书、常驻运行、反向代理、端口开放、数据迁移和常见排障请继续查看 `docs/deploy/部署指南.md`。
 
 ## 统计重建
 

@@ -50,6 +50,7 @@ export async function performUpstreamRequestAttempt(
   const socketTimeoutMs = upstreamSocketTimeoutMs(req, settings, account)
   const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
+  const upstreamBody = normalizeAnthropicMessagesBodyForAttempt(headers, upstreamUrl, body)
 
   getRequestLogger().debug({
     event: 'gateway_upstream_request_started',
@@ -61,7 +62,7 @@ export async function performUpstreamRequestAttempt(
     auditAttemptIndex,
     method: req.method,
     stream: isEffectiveOpenAIStreamRequest(req, account),
-    requestBodyBytes: typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : body?.byteLength,
+    requestBodyBytes: typeof upstreamBody === 'string' ? Buffer.byteLength(upstreamBody, 'utf8') : upstreamBody?.byteLength,
     socketTimeoutMs,
     requestTimeoutMs,
     proxyEnabled: Boolean(account.proxyUrl)
@@ -70,11 +71,12 @@ export async function performUpstreamRequestAttempt(
   const response = await requestUpstream(upstreamUrl, {
     method: req.method,
     headers,
-    body,
+    body: upstreamBody,
     proxyUrl: account.proxyUrl,
     timeoutMs: socketTimeoutMs,
     requestTimeoutMs,
-    signal
+    signal,
+    transport: upstreamTransportForAttempt(headers, upstreamUrl)
   })
 
   getRequestLogger().debug({
@@ -93,6 +95,7 @@ export async function performUpstreamRequestAttempt(
 
   const continueUpstreamJsonRequest = async (nextBody: Record<string, unknown>, eventName = 'gateway_continue_upstream_json_request_started') => {
     const nextBodyBuffer = Buffer.from(JSON.stringify(nextBody), 'utf8')
+    const nextUpstreamBody = normalizeAnthropicMessagesBodyForAttempt(headers, upstreamUrl, nextBodyBuffer)
     getRequestLogger().debug({
       event: eventName,
       accountId: account.id,
@@ -100,18 +103,19 @@ export async function performUpstreamRequestAttempt(
       upstreamUrl: safeUpstreamUrl,
       attemptIndex,
       auditAttemptIndex,
-      requestBodyBytes: nextBodyBuffer.byteLength,
+      requestBodyBytes: typeof nextUpstreamBody === 'string' ? Buffer.byteLength(nextUpstreamBody, 'utf8') : nextUpstreamBody?.byteLength,
       socketTimeoutMs,
       requestTimeoutMs
     }, '网关继续请求上游')
     return requestUpstream(upstreamUrl, {
       method: req.method,
       headers: new Headers(headers),
-      body: nextBodyBuffer,
+      body: nextUpstreamBody,
       proxyUrl: account.proxyUrl,
       timeoutMs: socketTimeoutMs,
       requestTimeoutMs,
-      signal
+      signal,
+      transport: upstreamTransportForAttempt(headers, upstreamUrl)
     })
   }
 
@@ -125,4 +129,82 @@ export async function performUpstreamRequestAttempt(
       return continueUpstreamJsonRequest(nextBody, 'gateway_codex_bridge_continue_chat_request_started')
     }
   })
+}
+
+function upstreamTransportForAttempt(
+  headers: Headers,
+  upstreamUrl: string
+): 'fetch' | undefined {
+  if (!isAnthropicMessagesRequestHeaders(headers)) return undefined
+  try {
+    const path = new URL(upstreamUrl).pathname.replace(/^\/v1(?=\/|$)/, '') || '/'
+    return path === '/messages' || path === '/messages/count_tokens' ? 'fetch' : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isAnthropicMessagesRequestHeaders(headers: Headers): boolean {
+  return Boolean(headers.get('anthropic-version'))
+    && (
+      Boolean(headers.get('x-api-key'))
+      || Boolean(headers.get('anthropic-api-key'))
+      || Boolean(headers.get('authorization'))
+    )
+}
+
+function normalizeAnthropicMessagesBodyForAttempt(
+  headers: Headers,
+  upstreamUrl: string,
+  body: Buffer | string | undefined
+): Buffer | string | undefined {
+  if (!body || !isAnthropicMessagesRequestHeaders(headers) || !isAnthropicMessagesPath(upstreamUrl)) {
+    return body
+  }
+  const text = Buffer.isBuffer(body) ? body.toString('utf8') : body
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    return body
+  }
+  if (!isJsonRecord(parsed)) return body
+  const normalized: Record<string, unknown> = { ...parsed }
+  if (normalized.stream === false) {
+    delete normalized.stream
+  }
+  if (Array.isArray(normalized.messages)) {
+    normalized.messages = normalized.messages.map(normalizeAnthropicMessageForAttempt)
+  }
+  const normalizedText = JSON.stringify(normalized)
+  return Buffer.isBuffer(body) ? Buffer.from(normalizedText, 'utf8') : normalizedText
+}
+
+function normalizeAnthropicMessageForAttempt(value: unknown): unknown {
+  if (!isJsonRecord(value) || !Array.isArray(value.content)) return value
+  const content = value.content
+  if (!content.every(isPlainAnthropicTextBlockForAttempt)) return value
+  return {
+    ...value,
+    content: content.map((block) => block.text).join('')
+  }
+}
+
+function isPlainAnthropicTextBlockForAttempt(value: unknown): value is { type: 'text'; text: string } {
+  return isJsonRecord(value)
+    && value.type === 'text'
+    && typeof value.text === 'string'
+    && Object.keys(value).every((key) => key === 'type' || key === 'text')
+}
+
+function isAnthropicMessagesPath(upstreamUrl: string): boolean {
+  try {
+    return (new URL(upstreamUrl).pathname.replace(/^\/v1(?=\/|$)/, '') || '/') === '/messages'
+  } catch {
+    return false
+  }
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
