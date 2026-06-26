@@ -258,14 +258,14 @@ export function optionalModelMappingText(value: unknown): string | undefined {
 }
 
 export function optionalModelMappingSourceEndpointFamily(value: unknown): AccountModelMappingSourceEndpointFamily | undefined {
-  if (value === 'chat_completions' || value === 'responses' || value === 'messages') {
+  if (value === 'chat_completions' || value === 'responses' || value === 'messages' || value === 'generate_content' || value === 'stream_generate_content') {
     return value
   }
   return undefined
 }
 
 export function optionalModelMappingUpstreamEndpointFamily(value: unknown): AccountModelMappingUpstreamEndpointFamily | undefined {
-  if (value === 'chat_completions' || value === 'responses' || value === 'messages') {
+  if (value === 'chat_completions' || value === 'responses' || value === 'messages' || value === 'generate_content') {
     return value
   }
   return undefined

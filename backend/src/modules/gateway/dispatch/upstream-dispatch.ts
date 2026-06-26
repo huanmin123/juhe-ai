@@ -64,7 +64,8 @@ export class UpstreamAttemptError extends Error {
   constructor(
     message: string,
     readonly lastAttempt?: UpstreamAttempt,
-    readonly failedAccountIds: string[] = []
+    readonly failedAccountIds: string[] = [],
+    readonly agentGuidanceResponse?: GatewayAgentGuidanceResponse
   ) {
     super(message)
   }
@@ -102,6 +103,7 @@ export async function fetchFirstAvailableUpstream(
   )
   const maxAttemptCount = retryAttemptCount(sameAccountRetryPolicy)
   let lastAttempt: UpstreamAttempt | undefined
+  let agentGuidanceResponse: GatewayAgentGuidanceResponse | undefined
   let auditAttemptIndex = 0
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
   const failedProxyDispatchKeys = new Map<string, string>()
@@ -247,6 +249,38 @@ export async function fetchFirstAvailableUpstream(
             headers = requestParts.headers
             body = requestParts.body
           } catch (error) {
+            if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
+              lastAttempt = accountScopedGuidanceAttempt(account, error)
+              agentGuidanceResponse = error
+              failedAccountIds.add(account.id)
+              getRequestLogger().info({
+                event: 'gateway_account_scoped_agent_guidance_dispatch_skip',
+                accountId: account.id,
+                accountName: account.name,
+                providerCode: account.providerCode,
+                providerProtocolProfileId: account.providerProtocolProfileId,
+                protocolCode: account.protocolCode,
+                protocolVersion: account.protocolVersion,
+                guidanceCode: error.code,
+                guidanceProtocol: error.protocol,
+                guidanceModel: error.model
+              }, '当前账号目标协议无法承载请求能力，跳过当前账号并继续调度')
+              auditCapture.addGatewayMetadata({
+                label: 'account_scoped_agent_guidance_dispatch_skip',
+                metadata: {
+                  accountId: account.id,
+                  accountName: account.name,
+                  providerCode: account.providerCode,
+                  providerProtocolProfileId: account.providerProtocolProfileId,
+                  protocolCode: account.protocolCode,
+                  protocolVersion: account.protocolVersion,
+                  guidanceCode: error.code,
+                  guidanceProtocol: error.protocol,
+                  guidanceModel: error.model
+                }
+              })
+              continue
+            }
             if (
               signal?.aborted
               || error instanceof GatewayAgentGuidanceResponse
@@ -475,7 +509,7 @@ export async function fetchFirstAvailableUpstream(
     break
   }
 
-  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds])
+  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds], agentGuidanceResponse)
 }
 
 function releaseAccountDispatchSlot(releaseConcurrency: () => void, halfOpenLease?: GatewayAccountHalfOpenLease): () => void {
@@ -552,6 +586,19 @@ function accountApiKeyPoolUnavailableAttempt(account: UpstreamAccount): Upstream
     protocolVersion: account.protocolVersion,
     upstreamUrl: 'account:api_key_pool_unavailable',
     message: '账户 API Key 池暂无可用 Key'
+  }
+}
+
+function accountScopedGuidanceAttempt(account: UpstreamAccount, guidance: GatewayAgentGuidanceResponse): UpstreamAttempt {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl: 'gateway:agent_guidance',
+    message: guidance.message
   }
 }
 

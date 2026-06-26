@@ -4,7 +4,7 @@ export const accountModelMappingSchema = z.object({
   sourceModel: z.string().trim().min(1),
   sourceEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content', 'stream_generate_content']),
   upstreamModel: z.string().trim().min(1),
-  upstreamEndpointFamily: z.enum(['chat_completions', 'responses', 'messages']),
+  upstreamEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content']),
   enabled: z.boolean().optional()
 }).strict()
 

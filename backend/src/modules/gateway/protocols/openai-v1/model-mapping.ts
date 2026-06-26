@@ -30,6 +30,7 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../request/json-parser.js'
 import { requestModel } from '../../request/metadata.js'
+import { requestStream } from '../../request/metadata.js'
 import { OpenAIOAuthCodexAdapterError } from '../../adapters/gpt-codex/oauth-adapter.js'
 import { splitPathAndQuery } from './route-helpers.js'
 
@@ -62,6 +63,7 @@ export function resolveOpenAIAccountModelMapping(
     && item.sourceEndpointFamily === sourceEndpointFamily
   ))
   if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined
+  if (!isOpenAIModelMappingRuntimeConversionSupported(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) return undefined
   return {
     sourceModel: mapping.sourceModel,
     sourceEndpointFamily: mapping.sourceEndpointFamily,
@@ -107,13 +109,6 @@ export function isOpenAIResponsesToChatCompletionsModelMapping(
     && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
 }
 
-export function isOpenAIChatCompletionsToResponsesModelMapping(
-  mapping: ResolvedOpenAIModelMapping | undefined
-): boolean {
-  return mapping?.sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
-    && mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY
-}
-
 export function isAnthropicMessagesToChatCompletionsModelMapping(
   mapping: ResolvedOpenAIModelMapping | undefined
 ): boolean {
@@ -130,6 +125,25 @@ export function isGeminiGenerateContentToChatCompletionsModelMapping(
   ) && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
 }
 
+export function isGeminiGenerateContentToAnthropicMessagesModelMapping(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): boolean {
+  return (
+    mapping?.sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY
+    || mapping?.sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  ) && mapping.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+}
+
+export function isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): mapping is ResolvedOpenAIModelMapping {
+  return (
+    mapping?.sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+    || mapping?.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    || mapping?.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+  ) && mapping.upstreamEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY
+}
+
 export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: ResolvedOpenAIModelMapping): string {
   const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
   if (isOpenAIResponsesToChatCompletionsModelMapping(mapping)) {
@@ -141,10 +155,43 @@ export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: Res
   if (isGeminiGenerateContentToChatCompletionsModelMapping(mapping)) {
     return `/chat/completions${geminiGenerateContentToChatCompletionsQuery(req)}`
   }
-  if (isOpenAIChatCompletionsToResponsesModelMapping(mapping)) {
-    return `/responses${query}`
-  }
   return req.originalUrl || req.path || '/'
+}
+
+function isOpenAIModelMappingRuntimeConversionSupported(
+  source: AccountModelMappingSourceEndpointFamily,
+  upstream: AccountModelMappingUpstreamEndpointFamily
+): boolean {
+  if (source === OPENAI_CHAT_COMPLETIONS_FAMILY) {
+    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
+      || upstream === ANTHROPIC_MESSAGES_FAMILY
+      || upstream === GEMINI_GENERATE_CONTENT_FAMILY
+  }
+  if (source === OPENAI_RESPONSES_FAMILY) {
+    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
+      || upstream === OPENAI_RESPONSES_FAMILY
+      || upstream === ANTHROPIC_MESSAGES_FAMILY
+      || upstream === GEMINI_GENERATE_CONTENT_FAMILY
+  }
+  if (source === ANTHROPIC_MESSAGES_FAMILY) {
+    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
+      || upstream === GEMINI_GENERATE_CONTENT_FAMILY
+  }
+  if (source === GEMINI_GENERATE_CONTENT_FAMILY || source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
+    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
+      || upstream === ANTHROPIC_MESSAGES_FAMILY
+  }
+  return false
+}
+
+export function geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery(req: Request): string {
+  return `/messages${geminiGenerateContentBridgeQuery(req)}`
+}
+
+export function geminiGenerateContentModelMappedUpstreamPathAndQuery(req: Request, mapping: ResolvedOpenAIModelMapping): string {
+  const model = geminiModelPathSegment(mapping.upstreamModel)
+  const action = requestStream(req) ? 'streamGenerateContent' : 'generateContent'
+  return `/v1beta/models/${model}:${action}${requestStream(req) ? '?alt=sse' : ''}`
 }
 
 export async function buildOpenAIModelMappedJsonBody(
@@ -209,6 +256,10 @@ function modelMappingRequestError(message: string): OpenAIOAuthCodexAdapterError
 }
 
 function geminiGenerateContentToChatCompletionsQuery(req: Request): string {
+  return geminiGenerateContentBridgeQuery(req)
+}
+
+function geminiGenerateContentBridgeQuery(req: Request): string {
   const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
   if (!query) return ''
   const params = new URLSearchParams(query.slice(1))
@@ -216,6 +267,11 @@ function geminiGenerateContentToChatCompletionsQuery(req: Request): string {
   params.delete('key')
   const text = params.toString()
   return text ? `?${text}` : ''
+}
+
+function geminiModelPathSegment(model: string): string {
+  const normalized = model.startsWith('models/') ? model.slice('models/'.length) : model
+  return encodeURIComponent(normalized)
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

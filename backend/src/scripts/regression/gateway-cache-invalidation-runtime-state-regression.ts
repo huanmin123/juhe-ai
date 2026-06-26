@@ -13,7 +13,11 @@ assert.match(invalidationSource, /publishGatewayCacheInvalidationToRuntimeState\
 assert.match(invalidationSource, /publishGatewayCacheInvalidationToRuntimeState\('authorization_quota_cache'/, '授权额度失效应发布 runtime state 版本')
 assert.match(invalidationSource, /publishGatewayCacheInvalidationToRuntimeState\('api_key_quota_cache'/, 'API Key 额度失效应发布 runtime state 版本')
 assert.match(invalidationSource, /applyRuntimeStateCacheInvalidation/, '读取侧应把远端版本变化转换为本地 handler 调用')
+assert.match(invalidationSource, /type GatewayRuntimeCacheInvalidationHandler = \(reason: string\) => void/, '网关运行态失效 handler 应保留 reason，避免账户更新误清系统设置缓存')
+assert.match(invalidationSource, /handler\(reason\)/, '本进程网关运行态失效应把 reason 传给 handler')
+assert.match(invalidationSource, /handler\(state\.reason\)/, '跨进程网关运行态失效应把远端 reason 传给 handler')
 assert.match(invalidationSource, /handler\(state\.apiKeyId\)/, 'API Key 额度远端失效应保留定点 apiKeyId')
+assertGatewayRuntimeInvalidationClearsSettingsByReason(runtimeCacheSource)
 
 for (const functionName of [
   'readCachedGatewaySettingsAsync',
@@ -42,4 +46,35 @@ function assertFunctionCallsRuntimeStateSync(source: string, functionName: strin
   const end = candidates.length ? Math.min(...candidates) : source.length
   const block = source.slice(start, end)
   assert.match(block, /await syncGatewayCacheInvalidationsFromRuntimeState\(\)/, `${functionName} 应先同步 runtime state 缓存失效版本`)
+}
+
+function assertGatewayRuntimeInvalidationClearsSettingsByReason(source: string): void {
+  const clearCacheBlock = sourceFunctionBlock(source, 'export function clearGatewayRuntimeCache')
+  assert.match(clearCacheBlock, /shouldClearSettingsCacheForGatewayInvalidation\(reason\)/, '网关运行态失效必须按 reason 决定是否清系统设置缓存')
+  const clearLocalBlock = sourceFunctionBlock(source, 'export function clearGatewayRuntimeCacheLocal')
+  assert.match(clearLocalBlock, /if \(options\.clearSettings \?\? true\)/, '本地网关缓存清理默认仍应清系统设置缓存，避免手动清理漏失效')
+  const reasonBlock = sourceFunctionBlock(source, 'function shouldClearSettingsCacheForGatewayInvalidation')
+  assert.match(reasonBlock, /!reason \|\| reason === 'settings_updated'/, '只有无 reason 的兼容清理和 settings_updated 才能清系统设置缓存')
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert(start >= 0, `未找到源码片段：${marker}`)
+  let searchFrom = source.indexOf('):', start)
+  if (searchFrom < 0) searchFrom = source.indexOf(') {', start)
+  assert(searchFrom >= 0, `源码片段缺少函数签名结束：${marker}`)
+  const bodyStart = source.indexOf('{', searchFrom)
+  assert(bodyStart >= 0, `源码片段缺少函数体：${marker}`)
+  let depth = 0
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return source.slice(start, index + 1)
+      }
+    }
+  }
+  throw new Error(`源码片段函数体未闭合：${marker}`)
 }

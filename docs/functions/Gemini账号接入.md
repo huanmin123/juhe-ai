@@ -9,7 +9,7 @@
 - Gemini native 客户端：走 `gemini/v1beta` 原生协议档案。
 - OpenAI Chat 客户端：走 Gemini 供应商下的 `profile_gemini_openai_chat_v1beta`，上游为 Gemini 官方 OpenAI compatibility endpoint。
 - Codex / OpenAI Responses 客户端：如果要使用 Gemini，必须在 Gemini OpenAI Chat 账号上显式配置 `responses -> chat_completions` 模型映射；不允许走 Gemini native 转换，也不允许 Anthropic Messages 转到 Gemini。
-- Gemini CLI / Gemini SDK 如果要调用 GLM、DeepSeek、OpenAI-compatible 或 Gemini OpenAI Chat 的 Chat 模型，必须在目标 Chat 上游账号上显式配置 `generate_content` 或 `stream_generate_content` 到 `chat_completions` 的模型映射；不做基于模型名或客户端画像的自动转换。
+- Gemini CLI / Gemini SDK 如果要调用 GLM、DeepSeek、OpenAI-compatible 或 Gemini OpenAI Chat 的 Chat 模型，必须在目标 Chat 上游账号上显式配置 `generate_content` 或 `stream_generate_content` 到 `chat_completions` 的模型映射；如果要调用 Claude / Anthropic Messages 模型，必须在目标 Anthropic 协议账号上显式配置 `generate_content` 或 `stream_generate_content` 到 `messages` 的模型映射；不做基于模型名或客户端画像的自动转换。
 
 本次参考：
 
@@ -280,10 +280,10 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 - Gemini OpenAI Chat 账户只能加入 `profile_gemini_openai_chat_v1beta` 分组，真实能力仍是 Chat Completions。
 - API Key 可以绑定 Gemini native、OpenAI、Anthropic、GLM、DeepSeek 等多个供应商档案分组。
 - Gemini native 请求通过路径协议和路径模型定位 `profile_gemini_native_v1beta`，再只在当前本地 API Key 已绑定的 Gemini native 分组内调度。
-- Gemini native `generateContent` / `streamGenerateContent` 请求会先在当前 API Key 已绑定账号池内匹配显式 `generate_content|stream_generate_content -> chat_completions` 账号模型映射；命中后进入目标 Chat 上游账号，未命中才按 Gemini native 直连调度。
+- Gemini native `generateContent` / `streamGenerateContent` 请求会先在当前 API Key 已绑定账号池内匹配显式 `generate_content|stream_generate_content -> chat_completions` 或 `generate_content|stream_generate_content -> messages` 账号模型映射；命中后进入目标 Chat 或 Anthropic Messages 上游账号，未命中才按 Gemini native 直连调度。
 - OpenAI Chat 请求不会因为模型名是 `gemini-*` 就自动进入 Gemini native 分组；如要用 Gemini 官方 OpenAI compatibility，必须进入 Gemini OpenAI Chat 分组。
 - Codex / Responses 请求要用 Gemini 时，通过本地 API Key 绑定 Gemini OpenAI Chat 分组，并在账号上配置 `responses -> chat_completions` 模型映射。
-- Anthropic Messages 请求不允许桥接到 Gemini OpenAI Chat；Gemini native 不允许桥接到 Responses 或 Anthropic Messages，只允许生成类请求显式桥接到 Chat Completions。
+- Anthropic Messages 请求不允许桥接到 Gemini OpenAI Chat；Gemini native 不允许桥接到 Responses，只允许生成类请求显式桥接到 Chat Completions 或 Anthropic Messages。
 - 模型不匹配、端点不支持、本地认证失败、额度不足和分组无账号都不写 Gemini 账号状态。
 
 ## 账号测试

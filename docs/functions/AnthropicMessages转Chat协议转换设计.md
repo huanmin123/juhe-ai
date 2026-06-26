@@ -138,7 +138,7 @@ guidance 文本不写死具体客户端名称，只描述能力缺口和可执�
 - 图片输入：Anthropic base64 / URL image 转 Chat `image_url`。
 - error/guidance：`thinking`、`cache_control`、`top_k`、`mcp_servers`、未知 content block、非法 Chat JSON body 返回受控 guidance 或协议错误，不返回 500。
 - 路由与能力：OpenAI-compatible、DeepSeek、GLM、GPT Chat 上游在显式映射下可承接 `/v1/messages`；无映射时仍不误接。
-- 回归：既有 `responses -> chat_completions`、`chat_completions -> responses`、`chat_completions|responses -> messages` 不受影响。
+- 回归：既有 `responses -> chat_completions`、`chat_completions|responses -> messages` 不受影响；`chat_completions -> responses` 已由 PLAN-0070 收敛为禁止方向。
 
 当前专项回归入口：
 

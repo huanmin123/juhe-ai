@@ -1,5 +1,8 @@
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase } from './database.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 
 const hourMs = 60 * 60 * 1000
 const dayMs = 24 * hourMs
@@ -214,6 +217,32 @@ export function usageStatsTimezone(): string {
     return cachedUsageStatsTimezone.value
   }
   const row = getBusinessDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
+  if (!row?.value_json) {
+    throw new Error('系统设置缺少 usageStatsTimezone')
+  }
+  try {
+    const value = JSON.parse(row.value_json) as unknown
+    return cacheUsageStatsTimezone(normalizeUsageStatsTimezone(value), nowMs)
+  } catch (error) {
+    throw new Error(`系统设置 usageStatsTimezone 无效：${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+export async function usageStatsTimezoneAsync(): Promise<string> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return usageStatsTimezone()
+  }
+  const nowMs = Date.now()
+  if (cachedUsageStatsTimezone && cachedUsageStatsTimezone.expiresAtMs > nowMs) {
+    return cachedUsageStatsTimezone.value
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ value_json?: string }>(`
+    SELECT value_json
+    FROM "juhe_business"."system_settings"
+    WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'
+    LIMIT 1
+  `)
   if (!row?.value_json) {
     throw new Error('系统设置缺少 usageStatsTimezone')
   }

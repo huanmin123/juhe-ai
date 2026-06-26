@@ -160,7 +160,7 @@ export interface AccountDraftTestAccountPayload {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
-  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages'; enabled: boolean }>
+  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'; enabled: boolean }>
   proxyProfileId?: string | null
   groupId: string
   accountExpiresAt?: string | null

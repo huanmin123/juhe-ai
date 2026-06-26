@@ -211,7 +211,7 @@ DeepSeek 支持 OpenAI-compatible 的 JSON Output 和 Tool Calls：
 
 - 这些能力可以按 Chat Completions 透传
 - 如果上游返回工具调用，仍按 OpenAI v1 `choices[].message.tool_calls` / `choices[].delta.tool_calls` 解析
-- 不把 DeepSeek 声明为原生 GPT / OpenAI Responses 工具协议；Codex bridge 只做 function tool call 的 Responses -> Chat / Chat -> Responses 结构转换
+- 不把 DeepSeek 声明为原生 GPT / OpenAI Responses 工具协议；Codex bridge 只做 function tool call 的 Responses -> Chat 结构转换
 - Strict Tool Calls 不作为默认账户能力；如果后续支持，必须作为 DeepSeek beta 子能力并配套 beta base URL 校验
 
 ### Chat Prefix Completion Beta

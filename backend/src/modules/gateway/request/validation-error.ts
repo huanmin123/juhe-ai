@@ -23,7 +23,7 @@ export class GatewayAgentGuidanceResponse extends Error {
   readonly statusCode = 200
   readonly type = 'agent_guidance'
   readonly code: string
-  readonly accountScoped = false
+  readonly accountScoped: boolean
   readonly protocol: GatewayAgentGuidanceProtocol
   readonly stream: boolean
   readonly model: string
@@ -34,12 +34,14 @@ export class GatewayAgentGuidanceResponse extends Error {
     protocol: GatewayAgentGuidanceProtocol
     stream: boolean
     model: string
+    accountScoped?: boolean
   }) {
     super(input.message)
     this.code = input.code
     this.protocol = input.protocol
     this.stream = input.stream
     this.model = input.model
+    this.accountScoped = input.accountScoped !== false
   }
 }
 

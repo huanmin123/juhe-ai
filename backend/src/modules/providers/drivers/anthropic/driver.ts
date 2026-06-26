@@ -13,16 +13,21 @@ import {
   ANTHROPIC_PROTOCOL_VERSION,
   DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GEMINI_PROTOCOL_CODE,
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   isAnthropicProtocolProfile
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
+import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
 import { buildAnthropicUpstreamUrl, buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery,
+  isGeminiGenerateContentToAnthropicMessagesModelMapping,
   openAIRequestEndpointFamily,
-  resolveOpenAIAccountModelMapping
+  resolveOpenAIAccountModelMapping,
+  resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import { openAICompatibleFilesResolverForGatewayRequest } from '../../../openai-compatible-files/file-resolver.js'
 import { openAICompatibleCodeInterpreterExecutorForGatewayRequest } from '../../../openai-compatible-code-interpreter/code-interpreter-executor.js'
@@ -47,10 +52,20 @@ import {
   prepareOpenAIToAnthropicBridgeHeaders,
   transformOpenAIToAnthropicBridgeUpstreamResponse
 } from '../_shared/openai-anthropic-bridge.js'
+import {
+  buildGeminiGenerateContentAnthropicMessagesBridgeBody,
+  geminiGenerateContentAnthropicMessagesBridgeRequiredEndpointMode,
+  prepareGeminiGenerateContentAnthropicMessagesBridgeHeaders,
+  transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamResponse
+} from '../_shared/gemini-anthropic-messages-bridge.js'
 
 const defaultAnthropicVersion = '2023-06-01'
 
 function anthropicEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
+  const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+  if (isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
+    return geminiGenerateContentAnthropicMessagesBridgeRequiredEndpointMode(req)
+  }
   const bridgeMode = openAIToAnthropicBridgeRequiredEndpointMode(req)
   if (bridgeMode) return bridgeMode
   return anthropicEndpointModeForRequestShape({
@@ -93,6 +108,13 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) && !isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
+      return []
+    }
+    if (account.type === 'api_key' && isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
+      return [buildAnthropicUpstreamUrl(account.baseUrl, geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery(req))]
+    }
     const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
     if (account.type === 'api_key' && bridgePath) {
       return [buildAnthropicUpstreamUrl(account.baseUrl, bridgePath)]
@@ -116,6 +138,18 @@ export const anthropicProviderDriver: ProviderDriver = {
     if (!headers.get('accept')) {
       headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
     }
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (modelMapping && isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
+      prepareGeminiGenerateContentAnthropicMessagesBridgeHeaders(headers, req)
+      return {
+        headers,
+        body: await buildGeminiGenerateContentAnthropicMessagesBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          guidanceProviderName: guidanceProviderNameForAccount(account),
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
     if (shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
       prepareOpenAIToAnthropicBridgeHeaders(headers, req)
       return {
@@ -132,7 +166,6 @@ export const anthropicProviderDriver: ProviderDriver = {
         }, signal)
       }
     }
-    const modelMapping = resolveOpenAIAccountModelMapping(account, requestModel(req), undefined)
     return {
       headers,
       body: modelMapping
@@ -141,10 +174,15 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
   },
   transformUpstreamResponse(req, account, response, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    const geminiGenerateContentResponse = transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamResponse(req, response, {
+      enabled: isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'anthropic'
+    })
     if (!shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
-      return response
+      return geminiGenerateContentResponse
     }
-    return transformOpenAIToAnthropicBridgeUpstreamResponse(req, response, {
+    return transformOpenAIToAnthropicBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
       model: openAIToAnthropicBridgeUpstreamModel(req, account),
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
       onResponsesCompleted: context?.codexResponsesChatBridgeCompletionHandler,
@@ -153,6 +191,22 @@ export const anthropicProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: anthropicEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
+    const modelMapping = resolveOpenAIRequestModelMapping(req, account)
+    if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) {
+      if (!isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
+        return false
+      }
+      return accountSupportsAnthropicEndpointMode({
+        mode: geminiGenerateContentAnthropicMessagesBridgeRequiredEndpointMode(req),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        accountType: account.type,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion,
+        providerProtocolProfileId: account.providerProtocolProfileId
+      })
+    }
     if (isOpenAIToAnthropicBridgeCandidateRequest(req)) {
       if (!shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
         return false

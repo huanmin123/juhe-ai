@@ -5,12 +5,15 @@ import type {
   ResourceAuthorizationSummary,
   ResourceAuthorizationUsageDetail
 } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import type { AccessScope } from './access-scope.js'
 import { loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { getBusinessDatabase, getStatsDatabase } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
+import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-utils.js'
-import { findResourceAuthorizationSummary } from './resource-authorization-read.repository.js'
+import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync } from './resource-authorization-read.repository.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
 import { loadSystemAccountPrincipalMapByIds } from './repository-lookups.js'
@@ -19,11 +22,19 @@ import {
   emptyAccountUsageSummary,
   normalizeAccountUsageStatsRange,
   usageStatsTimezone,
+  usageStatsTimezoneAsync,
   usageSummaryFromAggregate
 } from './usage-stats-helpers.js'
-import { loadUsageRangeSummaryForScope } from './usage-summary-loaders.js'
+import {
+  loadAuthorizationUsageRangeSummariesForScopesAsync,
+  loadUsageRangeSummaryForScope,
+  loadUsageRangeSummaryForScopeAsync,
+  type UsageSummaryScopeRequest
+} from './usage-summary-loaders.js'
 
 const defaultResourceAuthorizationUsageDetailPageSize = 200
+const businessSchemaName = 'juhe_business'
+const statsSchemaName = 'juhe_stats'
 
 export interface ResourceAuthorizationUsageOptions {
   range?: AccountUsageStatsRange
@@ -37,6 +48,27 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
   const detail = loadResourceAuthorizationUsageDetail(authorization, range, options)
+  return {
+    ...authorization,
+    usage: detail.usage,
+    lastUsedAt: detail.usage.lastUsedAt,
+    usageBySystemAccount: detail.usageBySystemAccount,
+    usageBySystemAccountTotal: detail.usageBySystemAccountTotal,
+    usageBySystemAccountPage: detail.usageBySystemAccountPage,
+    usageBySystemAccountPageSize: detail.usageBySystemAccountPageSize,
+    usageBySystemAccountHasMore: detail.usageBySystemAccountHasMore,
+    usageRange: range
+  }
+}
+
+export async function getResourceAuthorizationUsageAsync(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): Promise<ResourceAuthorizationSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getResourceAuthorizationUsage(authorizationId, access, options)
+  }
+  const authorization = await findResourceAuthorizationSummaryAsync(authorizationId, access, { includeUsage: false })
+  if (!authorization) return undefined
+  const range = options.range ?? normalizeAccountUsageStatsRange({}, await usageStatsTimezoneAsync())
+  const detail = await loadResourceAuthorizationUsageDetailAsync(authorization, range, options)
   return {
     ...authorization,
     usage: detail.usage,
@@ -89,6 +121,71 @@ function loadResourceAuthorizationUsageDetail(
     range
   })
   const account = loadSystemAccountPrincipalMapByIds([granteeSystemAccountId]).get(granteeSystemAccountId)
+  const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
+    systemAccountId: granteeSystemAccountId,
+    systemAccountName: account?.displayName ?? authorization.granteeSystemAccountName,
+    username: account?.username ?? authorization.granteeUsername,
+    ...rangeUsage,
+    rangeUsage
+  }]
+
+  return {
+    usage: rangeUsage,
+    usageBySystemAccount: pageOptions.page === 1 ? usageBySystemAccount.sort((left, right) => {
+      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
+      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      if (rightTime !== leftTime) {
+        return rightTime - leftTime
+      }
+      return left.systemAccountId.localeCompare(right.systemAccountId)
+    }) : [],
+    usageBySystemAccountTotal: 1,
+    usageBySystemAccountPage: pageOptions.page,
+    usageBySystemAccountPageSize: pageOptions.pageSize,
+    usageBySystemAccountHasMore: false
+  }
+}
+
+async function loadResourceAuthorizationUsageDetailAsync(
+  authorization: ResourceAuthorizationSummary,
+  range: AccountUsageStatsRange,
+  options: ResourceAuthorizationUsageOptions = {}
+): Promise<{
+  usage: AccountUsageSummary
+  usageBySystemAccount: ResourceAuthorizationUsageDetail[]
+  usageBySystemAccountTotal: number
+  usageBySystemAccountPage: number
+  usageBySystemAccountPageSize: number
+  usageBySystemAccountHasMore: boolean
+}> {
+  const pageOptions = normalizeResourceAuthorizationUsagePageOptions(options)
+  if (authorization.granteeType === 'team') {
+    return loadResourceAuthorizationGrantUsageDetailForTeamAsync(authorization, range, pageOptions)
+  }
+  const granteeSystemAccountId = authorization.granteeSystemAccountId
+  if (!granteeSystemAccountId) {
+    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
+  }
+  const client = await getResourceAuthorizationUsageBusinessClient()
+  const runtime = await client.one<ResourceAuthorizationRow>(`
+    SELECT ${resourceAuthorizationSelectColumns()}
+    FROM ${resourceAuthorizationUsageBusinessTable(client, 'resource_authorizations')}
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_system_account_id = ?
+    LIMIT 1
+  `, [authorization.resourceType, authorization.resourceId, granteeSystemAccountId])
+  if (!runtime) {
+    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
+  }
+  const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
+  const rangeUsage = await loadUsageRangeSummaryForScopeAsync({
+    systemAccountId: authorizationUsageStatsSystemAccountId(authorization.resourceType, authorization.resourceOwnerSystemAccountId, granteeSystemAccountId),
+    scopeType,
+    scopeId: runtime.id,
+    range
+  })
+  const account = (await loadSystemAccountPrincipalMapByIdsAsync(client, [granteeSystemAccountId])).get(granteeSystemAccountId)
   const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
     systemAccountId: granteeSystemAccountId,
     systemAccountName: account?.displayName ?? authorization.granteeSystemAccountName,
@@ -178,6 +275,70 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
   }
 }
 
+async function loadResourceAuthorizationGrantUsageDetailForTeamAsync(
+  authorization: ResourceAuthorizationSummary,
+  range: AccountUsageStatsRange,
+  pageOptions: { page: number; pageSize: number }
+): Promise<{
+  usage: AccountUsageSummary
+  usageBySystemAccount: ResourceAuthorizationUsageDetail[]
+  usageBySystemAccountTotal: number
+  usageBySystemAccountPage: number
+  usageBySystemAccountPageSize: number
+  usageBySystemAccountHasMore: boolean
+}> {
+  const teamId = authorization.granteeTeamId
+  if (!teamId) {
+    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
+  }
+  const client = await getResourceAuthorizationUsageBusinessClient()
+  const rows = await client.query<ResourceAuthorizationRow>(`
+    SELECT DISTINCT ${resourceAuthorizationSelectColumns('ra')}
+    FROM ${resourceAuthorizationUsageBusinessTable(client, 'resource_authorizations')} ra
+    INNER JOIN ${resourceAuthorizationUsageBusinessTable(client, 'resource_authorization_sources')} ras
+      ON ras.authorization_id = ra.id
+      AND ras.source_type = 'team'
+      AND ras.source_team_id = ?
+    WHERE ra.resource_type = ?
+      AND ra.resource_id = ?
+      AND ra.resource_owner_system_account_id = ?
+    ORDER BY ra.created_at ASC, ra.id ASC
+    LIMIT ? OFFSET ?
+  `, [
+    teamId,
+    authorization.resourceType,
+    authorization.resourceId,
+    authorization.resourceOwnerSystemAccountId,
+    pageOptions.pageSize + 1,
+    (pageOptions.page - 1) * pageOptions.pageSize
+  ])
+  const pageRows = takePageRows(rows, pageOptions.pageSize)
+  const usageBySystemAccount = await buildRuntimeAuthorizationUsageDetailsAsync(authorization, pageRows.rows, range)
+  const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
+  const rangeUsage = await loadAuthorizationTeamUsageRangeSummaryAsync(authorization, teamId, range)
+    ?? await loadUsageRangeSummaryForScopeAsync({
+      systemAccountId: authorization.resourceOwnerSystemAccountId,
+      scopeType,
+      scopeId: `${authorization.resourceId}:${teamId}`,
+      range
+    })
+  return {
+    usage: rangeUsage,
+    usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
+      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
+      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      if (rightTime !== leftTime) {
+        return rightTime - leftTime
+      }
+      return left.systemAccountId.localeCompare(right.systemAccountId)
+    }),
+    usageBySystemAccountTotal: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, usageBySystemAccount.length, pageRows.hasMore),
+    usageBySystemAccountPage: pageOptions.page,
+    usageBySystemAccountPageSize: pageOptions.pageSize,
+    usageBySystemAccountHasMore: pageRows.hasMore
+  }
+}
+
 function buildRuntimeAuthorizationUsageDetails(
   authorization: ResourceAuthorizationSummary,
   rows: ResourceAuthorizationRow[],
@@ -193,6 +354,37 @@ function buildRuntimeAuthorizationUsageDetails(
     ? loadAccountAuthorizationUsageSummaries(scopes, range)
     : loadGroupAuthorizationUsageSummaries(scopes, range)
   const accounts = loadSystemAccountPrincipalMapByIds(rows.map((row) => row.grantee_system_account_id ?? ''))
+  return rows.flatMap((row) => {
+    const systemAccountId = row.grantee_system_account_id
+    if (!systemAccountId) return []
+    const account = accounts.get(systemAccountId)
+    const rangeUsage = usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary()
+    return [{
+      systemAccountId,
+      systemAccountName: account?.displayName,
+      username: account?.username,
+      ...rangeUsage,
+      rangeUsage
+    }]
+  })
+}
+
+async function buildRuntimeAuthorizationUsageDetailsAsync(
+  authorization: ResourceAuthorizationSummary,
+  rows: ResourceAuthorizationRow[],
+  range: AccountUsageStatsRange
+): Promise<ResourceAuthorizationUsageDetail[]> {
+  if (!rows.length) return []
+  const client = await getResourceAuthorizationUsageBusinessClient()
+  const scopes = rows.map((row) => usageScope(
+    row.id,
+    authorizationUsageStatsSystemAccountId(row.resource_type, row.resource_owner_system_account_id, row.grantee_system_account_id ?? undefined),
+    row.id
+  ))
+  const usageByAuthorization = authorization.resourceType === 'account'
+    ? await loadAuthorizationUsageRangeSummariesForScopesAsync(scopes, 'account_authorization', range)
+    : await loadAuthorizationUsageRangeSummariesForScopesAsync(scopes, 'group_authorization', range)
+  const accounts = await loadSystemAccountPrincipalMapByIdsAsync(client, rows.map((row) => row.grantee_system_account_id ?? ''))
   return rows.flatMap((row) => {
     const systemAccountId = row.grantee_system_account_id
     if (!systemAccountId) return []
@@ -245,6 +437,34 @@ function loadAuthorizationTeamUsageRangeSummary(
   return row ? usageSummaryFromAggregate(row) : undefined
 }
 
+async function loadAuthorizationTeamUsageRangeSummaryAsync(
+  authorization: ResourceAuthorizationSummary,
+  teamId: string,
+  range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>
+): Promise<AccountUsageSummary | undefined> {
+  const client = await getResourceAuthorizationUsageStatsClient()
+  const row = await client.one<Parameters<typeof usageSummaryFromAggregate>[0]>(`
+    SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, total_cost_usd AS total_cost, last_used_at
+    FROM ${resourceAuthorizationUsageStatsTable(client, 'authorization_team_usage_range_windows')}
+    WHERE system_account_id = ?
+      AND start_date = ?
+      AND end_date = ?
+      AND team_filter_id = ?
+      AND resource_filter_type = ?
+      AND resource_filter_id = ?
+    LIMIT 1
+  `, [
+    authorization.resourceOwnerSystemAccountId,
+    range.startDate,
+    range.endDate,
+    teamId,
+    authorization.resourceType,
+    authorization.resourceId
+  ])
+  return row ? usageSummaryFromAggregate(row) : undefined
+}
+
 function normalizeResourceAuthorizationUsagePageOptions(options: ResourceAuthorizationUsageOptions): { page: number; pageSize: number } {
   const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
     ? Math.min(200, Math.max(1, options.pageSize))
@@ -262,4 +482,43 @@ function emptyResourceAuthorizationUsageDetailPage(pageOptions: { page: number; 
     usageBySystemAccountPageSize: pageOptions.pageSize,
     usageBySystemAccountHasMore: false
   }
+}
+
+async function loadSystemAccountPrincipalMapByIdsAsync(client: DatabaseClient, systemAccountIds: Array<string | undefined>): Promise<Map<string, { id: string; username: string; displayName: string }>> {
+  const ids = [...new Set(systemAccountIds.map((id) => id?.trim()).filter((id): id is string => Boolean(id)))]
+  if (!ids.length) return new Map()
+  const rows: Array<{ id: string; username: string; display_name: string }> = []
+  for (let index = 0; index < ids.length; index += 900) {
+    const chunk = ids.slice(index, index + 900)
+    rows.push(...await client.query<{ id: string; username: string; display_name: string }>(`
+      SELECT id, username, display_name
+      FROM ${resourceAuthorizationUsageBusinessTable(client, 'system_accounts')}
+      WHERE id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk))
+  }
+  return new Map(rows.map((row) => [row.id, {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name
+  }]))
+}
+
+async function getResourceAuthorizationUsageBusinessClient(): Promise<DatabaseClient> {
+  return createPostgresDatabaseClient(await getPostgresPool())
+}
+
+async function getResourceAuthorizationUsageStatsClient(): Promise<DatabaseClient> {
+  return createPostgresDatabaseClient(await getPostgresPool())
+}
+
+function resourceAuthorizationUsageBusinessTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
+function resourceAuthorizationUsageStatsTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(statsSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }

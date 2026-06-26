@@ -259,6 +259,13 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   anthropicRequestBody?: JsonRecord
 }
 
+interface OpenAIToAnthropicGuidanceContext {
+  req: Request
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
+  model: string
+  stream: boolean
+}
+
 interface OpenAIToAnthropicBridgeContentContext {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   fileResolver?: OpenAIToAnthropicFileResolver
@@ -521,13 +528,14 @@ export async function buildOpenAIToAnthropicBridgeBody(
   }
   const requestPlan = createOpenAIToAnthropicBridgeRequestPlan(sourceEndpointFamily, body)
   validateOpenAIToAnthropicMcpToolDefinitions(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicUnsupportedIncludes(sourceEndpointFamily, body, requestPlan)
-  validateOpenAIToAnthropicReasoningOptions(body)
-  validateOpenAIToAnthropicToolCallControlOptions(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicResponseStateOptions(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicRequestControlOptions(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicOutputShapeOptions(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicSemanticControlOptions(body)
+  const guidanceContext = { req, sourceEndpointFamily, model, stream: requestStream(req) }
+  validateOpenAIToAnthropicUnsupportedIncludes(body, requestPlan, guidanceContext)
+  validateOpenAIToAnthropicReasoningOptions(body, guidanceContext)
+  validateOpenAIToAnthropicToolCallControlOptions(body, guidanceContext)
+  validateOpenAIToAnthropicResponseStateOptions(body, guidanceContext)
+  validateOpenAIToAnthropicRequestControlOptions(body, guidanceContext)
+  validateOpenAIToAnthropicOutputShapeOptions(body, guidanceContext)
+  validateOpenAIToAnthropicSemanticControlOptions(body, guidanceContext)
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
   prepareOpenAIToAnthropicCodeInterpreterTool(sourceEndpointFamily, body, requestPlan, options.codeInterpreterExecutor)
   await prepareOpenAIToAnthropicMcpProxyTools(sourceEndpointFamily, body, requestPlan, options.mcpProxyExecutor, {
@@ -591,8 +599,8 @@ export async function buildOpenAIToAnthropicBridgeBody(
     signal
   }
   const anthropicBody = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    ? await responsesBodyToAnthropicMessages(body, model, options, requestPlan, contentContext)
-    : await chatBodyToAnthropicMessages(body, model, options, requestPlan, contentContext)
+    ? await responsesBodyToAnthropicMessages(body, model, options, requestPlan, contentContext, guidanceContext)
+    : await chatBodyToAnthropicMessages(body, model, options, requestPlan, contentContext, guidanceContext)
   requestPlan.anthropicRequestBody = anthropicBody
   return Buffer.from(JSON.stringify(anthropicBody), 'utf8')
 }
@@ -662,7 +670,8 @@ async function chatBodyToAnthropicMessages(
   model: string,
   options: OpenAIToAnthropicBridgeBodyOptions,
   requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  contentContext: OpenAIToAnthropicBridgeContentContext
+  contentContext: OpenAIToAnthropicBridgeContentContext,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): Promise<JsonRecord> {
   const messages: AnthropicMessage[] = []
   const systemParts: string[] = []
@@ -705,7 +714,7 @@ async function chatBodyToAnthropicMessages(
     }
     if (role !== 'user' && role !== 'assistant') continue
     const content = withOpenAIChatMessageNamePrefix(
-      await openAIChatContentToAnthropicBlocks(item.content, contentContext),
+      await openAIChatContentToAnthropicBlocks(item.content, contentContext, guidanceContext),
       stringValue(item.name)
     )
     if (role === 'assistant') {
@@ -740,9 +749,10 @@ async function chatBodyToAnthropicMessages(
     toolChoice,
     requestPlan.structuredOutput,
     body.parallel_tool_calls === false || requestPlan.chatLegacyFunctionCallResponse === true,
-    requestPlan
+    requestPlan,
+    guidanceContext
   )
-  validateAnthropicThinkingToolChoiceCompatibility(output)
+  validateAnthropicThinkingToolChoiceCompatibility(output, guidanceContext)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
   }
@@ -754,7 +764,8 @@ async function responsesBodyToAnthropicMessages(
   model: string,
   options: OpenAIToAnthropicBridgeBodyOptions,
   requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  contentContext: OpenAIToAnthropicBridgeContentContext
+  contentContext: OpenAIToAnthropicBridgeContentContext,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): Promise<JsonRecord> {
   if (stringValue(body.previous_response_id)) {
     throw bridgeValidationError(
@@ -774,10 +785,10 @@ async function responsesBodyToAnthropicMessages(
     })
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, item, contentContext, toolHistory, requestPlan)
+      await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, item, contentContext, toolHistory, requestPlan, guidanceContext)
     }
   } else if (isPlainObject(input)) {
-    await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, input, contentContext, toolHistory, requestPlan)
+    await appendResponsesInputItemAsAnthropicMessage(messages, systemParts, input, contentContext, toolHistory, requestPlan, guidanceContext)
   }
   if (!messages.length) {
     appendAnthropicMessage(messages, { role: 'user', content: [{ type: 'text', text: '' }] })
@@ -788,8 +799,8 @@ async function responsesBodyToAnthropicMessages(
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
   const tools = responsesToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
-  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false, requestPlan)
-  validateAnthropicThinkingToolChoiceCompatibility(output)
+  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false, requestPlan, guidanceContext)
+  validateAnthropicThinkingToolChoiceCompatibility(output, guidanceContext)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
   }
@@ -832,7 +843,8 @@ async function appendResponsesInputItemAsAnthropicMessage(
   item: unknown,
   contentContext: OpenAIToAnthropicBridgeContentContext,
   toolHistory: OpenAIToolResultHistory,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): Promise<void> {
   if (!isPlainObject(item)) return
   if (item.type === 'message') {
@@ -844,7 +856,7 @@ async function appendResponsesInputItemAsAnthropicMessage(
     if (role === 'user' || role === 'assistant') {
       appendAnthropicMessage(messages, {
         role,
-        content: await responsesContentToAnthropicBlocks(item.content, contentContext)
+        content: await responsesContentToAnthropicBlocks(item.content, contentContext, guidanceContext)
       })
     }
     return
@@ -1010,7 +1022,8 @@ function withOpenAIChatMessageNamePrefix(blocks: AnthropicContentBlock[], rawNam
 
 async function openAIChatContentToAnthropicBlocks(
   value: unknown,
-  contentContext: OpenAIToAnthropicBridgeContentContext
+  contentContext: OpenAIToAnthropicBridgeContentContext,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): Promise<AnthropicContentBlock[]> {
   if (typeof value === 'string') return [{ type: 'text', text: value }]
   if (!Array.isArray(value)) return []
@@ -1035,7 +1048,7 @@ async function openAIChatContentToAnthropicBlocks(
       blocks.push(await anthropicDocumentBlockFromOpenAIFilePart(item, 'Chat', contentContext))
       continue
     }
-    if (item.type === 'input_audio' || item.type === 'audio') throw unsupportedOpenAIAudioContentPart('Chat')
+    if (item.type === 'input_audio' || item.type === 'audio') throw unsupportedOpenAIAudioContentPart('Chat', guidanceContext)
     throw unsupportedOpenAIContentPart('Chat', item.type)
   }
   return blocks
@@ -1043,7 +1056,8 @@ async function openAIChatContentToAnthropicBlocks(
 
 async function responsesContentToAnthropicBlocks(
   value: unknown,
-  contentContext: OpenAIToAnthropicBridgeContentContext
+  contentContext: OpenAIToAnthropicBridgeContentContext,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): Promise<AnthropicContentBlock[]> {
   if (typeof value === 'string') return [{ type: 'text', text: value }]
   if (!Array.isArray(value)) return []
@@ -1072,14 +1086,18 @@ async function responsesContentToAnthropicBlocks(
       blocks.push(await anthropicDocumentBlockFromOpenAIFilePart(item, 'Responses', contentContext))
       continue
     }
-    if (item.type === 'input_audio' || item.type === 'audio') throw unsupportedOpenAIAudioContentPart('Responses')
+    if (item.type === 'input_audio' || item.type === 'audio') throw unsupportedOpenAIAudioContentPart('Responses', guidanceContext)
     throw unsupportedOpenAIContentPart('Responses', item.type)
   }
   return blocks
 }
 
-function unsupportedOpenAIAudioContentPart(sourceFamily: 'Chat' | 'Responses'): never {
-  throw bridgeValidationError(
+function unsupportedOpenAIAudioContentPart(
+  sourceFamily: 'Chat' | 'Responses',
+  guidanceContext: OpenAIToAnthropicGuidanceContext
+): GatewayAgentGuidanceResponse | GatewayRequestValidationError {
+  return openAIToAnthropicCapabilityGuidance(
+    guidanceContext,
     `${sourceFamily} input_audio 当前不能桥接到 Anthropic Messages；请使用可消费音频输入的原生 OpenAI 上游，或先在客户端 / 本地运行时转写为文本`,
     'openai_anthropic_bridge_audio_input_unsupported'
   )
@@ -1729,14 +1747,16 @@ function applyStructuredOutputPlan(
   toolChoice: unknown,
   structuredOutput: OpenAIToAnthropicStructuredOutputPlan | undefined,
   disableParallelToolUse: boolean,
-  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan,
+  guidanceContext?: OpenAIToAnthropicGuidanceContext
 ): void {
   if (!structuredOutput?.syntheticToolName) {
     applyTools(output, tools, toolChoice, disableParallelToolUse, requestPlan)
     return
   }
   if (tools.length) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'OpenAI 到 Anthropic 桥接当前不支持在 strict JSON schema 输出中同时使用用户工具',
       'openai_anthropic_bridge_structured_output_with_tools_unsupported'
     )
@@ -1864,12 +1884,16 @@ function responsesFunctionCallItemId(block: AnthropicStreamBlockState): string {
   return `fc_${safeIdSegment(block.id ?? `${block.index}`)}`
 }
 
-function validateAnthropicThinkingToolChoiceCompatibility(output: JsonRecord): void {
+function validateAnthropicThinkingToolChoiceCompatibility(
+  output: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
+): void {
   if (!isPlainObject(output.thinking)) return
   const toolChoice = objectValue(output.tool_choice)
   const toolChoiceType = stringValue(toolChoice?.type)
   if (toolChoiceType !== 'any' && toolChoiceType !== 'tool') return
-  throw bridgeValidationError(
+  throw openAIToAnthropicCapabilityGuidance(
+    guidanceContext,
     'Anthropic Messages 不支持同时启用 thinking 和强制工具调用；请关闭 reasoning / thinking，或把 tool_choice 改为 auto / none',
     'openai_anthropic_bridge_thinking_forced_tool_choice_unsupported'
   )
@@ -1940,10 +1964,11 @@ function createOpenAIToAnthropicBridgeRequestPlan(
 }
 
 function validateOpenAIToAnthropicUnsupportedIncludes(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   body: JsonRecord,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan
+  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): void {
+  const sourceEndpointFamily = guidanceContext.sourceEndpointFamily
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
   if (!hasMeaningfulField(body, 'include')) return
   if (!Array.isArray(body.include)) {
@@ -1955,7 +1980,8 @@ function validateOpenAIToAnthropicUnsupportedIncludes(
 
   const include = body.include
   if (include.includes('reasoning.encrypted_content')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'OpenAI 到 Anthropic 桥接不能生成或验证 OpenAI reasoning.encrypted_content；请移除 include=reasoning.encrypted_content，或改用原生 Responses 上游',
       'openai_anthropic_bridge_encrypted_reasoning_unsupported'
     )
@@ -1973,16 +1999,21 @@ function validateOpenAIToAnthropicUnsupportedIncludes(
     .map((item) => typeof item === 'string' && item.trim() ? item.trim() : '<non_string_include>')
     .slice(0, 4)
     .join('、')
-  throw bridgeValidationError(
+  throw openAIToAnthropicCapabilityGuidance(
+    guidanceContext,
     `Anthropic Messages 不能等价返回 OpenAI Responses include 扩展字段：${unsupportedList}；请移除这些 include，或改用原生 Responses / 对应本地运行时`,
     'openai_anthropic_bridge_include_unsupported'
   )
 }
 
-function validateOpenAIToAnthropicReasoningOptions(body: JsonRecord): void {
+function validateOpenAIToAnthropicReasoningOptions(
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
+): void {
   const effort = reasoningEffortFromOpenAIBody(body)
   if (hasOpenAIReasoningEffortRequest(body) && (effort === undefined || !supportedAnthropicBridgeReasoningEfforts.has(effort))) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'OpenAI 到 Anthropic 桥接当前只支持 reasoning.effort / reasoning_effort 为 none、minimal、low、medium、high；xhigh 或未知值需要上游 profile 明确支持后才能启用',
       'openai_anthropic_bridge_reasoning_effort_unsupported'
     )
@@ -1990,7 +2021,8 @@ function validateOpenAIToAnthropicReasoningOptions(body: JsonRecord): void {
 
   const summary = reasoningSummaryFromOpenAIBody(body)
   if (hasOpenAIReasoningSummaryRequest(body) && (summary === undefined || !supportedAnthropicBridgeReasoningSummaries.has(summary))) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'OpenAI 到 Anthropic 桥接当前只支持 reasoning.summary 为 auto、concise、detailed、none；未知 summary 会导致客户端误判 reasoning 输出形态',
       'openai_anthropic_bridge_reasoning_summary_unsupported'
     )
@@ -1998,11 +2030,13 @@ function validateOpenAIToAnthropicReasoningOptions(body: JsonRecord): void {
 }
 
 function validateOpenAIToAnthropicToolCallControlOptions(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): void {
+  const sourceEndpointFamily = guidanceContext.sourceEndpointFamily
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY || !hasMeaningfulField(body, 'max_tool_calls')) return
-  throw bridgeValidationError(
+  throw openAIToAnthropicCapabilityGuidance(
+    guidanceContext,
     'Anthropic Messages 不能等价承接 OpenAI Responses max_tool_calls 工具调用次数上限；请移除 max_tool_calls，或改用原生 Responses 上游',
     'openai_anthropic_bridge_max_tool_calls_unsupported'
   )
@@ -2132,31 +2166,36 @@ function isLoopbackMcpHost(hostname: string): boolean {
 }
 
 function validateOpenAIToAnthropicResponseStateOptions(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): void {
+  const sourceEndpointFamily = guidanceContext.sourceEndpointFamily
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
   if (hasMeaningfulField(body, 'conversation')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能直接承接 OpenAI Responses conversation 状态恢复和写回语义；请移除 conversation，或改用原生 Responses / 网关 Conversation 状态层',
       'openai_anthropic_bridge_conversation_unsupported'
     )
   }
   if (hasMeaningfulField(body, 'background') && body.background !== false) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI Responses background 后台响应语义；请移除 background 或设为 false，或改用原生 Responses 上游',
       'openai_anthropic_bridge_background_unsupported'
     )
   }
   const truncation = normalizedOpenAIEnumValue(body.truncation)
   if (hasMeaningfulField(body, 'truncation') && truncation !== 'disabled') {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI Responses truncation=auto 上下文裁剪策略；请移除 truncation 或设为 disabled，或改用原生 Responses 上游',
       'openai_anthropic_bridge_truncation_unsupported'
     )
   }
   if (hasMeaningfulField(body, 'context_management')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI Responses context_management 上下文管理配置；请移除 context_management，或改用原生 Responses 上游',
       'openai_anthropic_bridge_context_management_unsupported'
     )
@@ -2164,36 +2203,42 @@ function validateOpenAIToAnthropicResponseStateOptions(
 }
 
 function validateOpenAIToAnthropicRequestControlOptions(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): void {
+  const sourceEndpointFamily = guidanceContext.sourceEndpointFamily
   const serviceTier = normalizedOpenAIEnumValue(body.service_tier)
   if (hasMeaningfulField(body, 'service_tier') && serviceTier !== 'auto' && serviceTier !== 'default') {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI service_tier 服务档位；请移除 service_tier 或设为 auto/default，或改用原生 OpenAI 上游',
       'openai_anthropic_bridge_service_tier_unsupported'
     )
   }
   if (hasMeaningfulField(body, 'prompt_cache_retention')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI prompt_cache_retention 缓存保留策略；请移除 prompt_cache_retention，或改用原生 OpenAI 上游',
       'openai_anthropic_bridge_prompt_cache_retention_unsupported'
     )
   }
   if (hasMeaningfulField(body, 'store') && body.store !== false) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI store=true 存储、后续检索或 distillation/evals 语义；请移除 store 或设为 false，或改用原生 OpenAI 上游',
       'openai_anthropic_bridge_store_unsupported'
     )
   }
   if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && hasMeaningfulField(body, 'prompt')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能解析 OpenAI Responses prompt template 引用；请展开为 instructions/input 后重试，或改用原生 Responses 上游',
       'openai_anthropic_bridge_prompt_template_unsupported'
     )
   }
   if (hasMeaningfulField(body, 'moderation')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI 顶层 moderation 输入 / 输出审核配置；请移除 moderation，或改用具备审核策略的原生 OpenAI 上游',
       'openai_anthropic_bridge_moderation_unsupported'
     )
@@ -2201,63 +2246,77 @@ function validateOpenAIToAnthropicRequestControlOptions(
 }
 
 function validateOpenAIToAnthropicOutputShapeOptions(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
 ): void {
+  const sourceEndpointFamily = guidanceContext.sourceEndpointFamily
   if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
     const choiceCount = integerValue(body.n)
     if (choiceCount !== undefined && choiceCount !== 1) {
-      throw bridgeValidationError(
+      throw openAIToAnthropicCapabilityGuidance(
+        guidanceContext,
         'Anthropic Messages 单次请求只能等价返回一个 Chat choice；请把 n 设为 1，或改用原生 OpenAI Chat 上游',
         'openai_anthropic_bridge_multiple_choices_unsupported'
       )
     }
     if (body.logprobs === true || requestedPositiveInteger(body.top_logprobs)) {
-      throw bridgeValidationError(
+      throw openAIToAnthropicCapabilityGuidance(
+        guidanceContext,
         'Anthropic Messages 不能返回 OpenAI Chat token logprobs；请移除 logprobs / top_logprobs，或改用原生 OpenAI Chat 上游',
         'openai_anthropic_bridge_logprobs_unsupported'
       )
     }
-    validateOpenAIToAnthropicChatOutputModalities(body)
+    validateOpenAIToAnthropicChatOutputModalities(body, guidanceContext)
     return
   }
 
   if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
   const include = Array.isArray(body.include) ? body.include : []
   if (!include.includes('message.output_text.logprobs') && !requestedPositiveInteger(body.top_logprobs)) return
-  throw bridgeValidationError(
+  throw openAIToAnthropicCapabilityGuidance(
+    guidanceContext,
     'Anthropic Messages 不能返回 OpenAI Responses output_text logprobs；请移除 include=message.output_text.logprobs / top_logprobs，或改用原生 Responses 上游',
     'openai_anthropic_bridge_logprobs_unsupported'
   )
 }
 
-function validateOpenAIToAnthropicChatOutputModalities(body: JsonRecord): void {
+function validateOpenAIToAnthropicChatOutputModalities(
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
+): void {
   const modalities = stringArrayValue(body.modalities)
   const unsupportedModalities = modalities.filter((modality) => modality !== 'text')
   const hasAudioConfig = hasOwn(body, 'audio') && body.audio !== undefined && body.audio !== null
   if (!unsupportedModalities.length && !hasAudioConfig) return
-  throw bridgeValidationError(
+  throw openAIToAnthropicCapabilityGuidance(
+    guidanceContext,
     'Anthropic Messages 不能返回 OpenAI Chat audio output；请移除 modalities 中的 audio / 其他非 text 输出模态和 audio 配置，或改用原生 OpenAI Chat 上游',
     'openai_anthropic_bridge_output_modality_unsupported'
   )
 }
 
-function validateOpenAIToAnthropicSemanticControlOptions(body: JsonRecord): void {
+function validateOpenAIToAnthropicSemanticControlOptions(
+  body: JsonRecord,
+  guidanceContext: OpenAIToAnthropicGuidanceContext
+): void {
   const samplingControl = unsupportedOpenAISamplingControlName(body)
   if (samplingControl) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       `Anthropic Messages 不能等价承接 OpenAI ${samplingControl} 采样控制；请移除该字段，或改用原生 OpenAI 上游`,
       'openai_anthropic_bridge_sampling_control_unsupported'
     )
   }
   if (hasMeaningfulField(body, 'prediction')) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI Predicted Outputs prediction；请移除 prediction，或改用原生 OpenAI 上游',
       'openai_anthropic_bridge_prediction_unsupported'
     )
   }
   if (hasOpenAIVerbosityRequest(body)) {
-    throw bridgeValidationError(
+    throw openAIToAnthropicCapabilityGuidance(
+      guidanceContext,
       'Anthropic Messages 不能等价承接 OpenAI verbosity 输出详细度控制；请移除 verbosity，或改用原生 OpenAI 上游',
       'openai_anthropic_bridge_verbosity_unsupported'
     )
@@ -7092,6 +7151,32 @@ function responseIdFromAnthropicId(id: string | undefined): string {
 function safeIdSegment(value: string): string {
   const normalized = value.replace(/[^A-Za-z0-9_-]/g, '_')
   return normalized.slice(0, 96) || 'anthropic'
+}
+
+function openAIToAnthropicCapabilityGuidance(
+  context: OpenAIToAnthropicGuidanceContext | undefined,
+  message: string,
+  code: string
+): GatewayAgentGuidanceResponse | GatewayRequestValidationError {
+  if (!context) {
+    return bridgeValidationError(message, code)
+  }
+  return new GatewayAgentGuidanceResponse({
+    code,
+    protocol: context.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY ? 'responses' : 'chat_completions',
+    stream: context.stream,
+    model: context.model,
+    message: [
+      message,
+      '',
+      `能力代码：${code}`,
+      '',
+      '建议下一步：',
+      '1. 如果任务必须依赖该能力，请切换到原生支持该能力的上游协议或模型。',
+      '2. 如果该能力不是必须的，请移除对应字段后重试。',
+      '3. 如果可以由本地 agent / MCP / runtime 承接，请先配置本地能力，再继续任务。'
+    ].join('\n')
+  })
 }
 
 function bridgeValidationError(

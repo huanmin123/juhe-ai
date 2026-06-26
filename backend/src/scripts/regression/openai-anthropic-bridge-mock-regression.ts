@@ -525,7 +525,8 @@ async function assertChatMultipleChoicesRejected(baseUrl: string, localApiKey: s
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Chat n>1 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Chat n>1 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"chat\.completion"/)
   assert.match(text, /openai_anthropic_bridge_multiple_choices_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Chat n>1 不应请求 Anthropic 上游')
 }
@@ -597,7 +598,8 @@ async function assertChatLogprobsRejected(baseUrl: string, localApiKey: string):
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Chat logprobs 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Chat logprobs 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"chat\.completion"/)
   assert.match(text, /openai_anthropic_bridge_logprobs_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Chat logprobs 不应请求 Anthropic 上游')
 }
@@ -619,7 +621,8 @@ async function assertChatAudioOutputRejected(baseUrl: string, localApiKey: strin
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Chat audio output 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Chat audio output 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"chat\.completion"/)
   assert.match(text, /openai_anthropic_bridge_output_modality_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Chat audio output 不应请求 Anthropic 上游')
 }
@@ -645,7 +648,8 @@ async function assertChatInputAudioRejected(baseUrl: string, localApiKey: string
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Chat input_audio 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Chat input_audio 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"chat\.completion"/)
   assert.match(text, /openai_anthropic_bridge_audio_input_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Chat input_audio 不应请求 Anthropic 上游')
 }
@@ -895,7 +899,9 @@ async function assertResponsesLogprobsIncludeRejected(baseUrl: string, localApiK
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses logprobs include 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses logprobs include 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_logprobs_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses logprobs include 不应请求 Anthropic 上游')
 }
@@ -916,7 +922,9 @@ async function assertResponsesTopLogprobsRejected(baseUrl: string, localApiKey: 
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses top_logprobs>0 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses top_logprobs>0 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_logprobs_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses top_logprobs>0 不应请求 Anthropic 上游')
 }
@@ -943,7 +951,9 @@ async function assertResponsesInputAudioRejected(baseUrl: string, localApiKey: s
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses input_audio 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses input_audio 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_audio_input_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses input_audio 不应请求 Anthropic 上游')
 }
@@ -1092,7 +1102,7 @@ async function assertOpenAIBasicGenerationControlsBridge(baseUrl: string, localA
 }
 
 async function assertOpenAISamplingControlsRejected(baseUrl: string, localApiKey: string): Promise<void> {
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1103,7 +1113,7 @@ async function assertOpenAISamplingControlsRejected(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
     label: 'Chat temperature>1'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1115,7 +1125,7 @@ async function assertOpenAISamplingControlsRejected(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
     label: 'Chat penalty'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1126,7 +1136,7 @@ async function assertOpenAISamplingControlsRejected(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_sampling_control_unsupported',
     label: 'Responses logit_bias'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1140,7 +1150,7 @@ async function assertOpenAISamplingControlsRejected(baseUrl: string, localApiKey
 }
 
 async function assertOpenAIPredictionRejected(baseUrl: string, localApiKey: string): Promise<void> {
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1151,7 +1161,7 @@ async function assertOpenAIPredictionRejected(baseUrl: string, localApiKey: stri
     expectedCode: 'openai_anthropic_bridge_prediction_unsupported',
     label: 'Chat prediction'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1165,7 +1175,7 @@ async function assertOpenAIPredictionRejected(baseUrl: string, localApiKey: stri
 }
 
 async function assertOpenAIVerbosityRejected(baseUrl: string, localApiKey: string): Promise<void> {
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1176,7 +1186,7 @@ async function assertOpenAIVerbosityRejected(baseUrl: string, localApiKey: strin
     expectedCode: 'openai_anthropic_bridge_verbosity_unsupported',
     label: 'Chat verbosity'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1250,7 +1260,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
   assert.equal(upstreamHits[0]?.body.store, undefined, 'Chat store=false 不应透传到 Anthropic')
   assert.equal(upstreamHits[0]?.body.prompt_cache_key, undefined, 'Chat prompt_cache_key 不应透传到 Anthropic')
 
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1261,7 +1271,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_service_tier_unsupported',
     label: 'Chat service_tier=priority'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1272,7 +1282,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_service_tier_unsupported',
     label: 'Responses service_tier=flex'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1283,7 +1293,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_prompt_cache_retention_unsupported',
     label: 'Responses prompt_cache_retention'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1294,7 +1304,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_prompt_cache_retention_unsupported',
     label: 'Chat prompt_cache_retention'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1305,7 +1315,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_store_unsupported',
     label: 'Chat store=true'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1316,7 +1326,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_store_unsupported',
     label: 'Responses store=true'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1327,7 +1337,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_prompt_template_unsupported',
     label: 'Responses prompt template'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
     body: {
       model: 'gpt-5.5',
@@ -1338,7 +1348,7 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
     expectedCode: 'openai_anthropic_bridge_moderation_unsupported',
     label: 'Chat top-level moderation'
   })
-  await assertLocalBridgeRejects(baseUrl, localApiKey, {
+  await assertLocalBridgeGuidance(baseUrl, localApiKey, {
     path: '/v1/responses',
     body: {
       model: 'gpt-5.5',
@@ -1369,6 +1379,32 @@ async function assertLocalBridgeRejects(
   assert.equal(response.status, 400, `${input.label} 应本地 400，实际 HTTP ${response.status}: ${text}`)
   assert.match(text, new RegExp(input.expectedCode))
   assert.equal(upstreamHits.length, 0, `${input.label} 不应请求 Anthropic 上游`)
+}
+
+async function assertLocalBridgeGuidance(
+  baseUrl: string,
+  localApiKey: string,
+  input: { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown>; expectedCode: string; label: string }
+): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}${input.path}`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(input.body)
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `${input.label} 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, new RegExp(input.expectedCode))
+  if (input.path === '/v1/responses') {
+    assert.match(text, /"object":"response"/, `${input.label} guidance 应保持 Responses JSON 形态`)
+    assert.match(text, /"status":"completed"/, `${input.label} guidance 应以 completed 结束`)
+  } else {
+    assert.match(text, /"object":"chat\.completion"/, `${input.label} guidance 应保持 Chat Completions JSON 形态`)
+  }
+  assert.equal(upstreamHits.length, 0, `${input.label} guidance 不应请求 Anthropic 上游`)
 }
 
 async function assertResponsesMultiToolSseBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -2487,7 +2523,9 @@ async function assertResponsesMaxToolCallsRejected(baseUrl: string, localApiKey:
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses max_tool_calls 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses max_tool_calls 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_max_tool_calls_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses max_tool_calls 不应请求 Anthropic 上游')
 }
@@ -2558,7 +2596,9 @@ async function assertResponsesStateControlRejected(
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses 状态 / 上下文控制 ${expectedCode} 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses 状态 / 上下文控制 ${expectedCode} 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, new RegExp(expectedCode))
   assert.equal(upstreamHits.length, 0, `Responses 状态 / 上下文控制 ${expectedCode} 不应请求 Anthropic 上游`)
 }
@@ -2590,7 +2630,9 @@ async function assertResponsesThinkingForcedToolChoiceRejected(baseUrl: string, 
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses reasoning + forced tool_choice 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses reasoning + forced tool_choice 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_thinking_forced_tool_choice_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses reasoning + forced tool_choice 不应请求 Anthropic 上游')
 }
@@ -3579,7 +3621,9 @@ async function assertResponsesReasoningUnsupportedEffortRejected(baseUrl: string
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses reasoning effort xhigh 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses reasoning effort xhigh 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_reasoning_effort_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses reasoning effort xhigh 不应请求 Anthropic 上游')
 }
@@ -3600,7 +3644,8 @@ async function assertChatReasoningUnsupportedEffortRejected(baseUrl: string, loc
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Chat reasoning_effort xhigh 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Chat reasoning_effort xhigh 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"chat\.completion"/)
   assert.match(text, /openai_anthropic_bridge_reasoning_effort_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Chat reasoning_effort xhigh 不应请求 Anthropic 上游')
 }
@@ -3653,7 +3698,9 @@ async function assertResponsesReasoningUnsupportedSummaryRejected(baseUrl: strin
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses reasoning summary verbose 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses reasoning summary verbose 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_reasoning_summary_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses reasoning summary verbose 不应请求 Anthropic 上游')
 }
@@ -3675,7 +3722,9 @@ async function assertResponsesEncryptedReasoningIncludeRejected(baseUrl: string,
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 400, `Responses encrypted reasoning include 应本地 400，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `Responses encrypted reasoning include 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /"object":"response"/)
+  assert.match(text, /"status":"completed"/)
   assert.match(text, /openai_anthropic_bridge_encrypted_reasoning_unsupported/)
   assert.equal(upstreamHits.length, 0, 'Responses encrypted reasoning include 不应请求 Anthropic 上游')
 }
@@ -3703,7 +3752,9 @@ async function assertResponsesUnsupportedIncludesRejected(baseUrl: string, local
       })
     })
     const text = await response.text()
-    assert.equal(response.status, 400, `Responses unsupported include ${include} 应本地 400，实际 HTTP ${response.status}: ${text}`)
+    assert.equal(response.status, 200, `Responses unsupported include ${include} 应返回协议内 guidance，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /"object":"response"/)
+    assert.match(text, /"status":"completed"/)
     assert.match(text, /openai_anthropic_bridge_include_unsupported/)
     assert.equal(upstreamHits.length, 0, `Responses unsupported include ${include} 不应请求 Anthropic 上游`)
   }

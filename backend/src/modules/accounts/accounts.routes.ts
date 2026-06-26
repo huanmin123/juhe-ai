@@ -297,7 +297,7 @@ accountsRouter.patch('/:id', async (req, res) => {
     res.status(400).json(badRequest('账户分组不能为空'))
     return
   }
-  if (hasGroupId) {
+  if (hasGroupId && existingAccount.boundGroupId !== groupIdToBind) {
     const group = await findGroupSummaryAsync(groupIdToBind as string, requestAccess)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
@@ -318,19 +318,27 @@ accountsRouter.patch('/:id', async (req, res) => {
   if (Object.prototype.hasOwnProperty.call(body, 'credentials') && requestedCredentials) {
     accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
   }
+  const hasAccountUpdateInput = Object.keys(accountUpdateInput).length > 0
+  const canUseExistingWithoutAccountUpdate = existingAccount.accessType !== 'authorized' && !existingAccount.accountAuthorizationId
   try {
     const account = await runLoggedOperationAsync(async () => {
+      let account: AccountSummary | undefined
       if (requestedClearFailureState === true) {
         const restoredAccount = await clearAccountFailureStateAsync(req.params.id, requestAccess)
         if (!restoredAccount) {
           throw new Error('账户不存在')
         }
+        account = restoredAccount
       }
-      let account = await updateAccountAsync(req.params.id, accountUpdateInput, requestAccess)
-      if (!account) {
-        throw new Error('账户不存在')
+      if (hasAccountUpdateInput || !canUseExistingWithoutAccountUpdate) {
+        account = await updateAccountAsync(req.params.id, accountUpdateInput, requestAccess)
+        if (!account) {
+          throw new Error('账户不存在')
+        }
+      } else if (!account) {
+        account = existingAccount
       }
-      if (hasGroupId) {
+      if (hasGroupId && account.boundGroupId !== groupIdToBind) {
         const nextAccount = await setAccountGroupAsync(account.id, groupIdToBind as string, requestAccess)
         if (!nextAccount) {
           throw new Error('账户分组无效')

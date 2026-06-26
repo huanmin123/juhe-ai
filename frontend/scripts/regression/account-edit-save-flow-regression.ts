@@ -8,6 +8,11 @@ import { accountCreatePayloadWithActivationTest } from '../../src/views/accounts
 import type { AccountFormModel } from '../../src/views/accounts/accountFormTypes'
 import { buildAccountSavePayload, validateAccountSaveForm } from '../../src/views/accounts/accountSavePayload'
 import { FALLBACK_PROVIDERS } from '../../src/views/accounts/accountOptions'
+import {
+  defaultAccountModelMappingUpstreamEndpointFamily,
+  isAccountModelMappingProtocolAllowed,
+  isAccountModelMappingSourceEndpointFamilyAllowed
+} from '../../src/views/accounts/accountModelMappingProtocolMatrix'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -16,6 +21,7 @@ const apiKeySectionSource = readSource('src/views/accounts/AccountApiKeySection.
 const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
 const credentialsSource = readSource('src/views/accounts/accountCredentials.ts')
 const editFormSource = readSource('src/views/accounts/useAccountEditForm.ts')
+const strategySectionSource = readSource('src/views/accounts/AccountStrategySection.vue')
 const testModalSource = readSource('src/views/accounts/useAccountTestModal.ts')
 const savePayloadSource = readSource('src/views/accounts/accountSavePayload.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
@@ -47,8 +53,12 @@ assertIncludes(testModalSource, 'syncDraftActivationTestFromTask(latestTask, act
 assertIncludes(testModalSource, "successfulDraftActivationTest.value = { taskId: task.id, account: activationDraftPayload }", '成功草稿测试应绑定测试任务与创建表单快照')
 assertIncludes(savePayloadSource, 'supported_endpoint_modes?: AccountFormModel', 'OAuth 创建 payload 应允许透传接口能力限制')
 assertIncludes(savePayloadSource, 'credentialsPatch.supported_endpoint_modes', 'OAuth 创建 common payload 应把接口能力写入 credentialsPatch')
+assertIncludes(savePayloadSource, 'accountModelMappingProtocolValidationMessage', '前端保存校验必须复用模型映射协议矩阵 helper')
+assertIncludes(strategySectionSource, 'isAccountModelMappingProtocolAllowed', '模型映射 UI 右侧协议选择必须复用协议矩阵 helper')
+assertIncludes(strategySectionSource, 'isAccountModelMappingSourceEndpointFamilyAllowed', '模型映射 UI 左侧协议选择必须复用协议矩阵 helper')
 assertApiKeyDraftActivationPayload()
 assertModelMappingProtocolValidation()
+assertModelMappingProtocolMatrixHelper()
 
 for (const marker of [
   "submitAction('accounts.save'",
@@ -224,7 +234,7 @@ function assertModelMappingProtocolValidation(): void {
       enabled: true
     }]
   }), undefined, '前端保存前应允许真实 Responses 上游的 Responses -> Responses 直连映射')
-  assert.equal(validateForm({
+  assert.match(validateForm({
     ...baseForm,
     supportedEndpointModes: ['responses_json', 'responses_sse'],
     modelMappings: [{
@@ -234,7 +244,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'responses',
       enabled: true
     }]
-  }), undefined, '前端保存前应允许真实 Responses 上游承接 Chat Completions -> Responses')
+  }) ?? '', /暂不支持 Chat Completions 到 Responses 的协议转换/, '前端保存前应拒绝 Chat Completions -> Responses')
   assert.equal(validateForm({
     ...baseForm,
     supportedEndpointModes: ['chat_json', 'chat_sse'],
@@ -260,6 +270,29 @@ function assertModelMappingProtocolValidation(): void {
       enabled: true
     }]
   }), undefined, '前端保存前应允许 OpenAI Responses -> Anthropic Messages 显式映射')
+  assert.equal(validateForm({
+    ...baseForm,
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    supportedEndpointModes: ['messages_json', 'messages_sse'],
+    supportedModels: ['claude-haiku-4-5'],
+    modelMappings: [
+      {
+        sourceModel: 'gemini-3.5-flash',
+        sourceEndpointFamily: 'generate_content',
+        upstreamModel: 'claude-haiku-4-5',
+        upstreamEndpointFamily: 'messages',
+        enabled: true
+      },
+      {
+        sourceModel: 'gemini-3.5-flash',
+        sourceEndpointFamily: 'stream_generate_content',
+        upstreamModel: 'claude-haiku-4-5',
+        upstreamEndpointFamily: 'messages',
+        enabled: true
+      }
+    ]
+  }), undefined, '前端保存前应允许 Gemini GenerateContent / StreamGenerateContent -> Anthropic Messages 显式映射')
   assert.match(validateForm({
     ...baseForm,
     modelMappings: [{
@@ -270,6 +303,30 @@ function assertModelMappingProtocolValidation(): void {
       enabled: true
     }]
   }) ?? '', /Messages 下游协议当前只支持桥接到 Chat Completions/, '前端保存前应拒绝 Messages -> Responses')
+  assert.match(validateForm({
+    ...baseForm,
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    supportedEndpointModes: ['messages_json', 'messages_sse'],
+    supportedModels: ['claude-haiku-4-5'],
+    modelMappings: [{
+      sourceModel: 'gemini-3.5-flash',
+      sourceEndpointFamily: 'generate_content',
+      upstreamModel: 'claude-haiku-4-5',
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }) ?? '', /Gemini GenerateContent 下游协议当前只支持桥接到 Chat Completions 或 Messages/, '前端保存前应拒绝 Gemini GenerateContent -> Responses')
+  assert.match(validateForm({
+    ...baseForm,
+    modelMappings: [{
+      sourceModel: 'gemini-3.5-flash',
+      sourceEndpointFamily: 'generate_content',
+      upstreamModel: 'claude-haiku-4-5',
+      upstreamEndpointFamily: 'messages',
+      enabled: true
+    }]
+  }) ?? '', /Gemini GenerateContent 到 Anthropic Messages 桥接只能配置在 Anthropic Messages 协议档案账号上/, '前端保存前应拒绝 OpenAI 档案配置 Gemini GenerateContent -> Anthropic Messages')
   assert.match(validateForm({
     ...baseForm,
     providerCode: 'anthropic',
@@ -310,6 +367,56 @@ function assertModelMappingProtocolValidation(): void {
       enabled: true
     }]
   }) ?? '', /Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射/, '前端保存前应拒绝 Gemini OpenAI Chat 的 Messages 来源映射')
+}
+
+function assertModelMappingProtocolMatrixHelper(): void {
+  const gptProfile = protocolProfile('gpt', 'profile_gpt_openai_v1')
+  const anthropicProfile = protocolProfile('anthropic', 'profile_anthropic_anthropic_v1')
+  const geminiOpenAIChatProfile = protocolProfile('gemini', 'profile_gemini_openai_chat_v1beta')
+
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'chat_completions',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
+  }), true, '矩阵 helper 应允许 Responses -> Chat Completions 命中 Chat-only OpenAI 档案')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: 'responses',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
+  }), false, '矩阵 helper 应拒绝无原生 Responses 能力的 Chat -> Responses')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: 'responses',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['responses_json'] }
+  }), false, '矩阵 helper 应拒绝真实 Responses 能力下的 Chat -> Responses')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'messages',
+    context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json', 'messages_sse'] }
+  }), true, '矩阵 helper 应允许 OpenAI Responses -> Anthropic Messages')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'messages',
+    upstreamEndpointFamily: 'responses',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['responses_json'] }
+  }), false, '矩阵 helper 应拒绝 Anthropic Messages -> Responses')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'generate_content',
+    upstreamEndpointFamily: 'messages',
+    context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] }
+  }), true, '矩阵 helper 应允许 Gemini GenerateContent -> Anthropic Messages')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'stream_generate_content',
+    upstreamEndpointFamily: 'responses',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['responses_sse'] }
+  }), false, '矩阵 helper 应拒绝 Gemini StreamGenerateContent -> Responses')
+  assert.equal(isAccountModelMappingSourceEndpointFamilyAllowed('messages', {
+    providerProfile: geminiOpenAIChatProfile,
+    supportedEndpointModes: ['chat_json', 'chat_sse']
+  }), false, 'Gemini OpenAI Chat UI 不应允许选择 Messages 下游来源')
+  assert.equal(defaultAccountModelMappingUpstreamEndpointFamily('generate_content', {
+    providerProfile: anthropicProfile,
+    supportedEndpointModes: ['messages_json', 'messages_sse']
+  }), 'messages', 'Anthropic 档案下 Gemini 来源默认右侧协议应是 Messages')
 }
 
 function apiKeyFormFixture(): AccountFormModel {
@@ -357,4 +464,11 @@ function validateForm(form: AccountFormModel): string | undefined {
     responseInspectionRules: [],
     providers: FALLBACK_PROVIDERS
   })
+}
+
+function protocolProfile(providerCode: string, profileId: string) {
+  const provider = FALLBACK_PROVIDERS.find((item) => item.code === providerCode)
+  const profile = provider?.protocolProfiles.find((item) => item.id === profileId)
+  assert(profile, `缺少测试协议档案：${providerCode} / ${profileId}`)
+  return profile
 }

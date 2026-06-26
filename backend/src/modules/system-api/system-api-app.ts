@@ -32,6 +32,7 @@ import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
 import { ok } from '../../shared/http.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
 import { systemApiAuthenticatedRateLimit, systemApiIpRateLimit } from './system-api-rate-limit.middleware.js'
 
@@ -48,7 +49,7 @@ type BodyParserError = Error & {
 }
 
 export const systemApiJsonBodyLimit = '256kb'
-export const systemApiDbServiceMaxInFlight = 64
+export const systemApiDbServiceMaxInFlight = runtimeConfig.systemApi.dbServiceMaxInFlight
 let systemApiDbServiceInFlight = 0
 
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {

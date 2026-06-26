@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import express from 'express'
+import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_PROVIDER_CODE,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
@@ -59,7 +62,8 @@ const [
   modelCatalog,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  providerDriverRegistry
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -68,7 +72,8 @@ const [
   import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/providers/drivers/registry.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -285,7 +290,7 @@ try {
         schedulable: true
       }, access),
       /Gemini GenerateContent/,
-      'Gemini GenerateContent 下游协议不应允许桥接到非 Chat Completions 上游'
+      'Gemini GenerateContent 下游协议不应允许桥接到非 Chat Completions / Messages 上游'
     )
     const glmBridgeApiKey = repositories.createApiKeyRecord({
       name: 'Gemini Native 转 GLM Chat 回归 Key',
@@ -293,6 +298,149 @@ try {
       status: 'active'
     }, access)
     assert(glmBridgeApiKey.key, 'Gemini Native 转 GLM Chat 回归 API Key 未返回明文密钥')
+
+    const anthropicBridgeGroup = repositories.createGroup({
+      name: 'Gemini Native 转 Anthropic Messages 回归分组',
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+      enabled: true
+    }, access)
+    repositories.createAccount({
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+      name: 'Gemini Native 转 Anthropic Messages 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-anthropic-upstream',
+        base_url: upstreamOrigin,
+        supported_endpoint_modes: ['messages_json', 'messages_sse']
+      },
+      groupId: anthropicBridgeGroup.id,
+      supportedModels: ['claude-haiku-4-5'],
+      modelMappings: [
+        {
+          sourceModel: 'gemini-3.5-flash',
+          sourceEndpointFamily: 'generate_content',
+          upstreamModel: 'claude-haiku-4-5',
+          upstreamEndpointFamily: 'messages',
+          enabled: true
+        },
+        {
+          sourceModel: 'gemini-3.5-flash',
+          sourceEndpointFamily: 'stream_generate_content',
+          upstreamModel: 'claude-haiku-4-5',
+          upstreamEndpointFamily: 'messages',
+          enabled: true
+        }
+      ],
+      status: 'active',
+      schedulable: true
+    }, access)
+    const anthropicBridgeRuntimeAccounts = repositories.listOpenAIAccountsForGroup(anthropicBridgeGroup.id, access.systemAccountId, {
+      requestedModel: 'gemini-3.5-flash',
+      requestedEndpointFamily: 'generate_content'
+    })
+    assert(
+      anthropicBridgeRuntimeAccounts.some((item) => item.modelMappings?.some((mapping) => (
+        mapping.sourceModel === 'gemini-3.5-flash'
+        && mapping.sourceEndpointFamily === 'generate_content'
+        && mapping.upstreamEndpointFamily === 'messages'
+      ))),
+      '模型感知候选窗口必须能按 Gemini GenerateContent source 映射找到 Anthropic Messages 账号'
+    )
+    const anthropicBridgeRuntimeAccount = anthropicBridgeRuntimeAccounts[0]
+    assert(anthropicBridgeRuntimeAccount, 'Gemini Native 转 Anthropic Messages 回归账号必须进入运行时账号窗口')
+    const anthropicBridgeGatewayRequest = fakeGatewayPostRequest('/v1beta/models/gemini-3.5-flash:generateContent?trace=gemini-native-to-anthropic-messages-json')
+    assert.deepEqual(
+      providerDriverRegistry.buildGatewayUpstreamUrlsForAccount(anthropicBridgeRuntimeAccount, anthropicBridgeGatewayRequest),
+      [`${upstreamOrigin}/v1/messages?trace=gemini-native-to-anthropic-messages-json`],
+      'Anthropic driver 必须能把 Gemini GenerateContent 显式映射请求定位到 /messages 上游'
+    )
+    assert.equal(
+      providerDriverRegistry.accountSupportsGatewayRequest(anthropicBridgeGatewayRequest, anthropicBridgeRuntimeAccount),
+      true,
+      'Anthropic driver capability check 必须允许 Gemini GenerateContent -> Messages 显式映射请求'
+    )
+    const anthropicBridgeApiKey = repositories.createApiKeyRecord({
+      name: 'Gemini Native 转 Anthropic Messages 回归 Key',
+      groupBindings: [{ groupId: anthropicBridgeGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(anthropicBridgeApiKey.key, 'Gemini Native 转 Anthropic Messages 回归 API Key 未返回明文密钥')
+
+    const geminiNativeTargetBridgeGroup = repositories.createGroup({
+      name: 'OpenAI Anthropic 转 Gemini Native 回归分组',
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      enabled: true
+    }, access)
+    const geminiNativeTargetBridgeAccount = repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: 'OpenAI Anthropic 转 Gemini Native 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-target-upstream',
+        base_url: upstreamOrigin,
+        supported_endpoint_modes: ['generate_content_json', 'generate_content_sse']
+      },
+      groupId: geminiNativeTargetBridgeGroup.id,
+      supportedModels: ['gemini-3.5-flash'],
+      modelMappings: [
+        {
+          sourceModel: 'gpt-5.5',
+          sourceEndpointFamily: 'chat_completions',
+          upstreamModel: 'gemini-3.5-flash',
+          upstreamEndpointFamily: 'generate_content',
+          enabled: true
+        },
+        {
+          sourceModel: 'gpt-5.5',
+          sourceEndpointFamily: 'responses',
+          upstreamModel: 'gemini-3.5-flash',
+          upstreamEndpointFamily: 'generate_content',
+          enabled: true
+        },
+        {
+          sourceModel: 'claude-haiku-4-5',
+          sourceEndpointFamily: 'messages',
+          upstreamModel: 'gemini-3.5-flash',
+          upstreamEndpointFamily: 'generate_content',
+          enabled: true
+        }
+      ],
+      status: 'active',
+      schedulable: true
+    }, access)
+    const geminiNativeTargetRuntimeAccount = repositories.listOpenAIAccountsForGroup(geminiNativeTargetBridgeGroup.id, access.systemAccountId, {
+      requestedModel: 'gpt-5.5',
+      requestedEndpointFamily: 'chat_completions'
+    }).find((item) => item.id === geminiNativeTargetBridgeAccount.id)
+    assert(geminiNativeTargetRuntimeAccount, 'OpenAI Chat -> Gemini native 回归账号必须进入运行时账号窗口')
+    const geminiNativeTargetRuntimeRequest = fakeGatewayPostRequest('/v1/chat/completions')
+    geminiNativeTargetRuntimeRequest.body = { model: 'gpt-5.5', messages: [{ role: 'user', content: 'ping' }] }
+    assert.deepEqual(
+      providerDriverRegistry.buildGatewayUpstreamUrlsForAccount(geminiNativeTargetRuntimeAccount, geminiNativeTargetRuntimeRequest),
+      [`${upstreamOrigin}/v1beta/models/gemini-3.5-flash:generateContent`],
+      'Gemini driver 必须能把 OpenAI Chat -> Gemini native 显式映射定位到 generateContent 上游'
+    )
+    assert.equal(
+      providerDriverRegistry.accountSupportsGatewayRequest(geminiNativeTargetRuntimeRequest, geminiNativeTargetRuntimeAccount),
+      true,
+      'Gemini driver capability check 必须允许 OpenAI Chat -> Gemini native 显式映射请求'
+    )
+    const geminiNativeTargetBridgeApiKey = repositories.createApiKeyRecord({
+      name: 'OpenAI Anthropic 转 Gemini Native 回归 Key',
+      groupBindings: [{ groupId: geminiNativeTargetBridgeGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(geminiNativeTargetBridgeApiKey.key, 'OpenAI Anthropic 转 Gemini Native 回归 API Key 未返回明文密钥')
+    const geminiNativeTargetRuntime = await gatewayCache.readCachedGatewayRuntimeAsync(geminiNativeTargetBridgeApiKey.key)
+    assert.equal(geminiNativeTargetRuntime.apiKey?.selected_group_id, geminiNativeTargetBridgeGroup.id, 'OpenAI/Anthropic -> Gemini native runtime 应选中桥接分组')
+    assert(
+      geminiNativeTargetRuntime.accounts.some((item) => item.id === geminiNativeTargetBridgeAccount.id),
+      `OpenAI/Anthropic -> Gemini native runtime 应包含桥接账号，实际 ${geminiNativeTargetRuntime.accounts.length}，诊断 ${JSON.stringify(geminiNativeTargetRuntime.accountDispatchDiagnostics)}`
+    )
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -315,6 +463,16 @@ try {
     await assertGeminiCodexResponsesMapping(baseUrl, openAIChatApiKey.key)
     await assertGeminiGenerateContentToGlmChatJson(baseUrl, glmBridgeApiKey.key)
     await assertGeminiStreamGenerateContentToGlmChatSse(baseUrl, glmBridgeApiKey.key)
+    await assertGeminiGenerateContentToAnthropicMessagesJson(baseUrl, anthropicBridgeApiKey.key)
+    await assertGeminiStreamGenerateContentToAnthropicMessagesSse(baseUrl, anthropicBridgeApiKey.key)
+    await assertGeminiGenerateContentToAnthropicMessagesGuidance(baseUrl, anthropicBridgeApiKey.key)
+    await assertOpenAIChatToGeminiNativeJson(baseUrl, geminiNativeTargetBridgeApiKey.key)
+    await assertOpenAIChatToGeminiNativeSse(baseUrl, geminiNativeTargetBridgeApiKey.key)
+    await assertOpenAIResponsesToGeminiNativeJson(baseUrl, geminiNativeTargetBridgeApiKey.key)
+    await assertOpenAIResponsesToGeminiNativeSse(baseUrl, geminiNativeTargetBridgeApiKey.key)
+    await assertAnthropicMessagesToGeminiNativeJson(baseUrl, geminiNativeTargetBridgeApiKey.key)
+    await assertAnthropicMessagesToGeminiNativeSse(baseUrl, geminiNativeTargetBridgeApiKey.key)
+    await assertOpenAIResponsesToGeminiNativeGuidance(baseUrl, geminiNativeTargetBridgeApiKey.key)
     assertGeminiPolicyDefaults()
 
     console.log('gemini gateway mock ai regression passed')
@@ -837,6 +995,400 @@ async function assertGeminiStreamGenerateContentToGlmChatSse(baseUrl: string, lo
   assert(Array.isArray(upstreamBody.messages) && upstreamBody.messages.length === 1, 'Gemini stream -> Chat 桥接必须生成 Chat messages')
 }
 
+async function assertGeminiGenerateContentToAnthropicMessagesJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?trace=gemini-native-to-anthropic-messages-json', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: '只输出简短中文' }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: 'reply with anthropic gemini bridge json ok' },
+            { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }
+          ]
+        },
+        {
+          role: 'model',
+          parts: [
+            { functionCall: { name: 'lookup_order', args: { id: 'A-099' } } }
+          ]
+        },
+        {
+          role: 'function',
+          parts: [
+            { functionResponse: { name: 'lookup_order', response: { status: 'paid' } } }
+          ]
+        },
+        {
+          role: 'user',
+          parts: [{ text: 'now answer with final text' }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        topP: 0.9,
+        topK: 40,
+        maxOutputTokens: 64,
+        stopSequences: ['END'],
+        responseMimeType: 'text/plain'
+      },
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: 'lookup_order',
+              description: '查询订单',
+              parameters: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      toolConfig: {
+        functionCallingConfig: {
+          mode: 'ANY',
+          allowedFunctionNames: ['lookup_order']
+        }
+      }
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as {
+    candidates?: Array<{ content?: { role?: string; parts?: Array<{ text?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }> }; finishReason?: string }>
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number; cachedContentTokenCount?: number; thoughtsTokenCount?: number }
+    modelVersion?: string
+  }
+  assert.equal(body.candidates?.[0]?.content?.role, 'model')
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'anthropic gemini bridge json ok')
+  assert.equal(body.candidates?.[0]?.content?.parts?.[1]?.functionCall?.name, 'lookup_order')
+  assert.equal(body.candidates?.[0]?.content?.parts?.[1]?.functionCall?.args?.id, 'A-100')
+  assert.equal(body.candidates?.[0]?.finishReason, 'STOP')
+  assert.equal(body.modelVersion, 'claude-haiku-4-5')
+  assert.equal(body.usageMetadata?.promptTokenCount, 15)
+  assert.equal(body.usageMetadata?.candidatesTokenCount, 6)
+  assert.equal(body.usageMetadata?.totalTokenCount, 21)
+  assert.equal(body.usageMetadata?.cachedContentTokenCount, 2)
+  assert.equal(body.usageMetadata?.thoughtsTokenCount, 1)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/v1/messages?trace=gemini-native-to-anthropic-messages-json')
+  assert.equal(upstreamHits[0]?.xApiKey, 'sk-anthropic-upstream')
+  assert.equal(upstreamHits[0]?.authorization, '', 'Gemini -> Anthropic Messages 桥接上游不应使用 Bearer Authorization')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, '', 'Gemini -> Anthropic Messages 桥接上游不应使用 Gemini 原生 x-goog-api-key')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as {
+    model?: string
+    stream?: boolean
+    system?: string
+    messages?: Array<{ role?: string; content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; source?: { type?: string; media_type?: string; data?: string } }> }>
+    temperature?: number
+    top_p?: number
+    top_k?: number
+    max_tokens?: number
+    stop_sequences?: string[]
+    tools?: Array<{ name?: string; input_schema?: unknown }>
+    tool_choice?: { type?: string; name?: string }
+  }
+  assert.equal(upstreamBody.model, 'claude-haiku-4-5', 'Gemini -> Anthropic Messages 显式模型映射必须改写 Anthropic 上游模型')
+  assert.equal(upstreamBody.stream, false)
+  assert.equal(upstreamBody.system, '只输出简短中文')
+  assert.equal(upstreamBody.messages?.[0]?.role, 'user')
+  assert.equal(upstreamBody.messages?.[0]?.content?.[0]?.type, 'text')
+  assert.equal(upstreamBody.messages?.[0]?.content?.[1]?.type, 'image')
+  assert.equal(upstreamBody.messages?.[0]?.content?.[1]?.source?.type, 'base64')
+  assert.equal(upstreamBody.messages?.[0]?.content?.[1]?.source?.media_type, 'image/png')
+  assert.equal(upstreamBody.messages?.[1]?.role, 'assistant')
+  assert.equal(upstreamBody.messages?.[1]?.content?.[0]?.type, 'tool_use')
+  assert.equal(upstreamBody.messages?.[1]?.content?.[0]?.name, 'lookup_order')
+  assert.equal(upstreamBody.messages?.[1]?.content?.[0]?.input?.id, 'A-099')
+  assert.equal(upstreamBody.messages?.[2]?.role, 'user')
+  assert.equal(upstreamBody.messages?.[2]?.content?.[0]?.type, 'tool_result')
+  assert.equal(upstreamBody.messages?.[2]?.content?.[0]?.tool_use_id, upstreamBody.messages?.[1]?.content?.[0]?.id)
+  assert.equal(upstreamBody.messages?.[2]?.content?.[1]?.text, 'now answer with final text')
+  assert.equal(upstreamBody.temperature, 0.2)
+  assert.equal(upstreamBody.top_p, 0.9)
+  assert.equal(upstreamBody.top_k, 40)
+  assert.equal(upstreamBody.max_tokens, 64)
+  assert.deepEqual(upstreamBody.stop_sequences, ['END'])
+  assert.equal(upstreamBody.tools?.[0]?.name, 'lookup_order')
+  assert.equal(upstreamBody.tool_choice?.type, 'tool')
+  assert.equal(upstreamBody.tool_choice?.name, 'lookup_order')
+}
+
+async function assertGeminiStreamGenerateContentToAnthropicMessagesSse(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&trace=gemini-native-to-anthropic-messages-sse', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with anthropic gemini bridge stream ok' }] }
+      ],
+      generationConfig: {
+        maxOutputTokens: 64
+      }
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(responseText, /anthropic gemini /)
+  assert.match(responseText, /bridge stream ok/)
+  assert.match(responseText, /"functionCall":\{"name":"lookup_stream"/)
+  assert.match(responseText, /usageMetadata/)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/v1/messages?trace=gemini-native-to-anthropic-messages-sse')
+  assert.equal(upstreamHits[0]?.xApiKey, 'sk-anthropic-upstream')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, '')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { model?: string; stream?: boolean; messages?: unknown[]; max_tokens?: number }
+  assert.equal(upstreamBody.model, 'claude-haiku-4-5')
+  assert.equal(upstreamBody.stream, true)
+  assert.equal(upstreamBody.max_tokens, 64)
+  assert(Array.isArray(upstreamBody.messages) && upstreamBody.messages.length === 1, 'Gemini stream -> Anthropic Messages 桥接必须生成 Messages messages')
+}
+
+async function assertGeminiGenerateContentToAnthropicMessagesGuidance(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?trace=gemini-native-to-anthropic-messages-guidance', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'unsupported json schema should be guidance' }] }
+      ],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' }
+          }
+        }
+      }
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+  const text = body.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+  assert.match(text, /responseMimeType|responseSchema|Anthropic Messages|上游/, '不支持的 Gemini JSON schema 能力应返回 Gemini JSON guidance')
+  assert.equal(upstreamHits.length, 0, 'Gemini -> Anthropic Messages guidance 不应命中上游')
+}
+
+async function assertOpenAIChatToGeminiNativeJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/chat/completions', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'system', content: '只输出简短中文' },
+        { role: 'user', content: [{ type: 'text', text: 'reply with gemini json ok' }] }
+      ],
+      tools: [{ type: 'function', function: { name: 'lookup_order', parameters: { type: 'object', properties: { id: { type: 'string' } } } } }],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_tokens: 64
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as { choices?: Array<{ message?: { content?: string | null } }>; usage?: { prompt_tokens?: number } }
+  assert.equal(body.choices?.[0]?.message?.content, 'gemini json ok')
+  assert.equal(body.usage?.prompt_tokens, 11)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:generateContent')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-target-upstream')
+  assert.equal(upstreamHits[0]?.authorization, '', 'OpenAI -> Gemini native 上游不应透传本地 Authorization')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> }; generationConfig?: { responseMimeType?: string; temperature?: number; maxOutputTokens?: number }; tools?: Array<{ functionDeclarations?: Array<{ name?: string }> }> }
+  assert.equal(upstreamBody.systemInstruction?.parts?.[0]?.text, '只输出简短中文')
+  assert.equal(upstreamBody.contents?.[0]?.role, 'user')
+  assert.equal(upstreamBody.contents?.[0]?.parts?.[0]?.text, 'reply with gemini json ok')
+  assert.equal(upstreamBody.generationConfig?.responseMimeType, 'application/json')
+  assert.equal(upstreamBody.generationConfig?.temperature, 0.2)
+  assert.equal(upstreamBody.generationConfig?.maxOutputTokens, 64)
+  assert.equal(upstreamBody.tools?.[0]?.functionDeclarations?.[0]?.name, 'lookup_order')
+}
+
+async function assertOpenAIChatToGeminiNativeSse(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/chat/completions', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      stream: true,
+      messages: [{ role: 'user', content: 'reply with gemini sse ok' }]
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(responseText, /chat\.completion\.chunk/)
+  assert.match(responseText, /gemini /)
+  assert.match(responseText, /sse ok/)
+  assert.match(responseText, /data: \[DONE\]/)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:streamGenerateContent')
+  assert.match(upstreamHits[0]?.rawUrl ?? '', /alt=sse/)
+  assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-target-upstream')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: unknown[] }
+  assert(Array.isArray(upstreamBody.contents) && upstreamBody.contents.length === 1, 'OpenAI Chat SSE -> Gemini native 必须生成 Gemini contents')
+}
+
+async function assertOpenAIResponsesToGeminiNativeJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/responses', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      instructions: '只输出简短中文',
+      input: 'reply with gemini json ok'
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as { output?: Array<{ content?: Array<{ text?: string }> }> }
+  assert.equal(body.output?.[0]?.content?.[0]?.text, 'gemini json ok')
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:generateContent')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> } }
+  assert.equal(upstreamBody.systemInstruction?.parts?.[0]?.text, '只输出简短中文')
+  assert.equal(upstreamBody.contents?.[0]?.parts?.[0]?.text, 'reply with gemini json ok')
+}
+
+async function assertOpenAIResponsesToGeminiNativeSse(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/responses', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      stream: true,
+      input: 'reply with gemini sse ok'
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(responseText, /response.output_text.delta/)
+  assert.match(responseText, /gemini /)
+  assert.match(responseText, /sse ok/)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:streamGenerateContent')
+}
+
+async function assertAnthropicMessagesToGeminiNativeJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/messages', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      max_tokens: 64,
+      system: '只输出简短中文',
+      messages: [{ role: 'user', content: 'reply with gemini json ok' }]
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as { content?: Array<{ type?: string; text?: string }>; usage?: { input_tokens?: number } }
+  assert.equal(body.content?.[0]?.type, 'text')
+  assert.equal(body.content?.[0]?.text, 'gemini json ok')
+  assert.equal(body.usage?.input_tokens, 11)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:generateContent')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> } }
+  assert.equal(upstreamBody.systemInstruction?.parts?.[0]?.text, '只输出简短中文')
+  assert.equal(upstreamBody.contents?.[0]?.role, 'user')
+  assert.equal(upstreamBody.contents?.[0]?.parts?.[0]?.text, 'reply with gemini json ok')
+}
+
+async function assertAnthropicMessagesToGeminiNativeSse(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/messages', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      stream: true,
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'reply with gemini sse ok' }]
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(responseText, /message_start/)
+  assert.match(responseText, /text_delta/)
+  assert.match(responseText, /gemini /)
+  assert.match(responseText, /sse ok/)
+  assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:streamGenerateContent')
+}
+
+async function assertOpenAIResponsesToGeminiNativeGuidance(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1/responses', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      previous_response_id: 'resp_old',
+      input: 'this should be guidance'
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(responseText, /previous_response_id|context_management|Gemini native/, 'Responses 状态链不能保真时应返回 Responses guidance')
+  assert.equal(upstreamHits.length, 0, 'Responses -> Gemini native guidance 不应命中上游')
+}
+
 function assertGeminiPolicyDefaults(): void {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.id === 'default_gemini_error_object'), 'Gemini 默认响应检查策略必须存在')
@@ -1008,6 +1560,84 @@ function createGeminiMockUpstream(): http.Server {
       return
     }
 
+    if (req.method === 'POST' && (url.pathname === '/messages' || url.pathname === '/v1/messages')) {
+      const body = parseJsonObject(bodyText)
+      if (body.stream === true) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive'
+        })
+        res.write(`event: message_start\ndata: ${JSON.stringify({
+          type: 'message_start',
+          message: {
+            id: 'msg-gemini-anthropic-stream',
+            type: 'message',
+            role: 'assistant',
+            model: body.model ?? 'claude-haiku-4-5',
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 8, output_tokens: 0 }
+          }
+        })}\n\n`)
+        res.write(`event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' }
+        })}\n\n`)
+        res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'anthropic gemini ' }
+        })}\n\n`)
+        res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'bridge stream ok' }
+        })}\n\n`)
+        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`)
+        res.write(`event: content_block_start\ndata: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'tool_use', id: 'toolu_stream_0', name: 'lookup_stream', input: {} }
+        })}\n\n`)
+        res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: '{"id":"S-1"}' }
+        })}\n\n`)
+        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 1 })}\n\n`)
+        res.write(`event: message_delta\ndata: ${JSON.stringify({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 5, cache_read_input_tokens: 1 }
+        })}\n\n`)
+        res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`)
+        res.end()
+        return
+      }
+      sendJson(res, 200, {
+        id: 'msg-gemini-anthropic-json',
+        type: 'message',
+        role: 'assistant',
+        model: body.model ?? 'claude-haiku-4-5',
+        content: [
+          { type: 'text', text: 'anthropic gemini bridge json ok' },
+          { type: 'tool_use', id: 'toolu_lookup_order_0', name: 'lookup_order', input: { id: 'A-100' } }
+        ],
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        usage: {
+          input_tokens: 13,
+          cache_read_input_tokens: 2,
+          output_tokens: 6,
+          thinking_tokens: 1
+        }
+      })
+      return
+    }
+
     sendJson(res, 404, {
       error: {
         code: 404,
@@ -1057,6 +1687,17 @@ function headerText(req: http.IncomingMessage, name: string): string {
     return value[0] ?? ''
   }
   return typeof value === 'string' ? value : ''
+}
+
+function fakeGatewayPostRequest(originalUrl: string): Request {
+  return {
+    method: 'POST',
+    originalUrl,
+    path: originalUrl.split('?', 1)[0],
+    headers: {},
+    body: {},
+    header: () => undefined
+  } as unknown as Request
 }
 
 async function listen(server: http.Server): Promise<void> {

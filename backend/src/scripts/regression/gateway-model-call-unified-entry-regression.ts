@@ -33,6 +33,10 @@ const findings: SourceFinding[] = []
 const gatewayPreflightSource = readFileSync(resolve(sourceRoot, 'modules/gateway/request/preflight.ts'), 'utf8')
 const codexCompactPreflightSource = readFileSync(resolve(sourceRoot, 'modules/gateway/codex-responses/compact-preflight.ts'), 'utf8')
 const imageGenerationExecutorSource = readFileSync(resolve(sourceRoot, 'modules/openai-compatible-images/image-generation-executor.ts'), 'utf8')
+const computerAdapterSource = readFileSync(resolve(sourceRoot, 'modules/openai-compatible-computer/computer-adapter.ts'), 'utf8')
+const mcpProxyExecutorSource = readFileSync(resolve(sourceRoot, 'modules/openai-compatible-mcp/mcp-proxy-executor.ts'), 'utf8')
+const accountDispatchEntrypointPattern =
+  /\b(?:listCachedOpenAIAccountsForGroupAsync|prepareOpenAIGatewayDispatchContext|prepareOpenAIGatewayDispatchAccounts|fetchFirstAvailableUpstream|requestUpstream)\b/
 
 assertOnlyAllowedCallSites({
   rule: '上游真实请求只能由公共 dispatch attempt 层触发',
@@ -109,17 +113,29 @@ assert.doesNotMatch(
 )
 
 assertNoMatches({
-  rule: '生产后端不允许直接 fetch 模型上游；配置型图像工具 provider 是非账号调度例外',
+  rule: '生产后端不允许直接 fetch 模型上游；配置型图像工具 provider 和 hosted tool runtime adapter/proxy 是非账号调度例外',
   files: productionSourceFiles,
   pattern: /\bfetch\s*\(/g,
   allowedFiles: [
-    'backend/src/modules/openai-compatible-images/image-generation-executor.ts'
+    'backend/src/modules/openai-compatible-images/image-generation-executor.ts',
+    'backend/src/modules/openai-compatible-computer/computer-adapter.ts',
+    'backend/src/modules/openai-compatible-mcp/mcp-proxy-executor.ts'
   ]
 })
 assert.doesNotMatch(
   imageGenerationExecutorSource,
-  /\b(?:listCachedOpenAIAccountsForGroupAsync|prepareOpenAIGatewayDispatchContext|fetchFirstAvailableUpstream|requestUpstream)\b/,
+  accountDispatchEntrypointPattern,
   '配置型图像工具 provider 不能引入账号调度或上游传输入口'
+)
+assert.doesNotMatch(
+  computerAdapterSource,
+  accountDispatchEntrypointPattern,
+  'Computer hosted tool adapter 不能引入模型账号调度或上游传输入口'
+)
+assert.doesNotMatch(
+  mcpProxyExecutorSource,
+  accountDispatchEntrypointPattern,
+  'MCP hosted tool proxy 不能引入模型账号调度或上游传输入口'
 )
 
 assertNoMatches({

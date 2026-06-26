@@ -134,6 +134,9 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-0070 | Responses 目标映射收敛 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 文档 / 验证 | `docs/plans/计划-0070-Responses目标映射收敛.md` |
+| PLAN-0069 | 协议桥接框架与 Gemini Native 目标桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接框架 / Gemini native / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0069-协议桥接框架与GeminiNative目标桥接.md` |
+| PLAN-0068 | Gemini Native 转 Anthropic Messages 桥接 | 进行中 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / Anthropic Messages / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0068-GeminiNative转AnthropicMessages桥接.md` |
 | PLAN-0067 | Gemini Native 转 Chat 桥接 | 待真实验证 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / OpenAI Chat bridge / GLM / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0067-GeminiNative转Chat桥接.md` |
 | PLAN-0066 | PostgreSQL 与 Redis 高性能模式 | 进行中 | 2026-06-25 | 后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证 | `docs/plans/计划-0066-PostgreSQL与Redis高性能模式.md` |
 | PLAN-0065 | Gemini 原生协议接入 | 进行中 | 2026-06-25 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / Gemini native / gemini-cli / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0065-Gemini原生协议接入.md` |

@@ -2,20 +2,20 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
-import { listProviders, listProvidersAsync } from '../../storage/repositories.js'
+import { listProvidersAsync } from '../../storage/repositories.js'
 import {
-  listAnthropicProtocolProviderCodes,
-  listGeminiProtocolProviderCodes,
-  listOpenAIProtocolProviderCodes
+  listAnthropicProtocolProviderCodesAsync,
+  listGeminiProtocolProviderCodesAsync,
+  listOpenAIProtocolProviderCodesAsync
 } from '../../storage/provider.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import {
-  findCustomProviderModel,
-  customProviderModelBindings,
-  listProviderModelCatalog,
-  removeCustomProviderModel,
-  saveCustomProviderModel,
+  findCustomProviderModelAsync,
+  customProviderModelBindingsAsync,
+  listProviderModelCatalogAsync,
+  removeCustomProviderModelAsync,
+  saveCustomProviderModelAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 
@@ -42,53 +42,61 @@ providersRouter.get('/options', async (_req, res, next) => {
   }
 })
 
-providersRouter.get('/models/options', (req, res) => {
-  const context = getRequestAuthContext()
-  const systemAccountId = context?.systemAccountId
-  const providerCodes = providerModelOptionProviderCodes(req.query.protocol)
-  const options = dedupeProviderModelOptions(
-    listProviders()
-      .filter((provider) => provider.enabled && providerCodes.has(provider.code))
-      .flatMap((provider) => listProviderModelCatalog({
-        providerCode: provider.code,
-        systemAccountId,
-        includeUnpriced: true
-      }).map((item) => ({
+providersRouter.get('/models/options', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    const systemAccountId = context?.systemAccountId
+    const providerCodes = await providerModelOptionProviderCodesAsync(req.query.protocol)
+    const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && providerCodes.has(provider.code))
+    const catalogs = await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
+      providerCode: provider.code,
+      systemAccountId,
+      includeUnpriced: true
+    })))
+    const options = dedupeProviderModelOptions(
+      catalogs.flatMap((catalog) => catalog.map((item) => ({
         providerCode: item.providerCode,
         model: item.model
       })))
-  )
-  res.json(ok(options))
+    )
+    res.json(ok(options))
+  } catch (error) {
+    next(error)
+  }
 })
 
-function providerModelOptionProviderCodes(protocol: unknown): Set<string> {
+async function providerModelOptionProviderCodesAsync(protocol: unknown): Promise<Set<string>> {
   const value = Array.isArray(protocol) ? protocol[0] : protocol
   if (value === 'openai') {
-    return new Set(listOpenAIProtocolProviderCodes())
+    return new Set(await listOpenAIProtocolProviderCodesAsync())
   }
   if (value === 'anthropic') {
-    return new Set(listAnthropicProtocolProviderCodes())
+    return new Set(await listAnthropicProtocolProviderCodesAsync())
   }
   if (value === 'gemini') {
-    return new Set(listGeminiProtocolProviderCodes())
+    return new Set(await listGeminiProtocolProviderCodesAsync())
   }
-  return new Set(listProviders().filter((provider) => provider.enabled).map((provider) => provider.code))
+  return new Set((await listProvidersAsync()).filter((provider) => provider.enabled).map((provider) => provider.code))
 }
 
-providersRouter.get('/:code/models', (req, res) => {
-  const context = getRequestAuthContext()
-  const provider = listProviders().find((item) => item.code === req.params.code)
-  if (!provider) {
-    res.status(404).json({ message: '供应商不存在' })
-    return
-  }
+providersRouter.get('/:code/models', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    const provider = (await listProvidersAsync()).find((item) => item.code === req.params.code)
+    if (!provider) {
+      res.status(404).json({ message: '供应商不存在' })
+      return
+    }
 
-  res.json(ok(listProviderModelsForRequest({
-    providerCode: provider.code,
-    systemAccountId: context?.systemAccountId,
-    includeInactive: booleanQueryValue(req.query.includeInactive),
-    includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
-  })))
+    res.json(ok(await listProviderModelsForRequestAsync({
+      providerCode: provider.code,
+      systemAccountId: context?.systemAccountId,
+      includeInactive: booleanQueryValue(req.query.includeInactive),
+      includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
+    })))
+  } catch (error) {
+    next(error)
+  }
 })
 
 const nullableTrimmedStringSchema = z.string().trim().nullable().optional()
@@ -137,124 +145,136 @@ const customModelPatchSchema = customModelSchema.partial().refine((value) => Obj
   message: '请提供要修改的模型内容'
 })
 
-providersRouter.post('/:code/models', (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
-  const provider = listProviders().find((item) => item.code === req.params.code)
-  if (!provider) {
-    sendNotFound(res, '供应商不存在')
-    return
-  }
-  const parsed = customModelSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('自定义模型参数无效'))
-    return
-  }
-  const ownerSystemAccountId = context.systemAccountId
-  const validation = validateCustomModelPricing({
-    providerCode: provider.code,
-    ownerSystemAccountId,
-    input: parsed.data
-  })
-  if (!validation.success) {
-    res.status(400).json(badRequest(validation.message))
-    return
-  }
+providersRouter.post('/:code/models', async (req, res, next) => {
   try {
-    const saved = saveCustomProviderModel({
-      ...parsed.data,
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const provider = (await listProvidersAsync()).find((item) => item.code === req.params.code)
+    if (!provider) {
+      sendNotFound(res, '供应商不存在')
+      return
+    }
+    const parsed = customModelSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('自定义模型参数无效'))
+      return
+    }
+    const ownerSystemAccountId = context.systemAccountId
+    const validation = await validateCustomModelPricing({
       providerCode: provider.code,
-      scope: 'personal',
-      systemAccountId: ownerSystemAccountId,
-      actorSystemAccountId: context.systemAccountId
+      ownerSystemAccountId,
+      input: parsed.data
     })
-    res.status(201).json(ok(saved))
+    if (!validation.success) {
+      res.status(400).json(badRequest(validation.message))
+      return
+    }
+    try {
+      const saved = await saveCustomProviderModelAsync({
+        ...parsed.data,
+        providerCode: provider.code,
+        scope: 'personal',
+        systemAccountId: ownerSystemAccountId,
+        actorSystemAccountId: context.systemAccountId
+      })
+      res.status(201).json(ok(saved))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
+    }
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
+    next(error)
   }
 })
 
-providersRouter.patch('/:code/models/:id', (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
-  const existing = findCustomProviderModel(req.params.id)
-  if (!existing || existing.providerCode !== req.params.code) {
-    sendNotFound(res, '自定义模型不存在')
-    return
-  }
-  if (!canMutateCustomModel(existing.scope, existing.systemAccountId, context)) {
-    res.status(403).json({ message: '无权修改该自定义模型' })
-    return
-  }
-  const parsed = customModelPatchSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('自定义模型参数无效'))
-    return
-  }
-  if (parsed.data.model !== undefined && parsed.data.model.trim() !== existing.model.trim()) {
-    res.status(400).json(badRequest('模型 ID 创建后不能修改'))
-    return
-  }
-  const next = {
-    ...existing,
-    ...parsed.data,
-    scope: existing.scope
-  }
-  const validation = validateCustomModelPricing({
-    providerCode: existing.providerCode,
-    ownerSystemAccountId: existing.systemAccountId,
-    input: next
-  })
-  if (!validation.success) {
-    res.status(400).json(badRequest(validation.message))
-    return
-  }
+providersRouter.patch('/:code/models/:id', async (req, res, next) => {
   try {
-    res.json(ok(saveCustomProviderModel({
-      ...next,
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const existing = await findCustomProviderModelAsync(req.params.id)
+    if (!existing || existing.providerCode !== req.params.code) {
+      sendNotFound(res, '自定义模型不存在')
+      return
+    }
+    if (!canMutateCustomModel(existing.scope, existing.systemAccountId, context)) {
+      res.status(403).json({ message: '无权修改该自定义模型' })
+      return
+    }
+    const parsed = customModelPatchSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('自定义模型参数无效'))
+      return
+    }
+    if (parsed.data.model !== undefined && parsed.data.model.trim() !== existing.model.trim()) {
+      res.status(400).json(badRequest('模型 ID 创建后不能修改'))
+      return
+    }
+    const next = {
+      ...existing,
+      ...parsed.data,
+      scope: existing.scope
+    }
+    const validation = await validateCustomModelPricing({
       providerCode: existing.providerCode,
-      systemAccountId: existing.systemAccountId,
-      actorSystemAccountId: context.systemAccountId
-    })))
+      ownerSystemAccountId: existing.systemAccountId,
+      input: next
+    })
+    if (!validation.success) {
+      res.status(400).json(badRequest(validation.message))
+      return
+    }
+    try {
+      res.json(ok(await saveCustomProviderModelAsync({
+        ...next,
+        providerCode: existing.providerCode,
+        systemAccountId: existing.systemAccountId,
+        actorSystemAccountId: context.systemAccountId
+      })))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
+    }
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
+    next(error)
   }
 })
 
-providersRouter.delete('/:code/models/:id', (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
-  }
-  const existing = findCustomProviderModel(req.params.id)
-  if (!existing || existing.providerCode !== req.params.code) {
-    sendNotFound(res, '自定义模型不存在')
-    return
-  }
-  if (!canMutateCustomModel(existing.scope, existing.systemAccountId, context)) {
-    res.status(403).json({ message: '无权删除该自定义模型' })
-    return
-  }
-  const bindings = customProviderModelBindings({
-    providerCode: existing.providerCode,
-    model: existing.model,
-    scope: existing.scope,
-    systemAccountId: existing.systemAccountId
-  })
-  if (bindings.totalAccountCount > 0) {
-    res.status(409).json({
-      message: customModelBoundToAccountMessage(bindings)
+providersRouter.delete('/:code/models/:id', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const existing = await findCustomProviderModelAsync(req.params.id)
+    if (!existing || existing.providerCode !== req.params.code) {
+      sendNotFound(res, '自定义模型不存在')
+      return
+    }
+    if (!canMutateCustomModel(existing.scope, existing.systemAccountId, context)) {
+      res.status(403).json({ message: '无权删除该自定义模型' })
+      return
+    }
+    const bindings = await customProviderModelBindingsAsync({
+      providerCode: existing.providerCode,
+      model: existing.model,
+      scope: existing.scope,
+      systemAccountId: existing.systemAccountId
     })
-    return
+    if (bindings.totalAccountCount > 0) {
+      res.status(409).json({
+        message: customModelBoundToAccountMessage(bindings)
+      })
+      return
+    }
+    res.json(ok({ deleted: await removeCustomProviderModelAsync(existing.id) }))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok({ deleted: removeCustomProviderModel(existing.id) }))
 })
 
 export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
@@ -274,13 +294,13 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
   return result
 }
 
-function listProviderModelsForRequest(input: {
+async function listProviderModelsForRequestAsync(input: {
   providerCode: string
   systemAccountId?: string
   includeInactive?: boolean
   includeUnpriced?: boolean
-}): ProviderModelCatalogItem[] {
-  return listProviderModelCatalog({
+}): Promise<ProviderModelCatalogItem[]> {
+  return listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
     includeInactive: input.includeInactive,
@@ -327,11 +347,11 @@ function customModelBoundToAccountMessage(input: {
     : '模型已绑定 AI 账户，不能删除；请先解除账户绑定后再删除'
 }
 
-function validateCustomModelPricing(input: {
+async function validateCustomModelPricing(input: {
   providerCode: string
   ownerSystemAccountId?: string
   input: CustomModelPricingInput
-}): { success: true } | { success: false; message: string } {
+}): Promise<{ success: true } | { success: false; message: string }> {
   const status = input.input.status ?? 'active'
   const model = input.input.model?.trim()
   const pricingModel = typeof input.input.pricingModel === 'string' ? input.input.pricingModel.trim() : undefined
@@ -348,10 +368,10 @@ function validateCustomModelPricing(input: {
   if (model && model.toLowerCase() === pricingModel.toLowerCase()) {
     return { success: false, message: 'pricingModel 不能指向当前模型自身' }
   }
-  const pricingTarget = listProviderModelCatalog({
+  const pricingTarget = (await listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.ownerSystemAccountId
-  }).find((item) => item.model.toLowerCase() === pricingModel.toLowerCase())
+  })).find((item) => item.model.toLowerCase() === pricingModel.toLowerCase())
   if (!pricingTarget) {
     return { success: false, message: `pricingModel 不存在：${pricingModel}` }
   }

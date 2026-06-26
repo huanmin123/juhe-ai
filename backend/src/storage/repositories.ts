@@ -26,8 +26,8 @@ export {
   normalizeAccountSupportedModelsForProvider,
   normalizeAccountSupportedModelsForProviderAsync
 } from './account-model-normalization.js'
-import { replaceAccountModelMappings, replaceAccountModelMappingsInClientAsync } from './account-model-mappings.repository.js'
-import { loadSupportedModelsByAccountIds, replaceAccountSupportedModels, replaceAccountSupportedModelsInClientAsync } from './account-supported-models.repository.js'
+import { normalizeAccountModelMappingsInput, replaceAccountModelMappings, replaceAccountModelMappingsInClientAsync } from './account-model-mappings.repository.js'
+import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels, replaceAccountSupportedModelsInClientAsync } from './account-supported-models.repository.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson,
@@ -135,7 +135,7 @@ import {
   sanitizeAuthorizationSourcesForViewer
 } from './resource-authorization-helpers.js'
 import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, ownerPermissions } from './resource-permissions.js'
-import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, listResourceAuthorizationSummariesPageAsync, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
 export {
   returnAccountAuthorizationInstanceForGrantee,
   returnAccountAuthorizationInstanceForGranteeAsync,
@@ -146,11 +146,15 @@ export {
 } from './resource-authorization-return.repository.js'
 export {
   createResourceAuthorization,
+  createResourceAuthorizationAsync,
   revokeResourceAuthorization,
+  revokeResourceAuthorizationAsync,
+  updateResourceAuthorizationAsync,
   updateResourceAuthorization
 } from './resource-authorization-write.repository.js'
 export {
   getResourceAuthorizationUsage,
+  getResourceAuthorizationUsageAsync,
   type ResourceAuthorizationUsageOptions
 } from './resource-authorization-usage.repository.js'
 import {
@@ -396,8 +400,11 @@ export {
 } from './api-key.repository.js'
 export {
   listAuthorizationGranteeAccounts,
+  listAuthorizationGranteeAccountsAsync,
   listAuthorizationGranteeGroups,
-  listAuthorizationGranteeTeams
+  listAuthorizationGranteeGroupsAsync,
+  listAuthorizationGranteeTeams,
+  listAuthorizationGranteeTeamsAsync
 } from './authorization-options.repository.js'
 export {
   defaultProviderProtocolProfile,
@@ -841,6 +848,46 @@ function accountWriteTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function unorderedStringListEquals(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  const normalizedLeft = [...(left ?? [])].sort()
+  const normalizedRight = [...(right ?? [])].sort()
+  if (normalizedLeft.length !== normalizedRight.length) return false
+  return normalizedLeft.every((value, index) => value === normalizedRight[index])
+}
+
+function accountModelMappingsEqual(
+  left: readonly AccountModelMapping[] | undefined,
+  right: readonly AccountModelMapping[] | undefined
+): boolean {
+  const normalizedLeft = [...(left ?? [])].map(accountModelMappingComparisonKey).sort()
+  const normalizedRight = [...(right ?? [])].map(accountModelMappingComparisonKey).sort()
+  if (normalizedLeft.length !== normalizedRight.length) return false
+  return normalizedLeft.every((value, index) => value === normalizedRight[index])
+}
+
+function accountModelMappingComparisonKey(mapping: AccountModelMapping): string {
+  return [
+    mapping.sourceEndpointFamily,
+    mapping.sourceModel,
+    mapping.upstreamEndpointFamily,
+    mapping.upstreamModel,
+    mapping.enabled === false ? '0' : '1'
+  ].join('\u0000')
+}
+
+function normalizeSupportedModelsIfUnchanged(value: unknown, current: readonly string[] | undefined): string[] | undefined {
+  const normalized = normalizeAccountSupportedModelsInput(value)
+  return normalized !== undefined && unorderedStringListEquals(current, normalized) ? normalized : undefined
+}
+
+function normalizeModelMappingsIfUnchanged(
+  value: unknown,
+  current: readonly AccountModelMapping[] | undefined
+): AccountModelMapping[] | undefined {
+  const normalized = normalizeAccountModelMappingsInput(value)
+  return normalized !== undefined && accountModelMappingsEqual(current, normalized) ? normalized : undefined
 }
 
 export function getAccountUsageStatsOverview(access?: AccessScope, range?: AccountUsageStatsRange): AccountUsageStatsOverview {
@@ -1536,12 +1583,18 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
   const hasSupportedModelsInput = hasOwnInput(input, 'supportedModels')
+  const unchangedSupportedModelsInput = hasSupportedModelsInput
+    ? normalizeSupportedModelsIfUnchanged(input.supportedModels, current.supportedModels)
+    : undefined
   const nextSupportedModels = hasSupportedModelsInput
-    ? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
+    ? unchangedSupportedModelsInput ?? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
+  const unchangedModelMappingsInput = hasModelMappingsInput
+    ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
+    : undefined
   const nextModelMappings = hasModelMappingsInput
-    ? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId, current, {
+    ? unchangedModelMappingsInput ?? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId, current, {
         supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
       }) ?? []
     : current.modelMappings ?? []
@@ -1693,7 +1746,11 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     usage: current.usage
   })
 
-  assertAccountNameAvailable(systemAccountId, next.name, id)
+  const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
+  const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
+  if (next.name !== current.name) {
+    assertAccountNameAvailable(systemAccountId, next.name, id)
+  }
   const database = getBusinessDatabase()
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
@@ -1746,10 +1803,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       replaceAccountNameSearchTerms(database, id, systemAccountId, next.name, updatedAt)
       renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, updatedAt)
     }
-    if (Number(result.changes ?? 0) > 0 && hasSupportedModelsInput) {
+    if (Number(result.changes ?? 0) > 0 && supportedModelsChanged) {
       replaceAccountSupportedModels(id, next.providerCode, nextSupportedModels)
     }
-    if (Number(result.changes ?? 0) > 0 && hasModelMappingsInput) {
+    if (Number(result.changes ?? 0) > 0 && modelMappingsChanged) {
       replaceAccountModelMappings(id, next.providerCode, nextModelMappings)
     }
     if (Number(result.changes ?? 0) > 0 && hasTagsInput) {
@@ -1850,12 +1907,18 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
   const hasSupportedModelsInput = hasOwnInput(input, 'supportedModels')
+  const unchangedSupportedModelsInput = hasSupportedModelsInput
+    ? normalizeSupportedModelsIfUnchanged(input.supportedModels, current.supportedModels)
+    : undefined
   const nextSupportedModels = hasSupportedModelsInput
-    ? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
+    ? unchangedSupportedModelsInput ?? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
     : current.supportedModels ?? []
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
+  const unchangedModelMappingsInput = hasModelMappingsInput
+    ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
+    : undefined
   const nextModelMappings = hasModelMappingsInput
-    ? await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, current.providerCode, systemAccountId, current, {
+    ? unchangedModelMappingsInput ?? await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, current.providerCode, systemAccountId, current, {
         supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
       }) ?? []
     : current.modelMappings ?? []
@@ -2009,7 +2072,11 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     usage: current.usage
   })
 
-  await assertAccountNameAvailableAsync(client, systemAccountId, next.name, id)
+  const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
+  const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
+  if (next.name !== current.name) {
+    await assertAccountNameAvailableAsync(client, systemAccountId, next.name, id)
+  }
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -2064,10 +2131,10 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         await replaceAccountNameSearchTermsAsync(tx, id, systemAccountId, next.name, updatedAt)
         renamedAuthorizationInstanceIds = await syncAccountAuthorizationInstanceNamesForSourceAccountAsync(tx, id, next.name, updatedAt)
       }
-      if (hasSupportedModelsInput) {
+      if (supportedModelsChanged) {
         await replaceAccountSupportedModelsInClientAsync(tx, id, next.providerCode, nextSupportedModels)
       }
-      if (hasModelMappingsInput) {
+      if (modelMappingsChanged) {
         await replaceAccountModelMappingsInClientAsync(tx, id, next.providerCode, nextModelMappings)
       }
       if (hasTagsInput) {
@@ -2251,6 +2318,7 @@ export {
   recordAccountStreamFailure,
   recordAuthorizedAccountBindingStreamFailure,
   updateAuthorizedAccountBindingDispatch,
+  updateAuthorizedAccountBindingDispatchAsync,
   type AccountFailureStateClearResult,
   type AccountPrecheckMutationState,
   type AuthorizedAccountBindingRuntimeTarget
@@ -2266,7 +2334,21 @@ export function listResourceAuthorizationsPage(filters: Record<string, unknown> 
   return listResourceAuthorizationSummariesPage(filters, access, options)
 }
 
+export async function listResourceAuthorizationsPageAsync(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listResourceAuthorizationsPage(filters, access, options)
+  }
+  return listResourceAuthorizationSummariesPageAsync(filters, access, options)
+}
+
 export function findResourceAuthorization(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary | undefined {
   expireDueResourceAuthorizations()
   return findResourceAuthorizationSummary(authorizationId, access, options)
+}
+
+export async function findResourceAuthorizationAsync(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findResourceAuthorization(authorizationId, access, options)
+  }
+  return findResourceAuthorizationSummaryAsync(authorizationId, access, options)
 }

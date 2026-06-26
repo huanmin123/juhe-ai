@@ -4,11 +4,11 @@ import { z } from 'zod'
 import { runtimeConfig } from '../../config/runtime.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createApiKeyRecordAsync, deleteApiKeyWithRelatedCleanupAsync, findApiKeySecretAsync, findApiKeySummaryAsync, listApiKeysPageAsync, listProviders, refreshApiKeySecretAsync, updateApiKeyAsync, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { createApiKeyRecordAsync, deleteApiKeyWithRelatedCleanupAsync, findApiKeySecretAsync, findApiKeySummaryAsync, listApiKeysPageAsync, listProviders, listProvidersAsync, refreshApiKeySecretAsync, updateApiKeyAsync, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
+import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from './api-key-availability-schedule.schema.js'
 import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
@@ -168,13 +168,12 @@ function apiKeyStatusQueryValue(value: unknown): ApiKeyListOptions['status'] {
   return text === 'active' || text === 'disabled' || text === 'all' ? text : undefined
 }
 
-function validateHybridRoutingCatalogModels(value: unknown, access: RequestAccessScope | undefined): string | undefined {
+async function validateHybridRoutingCatalogModels(value: unknown, access: RequestAccessScope | undefined): Promise<string | undefined> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    return 'PostgreSQL 模式暂不支持混合路由模型目录校验，请等待模型目录仓储迁移后再启用混合路由'
-  }
   const config = value as Record<string, unknown>
-  const catalogModels = availableHybridRoutingModelSet(access)
+  const catalogModels = runtimeConfig.databaseDriver === 'postgres'
+    ? await availableHybridRoutingModelSetAsync(access)
+    : availableHybridRoutingModelSet(access)
   const scoringModelMessage = validateCatalogModel(config.scoringModel, catalogModels, '评分模型')
   if (scoringModelMessage) return scoringModelMessage
 
@@ -224,6 +223,22 @@ function availableHybridRoutingModelSet(access: RequestAccessScope | undefined):
   return new Set(models)
 }
 
+async function availableHybridRoutingModelSetAsync(access: RequestAccessScope | undefined): Promise<Set<string>> {
+  const context = getRequestAuthContext()
+  const systemAccountId = access?.systemAccountFilterId?.trim() || access?.systemAccountId || context?.systemAccountId
+  const providers = (await listProvidersAsync()).filter((provider) => provider.enabled)
+  const catalogs = await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
+    providerCode: provider.code,
+    systemAccountId,
+    includeUnpriced: true
+  })))
+  const models = catalogs
+    .flatMap((catalog) => catalog)
+    .map((item) => item.model.trim().toLowerCase())
+    .filter(Boolean)
+  return new Set(models)
+}
+
 apiKeysRouter.post('/', mutationGuard({
   operationKey: 'api_keys.create',
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
@@ -243,7 +258,7 @@ apiKeysRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
     return
   }
-  const modelValidationMessage = validateHybridRoutingCatalogModels(parsed.data.hybridRoutingConfig, requestAccess)
+  const modelValidationMessage = await validateHybridRoutingCatalogModels(parsed.data.hybridRoutingConfig, requestAccess)
   if (modelValidationMessage) {
     res.status(400).json(badRequest(modelValidationMessage))
     return
@@ -304,7 +319,7 @@ apiKeysRouter.patch('/:id', async (req, res, next) => {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
     return
   }
-  const modelValidationMessage = validateHybridRoutingCatalogModels(parsed.data.hybridRoutingConfig, requestAccess)
+  const modelValidationMessage = await validateHybridRoutingCatalogModels(parsed.data.hybridRoutingConfig, requestAccess)
   if (modelValidationMessage) {
     res.status(400).json(badRequest(modelValidationMessage))
     return

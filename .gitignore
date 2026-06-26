@@ -6,6 +6,8 @@ release/
 .env.*
 !.env.example
 !**/.env.example
+!.env.*.example
+!**/.env.*.example
 *.log
 logs/
 tmp/

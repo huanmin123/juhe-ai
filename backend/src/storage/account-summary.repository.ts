@@ -107,62 +107,173 @@ export async function findAccountSummaryAsync(accountId: string, access?: Access
   const id = accountId.trim()
   if (!id) return undefined
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const row = await findOwnerAccountRowByIdAsync(client, id)
-  if (!row) return undefined
-  if (!canManageResourceOwner(row.system_account_id, access)) {
-    return undefined
+  const ownerRow = await findOwnerAccountRowByIdAsync(client, id)
+  if (ownerRow) {
+    if (!canManageResourceOwner(ownerRow.system_account_id, access)) {
+      return undefined
+    }
+    return (await ownerAccountSummariesFromRowsAsync(client, [ownerRow], access))[0]
   }
 
+  const authorizedRow = await findAuthorizedAccountRowByIdAsync(client, id, access)
+  if (!authorizedRow) {
+    return undefined
+  }
+  return authorizedAccountSummaryFromRowAsync(client, authorizedRow, access)
+}
+
+async function findAuthorizedAccountRowByIdAsync(
+  client: DatabaseClient,
+  accountId: string,
+  access: AccessScope | undefined
+): Promise<AccountListRow | undefined> {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  if (!viewerSystemAccountId && !canAccessAll(access)) {
+    return undefined
+  }
+  const systemAccountClause = viewerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
+  const params = viewerSystemAccountId ? [accountId, viewerSystemAccountId] : [accountId]
+  return await client.one<AccountListRow>(`
+    SELECT
+      accounts.*,
+      'authorized' AS access_type,
+      authorizations.id AS authorization_id,
+      authorizations.status AS authorization_status,
+      authorizations.expires_at AS authorization_expires_at,
+      authorizations.limits_json AS authorization_limits_json,
+      authorizations.effective_source_type AS authorization_effective_source_type,
+      authorizations.effective_source_team_id AS authorization_effective_source_team_id,
+      authorizations.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
+      authorizations.resource_id AS authorization_resource_id,
+      source_accounts.provider_code AS source_provider_code,
+      source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id,
+      source_accounts.protocol_code AS source_protocol_code,
+      source_accounts.protocol_version AS source_protocol_version,
+      source_accounts.type AS source_type,
+      source_accounts.status AS source_status,
+      source_accounts.schedulable AS source_schedulable,
+      source_accounts.availability_schedule_json AS source_availability_schedule_json,
+      source_accounts.availability_schedule_active AS source_availability_schedule_active,
+      source_accounts.account_expires_at AS source_account_expires_at,
+      source_accounts.cooldown_until AS source_cooldown_until,
+      source_accounts.last_error_code AS source_last_error_code,
+      source_accounts.last_error_message AS source_last_error_message,
+      source_accounts.credential_mask AS source_credential_mask,
+      source_accounts.credentials_encrypted AS source_credentials_encrypted,
+      source_accounts.proxy_profile_id AS source_proxy_profile_id,
+      source_accounts.concurrency_limit AS source_concurrency_limit,
+      source_accounts.client_compatibility AS source_client_compatibility,
+      group_bindings.system_account_id AS binding_system_account_id,
+      group_bindings.group_id AS bound_group_id,
+      bound_groups.name AS bound_group_name,
+      group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+      group_bindings.local_priority AS bound_group_local_priority,
+      group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,
+      group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled
+    FROM ${accountSummaryTable(client, 'accounts')} accounts
+    INNER JOIN ${accountSummaryTable(client, 'resource_authorizations')} authorizations
+      ON authorizations.id = accounts.authorization_instance_authorization_id
+    LEFT JOIN ${accountSummaryTable(client, 'accounts')} source_accounts
+      ON source_accounts.id = accounts.authorization_instance_source_account_id
+      AND source_accounts.deleted_at IS NULL
+    LEFT JOIN LATERAL (
+      SELECT
+        group_accounts.system_account_id,
+        group_accounts.group_id,
+        group_accounts.account_authorization_id,
+        group_accounts.local_priority,
+        group_accounts.local_super_priority_enabled,
+        group_accounts.local_fallback_enabled,
+        group_accounts.updated_at,
+        group_accounts.account_id
+      FROM ${accountSummaryTable(client, 'group_accounts')} group_accounts
+      WHERE group_accounts.account_id = accounts.id
+        AND group_accounts.system_account_id = accounts.system_account_id
+        AND group_accounts.enabled = 1
+      ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+      LIMIT 1
+    ) group_bindings ON TRUE
+    LEFT JOIN ${accountSummaryTable(client, 'groups')} bound_groups
+      ON bound_groups.id = group_bindings.group_id
+    WHERE accounts.id = ?
+      ${systemAccountClause}
+      AND accounts.deleted_at IS NULL
+      AND accounts.authorization_instance_authorization_id IS NOT NULL
+      AND authorizations.status IN ('active', 'paused', 'expired')
+    LIMIT 1
+  `, params)
+}
+
+async function authorizedAccountSummaryFromRowAsync(
+  client: DatabaseClient,
+  row: AccountListRow,
+  access: AccessScope | undefined
+): Promise<AccountSummary> {
+  const factAccountId = accountResourceFactAccountId(row)
+  const includeAccountNames = includeSystemAccountFields(access)
+  const displayOwnerSystemAccountId = row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
   const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames] = await Promise.all([
-    loadSupportedModelsByAccountIdsAsync([row.id]),
-    loadModelMappingsByAccountIdsAsync([row.id]),
+    factAccountId ? loadSupportedModelsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map<string, string[]>()),
+    factAccountId ? loadModelMappingsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map()),
     loadAccountTagsByAccountIdsAsync([row.id]),
-    loadAccountSummarySystemAccountNamesAsync(client, includeSystemAccountFields(access) ? [row.system_account_id] : [])
+    loadAccountSummarySystemAccountNamesAsync(client, [
+      row.system_account_id,
+      displayOwnerSystemAccountId
+    ])
   ])
-  row.supported_models = supportedModelsByAccount.get(row.id) ?? []
-  row.model_mappings = modelMappingsByAccount.get(row.id) ?? []
+  row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
+  row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
 
   const groupBinding = accountGroupBindingFromRow(row, row.system_account_id)
-  const availabilitySchedule = parseAccountAvailabilityScheduleJson(row.availability_schedule_json)
-  const availabilityScheduleActive = row.availability_schedule_active !== 0
-  const ownerSystemAccountName = accountNames.get(row.system_account_id)
+  const currentNow = nowIso()
+  const effectiveAuthorizedStatus = authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
+  const effectiveAuthorizedSchedulable = Boolean(groupBinding && groupBinding.groupBindStatus === 'bound')
+    && authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) === undefined
+    && Boolean(factAccountId)
+    && isAuthorizedSourceAccountAvailableForDispatch(row, currentNow)
+    && row.status === 'active'
+    && row.schedulable === 1
+    && row.availability_schedule_active !== 0
+    && !isLaterIso(row.cooldown_until ?? undefined, currentNow)
+  const resourceProviderCode = accountResourceProviderCode(row)
+  const resourceType = accountResourceType(row)
+  const dispatchPriority = Number(row.bound_group_local_priority ?? row.priority ?? 0)
+  const dispatchSuperPriorityEnabled = row.bound_group_local_super_priority_enabled === 1
+  const dispatchFallbackEnabled = row.bound_group_local_fallback_enabled === 1
+  const sourceAvailabilityScheduleActive = row.source_availability_schedule_active !== 0
+
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
-    systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? ownerSystemAccountName : undefined,
-    ownerSystemAccountId: row.system_account_id,
-    ownerSystemAccountName,
-    providerCode: row.provider_code,
-    providerProtocolProfileId: row.provider_protocol_profile_id,
-    protocolCode: row.protocol_code,
-    protocolVersion: row.protocol_version,
+    systemAccountId: includeAccountNames ? row.system_account_id : undefined,
+    systemAccountName: includeAccountNames ? accountNames.get(row.system_account_id) : undefined,
+    ownerSystemAccountId: displayOwnerSystemAccountId,
+    ownerSystemAccountName: accountNames.get(displayOwnerSystemAccountId),
+    providerCode: resourceProviderCode,
+    providerProtocolProfileId: accountResourceProviderProtocolProfileId(row),
+    protocolCode: accountResourceProtocolCode(row),
+    protocolVersion: accountResourceProtocolVersion(row),
     name: row.name,
-    notes: row.notes ?? undefined,
-    type: row.type,
+    type: resourceType,
     credentials: accountCredentialsForList(row, true),
-    status: row.status,
-    concurrencyLimit: Number(row.concurrency_limit),
-    currentConcurrency: 0,
-    priority: Number(row.priority ?? 0),
-    superPriorityEnabled: row.super_priority_enabled === 1,
-    fallbackEnabled: row.fallback_enabled === 1,
+    status: effectiveAuthorizedStatus,
+    concurrencyLimit: accountResourceConcurrencyLimit(row),
+    currentConcurrency: loadAccountCurrentConcurrencyByIds([row.id]).get(row.id) ?? 0,
+    priority: dispatchPriority,
+    superPriorityEnabled: dispatchSuperPriorityEnabled,
+    fallbackEnabled: dispatchFallbackEnabled,
     clientCompatibility: accountResourceClientCompatibility(row),
     supportedModels: [...(row.supported_models ?? [])],
     modelMappings: [...(row.model_mappings ?? [])],
     tags: tagsByAccount.get(row.id) ?? [],
     lastSuccessfulTestModel: optionalString(row.last_successful_test_model),
-    proxyProfileId: row.proxy_profile_id ?? undefined,
-    schedulable: row.schedulable === 1,
-    availabilitySchedule,
-    availabilityScheduleActive,
+    proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
+    schedulable: effectiveAuthorizedSchedulable,
+    availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
+    availabilityScheduleActive: row.availability_schedule_active !== 0,
     accountExpiresAt: row.account_expires_at ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
-    lastErrorCode: row.last_error_code ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
-    cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
-    cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
-    cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
-    cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
+    cooldownRetestFailureCount: 0,
     healthCheckEnabled: row.health_check_enabled === 1,
     lastHealthCheckAt: row.last_health_check_at ?? undefined,
     nextHealthCheckAt: row.next_health_check_at ?? undefined,
@@ -173,14 +284,29 @@ export async function findAccountSummaryAsync(accountId: string, access?: Access
     lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
     streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-    lastUsedAt: row.last_used_at ?? undefined,
     todayUsage: emptyAccountUsageSummary(),
     usage: emptyAccountUsageSummary(),
-    accessType: 'owner',
+    accessType: 'authorized',
+    accountAuthorizationId: row.authorization_id ?? undefined,
+    authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
+    authorizationInstanceOwnerSystemAccountId: row.authorization_instance_owner_system_account_id ?? row.authorization_resource_owner_system_account_id ?? undefined,
+    authorizationInstanceSourceAccountStatus: row.source_status ?? undefined,
+    authorizationInstanceSourceAccountSchedulable: typeof row.source_schedulable === 'number' ? row.source_schedulable === 1 : undefined,
+    authorizationInstanceSourceAccountAvailabilitySchedule: parseAccountAvailabilityScheduleJson(row.source_availability_schedule_json),
+    authorizationInstanceSourceAccountScheduleActive: sourceAvailabilityScheduleActive,
+    authorizationInstanceSourceAccountExpiresAt: row.source_account_expires_at ?? undefined,
+    authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
+    authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
+    authorizationInstanceSourceAccountLastErrorMessage: row.source_last_error_message ?? undefined,
     boundGroupId: groupBinding?.groupId,
     boundGroupName: groupBinding?.groupName,
     groupBindStatus: groupBinding?.groupBindStatus,
-    permissions: ownerPermissions(),
+    bindingSystemAccountId: groupBinding ? row.system_account_id : undefined,
+    authorizationStatus: row.authorization_status ?? undefined,
+    authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+    authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
+    authorizationQuotaExceeded: false,
+    permissions: authorizedAccountPermissions(false),
     authorizationUsageAvailable: false,
     authorizationCount: 0,
     authorizationTeamCount: 0

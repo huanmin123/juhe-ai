@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
@@ -21,6 +24,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.cacheDriver, 'memory', 'standalone 默认缓存 driver 应为 memory')
   assert.equal(runtimeConfig.runtimeStateDriver, 'memory', 'standalone 默认运行态 driver 应为 memory')
   assert.equal(runtimeConfig.queueDriver, 'memory', 'standalone 默认队列 driver 应为 memory')
+  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 64, 'standalone 默认 System API DB service 在途上限应为 64')
 
   process.exit(0)
 }
@@ -48,8 +52,32 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.poolMax, 25, 'PostgreSQL pool max 应正确读取')
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
+  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
   assert.equal(runtimeConfig.queue.redisStreamMaxLen, 200000, 'Redis Stream 最大长度应正确读取')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
+
+  process.exit(0)
+}
+
+if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
+  const { runtimeConfig } = await import('../../config/runtime.js')
+
+  assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能模式应读取为 performance')
+  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 256, 'performance 默认 System API DB service 在途上限应为 256')
+
+  process.exit(0)
+}
+
+if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_FILE_CHILD === '1') {
+  const { runtimeConfig } = await import('../../config/runtime.js')
+
+  assert.equal(runtimeConfig.runtimeMode, 'performance', '专用 env 文件应能覆盖运行模式')
+  assert.equal(runtimeConfig.databaseDriver, 'postgres', '专用 env 文件应能覆盖数据库 driver')
+  assert.equal(runtimeConfig.cacheDriver, 'redis', '专用 env 文件应能覆盖缓存 driver')
+  assert.equal(runtimeConfig.runtimeStateDriver, 'redis', '专用 env 文件应能覆盖运行态 driver')
+  assert.equal(runtimeConfig.queueDriver, 'redis_stream', '专用 env 文件应能覆盖队列 driver')
+  assert.equal(runtimeConfig.postgres.poolMax, 44, '专用 env 文件应能覆盖 PostgreSQL pool max')
+  assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 333, '专用 env 文件应能覆盖 System API DB service 在途上限')
 
   process.exit(0)
 }
@@ -66,6 +94,11 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_USAGE_CATALOG_DERIVED_CHILD === '1') {
 
 const result = spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'standalone',
+  JUHE_AI_DATABASE_DRIVER: 'sqlite',
+  JUHE_AI_CACHE_DRIVER: 'memory',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
+  JUHE_AI_QUEUE_DRIVER: 'memory',
   JUHE_AI_PORT: '39123',
   JUHE_AI_HOST: '127.0.0.2',
   JUHE_AI_DATABASE_PATH: 'env-override-business.sqlite3',
@@ -81,6 +114,11 @@ assertRegressionSuccess(result)
 
 const defaultUsageRootResult = spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_USAGE_SHARD_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'standalone',
+  JUHE_AI_DATABASE_DRIVER: 'sqlite',
+  JUHE_AI_CACHE_DRIVER: 'memory',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
+  JUHE_AI_QUEUE_DRIVER: 'memory',
   JUHE_AI_DATASET_DATABASE_PATH: 'runtime-config-dataset-dir/dataset.sqlite3',
   JUHE_AI_USAGE_CATALOG_DATABASE_PATH: 'runtime-config-usage-catalog-dir/usage-catalog.sqlite3',
   JUHE_AI_USAGE_SHARD_ROOT: ''
@@ -90,6 +128,11 @@ assertRegressionSuccess(defaultUsageRootResult)
 
 const derivedUsageCatalogResult = spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_USAGE_CATALOG_DERIVED_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'standalone',
+  JUHE_AI_DATABASE_DRIVER: 'sqlite',
+  JUHE_AI_CACHE_DRIVER: 'memory',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
+  JUHE_AI_QUEUE_DRIVER: 'memory',
   JUHE_AI_DATASET_DATABASE_PATH: 'runtime-config-derived-dataset/dataset.sqlite3',
   JUHE_AI_USAGE_CATALOG_DATABASE_PATH: '',
   JUHE_AI_USAGE_SHARD_ROOT: ''
@@ -100,6 +143,10 @@ assertRegressionSuccess(derivedUsageCatalogResult)
 const performanceResult = spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD: '1',
   JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
   JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
   JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
@@ -107,15 +154,69 @@ const performanceResult = spawnRegression({
   JUHE_AI_DB_POOL_MAX: '25',
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
   JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',
+  JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
   JUHE_AI_REDIS_STREAM_MAXLEN: '200000',
   JUHE_AI_REDIS_STREAM_READ_COUNT: '500'
 })
 
 assertRegressionSuccess(performanceResult)
 
-console.log('运行配置环境变量覆盖回归通过：进程环境变量优先于 backend/.env，usage shard 默认根目录跟随使用记录目录库，高性能模式配置可读取')
+const performanceDefaultResult = spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
+})
+
+assertRegressionSuccess(performanceDefaultResult)
+
+const overlayDir = mkdtempSync(join(tmpdir(), 'juhe-ai-runtime-config-'))
+const overlayPath = join(overlayDir, 'performance.env')
+writeFileSync(overlayPath, [
+  'JUHE_AI_RUNTIME_MODE=performance',
+  'JUHE_AI_DATABASE_DRIVER=postgres',
+  'JUHE_AI_CACHE_DRIVER=redis',
+  'JUHE_AI_RUNTIME_STATE_DRIVER=redis',
+  'JUHE_AI_QUEUE_DRIVER=redis_stream',
+  'JUHE_AI_POSTGRES_URL=postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  'JUHE_AI_REDIS_CACHE_URL=redis://:cache-secret@127.0.0.1:6379/0',
+  'JUHE_AI_REDIS_STATE_URL=redis://:state-secret@127.0.0.1:6380/0',
+  'JUHE_AI_REDIS_QUEUE_URL=redis://:queue-secret@127.0.0.1:6381/0',
+  'JUHE_AI_DB_POOL_MAX=44',
+  'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT=333',
+  ''
+].join('\n'), 'utf8')
+
+try {
+  const envFileResult = spawnRegression({
+    JUHE_AI_RUNTIME_CONFIG_ENV_FILE_CHILD: '1',
+    JUHE_AI_ENV_FILE: overlayPath
+  })
+
+  assertRegressionSuccess(envFileResult)
+} finally {
+  rmSync(overlayDir, { recursive: true, force: true })
+}
+
+console.log('运行配置环境变量覆盖回归通过：进程环境变量优先于 backend/.env，专用 env 文件可隔离高性能配置，standalone/performance 默认阈值正确')
 
 function spawnRegression(env: Record<string, string>): ReturnType<typeof spawnSync> {
+  const childEnv = { ...process.env }
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('JUHE_AI_') || key === 'NODE_ENV') {
+      delete childEnv[key]
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(env, 'JUHE_AI_ENV_FILE')) {
+    env.JUHE_AI_ENV_FILE = ''
+  }
+
   return spawnSync(process.execPath, [
     '--import',
     'tsx',
@@ -123,7 +224,7 @@ function spawnRegression(env: Record<string, string>): ReturnType<typeof spawnSy
   ], {
     cwd: process.cwd(),
     env: {
-      ...process.env,
+      ...childEnv,
       ...env
     },
     encoding: 'utf8'

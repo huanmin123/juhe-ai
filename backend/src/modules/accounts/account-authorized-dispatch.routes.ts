@@ -2,12 +2,12 @@ import type { Router } from 'express'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { updateAuthorizedAccountBindingDispatch } from '../../storage/repositories.js'
+import { updateAuthorizedAccountBindingDispatchAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
-import { operationMode, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { authorizedAccountDispatchSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
@@ -25,8 +25,8 @@ export function registerAccountAuthorizedDispatchRoutes(router: Router): void {
       return
     }
     try {
-      const account = runLoggedOperation(() => {
-        const account = updateAuthorizedAccountBindingDispatch(req.params.id, parsed.data, requestAccess)
+      const account = await runLoggedOperationAsync(async () => {
+        const account = await updateAuthorizedAccountBindingDispatchAsync(req.params.id, parsed.data, requestAccess)
         if (!account) {
           throw new Error('授权账户不存在或尚未绑定分组')
         }

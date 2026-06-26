@@ -411,8 +411,10 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   return runtime.apiKey ? cloneGatewayRuntimeForDispatch(runtime) : cloneStaticGatewayRuntime(runtime)
 }
 
-export function clearGatewayRuntimeCache(): void {
-  clearGatewayRuntimeCacheLocal()
+export function clearGatewayRuntimeCache(reason?: string): void {
+  clearGatewayRuntimeCacheLocal({
+    clearSettings: shouldClearSettingsCacheForGatewayInvalidation(reason)
+  })
   if (runtimeConfig.processRole === 'server') {
     clearDbServiceGatewayRuntimeCache()
     return
@@ -426,7 +428,7 @@ export function clearGatewayRuntimeCache(): void {
   }
 }
 
-export function clearGatewayRuntimeCacheLocal(): void {
+export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean } = {}): void {
   gatewayRuntimeCacheGeneration += 1
   pendingGatewayRuntimeLoads.clear()
   pendingGroupUsageAccessRefreshes.clear()
@@ -439,7 +441,13 @@ export function clearGatewayRuntimeCacheLocal(): void {
   providerModelCatalogCache.clear()
   providerModelRouteIndexCache.clear()
   responseInspectionPolicyCache.clear()
-  clearSettingsRepositoryCache()
+  if (options.clearSettings ?? true) {
+    clearSettingsRepositoryCache()
+  }
+}
+
+function shouldClearSettingsCacheForGatewayInvalidation(reason: string | undefined): boolean {
+  return !reason || reason === 'settings_updated'
 }
 
 function gatewayCacheKey(groupId: string, systemAccountId: string): string {

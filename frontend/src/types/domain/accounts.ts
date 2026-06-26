@@ -188,7 +188,7 @@ export interface AccountModelMapping {
   sourceModel: string
   sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
   upstreamModel: string
-  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages'
+  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'
   enabled: boolean
 }
 

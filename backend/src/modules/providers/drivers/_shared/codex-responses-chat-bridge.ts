@@ -131,6 +131,8 @@ interface ChatToResponsesState {
   finishReasonFailures: Map<string, CodexResponsesChatBridgeFinishReasonFailure>
   completed: boolean
   failed: boolean
+  failureCode?: string
+  failureMessage?: string
   terminalReceived: boolean
   completionNotified: boolean
 }
@@ -272,26 +274,47 @@ export function transformCodexResponsesChatBridgeUpstreamResponse(
   response: GatewayUpstreamResponse,
   options: TransformCodexResponsesChatBridgeResponseOptions
 ): GatewayUpstreamResponse {
-  if (!response.ok || !response.body || !isCodexResponsesChatBridgeRequest(req, options)) {
+  if (!response.ok || !response.body || !isCodexResponsesChatBridgeResponseTransformRequest(req, options)) {
     return response
   }
   const headers = new Headers(response.headers)
-  headers.set('content-type', 'text/event-stream; charset=utf-8')
   headers.delete('content-length')
+  const transformInput = {
+    finishReasonFailures: options.finishReasonFailures,
+    idPrefix: options.idPrefix,
+    estimatedInputTokens: estimateResponsesRequestInputTokens(req),
+    model: options.model ?? stringValue((req.body as JsonRecord | undefined)?.model) ?? options.defaultModel,
+    previousResponseId: options.previousResponseId,
+    toolAdaptersByChatName: (req as CodexResponsesChatBridgeRuntimeRequest).codexResponsesChatBridgeToolAdaptersByChatName,
+    onCompleted: options.onCompleted
+  }
+  if (!requestStream(req)) {
+    headers.set('content-type', 'application/json; charset=utf-8')
+    return {
+      status: response.status,
+      ok: response.ok,
+      headers,
+      body: transformChatCompletionsSseToResponsesJson(response.body, transformInput)
+    }
+  }
+  headers.set('content-type', 'text/event-stream; charset=utf-8')
   return {
     status: response.status,
     ok: response.ok,
     headers,
-    body: transformChatCompletionsSseToResponsesSse(response.body, {
-      finishReasonFailures: options.finishReasonFailures,
-      idPrefix: options.idPrefix,
-      estimatedInputTokens: estimateResponsesRequestInputTokens(req),
-      model: options.model ?? stringValue((req.body as JsonRecord | undefined)?.model) ?? options.defaultModel,
-      previousResponseId: options.previousResponseId,
-      toolAdaptersByChatName: (req as CodexResponsesChatBridgeRuntimeRequest).codexResponsesChatBridgeToolAdaptersByChatName,
-      onCompleted: options.onCompleted
-    })
+    body: transformChatCompletionsSseToResponsesSse(response.body, transformInput)
   }
+}
+
+function isCodexResponsesChatBridgeResponseTransformRequest(
+  req: Request,
+  options: TransformCodexResponsesChatBridgeResponseOptions
+): boolean {
+  if (!options.enabled) return false
+  if (options.explicitMappingBridge === true) {
+    return isOpenAIResponsesPostRequest(req)
+  }
+  return isCodexResponsesChatBridgeRequest(req, options)
 }
 
 export function isOpenAIResponsesPostRequest(req: Request): boolean {
@@ -1150,6 +1173,57 @@ async function * transformChatCompletionsSseToResponsesSse(
   await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
 }
 
+async function * transformChatCompletionsSseToResponsesJson(
+  upstreamBody: AsyncIterable<Uint8Array>,
+  input: {
+    estimatedInputTokens?: number
+    finishReasonFailures?: Record<string, CodexResponsesChatBridgeFinishReasonFailure>
+    idPrefix?: string
+    model: string
+    previousResponseId?: string
+    toolAdaptersByChatName?: Map<string, CodexResponsesChatBridgeToolAdapter>
+    onCompleted?: CodexResponsesChatBridgeCompletionHandler
+  }
+): AsyncIterable<Uint8Array> {
+  const state = createChatToResponsesState(
+    input.model,
+    input.idPrefix,
+    input.estimatedInputTokens,
+    input.previousResponseId,
+    input.finishReasonFailures,
+    input.toolAdaptersByChatName
+  )
+  const decoder = new StringDecoder('utf8')
+  let pending = ''
+  for await (const chunk of upstreamBody) {
+    pending += decoder.write(Buffer.from(chunk))
+    const events = takeCompleteSseEvents(pending)
+    pending = events.rest
+    for (const eventText of events.events) {
+      processChatSseEvent(state, eventText)
+      await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
+    }
+  }
+
+  pending += decoder.end()
+  if (pending.trim()) {
+    processChatSseEvent(state, pending)
+    await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
+  }
+  if (!state.terminalReceived && !state.completed && !state.failed) {
+    failResponsesStream(state, '上游 Chat SSE 在正常结束事件前中断', 'upstream_stream_interrupted')
+  }
+  await notifyCodexResponsesChatBridgeCompletion(state, input.onCompleted)
+  const payload = state.failed
+    ? responseFailedSnapshot(
+      state,
+      state.failureMessage ?? '上游 Chat SSE 返回错误',
+      state.failureCode ?? 'upstream_error'
+    )
+    : responseSnapshot(state, 'completed', state.outputItems)
+  yield Buffer.from(JSON.stringify(payload), 'utf8')
+}
+
 function createChatToResponsesState(
   model: string,
   idPrefix = 'chat_bridge',
@@ -1617,6 +1691,8 @@ function failResponsesStream(state: ChatToResponsesState, message: string, code:
   if (state.completed || state.failed) return []
   const output = state.started ? ensureResponsesStreamStarted(state) : []
   state.failed = true
+  state.failureMessage = message
+  state.failureCode = code
   output.push(sse('response.failed', {
     type: 'response.failed',
     response: responseFailedSnapshot(state, message, code)

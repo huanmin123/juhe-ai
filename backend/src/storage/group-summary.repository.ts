@@ -140,7 +140,7 @@ export function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessS
   })
 }
 
-async function buildGroupOptionSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupOptionSummary[]> {
+export async function buildGroupOptionSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupOptionSummary[]> {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)

@@ -23,7 +23,6 @@ import {
   buildOpenAIModelMappedJsonBody,
   isGeminiGenerateContentToChatCompletionsModelMapping,
   isAnthropicMessagesToChatCompletionsModelMapping,
-  isOpenAIChatCompletionsToResponsesModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
   openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
@@ -54,11 +53,6 @@ import {
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
-import {
-  buildOpenAIChatResponsesBridgeBody,
-  prepareOpenAIChatResponsesBridgeHeaders,
-  transformOpenAIChatResponsesBridgeUpstreamResponse
-} from '../_shared/openai-chat-responses-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 
 function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
@@ -133,7 +127,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
     if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) && !isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
       return []
     }
-    if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping) || isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
+    if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping) || isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
       return [buildOpenAICompatibleDriverUpstreamUrl(account, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
     }
     return buildOpenAICompatibleDriverUpstreamUrls(account, req.originalUrl)
@@ -173,17 +167,6 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
         }, signal)
       }
     }
-    if (modelMapping && isOpenAIChatCompletionsToResponsesModelMapping(modelMapping)) {
-      const headers = buildUpstreamHeaders(req.headers, account)
-      prepareOpenAIChatResponsesBridgeHeaders(headers)
-      return {
-        headers,
-        body: await buildOpenAIChatResponsesBridgeBody(req, {
-          defaultModel: modelMapping.upstreamModel,
-          modelOverride: modelMapping.upstreamModel
-        }, signal)
-      }
-    }
     const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
@@ -207,7 +190,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       enabled: isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping),
       model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'openai-compatible'
     })
-    const responsesToChatResponse = transformCodexResponsesChatBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
+    return transformCodexResponsesChatBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
       defaultModel: modelMapping?.upstreamModel ?? requestModel(req) ?? 'openai-compatible',
       enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: true,
@@ -217,10 +200,6 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       onCompleted: context?.codexResponsesChatBridgeCompletionHandler,
       continueChatRequest: context?.codexResponsesChatBridgeContinueChatRequest,
       requestClientCompatibility: context?.requestClientCompatibility
-    })
-    return transformOpenAIChatResponsesBridgeUpstreamResponse(req, responsesToChatResponse, {
-      enabled: isOpenAIChatCompletionsToResponsesModelMapping(modelMapping),
-      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'openai-compatible'
     })
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
@@ -251,22 +230,6 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
     if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
-        supportedEndpointModes: account.supportedEndpointModes,
-        credentials: account.credentials,
-        providerCode: account.providerCode,
-        providerProtocolProfileId: account.providerProtocolProfileId,
-        accountType: account.type,
-        clientCompatibility: account.clientCompatibility
-      })
-    }
-    if (modelMapping && isOpenAIChatCompletionsToResponsesModelMapping(modelMapping)) {
-      const mode = openAIEndpointModeForRequestShape({
-        endpoint: '/responses',
-        stream: isEffectiveOpenAIStreamRequest(req, account)
-      })
-      if (!mode) return false
-      return accountSupportsOpenAIEndpointMode({
-        mode,
         supportedEndpointModes: account.supportedEndpointModes,
         credentials: account.credentials,
         providerCode: account.providerCode,

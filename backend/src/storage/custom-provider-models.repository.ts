@@ -194,6 +194,20 @@ export function findCustomProviderModelById(id: string): CustomProviderModelReco
   return row ? customProviderModelFromRow(row) : undefined
 }
 
+export async function findCustomProviderModelByIdAsync(id: string): Promise<CustomProviderModelRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findCustomProviderModelById(id)
+  }
+  const client = await getCustomProviderModelsDatabaseClient()
+  const row = await client.one<CustomProviderModelRow>(`
+    SELECT ${customProviderModelColumns()}
+    FROM ${customProviderModelsTable(client)}
+    WHERE id = ?
+    LIMIT 1
+  `, [id])
+  return row ? customProviderModelFromRow(row) : undefined
+}
+
 export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput): CustomProviderModelRecord {
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
@@ -289,10 +303,119 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
   return saved
 }
 
+export async function upsertCustomProviderModelAsync(input: UpsertCustomProviderModelInput): Promise<CustomProviderModelRecord> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return upsertCustomProviderModel(input)
+  }
+  const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
+  const model = requiredText(input.model, '模型 ID 不能为空')
+  const scope: CustomProviderModelScope = 'personal'
+  const systemAccountId = requiredText(input.systemAccountId ?? input.actorSystemAccountId, '自定义模型必须归属当前系统账户')
+  const status = input.status ?? 'active'
+  const now = nowIso()
+  const existing = input.id
+    ? await findCustomProviderModelByIdAsync(input.id)
+    : await findCustomProviderModelByScopeAsync(providerCode, scope, systemAccountId, model)
+  if (existing && existing.model.trim() !== model) {
+    throw new Error('模型 ID 创建后不能修改')
+  }
+  const id = existing?.id ?? input.id ?? newId('custom_model')
+
+  const client = await getCustomProviderModelsDatabaseClient()
+  await client.execute(`
+    INSERT INTO ${customProviderModelsTable(client)} (
+      id, provider_code, model, scope, system_account_id, status,
+      mode, supported_api_protocols_json, pricing_model,
+      release_date, shutdown_date, context_window_tokens, max_output_tokens,
+      input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+      image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+      output_usd_per_image, currency, pricing_notes, capability_notes, notes,
+      created_by, updated_by, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      provider_code = excluded.provider_code,
+      model = excluded.model,
+      scope = excluded.scope,
+      system_account_id = excluded.system_account_id,
+      status = excluded.status,
+      mode = excluded.mode,
+      supported_api_protocols_json = excluded.supported_api_protocols_json,
+      pricing_model = excluded.pricing_model,
+      release_date = excluded.release_date,
+      shutdown_date = excluded.shutdown_date,
+      context_window_tokens = excluded.context_window_tokens,
+      max_output_tokens = excluded.max_output_tokens,
+      input_usd_per_1m = excluded.input_usd_per_1m,
+      output_usd_per_1m = excluded.output_usd_per_1m,
+      cached_input_usd_per_1m = excluded.cached_input_usd_per_1m,
+      cache_write_usd_per_1m = excluded.cache_write_usd_per_1m,
+      image_input_usd_per_1m = excluded.image_input_usd_per_1m,
+      image_output_usd_per_1m = excluded.image_output_usd_per_1m,
+      audio_input_usd_per_1m = excluded.audio_input_usd_per_1m,
+      audio_output_usd_per_1m = excluded.audio_output_usd_per_1m,
+      output_usd_per_image = excluded.output_usd_per_image,
+      pricing_notes = excluded.pricing_notes,
+      capability_notes = excluded.capability_notes,
+      notes = excluded.notes,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at
+  `, [
+    id,
+    providerCode,
+    model,
+    scope,
+    systemAccountId ?? null,
+    status,
+    optionalText(input.mode) ?? null,
+    JSON.stringify(normalizeProtocols(input.supportedApiProtocols)),
+    optionalText(input.pricingModel) ?? null,
+    optionalDate(input.releaseDate) ?? null,
+    optionalDate(input.shutdownDate) ?? null,
+    optionalInteger(input.contextWindowTokens) ?? null,
+    optionalInteger(input.maxOutputTokens) ?? null,
+    optionalNumber(input.inputUsdPer1M) ?? null,
+    optionalNumber(input.outputUsdPer1M) ?? null,
+    optionalNumber(input.cachedInputUsdPer1M) ?? null,
+    optionalNumber(input.cacheWriteUsdPer1M) ?? null,
+    optionalNumber(input.imageInputUsdPer1M) ?? null,
+    optionalNumber(input.imageOutputUsdPer1M) ?? null,
+    optionalNumber(input.audioInputUsdPer1M) ?? null,
+    optionalNumber(input.audioOutputUsdPer1M) ?? null,
+    optionalNumber(input.outputUsdPerImage) ?? null,
+    optionalText(input.pricingNotes) ?? null,
+    optionalText(input.capabilityNotes) ?? null,
+    optionalText(input.notes) ?? null,
+    existing?.createdBy ?? input.actorSystemAccountId,
+    input.actorSystemAccountId,
+    existing?.createdAt ?? now,
+    now
+  ])
+
+  const saved = await findCustomProviderModelByIdAsync(id)
+  if (!saved) {
+    throw new Error('自定义模型保存失败')
+  }
+  notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  return saved
+}
+
 export function deleteCustomProviderModel(id: string): boolean {
   const result = getBusinessDatabase()
     .prepare('DELETE FROM custom_provider_models WHERE id = ?')
     .run(id)
+  if (result.changes > 0) {
+    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
+  }
+  return result.changes > 0
+}
+
+export async function deleteCustomProviderModelAsync(id: string): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deleteCustomProviderModel(id)
+  }
+  const client = await getCustomProviderModelsDatabaseClient()
+  const result = await client.execute(`DELETE FROM ${customProviderModelsTable(client)} WHERE id = ?`, [id])
   if (result.changes > 0) {
     notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
   }
@@ -360,6 +483,74 @@ export function customProviderModelAccountBindingSummary(input: {
   }
 }
 
+export async function customProviderModelAccountBindingSummaryAsync(input: {
+  providerCode: string
+  model: string
+  scope: CustomProviderModelScope
+  systemAccountId?: string
+}): Promise<CustomProviderModelAccountBindingSummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return customProviderModelAccountBindingSummary(input)
+  }
+  const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
+  const model = requiredText(input.model, '模型 ID 不能为空')
+  const client = await getCustomProviderModelsDatabaseClient()
+  const accountOwnerScope = accountBindingOwnerScope(input.scope, input.systemAccountId)
+  const accountsTable = businessTable(client, 'accounts')
+  const supportedModelsTable = businessTable(client, 'account_supported_models')
+  const modelMappingsTable = businessTable(client, 'account_model_mappings')
+  const supportedModelSql = `
+    SELECT account_supported_models.account_id
+    FROM ${supportedModelsTable} account_supported_models
+    INNER JOIN ${accountsTable} accounts
+      ON accounts.id = account_supported_models.account_id
+      AND accounts.deleted_at IS NULL
+    WHERE account_supported_models.provider_code = ?
+      AND lower(account_supported_models.model) = lower(?)
+      ${accountOwnerScope.sql}
+  `
+  const supportedModelParams: SQLInputValue[] = [providerCode, model, ...accountOwnerScope.params]
+  const mappingSourceSql = `
+    SELECT account_model_mappings.account_id
+    FROM ${modelMappingsTable} account_model_mappings
+    INNER JOIN ${accountsTable} accounts
+      ON accounts.id = account_model_mappings.account_id
+      AND accounts.deleted_at IS NULL
+    WHERE lower(account_model_mappings.source_model) = lower(?)
+      ${accountOwnerScope.sql}
+  `
+  const mappingSourceParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
+  const mappingUpstreamSql = `
+    SELECT account_model_mappings.account_id
+    FROM ${modelMappingsTable} account_model_mappings
+    INNER JOIN ${accountsTable} accounts
+      ON accounts.id = account_model_mappings.account_id
+      AND accounts.deleted_at IS NULL
+    WHERE lower(account_model_mappings.upstream_model) = lower(?)
+      ${accountOwnerScope.sql}
+  `
+  const mappingUpstreamParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
+  const supportedModelAccountCount = await countDistinctBoundAccountsAsync(client, supportedModelSql, supportedModelParams)
+  const mappingSourceAccountCount = await countDistinctBoundAccountsAsync(client, mappingSourceSql, mappingSourceParams)
+  const mappingUpstreamAccountCount = await countDistinctBoundAccountsAsync(client, mappingUpstreamSql, mappingUpstreamParams)
+  const totalAccountCount = await countDistinctBoundAccountsAsync(client, `
+    SELECT account_id FROM (
+      ${supportedModelSql}
+      UNION
+      ${mappingSourceSql}
+      UNION
+      ${mappingUpstreamSql}
+    ) bound_account_union
+  `, [...supportedModelParams, ...mappingSourceParams, ...mappingUpstreamParams])
+
+  return {
+    supportedModelAccountCount,
+    mappingSourceAccountCount,
+    mappingUpstreamAccountCount,
+    totalAccountCount
+  }
+}
+
 function accountBindingOwnerScope(scope: CustomProviderModelScope, systemAccountId?: string): { sql: string; params: SQLInputValue[] } {
   if (scope !== 'personal') {
     return { sql: '', params: [] }
@@ -384,11 +575,37 @@ function findCustomProviderModelByScope(
   return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
 }
 
+async function findCustomProviderModelByScopeAsync(
+  providerCode: string,
+  scope: CustomProviderModelScope,
+  systemAccountId: string | undefined,
+  model: string
+): Promise<CustomProviderModelRecord | undefined> {
+  if (scope !== 'personal') return undefined
+  const client = await getCustomProviderModelsDatabaseClient()
+  const row = await client.one<CustomProviderModelRow>(`
+    SELECT ${customProviderModelColumns()}
+    FROM ${customProviderModelsTable(client)}
+    WHERE provider_code = ?
+      AND scope = 'personal'
+      AND system_account_id = ?
+      AND lower(model) = lower(?)
+    LIMIT 1
+  `, [providerCode, systemAccountId ?? '', model])
+  return row ? customProviderModelFromRow(row) : undefined
+}
+
 function countDistinctBoundAccounts(sql: string, ...params: SQLInputValue[]): number {
   const row = getBusinessDatabase()
     .prepare(`SELECT COUNT(DISTINCT account_id) AS count FROM (${sql})`)
     .get(...params) as { count?: number } | undefined
   return typeof row?.count === 'number' ? row.count : 0
+}
+
+async function countDistinctBoundAccountsAsync(client: DatabaseClient, sql: string, params: readonly unknown[]): Promise<number> {
+  const row = await client.one<{ count?: number | string | bigint }>(`SELECT COUNT(DISTINCT account_id) AS count FROM (${sql}) bound_accounts`, params)
+  const count = Number(row?.count ?? 0)
+  return Number.isFinite(count) ? count : 0
 }
 
 function customProviderModelColumns(): string {
@@ -411,9 +628,13 @@ async function getCustomProviderModelsDatabaseClient(): Promise<DatabaseClient> 
 }
 
 function customProviderModelsTable(client: DatabaseClient): string {
+  return businessTable(client, 'custom_provider_models')
+}
+
+function businessTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
-    ? client.dialect.qualifyTable('juhe_business', 'custom_provider_models')
-    : client.dialect.quoteIdentifier('custom_provider_models')
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 function customProviderModelFromRow(row: CustomProviderModelRow): CustomProviderModelRecord {

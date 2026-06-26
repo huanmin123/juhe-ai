@@ -1,10 +1,14 @@
 import {
   customProviderModelAccountBindingSummary,
+  customProviderModelAccountBindingSummaryAsync,
   deleteCustomProviderModel,
+  deleteCustomProviderModelAsync,
   findCustomProviderModelById,
+  findCustomProviderModelByIdAsync,
   listCustomProviderModelsForCatalog,
   listCustomProviderModelsForCatalogAsync,
   upsertCustomProviderModel,
+  upsertCustomProviderModelAsync,
   type CustomProviderModelAccountBindingSummary,
   type CustomProviderModelRecord,
   type CustomProviderModelScope,
@@ -204,12 +208,25 @@ export function saveCustomProviderModel(input: SaveCustomProviderModelInput): Pr
   return toCustomCatalogItem(saved)
 }
 
+export async function saveCustomProviderModelAsync(input: SaveCustomProviderModelInput): Promise<ProviderModelCatalogItem> {
+  const saved = await upsertCustomProviderModelAsync(input)
+  return toCustomCatalogItem(saved)
+}
+
 export function findCustomProviderModel(id: string): CustomProviderModelRecord | undefined {
   return findCustomProviderModelById(id)
 }
 
+export async function findCustomProviderModelAsync(id: string): Promise<CustomProviderModelRecord | undefined> {
+  return findCustomProviderModelByIdAsync(id)
+}
+
 export function removeCustomProviderModel(id: string): boolean {
   return deleteCustomProviderModel(id)
+}
+
+export async function removeCustomProviderModelAsync(id: string): Promise<boolean> {
+  return deleteCustomProviderModelAsync(id)
 }
 
 export function customProviderModelBindings(input: {
@@ -219,6 +236,15 @@ export function customProviderModelBindings(input: {
   systemAccountId?: string
 }): CustomProviderModelAccountBindingSummary {
   return customProviderModelAccountBindingSummary(input)
+}
+
+export async function customProviderModelBindingsAsync(input: {
+  providerCode: string
+  model: string
+  scope: CustomProviderModelScope
+  systemAccountId?: string
+}): Promise<CustomProviderModelAccountBindingSummary> {
+  return customProviderModelAccountBindingSummaryAsync(input)
 }
 
 export function estimateCatalogCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {

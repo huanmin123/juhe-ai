@@ -4,21 +4,21 @@ import { z } from 'zod'
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
 import { getAuthorizationTeamUsageOverview, getAuthorizationUserUsageOverview } from '../../storage/authorization-usage.repository.js'
 import {
-  createResourceAuthorization,
-  findResourceAuthorization,
-  getResourceAuthorizationUsage,
-  listResourceAuthorizationsPage,
-  revokeResourceAuthorization,
+  createResourceAuthorizationAsync,
+  findResourceAuthorizationAsync,
+  getResourceAuthorizationUsageAsync,
+  listResourceAuthorizationsPageAsync,
+  revokeResourceAuthorizationAsync,
   returnResourceAuthorizationForGranteeAsync,
-  updateResourceAuthorization
+  updateResourceAuthorizationAsync
 } from '../../storage/repositories.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
-import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { isAdminRole, type ResourceAuthorizationSummary } from '../../domain/types.js'
 
@@ -113,19 +113,23 @@ const updateAuthorizationExpireSchema = z.object({
   limits: requestQuotaLimitsSchema.nullable().optional()
 }).strict()
 
-authorizationsRouter.get('/', (req, res) => {
+authorizationsRouter.get('/', async (req, res, next) => {
   const parsed = parseOrBadRequest(authorizationsQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, direction, sourceType, startDate, endDate, page, pageSize, ...filters } = parsed.data
-  const usageRange = normalizeAuthorizationListUsageRange({ startDate, endDate })
-  const sourceTypeFilter = sourceType && sourceType !== 'all' ? { sourceType } : {}
-  const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
-    ? { ...filters, ...sourceTypeFilter, direction }
-    : { ...filters, ...sourceTypeFilter }
-  res.json(ok(listResourceAuthorizationsPage(routeFilters, getRequestAccessScope(systemAccountId), { usageRange, page, pageSize })))
+  try {
+    const { systemAccountId, direction, sourceType, startDate, endDate, page, pageSize, ...filters } = parsed.data
+    const usageRange = await normalizeAuthorizationListUsageRangeAsync({ startDate, endDate })
+    const sourceTypeFilter = sourceType && sourceType !== 'all' ? { sourceType } : {}
+    const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
+      ? { ...filters, ...sourceTypeFilter, direction }
+      : { ...filters, ...sourceTypeFilter }
+    res.json(ok(await listResourceAuthorizationsPageAsync(routeFilters, getRequestAccessScope(systemAccountId), { usageRange, page, pageSize })))
+  } catch (error) {
+    next(error)
+  }
 })
 
 authorizationsRouter.get('/usage/team-details', (req, res) => {
@@ -161,7 +165,7 @@ authorizationsRouter.post('/', mutationGuard({
     granteeId: textValue(bodyField(req, 'granteeId')),
     targetGroupId: textValue(bodyField(req, 'targetGroupId'))
   })
-}), (req, res) => {
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -179,8 +183,8 @@ authorizationsRouter.post('/', mutationGuard({
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = runLoggedOperation(() => {
-      const authorization = createResourceAuthorization(parsed.data, requestAccess)
+    const authorization = await runLoggedOperationAsync(async () => {
+      const authorization = await createResourceAuthorizationAsync(parsed.data, requestAccess)
       return {
         result: authorization,
         log: {
@@ -275,7 +279,7 @@ authorizationsRouter.delete('/:id/return', async (req, res) => {
   }
 })
 
-authorizationsRouter.delete('/:id', (req, res) => {
+authorizationsRouter.delete('/:id', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -288,9 +292,9 @@ authorizationsRouter.delete('/:id', (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = runLoggedOperation(() => {
-      const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
-      const authorization = revokeResourceAuthorization(paramsParsed.data.id, requestAccess)
+    const authorization = await runLoggedOperationAsync(async () => {
+      const before = await findResourceAuthorizationAsync(paramsParsed.data.id, requestAccess, { includeUsage: false })
+      const authorization = await revokeResourceAuthorizationAsync(paramsParsed.data.id, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
       }
@@ -329,7 +333,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
   }
 })
 
-authorizationsRouter.patch('/:id', (req, res) => {
+authorizationsRouter.patch('/:id', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -347,9 +351,9 @@ authorizationsRouter.patch('/:id', (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = runLoggedOperation(() => {
-      const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
-      const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
+    const authorization = await runLoggedOperationAsync(async () => {
+      const before = await findResourceAuthorizationAsync(paramsParsed.data.id, requestAccess, { includeUsage: false })
+      const authorization = await updateResourceAuthorizationAsync(paramsParsed.data.id, parsed.data, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
       }
@@ -385,7 +389,7 @@ authorizationsRouter.patch('/:id', (req, res) => {
   }
 })
 
-authorizationsRouter.patch('/:id/expire', (req, res) => {
+authorizationsRouter.patch('/:id/expire', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -403,9 +407,9 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = runLoggedOperation(() => {
-      const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
-      const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
+    const authorization = await runLoggedOperationAsync(async () => {
+      const before = await findResourceAuthorizationAsync(paramsParsed.data.id, requestAccess, { includeUsage: false })
+      const authorization = await updateResourceAuthorizationAsync(paramsParsed.data.id, parsed.data, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
       }
@@ -441,7 +445,7 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
   }
 })
 
-authorizationsRouter.get('/:id/usage', (req, res) => {
+authorizationsRouter.get('/:id/usage', async (req, res, next) => {
   const queryParsed = parseOrBadRequest(authorizationUsageQuerySchema, req.query, '查询参数不合法')
   if (!queryParsed.success) {
     sendBadRequest(res, queryParsed.message)
@@ -452,23 +456,27 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
     sendBadRequest(res, paramsParsed.message)
     return
   }
-  const authorization = getResourceAuthorizationUsage(
-    paramsParsed.data.id,
-    getRequestAccessScope(queryParsed.data.systemAccountId),
-    {
-      range: normalizeAccountUsageStatsRange({
-        startDate: queryParsed.data.startDate,
-        endDate: queryParsed.data.endDate
-      }, usageStatsTimezone()),
-      page: queryParsed.data.page,
-      pageSize: queryParsed.data.pageSize
+  try {
+    const authorization = await getResourceAuthorizationUsageAsync(
+      paramsParsed.data.id,
+      getRequestAccessScope(queryParsed.data.systemAccountId),
+      {
+        range: await normalizeAuthorizationUsageRangeAsync({
+          startDate: queryParsed.data.startDate,
+          endDate: queryParsed.data.endDate
+        }),
+        page: queryParsed.data.page,
+        pageSize: queryParsed.data.pageSize
+      }
+    )
+    if (!authorization) {
+      sendNotFound(res, '授权记录不存在')
+      return
     }
-  )
-  if (!authorization) {
-    sendNotFound(res, '授权记录不存在')
-    return
+    res.json(ok(authorization))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(authorization))
 })
 
 function authorizationTargets(authorization: ResourceAuthorizationSummary) {
@@ -522,8 +530,27 @@ function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDa
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }
 
+async function normalizeAuthorizationListUsageRangeAsync(input: { startDate?: string; endDate?: string }) {
+  const timezone = await usageStatsTimezoneAsync()
+  const today = todayDateKey(timezone)
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
+  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
+}
+
 function normalizeAuthorizationUsageRange(input: { startDate?: string; endDate?: string }) {
   const timezone = usageStatsTimezone()
+  const today = todayDateKey(timezone)
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
+  return normalizeAccountUsageStatsRange({
+    startDate,
+    endDate
+  }, timezone)
+}
+
+async function normalizeAuthorizationUsageRangeAsync(input: { startDate?: string; endDate?: string }) {
+  const timezone = await usageStatsTimezoneAsync()
   const today = todayDateKey(timezone)
   const startDate = input.startDate ?? input.endDate ?? today
   const endDate = input.endDate ?? input.startDate ?? today

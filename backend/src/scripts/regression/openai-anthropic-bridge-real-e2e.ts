@@ -19,7 +19,7 @@ const apiKey = requiredEnv('JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_API_KEY')
 const upstreamBaseUrl = (process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_BASE_URL ?? 'https://vsllm.com').replace(/\/+$/, '')
 const upstreamModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_MODEL ?? 'claude-sonnet-4-6'
 const sourceModel = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_SOURCE_MODEL ?? 'gpt-5.5'
-const realE2ERequestTimeoutMs = 45_000
+const realE2ERequestTimeoutMs = positiveIntegerEnv('JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_REQUEST_TIMEOUT_MS') ?? 45_000
 const runImageProviderE2E = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER === '1'
 const runImageProviderStreamE2E = process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_RUN_IMAGE_PROVIDER_STREAM === '1'
 const imageProviderBaseUrl = (process.env.JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_IMAGE_PROVIDER_BASE_URL ?? upstreamBaseUrl).replace(/\/+$/, '')
@@ -863,6 +863,16 @@ function requiredEnv(name: string): string {
     throw new Error(`缺少环境变量 ${name}`)
   }
   return value
+}
+
+function positiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim()
+  if (!raw) return undefined
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`环境变量 ${name} 必须是正整数毫秒值`)
+  }
+  return Math.trunc(value)
 }
 
 function listen(server: http.Server): Promise<void> {

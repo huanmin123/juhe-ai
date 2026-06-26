@@ -2,26 +2,38 @@ import { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { listAuthorizationGranteeAccounts, listAuthorizationGranteeGroups, listAuthorizationGranteeTeams } from '../../storage/repositories.js'
+import { listAuthorizationGranteeAccountsAsync, listAuthorizationGranteeGroupsAsync, listAuthorizationGranteeTeamsAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 
 export const authorizationOptionsRouter = Router()
 
-authorizationOptionsRouter.get('/grantee-accounts', (req, res) => {
-  res.json(ok(listAuthorizationGranteeAccounts(getRequestAccessScope(), parseAuthorizationOptionListOptions(req.query))))
+authorizationOptionsRouter.get('/grantee-accounts', async (req, res, next) => {
+  try {
+    res.json(ok(await listAuthorizationGranteeAccountsAsync(getRequestAccessScope(), parseAuthorizationOptionListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
-authorizationOptionsRouter.get('/grantee-teams', (req, res) => {
-  res.json(ok(listAuthorizationGranteeTeams(getRequestAccessScope(), parseAuthorizationOptionListOptions(req.query))))
+authorizationOptionsRouter.get('/grantee-teams', async (req, res, next) => {
+  try {
+    res.json(ok(await listAuthorizationGranteeTeamsAsync(getRequestAccessScope(), parseAuthorizationOptionListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
-authorizationOptionsRouter.get('/grantee-groups', (req, res) => {
+authorizationOptionsRouter.get('/grantee-groups', async (req, res, next) => {
   const options = parseAuthorizationGranteeGroupOptionListOptions(req.query)
   if (!options.granteeSystemAccountId) {
     res.status(400).json(badRequest('被授权用户不能为空'))
     return
   }
-  res.json(ok(listAuthorizationGranteeGroups(getRequestAccessScope(), options)))
+  try {
+    res.json(ok(await listAuthorizationGranteeGroupsAsync(getRequestAccessScope(), options)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 function parseAuthorizationOptionListOptions(query: Record<string, unknown>) {

@@ -94,6 +94,7 @@ export interface OpenAIGatewayRequestIdentity {
 interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
   apiKeyRecord?: GatewayApiKeyRow
+  groupFallbackApiKeyRecord?: GatewayApiKeyRow
   candidateAccounts?: UpstreamAccount[]
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   disableSessionAffinity?: boolean
@@ -126,6 +127,7 @@ export interface OpenAIGatewayDispatchContext {
   groupSchedulingPolicy?: GroupSchedulingPolicy
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
+  groupFallbackApiKeyRecord?: GatewayApiKeyRow
   hybridRoute?: HybridGatewayRuntimeRoute
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
@@ -138,6 +140,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   const { req, res, auditCapture, options, startedAt, traceId, clientIp, endpoint, requestSnapshot, signal } = input
   let gatewaySettings: GatewaySettings | undefined
   let apiKeyRecord: GatewayApiKeyRow | undefined = options.apiKeyRecord
+  let groupFallbackApiKeyRecord: GatewayApiKeyRow | undefined = options.groupFallbackApiKeyRecord ?? apiKeyRecord
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
@@ -152,6 +155,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
     gatewaySettings = runtime.settings
     apiKeyRecord = runtime.apiKey
+    groupFallbackApiKeyRecord ??= runtime.apiKey
     runtimeGroupAccess = runtime.groupAccess
     runtimeAccounts = runtime.accounts
     runtimeAccountDispatchDiagnostics = runtime.accountDispatchDiagnostics
@@ -260,6 +264,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       requestClientCompatibility: initialClientStrategy.requestClientCompatibility
     })
     if (normalRoute.outcome === 'selected') {
+      groupFallbackApiKeyRecord ??= apiKeyRecord
       apiKeyRecord = normalRoute.apiKeyRecord
       groupId = normalRoute.groupId
       identity = {
@@ -748,6 +753,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],
     apiKeyRecord,
+    groupFallbackApiKeyRecord,
     hybridRoute: selectedHybridRoute,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
@@ -855,6 +861,7 @@ interface ApiKeyGroupFallbackDispatchInput {
   signal?: AbortSignal
   reason: string
   apiKeyRecord?: GatewayApiKeyRow
+  groupFallbackApiKeyRecord?: GatewayApiKeyRow
   systemAccountId: string
   apiKeyId?: string
   groupId: string
@@ -900,6 +907,7 @@ export async function prepareApiKeyGroupFallbackDispatchContext(
         groupId: candidate.groupId
       },
       apiKeyRecord: input.apiKeyRecord,
+      groupFallbackApiKeyRecord: input.groupFallbackApiKeyRecord ?? input.apiKeyRecord,
       candidateAccounts: candidate.accounts,
       responseInspectionPolicies: candidate.responseInspectionPolicies,
       trafficSource: input.trafficSource,

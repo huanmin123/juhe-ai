@@ -3,6 +3,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
 import { createRuntimeStateStore } from './runtime-state-store.js'
 
+type GatewayRuntimeCacheInvalidationHandler = (reason: string) => void
 type CacheInvalidationHandler = () => void
 type ApiKeyQuotaInvalidationHandler = (apiKeyId?: string) => void
 type GatewayCacheInvalidationTopic = 'gateway_runtime_cache' | 'authorization_quota_cache' | 'api_key_quota_cache'
@@ -14,7 +15,7 @@ interface GatewayCacheInvalidationState {
   publishedAt: string
 }
 
-const gatewayRuntimeCacheInvalidators = new Set<CacheInvalidationHandler>()
+const gatewayRuntimeCacheInvalidators = new Set<GatewayRuntimeCacheInvalidationHandler>()
 const authorizationQuotaCacheInvalidators = new Set<CacheInvalidationHandler>()
 const apiKeyQuotaCacheInvalidators = new Set<ApiKeyQuotaInvalidationHandler>()
 const gatewayCacheInvalidationState = createRuntimeStateStore('gateway_cache_invalidation')
@@ -30,7 +31,7 @@ const lastSeenGatewayCacheInvalidationVersions = new Map<GatewayCacheInvalidatio
 let lastGatewayCacheInvalidationSyncAt = 0
 let gatewayCacheInvalidationSyncPromise: Promise<void> | undefined
 
-export function registerGatewayRuntimeCacheInvalidator(handler: CacheInvalidationHandler): () => void {
+export function registerGatewayRuntimeCacheInvalidator(handler: GatewayRuntimeCacheInvalidationHandler): () => void {
   gatewayRuntimeCacheInvalidators.add(handler)
   return () => {
     gatewayRuntimeCacheInvalidators.delete(handler)
@@ -53,7 +54,7 @@ export function registerApiKeyQuotaCacheInvalidator(handler: ApiKeyQuotaInvalida
 
 export function notifyGatewayRuntimeCacheInvalidation(reason: string): void {
   runGatewayCacheInvalidatorsAfterCommit(() => {
-    runCacheInvalidators('gateway_runtime_cache', reason, gatewayRuntimeCacheInvalidators, (handler) => handler())
+    runCacheInvalidators('gateway_runtime_cache', reason, gatewayRuntimeCacheInvalidators, (handler) => handler(reason))
     publishGatewayCacheInvalidationToRuntimeState('gateway_runtime_cache', reason)
   })
 }
@@ -159,7 +160,7 @@ async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe(): Promise<vo
 
 function applyRuntimeStateCacheInvalidation(topic: GatewayCacheInvalidationTopic, state: GatewayCacheInvalidationState): void {
   if (topic === 'gateway_runtime_cache') {
-    runCacheInvalidators(topic, state.reason, gatewayRuntimeCacheInvalidators, (handler) => handler())
+    runCacheInvalidators(topic, state.reason, gatewayRuntimeCacheInvalidators, (handler) => handler(state.reason))
     return
   }
   if (topic === 'authorization_quota_cache') {

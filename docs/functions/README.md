@@ -43,6 +43,7 @@
 - [Anthropic 与 GPT 全链路能力对比](Anthropic与GPT全链路能力对比.md)
 - [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)
 - [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)
+- [协议桥接框架设计](协议桥接框架设计.md)
 - [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)
 - [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)
 - [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)
@@ -86,6 +87,7 @@
 - 新增或调整 Anthropic 官方直连、Anthropic API Key 账户类型、Anthropic OAuth / Claude Code token 真实验证结论、Claude Code 客户端画像、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 OpenAI Chat / Responses 下游请求到 Anthropic Messages 上游的协议桥接、四类入口 JSON / SSE 响应渲染、`chat_completions|responses -> messages` 模型映射、OpenAI 下游错误渲染、Responses 状态或混合路由选中 Anthropic 模型的承接能力时，优先更新 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)；如果涉及 hosted tools、thinking、图片文件、structured output、MCP、computer、code execution、image_generation 或 compact 高兼容能力，再同步 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)，并按影响同步 [Anthropic 账号接入](Anthropic账号接入.md)、[多模型混合智能分级路由设计](多模型混合智能分级路由设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。如果涉及 OpenAI `file_id`、`/v1/files`、Vector Stores 或 Responses `file_search` 本地承接，还必须同步 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)；如果涉及 `code_interpreter`、`computer`、`mcp`、`shell`、`skills` 或 `tool_search` 真实执行器，还必须同步 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)。
 - 新增或调整 Anthropic Messages 下游请求到 OpenAI Chat Completions 上游的协议桥接、Anthropic JSON / SSE 响应还原、`messages -> chat_completions` 模型映射、Anthropic guidance 渲染或 Claude Code / Anthropic-compatible 客户端访问 Chat-only 上游时，优先更新 [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[AI 账户导入协议](AI账户导入协议.md) 和 [请求处理分层设计](请求处理分层设计.md)。
+- 新增或调整跨协议桥接框架、统一中间表示、协议能力矩阵、guidance-first 策略、新协议正反向接入模板或 OpenAI / Anthropic / Gemini native 之间新增互转方向时，优先更新 [协议桥接框架设计](协议桥接框架设计.md)，再同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、对应供应商协议兼容文档、[请求处理分层设计](请求处理分层设计.md) 和相关计划。
 - 新增或调整 Codex `/v1/responses` 到 OpenAI-compatible Chat Completions 的协议转换、Chat SSE 到 Responses SSE 事件映射、工具调用映射、reasoning 字段处理或供应商桥接启用条件时，优先更新 [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)，再按影响同步具体供应商接入文档。
 - 新增或调整智谱 GLM 通用 API、GLM Coding Plan、GLM OpenAI 兼容档案、GLM Anthropic / Claude Code 兼容档案、GLM Codex bridge、GLM 模型目录、GLM 价格口径或 GLM 账户测试时，优先更新 [智谱 GLM 账号接入](智谱GLM账号接入.md)、[Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 DeepSeek OpenAI-compatible、DeepSeek Anthropic / Claude Code 兼容档案、DeepSeek 协议档案、DeepSeek 特殊参数、DeepSeek 模型目录、DeepSeek 价格口径或 DeepSeek 账户测试时，优先更新 [DeepSeek 账号接入](DeepSeek账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。

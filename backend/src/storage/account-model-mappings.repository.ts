@@ -1,6 +1,5 @@
 import type {
   AccountModelMapping,
-  AccountModelMappingEndpointFamily,
   AccountModelMappingSourceEndpointFamily,
   AccountModelMappingUpstreamEndpointFamily
 } from '../domain/types.js'
@@ -11,6 +10,10 @@ import {
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
 } from '../domain/provider-protocol.js'
+import {
+  accountModelMappingEndpointFamilyLabel,
+  assertSupportedAccountModelMappingEndpointFamilyConversion
+} from './account-model-mapping-protocol-matrix.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
@@ -46,13 +49,13 @@ export function normalizeAccountModelMappingsInput(value: unknown): AccountModel
     const sourceEndpointFamily = sourceEndpointFamilyValue(record.sourceEndpointFamily)
     const upstreamModel = stringModelValue(record.upstreamModel, '上游模型')
     const upstreamEndpointFamily = upstreamEndpointFamilyValue(record.upstreamEndpointFamily)
-    assertSupportedEndpointFamilyConversion(sourceEndpointFamily, upstreamEndpointFamily)
+    assertSupportedAccountModelMappingEndpointFamilyConversion(sourceEndpointFamily, upstreamEndpointFamily)
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
     }
     const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
     if (seenSources.has(sourceKey)) {
-      throw new Error(`同一个下游模型和协议只能配置一条映射：${sourceModel} / ${endpointFamilyLabel(sourceEndpointFamily)}`)
+      throw new Error(`同一个下游模型和协议只能配置一条映射：${sourceModel} / ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)}`)
     }
     seenSources.add(sourceKey)
     output.push({
@@ -215,46 +218,19 @@ function sourceEndpointFamilyValue(value: unknown): AccountModelMappingSourceEnd
   ) {
     return value
   }
-  throw new Error(`下游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}、${endpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}、${endpointFamilyLabel(GEMINI_GENERATE_CONTENT_FAMILY)} 或 ${endpointFamilyLabel(GEMINI_STREAM_GENERATE_CONTENT_FAMILY)}`)
+  throw new Error(`下游协议必须是 ${accountModelMappingEndpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${accountModelMappingEndpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}、${accountModelMappingEndpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}、${accountModelMappingEndpointFamilyLabel(GEMINI_GENERATE_CONTENT_FAMILY)} 或 ${accountModelMappingEndpointFamilyLabel(GEMINI_STREAM_GENERATE_CONTENT_FAMILY)}`)
 }
 
 function upstreamEndpointFamilyValue(value: unknown): AccountModelMappingUpstreamEndpointFamily {
-  if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY || value === ANTHROPIC_MESSAGES_FAMILY) {
+  if (
+    value === OPENAI_CHAT_COMPLETIONS_FAMILY
+    || value === OPENAI_RESPONSES_FAMILY
+    || value === ANTHROPIC_MESSAGES_FAMILY
+    || value === GEMINI_GENERATE_CONTENT_FAMILY
+  ) {
     return value
   }
-  throw new Error(`上游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)} 或 ${endpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}`)
-}
-
-function assertSupportedEndpointFamilyConversion(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
-): void {
-  if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-    if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
-      throw new Error('Anthropic Messages 下游协议当前只支持显式桥接到 Chat Completions 上游')
-    }
-    return
-  }
-  if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
-    if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
-      throw new Error('Gemini GenerateContent 下游协议当前只支持显式桥接到 Chat Completions 上游')
-    }
-    return
-  }
-  if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
-    if (upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY || upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-      return
-    }
-  }
-  throw new Error(`暂不支持 ${endpointFamilyLabel(sourceEndpointFamily)} 到 ${endpointFamilyLabel(upstreamEndpointFamily)} 的协议转换`)
-}
-
-function endpointFamilyLabel(value: AccountModelMappingEndpointFamily): string {
-  if (value === OPENAI_RESPONSES_FAMILY) return 'Responses'
-  if (value === ANTHROPIC_MESSAGES_FAMILY) return 'Messages'
-  if (value === GEMINI_GENERATE_CONTENT_FAMILY) return 'Gemini GenerateContent'
-  if (value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) return 'Gemini StreamGenerateContent'
-  return 'Chat Completions'
+  throw new Error(`上游协议必须是 ${accountModelMappingEndpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${accountModelMappingEndpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}、${accountModelMappingEndpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)} 或 ${accountModelMappingEndpointFamilyLabel(GEMINI_GENERATE_CONTENT_FAMILY)}`)
 }
 
 export function loadModelMappingsForAccount(accountId: string): AccountModelMapping[] {

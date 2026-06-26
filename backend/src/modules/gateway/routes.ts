@@ -201,13 +201,17 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryExcludedAccountIds = new Set<string>()
   let streamServerRetryCount = 0
   let fallbackSwitchCount = 0
+  let lastExhaustedAgentGuidance: UpstreamAttemptError['agentGuidanceResponse']
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
     reason: string,
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
-    const groupBindingCount = currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0
+    const fallbackApiKeyRecord = reason === 'account_scoped_agent_guidance_exhausted'
+      ? currentPreflight.groupFallbackApiKeyRecord ?? currentPreflight.apiKeyRecord
+      : currentPreflight.apiKeyRecord
+    const groupBindingCount = fallbackApiKeyRecord?.group_bindings?.length ?? 0
     if (groupBindingCount > 0 && fallbackSwitchCount >= groupBindingCount) {
       auditCapture.addGatewayMetadata({
         label: 'api_key_group_route_fallback_skipped',
@@ -237,13 +241,14 @@ export async function handleOpenAIGatewayRequest(
       requestSnapshot,
       signal: abortController.signal,
       reason,
-      apiKeyRecord: currentPreflight.apiKeyRecord,
+      apiKeyRecord: fallbackApiKeyRecord,
       systemAccountId: gatewayUsageContext.systemAccountId,
       apiKeyId: gatewayUsageContext.apiKeyId,
       groupId: gatewayUsageContext.groupId,
       trafficSource: gatewayUsageContext.trafficSource,
       requestLane: currentPreflight.requestLane,
       requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
+      groupFallbackApiKeyRecord: currentPreflight.groupFallbackApiKeyRecord ?? currentPreflight.apiKeyRecord,
       excludedAccountIds: exhaustedAccountIds,
       allowCandidateWrap: input.allowCandidateWrap
     })
@@ -374,6 +379,9 @@ export async function handleOpenAIGatewayRequest(
         if (fallbackSwitch === 'switched') {
           continue
         }
+        if (lastExhaustedAgentGuidance) {
+          throw lastExhaustedAgentGuidance
+        }
         throw new UpstreamAttemptError('没有可用的上游账户')
       }
       if (codexTurnAccountAvoidanceApplied) {
@@ -442,6 +450,7 @@ export async function handleOpenAIGatewayRequest(
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
+          lastExhaustedAgentGuidance = error.agentGuidanceResponse
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
             exhaustedAccountIds.add(accountId)
           }
@@ -454,12 +463,18 @@ export async function handleOpenAIGatewayRequest(
           if (codexTurnAccountAvoidanceApplied) {
             continue
           }
-          const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', { allowCandidateWrap: true })
+          const fallbackReason = error.agentGuidanceResponse
+            ? 'account_scoped_agent_guidance_exhausted'
+            : 'upstream_accounts_exhausted'
+          const fallbackSwitch = await switchToFallbackGroup(fallbackReason, { allowCandidateWrap: true })
           if (fallbackSwitch === 'completed') {
             return
           }
           if (fallbackSwitch === 'switched') {
             continue
+          }
+          if (error.agentGuidanceResponse) {
+            throw error.agentGuidanceResponse
           }
         }
         throw error

@@ -73,14 +73,14 @@ try {
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       enabled: true
     }, access)
-    const account = repositories.createAccount({
+    assert.throws(() => repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      name: '通用 OpenAI 兼容网关 E2E 账户',
+      name: '通用 OpenAI 兼容网关非法 Chat 到 Responses 映射账户',
       type: 'api_key',
       credentials: {
-        api_key: 'sk-openai-compatible-upstream',
+        api_key: 'sk-openai-compatible-upstream-invalid',
         base_url: upstreamBaseUrl,
-        supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
+        supported_endpoint_modes: ['responses_json', 'responses_sse']
       },
       groupId: group.id,
       status: 'active',
@@ -92,6 +92,20 @@ try {
         upstreamEndpointFamily: 'responses',
         enabled: true
       }]
+    }, access), /暂不支持 Chat Completions 到 Responses 的协议转换/, '通用 OpenAI-compatible 账号必须拒绝 Chat -> Responses 映射')
+
+    const account = repositories.createAccount({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      name: '通用 OpenAI 兼容网关 E2E 账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-openai-compatible-upstream',
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true
     }, access)
     const apiKey = repositories.createApiKeyRecord({
       name: '通用 OpenAI 兼容网关 E2E Key',
@@ -124,66 +138,6 @@ try {
     assert.equal(upstreamPath, '/v1/chat/completions')
     assert.equal(upstreamAuthorization, 'Bearer sk-openai-compatible-upstream')
     assert.match(upstreamRequestBody, /generic openai provider/)
-
-    const bridgeJsonResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: chatToResponsesSourceModel,
-        messages: [{ role: 'user', content: 'call lookup tool' }],
-        tools: [{
-          type: 'function',
-          function: {
-            name: 'lookup',
-            description: 'lookup test data',
-            parameters: {
-              type: 'object',
-              properties: { query: { type: 'string' } },
-              required: ['query']
-            }
-          }
-        }],
-        tool_choice: { type: 'function', function: { name: 'lookup' } },
-        stream: false
-      })
-    })
-    const bridgeJsonText = await bridgeJsonResponse.text()
-    assert.equal(bridgeJsonResponse.status, 200, `Chat -> Responses JSON bridge 应成功，实际 HTTP ${bridgeJsonResponse.status}: ${bridgeJsonText}`)
-    const bridgeJsonBody = JSON.parse(bridgeJsonText) as { choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> }; finish_reason?: string }> }
-    assert.equal(bridgeJsonBody.choices?.[0]?.finish_reason, 'tool_calls')
-    assert.equal(bridgeJsonBody.choices?.[0]?.message?.content, null)
-    assert.equal(bridgeJsonBody.choices?.[0]?.message?.tool_calls?.[0]?.function?.name, 'lookup')
-    assert.match(bridgeJsonBody.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments ?? '', /query/)
-    assert.equal(upstreamPath, '/v1/responses')
-    const bridgeJsonUpstreamBody = JSON.parse(upstreamRequestBody) as { model?: string; input?: unknown[]; tools?: Array<{ type?: string; name?: string }>; tool_choice?: { type?: string; name?: string } }
-    assert.equal(bridgeJsonUpstreamBody.model, chatToResponsesUpstreamModel, 'Chat -> Responses bridge 应改写上游模型')
-    assert.equal(bridgeJsonUpstreamBody.tools?.[0]?.type, 'function', 'Chat function tool 应转换为 Responses function tool')
-    assert.equal(bridgeJsonUpstreamBody.tools?.[0]?.name, 'lookup', 'Chat function 名称应进入 Responses tool 顶层')
-    assert.equal(bridgeJsonUpstreamBody.tool_choice?.name, 'lookup', 'Chat tool_choice 应转换为 Responses tool_choice')
-
-    const bridgeSseResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: chatToResponsesSourceModel,
-        messages: [{ role: 'user', content: 'stream through responses' }],
-        stream: true
-      })
-    })
-    const bridgeSseText = await bridgeSseResponse.text()
-    assert.equal(bridgeSseResponse.status, 200, `Chat -> Responses SSE bridge 应成功，实际 HTTP ${bridgeSseResponse.status}: ${bridgeSseText}`)
-    assert.match(bridgeSseResponse.headers.get('content-type') ?? '', /text\/event-stream/)
-    assert.match(bridgeSseText, /chat\.completion\.chunk/, 'Chat -> Responses SSE bridge 应输出 Chat chunk')
-    assert.match(bridgeSseText, /data:\s*\[DONE\]/, 'Chat -> Responses SSE bridge 应以 [DONE] 结束')
-    assert.match(bridgeSseText, /responses-stream-ok/, 'Chat -> Responses SSE bridge 应透出 Responses 文本 delta')
-    assert.equal(upstreamPath, '/v1/responses')
-    assert.equal(JSON.parse(upstreamRequestBody).stream, true, '下游 Chat SSE 应转换为上游 Responses SSE')
 
     const updated = repositories.findAccountSummary(account.id, access)
     assert.equal(updated?.providerCode, OPENAI_COMPATIBLE_PROVIDER_CODE, '命中账号应保持通用 openai providerCode')

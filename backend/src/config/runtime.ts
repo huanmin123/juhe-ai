@@ -31,6 +31,9 @@ export interface RuntimeConfig {
   }
   dbServiceHttpHost: string
   dbServiceHttpPort: number
+  systemApi: {
+    dbServiceMaxInFlight: number
+  }
   postgres: {
     url?: string
     poolMax: number
@@ -179,10 +182,18 @@ export const defaultOpenAICompatibleFilesRoot = resolve(backendRoot, 'data', 'op
 export const defaultCodeInterpreterTempRoot = resolve(backendRoot, 'data', 'code-interpreter-tmp')
 export const defaultCodexContextStateShardRoot = resolve(defaultCodexContextRoot, 'state-shards')
 export const defaultRuntimeSecret = 'juhe-ai-dev-secret-change-me'
+export const defaultStandaloneSystemApiDbServiceMaxInFlight = 64
+export const defaultPerformanceSystemApiDbServiceMaxInFlight = 256
 const minimumProductionSecretLength = 32
 
 const localEnv = loadLocalEnv(localEnvPath)
+const localEnvOverlayPath = envFilePathConfig(process.env.JUHE_AI_ENV_FILE ?? localEnv.JUHE_AI_ENV_FILE)
+const localEnvOverlay = localEnvOverlayPath ? loadLocalEnv(localEnvOverlayPath) : {}
 const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', 'standalone')
+const defaultSystemApiDbServiceMaxInFlight =
+  configuredRuntimeMode === 'performance'
+    ? defaultPerformanceSystemApiDbServiceMaxInFlight
+    : defaultStandaloneSystemApiDbServiceMaxInFlight
 const configuredDatabaseDriver = databaseDriverConfig(
   'JUHE_AI_DATABASE_DRIVER',
   configuredRuntimeMode === 'performance' ? 'postgres' : 'sqlite'
@@ -228,6 +239,14 @@ export const runtimeConfig: RuntimeConfig = {
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
+  systemApi: {
+    dbServiceMaxInFlight: numberConfig(
+      'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT',
+      defaultSystemApiDbServiceMaxInFlight,
+      1,
+      5000
+    )
+  },
   postgres: {
     url: configuredPostgresUrl,
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
@@ -338,13 +357,19 @@ function loadLocalEnv(path: string): Record<string, string> {
   return parse(readFileSync(path))
 }
 
+function envFilePathConfig(value: string | undefined): string | undefined {
+  const trimmedValue = value?.trim()
+  if (!trimmedValue) return undefined
+  return isAbsolute(trimmedValue) ? trimmedValue : resolve(backendRoot, trimmedValue)
+}
+
 function stringConfig(name: string, fallback: string): string {
   const value = rawStringConfig(name)
   return value ? value : fallback
 }
 
 function rawStringConfig(name: string): string | undefined {
-  return process.env[name]?.trim() ?? localEnv[name]?.trim()
+  return process.env[name]?.trim() ?? localEnvOverlay[name]?.trim() ?? localEnv[name]?.trim()
 }
 
 function secretConfig(name: string, fallback: string): string {
@@ -361,7 +386,7 @@ function assertProductionSecret(name: string, value: string): void {
 }
 
 export function isProductionRuntime(): boolean {
-  return (process.env.NODE_ENV?.trim() ?? localEnv.NODE_ENV?.trim() ?? '').toLowerCase() === 'production'
+  return (rawStringConfig('NODE_ENV') ?? '').toLowerCase() === 'production'
 }
 
 function optionalStringConfig(name: string): string | undefined {

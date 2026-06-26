@@ -904,8 +904,8 @@ function accountModelMappingSourceEndpointFamilyValue(value: unknown): 'chat_com
     : undefined
 }
 
-function accountModelMappingUpstreamEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | 'messages' | undefined {
-  return value === 'chat_completions' || value === 'responses' || value === 'messages' ? value : undefined
+function accountModelMappingUpstreamEndpointFamilyValue(value: unknown): 'chat_completions' | 'responses' | 'messages' | 'generate_content' | undefined {
+  return value === 'chat_completions' || value === 'responses' || value === 'messages' || value === 'generate_content' ? value : undefined
 }
 
 function availabilityScheduleValue(value: unknown): AccountAvailabilitySchedule | undefined {

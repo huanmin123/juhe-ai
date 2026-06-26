@@ -39,6 +39,13 @@
 
 ## 配置模型
 
+配置文件按职责分层：
+
+- `backend/.env` 只保留通用和 standalone 默认配置，例如监听端口、密钥、Cookie、日志、SQLite 路径和 smoke 参数。
+- 非 Docker 高性能节点复制 `backend/.env.performance.example` 为 `backend/.env.performance`，再通过 `JUHE_AI_ENV_FILE=./.env.performance` 从主配置加载覆盖项。
+- Docker 高性能部署只使用 `docker/.env.performance` 和 `docker/compose.performance.yml` 管理中间件、容器内连接串和高并发参数。
+- 加载优先级为进程环境变量 > `JUHE_AI_ENV_FILE` 指向的覆盖文件 > `backend/.env`。
+
 新增运行模式配置：
 
 ```dotenv
@@ -65,7 +72,8 @@ JUHE_AI_REDIS_STREAM_MAXLEN=1000000
 JUHE_AI_REDIS_STREAM_READ_COUNT=1000
 JUHE_AI_REDIS_STREAM_BLOCK_MS=1000
 JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS=60000
-JUHE_AI_DB_POOL_MAX=50
+JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT=256
+JUHE_AI_DB_POOL_MAX=150
 JUHE_AI_DB_WRITE_MAX_CONCURRENCY=100
 JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 ```
@@ -134,6 +142,8 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 - 业务唯一约束继续由数据库兜底，例如账号名称、API Key token hash、分组绑定、授权来源等。
 - 管理端幂等仍保留 Redis / 内存防重复提交 + 数据库唯一约束双层保护。
 - PostgreSQL 不存在 SQLite 文件级全局写锁，但仍存在行锁、索引页竞争、连接池耗尽、长事务和 autovacuum 压力；高性能模式不能把所有队列无限并发。
+- System API 管理端 DB 在途请求默认保留保护阈值：standalone 默认 `64`，performance 默认 `256`，可按高性能部署压测继续调整。
+- 同一账号等热点资源的高频并发写入仍会形成行锁排队；需要按资源维度串行、合并写入或把短 TTL 运行态拆到 Redis，不能因为切换 PostgreSQL 就把同一行无限并发写。
 
 ## SQL Dialect 与 Repository
 
@@ -191,7 +201,7 @@ repository 迁移原则：
 - 新增全局设置和系统设置局部更新的 async 双 driver 版本，写入通过 `DatabaseClient.transaction()` 执行，并在写入后清理 settings cache。
 - `backend/src/modules/system-api/system-api-app.ts` 的 `/__aisys__/api/settings/public`、`backend/src/modules/system-api/system-api-rate-limit.middleware.ts` 的限流配置读取，以及 `backend/src/modules/settings/settings.routes.ts` 的 `/settings/global`、`/settings` GET / PATCH 已切到 async settings repository。
 - `backend/src/modules/operation-logs/operation-log.service.ts` 新增 `runLoggedOperationAsync()`，用于 settings async 路由在记录操作日志前通过 `getSettingsAsync()` 读取 operation log 配置。
-- `backend/src/shared/gateway-cache-invalidation.ts` 在 PostgreSQL driver 下不再触碰 SQLite after-commit 队列，已迁移的 PG 写路径在事务提交后直接执行当前进程 invalidator；跨进程缓存失效广播仍需后续 Redis / runtime state 化。
+- `backend/src/shared/gateway-cache-invalidation.ts` 在 PostgreSQL driver 下不再触碰 SQLite after-commit 队列，已迁移的 PG 写路径在事务提交后直接执行当前进程 invalidator；performance 模式下会把网关运行态、授权额度和 API Key 额度缓存失效版本写入 Redis runtime state，其他 server 进程在网关 / 配额读取入口按 1 秒节流同步版本并触发本地 handler。
 - `pnpm --filter juhe-ai-backend test:settings-public-driver` 已覆盖本地 SQLite 和远端 PostgreSQL / Redis URL 下的设置读取一致性。
 - `pnpm --filter juhe-ai-backend test:settings-management-driver` 已覆盖本地 SQLite 和远端 PostgreSQL / Redis URL 下的设置管理读写一致性。
 - `pnpm --filter juhe-ai-backend test:performance-system-api-smoke` 已覆盖 public settings、captcha、login、me、settings GET / PATCH、system-accounts GET / POST / PATCH、providers、provider options 和 logout 的最小 HTTP 链路。
@@ -213,26 +223,31 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - 新增 API Key 列表、分页、摘要、secret 查询、创建、更新、刷新密钥和删除的 async 双 driver 版本。
 - PostgreSQL 查询通过 `juhe_business` schema 读取 `api_keys`、`api_key_group_bindings`、`groups`、`system_accounts`、`resource_authorizations`、`group_authorization_settings` 和 `request_quota_hourly_window_configs`。
 - 创建和更新保留分组绑定边界、同账户名称唯一性、启用分组保护、分组优先级唯一性、额度限制、时间计划、密钥加密和网关缓存 / 额度缓存失效语义。
-- 网关 API Key 校验入口已新增 async 双 driver 版本；PG 模式下 `read_gateway_runtime` 能读取有效 API Key、绑定分组、网关设置、分组访问元数据、响应检查策略和最小可调度账号候选。候选账号读取已通过 `juhe_business` / `juhe_stats` schema 覆盖分组绑定、账号状态、授权实例、支持模型、模型映射、API Key 运行态、代理和质量分窗口；完整 `/v1` PG-ready 仍需继续迁移账号管理写路径、模型目录、usage / stats、授权额度和审计记录链路。
+- 网关 API Key 校验入口已新增 async 双 driver 版本；PG 模式下 `read_gateway_runtime` 能读取有效 API Key、绑定分组、网关设置、分组访问元数据、响应检查策略和最小可调度账号候选。候选账号读取已通过 `juhe_business` / `juhe_stats` schema 覆盖分组绑定、账号状态、授权实例、支持模型、模型映射、API Key 运行态、代理和质量分窗口；完整 `/v1` PG-ready 仍需继续迁移账号管理写路径、usage / stats、授权额度和审计记录链路。
 - `account_supported_models` 和 `account_model_mappings` 已新增 async replace helper；PG 模式下通过事务先删后写，供账号创建 / 更新迁移复用。`test:api-key-management-driver` 已覆盖创建账号时直接写入最小候选账号模型配置，并从 `read_gateway_runtime` 断言读回。
 - `createAccountAsync` 已新增 PG 最小创建路径：同一事务写入 `accounts`、`group_accounts`、账号名称搜索词、标签绑定、支持模型和模型映射，提交后失效账号 / 分组 / 网关运行态缓存。模型目录读取已新增 async 路径，用于账号创建时校验内置模型和 `custom_provider_models`；`POST /__aisys__/api/accounts` 已切到 async 创建路径并由 `test:performance-system-api-smoke` 覆盖。
+- 自定义模型管理已新增 async PG 路径：`/providers/models/options`、`/providers/:code/models` 列表、创建、更新和删除会通过 async provider、模型目录和 `custom_provider_models` repository 读取 / 写入 PostgreSQL；pricingModel 引用校验、个人模型权限和已绑定账户删除保护保持原语义。`test:model-catalog` 覆盖 SQLite 详细契约，`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下自定义模型 HTTP 创建、pricingModel 引用、列表、更新和删除。
 - `listAccountsPageAsync()` 已新增 PG 普通 owner 账号列表分页读取：支持分页、账号名称精确 / 前缀 / 词项候选包含搜索、供应商、协议档案、分组、标签、类型、状态、调度状态和基础排序；不做精确 `COUNT(*)`，沿用 `pageSize + 1` 上界 total 语义。该路径暂不返回授权实例列表、质量分排序和 usage 聚合。
 - `listAccountOptionsAsync()` 已新增 PG 普通 owner 账号 options 轻量读取：支持 ID、账号名称精确 / 前缀 / 词项候选包含搜索、供应商、协议档案、分组、标签、类型、状态和调度状态过滤；只返回下拉所需轻量字段，不读取统计库质量分和 usage 聚合。
-- `findAccountSummaryAsync()` / `findAccountForTestAsync()` 已新增 PG 普通 owner 账号详情读取：从 `accounts`、`group_accounts`、`groups`、支持模型、模型映射和标签表装配 `AccountSummary`，用于 `GET /__aisys__/api/accounts/:id` 回看新建账号。该路径暂不装配授权实例详情、实时 usage / stats、账号质量和 API Key 运行态明细，统计字段按空聚合返回，后续必须接入预聚合窗口而不是在详情请求里扫描明细表。
+- `findAccountSummaryAsync()` / `findAccountForTestAsync()` 已新增 PG 普通 owner 账号详情读取，并补齐授权实例单账号详情读取：从 `accounts`、`group_accounts`、`groups`、授权运行态、源账号事实、支持模型、模型映射和标签表装配 `AccountSummary`，用于 `GET /__aisys__/api/accounts/:id` 回看新建账号和授权实例调度恢复。该路径暂不装配完整授权实例列表、实时 usage / stats、账号质量和 API Key 运行态明细，统计字段按空聚合返回，后续必须接入预聚合窗口而不是在详情请求里扫描明细表。
 - `updateAccountAsync()` 和 `setAccountGroupAsync()` 已新增 PG 普通 owner 账号常规更新路径：支持名称、备注、凭据、状态、并发、优先级、超级优先、降级备用、客户端兼容、支持模型、模型映射、标签、代理、调度开关、过期时间、时间计划和分组绑定更新；更新名称会同步普通授权实例名称搜索索引。
-- `clearAccountFailureStateAsync()` 已新增 PG 普通 owner 账号异常状态恢复路径：支持将临时不可用、限流中和错误状态恢复为 active，并清理冷却、失败、stream failure 和重测状态字段；套餐过期账号仍保持 disabled 并写入 `account_expired`。授权实例异常状态恢复仍等待授权实例运行态 mutation repository 迁移。
+- `clearAccountFailureStateAsync()` 已新增 PG 普通 owner 账号异常状态恢复路径，`updateAuthorizedAccountBindingDispatchAsync()` 已新增 PG 授权实例调度恢复路径：支持将临时不可用、限流中和错误状态恢复为 active，并清理冷却、失败、stream failure 和重测状态字段；套餐过期 owner 账号仍保持 disabled 并写入 `account_expired`。授权实例恢复会校验当前被授权账号、目标分组和运行态授权绑定，避免跨用户恢复。
 - `deleteAccountWithRelatedCleanupAsync()` 已新增 PG 普通 owner 账号逻辑删除路径：事务内撤销该账号资源的授权 grant / runtime authorization / source，逻辑删除源账号和对应授权实例，清理标签绑定与名称搜索索引，提交后失效账号、分组、网关和授权运行态缓存。该路径暂不执行过期已删除账号的物理清理，也不登记 dataset / stats 历史数据清理目标。
 - `returnAccountAuthorizationInstanceForGranteeAsync()` 已新增 PG 授权账户实例归还路径：通过事务把个人直授权 grant 标记为 `returned`，撤销 manual source，并按 active team / paused team / active manual / 无有效来源顺序刷新 runtime authorization；`POST /__aisys__/api/accounts/:id/return-authorization` 已切到 async repository。
-- `returnResourceAuthorizationForGranteeAsync()` 和 `returnGroupAuthorizationForGranteeAsync()` 已新增 PG 授权列表个人归还 / 分组个人归还路径；`POST /__aisys__/api/authorizations/:id/return` 和 `POST /__aisys__/api/groups/:id/return-authorization` 已切到 async repository。当前覆盖个人归还，不代表完整授权创建、授权更新、授权回收、授权列表读取和授权实例管理已全部 PG-ready。
-- 完整账号管理端还需授权实例列表 / 详情 / options、授权实例异常状态恢复、过期物理清理和模型管理 CRUD 继续迁移。
+- `returnResourceAuthorizationForGranteeAsync()` 和 `returnGroupAuthorizationForGranteeAsync()` 已新增 PG 授权列表个人归还 / 分组个人归还路径；`POST /__aisys__/api/authorizations/:id/return` 和 `POST /__aisys__/api/groups/:id/return-authorization` 已切到 async repository。当前覆盖个人归还，团队归还仍按后续完整授权场景继续补回归。
+- `listResourceAuthorizationsPageAsync()` 和授权候选项 options 已新增 PG 读取路径：`/__aisys__/api/authorizations`、`/__aisys__/api/my-authorizations`、`/__aisys__/api/authorization-options/grantee-accounts`、`grantee-teams`、`grantee-groups` 会读取 `juhe_business` 授权 / 系统账号 / 团队 / 分组表，并通过 `juhe_stats` 预聚合表装配授权列表 usage 摘要。路由进入列表前的统计时区读取已新增 `usageStatsTimezoneAsync()`，PG 模式下不再回退打开 SQLite 设置库。
+- `getResourceAuthorizationUsageAsync()` 已新增 PG 授权 usage 详情读取路径：`GET /__aisys__/api/authorizations/:id/usage` 会通过 `juhe_business.resource_authorizations` 定位运行态授权，并从 `juhe_stats.usage_scope_range_windows` / `authorization_team_usage_range_windows` 读取个人或团队授权范围窗口；路由使用异步统计时区读取，不再在 PG 模式下打开 SQLite 设置库。
+- `createResourceAuthorizationAsync()` 已新增 PG 授权创建路径：`POST /__aisys__/api/authorizations` 会在同一事务内写入 grant、runtime authorization、source、额度窗口配置；授权 AI 账号给个人时会创建或恢复授权实例账号并绑定目标分组。当前 HTTP smoke 覆盖个人账号授权创建 / 回收，团队授权 fanout 逻辑已按同步路径迁移但仍建议补独立团队场景回归。
+- `updateResourceAuthorizationAsync()` 和 `revokeResourceAuthorizationAsync()` 已新增 PG 现有授权管理写路径：`PATCH /__aisys__/api/authorizations/:id` 支持暂停 / 恢复和额度更新，`PATCH /__aisys__/api/authorizations/:id/expire` 支持有效期与额度更新，`DELETE /__aisys__/api/authorizations/:id` 支持回收；PG 事务内会更新 grant、runtime authorization、source、额度窗口配置，并在提交后失效网关运行态、授权额度、API Key 校验和授权读取缓存。
+- 完整账号管理端还需授权实例列表视图、过期物理清理、统计聚合和使用记录读写继续迁移；当前 `authorizations` 路由本身没有独立 `GET /:id` 详情入口。
 - PG 模式下 API Key 摘要会读取真实绑定分组；`usage` 暂时返回空聚合，等待 usage / stats repository 迁移后接入预聚合窗口。
 - PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并返回 cleanup target；路由暂不投递旧的 dataset / stats 清理目标，等待 dataset / record-maintenance 清理仓储迁移后恢复。
-- PG 模式下暂不支持混合路由模型目录校验；模型目录 repository 迁移完成前，管理端创建 / 更新混合路由 API Key 会被显式拒绝。
+- PG 模式下 API Key 创建 / 更新混合路由配置会通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下混合路由 API Key 的 HTTP 创建、更新和删除。
 - `backend/src/modules/api-keys/api-keys.routes.ts` 的列表、secret、创建、更新、刷新密钥和删除已切到 async repository。
 - `pnpm --filter juhe-ai-backend test:api-key-management-driver` 已覆盖本地 SQLite 和远端 PostgreSQL / Redis URL 下的 API Key 管理读写、网关 Key 校验和 `read_gateway_runtime` Key 读取入口一致性。
-- `pnpm --filter juhe-ai-backend test:performance-system-api-smoke` 已扩展覆盖 accounts POST / GET 列表 / 详情 / options / PATCH / clearFailureState / DELETE 以及 api-keys GET / POST / PATCH / secret / refresh-key / DELETE 的最小 HTTP 链路。
+- `pnpm --filter juhe-ai-backend test:performance-system-api-smoke` 已扩展覆盖 accounts POST / GET 列表 / 详情 / options / PATCH / clearFailureState / DELETE、authorizations `POST` / `GET /:id/usage` / `PATCH /:id` / `PATCH /:id/expire` / `DELETE /:id` 以及 api-keys GET / POST / PATCH / secret / refresh-key / DELETE 的最小 HTTP 链路。
 
-其他业务 repository 仍待逐个迁移到该接口，尤其是账号授权实例列表 / 详情 / options、授权实例异常状态恢复、授权创建 / 更新 / 回收 / 列表、模型管理 CRUD、统计和使用记录读写路径；不能据此认为完整管理端已 PG-ready。
+其他业务 repository 仍待逐个迁移到该接口，尤其是完整授权实例列表视图、统计和使用记录读写路径；不能据此认为完整管理端已 PG-ready。
 
 ## Redis 缓存与运行态
 
@@ -282,7 +297,7 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
 - API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文和可能造成越权的权限中间结果不得进入通用 Redis cache。
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
-- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、账号并发槽 Redis 原子获取 / 释放；仍需继续迁移会话亲和、客户端 IP 并发、错误熔断、验证码挑战和缓存失效广播。
+- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、账号并发槽 Redis 原子获取 / 释放和网关缓存失效 runtime state 版本广播；仍需继续迁移会话亲和、客户端 IP 并发、错误熔断和验证码挑战。
 
 ## 队列与消费并发
 
@@ -367,7 +382,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 | --- | --- | --- |
 | 配置 | standalone 默认启动 | 不要求 PostgreSQL / Redis，行为与当前一致 |
 | 配置 | performance 缺少 PostgreSQL / Redis | 启动快速失败，错误可读 |
-| SQL dialect | SQLite / PostgreSQL 同一 repository 语义 | CRUD、分页、唯一约束、upsert、事务回滚一致；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、公共设置读取、系统 API 限流设置读取和系统设置管理读写已通过双 driver 回归 |
+| SQL dialect | SQLite / PostgreSQL 同一 repository 语义 | CRUD、分页、唯一约束、upsert、事务回滚一致；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、授权列表 / options / usage 详情读取、公共设置读取、系统 API 限流设置读取和系统设置管理读写已通过双 driver 回归 |
 | Redis cache | memory / redis driver 一致 | TTL、失效、序列化、domain clear 行为一致 |
 | Redis state | 原子计数和锁 | 并发下不突破限制，不出现锁误释放 |
 | 队列 | DB 写并发上限 100，Redis Streams 使用记录缓冲 | 入队即触发消费，连接池不爆，pending 可重投，低优先级不饿死高优先级 |
@@ -379,11 +394,11 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 ## 落地顺序
 
 1. 新增配置模型、运行模式校验和文档。已完成基础配置、`.env` 示例和 fail-fast 校验。
-2. 抽象 `DatabaseClient` / `SqlDialect`，先让 SQLite 在新接口下通过现有回归。基础层已完成并接入 PostgreSQL 初始化脚本；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、公共设置读取、系统 API 限流设置读取和系统设置管理读写已完成，主要写路径和其他 repository 迁移待完成。
+2. 抽象 `DatabaseClient` / `SqlDialect`，先让 SQLite 在新接口下通过现有回归。基础层已完成并接入 PostgreSQL 初始化脚本；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、授权列表 / options / usage 详情读取、公共设置读取、系统 API 限流设置读取和系统设置管理读写已完成，主要写路径和其他 repository 迁移待完成。
 3. 抽象 `AppCache` / `SharedJsonCache` / `RuntimeStateStore`，先让 memory driver 行为不变。已完成基础 driver，仍需迁移全部调用点。
 4. 搭建 `192.168.1.203` Docker 测试栈：PostgreSQL、PgBouncer、Redis cache、Redis state。
-5. 新增 PostgreSQL schema、schema 初始化脚本和 repository PG adapter。已完成 PostgreSQL pool、schema 映射初始化脚本、默认种子写入、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter 和系统设置管理读写 adapter；其他 repository adapter 待完成。
-6. 新增 Redis cache / runtime state driver，迁移网关运行态缓存调用点。已完成登录失败窗口和账号并发槽，其他运行态待迁移。
+5. 新增 PostgreSQL schema、schema 初始化脚本和 repository PG adapter。已完成 PostgreSQL pool、schema 映射初始化脚本、默认种子写入、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、授权列表 / options / usage 详情读取 adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter 和系统设置管理读写 adapter；其他 repository adapter 待完成。
+6. 新增 Redis cache / runtime state driver，迁移网关运行态缓存调用点。已完成登录失败窗口、账号并发槽和网关缓存失效版本广播，其他运行态待迁移。
 7. 调整写队列 drain 策略，performance 模式启用最大并发 `100` 和连接池背压。已完成使用记录 Redis Streams 首批队列和 PG 并发 drain 骨架，其他写队列待迁移。
 8. 增加离线 SQLite -> PostgreSQL 迁移脚本和统计重建流程。
 9. 完成压测、故障演练、备份恢复和部署文档。
