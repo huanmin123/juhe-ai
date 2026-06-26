@@ -26,7 +26,6 @@ import {
   replaceGatewayJsonBody,
   type GatewayRawBodyRequest
 } from '../request/body.js'
-import { requestStream } from '../request/metadata.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
@@ -528,9 +527,8 @@ function isChatOnlyCodexResponsesBridgeStateRequest(
   requestClientCompatibility: ClientCompatibilityCapability,
   accounts: readonly UpstreamAccount[]
 ): boolean {
-  return requestClientCompatibility === 'codex_responses'
-    && requestStream(req)
-    && isOpenAIResponsesPostRequest(req)
+  void requestClientCompatibility
+  return isOpenAIResponsesPostRequest(req)
     && accounts.some((account) => account.clientCompatibility === 'codex_responses')
 }
 

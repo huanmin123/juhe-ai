@@ -12,6 +12,9 @@ import type {
   ModelCheckRunDetail,
   ModelCheckRunListParams,
   MonitoredDatabaseRole,
+  OpenAICompatibleMcpApprovalPolicy,
+  OpenAICompatibleMcpApprovalStatus,
+  OpenAICompatibleMcpExecutionStatus,
   PublicApiLogResultFilter,
   RequestQuotaLimits,
   ResponseInspectionPolicyAction,
@@ -157,7 +160,7 @@ export interface AccountDraftTestAccountPayload {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
-  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages'; enabled: boolean }>
+  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages'; enabled: boolean }>
   proxyProfileId?: string | null
   groupId: string
   accountExpiresAt?: string | null
@@ -192,6 +195,64 @@ export interface UsageRecordListParams extends ListParams {
   endDate?: string
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
   sortOrder?: SortDirection
+}
+
+export interface OpenAICompatibleMcpServerListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  enabled?: 'all' | 'true' | 'false'
+}
+
+export interface OpenAICompatibleMcpServerPayload {
+  label: string
+  serverUrl: string
+  description?: string | null
+  enabled?: boolean
+  allowedTools?: string[]
+  defaultApprovalPolicy?: OpenAICompatibleMcpApprovalPolicy
+  timeoutMs?: number | null
+  maxRetries?: number | null
+  retryDelayMs?: number | null
+  maxBodyBytes?: number | null
+  maxOutputBytes?: number | null
+  allowRequestAuthorization?: boolean
+  authorizationRef?: string | null
+}
+
+export interface OpenAICompatibleMcpServerDiagnosePayload {
+  authorization?: string
+}
+
+export interface OpenAICompatibleMcpApprovalRequestListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  apiKeyId?: string
+  groupId?: string
+  traceId?: string
+  serverLabel?: string
+  toolName?: string
+  status?: OpenAICompatibleMcpApprovalStatus | 'all'
+  startAt?: string
+  endAt?: string
+}
+
+export interface OpenAICompatibleMcpApprovalRejectPayload {
+  rejectReason?: string
+}
+
+export interface OpenAICompatibleMcpExecutionRecordListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  apiKeyId?: string
+  groupId?: string
+  traceId?: string
+  approvalRequestId?: string
+  serverLabel?: string
+  toolName?: string
+  status?: OpenAICompatibleMcpExecutionStatus | 'all'
+  startAt?: string
+  endAt?: string
 }
 
 export interface AuditLogListParams extends ListParams {

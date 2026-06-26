@@ -32,7 +32,7 @@ export const geminiV1BetaProtocolDriver: GatewayProtocolDriver = {
   protocolVersion: GEMINI_PROTOCOL_VERSION,
   responseProtocol: 'gemini_v1beta',
   clientErrorProtocol: 'gemini',
-  defaultClientProfile: 'generic_openai',
+  defaultClientProfile: 'generic_gemini',
   supportsProfile: isGeminiProtocolProfile,
   endpointModeForRequestShape: geminiEndpointModeForRequestShape,
   isNativeRequest: isGeminiNativeRequest,

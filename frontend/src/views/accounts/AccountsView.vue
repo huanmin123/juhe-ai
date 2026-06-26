@@ -162,6 +162,7 @@
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
       :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
+      :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
       :model-options="providerModelOptions"
       :models-loading="strategyModelsLoading"
@@ -461,6 +462,7 @@ const {
   isOAuthForm,
   isOpenAIOAuthForm,
   mappingAnthropicSourceModelOptions,
+  mappingGeminiSourceModelOptions,
   mappingSourceModelOptions,
   modalConfirmLoading,
   modalOkButtonProps,

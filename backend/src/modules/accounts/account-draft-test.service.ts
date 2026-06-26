@@ -3,7 +3,7 @@ import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountClientCompatibility, AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
+import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson
@@ -141,11 +141,6 @@ export function prepareAccountDraftTestSnapshot(input: {
   })
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: accountInput.availabilitySchedule })
   const availabilityScheduleJson = accountAvailabilityScheduleJson(availabilitySchedule) ?? undefined
-  assertDraftEndpointModesCompatible(providerProfile, {
-    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
-    accountType: accountInput.type,
-    clientCompatibility
-  })
   const account = draftTestAccountSummary({
     id: input.draftAccountId,
     account: accountInput,
@@ -157,6 +152,12 @@ export function prepareAccountDraftTestSnapshot(input: {
     providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion
+  })
+  assertDraftEndpointModesCompatible(providerProfile, {
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelMappings: account.modelMappings,
+    accountType: accountInput.type,
+    clientCompatibility
   })
   return {
     account,
@@ -348,6 +349,7 @@ function assertDraftEndpointModesCompatible(
   },
   input: {
     modes: readonly AccountSupportedEndpointMode[]
+    modelMappings?: readonly AccountModelMapping[]
     accountType?: string
     clientCompatibility: AccountSummary['clientCompatibility']
   }
@@ -362,6 +364,7 @@ function assertDraftEndpointModesCompatible(
   if (isOpenAIProtocolProfile(providerProfile)) {
     assertOpenAIEndpointModesCompatible({
       modes: input.modes,
+      modelMappings: input.modelMappings,
       providerCode: providerProfile.providerCode,
       providerProtocolProfileId: providerProfile.providerProtocolProfileId ?? providerProfile.id,
       accountType: input.accountType,

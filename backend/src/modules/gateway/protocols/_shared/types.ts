@@ -17,7 +17,7 @@ export interface GatewayProtocolDriverRequestShape {
 }
 
 export type GatewayProtocolClientErrorProtocol = 'openai' | 'anthropic' | 'gemini'
-export type GatewayProtocolDefaultClientProfile = 'generic_openai' | 'generic_anthropic'
+export type GatewayProtocolDefaultClientProfile = 'generic_openai' | 'generic_anthropic' | 'generic_gemini'
 
 export interface GatewayStreamUsageFallbackInput {
   outputReceived: boolean

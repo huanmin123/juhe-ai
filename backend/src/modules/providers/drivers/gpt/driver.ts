@@ -7,6 +7,7 @@ import {
 } from '../../../../domain/openai-endpoint-modes.js'
 import {
   ANTHROPIC_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_PROTOCOL_CODE,
@@ -20,6 +21,7 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isGeminiGenerateContentToChatCompletionsModelMapping,
   isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIChatCompletionsToResponsesModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
@@ -44,6 +46,12 @@ import {
   prepareAnthropicMessagesChatBridgeHeaders,
   transformAnthropicMessagesChatBridgeUpstreamResponse
 } from '../_shared/anthropic-openai-chat-bridge.js'
+import {
+  buildGeminiGenerateContentChatBridgeBody,
+  geminiGenerateContentChatBridgeRequiredEndpointMode,
+  prepareGeminiGenerateContentChatBridgeHeaders,
+  transformGeminiGenerateContentChatBridgeUpstreamResponse
+} from '../_shared/gemini-openai-chat-bridge.js'
 import {
   buildCodexResponsesChatBridgeBody,
   codexResponsesChatBridgeRequiredEndpointMode,
@@ -94,7 +102,10 @@ export const gptProviderDriver: ProviderDriver = {
     if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !(account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
       return []
     }
-    if (account.type !== 'oauth' && modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
+    if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) && !(account.type !== 'oauth' && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
+      return []
+    }
+    if (account.type !== 'oauth' && modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isOpenAIChatCompletionsToResponsesModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping) || isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
       return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
     }
     if (account.type === 'oauth') {
@@ -110,6 +121,17 @@ export const gptProviderDriver: ProviderDriver = {
       return {
         headers,
         body: await buildAnthropicMessagesChatBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
+    if (account.type !== 'oauth' && modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareGeminiGenerateContentChatBridgeHeaders(headers, req)
+      return {
+        headers,
+        body: await buildGeminiGenerateContentChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
         }, signal)
@@ -161,7 +183,11 @@ export const gptProviderDriver: ProviderDriver = {
       enabled: account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping),
       model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex'
     })
-    const responsesToChatResponse = transformCodexResponsesChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
+    const geminiGenerateContentResponse = transformGeminiGenerateContentChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
+      enabled: account.type !== 'oauth' && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex'
+    })
+    const responsesToChatResponse = transformCodexResponsesChatBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
       defaultModel: modelMapping?.upstreamModel ?? requestModel(req) ?? 'gpt-5.3-codex',
       enabled: account.type !== 'oauth' && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: true,
@@ -183,6 +209,17 @@ export const gptProviderDriver: ProviderDriver = {
     if (account.type !== 'oauth' && modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: anthropicMessagesChatBridgeRequiredEndpointMode(isEffectiveOpenAIStreamRequest(req, account)),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
+    if (account.type !== 'oauth' && modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: geminiGenerateContentChatBridgeRequiredEndpointMode(req),
         supportedEndpointModes: account.supportedEndpointModes,
         credentials: account.credentials,
         providerCode: account.providerCode,

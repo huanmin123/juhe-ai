@@ -9,6 +9,9 @@ import type {
   AuthorizationPrincipalOptionsParams,
   GroupListParams,
   GroupOptionParams,
+  OpenAICompatibleMcpApprovalRequestListParams,
+  OpenAICompatibleMcpExecutionRecordListParams,
+  OpenAICompatibleMcpServerListParams,
   OperationLogListParams,
   SystemAccountListParams,
   SystemAccountOptionsParams,
@@ -109,6 +112,41 @@ export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionP
   if (typeof params.manageableOnly === 'boolean') output.manageableOnly = params.manageableOnly
   if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
   return Object.keys(output).length ? output : undefined
+}
+
+export function scopedListParams<T extends object>(params?: T, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output = { ...(params as Record<string, unknown>) }
+  if (!includeSystemAccount) {
+    delete output.systemAccountId
+  }
+  for (const [key, value] of Object.entries(output)) {
+    if (value === undefined || value === null || value === '' || value === 'all') {
+      delete output[key]
+    }
+  }
+  return Object.keys(output).length ? output : undefined
+}
+
+export function openAICompatibleMcpServerListParams(
+  params?: OpenAICompatibleMcpServerListParams,
+  includeSystemAccount = true
+): Record<string, unknown> | undefined {
+  return scopedListParams(params, includeSystemAccount)
+}
+
+export function openAICompatibleMcpApprovalRequestListParams(
+  params?: OpenAICompatibleMcpApprovalRequestListParams,
+  includeSystemAccount = true
+): Record<string, unknown> | undefined {
+  return scopedListParams(params, includeSystemAccount)
+}
+
+export function openAICompatibleMcpExecutionRecordListParams(
+  params?: OpenAICompatibleMcpExecutionRecordListParams,
+  includeSystemAccount = true
+): Record<string, unknown> | undefined {
+  return scopedListParams(params, includeSystemAccount)
 }
 
 export function teamListParams(params?: TeamListParams | Omit<TeamListParams, 'systemAccountId'>, includeSystemAccount = true): Record<string, unknown> | undefined {

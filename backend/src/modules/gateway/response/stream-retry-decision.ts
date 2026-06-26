@@ -2,7 +2,8 @@ import type { ResponseInspectionDecision } from './inspection.js'
 import { gatewayStreamClientRetryErrorCode } from './responses.js'
 
 const serverRetryableSystemDefaultResponseInspectionPolicyIds = new Set([
-  'default_codex_compaction_contract'
+  'default_codex_compaction_contract',
+  'default_gemini_cli_retryable_error'
 ])
 
 export interface StreamRetryResponseState {

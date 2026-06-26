@@ -133,8 +133,15 @@ export function extractOpenAISseSemanticFrames(
       eventType
     })
   }
-  frames.push(rawJsonFrame(data, endpointFamily, 'sse', eventType, rawText))
-  return attachRawJson(frames, data, rawText, eventType)
+  const rawJson = rawJsonForOpenAISseInspection(data, eventType)
+  frames.push(rawJsonFrame(rawJson, endpointFamily, 'sse', eventType, rawText))
+  return attachRawJson(frames, rawJson, rawText, eventType)
+}
+
+function rawJsonForOpenAISseInspection(data: Record<string, unknown>, eventType: string): Record<string, unknown> {
+  if (eventType !== 'response.mcp_call.failed') return data
+  const { error: _error, ...rest } = data
+  return rest
 }
 
 function rawJsonFrame(

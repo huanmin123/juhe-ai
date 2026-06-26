@@ -1,60 +1,123 @@
 import type { RawModelPricing } from './provider-driver.types.js'
 
+// Curated from the official Gemini API model and pricing docs on 2026-06-25.
+// Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 const textGenerationProtocols = ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens'] as const
+const embeddingProtocols = ['embed_content'] as const
 
 export const geminiModelPricingData: RawModelPricing[] = [
-  {
+  textModel({
     model: 'gemini-3.5-flash',
-    mode: 'chat',
-    catalog_order: 10,
-    input_cost_per_token: 0,
-    output_cost_per_token: 0,
-    max_tokens: 1_048_576,
-    supported_api_protocols: textGenerationProtocols,
-    supports_prompt_caching: true,
-    catalog_visible: true
-  },
-  {
+    catalogOrder: 10,
+    inputUsdPer1M: 1.5,
+    outputUsdPer1M: 9,
+    cachedInputUsdPer1M: 0.15
+  }),
+  textModel({
+    model: 'gemini-3.1-pro-preview',
+    catalogOrder: 20,
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 12,
+    cachedInputUsdPer1M: 0.2
+  }),
+  textModel({
+    model: 'gemini-3.1-pro-preview-customtools',
+    catalogOrder: 30,
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 12,
+    cachedInputUsdPer1M: 0.2
+  }),
+  textModel({
+    model: 'gemini-3-flash-preview',
+    catalogOrder: 40,
+    inputUsdPer1M: 0.5,
+    outputUsdPer1M: 3,
+    cachedInputUsdPer1M: 0.05,
+    audioInputUsdPer1M: 1
+  }),
+  textModel({
     model: 'gemini-3.1-flash-lite',
-    mode: 'chat',
-    catalog_order: 20,
-    input_cost_per_token: 0,
-    output_cost_per_token: 0,
-    max_tokens: 1_048_576,
-    supported_api_protocols: textGenerationProtocols,
-    supports_prompt_caching: true,
-    catalog_visible: true
-  },
-  {
-    model: 'gemini-2.5-flash',
-    mode: 'chat',
-    catalog_order: 30,
-    input_cost_per_token: 0,
-    output_cost_per_token: 0,
-    max_tokens: 1_048_576,
-    supported_api_protocols: textGenerationProtocols,
-    supports_prompt_caching: true,
-    catalog_visible: true
-  },
-  {
+    catalogOrder: 50,
+    inputUsdPer1M: 0.25,
+    outputUsdPer1M: 1.5,
+    cachedInputUsdPer1M: 0.025,
+    audioInputUsdPer1M: 0.5
+  }),
+  textModel({
     model: 'gemini-2.5-pro',
+    catalogOrder: 60,
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 10,
+    cachedInputUsdPer1M: 0.125
+  }),
+  textModel({
+    model: 'gemini-2.5-flash',
+    catalogOrder: 70,
+    inputUsdPer1M: 0.3,
+    outputUsdPer1M: 2.5,
+    cachedInputUsdPer1M: 0.03,
+    audioInputUsdPer1M: 1
+  }),
+  textModel({
+    model: 'gemini-2.5-flash-lite',
+    catalogOrder: 80,
+    inputUsdPer1M: 0.1,
+    outputUsdPer1M: 0.4,
+    cachedInputUsdPer1M: 0.01,
+    audioInputUsdPer1M: 0.3
+  }),
+  embeddingModel({
+    model: 'gemini-embedding-2',
+    catalogOrder: 100,
+    inputUsdPer1M: 0.15
+  }),
+  embeddingModel({
+    model: 'gemini-embedding-001',
+    catalogOrder: 110,
+    inputUsdPer1M: 0.15
+  })
+]
+
+function textModel(input: {
+  model: string
+  catalogOrder: number
+  inputUsdPer1M: number
+  outputUsdPer1M: number
+  cachedInputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+}): RawModelPricing {
+  return {
+    model: input.model,
     mode: 'chat',
-    catalog_order: 40,
-    input_cost_per_token: 0,
-    output_cost_per_token: 0,
-    max_tokens: 1_048_576,
+    catalog_order: input.catalogOrder,
+    input_cost_per_token: usdPerToken(input.inputUsdPer1M),
+    output_cost_per_token: usdPerToken(input.outputUsdPer1M),
+    cache_read_input_token_cost: input.cachedInputUsdPer1M === undefined ? undefined : usdPerToken(input.cachedInputUsdPer1M),
+    input_cost_per_audio_token: input.audioInputUsdPer1M === undefined ? undefined : usdPerToken(input.audioInputUsdPer1M),
+    max_input_tokens: 1_048_576,
+    max_output_tokens: 65_536,
     supported_api_protocols: textGenerationProtocols,
     supports_prompt_caching: true,
     catalog_visible: true
-  },
-  {
-    model: 'gemini-embedding-001',
+  }
+}
+
+function embeddingModel(input: {
+  model: string
+  catalogOrder: number
+  inputUsdPer1M: number
+}): RawModelPricing {
+  return {
+    model: input.model,
     mode: 'embedding',
-    catalog_order: 100,
-    input_cost_per_token: 0,
-    output_cost_per_token: 0,
-    supported_api_protocols: ['embed_content'],
+    catalog_order: input.catalogOrder,
+    input_cost_per_token: usdPerToken(input.inputUsdPer1M),
+    supported_api_protocols: embeddingProtocols,
     supports_prompt_caching: false,
     catalog_visible: true
   }
-]
+}
+
+function usdPerToken(usdPer1M: number): number {
+  return usdPer1M / 1_000_000
+}

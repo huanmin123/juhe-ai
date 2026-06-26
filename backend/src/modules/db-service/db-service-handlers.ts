@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   accountTestTaskCancelMessage,
   cancelExpiredAccountTestSessions,
@@ -25,6 +26,7 @@ import {
   getAccountPrecheckMutationState,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
+  listOpenAIAccountsForGroupResultAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   markAccountException,
@@ -42,13 +44,15 @@ import {
   recordAccountSuccessfulTestModel,
   recordAuthorizedAccountBindingStreamFailure,
   resolveGroupUsageAccessMetadata,
+  resolveGroupUsageAccessMetadataAsync,
   resolveProxyUrlForProfile,
   syncAccountAvailabilityScheduleStatuses,
   syncApiKeyAvailabilityScheduleStatuses,
   type OpenAIAccountSecret,
   updateAccount,
   updateProxyTestState,
-  validateGatewayApiKey
+  validateGatewayApiKey,
+  validateGatewayApiKeyAsync
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
@@ -59,7 +63,7 @@ import {
 import {
   listActiveClientIpPolicies,
 } from '../../storage/client-ip-stats.repository.js'
-import { listActiveResponseInspectionPoliciesForGateway } from '../../storage/response-inspection-policy.repository.js'
+import { listActiveResponseInspectionPoliciesForGateway, listActiveResponseInspectionPoliciesForGatewayAsync } from '../../storage/response-inspection-policy.repository.js'
 import { cleanupExpiredSystemSessions } from '../../storage/data-retention.repository.js'
 import {
   cleanupExpiredCodexContextStates,
@@ -90,7 +94,7 @@ import { isDynamicApiKeyGroupRouteStrategy } from '../../domain/api-key-routing.
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/quota/authorization-quota.service.js'
-import { applyAccountErrorHandling } from '../gateway/policy/account-error-policy.service.js'
+import { applyAccountErrorHandling, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
 import {
@@ -176,6 +180,10 @@ export async function handleDbServiceOperation<T extends DbServiceOperation>(ope
 
 async function handleDbServiceOperationDispatch(operation: DbServiceOperation): Promise<unknown> {
   switch (operation.type) {
+    case 'validate_gateway_api_key':
+      return await validateGatewayApiKeyAsync(operation.key)
+    case 'read_gateway_runtime':
+      return await readGatewayRuntimeAsync(operation)
     case 'save_codex_context_response_state':
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
@@ -823,6 +831,88 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     settings,
     accounts: [],
     responseInspectionPolicies: []
+  }
+}
+
+async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { type: 'read_gateway_runtime' }>): Promise<DbServiceGatewayRuntime> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return withDbServiceLocalRole(() => readGatewayRuntime(operation))
+  }
+  const settings = await readGatewaySettingsAsync()
+  const apiKey = await validateGatewayApiKeyAsync(operation.key)
+  if (!apiKey) {
+    return {
+      settings,
+      accounts: []
+    }
+  }
+  const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
+  if (operation.skipDynamicRouteSelection === true && isDynamicApiKeyGroupRouteStrategy(apiKey.group_route_strategy)) {
+    return {
+      apiKey: {
+        ...apiKey,
+        group_bindings: apiKey.group_bindings?.map((binding) => ({ ...binding }))
+      },
+      settings,
+      accounts: [],
+      responseInspectionPolicies: []
+    }
+  }
+  const orderedBindings = orderGatewayApiKeyGroupBindingsForDispatch(apiKey)
+  apiKey.selected_group_id = orderedBindings[0]?.group_id ?? apiKey.selected_group_id
+  const candidateGroupIds = operation.groupId
+    ? orderedBindings.some((binding) => binding.group_id === operation.groupId)
+      ? [operation.groupId]
+      : []
+    : orderedBindings.map((binding) => binding.group_id)
+  const uniqueCandidateGroupIds = [...new Set(candidateGroupIds.filter(Boolean))]
+
+  for (const groupId of uniqueCandidateGroupIds) {
+    const groupAccess = await resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+    if (!groupAccess) {
+      continue
+    }
+    const groupAccountsResult = await listOpenAIAccountsForGroupResultAsync(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
+    const accounts = groupAccountsResult.accounts
+    if (!hasDispatchableGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
+      continue
+    }
+    const responseInspectionPolicies = await listActiveResponseInspectionPoliciesForGatewayAsync({
+      protocolCode: groupAccess.protocolCode,
+      providerCode: groupAccess.providerCode
+    })
+    return {
+      apiKey: {
+        ...apiKey,
+        selected_group_id: groupId,
+        group_bindings: orderedBindings.length ? orderedBindings : apiKey.group_bindings
+      },
+      settings,
+      groupAccess,
+      accounts,
+      accountDispatchDiagnostics: groupAccountsResult.diagnostics,
+      responseInspectionPolicies
+    }
+  }
+
+  return {
+    apiKey,
+    settings,
+    accounts: [],
+    responseInspectionPolicies: []
+  }
+}
+
+function withDbServiceLocalRole<T>(operation: () => T): T {
+  if (runtimeConfig.processRole !== 'server') {
+    return operation()
+  }
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return operation()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
   }
 }
 

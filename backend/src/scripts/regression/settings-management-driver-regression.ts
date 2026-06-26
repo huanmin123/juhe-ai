@@ -1,0 +1,119 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+if (process.env.JUHE_SETTINGS_MANAGEMENT_DRIVER_CHILD === 'postgres') {
+  const repositories = await import('../../storage/repositories.js')
+  await assertSettingsManagementAsync(repositories)
+  process.exit(0)
+}
+
+const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-settings-management-driver-'))
+try {
+  process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
+  process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
+  process.env.JUHE_AI_CACHE_DRIVER = 'memory'
+  process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'memory'
+  process.env.JUHE_AI_DATABASE_PATH = join(tempRoot, 'business.sqlite3')
+  process.env.JUHE_AI_DATASET_DATABASE_PATH = join(tempRoot, 'dataset.sqlite3')
+  process.env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = join(tempRoot, 'usage-catalog.sqlite3')
+  process.env.JUHE_AI_STATS_DATABASE_PATH = join(tempRoot, 'stats.sqlite3')
+  process.env.JUHE_AI_USAGE_SHARD_ROOT = join(tempRoot, 'usage-shards')
+  process.env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = join(tempRoot, 'codex-context')
+
+  const repositories = await import('../../storage/repositories.js')
+  await assertSettingsManagementAsync(repositories)
+
+  if (process.env.JUHE_SETTINGS_MANAGEMENT_POSTGRES_URL) {
+    const result = spawnSync(process.execPath, [
+      '--import',
+      'tsx',
+      fileURLToPath(import.meta.url)
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        JUHE_SETTINGS_MANAGEMENT_DRIVER_CHILD: 'postgres',
+        JUHE_AI_RUNTIME_MODE: 'performance',
+        JUHE_AI_DATABASE_DRIVER: 'postgres',
+        JUHE_AI_CACHE_DRIVER: 'redis',
+        JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_POSTGRES_URL: process.env.JUHE_SETTINGS_MANAGEMENT_POSTGRES_URL,
+        JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
+        JUHE_AI_REDIS_STATE_URL: process.env.JUHE_SETTINGS_MANAGEMENT_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'
+      }
+    })
+    if (result.status !== 0) {
+      process.stdout.write(result.stdout)
+      process.stderr.write(result.stderr)
+      process.exit(result.status ?? 1)
+    }
+  }
+
+  console.log('settings-management-driver-regression passed')
+} finally {
+  await closeSqliteStorageDatabases()
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+async function assertSettingsManagementAsync(repositories: typeof import('../../storage/repositories.js')): Promise<void> {
+  const originalGlobal = await repositories.listGlobalSettingsAsync()
+  const originalSystem = await repositories.getSettingsAsync()
+  const label = process.env.JUHE_AI_DATABASE_DRIVER === 'postgres' ? 'postgres' : 'sqlite'
+  const nextAppName = `聚合 AI ${label} 设置回归`
+  const nextReadLimit = Number(originalSystem.systemApiRateLimitIpReadPerMinute) + 1
+
+  try {
+    const updatedGlobal = await repositories.updateGlobalSettingsAsync({ appName: nextAppName })
+    assert.equal(updatedGlobal.appName, nextAppName, '全局设置 async 更新后应返回新应用名')
+    assert.equal(updatedGlobal.appIcon, originalGlobal.appIcon, '全局设置 async 局部更新不应覆盖未提交字段')
+    const publicSettings = await repositories.listPublicGlobalSettingsAsync()
+    assert.equal(publicSettings.appName, nextAppName, '公开设置应读取到 async 更新后的全局应用名')
+
+    const updatedSystem = await repositories.updateSettingsAsync({ systemApiRateLimitIpReadPerMinute: nextReadLimit })
+    assert.equal(updatedSystem.systemApiRateLimitIpReadPerMinute, nextReadLimit, '系统设置 async 更新后应返回新限流值')
+    assert.equal(updatedSystem.systemApiRateLimitEnabled, originalSystem.systemApiRateLimitEnabled, '系统设置 async 局部更新不应覆盖未提交字段')
+    const reloadedSystem = await repositories.getSettingsAsync()
+    assert.equal(reloadedSystem.systemApiRateLimitIpReadPerMinute, nextReadLimit, '系统设置 async 更新后缓存应失效并可重新读取')
+
+    await assert.rejects(
+      () => repositories.updateSettingsAsync({ rogue_settings_key_0: true }),
+      /未知系统设置字段/,
+      '系统设置 async 更新不能接受未知字段'
+    )
+    await assert.rejects(
+      () => repositories.updateGlobalSettingsAsync({ legacyBrandName: '旧字段' }),
+      /未知全局设置字段/,
+      '全局设置 async 更新不能接受未知字段'
+    )
+
+    if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+      await assert.rejects(
+        () => repositories.updateSettingsAsync({ usageStatsTimezone: 'UTC' }),
+        /PostgreSQL 模式下暂不支持在线修改统计时区/,
+        'PostgreSQL 模式下不能在线修改统计时区'
+      )
+    }
+  } finally {
+    await repositories.updateGlobalSettingsAsync({
+      appName: originalGlobal.appName,
+      appIcon: originalGlobal.appIcon
+    })
+    await repositories.updateSettingsAsync({
+      systemApiRateLimitIpReadPerMinute: originalSystem.systemApiRateLimitIpReadPerMinute
+    })
+  }
+}
+
+async function closeSqliteStorageDatabases(): Promise<void> {
+  try {
+    const databaseModule = await import('../../storage/database.js')
+    databaseModule.closeStorageDatabases()
+  } catch {
+    // The regression may fail before SQLite storage is imported.
+  }
+}

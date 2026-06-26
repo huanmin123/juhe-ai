@@ -3,18 +3,27 @@ import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/gr
 import type { AccountGroupOptionSummary, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType } from '../domain/types.js'
 import { includeSystemAccountFields, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds } from './authorization-read-loaders.js'
-import { groupAccountStatsFromRow } from './group-account-stats.mapper.js'
+import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getBusinessDatabase } from './database.js'
+import { getPostgresPool } from './postgres-client.js'
+import { runtimeConfig } from '../config/runtime.js'
 import {
   findGroupRowForAccess,
+  findGroupRowForAccessAsync,
   listGroupOptionRowsForAccess,
+  listGroupOptionRowsForAccessAsync,
   listGroupRowsForAccess,
+  listGroupRowsForAccessAsync,
   listGroupRowsPageForAccess,
+  listGroupRowsPageForAccessAsync,
   loadGroupAuthorizationUsageSummaries,
   type GroupListOptions,
   type GroupOptionListOptions
 } from './group-read.repository.js'
 import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
+import { chunkValues } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { isResourceAuthorizationExpired, sanitizeAuthorizationSourcesForViewer, usageScope } from './resource-authorization-helpers.js'
@@ -24,6 +33,10 @@ import { loadGroupUsageSummariesForScopes } from './usage-summary-loaders.js'
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
   return buildGroupSummaries(listGroupRowsForAccess(access), access)
+}
+
+export async function listGroupsAsync(access?: AccessScope): Promise<GroupSummary[]> {
+  return buildGroupSummariesAsync(await listGroupRowsForAccessAsync(access), access)
 }
 
 export function listGroupsPage(access?: AccessScope, options?: GroupListOptions): GroupListResult {
@@ -37,8 +50,23 @@ export function listGroupsPage(access?: AccessScope, options?: GroupListOptions)
   }
 }
 
+export async function listGroupsPageAsync(access?: AccessScope, options?: GroupListOptions): Promise<GroupListResult> {
+  const page = await listGroupRowsPageForAccessAsync(access, options)
+  return {
+    items: await buildGroupSummariesAsync(page.rows, access),
+    total: page.total,
+    hasMore: page.hasMore,
+    page: page.page,
+    pageSize: page.pageSize
+  }
+}
+
 export function listGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): GroupOptionSummary[] {
   return buildGroupOptionSummaries(listGroupOptionRowsForAccess(access, options), access)
+}
+
+export async function listGroupOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupOptionSummary[]> {
+  return buildGroupOptionSummariesAsync(await listGroupOptionRowsForAccessAsync(access, options), access)
 }
 
 export function listAccountGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): AccountGroupOptionSummary[] {
@@ -55,9 +83,29 @@ export function listAccountGroupOptions(access?: AccessScope, options?: GroupOpt
   })
 }
 
+export async function listAccountGroupOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<AccountGroupOptionSummary[]> {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const rows = await listGroupOptionRowsForAccessAsync(access, options)
+  const accountIdsByGroup = await loadGroupAccountIdsByGroupIdsAsync(rows.map((row) => row.id))
+  const groups = await buildGroupOptionSummariesAsync(rows, access)
+  return groups.map((group, index) => {
+    const row = rows[index]
+    const isAuthorizedView = row?.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId
+    return {
+      ...group,
+      accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(group.id) ?? []
+    }
+  })
+}
+
 export function findGroupSummary(id: string, access?: AccessScope): GroupSummary | undefined {
   const row = findGroupRowForAccess(access, id)
   return row ? buildGroupSummaries([row], access)[0] : undefined
+}
+
+export async function findGroupSummaryAsync(id: string, access?: AccessScope): Promise<GroupSummary | undefined> {
+  const row = await findGroupRowForAccessAsync(access, id)
+  return row ? (await buildGroupSummariesAsync([row], access))[0] : undefined
 }
 
 export function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): GroupOptionSummary[] {
@@ -80,6 +128,41 @@ export function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessS
       protocolVersion: row.protocol_version,
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
+      groupType: groupTypeFromRow(row),
+      schedulingPolicy: groupSchedulingPolicyFromRow(row),
+      accessType: row.access_type ?? 'owner',
+      groupAuthorizationId: row.authorization_id ?? undefined,
+      authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row)) : ownerPermissions()
+    }
+  })
+}
+
+async function buildGroupOptionSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupOptionSummary[]> {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const client = await getGroupSummaryDatabaseClient()
+  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows
+    ? await loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
+    : new Map<string, string>()
+  return rows.map((row) => {
+    const isAuthorizedView = row.access_type === 'authorized'
+    return {
+      id: row.id,
+      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
+      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
+      ownerSystemAccountId: row.system_account_id,
+      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      name: row.name,
+      providerCode: row.provider_code,
+      providerProtocolProfileId: row.provider_protocol_profile_id,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
+      enabled: Number(row.enabled) === 1,
+      isDefault: isAuthorizedView ? false : Number(row.is_default) === 1,
       groupType: groupTypeFromRow(row),
       schedulingPolicy: groupSchedulingPolicyFromRow(row),
       accessType: row.access_type ?? 'owner',
@@ -152,8 +235,51 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   })
 }
 
+async function buildGroupSummariesAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupSummary[]> {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const groupIds = rows.map((row) => row.id)
+  const accountIdsByGroup = await loadGroupAccountIdsByGroupIdsAsync(groupIds)
+  const accountNames = await loadSystemAccountNameMapByIdsAsync(await getGroupSummaryDatabaseClient(), rows.map((row) => row.system_account_id))
+  return rows.map((row) => {
+    const isAuthorizedView = row.access_type === 'authorized'
+    const accountIds = isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? []
+    const accountStats = emptyGroupAccountStats()
+    if (!isAuthorizedView) {
+      accountStats.total = accountIds.length
+    }
+    return {
+      id: row.id,
+      systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
+      systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
+      ownerSystemAccountId: row.system_account_id,
+      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      name: row.name,
+      providerCode: row.provider_code,
+      providerProtocolProfileId: row.provider_protocol_profile_id,
+      protocolCode: row.protocol_code,
+      protocolVersion: row.protocol_version,
+      description: row.description ?? undefined,
+      enabled: Number(row.enabled) === 1,
+      isDefault: isAuthorizedView ? false : Number(row.is_default) === 1,
+      groupType: groupTypeFromRow(row),
+      schedulingPolicy: groupSchedulingPolicyFromRow(row),
+      accountIds,
+      accountStats,
+      accessType: row.access_type ?? 'owner',
+      groupAuthorizationId: row.authorization_id ?? undefined,
+      authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
+      authorizationSources: undefined,
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId
+        ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row), false)
+        : ownerPermissions()
+    }
+  })
+}
+
 function canBindAuthorizedGroupRowToApiKey(row: GroupListRow): boolean {
-  return row.enabled === 1 && row.authorization_status === 'active' && !isResourceAuthorizationExpired(row.authorization_expires_at)
+  return Number(row.enabled) === 1 && row.authorization_status === 'active' && !isResourceAuthorizationExpired(row.authorization_expires_at)
 }
 
 function groupTypeFromRow(row: Pick<GroupListRow, 'group_type'>): GroupType {
@@ -162,4 +288,77 @@ function groupTypeFromRow(row: Pick<GroupListRow, 'group_type'>): GroupType {
 
 function groupSchedulingPolicyFromRow(row: Pick<GroupListRow, 'group_type' | 'scheduling_policy_json'>): GroupSchedulingPolicy | undefined {
   return parseGroupSchedulingPolicyJson(row.scheduling_policy_json, groupTypeFromRow(row))
+}
+
+async function getGroupSummaryDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+async function loadSystemAccountNameMapByIdsAsync(client: DatabaseClient, systemAccountIds: Array<string | undefined>): Promise<Map<string, string>> {
+  const ids = uniqueTextValues(systemAccountIds)
+  if (!ids.length) return new Map()
+  const rows: Array<{ id: string; display_name: string }> = []
+  const table = groupSummaryTable(client, 'system_accounts')
+  for (const chunk of chunkValues(ids, 500)) {
+    rows.push(...await client.query<{ id: string; display_name: string }>(`
+      SELECT id, display_name
+      FROM ${table}
+      WHERE id IN (${client.dialect.bindPlaceholders(chunk.length)})
+    `, chunk))
+  }
+  return new Map(rows.map((row) => [row.id, row.display_name]))
+}
+
+async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Promise<Map<string, string[]>> {
+  const ids = uniqueTextValues(groupIds)
+  const result = new Map<string, string[]>()
+  if (!ids.length) return result
+  const client = await getGroupSummaryDatabaseClient()
+  const groupAccountsTable = groupSummaryTable(client, 'group_accounts')
+  const groupsTable = groupSummaryTable(client, 'groups')
+  const accountsTable = groupSummaryTable(client, 'accounts')
+  const resourceAuthorizationsTable = groupSummaryTable(client, 'resource_authorizations')
+  const rows: Array<{ group_id: string; account_id: string }> = []
+  for (const chunk of chunkValues(ids, 500)) {
+    rows.push(...await client.query<ArrayElement<typeof rows>>(`
+      SELECT group_accounts.group_id, group_accounts.account_id
+      FROM ${groupAccountsTable} group_accounts
+      INNER JOIN ${groupsTable} groups ON groups.id = group_accounts.group_id
+      INNER JOIN ${accountsTable} accounts ON accounts.id = group_accounts.account_id
+      LEFT JOIN ${resourceAuthorizationsTable} resource_authorization_rows
+        ON resource_authorization_rows.id = group_accounts.account_authorization_id
+      WHERE group_accounts.enabled = 1
+        AND group_accounts.group_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+        AND accounts.deleted_at IS NULL
+        AND (
+          accounts.system_account_id = groups.system_account_id
+          OR (
+            resource_authorization_rows.status IN ('active', 'paused', 'expired')
+          )
+        )
+      ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC
+    `, chunk))
+  }
+  for (const id of ids) {
+    result.set(id, [])
+  }
+  for (const row of rows) {
+    result.set(row.group_id, [...(result.get(row.group_id) ?? []), row.account_id])
+  }
+  return result
+}
+
+type ArrayElement<T extends readonly unknown[]> = T extends readonly (infer Item)[] ? Item : never
+
+function uniqueTextValues(values: Array<string | undefined | null>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
+}
+
+function groupSummaryTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }

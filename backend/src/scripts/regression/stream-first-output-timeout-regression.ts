@@ -310,6 +310,7 @@ async function main(): Promise<void> {
 
     const overloadedBeforeOutputResult = await requestServerOverloadedBeforeOutput(baseUrl, overloadedBeforeOutputCredential.apiKey.key)
     assert(!overloadedBeforeOutputResult.streamText.includes('server_is_overloaded'), `未输出前不应把原始容量错误发给客户端：${overloadedBeforeOutputResult.streamText}`)
+    assert(!overloadedBeforeOutputResult.streamText.includes('Our servers are currently overloaded'), `未输出前不应把原始容量错误文案发给客户端：${overloadedBeforeOutputResult.streamText}`)
     assert(overloadedBeforeOutputResult.streamText.includes('upstream_retryable_error'), `未输出前容量错误应按通用兜底改写为可重试错误：${overloadedBeforeOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -412,11 +413,13 @@ async function main(): Promise<void> {
 
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
     assert(!overloadedNoBoundaryResult.streamText.includes('server_is_overloaded'), `EOF 尾包未输出前不应把原始容量错误发给客户端：${overloadedNoBoundaryResult.streamText}`)
+    assert(!overloadedNoBoundaryResult.streamText.includes('Our servers are currently overloaded'), `EOF 尾包未输出前不应把原始容量错误文案发给客户端：${overloadedNoBoundaryResult.streamText}`)
     assert(overloadedNoBoundaryResult.streamText.includes('upstream_retryable_error'), `EOF 尾包未输出前应按通用兜底改写为可重试错误：${overloadedNoBoundaryResult.streamText}`)
 
     const overloadedAfterOutputResult = await requestServerOverloadedAfterOutput(baseUrl, overloadedAfterOutputCredential.apiKey.key)
     assert(!overloadedAfterOutputResult.streamText.includes('hello'), `尚未写入下游时不应泄露同批次前序输出：${overloadedAfterOutputResult.streamText}`)
     assert(!overloadedAfterOutputResult.streamText.includes('server_is_overloaded'), `尚未写入下游时容量错误应按可重试失败改写：${overloadedAfterOutputResult.streamText}`)
+    assert(!overloadedAfterOutputResult.streamText.includes('Our servers are currently overloaded'), `尚未写入下游时容量错误文案应按可重试失败改写：${overloadedAfterOutputResult.streamText}`)
     assert(overloadedAfterOutputResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时容量错误应给下游明确可重试信号：${overloadedAfterOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()

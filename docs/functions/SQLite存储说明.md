@@ -185,7 +185,7 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 
 敏感和大体积数据不得进入通用 lookup 缓存：API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文、日志大字段和可能造成越权的权限判定中间结果，必须走专门的受控读取、权限裁剪和分块策略。
 
-当前轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，不引入 Redis 等分布式依赖。缓存只用于降低请求链路反查成本，事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
+standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，standalone 模式不引入 Redis 等分布式依赖。performance 模式显式引入 Redis 作为跨进程短 TTL 缓存和运行态 state store，具体见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。缓存只用于降低请求链路反查成本，standalone 模式事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
 
 ## 大文件与频繁读取底线
 

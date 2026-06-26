@@ -1267,14 +1267,15 @@ function sendCodexSwitchProbeFailedResponse(input: {
   startedAt: number
   probes: CodexSwitchProbeResult[]
 }): void {
-  const message = codexSwitchProbeFailedMessage(input.probes)
-  const failureEvent = writeGatewayStreamFailureEvent(input.res, message, 'codex_switch_probe_failed')
+  const diagnosticMessage = codexSwitchProbeFailedMessage(input.probes)
+  const message = gatewayStreamClientRetryMessage
+  const failureEvent = writeGatewayStreamFailureEvent(input.res, message, gatewayStreamClientRetryErrorCode)
   recordGatewayFailure(input.req, input.usageContext, {
     statusCode: 200,
     startedAt: input.startedAt,
-    responsePayload: gatewayErrorPayload(message, 'server_error', 'codex_switch_probe_failed'),
+    responsePayload: gatewayErrorPayload(message, 'server_error', gatewayStreamClientRetryErrorCode),
     errorMessage: message,
-    errorCode: 'codex_switch_probe_failed',
+    errorCode: gatewayStreamClientRetryErrorCode,
     responseSnapshot: buildUsageResponseSnapshot({
       statusCode: 200,
       headers: {
@@ -1290,6 +1291,7 @@ function sendCodexSwitchProbeFailedResponse(input: {
   input.auditCapture.addGatewayMetadata({
     label: 'codex_switch_probe_failed',
     metadata: {
+      message: diagnosticMessage,
       probeCount: input.probes.length,
       probes: input.probes.map(codexSwitchProbeAuditMetadata)
     }
@@ -1314,7 +1316,7 @@ function sendCodexSwitchProbeFailedResponse(input: {
     responseBody: failureEvent,
     responsePartType: 'gateway_response',
     errorPhase: 'stream',
-    errorCode: 'codex_switch_probe_failed',
+    errorCode: gatewayStreamClientRetryErrorCode,
     errorMessage: message
   })
 }

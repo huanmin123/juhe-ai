@@ -1,13 +1,15 @@
 # Docker 部署
 
-这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。
+这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务。
 
 ## 文件说明
 
 - `compose.yml`：单容器 Compose 配置，包含端口、环境变量、数据卷和镜像构建参数。
+- `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务。
 - `Dockerfile`：运行镜像构建文件，只组装已构建好的 `backend/dist`、`frontend/dist` 和后端生产依赖。
 - `entrypoint.sh`：容器启动入口，设置默认环境变量、创建数据目录、生成或复用 `JUHE_AI_SECRET`，并执行 SQLite 运行时预检。
 - `.env.example`：可选配置模板。不复制也能使用默认值启动；需要改端口、公网地址、密钥或镜像名时复制为 `.env`。
+- `.env.performance.example`：高性能模式配置模板，复制为 `.env.performance` 后必须修改数据库、Redis 和应用密钥。
 
 ## 构建产物
 
@@ -34,6 +36,26 @@ http://localhost:3000/__aisys__/
 ```
 
 公网访问时，把 `localhost` 换成服务器 IP 或域名，并建议在 `.env` 中配置 `JUHE_AI_PUBLIC_ORIGIN`。
+
+## 高性能模式启动
+
+```bash
+cd docker
+cp .env.performance.example .env.performance
+# 编辑 .env.performance，替换 JUHE_AI_SECRET、PostgreSQL 密码、Redis 密码和访问 Origin
+docker compose --env-file .env.performance -f compose.performance.yml up -d --build
+```
+
+当前 PostgreSQL repository adapter 未整体完成，provider 只读、登录 / 会话、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、公共设置读取、系统 API 限流设置读取和系统设置管理读写已完成双 driver 适配；其他仍未迁移的 SQLite 数据库入口会在 performance 模式下 fail-fast，避免误回退到 SQLite。PostgreSQL、PgBouncer 和 Redis 容器可以先独立完成部署验证，PostgreSQL schema 和默认种子数据可通过初始化脚本先落库。
+
+中间件启动后，在项目根目录执行：
+
+```bash
+pnpm --filter juhe-ai-backend postgres:init-schema-only
+pnpm --filter juhe-ai-backend postgres:init-schema
+```
+
+如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL` 和 `JUHE_AI_REDIS_STATE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`，不要把 redis-state 的容器内 `6379` 误当宿主机端口。
 
 ## 按需配置
 

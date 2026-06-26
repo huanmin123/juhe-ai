@@ -148,7 +148,7 @@ flowchart LR
 
 ### 6.1 存储原则
 
-- SQLite 是当前唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
+- standalone 模式下 SQLite 是当前持久化存储；performance 模式显式引入 PostgreSQL 与 Redis。当前不引入 ClickHouse 或独立任务队列。
 - 运行时必须明确区分业务库、统计数据集域和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集域由数据集目录库、使用记录目录库和 usage shard 文件组成，数据集目录库保存审计、操作日志、公开接口日志、运行日志索引和模型检测，使用记录目录库保存 shard 元数据、列表筛选目录和账号 / API Key scope catalog，新写入的使用记录保存到 usage shard 文件；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
 - 多进程写入必须按 SQLite 文件级单写者治理。WAL 和 `busy_timeout` 只能吸收短冲突，不能允许多个 worker 长期并发写同一个数据库文件。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。

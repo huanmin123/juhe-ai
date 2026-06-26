@@ -15,6 +15,7 @@ import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { validateAccountEndpointModes } from './accountEndpointModes'
 import { canCreateOAuthAccount, endpointModesForProfile, responsesEndpointModes } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
+import { GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID, isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -96,6 +97,7 @@ export function validateAccountSaveForm(input: {
     modes: form.supportedEndpointModes,
     type: form.type,
     clientCompatibility: form.clientCompatibility,
+    modelMappings: form.modelMappings,
     profile: formProviderProfile.profile ?? formProviderProfile.provider,
     allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider)
   })
@@ -104,7 +106,7 @@ export function validateAccountSaveForm(input: {
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)
   if (!responseInspectionValidation.valid) return responseInspectionValidation.message || '账户响应检查策略配置不完整'
-  return validateAccountModelMappings(form.modelMappings, form.supportedEndpointModes)
+  return validateAccountModelMappings(form.modelMappings, form.supportedEndpointModes, formProviderProfile.profile ?? formProviderProfile.provider)
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
@@ -271,9 +273,17 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
 
 function validateAccountModelMappings(
   value: AccountFormModel['modelMappings'],
-  supportedEndpointModes: AccountFormModel['supportedEndpointModes']
+  supportedEndpointModes: AccountFormModel['supportedEndpointModes'],
+  providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]
 ): string | undefined {
   const seenSources = new Set<string>()
+  const openAIProfile = isOpenAIProtocolProfile(providerProfile)
+  const anthropicProfile = isAnthropicProtocolProfile(providerProfile)
+  const profileId = providerProfile && 'id' in providerProfile ? providerProfile.id : undefined
+  const providerProfileId = providerProfile && 'providerProtocolProfileId' in providerProfile
+    ? providerProfile.providerProtocolProfileId
+    : undefined
+  const geminiOpenAIChatProfile = profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID || providerProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
     const upstreamModel = item.upstreamModel.trim()
@@ -285,11 +295,32 @@ function validateAccountModelMappings(
     if (!sourceModel || !upstreamModel) {
       return '模型映射需要同时选择下游模型和上游模型'
     }
-    if (upstreamEndpointFamily === 'responses' && !hasNativeResponsesEndpointMode(supportedEndpointModes)) {
-      return '上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游'
+    if (geminiOpenAIChatProfile && sourceEndpointFamily === 'messages') {
+      return 'Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射；Codex 使用 Gemini 时只配置 Responses 到 Chat Completions'
+    }
+    if (geminiOpenAIChatProfile && upstreamEndpointFamily !== 'chat_completions') {
+      return 'Gemini OpenAI Chat 档案的模型映射上游协议只能是 Chat Completions'
+    }
+    if (sourceEndpointFamily === 'messages' && !openAIProfile) {
+      return 'Anthropic Messages 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上'
     }
     if (sourceEndpointFamily === 'messages' && upstreamEndpointFamily !== 'chat_completions') {
       return 'Anthropic Messages 下游协议当前只支持桥接到 Chat Completions 上游'
+    }
+    if (isGeminiGenerateContentSource(sourceEndpointFamily) && !openAIProfile) {
+      return 'Gemini GenerateContent 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上'
+    }
+    if (isGeminiGenerateContentSource(sourceEndpointFamily) && upstreamEndpointFamily !== 'chat_completions') {
+      return 'Gemini GenerateContent 下游协议当前只支持桥接到 Chat Completions 上游'
+    }
+    if (upstreamEndpointFamily === 'messages' && !anthropicProfile) {
+      return '只有 Anthropic Messages 协议档案可以把上游协议配置为 Messages'
+    }
+    if ((upstreamEndpointFamily === 'chat_completions' || upstreamEndpointFamily === 'responses') && !openAIProfile) {
+      return '当前供应商协议不支持 OpenAI 模型映射：只有 OpenAI 协议档案可以把上游协议配置为 Chat Completions 或 Responses'
+    }
+    if (upstreamEndpointFamily === 'responses' && !hasNativeResponsesEndpointMode(supportedEndpointModes)) {
+      return '上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游'
     }
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
@@ -305,7 +336,13 @@ function validateAccountModelMappings(
 
 function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): string {
   if (value === 'messages') return 'Messages'
+  if (value === 'generate_content') return 'Gemini GenerateContent'
+  if (value === 'stream_generate_content') return 'Gemini StreamGenerateContent'
   return value === 'responses' ? 'Responses' : 'Chat Completions'
+}
+
+function isGeminiGenerateContentSource(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): boolean {
+  return value === 'generate_content' || value === 'stream_generate_content'
 }
 
 function hasNativeResponsesEndpointMode(value: AccountFormModel['supportedEndpointModes']): boolean {

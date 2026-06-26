@@ -1,6 +1,9 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
@@ -41,6 +44,7 @@ interface NormalizedGroupListOptions {
 
 const defaultGroupListPageSize = 50
 const maxGroupListPageSize = 500
+const businessSchemaName = 'juhe_business'
 
 export function listGroupRowsForAccess(access?: AccessScope, options?: GroupListOptions): GroupListRow[] {
   const listOptions = normalizeGroupListOptions(options)
@@ -64,6 +68,38 @@ export function listGroupRowsPageForAccess(access: AccessScope | undefined, opti
     limit: listOptions.pageSize + 1,
     offset: (listOptions.page - 1) * listOptions.pageSize
   }, listOptions).rows
+  const pageRows = takePageRows(rows, listOptions.pageSize)
+  return {
+    rows: pageRows.rows,
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
+export async function listGroupRowsForAccessAsync(access?: AccessScope, options?: GroupListOptions): Promise<GroupListRow[]> {
+  const listOptions = normalizeGroupListOptions(options)
+  const pagination = options
+    ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
+    : undefined
+  return (await queryGroupRowsForAccessAsync(access, pagination, listOptions)).rows
+}
+
+export async function listGroupOptionRowsForAccessAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupListRow[]> {
+  const listOptions = normalizeGroupOptionListOptions(options)
+  const pagination = options
+    ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
+    : undefined
+  return (await queryGroupRowsForAccessAsync(access, pagination, listOptions)).rows
+}
+
+export async function listGroupRowsPageForAccessAsync(access: AccessScope | undefined, options?: GroupListOptions): Promise<GroupRowsPage> {
+  const listOptions = normalizeGroupListOptions(options)
+  const rows = (await queryGroupRowsForAccessAsync(access, {
+    limit: listOptions.pageSize + 1,
+    offset: (listOptions.page - 1) * listOptions.pageSize
+  }, listOptions)).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
   return {
     rows: pageRows.rows,
@@ -148,6 +184,67 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
   return { rows }
 }
 
+async function queryGroupRowsForAccessAsync(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): Promise<{ rows: GroupListRow[] }> {
+  const client = await getGroupReadDatabaseClient()
+  const groupsTable = groupTable(client, 'groups')
+  const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
+  const groupAuthorizationSettingsTable = groupTable(client, 'group_authorization_settings')
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
+  const orderClause = groupOrderClause(options.preferDefault)
+  const directFilter = buildGroupFilterForClient(client, 'groups', options)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    const rows = await client.query<GroupListRow>(`
+      SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}
+      FROM ${groupsTable} groups
+      ${whereClause(directFilter.clauses)}
+      ${orderClause}
+      ${pageClause}
+    `, [...directFilter.params, ...pageParams])
+    return { rows }
+  }
+  if (!viewerSystemAccountId) {
+    throw new Error('缺少系统账户上下文')
+  }
+  if (options.manageableOnly) {
+    const ownerFilter = buildGroupFilterForClient(client, 'groups', options, ['groups.system_account_id = ?'], [ownerSystemAccountId ?? viewerSystemAccountId])
+    const rows = await client.query<GroupListRow>(`
+      SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}
+      FROM ${groupsTable} groups
+      ${whereClause(ownerFilter.clauses)}
+      ${orderClause}
+      ${pageClause}
+    `, [...ownerFilter.params, ...pageParams])
+    return { rows }
+  }
+  const outerFilter = buildGroupFilterForClient(client, undefined, options)
+  const rows = await client.query<GroupListRow>(`
+    SELECT ${groupListRowOuterSelectColumns()} FROM (
+      SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}
+      FROM ${groupsTable} groups
+      WHERE groups.system_account_id = ?
+      UNION ALL
+      SELECT ${authorizedGroupRowSelectColumns('groups', 'authorization_settings')}, ${authorizedAuthorizationColumns()}
+      FROM ${resourceAuthorizationsTable} ra
+      INNER JOIN ${groupsTable} groups ON groups.id = ra.resource_id
+      LEFT JOIN ${groupAuthorizationSettingsTable} authorization_settings
+        ON authorization_settings.authorization_id = ra.id
+        AND authorization_settings.system_account_id = ra.grantee_system_account_id
+        AND authorization_settings.group_id = ra.resource_id
+      WHERE ra.resource_type = 'group'
+        AND ra.grantee_system_account_id = ?
+        AND ra.status IN ('active', 'paused', 'expired')
+        AND groups.system_account_id <> ?
+    ) group_rows
+    ${whereClause(outerFilter.clauses)}
+    ${orderClause}
+    ${pageClause}
+  `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId, ...outerFilter.params, ...pageParams])
+  return { rows }
+}
+
 export function findGroupRowForAccess(access: AccessScope | undefined, groupId: string): GroupListRow | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
@@ -183,6 +280,47 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
       LIMIT 1
     `)
     .get(groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow | undefined
+}
+
+export async function findGroupRowForAccessAsync(access: AccessScope | undefined, groupId: string): Promise<GroupListRow | undefined> {
+  const client = await getGroupReadDatabaseClient()
+  const groupsTable = groupTable(client, 'groups')
+  const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
+  const groupAuthorizationSettingsTable = groupTable(client, 'group_authorization_settings')
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return client.one<GroupListRow>(`
+      SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}
+      FROM ${groupsTable} groups
+      WHERE groups.id = ?
+    `, [groupId])
+  }
+  if (!viewerSystemAccountId) {
+    throw new Error('缺少系统账户上下文')
+  }
+  return client.one<GroupListRow>(`
+    SELECT ${groupListRowOuterSelectColumns()} FROM (
+      SELECT ${groupRowSelectColumns('groups')}, ${ownerAuthorizationColumns()}
+      FROM ${groupsTable} groups
+      WHERE groups.id = ?
+        AND groups.system_account_id = ?
+      UNION ALL
+      SELECT ${authorizedGroupRowSelectColumns('groups', 'authorization_settings')}, ${authorizedAuthorizationColumns()}
+      FROM ${resourceAuthorizationsTable} ra
+      INNER JOIN ${groupsTable} groups ON groups.id = ra.resource_id
+      LEFT JOIN ${groupAuthorizationSettingsTable} authorization_settings
+        ON authorization_settings.authorization_id = ra.id
+        AND authorization_settings.system_account_id = ra.grantee_system_account_id
+        AND authorization_settings.group_id = ra.resource_id
+      WHERE groups.id = ?
+        AND ra.resource_type = 'group'
+        AND ra.grantee_system_account_id = ?
+        AND ra.status IN ('active', 'paused', 'expired')
+        AND groups.system_account_id <> ?
+    ) group_rows
+    LIMIT 1
+  `, [groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId])
 }
 
 function ownerAuthorizationColumns(): string {
@@ -315,6 +453,49 @@ function buildGroupFilter(
   return { clauses, params }
 }
 
+function buildGroupFilterForClient(
+  client: DatabaseClient,
+  alias: string | undefined,
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'providerProtocolProfileId'>,
+  initialClauses: string[] = [],
+  initialParams: string[] = []
+): { clauses: string[]; params: string[] } {
+  if (client.driver === 'sqlite') {
+    return buildGroupFilter(alias, options, initialClauses, initialParams)
+  }
+  const clauses = [...initialClauses]
+  const params = [...initialParams]
+  const providerCode = options.providerCode?.trim()
+  const providerProtocolProfileId = 'providerProtocolProfileId' in options ? options.providerProtocolProfileId?.trim() : undefined
+  const column = (name: string) => alias ? `${alias}.${name}` : name
+  const lowerEquals = (name: string) => `lower(${column(name)}) = lower(?)`
+  const lowerLike = (name: string) => `lower(${column(name)}) LIKE lower(?) ESCAPE '\\'`
+  if (options.ids.length) {
+    clauses.push(`${column('id')} IN (${options.ids.map(() => '?').join(', ')})`)
+    params.push(...options.ids)
+  }
+  if (providerCode) {
+    clauses.push(lowerEquals('provider_code'))
+    params.push(providerCode)
+  }
+  if (providerProtocolProfileId) {
+    clauses.push(lowerEquals('provider_protocol_profile_id'))
+    params.push(providerProtocolProfileId)
+  }
+  const text = options.keyword?.trim()
+  if (text) {
+    const prefix = `${escapeLikePrefix(text)}%`
+    clauses.push(`(
+      ${lowerEquals('name')}
+      OR ${lowerLike('name')}
+      OR ${lowerEquals('provider_code')}
+      OR ${lowerLike('provider_code')}
+    )`)
+    params.push(text, prefix, text, prefix)
+  }
+  return { clauses, params }
+}
+
 function whereClause(clauses: string[]): string {
   return clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
 }
@@ -343,4 +524,17 @@ export function loadGroupAuthorizationUsageSummaries(
     return loadAuthorizationUsageRangeSummariesForScopes(scopes, scopeType, statDateOrRange)
   }
   return loadAuthorizationUsageSummariesForScopes(scopes, scopeType, statDateOrRange)
+}
+
+async function getGroupReadDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function groupTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }

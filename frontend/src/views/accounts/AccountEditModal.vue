@@ -110,6 +110,7 @@
               :is-management-view="isManagementView"
               :is-o-auth-form="isOAuthForm"
               :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
+              :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
               :mapping-source-model-options="mappingSourceModelOptions"
               :mapping-upstream-model-options="mappingUpstreamModelOptions"
               :model-options="modelOptions"
@@ -215,6 +216,7 @@ const props = withDefaults(defineProps<{
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
   mappingAnthropicSourceModelOptions: SelectOption[]
+  mappingGeminiSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
   modelOptions: SelectOption[]
   modelsLoading: boolean
@@ -264,6 +266,8 @@ const mappingUpstreamModelOptions = computed(() => (
 function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']): string {
   if (value === 'responses') return 'Responses'
   if (value === 'messages') return 'Messages'
+  if (value === 'generate_content') return 'Gemini GenerateContent'
+  if (value === 'stream_generate_content') return 'Gemini StreamGenerateContent'
   return 'Chat Completions'
 }
 const confirmButtonProps = computed(() => ({

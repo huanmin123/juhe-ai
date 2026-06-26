@@ -1,6 +1,6 @@
 import type { Request } from 'express'
 
-import { getAccountCurrentConcurrency, tryAcquireAccountConcurrency, type AccountConcurrencySlot } from '../../../shared/account-concurrency.js'
+import { getAccountCurrentConcurrency, tryAcquireAccountConcurrency, tryAcquireAccountConcurrencyAsync, type AccountConcurrencySlot } from '../../../shared/account-concurrency.js'
 import { effectiveImageLaneConcurrencyLimit } from '../../../domain/group-scheduling.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
@@ -510,7 +510,7 @@ async function acquireAccountConcurrencyWithShortRetry(
 ): Promise<AccountConcurrencyAcquireResult> {
   let remainingWaitBudgetMs = Math.max(0, Math.trunc(waitBudgetMs))
   const acquireOptions = accountConcurrencyLaneAcquireOptions(concurrencyLimit, requestLane, groupSchedulingPolicy)
-  let slot = tryAcquireAccountConcurrency(accountId, concurrencyLimit, acquireOptions)
+  let slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
   let waitedMs = 0
   let retryCount = 0
   while (!slot.acquired && remainingWaitBudgetMs > 0) {
@@ -520,7 +520,7 @@ async function acquireAccountConcurrencyWithShortRetry(
     waitedMs += currentDelayMs
     remainingWaitBudgetMs -= currentDelayMs
     retryCount += 1
-    slot = tryAcquireAccountConcurrency(accountId, concurrencyLimit, acquireOptions)
+    slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
   }
   return {
     slot,

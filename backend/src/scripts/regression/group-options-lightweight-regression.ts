@@ -130,7 +130,7 @@ try {
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
-    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+groups\b/i.test(sql) && /\bORDER\s+BY\b/i.test(sql)) {
+    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+"?groups"?\b/i.test(sql) && /\bORDER\s+BY\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         capturedCalls.push({ sql, params })

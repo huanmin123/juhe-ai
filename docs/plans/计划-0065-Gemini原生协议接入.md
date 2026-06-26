@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：PLAN-0065
-- 状态：进行中（待真实账号联调）
+- 状态：完成
 - 创建时间：2026-06-25
 - 更新时间：2026-06-25
 - 需求来源：用户对话
@@ -30,8 +30,8 @@
 - [x] 新增 Gemini 模型目录、价格目录和 usage semantic。
 - [x] 新增 mockai 回归覆盖 Gemini native JSON / SSE / countTokens / models / error。
 - [x] 新增 mockai 回归覆盖 Gemini OpenAI Chat 直连、Codex Responses 显式映射到 Chat、Anthropic Messages 映射禁用。
-- [ ] 新增真实 `gemini-cli` E2E 脚本。
-- [ ] 用户提供真实 Gemini 账号后完成真实调用验证。
+- [x] 新增真实 Gemini OpenAI Chat E2E 脚本和真实 `gemini-cli` E2E 脚本。
+- [x] 用户提供真实 Gemini / NewAPI 聚合账号后完成真实调用验证。
 
 ### 本次不包含
 
@@ -69,8 +69,10 @@
 - [x] 模型目录与价格：内置模型、Gemini usage 语义。
 - [x] 前端 capability：供应商展示、账号表单兜底、endpoint modes。
 - [x] Mock 回归：native JSON、SSE、countTokens、models、auth、错误、usage、协议隔离。
-- [ ] 真实 E2E：`gemini-cli` 使用 `GOOGLE_GEMINI_BASE_URL` 调用本地网关。
-- [ ] 更新测试说明和完成总结。
+- [x] 官方模型目录清洗：只保留 Google 官方 Gemini 模型 ID，第三方中转自定义型号由用户自定义模型承接。
+- [x] `gemini-cli` 客户端画像：显式 header / 官方 CLI User-Agent 签名、普通 SDK 隔离、响应策略写出前换账号。
+- [x] 真实 E2E：`gemini-cli` 使用 `GOOGLE_GEMINI_BASE_URL` 调用本地网关。
+- [x] 更新测试说明和完成总结。
 
 ## 测试项
 
@@ -81,13 +83,16 @@
 | Mock 回归 | Gemini OpenAI Chat 直连 | `pnpm --dir backend run test:gemini-gateway-mock-ai` | OpenAI Chat 命中 `/v1beta/openai/chat/completions`，使用账号 Bearer Key | 通过 | 新增 `profile_gemini_openai_chat_v1beta` |
 | Mock 回归 | Codex Responses 到 Gemini | `pnpm --dir backend run test:gemini-gateway-mock-ai` | 显式 `responses -> chat_completions` 模型映射命中 Gemini OpenAI Chat | 通过 | 上游模型改写为 `gemini-3.5-flash` |
 | Mock 回归 | 供应商边界 | `pnpm --dir backend run test:gemini-gateway-mock-ai` | OpenAI Chat 不自动进入 Gemini native，Anthropic Messages 不能映射到 Gemini OpenAI Chat | 通过 | 专项断言 `/v1/chat/completions` 不命中 native；`messages -> chat_completions` 保存失败 |
+| Mock 回归 | Gemini CLI 响应策略 | `pnpm --dir backend run test:gemini-gateway-mock-ai` | `gemini_cli` 专属可重试错误写出前换到下一个账号，`generic_gemini` 不继承 | 通过 | mock 上游返回 `200 + error.status=UNAVAILABLE` 覆盖服务端切号 |
+| 客户端画像 | Gemini CLI 画像识别 | `pnpm --dir backend run test:gemini-client-strategy` | 显式 header / CLI User-Agent 命中，普通 SDK / OpenAI / Anthropic 不误判 | 通过 | `x-goog-api-client` 不作为 CLI 专属信号 |
+| 模型目录 | Gemini 官方模型清洗 | `pnpm --dir backend run test:model-catalog` / `pnpm --dir backend run test:usage-pricing` | 内置目录只包含 Google 官方 Gemini 模型，不包含 `*-antigravity*` 中转型号 | 通过 | 模型候选匹配只接受精确官方 ID 或 `models/` 前缀精确 ID |
 | 类型检查 | 后端类型检查 | `pnpm --dir backend run typecheck` | 通过 | 通过 | `tsc -p tsconfig.json --noEmit` |
 | 类型检查 | 前端类型检查 | `pnpm --dir frontend run typecheck` | 通过 | 通过 | `vue-tsc --noEmit` |
 | 前端回归 | 账户协议测试 | `pnpm --dir frontend run test:account-test-protocols` | Gemini v1beta 可测试，未支持协议仍拦截 | 通过 | 已补 Gemini 断言 |
 | 前端回归 | 账户基础文案 | `pnpm --dir frontend run test:account-basic-formatters` | 基础 formatter 通过 | 通过 | 已覆盖通用基础文案 |
 | 前端体验 | Gemini 账户创建 / 编辑 | 类型检查 + 现有动态表单 | 中文文案、默认值、校验正确 | 通过 | 复用现有 API Key 表单，新增 Gemini fallback provider 与 endpoint modes |
-| 真实联调 | `gemini-cli` JSON 输出 | `gemini -m gemini-3.5-flash -p "只回复 JUHE_GEMINI_OK" --output-format json` | 通过本地网关返回 marker | 未执行 | 等真实 Gemini 账号 |
-| 真实联调 | `gemini-cli` stream-json 输出 | `gemini -m gemini-3.5-flash -p "分两段输出 JUHE 和 GEMINI" --output-format stream-json` | 通过本地网关收到流式事件 | 未执行 | 等真实 Gemini 账号 |
+| 真实联调 | Gemini OpenAI Chat | `pnpm --dir backend run test:gemini-openai-chat-real` | `/v1/models`、Chat JSON、Chat SSE、Codex Responses bridge 通过 | 通过 | 使用用户提供的真实 NewAPI 聚合账号；默认模型改为官方 `gemini-3.5-flash` |
+| 真实联调 | `gemini-cli` stream-json 输出 | `pnpm --dir backend run test:gemini-cli-real-gateway` | 通过本地网关调用 `:streamGenerateContent?alt=sse` 返回 marker | 通过 | 临时 HOME 写入 `.gemini/settings.json`，不修改用户全局配置 |
 | 未覆盖说明 | Google 登录 / Vertex / Live API | 不执行 | 明确不属于本计划 | 不适用 | 后续单独立项 |
 
 ## 进度记录
@@ -97,6 +102,8 @@
 | 2026-06-25 | 进行中 | AI | 创建目标和计划；完成 Gemini native 账号接入与协议兼容设计文档。明确不为 Gemini 做专属 OpenAI 映射，OpenAI 客户端使用官方 OpenAI compatibility 直连。 |
 | 2026-06-25 | 进行中 | AI | 完成 Gemini native 后端直连、前端兜底识别、mockai 回归和类型检查；本机已安装 `gemini` CLI `0.47.0`，等待真实 Gemini 账号做 E2E。 |
 | 2026-06-25 | 进行中 | AI | 根据用户补充边界收口：新增 Gemini OpenAI Chat 档案和默认分组；Codex 使用 Gemini 时只走 `responses -> chat_completions` 到 Gemini OpenAI Chat；禁止 Anthropic Messages 映射到 Gemini。 |
+| 2026-06-25 | 完成 | AI | 用户提供真实 NewAPI 聚合账号后完成 Gemini OpenAI Chat 和 `gemini-cli` 真实 E2E；补充 Google 官方模型目录核对，内置 Gemini 目录只保留官方 ID，`gemini-3.5-flash-antigravity*` 等第三方型号改由用户自定义模型承接。 |
+| 2026-06-25 | 完成 | AI | 根据 `gemini-cli` 源码补充客户端画像和响应策略边界：`GeminiCLI` / `proxy_client=geminicli` + Gemini 认证信号识别为 `gemini_cli`，普通 SDK 为 `generic_gemini`；`gemini_cli` 专属默认规则对已知可重试 Google canonical error 写出前请求下一个账号。 |
 
 ## 决策记录
 
@@ -106,6 +113,8 @@
 | 2026-06-25 | 不做 Gemini 专属协议映射 | Gemini 官方已支持 OpenAI Chat compatibility，项目内再转一次会扩大不确定性 | OpenAI Chat 客户端按 OpenAI-compatible 直连档案处理 |
 | 2026-06-25 | Gemini OpenAI Chat 档案禁止 Anthropic Messages 来源映射 | 用户明确要求 Gemini 不参与 Anthropic / Responses / native 多向互转，Codex 到 Gemini 只需要现有 Responses-to-Chat bridge | 模型映射保存层和前端 UI 对 `profile_gemini_openai_chat_v1beta` 只保留 Chat / Responses-to-Chat |
 | 2026-06-25 | `gemini-cli` 验收使用 `GOOGLE_GEMINI_BASE_URL` | 源码显示这是官方 CLI 的 gateway 模式，能走 `@google/genai` native endpoint | 真实 E2E 用 `GEMINI_API_KEY` 填本地 Key，不用 Google 登录 |
+| 2026-06-25 | `gemini-cli` 错误处理必须绑定客户端画像 | 项目规范禁止泛化识别上游状态码 / 错误类型；`gemini-cli` 源码明确 429、499、5xx 和超时类错误可重试 | 仅 `clientProfiles=['gemini_cli']` 默认规则可按 `error.status` 请求下一个账号，普通 Gemini 不继承 |
+| 2026-06-25 | Gemini 内置模型目录只收 Google 官方模型 ID | 第三方 NewAPI / 中转商可定义自有型号，不能代表 Google 官方 Gemini API model ID | `gemini-3.5-flash-antigravity*` 等型号不进入内置目录，也不会按前缀回落到官方模型价格；需要时由用户创建自定义模型 |
 
 ## 验收标准
 
@@ -116,15 +125,16 @@
 - [x] 本地认证支持 `Authorization`、`x-goog-api-key` 和 query `key`，且不泄漏本地 Key。
 - [x] usage 和成本按 Gemini semantic 记录。
 - [x] OpenAI Chat 请求不自动进入 Gemini native。
-- [ ] 真实 `gemini-cli` 可通过本项目完成 JSON 和 stream-json 调用。
+- [x] 真实 `gemini-cli` 可通过本项目完成 stream-json 调用。
 
 ## 验证记录
 
 - 类型检查：`pnpm --dir backend run typecheck` 通过；`pnpm --dir frontend run typecheck` 通过。
 - Mock 回归：`pnpm --dir backend run test:gemini-gateway-mock-ai` 通过，覆盖 Gemini native、Gemini OpenAI Chat、Codex Responses 映射和 Anthropic Messages 映射禁用。
+- 模型目录 / 计费：`pnpm --dir backend run test:model-catalog`、`pnpm --dir backend run test:usage-pricing` 通过，覆盖 Gemini 官方模型清单、官方价格基础档和第三方自定义型号排除。
 - 前端回归：`pnpm --dir frontend run test:account-test-protocols`、`pnpm --dir frontend run test:account-basic-formatters` 通过。
 - CLI 环境：本机已安装 `gemini` CLI `0.47.0`。
-- 真实联调：未执行，等待用户提供真实 Gemini 账号。
+- 真实联调：`pnpm --dir backend run test:gemini-openai-chat-real`、`pnpm --dir backend run test:gemini-cli-real-gateway` 已用用户提供的真实 NewAPI 聚合账号执行通过。
 
 ## 风险与注意事项
 
@@ -135,8 +145,8 @@
 
 ## 完成总结
 
-- 完成时间：后端 / 前端 mock 阶段完成于 2026-06-25；真实账号联调待补充。
-- 实际完成内容：Gemini native provider / protocol / endpoint modes / usage / error shape / models list / mock 回归；前端新增 Gemini fallback provider、协议识别和 endpoint mode 校验。
+- 完成时间：2026-06-25。
+- 实际完成内容：Gemini native provider / protocol / endpoint modes / usage / error shape / models list / mock 回归；Gemini OpenAI Chat 档案和 Codex `responses -> chat_completions` 显式映射；前端新增 Gemini fallback provider、协议识别和 endpoint mode 校验；真实 Gemini OpenAI Chat 和 `gemini-cli` E2E；官方模型目录清洗。
 - 主要改动位置：`backend/src/domain/`、`backend/src/modules/gateway/protocols/gemini-v1beta/`、`backend/src/modules/providers/drivers/gemini/`、`backend/src/modules/model-pricing/`、`frontend/src/shared/providerProtocol.ts`、`frontend/src/views/accounts/`。
-- 验证结果：后端 typecheck、前端 typecheck、Gemini mock 回归、前端协议回归和基础 formatter 回归均通过。
-- 后续建议：用户提供真实 Gemini API Key 后，使用已安装的 `gemini` CLI 对本地网关执行 JSON 与 stream-json E2E。
+- 验证结果：后端 typecheck、前端 typecheck、Gemini mock 回归、模型目录 / usage pricing 回归、真实 Gemini OpenAI Chat E2E、真实 `gemini-cli` E2E、前端协议回归和基础 formatter 回归均通过。
+- 后续建议：若要接入 `gemini-3.5-flash-antigravity` 等中转商自定义型号，在管理面按用户自定义模型添加，不写入 Gemini 官方内置目录。

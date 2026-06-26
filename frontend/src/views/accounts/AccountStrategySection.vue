@@ -145,7 +145,13 @@ import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
-import { GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID, isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import {
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  isAnthropicProtocolProfile,
+  isOpenAIProtocolProfile
+} from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
@@ -164,6 +170,7 @@ const props = defineProps<{
   isOAuthForm: boolean
   isManagementView: boolean
   mappingAnthropicSourceModelOptions: Array<{ label: string; value: string }>
+  mappingGeminiSourceModelOptions: Array<{ label: string; value: string }>
   mappingSourceModelOptions: Array<{ label: string; value: string }>
   mappingUpstreamModelOptions: Array<{ label: string; value: string }>
   modelOptions: Array<{ label: string; value: string }>
@@ -198,14 +205,20 @@ const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
 })
-const endpointFamilyOptions = [
+const upstreamEndpointFamilyBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' }
 ] as const
-const sourceEndpointFamilyOptions = computed(() => endpointFamilyOptions.map((option) => ({
+const sourceEndpointFamilyBaseOptions = [
+  ...upstreamEndpointFamilyBaseOptions,
+  { label: 'Gemini GenerateContent', value: GEMINI_GENERATE_CONTENT_FAMILY },
+  { label: 'Gemini StreamGenerateContent', value: GEMINI_STREAM_GENERATE_CONTENT_FAMILY }
+] as const
+const sourceEndpointFamilyOptions = computed(() => sourceEndpointFamilyBaseOptions.map((option) => ({
   ...option,
-  disabled: option.value === 'messages' && !canSelectMessagesSource()
+  disabled: (option.value === 'messages' && !canSelectMessagesSource())
+    || (isGeminiGenerateContentSource(option.value) && !canSelectGeminiGenerateContentSource())
 })))
 const nativeResponsesUpstreamAvailable = computed(() => props.form.supportedEndpointModes.some((mode) => responsesEndpointModes.includes(mode)))
 const openAIUpstreamProfile = computed(() => isOpenAIProtocolProfile(props.selectedProtocolProfile))
@@ -222,6 +235,9 @@ watch(() => [
     if (mapping.sourceEndpointFamily === 'messages' && !canSelectMessagesSource()) {
       mapping.sourceEndpointFamily = 'chat_completions'
     }
+    if (isGeminiGenerateContentSource(mapping.sourceEndpointFamily) && !canSelectGeminiGenerateContentSource()) {
+      mapping.sourceEndpointFamily = 'chat_completions'
+    }
     if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) {
       mapping.upstreamEndpointFamily = defaultUpstreamEndpointFamilyForSource(mapping.sourceEndpointFamily)
     }
@@ -229,13 +245,17 @@ watch(() => [
 })
 
 function mappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  return sourceEndpointFamily === 'messages'
-    ? props.mappingAnthropicSourceModelOptions
-    : props.mappingSourceModelOptions
+  if (sourceEndpointFamily === 'messages') {
+    return props.mappingAnthropicSourceModelOptions
+  }
+  if (isGeminiGenerateContentSource(sourceEndpointFamily)) {
+    return props.mappingGeminiSourceModelOptions
+  }
+  return props.mappingSourceModelOptions
 }
 
 function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  return endpointFamilyOptions.map((option) => ({
+  return upstreamEndpointFamilyBaseOptions.map((option) => ({
     ...option,
     disabled: upstreamEndpointFamilyDisabled(sourceEndpointFamily, option.value)
   }))
@@ -249,6 +269,10 @@ function canSelectMessagesSource(): boolean {
   return openAIUpstreamProfile.value && !geminiOpenAIChatUpstreamProfile.value
 }
 
+function canSelectGeminiGenerateContentSource(): boolean {
+  return openAIUpstreamProfile.value
+}
+
 function canSelectMessagesUpstream(): boolean {
   return anthropicUpstreamProfile.value
 }
@@ -259,6 +283,9 @@ function upstreamEndpointFamilyDisabled(
 ): boolean {
   if (sourceEndpointFamily === 'messages') {
     return !canSelectMessagesSource() || upstreamEndpointFamily !== 'chat_completions'
+  }
+  if (isGeminiGenerateContentSource(sourceEndpointFamily)) {
+    return !canSelectGeminiGenerateContentSource() || upstreamEndpointFamily !== 'chat_completions'
   }
   if (upstreamEndpointFamily === 'messages') {
     return !canSelectMessagesUpstream()
@@ -273,6 +300,9 @@ function defaultUpstreamEndpointFamilyForSource(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
 ): AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'] {
   if (sourceEndpointFamily === 'messages' && canSelectMessagesSource()) {
+    return 'chat_completions'
+  }
+  if (isGeminiGenerateContentSource(sourceEndpointFamily) && canSelectGeminiGenerateContentSource()) {
     return 'chat_completions'
   }
   if (canSelectMessagesUpstream()) {
@@ -316,6 +346,10 @@ function activeProfileId(): string | undefined {
     return profile.id
   }
   return props.form.providerProtocolProfileId
+}
+
+function isGeminiGenerateContentSource(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']): boolean {
+  return value === GEMINI_GENERATE_CONTENT_FAMILY || value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 }
 </script>
 

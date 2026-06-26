@@ -91,7 +91,7 @@ try {
       providerCode: ANTHROPIC_PROVIDER_CODE,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const account = repositories.createAccount({
       providerCode: ANTHROPIC_PROVIDER_CODE,
       name: 'OpenAI 到 Anthropic 桥接真实 E2E 账户',
       type: 'api_key',
@@ -122,6 +122,21 @@ try {
       status: 'active',
       schedulable: true
     }, access)
+    assert.equal(account.modelMappings?.length, 2, '真实 E2E 桥接账号应保存 Chat/Responses 映射')
+    const defaultCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId)
+    assert.equal(defaultCandidateResult.accounts.length, 1, `真实 E2E 默认候选窗口应返回桥接账号，实际 ${defaultCandidateResult.accounts.length}，诊断 ${JSON.stringify(defaultCandidateResult.diagnostics)}`)
+    const chatCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
+      requestedModel: sourceModel,
+      requestedEndpointFamily: 'chat_completions'
+    })
+    assert.equal(chatCandidateResult.accounts.length, 1, `真实 E2E Chat 模型候选窗口应返回桥接账号，实际 ${chatCandidateResult.accounts.length}，诊断 ${JSON.stringify(chatCandidateResult.diagnostics)}`)
+    assert.equal(chatCandidateResult.accounts[0]?.modelMappings?.length, 2, '真实 E2E Chat 模型候选窗口返回的账号应带模型映射')
+    const responsesCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
+      requestedModel: sourceModel,
+      requestedEndpointFamily: 'responses'
+    })
+    assert.equal(responsesCandidateResult.accounts.length, 1, `真实 E2E Responses 模型候选窗口应返回桥接账号，实际 ${responsesCandidateResult.accounts.length}，诊断 ${JSON.stringify(responsesCandidateResult.diagnostics)}`)
+    assert.equal(responsesCandidateResult.accounts[0]?.modelMappings?.length, 2, '真实 E2E Responses 模型候选窗口返回的账号应带模型映射')
     const localKey = repositories.createApiKeyRecord({
       name: 'OpenAI 到 Anthropic 桥接真实 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -147,6 +162,7 @@ try {
       await optionalCheck('responses_thinking', () => assertResponsesThinking(baseUrl, localKey.key)),
       await optionalCheck('responses_file_search_local', () => assertResponsesFileSearchLocal(baseUrl, localKey.key)),
       await optionalCheck('responses_tool_search_namespace', () => assertResponsesToolSearchNamespace(baseUrl, localKey.key)),
+      await optionalCheck('responses_previous_response_id_json', () => assertResponsesPreviousResponseIdJson(baseUrl, localKey.key)),
       await optionalCheck('responses_compact', () => assertResponsesCompact(baseUrl, localKey.key))
     ]
     if (runImageProviderE2E) {
@@ -280,6 +296,52 @@ async function assertResponsesSse(baseUrl: string, localApiKey: string): Promise
   assert.equal(response.status, 200, `真实 Responses SSE 桥接应成功，实际 HTTP ${response.status}: ${text.slice(0, 500)}`)
   assert.match(text, /event: response\.created/)
   assert.match(text, /event: response\.completed/)
+}
+
+async function assertResponsesPreviousResponseIdJson(baseUrl: string, localApiKey: string): Promise<void> {
+  const first = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: sourceModel,
+      input: 'Remember the phrase real previous bridge marker.',
+      max_output_tokens: 24,
+      stream: false,
+      store: false
+    })
+  })
+  const firstText = await first.text()
+  assert.equal(first.status, 200, `真实 Responses previous_response_id JSON 首轮应成功，HTTP ${first.status}: ${firstText.slice(0, 500)}`)
+  const firstBody = JSON.parse(firstText) as { id?: string; object?: string; status?: string }
+  assert.equal(firstBody.object, 'response')
+  assert.equal(firstBody.status, 'completed')
+  assert(firstBody.id, `真实 Responses previous_response_id JSON 首轮应返回 response id: ${firstText.slice(0, 500)}`)
+
+  const second = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: sourceModel,
+      previous_response_id: firstBody.id,
+      input: 'Reply with exactly two words: previous-ok',
+      max_output_tokens: 24,
+      stream: false,
+      store: false
+    })
+  })
+  const secondText = await second.text()
+  assert.equal(second.status, 200, `真实 Responses previous_response_id JSON 续链应成功，HTTP ${second.status}: ${secondText.slice(0, 500)}`)
+  const secondBody = JSON.parse(secondText) as { object?: string; status?: string; previous_response_id?: string; output_text?: string }
+  assert.equal(secondBody.object, 'response')
+  assert.equal(secondBody.status, 'completed')
+  assert.equal(secondBody.previous_response_id, firstBody.id)
+  assert((secondBody.output_text ?? '').length > 0, '真实 Responses previous_response_id JSON 续链应返回非空 output_text')
 }
 
 async function assertResponsesImageGenerationProvider(baseUrl: string, localApiKey: string): Promise<void> {

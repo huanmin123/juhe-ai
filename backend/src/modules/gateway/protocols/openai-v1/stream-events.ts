@@ -124,6 +124,7 @@ export function classifyOpenAIStreamEvent(
 }
 
 export function extractOpenAIStreamEventError(data: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (data.type === 'response.mcp_call.failed') return undefined
   const response = objectValue(data.response)
   const responseError = objectValue(response?.error)
   if (responseError) return responseError

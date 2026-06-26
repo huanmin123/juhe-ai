@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountSupportedEndpointMode } from './types.js'
+import type { AccountClientCompatibility, AccountModelMapping, AccountSupportedEndpointMode } from './types.js'
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
@@ -150,6 +150,7 @@ export function accountSupportsOpenAIEndpointMode(input: {
 
 export function assertOpenAIEndpointModesCompatible(input: {
   modes: readonly AccountSupportedEndpointMode[]
+  modelMappings?: readonly AccountModelMapping[]
   providerCode?: string
   providerProtocolProfileId?: string
   accountType?: string
@@ -170,7 +171,10 @@ export function assertOpenAIEndpointModesCompatible(input: {
       throw new Error(`Gemini OpenAI Chat 账户接口能力只能选择 ${openAIEndpointModeLabel('chat_json', input)} 或 ${openAIEndpointModeLabel('chat_sse', input)}`)
     }
   }
-  if (input.clientCompatibility === 'codex_responses' && supportsCodexResponsesChatBridge(input)) {
+  if (
+    input.clientCompatibility === 'codex_responses'
+    && (supportsCodexResponsesChatBridge(input) || hasResponsesToChatCompletionsMapping(input.modelMappings))
+  ) {
     if (!input.modes.includes('chat_sse')) {
       throw new Error(`Codex Responses 桥接能力必须启用 ${openAIEndpointModeLabel('chat_sse', input)}`)
     }
@@ -216,4 +220,10 @@ function openAIChatCapabilityName(context: OpenAIEndpointModeDefaultContext): st
     return context.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID ? 'OpenAI Chat Completions' : '对话补全'
   }
   return 'Chat Completions'
+}
+
+function hasResponsesToChatCompletionsMapping(value: readonly AccountModelMapping[] | undefined): boolean {
+  return (value ?? []).some((mapping) => mapping.enabled !== false
+    && mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY)
 }

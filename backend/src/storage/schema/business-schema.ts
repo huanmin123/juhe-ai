@@ -624,6 +624,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       system_account_id TEXT NOT NULL,
       api_key_id TEXT NOT NULL,
       purpose TEXT NOT NULL,
+      container_id TEXT,
       filename TEXT NOT NULL,
       bytes INTEGER NOT NULL,
       media_type TEXT,
@@ -687,6 +688,124 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       keyword_index_text TEXT NOT NULL,
       created_at TEXT NOT NULL,
       FOREIGN KEY (vector_store_id, file_id) REFERENCES openai_compatible_vector_store_files(vector_store_id, file_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_mcp_servers (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      server_url TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+      default_approval_policy TEXT NOT NULL DEFAULT 'always',
+      timeout_ms INTEGER,
+      max_retries INTEGER,
+      retry_delay_ms INTEGER,
+      max_body_bytes INTEGER,
+      max_output_bytes INTEGER,
+      allow_request_authorization INTEGER NOT NULL DEFAULT 0,
+      authorization_ref TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (enabled IN (0, 1)),
+      CHECK (allow_request_authorization IN (0, 1)),
+      CHECK (default_approval_policy IN ('always', 'never')),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_mcp_approval_requests (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      server_label TEXT NOT NULL,
+      server_url TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      arguments_digest TEXT NOT NULL,
+      arguments_preview TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      trace_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      approved_at TEXT,
+      rejected_at TEXT,
+      consumed_at TEXT,
+      reject_reason TEXT,
+      CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'consumed')),
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE,
+      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_mcp_tool_cache (
+      id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      server_label TEXT NOT NULL,
+      server_url TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      description TEXT,
+      input_schema_json TEXT NOT NULL DEFAULT '{}',
+      annotations_json TEXT NOT NULL DEFAULT 'null',
+      last_checked_at TEXT NOT NULL,
+      expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (server_id, tool_name),
+      FOREIGN KEY (server_id) REFERENCES openai_compatible_mcp_servers(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_mcp_server_diagnostics (
+      id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      server_label TEXT NOT NULL,
+      server_url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'succeeded',
+      tool_count INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT,
+      error_message TEXT,
+      omission_metadata_json TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('succeeded', 'failed')),
+      FOREIGN KEY (server_id) REFERENCES openai_compatible_mcp_servers(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS openai_compatible_mcp_execution_records (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      trace_id TEXT,
+      approval_request_id TEXT,
+      server_label TEXT NOT NULL,
+      server_url TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      arguments_digest TEXT NOT NULL,
+      arguments_preview TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'succeeded',
+      output_digest TEXT,
+      output_bytes INTEGER NOT NULL DEFAULT 0,
+      output_truncated INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT,
+      error_message TEXT,
+      omission_metadata_json TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (status IN ('succeeded', 'failed')),
+      FOREIGN KEY (approval_request_id) REFERENCES openai_compatible_mcp_approval_requests(id) ON DELETE SET NULL,
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE,
+      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS account_schedule_status_events (
@@ -893,6 +1012,32 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_openai_compatible_vector_store_chunks_search
       ON openai_compatible_vector_store_chunks(system_account_id, api_key_id, vector_store_id, file_id, chunk_index);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_openai_compatible_mcp_servers_scope_label_unique
+      ON openai_compatible_mcp_servers(system_account_id, lower(label));
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_servers_scope_enabled
+      ON openai_compatible_mcp_servers(system_account_id, enabled, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_servers_scope_label_url
+      ON openai_compatible_mcp_servers(system_account_id, label, server_url);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_approval_scope_status
+      ON openai_compatible_mcp_approval_requests(system_account_id, api_key_id, group_id, status, expires_at, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_approval_expiry
+      ON openai_compatible_mcp_approval_requests(status, expires_at)
+      WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_tool_cache_server
+      ON openai_compatible_mcp_tool_cache(server_id, tool_name);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_tool_cache_scope_checked
+      ON openai_compatible_mcp_tool_cache(system_account_id, last_checked_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_server_diagnostics_server
+      ON openai_compatible_mcp_server_diagnostics(server_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_server_diagnostics_scope
+      ON openai_compatible_mcp_server_diagnostics(system_account_id, status, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_execution_scope_status
+      ON openai_compatible_mcp_execution_records(system_account_id, api_key_id, group_id, status, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_execution_approval
+      ON openai_compatible_mcp_execution_records(approval_request_id, created_at DESC, id DESC)
+      WHERE approval_request_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_mcp_execution_tool
+      ON openai_compatible_mcp_execution_records(server_label, tool_name, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_account_schedule_status_events_account
       ON account_schedule_status_events(account_id, executed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
@@ -924,6 +1069,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureOpenAICompatibleFilesSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureApiKeyGroupBindingUniqueIndexes(database)
@@ -942,6 +1088,22 @@ function ensureResponseInspectionPolicyIndexes(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_enabled_priority ON response_inspection_policies(enabled, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_protocol_priority ON response_inspection_policies(protocol_code, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_scope_priority ON response_inspection_policies(protocol_code, scope_type, provider_code, priority, updated_at DESC, id);
+  `)
+}
+
+function ensureOpenAICompatibleFilesSchema(database: DatabaseSync): void {
+  const columns = new Set(
+    (database.prepare("PRAGMA table_info('openai_compatible_files')").all() as Array<{ name?: string }>)
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0)
+  )
+  if (!columns.has('container_id')) {
+    database.exec('ALTER TABLE openai_compatible_files ADD COLUMN container_id TEXT')
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_container_created
+      ON openai_compatible_files(system_account_id, api_key_id, container_id, created_at DESC, id DESC)
+      WHERE deleted_at IS NULL AND container_id IS NOT NULL;
   `)
 }
 

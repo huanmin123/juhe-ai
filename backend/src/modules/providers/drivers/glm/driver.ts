@@ -7,6 +7,7 @@ import {
 } from '../../../../domain/openai-endpoint-modes.js'
 import {
   ANTHROPIC_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_CODE,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
@@ -20,6 +21,7 @@ import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/regis
 import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
+  isGeminiGenerateContentToChatCompletionsModelMapping,
   isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
   openAIModelMappedUpstreamPathAndQuery,
@@ -39,6 +41,12 @@ import {
   prepareAnthropicMessagesChatBridgeHeaders,
   transformAnthropicMessagesChatBridgeUpstreamResponse
 } from '../_shared/anthropic-openai-chat-bridge.js'
+import {
+  buildGeminiGenerateContentChatBridgeBody,
+  geminiGenerateContentChatBridgeRequiredEndpointMode,
+  prepareGeminiGenerateContentChatBridgeHeaders,
+  transformGeminiGenerateContentChatBridgeUpstreamResponse
+} from '../_shared/gemini-openai-chat-bridge.js'
 import {
   buildCodexResponsesChatBridgeBody,
   codexResponsesChatBridgeRequiredEndpointMode,
@@ -88,6 +96,9 @@ export const glmProviderDriver: ProviderDriver = {
     if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return []
     }
+    if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) && !isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      return []
+    }
     return buildGlmOpenAIChatUpstreamUrls(account, req)
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
@@ -98,6 +109,18 @@ export const glmProviderDriver: ProviderDriver = {
       return {
         headers,
         body: await buildAnthropicMessagesChatBridgeBody(req, {
+          defaultModel: modelMapping.upstreamModel,
+          guidanceProviderName: 'GLM',
+          modelOverride: modelMapping.upstreamModel
+        }, signal)
+      }
+    }
+    if (modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      const headers = buildUpstreamHeaders(req.headers, account)
+      prepareGeminiGenerateContentChatBridgeHeaders(headers, req)
+      return {
+        headers,
+        body: await buildGeminiGenerateContentChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           guidanceProviderName: 'GLM',
           modelOverride: modelMapping.upstreamModel
@@ -136,7 +159,11 @@ export const glmProviderDriver: ProviderDriver = {
       enabled: isAnthropicMessagesToChatCompletionsModelMapping(modelMapping),
       model: modelMapping?.upstreamModel ?? requestModel(req) ?? GLM_CODEX_BRIDGE_DEFAULT_MODEL
     })
-    return transformCodexResponsesChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
+    const geminiGenerateContentResponse = transformGeminiGenerateContentChatBridgeUpstreamResponse(req, anthropicMessagesResponse, {
+      enabled: isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping),
+      model: modelMapping?.upstreamModel ?? requestModel(req) ?? GLM_CODEX_BRIDGE_DEFAULT_MODEL
+    })
+    return transformCodexResponsesChatBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
       defaultModel: GLM_CODEX_BRIDGE_DEFAULT_MODEL,
       enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: true,
@@ -168,6 +195,17 @@ export const glmProviderDriver: ProviderDriver = {
     if (modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: anthropicMessagesChatBridgeRequiredEndpointMode(isEffectiveOpenAIStreamRequest(req, account)),
+        supportedEndpointModes: account.supportedEndpointModes,
+        credentials: account.credentials,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        accountType: account.type,
+        clientCompatibility: account.clientCompatibility
+      })
+    }
+    if (modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
+      return accountSupportsOpenAIEndpointMode({
+        mode: geminiGenerateContentChatBridgeRequiredEndpointMode(req),
         supportedEndpointModes: account.supportedEndpointModes,
         credentials: account.credentials,
         providerCode: account.providerCode,
@@ -210,7 +248,7 @@ function buildGlmOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req: Req
   }
   const baseUrl = normalizeGlmOpenAIChatBaseUrl(account.baseUrl)
   const modelMapping = resolveOpenAIRequestModelMapping(req, account)
-  if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
+  if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping) || isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
     return [`${baseUrl}${openAIModelMappedUpstreamPathAndQuery(req, modelMapping)}`]
   }
   const { path, query } = splitPathAndQuery(req.originalUrl)

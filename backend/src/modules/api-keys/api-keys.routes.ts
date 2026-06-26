@@ -1,9 +1,10 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySecret, findApiKeySummary, listApiKeysPage, listProviders, refreshApiKeySecret, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { createApiKeyRecordAsync, deleteApiKeyWithRelatedCleanupAsync, findApiKeySecretAsync, findApiKeySummaryAsync, listApiKeysPageAsync, listProviders, refreshApiKeySecretAsync, updateApiKeyAsync, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -11,7 +12,7 @@ import { listProviderModelCatalog } from '../model-pricing/model-catalog.service
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from './api-key-availability-schedule.schema.js'
 import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const apiKeysRouter = Router()
 
@@ -69,22 +70,30 @@ const apiKeyUpdateSchema = apiKeyMutationSchema.partial().refine((value) => Obje
   message: '请提供要修改的 API Key 内容'
 })
 
-apiKeysRouter.get('/', (req, res) => {
-  res.json(ok(listApiKeysPage(getRequestAccessScope(req.query.systemAccountId), parseApiKeyListOptions(req.query))))
+apiKeysRouter.get('/', async (req, res, next) => {
+  try {
+    res.json(ok(await listApiKeysPageAsync(getRequestAccessScope(req.query.systemAccountId), parseApiKeyListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
-apiKeysRouter.get('/:id/secret', (req, res) => {
+apiKeysRouter.get('/:id/secret', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
-  const apiKey = findApiKeySecret(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
-  if (!apiKey) {
-    res.status(404).json({ message: 'API Key 不存在' })
-    return
+  try {
+    const apiKey = await findApiKeySecretAsync(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!apiKey) {
+      res.status(404).json({ message: 'API Key 不存在' })
+      return
+    }
+    res.json(ok({ key: apiKey.key }))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok({ key: apiKey.key }))
 })
 
 apiKeysRouter.post('/:id/refresh-key', mutationGuard({
@@ -94,17 +103,23 @@ apiKeysRouter.post('/:id/refresh-key', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     id: normalizedText(req.params.id)
   })
-}), (req, res) => {
+}), async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = findApiKeySummary(req.params.id, requestAccess)
+  let before: Awaited<ReturnType<typeof findApiKeySummaryAsync>>
   try {
-    const apiKey = runLoggedOperation(() => {
-      const apiKey = refreshApiKeySecret(req.params.id, requestAccess)
+    before = await findApiKeySummaryAsync(req.params.id, requestAccess)
+  } catch (error) {
+    next(error)
+    return
+  }
+  try {
+    const apiKey = await runLoggedOperationAsync(async () => {
+      const apiKey = await refreshApiKeySecretAsync(req.params.id, requestAccess)
       if (!apiKey) {
         throw new Error('API Key 不存在')
       }
@@ -134,7 +149,7 @@ apiKeysRouter.post('/:id/refresh-key', mutationGuard({
       res.status(404).json({ message: 'API Key 不存在' })
       return
     }
-    throw error
+    next(error)
   }
 })
 
@@ -155,6 +170,9 @@ function apiKeyStatusQueryValue(value: unknown): ApiKeyListOptions['status'] {
 
 function validateHybridRoutingCatalogModels(value: unknown, access: RequestAccessScope | undefined): string | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return 'PostgreSQL 模式暂不支持混合路由模型目录校验，请等待模型目录仓储迁移后再启用混合路由'
+  }
   const config = value as Record<string, unknown>
   const catalogModels = availableHybridRoutingModelSet(access)
   const scoringModelMessage = validateCatalogModel(config.scoringModel, catalogModels, '评分模型')
@@ -213,7 +231,7 @@ apiKeysRouter.post('/', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name'))
   })
-}), (req, res) => {
+}), async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -231,8 +249,8 @@ apiKeysRouter.post('/', mutationGuard({
     return
   }
   try {
-    const apiKey = runLoggedOperation(() => {
-      const apiKey = createApiKeyRecord(parsed.data, requestAccess)
+    const apiKey = await runLoggedOperationAsync(async () => {
+      const apiKey = await createApiKeyRecordAsync(parsed.data, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
       return {
         result: apiKey,
@@ -267,14 +285,20 @@ apiKeysRouter.post('/', mutationGuard({
   }
 })
 
-apiKeysRouter.patch('/:id', (req, res) => {
+apiKeysRouter.patch('/:id', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = findApiKeySummary(req.params.id, requestAccess)
+  let before: Awaited<ReturnType<typeof findApiKeySummaryAsync>>
+  try {
+    before = await findApiKeySummaryAsync(req.params.id, requestAccess)
+  } catch (error) {
+    next(error)
+    return
+  }
   const parsed = apiKeyUpdateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 参数无效')))
@@ -286,8 +310,8 @@ apiKeysRouter.patch('/:id', (req, res) => {
     return
   }
   try {
-    const apiKey = runLoggedOperation(() => {
-      const apiKey = updateApiKey(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
+    const apiKey = await runLoggedOperationAsync(async () => {
+      const apiKey = await updateApiKeyAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
       if (!apiKey) {
         throw new Error('API Key 不存在')
       }
@@ -332,25 +356,31 @@ apiKeysRouter.patch('/:id', (req, res) => {
   }
 })
 
-apiKeysRouter.delete('/:id', (req, res) => {
+apiKeysRouter.delete('/:id', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = findApiKeySummary(req.params.id, requestAccess)
+  let before: Awaited<ReturnType<typeof findApiKeySummaryAsync>>
+  try {
+    before = await findApiKeySummaryAsync(req.params.id, requestAccess)
+  } catch (error) {
+    next(error)
+    return
+  }
   const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
-    runLoggedOperation(() => {
-      const deleteResult = deleteApiKeyWithRelatedCleanup(req.params.id, requestAccess)
+    await runLoggedOperationAsync(async () => {
+      const deleteResult = await deleteApiKeyWithRelatedCleanupAsync(req.params.id, requestAccess)
       if (!deleteResult.deleted) {
         throw new Error('API Key 不存在')
       }
       return {
         result: true,
         afterCommit: () => {
-          if (deleteResult.cleanupTarget) {
+          if (deleteResult.cleanupTarget && runtimeConfig.databaseDriver !== 'postgres') {
             submitApiKeyRelatedCleanup(deleteResult.cleanupTarget)
           }
         },
@@ -374,7 +404,8 @@ apiKeysRouter.delete('/:id', (req, res) => {
       res.status(404).json({ message: 'API Key 不存在' })
       return
     }
-    throw error
+    next(error)
+    return
   }
   res.status(204).send()
 })

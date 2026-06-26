@@ -246,11 +246,14 @@ try {
   const expiringAfterBoundary = await withMockedNow(Date.parse('2026-06-01T00:01:01.000Z'), () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.expiringKey))
   assert.equal(expiringAfterBoundary.apiKey, undefined, 'API Key 过期后不应被高频缓存命中续命')
   assert.equal(fakeChild.sentOperationCount, expiringOperationCount + 2, 'API Key 过期后应重新请求 DB service')
+  await delay(10)
+  runtimeConfig.processRole = 'server'
 
   const accountExpiringExpiresAtMs = Date.parse(apiKey.accountExpiringExpiresAt)
   const accountExpiringBeforeBoundary = accountExpiringExpiresAtMs - 20_000
   const accountExpiringAfterBoundary = accountExpiringExpiresAtMs + 1_000
   const accountExpiringOperationCount = fakeChild.sentOperationCount
+  assert.equal(runtimeConfig.processRole, 'server', '账户到期缓存用例前 processRole 应恢复为 server')
   const accountExpiringFirst = await withMockedNow(accountExpiringBeforeBoundary, () => gatewayCache.readCachedGatewayRuntimeAsync(apiKey.accountExpiringKey))
   assert.equal(accountExpiringFirst.accounts.length, 1, '账户到期前应返回候选账号')
   assert.equal(accountExpiringFirst.accounts[0]?.accountExpiresAt, apiKey.accountExpiringExpiresAt, '运行态候选应携带账户到期时间用于缓存边界')
@@ -605,11 +608,16 @@ function isDbServiceRequest(value: unknown): value is { type: 'db_service_reques
 }
 
 async function simulateDbServiceRuntimeCacheInvalidation(fakeChild: FakeDbServiceChild): Promise<void> {
-  await runWithDbServiceParentMessageBridge(fakeChild, async () => {
-    runtimeConfig.processRole = 'db-service'
-    gatewayCache.clearGatewayRuntimeCache()
-    await delay(10)
-  })
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    await runWithDbServiceParentMessageBridge(fakeChild, async () => {
+      runtimeConfig.processRole = 'db-service'
+      gatewayCache.clearGatewayRuntimeCache()
+      await delay(10)
+    })
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
 }
 
 async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceChild, operation: () => Promise<T> | T): Promise<T> {
@@ -618,12 +626,11 @@ async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceCh
   try {
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = (message: unknown) => {
       queueMicrotask(() => {
-        const parentProcessRole = runtimeConfig.processRole
         runtimeConfig.processRole = 'server'
         try {
           fakeChild.emit('message', message)
         } finally {
-          runtimeConfig.processRole = parentProcessRole
+          runtimeConfig.processRole = previousProcessRole
         }
       })
       return true

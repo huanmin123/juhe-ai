@@ -160,7 +160,7 @@ export function responseInspectionFailurePayloadForDecision(
     : undefined
   const errorCode = clientRetryCode ?? decision.rewriteErrorCode ?? 'response_inspection_matched'
   const message = clientRetryCode === gatewayStreamClientRetryErrorCode
-    ? decision.rewriteMessage ?? gatewayStreamClientRetryMessage
+    ? gatewayStreamClientRetryMessage
     : decision.rewriteMessage ?? '响应命中检查策略'
   return { errorCode, message }
 }

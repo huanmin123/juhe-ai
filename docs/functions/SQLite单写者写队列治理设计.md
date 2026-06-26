@@ -1,7 +1,7 @@
 # SQLite 单写者写队列治理设计
 
 > 面向后端实现、后台 worker 和数据库维护者。
-> 本文定义 SQLite 多进程写入治理的长期边界。执行计划见 [PLAN-0048 SQLite 单写者写队列治理](../plans/计划-0048-SQLite单写者写队列治理.md)。
+> 本文定义 standalone 模式下 SQLite 多进程写入治理的长期边界。执行计划见 [PLAN-0048 SQLite 单写者写队列治理](../plans/计划-0048-SQLite单写者写队列治理.md)。PostgreSQL performance 模式的并发写入边界见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
 
 ## 背景
 
@@ -16,7 +16,7 @@
 - 每个 SQLite 文件只有一个明确写 owner。
 - 所有写入都通过 typed command 或明确 repository 入口提交，禁止散落的跨进程直接写。
 - 写 owner 支持优先级、批量、合并、重试、blocked 降级和运行态指标。
-- 保持当前轻量单机部署，不引入 Redis、Kafka、PostgreSQL 或外部分布式锁。
+- 保持 standalone 轻量单机部署，不在 SQLite 模式引入 Redis、Kafka、PostgreSQL 或外部分布式锁。
 - 业务强一致写入同步确认；记录类和统计类写入按语义允许异步、延迟或 best-effort。
 
 ## 非目标

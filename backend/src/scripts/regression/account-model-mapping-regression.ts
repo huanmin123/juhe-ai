@@ -402,6 +402,26 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   assert.deepEqual(chatBridgeAccount.modelMappings, [
     responsesToChatMapping(sourceModel, upstreamModel)
   ], 'Chat-only 账号仍允许显式 Responses 转 Chat Completions bridge')
+
+  const codexChatBridgeAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: 'Codex Chat-only 账号允许 Responses 转 Chat',
+    type: 'api_key',
+    clientCompatibility: 'codex_responses',
+    credentials: {
+      api_key: 'sk-account-model-mapping-codex-chat-only-responses-to-chat',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    supportedModels: [chatCompletionsUpstreamModel],
+    modelMappings: [
+      responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+    ],
+    groupId: group.id
+  }, ownerAccess)
+  assert.deepEqual(codexChatBridgeAccount.modelMappings, [
+    responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+  ], 'Codex Responses 兼容的 Chat-only 账号可通过显式 Responses -> Chat Completions 映射保存真实 Chat endpoint modes')
 }
 
 function assertAnthropicMessagesToChatMapping(groupId: string): void {
@@ -583,7 +603,7 @@ function assertImportPreviewRejectsUnsupportedMessagesMapping(groupId: string): 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {
   return (databaseModule.getBusinessDatabase()
     .prepare('SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled FROM account_model_mappings WHERE account_id = ? ORDER BY source_model ASC, source_endpoint_family ASC')
-    .all(accountId) as unknown as Array<{ source_model: string; source_endpoint_family: 'chat_completions' | 'responses' | 'messages'; upstream_model: string; upstream_endpoint_family: 'chat_completions' | 'responses' | 'messages'; enabled: number }>)
+    .all(accountId) as unknown as Array<{ source_model: string; source_endpoint_family: AccountModelMapping['sourceEndpointFamily']; upstream_model: string; upstream_endpoint_family: AccountModelMapping['upstreamEndpointFamily']; enabled: number }>)
     .map((row) => ({
       sourceModel: row.source_model,
       sourceEndpointFamily: row.source_endpoint_family,

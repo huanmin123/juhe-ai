@@ -9,6 +9,7 @@ import {
   clearAccountFailureStateResult,
   clearAuthorizedAccountBindingFailureStateByContext,
   getSettings,
+  getSettingsAsync,
   markAccountCooldown,
   markAccountTemporaryUnavailable,
   markAccountDisabledByFailure,
@@ -83,6 +84,38 @@ export function readGatewaySettings(): GatewaySettings {
     streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
+  }
+}
+
+export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return withGatewaySettingsLocalDatabaseAccess(() => readGatewaySettings())
+  }
+  const settings = await getSettingsAsync()
+  return {
+    gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
+    defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
+    temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
+    temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
+    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, 'streamCircuitBreakerEnabled'),
+    streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
+    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
+    streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
+    streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
+    streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
+  }
+}
+
+function withGatewaySettingsLocalDatabaseAccess<T>(operation: () => T): T {
+  if (runtimeConfig.processRole !== 'server') {
+    return operation()
+  }
+  const previousProcessRole = runtimeConfig.processRole
+  try {
+    runtimeConfig.processRole = 'db-service'
+    return operation()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
   }
 }
 

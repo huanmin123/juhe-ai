@@ -1,8 +1,11 @@
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { createAppCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
+import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
+import { runtimeConfig } from '../config/runtime.js'
 
 interface GlobalSettingRow {
   key: string
@@ -12,6 +15,7 @@ interface GlobalSettingRow {
 
 const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
 const settingsCacheTtlMs = 60_000
+const businessSchemaName = 'juhe_business'
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
   'systemApiRateLimitEnabled',
@@ -164,8 +168,33 @@ export function listGlobalSettings(): Record<string, unknown> {
   return { ...settings }
 }
 
+export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>> {
+  const cached = globalSettingsCache.get('current')
+  if (cached) {
+    return { ...cached }
+  }
+  const client = await getSettingsDatabaseClient()
+  const rows = await client.query<GlobalSettingRow>(`
+    SELECT key, value_json, updated_at
+    FROM ${settingsTable(client, 'global_settings')}
+    WHERE key IN ('appName', 'appIcon')
+    ORDER BY key ASC
+  `)
+  const settings: Record<string, unknown> = {}
+  for (const row of rows) {
+    settings[row.key] = normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(settings, globalSettingKeys, '全局设置')
+  globalSettingsCache.set('current', settings)
+  return { ...settings }
+}
+
 export function listPublicGlobalSettings(): Record<string, unknown> {
   return pickGlobalSettings(listGlobalSettings())
+}
+
+export async function listPublicGlobalSettingsAsync(): Promise<Record<string, unknown>> {
+  return pickGlobalSettings(await listGlobalSettingsAsync())
 }
 
 export function updateGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -177,6 +206,23 @@ export function updateGlobalSettings(input: Record<string, unknown>): Record<str
   }
   clearGlobalSettingsCache()
   return listGlobalSettings()
+}
+
+export async function updateGlobalSettingsAsync(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const normalizedInput = normalizeGlobalSettingsInput(input)
+  const client = await getSettingsDatabaseClient()
+  const now = nowIso()
+  await client.transaction(async (tx) => {
+    for (const [key, value] of Object.entries(normalizedInput)) {
+      await tx.execute(`
+        INSERT INTO ${settingsTable(tx, 'global_settings')} (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `, [key, JSON.stringify(value), now])
+    }
+  })
+  clearGlobalSettingsCache()
+  return listGlobalSettingsAsync()
 }
 
 function pickGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -193,6 +239,28 @@ export function getSettings(): Record<string, unknown> {
   const rows = getBusinessDatabase()
     .prepare(`SELECT key, value_json FROM system_settings WHERE system_account_id = ? AND key IN (${sqlPlaceholders(systemSettingKeys.length)}) ORDER BY key ASC`)
     .all(systemAccountId, ...systemSettingKeys) as Array<{ key: string; value_json: string }>
+  const settings: Record<string, unknown> = {}
+  for (const row of rows) {
+    settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
+  systemSettingsCache.set('current', settings)
+  return { ...settings }
+}
+
+export async function getSettingsAsync(): Promise<Record<string, unknown>> {
+  const cached = systemSettingsCache.get('current')
+  if (cached) {
+    return { ...cached }
+  }
+  const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
+  const client = await getSettingsDatabaseClient()
+  const rows = await client.query<{ key: string; value_json: string }>(`
+    SELECT key, value_json
+    FROM ${settingsTable(client, 'system_settings')}
+    WHERE system_account_id = ? AND key IN (${client.dialect.bindPlaceholders(systemSettingKeys.length)})
+    ORDER BY key ASC
+  `, [systemAccountId, ...systemSettingKeys])
   const settings: Record<string, unknown> = {}
   for (const row of rows) {
     settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
@@ -220,6 +288,26 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
   return getSettings()
 }
 
+export async function updateSettingsAsync(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
+  const normalizedInput = normalizeSystemSettingsInput(input)
+  assertUsageStatsTimezoneUpdateAllowed(normalizedInput)
+  const client = await getSettingsDatabaseClient()
+  const now = nowIso()
+  await client.transaction(async (tx) => {
+    for (const [key, value] of Object.entries(normalizedInput)) {
+      await tx.execute(`
+        INSERT INTO ${settingsTable(tx, 'system_settings')} (system_account_id, key, value_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `, [systemAccountId, key, JSON.stringify(value), now])
+    }
+  })
+  clearSystemSettingsCache()
+  notifyGatewayRuntimeCacheInvalidation('settings_updated')
+  return getSettingsAsync()
+}
+
 export function clearSettingsRepositoryCache(): void {
   clearSystemSettingsCache()
   clearGlobalSettingsCache()
@@ -238,9 +326,25 @@ function clearGlobalSettingsCache(): void {
   globalSettingsCache.clear()
 }
 
+async function getSettingsDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function settingsTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
 function assertUsageStatsTimezoneUpdateAllowed(input: Record<string, unknown>): void {
   if (!Object.prototype.hasOwnProperty.call(input, 'usageStatsTimezone')) {
     return
+  }
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('PostgreSQL 模式下暂不支持在线修改统计时区，请停机后通过离线迁移 / 重建流程调整')
   }
   const current = usageStatsTimezone()
   const next = normalizeUsageStatsTimezone(input.usageStatsTimezone)

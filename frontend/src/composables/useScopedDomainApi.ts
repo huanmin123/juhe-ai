@@ -1,6 +1,21 @@
 import type { Ref } from 'vue'
 
-import { api, type AccountOptionParams, type ApiKeyListParams, type ModelCheckListParams, type ModelCheckScopeParams, type ModelCheckStreamOptions, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
+import {
+  api,
+  type AccountOptionParams,
+  type ApiKeyListParams,
+  type ModelCheckListParams,
+  type ModelCheckScopeParams,
+  type ModelCheckStreamOptions,
+  type OpenAICompatibleMcpApprovalRejectPayload,
+  type OpenAICompatibleMcpApprovalRequestListParams,
+  type OpenAICompatibleMcpExecutionRecordListParams,
+  type OpenAICompatibleMcpServerDiagnosePayload,
+  type OpenAICompatibleMcpServerListParams,
+  type OpenAICompatibleMcpServerPayload,
+  type OperationLogListParams,
+  type UsageRecordListParams
+} from '@/api/client'
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
@@ -81,6 +96,56 @@ export function useScopedOperationLogsApi(isManagementView: Ref<boolean>) {
     detail: (id: string) => isManagementView.value
       ? api.operationLogs.detail(id)
       : api.myOperationLogs.detail(id)
+  }
+}
+
+export function useScopedOpenAICompatibleMcpRuntimeApi(isManagementView: Ref<boolean>) {
+  return {
+    servers: {
+      list: (params?: OpenAICompatibleMcpServerListParams) => isManagementView.value
+        ? api.mcpRuntime.servers.list(params)
+        : api.myMcpRuntime.servers.list(params),
+      detail: (id: string, params?: Pick<OpenAICompatibleMcpServerListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.servers.detail(id, params)
+        : api.myMcpRuntime.servers.detail(id),
+      tools: (id: string, params?: Pick<OpenAICompatibleMcpServerListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.servers.tools(id, params)
+        : api.myMcpRuntime.servers.tools(id),
+      diagnose: (id: string, payload?: OpenAICompatibleMcpServerDiagnosePayload, params?: Pick<OpenAICompatibleMcpServerListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.servers.diagnose(id, payload, params)
+        : api.myMcpRuntime.servers.diagnose(id, payload),
+      create: (payload: OpenAICompatibleMcpServerPayload, params?: Pick<OpenAICompatibleMcpServerListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.servers.create(payload, params)
+        : api.myMcpRuntime.servers.create(payload),
+      update: (id: string, payload: Partial<OpenAICompatibleMcpServerPayload>, params?: Pick<OpenAICompatibleMcpServerListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.servers.update(id, payload, params)
+        : api.myMcpRuntime.servers.update(id, payload),
+      delete: (id: string, params?: Pick<OpenAICompatibleMcpServerListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.servers.delete(id, params)
+        : api.myMcpRuntime.servers.delete(id)
+    },
+    approvals: {
+      list: (params?: OpenAICompatibleMcpApprovalRequestListParams) => isManagementView.value
+        ? api.mcpRuntime.approvals.list(params)
+        : api.myMcpRuntime.approvals.list(params),
+      detail: (id: string, params?: Pick<OpenAICompatibleMcpApprovalRequestListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.approvals.detail(id, params)
+        : api.myMcpRuntime.approvals.detail(id),
+      approve: (id: string, params?: Pick<OpenAICompatibleMcpApprovalRequestListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.approvals.approve(id, params)
+        : api.myMcpRuntime.approvals.approve(id),
+      reject: (id: string, payload: OpenAICompatibleMcpApprovalRejectPayload, params?: Pick<OpenAICompatibleMcpApprovalRequestListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.approvals.reject(id, payload, params)
+        : api.myMcpRuntime.approvals.reject(id, payload)
+    },
+    executions: {
+      list: (params?: OpenAICompatibleMcpExecutionRecordListParams) => isManagementView.value
+        ? api.mcpRuntime.executions.list(params)
+        : api.myMcpRuntime.executions.list(params),
+      detail: (id: string, params?: Pick<OpenAICompatibleMcpExecutionRecordListParams, 'systemAccountId'>) => isManagementView.value
+        ? api.mcpRuntime.executions.detail(id, params)
+        : api.myMcpRuntime.executions.detail(id)
+    }
   }
 }
 

@@ -65,7 +65,10 @@ const [
   usageRecordQueue,
   auditLogQueue,
   openAICompatibleVectorStoresRepository,
-  openAIAnthropicBridge
+  openAIAnthropicBridge,
+  openAICompatibleComputerAdapter,
+  mcpApprovalRepository,
+  mcpExecutionRepository
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -78,13 +81,17 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../storage/openai-compatible-vector-stores.repository.js'),
-  import('../../modules/providers/drivers/_shared/openai-anthropic-bridge.js')
+  import('../../modules/providers/drivers/_shared/openai-anthropic-bridge.js'),
+  import('../../modules/openai-compatible-computer/computer-adapter.js'),
+  import('../../storage/openai-compatible-mcp-approval.repository.js'),
+  import('../../storage/openai-compatible-mcp-execution.repository.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: UpstreamHit[] = []
 const imageGenerationHits: ImageGenerationHit[] = []
 const mcpProxyHits: McpProxyHit[] = []
+let mcpProxyRetryInitializeFailures = 0
 const mockImageBase64 = Buffer.from('mock image generation result', 'utf8').toString('base64')
 const mockPartialImageBase64 = Buffer.from('mock partial image generation result', 'utf8').toString('base64')
 
@@ -246,12 +253,17 @@ try {
     await assertResponsesReasoningSummaryNoneSseBridge(baseUrl, apiKey.key)
     await assertResponsesHostedToolUnsupported(baseUrl, apiKey.key)
     await assertHostedToolRuntimeRejectMode(baseUrl, apiKey.key)
+    await assertHostedToolRuntimeLocalUnavailable(baseUrl, apiKey.key)
+    await assertHostedToolRuntimeLocalWorkerLoop(baseUrl, apiKey.key)
     await assertHostedToolRuntimeMockMode(baseUrl, apiKey.key)
+    await assertComputerHostedToolRuntimeMockMode(baseUrl, apiKey.key)
+    await assertComputerHostedToolRuntimeLocalRuntimeMode(baseUrl, apiKey.key)
+    await assertComputerHostedToolRuntimeHttpAdapterMode(baseUrl, apiKey.key)
     await assertMcpMockProxyMode(baseUrl, apiKey.key)
     await assertMcpLocalRuntimeGate(baseUrl, apiKey.key)
     configureMockMcpProxy(mcpProxyEndpoint)
     try {
-      await assertMcpLocalRuntimeProxyMode(baseUrl, apiKey.key)
+      await assertMcpLocalRuntimeProxyMode(baseUrl, apiKey.key, apiKey.id, group.id, otherApiKey.key)
     } finally {
       clearMockMcpProxy()
     }
@@ -282,6 +294,9 @@ try {
     await assertResponsesCompactionSummaryInputBridge(baseUrl, apiKey.key)
     await assertResponsesCompactEndpointBridge(baseUrl, apiKey.key, otherApiKey.key)
     await assertCodexPreviousResponseBridge(baseUrl, apiKey.key)
+    await assertGenericResponsesPreviousResponseJsonBridge(baseUrl, apiKey.key, otherApiKey.key)
+    await assertGenericResponsesPreviousResponseSseBridge(baseUrl, apiKey.key, otherApiKey.key)
+    await assertGenericResponsesPreviousResponseMissingBridge(baseUrl, apiKey.key)
 
     console.log('openai anthropic bridge mock regression passed')
   } finally {
@@ -323,21 +338,61 @@ function clearMockImageGenerationProvider(): void {
 }
 
 function configureMockMcpProxy(endpoint: string): void {
-  runtimeConfig.mcpProxy.servers = [{
-    label: 'real-mcp',
-    serverUrl: endpoint,
-    enabled: true,
-    allowedTools: ['echo', 'large'],
-    allowRequestAuthorization: true
-  }]
+  const sseEndpoint = endpoint.replace(/\/mcp$/, '/mcp-sse')
+  const legacySseEndpoint = endpoint.replace(/\/mcp$/, '/mcp-legacy-sse')
+  const retryEndpoint = endpoint.replace(/\/mcp$/, '/mcp-retry')
+  const redirectEndpoint = endpoint.replace(/\/mcp$/, '/mcp-redirect')
+  mcpProxyRetryInitializeFailures = 0
+  runtimeConfig.mcpProxy.servers = [
+    {
+      label: 'real-mcp',
+      serverUrl: endpoint,
+      enabled: true,
+      allowedTools: ['echo', 'large', 'fail'],
+      allowRequestAuthorization: true
+    },
+    {
+      label: 'real-mcp-sse',
+      serverUrl: sseEndpoint,
+      enabled: true,
+      allowedTools: ['echo'],
+      allowRequestAuthorization: true
+    },
+    {
+      label: 'real-mcp-legacy-sse',
+      serverUrl: legacySseEndpoint,
+      enabled: true,
+      allowedTools: ['echo'],
+      allowRequestAuthorization: true
+    },
+    {
+      label: 'real-mcp-retry',
+      serverUrl: retryEndpoint,
+      enabled: true,
+      allowedTools: ['echo'],
+      allowRequestAuthorization: true
+    },
+    {
+      label: 'real-mcp-redirect',
+      serverUrl: redirectEndpoint,
+      enabled: true,
+      allowedTools: ['echo'],
+      allowRequestAuthorization: true
+    }
+  ]
   runtimeConfig.mcpProxy.timeoutMs = 30000
+  runtimeConfig.mcpProxy.maxRetries = 1
+  runtimeConfig.mcpProxy.retryDelayMs = 0
   runtimeConfig.mcpProxy.maxBodyBytes = 1024 * 1024
   runtimeConfig.mcpProxy.maxOutputBytes = 128
 }
 
 function clearMockMcpProxy(): void {
+  mcpProxyRetryInitializeFailures = 0
   runtimeConfig.mcpProxy.servers = []
   runtimeConfig.mcpProxy.timeoutMs = 10000
+  runtimeConfig.mcpProxy.maxRetries = 1
+  runtimeConfig.mcpProxy.retryDelayMs = 100
   runtimeConfig.mcpProxy.maxBodyBytes = 512 * 1024
   runtimeConfig.mcpProxy.maxOutputBytes = 64 * 1024
 }
@@ -821,6 +876,8 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
       input: 'responses request control allowed bridge',
       service_tier: 'default',
       safety_identifier: 'safe-user-123',
+      user: 'fallback-user-should-not-win',
+      metadata: { tenant: 'tenant-should-not-forward', trace: 'trace-should-not-forward' },
       prompt_cache_key: 'local-cache-affinity-only',
       stream: false
     })
@@ -828,11 +885,38 @@ async function assertOpenAIRequestControlBoundaries(baseUrl: string, localApiKey
   const allowedText = await allowedResponse.text()
   assert.equal(allowedResponse.status, 200, `Responses 请求级默认控制字段应正常桥接，实际 HTTP ${allowedResponse.status}: ${allowedText}`)
   assertBridgeUpstreamHit(upstreamHits[0], false, 'responses request control allowed bridge')
-  const upstreamMetadata = upstreamHits[0]?.body.metadata as { user_id?: unknown } | undefined
+  const upstreamMetadata = upstreamHits[0]?.body.metadata as Record<string, unknown> | undefined
   assert.equal(upstreamMetadata?.user_id, 'safe-user-123', 'safety_identifier 应映射为 Anthropic metadata.user_id')
+  assert.equal(upstreamMetadata?.tenant, undefined, '业务 metadata.tenant 不应透传到 Anthropic metadata')
+  assert.equal(upstreamMetadata?.trace, undefined, '业务 metadata.trace 不应透传到 Anthropic metadata')
+  assert.equal(upstreamHits[0]?.body.user, undefined, 'OpenAI user 不应以顶层字段透传到 Anthropic')
   assert.equal(upstreamHits[0]?.body.prompt_cache_key, undefined, 'prompt_cache_key 不应透传到 Anthropic')
   assert.equal(upstreamHits[0]?.body.service_tier, undefined, 'service_tier=default 不应透传到 Anthropic')
   assert.equal(upstreamHits[0]?.body.safety_identifier, undefined, 'safety_identifier 不应以 OpenAI 字段透传到 Anthropic')
+  assert.equal(upstreamMetadata?.user_id, 'safe-user-123', 'safety_identifier 应优先于 user')
+
+  upstreamHits.length = 0
+  const userFallbackResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'chat request control user fallback bridge' }],
+      user: 'chat-user-fallback-456',
+      metadata: { tenant: 'chat-tenant-should-not-forward' },
+      stream: false
+    })
+  })
+  const userFallbackText = await userFallbackResponse.text()
+  assert.equal(userFallbackResponse.status, 200, `Chat user fallback 应正常桥接，实际 HTTP ${userFallbackResponse.status}: ${userFallbackText}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'chat request control user fallback bridge')
+  const fallbackMetadata = upstreamHits[0]?.body.metadata as Record<string, unknown> | undefined
+  assert.equal(fallbackMetadata?.user_id, 'chat-user-fallback-456', '缺少 safety_identifier 时应使用 OpenAI user 作为 Anthropic metadata.user_id')
+  assert.equal(fallbackMetadata?.tenant, undefined, 'Chat 业务 metadata 不应透传到 Anthropic metadata')
+  assert.equal(upstreamHits[0]?.body.user, undefined, 'Chat OpenAI user 不应以顶层字段透传到 Anthropic')
 
   await assertLocalBridgeRejects(baseUrl, localApiKey, {
     path: '/v1/chat/completions',
@@ -942,6 +1026,26 @@ async function assertResponsesMultiToolSseBridge(baseUrl: string, localApiKey: s
   assert.match(text, /event: response\.output_item\.added/)
   assert.match(text, /"type":"function_call","status":"in_progress","call_id":"toolu_multi_weather"/)
   assert.match(text, /"type":"function_call","status":"in_progress","call_id":"toolu_multi_news"/)
+  const argumentDeltas = sseEventPayloads(text, 'response.function_call_arguments.delta')
+  assert.deepEqual(
+    argumentDeltas.map((payload) => payload.delta),
+    ['{"city"', ':"Shanghai"}', '{"topic"', ':"weather"}'],
+    `Responses 多工具 SSE 应逐段输出 function_call_arguments.delta: ${text}`
+  )
+  assert.deepEqual(
+    aggregateArgumentDeltasByItem(argumentDeltas),
+    {
+      fc_toolu_multi_weather: '{"city":"Shanghai"}',
+      fc_toolu_multi_news: '{"topic":"weather"}'
+    },
+    `Responses 多工具 SSE delta 聚合结果应等于最终 arguments: ${text}`
+  )
+  const argumentDonePayloads = sseEventPayloads(text, 'response.function_call_arguments.done')
+  assert.deepEqual(
+    argumentDonePayloads.map((payload) => (payload.item as Record<string, unknown> | undefined)?.arguments),
+    ['{"city":"Shanghai"}', '{"topic":"weather"}'],
+    `Responses 多工具 SSE 应输出 function_call_arguments.done: ${text}`
+  )
   assert.match(text, /"type":"function_call","status":"completed","call_id":"toolu_multi_weather","name":"lookup_weather","arguments":"\{\\"city\\":\\"Shanghai\\"\}"/)
   assert.match(text, /"type":"function_call","status":"completed","call_id":"toolu_multi_news","name":"lookup_news","arguments":"\{\\"topic\\":\\"weather\\"\}"/)
   assert.match(text, /event: response\.completed/)
@@ -2591,6 +2695,299 @@ async function assertHostedToolRuntimeRejectMode(baseUrl: string, localApiKey: s
   }
 }
 
+async function assertHostedToolRuntimeLocalUnavailable(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.codeInterpreter
+  const previousPythonCommand = runtimeConfig.codeInterpreter.pythonCommand
+  runtimeConfig.hostedToolRuntimes.codeInterpreter = 'local_runtime'
+  runtimeConfig.codeInterpreter.pythonCommand = ''
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses code_interpreter hosted runtime local unavailable',
+        tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+        tool_choice: { type: 'code_interpreter' },
+        include: ['code_interpreter_call.outputs'],
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 503, `code_interpreter local_runtime 未配置 executor 应返回本地 503，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /openai_anthropic_bridge_code_interpreter_runtime_unavailable/)
+    assert.match(text, /service_unavailable/)
+    assert.doesNotMatch(text, /openai_anthropic_bridge_include_unsupported/, 'local_runtime 应先进入运行时分支，不应被 include 校验误拒绝')
+    assert.equal(upstreamHits.length, 0, 'code_interpreter local_runtime 未配置 executor 不应请求 Anthropic 上游')
+  } finally {
+    runtimeConfig.hostedToolRuntimes.codeInterpreter = previousMode
+    runtimeConfig.codeInterpreter.pythonCommand = previousPythonCommand
+  }
+}
+
+async function assertHostedToolRuntimeLocalWorkerLoop(baseUrl: string, localApiKey: string): Promise<void> {
+  const previousMode = runtimeConfig.hostedToolRuntimes.codeInterpreter
+  const previousPythonCommand = runtimeConfig.codeInterpreter.pythonCommand
+  const previousTimeoutMs = runtimeConfig.codeInterpreter.timeoutMs
+  const previousMaxOutputBytes = runtimeConfig.codeInterpreter.maxOutputBytes
+  const previousMaxArtifactCount = runtimeConfig.codeInterpreter.maxArtifactCount
+  const previousMaxArtifactBytes = runtimeConfig.codeInterpreter.maxArtifactBytes
+  runtimeConfig.hostedToolRuntimes.codeInterpreter = 'local_runtime'
+  runtimeConfig.codeInterpreter.pythonCommand = previousPythonCommand || 'python'
+  runtimeConfig.codeInterpreter.timeoutMs = 3000
+  runtimeConfig.codeInterpreter.maxOutputBytes = 4096
+  runtimeConfig.codeInterpreter.maxArtifactCount = 4
+  runtimeConfig.codeInterpreter.maxArtifactBytes = 1024
+  try {
+    await assertCodeInterpreterWorkerCase(baseUrl, localApiKey, {
+      input: 'responses code_interpreter local runtime worker success',
+      expectedLog: /ci-success: 5/,
+      expectedFinal: /Code interpreter final answer: .*ci-success: 5/s,
+      validate(codeItem, text) {
+        assert.match(codeItem.outputs?.[0]?.logs ?? '', /secret: missing/)
+        assert.doesNotMatch(text, /juhe-ai-dev-secret-change-me/, 'Code interpreter 子进程不应继承网关密钥环境')
+      }
+    })
+
+    await assertCodeInterpreterWorkerCase(baseUrl, localApiKey, {
+      input: 'responses code_interpreter local runtime worker stderr',
+      expectedLog: /\[stderr\]\nci-stderr-line/,
+      expectedFinal: /Code interpreter final answer: .*ci-stdout-line/s,
+      validate(codeItem) {
+        assert.equal(codeItem.metadata?.exit_code, 0)
+      }
+    })
+
+    await assertCodeInterpreterWorkerCase(baseUrl, localApiKey, {
+      input: 'responses code_interpreter local runtime worker artifact',
+      expectedLog: /artifact ready/,
+      expectedFinal: /Code interpreter final answer: .*artifact ready/s,
+      async validate(codeItem, text) {
+        const artifactLogs = codeItem.outputs?.map((output) => output.logs ?? '').join('\n') ?? ''
+        assert.match(artifactLogs, /\[artifacts\]/)
+        assert.match(artifactLogs, /result\.txt/)
+        assert.doesNotMatch(text, /artifact_body_marker/, 'Code interpreter 文件正文不应进入 Responses payload 或 Anthropic tool_result')
+        const containerId = typeof codeItem.container_id === 'string' ? codeItem.container_id : ''
+        assert.match(containerId, /^cntr_local_/, 'Code interpreter 产物应绑定本地 container_id')
+        const artifact = codeItem.metadata?.artifacts?.[0]
+        assert.equal(artifact?.filename, 'result.txt')
+        assert.equal(artifact?.media_type, 'text/plain')
+        assert.equal(typeof artifact?.bytes, 'number')
+        assert((artifact?.bytes ?? 0) > 0, 'Code interpreter 文件产物应记录字节数')
+        assert.match(artifact?.file_id ?? '', /^file-/)
+        assert.equal(artifact?.download_path, `/v1/files/${artifact?.file_id}/content`)
+        assert.equal(artifact?.container_id, containerId)
+        assert.equal(artifact?.container_download_path, `/v1/containers/${containerId}/files/${artifact?.file_id}/content`)
+        assert.match(artifactLogs, new RegExp(`file_id: ${artifact?.file_id}`))
+        assert.equal(artifact?.content_omitted, undefined)
+        assert.equal(artifact?.omit_reason, undefined)
+        assert.equal(codeItem.metadata?.artifacts_omitted_count, undefined)
+        const fileId = artifact?.file_id ?? ''
+        const artifactBody = 'artifact_body_marker'
+        const expectedBytes = Buffer.byteLength(artifactBody, 'utf8')
+        assert.equal(artifact?.bytes, expectedBytes)
+        const listResponse = await fetch(`${baseUrl}/v1/containers/${encodeURIComponent(containerId)}/files`, {
+          headers: { authorization: `Bearer ${localApiKey}` }
+        })
+        const listText = await listResponse.text()
+        assert.equal(listResponse.status, 200, `Code interpreter container 文件列表应可读取，实际 HTTP ${listResponse.status}: ${listText}`)
+        const listBody = JSON.parse(listText) as {
+          object?: string
+          data?: Array<{
+            id?: string
+            object?: string
+            container_id?: string
+            filename?: string
+            bytes?: number
+            status?: string
+          }>
+        }
+        assert.equal(listBody.object, 'list')
+        const listedFile = listBody.data?.find((item) => item.id === fileId)
+        assert(listedFile, 'Code interpreter container 文件列表应包含当前产物')
+        assert.equal(listedFile?.object, 'container.file')
+        assert.equal(listedFile?.container_id, containerId)
+        assert.equal(listedFile?.filename, 'result.txt')
+        assert.equal(listedFile?.bytes, expectedBytes)
+        const detailResponse = await fetch(`${baseUrl}/v1/containers/${encodeURIComponent(containerId)}/files/${encodeURIComponent(fileId)}`, {
+          headers: { authorization: `Bearer ${localApiKey}` }
+        })
+        const detailText = await detailResponse.text()
+        assert.equal(detailResponse.status, 200, `Code interpreter container 文件详情应可读取，实际 HTTP ${detailResponse.status}: ${detailText}`)
+        const detailBody = JSON.parse(detailText) as {
+          id?: string
+          object?: string
+          container_id?: string
+          filename?: string
+          bytes?: number
+          status?: string
+        }
+        assert.equal(detailBody.object, 'container.file')
+        assert.equal(detailBody.id, fileId)
+        assert.equal(detailBody.container_id, containerId)
+        assert.equal(detailBody.filename, 'result.txt')
+        assert.equal(detailBody.bytes, expectedBytes)
+        const containerDownloadResponse = await fetch(`${baseUrl}/v1/containers/${encodeURIComponent(containerId)}/files/${encodeURIComponent(fileId)}/content`, {
+          headers: { authorization: `Bearer ${localApiKey}` }
+        })
+        const containerDownloaded = await containerDownloadResponse.text()
+        assert.equal(containerDownloadResponse.status, 200, `Code interpreter container 文件内容应可下载，实际 HTTP ${containerDownloadResponse.status}: ${containerDownloaded}`)
+        assert.equal(containerDownloaded, artifactBody)
+        const wrongContainerResponse = await fetch(`${baseUrl}/v1/containers/cntr_local_wrong/files/${encodeURIComponent(fileId)}`, {
+          headers: { authorization: `Bearer ${localApiKey}` }
+        })
+        assert.equal(wrongContainerResponse.status, 404, '错误 container 不应读取到当前文件')
+        const downloadResponse = await fetch(`${baseUrl}/v1/files/${encodeURIComponent(fileId)}/content`, {
+          headers: { authorization: `Bearer ${localApiKey}` }
+        })
+        const downloaded = await downloadResponse.text()
+        assert.equal(downloadResponse.status, 200, `Code interpreter 文件产物应可下载，实际 HTTP ${downloadResponse.status}: ${downloaded}`)
+        assert.equal(downloaded, artifactBody)
+      }
+    })
+
+    await assertCodeInterpreterWorkerCase(baseUrl, localApiKey, {
+      input: 'responses code_interpreter local runtime worker artifact large',
+      expectedLog: /large artifact ready/,
+      expectedFinal: /Code interpreter final answer: .*large artifact ready/s,
+      validate(codeItem) {
+        const artifact = codeItem.metadata?.artifacts?.[0]
+        assert.equal(artifact?.filename, 'big.txt')
+        assert.equal(artifact?.content_omitted, true)
+        assert.equal(artifact?.omit_reason, 'file_too_large')
+        assert.equal(artifact?.file_id, undefined)
+        assert.equal(artifact?.download_path, undefined)
+      }
+    })
+
+    runtimeConfig.codeInterpreter.maxOutputBytes = 32
+    await assertCodeInterpreterWorkerCase(baseUrl, localApiKey, {
+      input: 'responses code_interpreter local runtime worker truncation',
+      expectedLog: /\[truncated\]/,
+      expectedFinal: /Code interpreter final answer:/,
+      validate(codeItem) {
+        assert.equal(codeItem.metadata?.output_truncated, true, 'Code interpreter 大输出应标记 output_truncated')
+      }
+    })
+
+    runtimeConfig.codeInterpreter.maxOutputBytes = 4096
+    runtimeConfig.codeInterpreter.timeoutMs = 200
+    await assertCodeInterpreterWorkerCase(baseUrl, localApiKey, {
+      input: 'responses code_interpreter local runtime worker timeout',
+      expectedLog: /\[timeout\]/,
+      expectedFinal: /Code interpreter final answer:/,
+      validate(codeItem) {
+        assert.equal(codeItem.metadata?.timed_out, true, 'Code interpreter 超时应标记 timed_out')
+      }
+    })
+  } finally {
+    runtimeConfig.hostedToolRuntimes.codeInterpreter = previousMode
+    runtimeConfig.codeInterpreter.pythonCommand = previousPythonCommand
+    runtimeConfig.codeInterpreter.timeoutMs = previousTimeoutMs
+    runtimeConfig.codeInterpreter.maxOutputBytes = previousMaxOutputBytes
+    runtimeConfig.codeInterpreter.maxArtifactCount = previousMaxArtifactCount
+    runtimeConfig.codeInterpreter.maxArtifactBytes = previousMaxArtifactBytes
+  }
+}
+
+async function assertCodeInterpreterWorkerCase(
+  baseUrl: string,
+  localApiKey: string,
+  input: {
+    input: string
+    expectedLog: RegExp
+    expectedFinal: RegExp
+    validate?: (codeItem: {
+      type?: string
+      code?: string
+      container_id?: string
+      outputs?: Array<{ type?: string; logs?: string }>
+      metadata?: {
+        exit_code?: number
+        timed_out?: boolean
+        output_truncated?: boolean
+        artifacts?: Array<{
+          filename?: string
+          bytes?: number
+          file_id?: string
+          download_path?: string
+          container_id?: string
+          container_download_path?: string
+          media_type?: string
+          content_omitted?: boolean
+          omit_reason?: string
+        }>
+        artifacts_omitted_count?: number
+      }
+    }, text: string) => void | Promise<void>
+  }
+): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: input.input,
+      tools: [{ type: 'code_interpreter', container: { type: 'auto' } }],
+      tool_choice: { type: 'code_interpreter' },
+      include: ['code_interpreter_call.outputs'],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `code_interpreter local_runtime worker 应成功，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as {
+    status?: string
+    output?: Array<{
+      type?: string
+      code?: string
+      container_id?: string
+      outputs?: Array<{ type?: string; logs?: string }>
+      metadata?: {
+        exit_code?: number
+        timed_out?: boolean
+        output_truncated?: boolean
+        artifacts?: Array<{
+          filename?: string
+          bytes?: number
+          file_id?: string
+          download_path?: string
+          container_id?: string
+          container_download_path?: string
+          media_type?: string
+          content_omitted?: boolean
+          omit_reason?: string
+        }>
+        artifacts_omitted_count?: number
+      }
+    }>
+    output_text?: string
+    metadata?: { gateway_runtime?: string; gateway_tool?: string; gateway_mcp_tool_loop_rounds?: number }
+  }
+  assert.equal(body.status, 'completed')
+  assert.equal(body.metadata?.gateway_runtime, 'local_runtime')
+  assert.equal(body.metadata?.gateway_tool, 'code_interpreter')
+  assert.equal(body.metadata?.gateway_mcp_tool_loop_rounds, 1)
+  const codeItem = body.output?.find((item) => item.type === 'code_interpreter_call')
+  assert(codeItem, `code_interpreter local_runtime worker 应返回 code_interpreter_call: ${text}`)
+  assert.match(codeItem.code ?? '', /print|while True|sys\.stderr/)
+  assert.equal(codeItem.outputs?.[0]?.type, 'logs')
+  assert.match(codeItem.outputs?.[0]?.logs ?? '', input.expectedLog)
+  assert.match(body.output_text ?? '', input.expectedFinal)
+  assert.equal(upstreamHits.length, 2, 'code_interpreter local_runtime worker 应请求 Anthropic 选择工具并回灌 tool_result')
+  assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['python'])
+  assert.match(JSON.stringify(upstreamHits[1]?.body ?? {}), /"type":"tool_result"/, 'Code interpreter 第二轮应回灌 Anthropic tool_result')
+  await input.validate?.(codeItem, text)
+}
+
 async function assertHostedToolRuntimeMockMode(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const previousMode = runtimeConfig.hostedToolRuntimes.codeInterpreter
@@ -2665,6 +3062,455 @@ async function assertHostedToolRuntimeMockMode(baseUrl: string, localApiKey: str
   } finally {
     runtimeConfig.hostedToolRuntimes.codeInterpreter = previousMode
   }
+}
+
+async function assertComputerHostedToolRuntimeMockMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.computer
+  runtimeConfig.hostedToolRuntimes.computer = 'mock'
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer hosted runtime mock json',
+        tools: [{ type: 'computer', display_width: 1280, display_height: 720, environment: 'browser' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `computer mock JSON 应返回本地 Responses，实际 HTTP ${response.status}: ${text}`)
+    const body = JSON.parse(text) as {
+      status?: string
+      output?: Array<{ type?: string; actions?: Array<{ type?: string }>; call_id?: string }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string; gateway_computer_action_policy?: string }
+      tools?: Array<{ type?: string; display_width?: number; display_height?: number; environment?: string }>
+      usage?: { total_tokens?: number }
+    }
+    assert.equal(body.status, 'completed')
+    assert.equal(body.metadata?.gateway_runtime, 'mock')
+    assert.equal(body.metadata?.gateway_tool, 'computer')
+    assert.equal(body.metadata?.gateway_computer_action_policy, 'screenshot_only')
+    assert.equal(body.usage?.total_tokens, 0)
+    assert.deepEqual(body.tools?.[0], { type: 'computer', display_width: 1280, display_height: 720, environment: 'browser' })
+    const computerItem = body.output?.find((item) => item.type === 'computer_call')
+    assert(computerItem, `computer mock JSON 应返回 computer_call: ${text}`)
+    assert(computerItem.call_id, `computer mock JSON 应返回 call_id: ${text}`)
+    assert.deepEqual(computerItem.actions, [{ type: 'screenshot' }])
+    assert.match(body.output_text ?? '', /screenshot request/i)
+    assert.doesNotMatch(text, /responses computer hosted runtime mock json/, 'computer mock JSON 输出不能泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'computer mock JSON 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const sseResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer hosted runtime mock sse',
+        tools: [{ type: 'computer' }],
+        tool_choice: { type: 'computer' },
+        stream: true
+      })
+    })
+    const sseText = await sseResponse.text()
+    assert.equal(sseResponse.status, 200, `computer mock SSE 应返回本地 Responses SSE，实际 HTTP ${sseResponse.status}: ${sseText}`)
+    assert.match(sseText, /event: response\.created/)
+    assert.match(sseText, /event: response\.output_item\.added/)
+    assert.match(sseText, /event: response\.output_item\.done/)
+    assert.match(sseText, /event: response\.output_text\.delta/)
+    assert.match(sseText, /event: response\.completed/)
+    assert.match(sseText, /"type":"computer_call"/)
+    assert.match(sseText, /"type":"screenshot"/)
+    assert.match(sseText, /Computer mock runtime returned a screenshot request/)
+    assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses computer mock SSE 不应使用 Chat [DONE]')
+    assert.doesNotMatch(sseText, /responses computer hosted runtime mock sse/, 'computer mock SSE 输出不能泄漏用户 prompt')
+    assert.equal(upstreamHits.length, 0, 'computer mock SSE 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const outputResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [{
+          type: 'computer_call_output',
+          call_id: 'call_mock_computer_output',
+          output: {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U='
+          }
+        }],
+        tools: [{ type: 'computer' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const outputText = await outputResponse.text()
+    assert.equal(outputResponse.status, 200, `computer_call_output mock JSON 应正常收口，实际 HTTP ${outputResponse.status}: ${outputText}`)
+    const outputBody = JSON.parse(outputText) as {
+      status?: string
+      output?: Array<{ type?: string }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string }
+    }
+    assert.equal(outputBody.status, 'completed')
+    assert.equal(outputBody.metadata?.gateway_runtime, 'mock')
+    assert.equal(outputBody.metadata?.gateway_tool, 'computer')
+    assert.equal(outputBody.output?.some((item) => item.type === 'computer_call'), false)
+    assert.match(outputBody.output_text ?? '', /received computer_call_output/i)
+    assert.doesNotMatch(outputText, /data:image\/png;base64/, 'computer_call_output mock 不应回显截图正文')
+    assert.equal(upstreamHits.length, 0, 'computer_call_output mock 不应请求 Anthropic 上游')
+  } finally {
+    runtimeConfig.hostedToolRuntimes.computer = previousMode
+  }
+}
+
+async function assertComputerHostedToolRuntimeLocalRuntimeMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.computer
+  runtimeConfig.hostedToolRuntimes.computer = 'local_runtime'
+  openAICompatibleComputerAdapter.setOpenAICompatibleComputerExecutorForTest(undefined)
+  try {
+    const unavailableResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer hosted runtime local unavailable',
+        tools: [{ type: 'computer', display_width: 1280, display_height: 720, environment: 'browser' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const unavailableText = await unavailableResponse.text()
+    assert.equal(unavailableResponse.status, 503, `computer local_runtime 未配置 adapter 应返回 503，实际 HTTP ${unavailableResponse.status}: ${unavailableText}`)
+    assert.match(unavailableText, /openai_anthropic_bridge_computer_runtime_unavailable/)
+    assert.equal(upstreamHits.length, 0, 'computer local_runtime 未配置 adapter 不应请求 Anthropic 上游')
+
+    openAICompatibleComputerAdapter.setOpenAICompatibleComputerExecutorForTest({
+      async run(input) {
+        const hasComputerOutput = Array.isArray(input.body.input)
+          && input.body.input.some((item) => typeof item === 'object' && item !== null && !Array.isArray(item) && (item as { type?: unknown }).type === 'computer_call_output')
+        if (hasComputerOutput) {
+          return {
+            message: 'Computer local_runtime adapter received computer_call_output and completed.',
+            metadata: {
+              session_id: 'comp_sess_local',
+              screenshot_omitted: true,
+              image_url: 'data:image/png;base64,should_not_leak_local_output',
+              prompt: 'responses computer local runtime output prompt should not leak'
+            }
+          }
+        }
+        return {
+          message: 'Computer local_runtime adapter returned controlled screenshot request.',
+          call: {
+            callId: 'local_computer_test',
+            status: 'completed',
+            actions: [{
+              type: 'screenshot',
+              text: 'typed secret should be omitted',
+              metadata: {
+                screenshot_ref: 'omitted://computer/local',
+                image_url: 'data:image/png;base64,should_not_leak_action',
+                token: 'should_not_leak_token'
+              }
+            }],
+            metadata: {
+              session_id: 'comp_sess_local',
+              action_count: 1,
+              screenshot_ref: 'omitted://computer/local',
+              image_url: 'data:image/png;base64,should_not_leak_call'
+            }
+          },
+          metadata: {
+            session_id: 'comp_sess_local',
+            screenshot_omitted: true,
+            screenshot_ref: 'omitted://computer/local',
+            prompt: 'responses computer local runtime json prompt should not leak',
+            base64_blob: 'QkFTRTY0X1NIT1VMRF9OT1RfTEVBSw=='
+          }
+        }
+      }
+    })
+
+    upstreamHits.length = 0
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer local runtime json prompt should not leak',
+        tools: [{ type: 'computer', display_width: 1024, display_height: 768, environment: 'browser' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `computer local_runtime JSON 应返回本地 Responses，实际 HTTP ${response.status}: ${text}`)
+    const body = JSON.parse(text) as {
+      status?: string
+      output?: Array<{ type?: string; call_id?: string; actions?: Array<{ type?: string; text_omitted?: boolean; text_length?: number; metadata?: Record<string, unknown> }>; metadata?: Record<string, unknown> }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string; gateway_computer_adapter?: { session_id?: string; screenshot_omitted?: boolean; screenshot_ref?: string } }
+      tools?: Array<{ type?: string; display_width?: number; display_height?: number; environment?: string }>
+    }
+    assert.equal(body.status, 'completed')
+    assert.equal(body.metadata?.gateway_runtime, 'local_runtime')
+    assert.equal(body.metadata?.gateway_tool, 'computer')
+    assert.equal(body.metadata?.gateway_computer_adapter?.session_id, 'comp_sess_local')
+    assert.equal(body.metadata?.gateway_computer_adapter?.screenshot_omitted, true)
+    assert.deepEqual(body.tools?.[0], { type: 'computer', display_width: 1024, display_height: 768, environment: 'browser' })
+    const computerItem = body.output?.find((item) => item.type === 'computer_call')
+    assert(computerItem, `computer local_runtime JSON 应返回 computer_call: ${text}`)
+    assert.equal(computerItem.call_id, 'call_local_computer_test')
+    assert.equal(computerItem.actions?.[0]?.type, 'screenshot')
+    assert.equal(computerItem.actions?.[0]?.text_omitted, true)
+    assert.equal(computerItem.actions?.[0]?.metadata?.screenshot_ref, 'omitted://computer/local')
+    assert.match(body.output_text ?? '', /controlled screenshot request/i)
+    assert.doesNotMatch(text, /responses computer local runtime json prompt should not leak/, 'computer local_runtime JSON 输出不能泄漏用户 prompt')
+    assert.doesNotMatch(text, /should_not_leak|typed secret|data:image\/png;base64|QkFTRTY0/, 'computer local_runtime JSON 不应回显截图、token、prompt 或 base64 正文')
+    assert.equal(upstreamHits.length, 0, 'computer local_runtime JSON 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const sseResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer local runtime sse prompt should not leak',
+        tools: [{ type: 'computer' }],
+        tool_choice: { type: 'computer' },
+        stream: true
+      })
+    })
+    const sseText = await sseResponse.text()
+    assert.equal(sseResponse.status, 200, `computer local_runtime SSE 应返回本地 Responses SSE，实际 HTTP ${sseResponse.status}: ${sseText}`)
+    assert.match(sseText, /event: response\.created/)
+    assert.match(sseText, /event: response\.output_item\.added/)
+    assert.match(sseText, /event: response\.output_item\.done/)
+    assert.match(sseText, /event: response\.output_text\.delta/)
+    assert.match(sseText, /event: response\.completed/)
+    assert.match(sseText, /"gateway_runtime":"local_runtime"/)
+    assert.match(sseText, /"type":"computer_call"/)
+    assert.match(sseText, /"type":"screenshot"/)
+    assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses computer local_runtime SSE 不应使用 Chat [DONE]')
+    assert.doesNotMatch(sseText, /responses computer local runtime sse prompt should not leak|should_not_leak|typed secret|data:image\/png;base64|QkFTRTY0/, 'computer local_runtime SSE 不应泄漏 prompt 或截图正文')
+    assert.equal(upstreamHits.length, 0, 'computer local_runtime SSE 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const outputResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [{
+          type: 'computer_call_output',
+          call_id: 'call_local_computer_test',
+          output: {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U='
+          }
+        }],
+        tools: [{ type: 'computer' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const outputText = await outputResponse.text()
+    assert.equal(outputResponse.status, 200, `computer_call_output local_runtime JSON 应正常收口，实际 HTTP ${outputResponse.status}: ${outputText}`)
+    const outputBody = JSON.parse(outputText) as {
+      status?: string
+      output?: Array<{ type?: string }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string }
+    }
+    assert.equal(outputBody.status, 'completed')
+    assert.equal(outputBody.metadata?.gateway_runtime, 'local_runtime')
+    assert.equal(outputBody.metadata?.gateway_tool, 'computer')
+    assert.equal(outputBody.output?.some((item) => item.type === 'computer_call'), false)
+    assert.match(outputBody.output_text ?? '', /received computer_call_output/i)
+    assert.doesNotMatch(outputText, /data:image\/png;base64|aW1hZ2U=|should_not_leak|prompt should not leak/, 'computer_call_output local_runtime 不应回显截图正文')
+    assert.equal(upstreamHits.length, 0, 'computer_call_output local_runtime 不应请求 Anthropic 上游')
+  } finally {
+    openAICompatibleComputerAdapter.setOpenAICompatibleComputerExecutorForTest(undefined)
+    runtimeConfig.hostedToolRuntimes.computer = previousMode
+  }
+}
+
+async function assertComputerHostedToolRuntimeHttpAdapterMode(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const previousMode = runtimeConfig.hostedToolRuntimes.computer
+  const previousAdapter = { ...runtimeConfig.computerAdapter }
+  const adapterHits: Array<Record<string, unknown>> = []
+  let adapterServer: http.Server | undefined
+  try {
+    adapterServer = http.createServer(async (req, res) => {
+      try {
+        if (req.method !== 'POST' || req.url?.split('?', 1)[0] !== '/computer') {
+          res.writeHead(404, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'not_found' }))
+          return
+        }
+        const requestText = await readComputerAdapterMockRequestText(req, 1024 * 1024)
+        const requestBody = JSON.parse(requestText) as Record<string, unknown>
+        adapterHits.push(requestBody)
+        const requestBodyText = JSON.stringify(requestBody)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        if (requestBodyText.includes('responses computer http adapter oversized')) {
+          res.end(JSON.stringify({ message: 'X'.repeat(2048) }))
+          return
+        }
+        res.end(JSON.stringify({
+          message: 'Computer HTTP adapter returned controlled screenshot request.',
+          call: {
+            call_id: 'http_adapter_call',
+            status: 'completed',
+            actions: [{
+              type: 'screenshot',
+              text: 'http adapter typed secret should be omitted',
+              metadata: {
+                screenshot_ref: 'omitted://computer/http',
+                image_url: 'data:image/png;base64,should_not_leak_http_action',
+                token: 'should_not_leak_http_token'
+              }
+            }],
+            metadata: {
+              session_id: 'comp_sess_http',
+              screenshot_ref: 'omitted://computer/http',
+              image_url: 'data:image/png;base64,should_not_leak_http_call'
+            }
+          },
+          metadata: {
+            session_id: 'comp_sess_http',
+            screenshot_omitted: true,
+            screenshot_ref: 'omitted://computer/http',
+            prompt: 'responses computer http adapter prompt should not leak',
+            base64_blob: 'SFRUUF9BREFQVEVSX0JBU0U2NF9TSE9VTERfTk9UX0xFQUs='
+          }
+        }))
+      } catch (error) {
+        res.writeHead(500, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'adapter_error' }))
+      }
+    })
+    await listen(adapterServer)
+    runtimeConfig.hostedToolRuntimes.computer = 'local_runtime'
+    Object.assign(runtimeConfig.computerAdapter, {
+      enabled: true,
+      endpoint: `http://127.0.0.1:${serverAddress(adapterServer).port}/computer`,
+      timeoutMs: 3000,
+      maxBodyBytes: 4096
+    })
+    openAICompatibleComputerAdapter.setOpenAICompatibleComputerExecutorForTest(undefined)
+
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer http adapter prompt should not leak',
+        tools: [{ type: 'computer', display_width: 1280, display_height: 720, environment: 'browser' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `computer HTTP adapter JSON 应返回本地 Responses，实际 HTTP ${response.status}: ${text}`)
+    assert.equal(adapterHits.length, 1, 'computer HTTP adapter 应被调用一次')
+    assert.equal((adapterHits[0]?.tool as { type?: string } | undefined)?.type, 'computer')
+    assert.equal(adapterHits[0]?.stream, false)
+    const body = JSON.parse(text) as {
+      status?: string
+      output?: Array<{ type?: string; call_id?: string; actions?: Array<{ type?: string; text_omitted?: boolean; metadata?: Record<string, unknown> }>; metadata?: Record<string, unknown> }>
+      output_text?: string
+      metadata?: { gateway_runtime?: string; gateway_tool?: string; gateway_computer_adapter?: { adapter?: string; session_id?: string; screenshot_omitted?: boolean; screenshot_ref?: string } }
+    }
+    assert.equal(body.status, 'completed')
+    assert.equal(body.metadata?.gateway_runtime, 'local_runtime')
+    assert.equal(body.metadata?.gateway_tool, 'computer')
+    assert.equal(body.metadata?.gateway_computer_adapter?.adapter, 'http_browser')
+    assert.equal(body.metadata?.gateway_computer_adapter?.session_id, 'comp_sess_http')
+    assert.equal(body.metadata?.gateway_computer_adapter?.screenshot_omitted, true)
+    const computerItem = body.output?.find((item) => item.type === 'computer_call')
+    assert(computerItem, `computer HTTP adapter JSON 应返回 computer_call: ${text}`)
+    assert.equal(computerItem.call_id, 'call_http_adapter_call')
+    assert.equal(computerItem.actions?.[0]?.type, 'screenshot')
+    assert.equal(computerItem.actions?.[0]?.text_omitted, true)
+    assert.equal(computerItem.actions?.[0]?.metadata?.screenshot_ref, 'omitted://computer/http')
+    assert.match(body.output_text ?? '', /HTTP adapter returned controlled screenshot request/)
+    assert.doesNotMatch(text, /responses computer http adapter prompt should not leak/, 'computer HTTP adapter JSON 输出不能泄漏用户 prompt')
+    assert.doesNotMatch(text, /should_not_leak|http adapter typed secret|data:image\/png;base64|SFRUUF9BREFQVEVS/, 'computer HTTP adapter JSON 不应回显截图、token、prompt 或 base64 正文')
+    assert.equal(upstreamHits.length, 0, 'computer HTTP adapter JSON 不应请求 Anthropic 上游')
+
+    runtimeConfig.computerAdapter.maxBodyBytes = 64
+    const largeResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses computer http adapter oversized',
+        tools: [{ type: 'computer' }],
+        tool_choice: { type: 'computer' },
+        stream: false
+      })
+    })
+    const largeText = await largeResponse.text()
+    assert.equal(largeResponse.status, 502, `computer HTTP adapter 响应超限应返回 502，实际 HTTP ${largeResponse.status}: ${largeText}`)
+    assert.match(largeText, /openai_anthropic_bridge_computer_runtime_failed/)
+    assert.match(largeText, /exceeded limit/)
+    assert.equal(upstreamHits.length, 0, 'computer HTTP adapter 响应超限不应请求 Anthropic 上游')
+  } finally {
+    openAICompatibleComputerAdapter.setOpenAICompatibleComputerExecutorForTest(undefined)
+    runtimeConfig.hostedToolRuntimes.computer = previousMode
+    Object.assign(runtimeConfig.computerAdapter, previousAdapter)
+    await closeServer(adapterServer)
+  }
+}
+
+async function readComputerAdapterMockRequestText(req: http.IncomingMessage, maxBytes: number): Promise<string> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buffer.byteLength
+    if (total > maxBytes) {
+      throw new Error('computer adapter mock request body too large')
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 async function assertMcpMockProxyMode(baseUrl: string, localApiKey: string): Promise<void> {
@@ -2750,6 +3596,7 @@ async function assertMcpMockProxyMode(baseUrl: string, localApiKey: string): Pro
     assert.match(sseText, /"type":"mcp_call"/)
     assert.match(sseText, /"name":"status"/)
     assert.match(sseText, /juhe-ai mcp mock runtime/)
+    assertMcpCallSseLifecycle(sseText, 'MCP mock SSE', 'status')
     assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses MCP mock SSE 不应使用 Chat [DONE]')
     assert.doesNotMatch(sseText, /should-not-leak-sse/, 'MCP mock SSE 不应泄漏 authorization')
     assert.doesNotMatch(sseText, /responses mcp hosted runtime mock sse/, 'MCP mock SSE 不应泄漏用户 prompt')
@@ -2776,11 +3623,86 @@ async function assertMcpMockProxyMode(baseUrl: string, localApiKey: string): Pro
     })
     const approvalText = await approvalResponse.text()
     assert.equal(approvalResponse.status, 200, `MCP mock approval 应返回本地 Responses，实际 HTTP ${approvalResponse.status}: ${approvalText}`)
-    const approvalBody = JSON.parse(approvalText) as { output?: Array<{ type?: string }> }
+    const approvalBody = JSON.parse(approvalText) as { output?: Array<{ id?: string; type?: string; name?: string }> }
     assert(approvalBody.output?.some((item) => item.type === 'mcp_list_tools'), `MCP mock approval 应返回 mcp_list_tools: ${approvalText}`)
-    assert(approvalBody.output?.some((item) => item.type === 'mcp_approval_request'), `MCP mock approval 应返回 mcp_approval_request: ${approvalText}`)
+    const mcpMockApprovalItem = approvalBody.output?.find((item) => item.type === 'mcp_approval_request')
+    assert(mcpMockApprovalItem?.id, `MCP mock approval 应返回带 id 的 mcp_approval_request: ${approvalText}`)
+    assert.equal(mcpMockApprovalItem.name, 'echo')
     assert.equal(approvalBody.output?.some((item) => item.type === 'mcp_call'), false, 'approval required 时不应直接返回 mcp_call')
     assert.equal(upstreamHits.length, 0, 'MCP mock approval 不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const wrongApprovalIdResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp hosted runtime mock approval' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: 'mcpr_wrong_mock_approval_id',
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const wrongApprovalIdText = await wrongApprovalIdResponse.text()
+    assert.equal(wrongApprovalIdResponse.status, 400, `MCP mock approval_request_id 错误应本地 400，实际 HTTP ${wrongApprovalIdResponse.status}: ${wrongApprovalIdText}`)
+    assert.match(wrongApprovalIdText, /openai_anthropic_bridge_mcp_approval_mismatch/)
+    assert.equal(upstreamHits.length, 0, 'MCP mock approval_request_id 错误不应请求 Anthropic 上游')
+
+    upstreamHits.length = 0
+    const approvedResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp hosted runtime mock approval' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: mcpMockApprovalItem.id,
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'mock-mcp',
+          server_url: 'https://mock.mcp.local/mcp'
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const approvedText = await approvedResponse.text()
+    assert.equal(approvedResponse.status, 200, `MCP mock approval_request_id 正确应执行本地 mock call，实际 HTTP ${approvedResponse.status}: ${approvedText}`)
+    const approvedBody = JSON.parse(approvedText) as { output?: Array<{ type?: string; approval_request_id?: string }> }
+    const approvedCall = approvedBody.output?.find((item) => item.type === 'mcp_call')
+    assert(approvedCall, `MCP mock approval_request_id 正确应返回 mcp_call: ${approvedText}`)
+    assert.equal(approvedCall.approval_request_id, mcpMockApprovalItem.id)
+    assert.equal(upstreamHits.length, 0, 'MCP mock approval_request_id 正确仍不应请求 Anthropic 上游')
 
     upstreamHits.length = 0
     const duplicateLabelResponse = await fetch(`${baseUrl}/v1/responses`, {
@@ -2988,11 +3910,22 @@ async function assertMcpLocalRuntimeGate(baseUrl: string, localApiKey: string): 
   }
 }
 
-async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertMcpLocalRuntimeProxyMode(
+  baseUrl: string,
+  localApiKey: string,
+  localApiKeyId: string,
+  localGroupId: string,
+  otherApiKey: string
+): Promise<void> {
   upstreamHits.length = 0
   mcpProxyHits.length = 0
   const previousMode = runtimeConfig.hostedToolRuntimes.mcp
   runtimeConfig.hostedToolRuntimes.mcp = 'local_runtime'
+  const executionScope = {
+    systemAccountId: access.systemAccountId,
+    apiKeyId: localApiKeyId,
+    groupId: localGroupId
+  }
   try {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: 'POST',
@@ -3019,7 +3952,17 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert.equal(response.status, 200, `MCP local_runtime proxy JSON 应成功，实际 HTTP ${response.status}: ${text}`)
     const body = JSON.parse(text) as {
       status?: string
-      output?: Array<{ type?: string; tools?: Array<{ name?: string }>; name?: string; output?: string; metadata?: { output_truncated?: boolean } }>
+      output?: Array<{
+        type?: string
+        tools?: Array<{ name?: string }>
+        name?: string
+        output?: string
+        metadata?: {
+          execution_record_id?: string
+          output_limit_bytes?: number
+          output_truncated?: boolean
+        }
+      }>
       output_text?: string
       metadata?: { gateway_runtime?: string; gateway_tool?: string }
       tools?: Array<{ authorization?: string }>
@@ -3042,7 +3985,6 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert.doesNotMatch(JSON.stringify(upstreamHits[0]?.body ?? {}), /mcp-proxy-request-token/, 'MCP local_runtime proxy 不应把 authorization 发给 Anthropic 上游')
     assert.doesNotMatch(JSON.stringify(upstreamHits[1]?.body ?? {}), /mcp-proxy-request-token/, 'MCP local_runtime proxy tool_result 回灌不应把 authorization 发给 Anthropic 上游')
     assert.match(JSON.stringify(upstreamHits[1]?.body ?? {}), /"type":"tool_result"/, 'MCP local_runtime proxy 第二轮应回灌 Anthropic tool_result')
-    assert.deepEqual(upstreamHits[1]?.body.tool_choice, { type: 'none' }, 'MCP local_runtime proxy 第二轮应关闭继续工具调用')
     assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
       'initialize',
       'notifications/initialized',
@@ -3053,6 +3995,290 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert.match(mcpProxyHits[2]?.sessionId ?? '', /^mcp_session_/, 'MCP proxy tools/list 应带 initialize session id')
     const callParams = mcpProxyHits[3]?.body.params as Record<string, unknown> | undefined
     assert.equal(callParams?.name, 'echo', 'MCP proxy tools/call 应使用原始 MCP tool name')
+    const jsonExecutionRecord = mcpExecutionRepository
+      .listOpenAICompatibleMcpExecutionRecords({ scope: executionScope, limit: 50 })
+      .find((record) => record.toolName === 'echo' && record.argumentsPreview.includes('responses mcp local runtime proxy json'))
+    assert(jsonExecutionRecord, `MCP local_runtime proxy JSON 应写入执行记录: ${text}`)
+    assert.equal(jsonExecutionRecord.systemAccountId, access.systemAccountId)
+    assert.equal(jsonExecutionRecord.apiKeyId, localApiKeyId)
+    assert.equal(jsonExecutionRecord.groupId, localGroupId)
+    assert.equal(jsonExecutionRecord.serverLabel, 'real-mcp')
+    assert.equal(jsonExecutionRecord.status, 'succeeded')
+    assert.equal(jsonExecutionRecord.approvalRequestId, undefined)
+    assert.equal(jsonExecutionRecord.outputTruncated, false)
+    assert(jsonExecutionRecord.outputBytes > 0, 'MCP execution record 应记录输出字节数')
+    assert.match(jsonExecutionRecord.outputDigest ?? '', /^[0-9a-f]{64}$/)
+    assert.match(jsonExecutionRecord.argumentsDigest, /^[0-9a-f]{64}$/)
+    assert.equal(jsonExecutionRecord.errorCode, undefined)
+    assert.equal(jsonExecutionRecord.errorMessage, undefined)
+    assert.equal(callItem.metadata?.execution_record_id, jsonExecutionRecord.id)
+    assert.doesNotMatch(JSON.stringify(jsonExecutionRecord), /mock MCP echo:/, 'MCP execution record 不应保存远程输出正文')
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
+    gatewayCache.clearGatewayRuntimeCache()
+    const failedResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy deliberate failure',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const failedText = await failedResponse.text()
+    assert.equal(
+      failedResponse.status,
+      200,
+      `MCP local_runtime proxy tools/call 失败应返回 OpenAI Responses 终态，实际 HTTP ${failedResponse.status}: ${failedText}`
+    )
+    const failedBody = JSON.parse(failedText) as {
+      output?: Array<{ type?: string; name?: string; output?: unknown; error?: { code?: string; message?: string } }>
+      output_text?: string
+      metadata?: { gateway_mcp_tool_loop?: string }
+    }
+    const failedCallItem = failedBody.output?.find((item) => item.type === 'mcp_call')
+    assert(failedCallItem, `MCP local_runtime proxy tools/call 失败应返回 mcp_call error item: ${failedText}`)
+    assert.equal(failedCallItem.name, 'echo')
+    assert.equal(failedCallItem.output, null)
+    assert.equal(failedCallItem.error?.code, 'mock_mcp_tool_failed')
+    assert.equal(failedCallItem.error?.message, 'mock_mcp_tool_failed')
+    assert.equal(failedBody.metadata?.gateway_mcp_tool_loop, 'tool_call_failed')
+    assert.match(failedBody.output_text ?? '', /MCP proxy tool call failed/)
+    assert.doesNotMatch(failedText, /没有可用的上游账户/)
+    assert.doesNotMatch(failedText, /mock MCP tool failed/, 'MCP local_runtime proxy 失败响应不应泄漏远程错误正文')
+    assert.equal(upstreamHits.length, 1, 'MCP local_runtime proxy tools/call 失败前只应请求 Anthropic 选择工具一次')
+    assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__echo'])
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'tools/call'
+    ])
+    const failedExecutionRecord = mcpExecutionRepository
+      .listOpenAICompatibleMcpExecutionRecords({ scope: executionScope, limit: 50 })
+      .find((record) => record.toolName === 'echo' && record.status === 'failed' && record.argumentsPreview.includes('deliberate failure'))
+    assert(failedExecutionRecord, `MCP local_runtime proxy tools/call 失败应写入执行记录: ${failedText}`)
+    assert.equal(failedExecutionRecord.toolName, 'echo')
+    assert.equal(failedExecutionRecord.outputBytes, 0)
+    assert.equal(failedExecutionRecord.outputDigest, undefined)
+    assert.equal(failedExecutionRecord.outputTruncated, false)
+    assert.equal(failedExecutionRecord.errorCode, 'mock_mcp_tool_failed')
+    assert.equal(failedExecutionRecord.errorMessage, 'mock_mcp_tool_failed')
+    assert.doesNotMatch(JSON.stringify(failedExecutionRecord), /mock MCP tool failed/, 'MCP failed execution record 不应保存远程错误正文')
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    accountSideEffects.clearGatewayAccountSideEffectQueueForTest()
+    gatewayCache.clearGatewayRuntimeCache()
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const multiRoundResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy multi round',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const multiRoundText = await multiRoundResponse.text()
+    assert.equal(multiRoundResponse.status, 200, `MCP local_runtime proxy 多轮 JSON 应成功，实际 HTTP ${multiRoundResponse.status}: ${multiRoundText}`)
+    const multiRoundBody = JSON.parse(multiRoundText) as {
+      output?: Array<{ type?: string; name?: string; output?: string }>
+      output_text?: string
+      metadata?: { gateway_mcp_tool_loop_rounds?: number }
+    }
+    const multiRoundCalls = multiRoundBody.output?.filter((item) => item.type === 'mcp_call') ?? []
+    assert.equal(multiRoundCalls.length, 2, `MCP local_runtime proxy 多轮应返回两个 mcp_call: ${multiRoundText}`)
+    assert.match(multiRoundCalls[0]?.output ?? '', /mock MCP echo: responses mcp local runtime proxy multi round first/)
+    assert.match(multiRoundCalls[1]?.output ?? '', /mock MCP echo: responses mcp local runtime proxy multi round second/)
+    assert.match(multiRoundBody.output_text ?? '', /MCP proxy multi final answer: mock MCP echo: responses mcp local runtime proxy multi round first \| mock MCP echo: responses mcp local runtime proxy multi round second/)
+    assert.equal(multiRoundBody.metadata?.gateway_mcp_tool_loop_rounds, 2, 'MCP local_runtime proxy 多轮应记录执行轮数')
+    assert.equal(upstreamHits.length, 3, 'MCP local_runtime proxy 多轮应两次请求 Anthropic 选择工具并第三次生成最终回答')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'tools/call',
+      'tools/call'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const sseTransportServer = runtimeConfig.mcpProxy.servers.find((server) => server.label === 'real-mcp-sse')
+    const sseTransportResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy sse transport',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp-sse',
+          server_url: sseTransportServer?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const sseTransportText = await sseTransportResponse.text()
+    assert.equal(sseTransportResponse.status, 200, `MCP local_runtime proxy HTTP-SSE transport 应成功，实际 HTTP ${sseTransportResponse.status}: ${sseTransportText}`)
+    const sseTransportBody = JSON.parse(sseTransportText) as { output?: Array<{ type?: string; name?: string; output?: string }>; output_text?: string }
+    const sseTransportCall = sseTransportBody.output?.find((item) => item.type === 'mcp_call')
+    assert(sseTransportCall, `MCP local_runtime proxy HTTP-SSE transport 应返回 mcp_call: ${sseTransportText}`)
+    assert.equal(sseTransportCall.name, 'echo')
+    assert.match(sseTransportCall.output ?? '', /mock MCP echo: responses mcp local runtime proxy sse transport/)
+    assert.match(sseTransportBody.output_text ?? '', /MCP proxy final answer: mock MCP echo: responses mcp local runtime proxy sse transport/)
+    assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy HTTP-SSE transport 应请求 Anthropic 选择工具并回灌 tool_result')
+    assert.deepEqual(mcpProxyHits.map((hit) => `${hit.path}:${String(hit.body.method ?? '')}`), [
+      '/mcp-sse:initialize',
+      '/mcp-sse:notifications/initialized',
+      '/mcp-sse:tools/list',
+      '/mcp-sse:tools/call'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const legacySseTransportServer = runtimeConfig.mcpProxy.servers.find((server) => server.label === 'real-mcp-legacy-sse')
+    const legacySseTransportResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy legacy sse transport',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp-legacy-sse',
+          server_url: legacySseTransportServer?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const legacySseTransportText = await legacySseTransportResponse.text()
+    assert.equal(legacySseTransportResponse.status, 200, `MCP local_runtime proxy legacy HTTP-SSE transport 应成功，实际 HTTP ${legacySseTransportResponse.status}: ${legacySseTransportText}`)
+    const legacySseTransportBody = JSON.parse(legacySseTransportText) as { output?: Array<{ type?: string; name?: string; output?: string }>; output_text?: string }
+    const legacySseTransportCall = legacySseTransportBody.output?.find((item) => item.type === 'mcp_call')
+    assert(legacySseTransportCall, `MCP local_runtime proxy legacy HTTP-SSE transport 应返回 mcp_call: ${legacySseTransportText}`)
+    assert.equal(legacySseTransportCall.name, 'echo')
+    assert.match(legacySseTransportCall.output ?? '', /mock MCP echo: responses mcp local runtime proxy legacy sse transport/)
+    assert.match(legacySseTransportBody.output_text ?? '', /MCP proxy final answer: mock MCP echo: responses mcp local runtime proxy legacy sse transport/)
+    assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy legacy HTTP-SSE transport 应请求 Anthropic 选择工具并回灌 tool_result')
+    assert.deepEqual(mcpProxyHits.map((hit) => `${hit.method}:${hit.path}:${String(hit.body.method ?? '')}`), [
+      'POST:/mcp-legacy-sse:initialize',
+      'GET:/mcp-legacy-sse:',
+      'POST:/mcp-legacy-message:initialize',
+      'POST:/mcp-legacy-message:notifications/initialized',
+      'POST:/mcp-legacy-message:tools/list',
+      'POST:/mcp-legacy-message:tools/call'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const retryTransportServer = runtimeConfig.mcpProxy.servers.find((server) => server.label === 'real-mcp-retry')
+    const retryTransportResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy retry transport',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp-retry',
+          server_url: retryTransportServer?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const retryTransportText = await retryTransportResponse.text()
+    assert.equal(retryTransportResponse.status, 200, `MCP local_runtime proxy retry transport 应重试后成功，实际 HTTP ${retryTransportResponse.status}: ${retryTransportText}`)
+    const retryTransportBody = JSON.parse(retryTransportText) as { output?: Array<{ type?: string; name?: string; output?: string }>; output_text?: string }
+    const retryTransportCall = retryTransportBody.output?.find((item) => item.type === 'mcp_call')
+    assert(retryTransportCall, `MCP local_runtime proxy retry transport 应返回 mcp_call: ${retryTransportText}`)
+    assert.equal(retryTransportCall.name, 'echo')
+    assert.match(retryTransportCall.output ?? '', /mock MCP echo: responses mcp local runtime proxy retry transport/)
+    assert.match(retryTransportBody.output_text ?? '', /MCP proxy final answer: mock MCP echo: responses mcp local runtime proxy retry transport/)
+    assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy retry transport 应请求 Anthropic 选择工具并回灌 tool_result')
+    assert.deepEqual(mcpProxyHits.map((hit) => `${hit.path}:${String(hit.body.method ?? '')}`), [
+      '/mcp-retry:initialize',
+      '/mcp-retry:initialize',
+      '/mcp-retry:notifications/initialized',
+      '/mcp-retry:tools/list',
+      '/mcp-retry:tools/call'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const redirectServer = runtimeConfig.mcpProxy.servers.find((server) => server.label === 'real-mcp-redirect')
+    const redirectResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy redirect blocked',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp-redirect',
+          server_url: redirectServer?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const redirectText = await redirectResponse.text()
+    assert.equal(redirectResponse.status, 502, `MCP local_runtime proxy redirect 应本地 502，实际 HTTP ${redirectResponse.status}: ${redirectText}`)
+    assert.match(redirectText, /openai_anthropic_bridge_mcp_proxy_redirect_blocked/)
+    assert.match(redirectText, /redirect\.example\/mcp/)
+    assert.doesNotMatch(redirectText, /secret-redirect-token/, 'MCP redirect 错误不应泄漏 Location query')
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy redirect 不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => `${hit.path}:${String(hit.body.method ?? '')}`), [
+      '/mcp-redirect:initialize'
+    ])
 
     upstreamHits.length = 0
     mcpProxyHits.length = 0
@@ -3077,11 +4303,300 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     })
     const approvalText = await approvalResponse.text()
     assert.equal(approvalResponse.status, 200, `MCP local_runtime proxy 默认 approval 应返回审批请求，实际 HTTP ${approvalResponse.status}: ${approvalText}`)
-    const approvalBody = JSON.parse(approvalText) as { output?: Array<{ type?: string; name?: string }> }
+    const approvalBody = JSON.parse(approvalText) as { output?: Array<{ id?: string; type?: string; name?: string; approval_request_id?: string; output?: string }> }
     const approvalItem = approvalBody.output?.find((item) => item.type === 'mcp_approval_request')
-    assert(approvalItem, `MCP local_runtime proxy 默认 approval 应返回 mcp_approval_request: ${approvalText}`)
+    assert(approvalItem?.id, `MCP local_runtime proxy 默认 approval 应返回带 id 的 mcp_approval_request: ${approvalText}`)
     assert.equal(approvalItem.name, 'echo')
+    const approvalRecord = mcpApprovalRepository.findOpenAICompatibleMcpApprovalRequest(approvalItem.id)
+    assert(approvalRecord, `MCP local_runtime proxy approval request 应写入业务库: ${approvalText}`)
+    assert.equal(approvalRecord.status, 'pending')
+    assert.equal(approvalRecord.apiKeyId, localApiKeyId)
+    assert.equal(approvalRecord.groupId, localGroupId)
+    assert.equal(approvalRecord.serverLabel, 'real-mcp')
+    assert.equal(approvalRecord.toolName, 'echo')
     assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy 默认 approval 不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const wrongApprovalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp local runtime proxy approval required' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: 'mcpr_wrong_proxy_approval_id',
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const wrongApprovalText = await wrongApprovalResponse.text()
+    assert.equal(wrongApprovalResponse.status, 400, `MCP local_runtime proxy approval_request_id 错误应本地 400，实际 HTTP ${wrongApprovalResponse.status}: ${wrongApprovalText}`)
+    assert.match(wrongApprovalText, /openai_anthropic_bridge_mcp_approval_not_found/)
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy approval_request_id 错误不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const crossScopeApprovalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${otherApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp local runtime proxy approval required' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: approvalItem.id,
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const crossScopeApprovalText = await crossScopeApprovalResponse.text()
+    assert.equal(crossScopeApprovalResponse.status, 403, `MCP local_runtime proxy 跨 API Key approval 应本地 403，实际 HTTP ${crossScopeApprovalResponse.status}: ${crossScopeApprovalText}`)
+    assert.match(crossScopeApprovalText, /openai_anthropic_bridge_mcp_approval_scope_mismatch/)
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy 跨 API Key approval 不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list'
+    ])
+    assert.equal(mcpApprovalRepository.findOpenAICompatibleMcpApprovalRequest(approvalItem.id)?.status, 'pending', '跨 API Key approval 不应改变原 approval 状态')
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const approvedResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp local runtime proxy approval required' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: approvalItem.id,
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const approvedText = await approvedResponse.text()
+    assert.equal(approvedResponse.status, 200, `MCP local_runtime proxy approval_request_id 正确应执行 tools/call，实际 HTTP ${approvedResponse.status}: ${approvedText}`)
+    const approvedBody = JSON.parse(approvedText) as {
+      output?: Array<{
+        type?: string
+        name?: string
+        approval_request_id?: string
+        output?: string
+        metadata?: { execution_record_id?: string }
+      }>
+    }
+    const approvedCall = approvedBody.output?.find((item) => item.type === 'mcp_call')
+    assert(approvedCall, `MCP local_runtime proxy approval_request_id 正确应返回 mcp_call: ${approvedText}`)
+    assert.equal(approvedCall.name, 'echo')
+    assert.equal(approvedCall.approval_request_id, approvalItem.id)
+    assert.match(approvedCall.output ?? '', /mock MCP echo: responses mcp local runtime proxy approval required/)
+    assert.equal(mcpApprovalRepository.findOpenAICompatibleMcpApprovalRequest(approvalItem.id)?.status, 'consumed', 'MCP local_runtime proxy approval 执行后应标记 consumed')
+    const approvedExecutionRecord = mcpExecutionRepository
+      .listOpenAICompatibleMcpExecutionRecords({ scope: executionScope, limit: 50 })
+      .find((record) => record.approvalRequestId === approvalItem.id)
+    assert(approvedExecutionRecord, `MCP local_runtime proxy approval 执行后应写入执行记录: ${approvedText}`)
+    assert.equal(approvedExecutionRecord.status, 'succeeded')
+    assert.equal(approvedExecutionRecord.toolName, 'echo')
+    assert.equal(approvedExecutionRecord.outputTruncated, false)
+    assert.equal(approvedCall.metadata?.execution_record_id, approvedExecutionRecord.id)
+    assert.doesNotMatch(JSON.stringify(approvedExecutionRecord), /mock MCP echo:/, 'MCP approval execution record 不应保存远程输出正文')
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy approval 后本地执行不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'tools/call'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const replayApprovalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp local runtime proxy approval required' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: approvalItem.id,
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const replayApprovalText = await replayApprovalResponse.text()
+    assert.equal(replayApprovalResponse.status, 400, `MCP local_runtime proxy approval replay 应本地 400，实际 HTTP ${replayApprovalResponse.status}: ${replayApprovalText}`)
+    assert.match(replayApprovalText, /openai_anthropic_bridge_mcp_approval_not_pending/)
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy approval replay 不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list'
+    ])
+
+    const rejectedApprovalItem = await createMcpApprovalFixture(baseUrl, localApiKey)
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const rejectedApprovalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp local runtime proxy approval required' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: rejectedApprovalItem.id,
+            approve: false,
+            reason: 'mock reject'
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const rejectedApprovalText = await rejectedApprovalResponse.text()
+    assert.equal(rejectedApprovalResponse.status, 200, `MCP local_runtime proxy approval reject 应返回普通响应，实际 HTTP ${rejectedApprovalResponse.status}: ${rejectedApprovalText}`)
+    assert.match(rejectedApprovalText, /MCP proxy tool call was not approved/)
+    assert.equal(mcpApprovalRepository.findOpenAICompatibleMcpApprovalRequest(rejectedApprovalItem.id)?.status, 'rejected', 'MCP local_runtime proxy reject 后应标记 rejected')
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy approval reject 不应请求 Anthropic 上游')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list'
+    ])
+
+    const expiredApprovalItem = await createMcpApprovalFixture(baseUrl, localApiKey)
+    mcpApprovalRepository.markOpenAICompatibleMcpApprovalExpired(expiredApprovalItem.id)
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const expiredApprovalResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'responses mcp local runtime proxy approval required' }]
+          },
+          {
+            type: 'mcp_approval_response',
+            approval_request_id: expiredApprovalItem.id,
+            approve: true
+          }
+        ],
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: false
+      })
+    })
+    const expiredApprovalText = await expiredApprovalResponse.text()
+    assert.equal(expiredApprovalResponse.status, 400, `MCP local_runtime proxy expired approval 应本地 400，实际 HTTP ${expiredApprovalResponse.status}: ${expiredApprovalText}`)
+    assert.match(expiredApprovalText, /openai_anthropic_bridge_mcp_approval_expired/)
+    assert.equal(upstreamHits.length, 0, 'MCP local_runtime proxy expired approval 不应请求 Anthropic 上游')
     assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
       'initialize',
       'notifications/initialized',
@@ -3121,10 +4636,50 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     assert.match(sseText, /"type":"mcp_call"/)
     assert.match(sseText, /mock MCP echo: responses mcp local runtime proxy sse/)
     assert.match(sseText, /MCP proxy final answer: mock MCP echo: responses mcp local runtime proxy sse/)
+    assertMcpCallSseLifecycle(sseText, 'MCP local_runtime proxy SSE', 'echo')
     assert.doesNotMatch(sseText, /data: \[DONE\]/, 'Responses MCP local_runtime proxy SSE 不应使用 Chat [DONE]')
     assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy SSE 应请求 Anthropic 选择工具并回灌 tool_result')
     assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__echo'])
     assert.match(JSON.stringify(upstreamHits[1]?.body ?? {}), /"type":"tool_result"/, 'MCP local_runtime proxy SSE 第二轮应回灌 Anthropic tool_result')
+    assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+      'tools/call'
+    ])
+
+    upstreamHits.length = 0
+    mcpProxyHits.length = 0
+    const failedSseResponse = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        input: 'responses mcp local runtime proxy deliberate failure',
+        tools: [{
+          type: 'mcp',
+          server_label: 'real-mcp',
+          server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+          require_approval: 'never',
+          allowed_tools: ['echo']
+        }],
+        tool_choice: { type: 'mcp' },
+        stream: true
+      })
+    })
+    const failedSseText = await failedSseResponse.text()
+    assert.equal(failedSseResponse.status, 200, `MCP local_runtime proxy SSE tools/call 失败应返回 OpenAI Responses 终态，实际 HTTP ${failedSseResponse.status}: ${failedSseText}`)
+    assert.match(failedSseText, /event: response\.created/)
+    assert.match(failedSseText, /event: response\.mcp_call\.failed/)
+    assert.match(failedSseText, /MCP proxy tool call failed\./)
+    assert.match(failedSseText, /"error":\{"message":"mock_mcp_tool_failed","type":"upstream_error","code":"mock_mcp_tool_failed"\}/)
+    assertMcpCallSseLifecycle(failedSseText, 'MCP local_runtime proxy SSE failure', 'echo', 'mock_mcp_tool_failed')
+    assert.doesNotMatch(failedSseText, /mock MCP tool failed/, 'MCP local_runtime proxy SSE 失败响应不应泄漏远程错误正文')
+    assert.equal(upstreamHits.length, 1, 'MCP local_runtime proxy SSE 失败前只应请求 Anthropic 选择工具一次')
+    assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__echo'])
     assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
       'initialize',
       'notifications/initialized',
@@ -3156,16 +4711,73 @@ async function assertMcpLocalRuntimeProxyMode(baseUrl: string, localApiKey: stri
     })
     const largeText = await largeResponse.text()
     assert.equal(largeResponse.status, 200, `MCP local_runtime proxy 大输出应截断后成功，实际 HTTP ${largeResponse.status}: ${largeText}`)
-    const largeBody = JSON.parse(largeText) as { output?: Array<{ type?: string; output?: string; metadata?: { output_truncated?: boolean } }> }
+    const largeBody = JSON.parse(largeText) as {
+      output?: Array<{
+        type?: string
+        output?: string
+        metadata?: {
+          execution_record_id?: string
+          output_limit_bytes?: number
+          output_truncated?: boolean
+        }
+      }>
+    }
     const largeCall = largeBody.output?.find((item) => item.type === 'mcp_call')
     assert(largeCall, `MCP local_runtime proxy 大输出应返回 mcp_call: ${largeText}`)
     assert.match(largeCall.output ?? '', /truncated by juhe-ai MCP proxy output limit/)
     assert.equal(largeCall.metadata?.output_truncated, true, 'MCP local_runtime proxy 大输出应标记 output_truncated')
+    assert.equal(largeCall.metadata?.output_limit_bytes, runtimeConfig.mcpProxy.maxOutputBytes)
     assert.equal(upstreamHits.length, 2, 'MCP local_runtime proxy 大输出 JSON 应请求 Anthropic 选择工具并回灌 tool_result')
     assert.deepEqual(upstreamToolNames(upstreamHits[0]), ['real-mcp__large'])
+    const largeExecutionRecord = mcpExecutionRepository
+      .listOpenAICompatibleMcpExecutionRecords({ scope: executionScope, limit: 50 })
+      .find((record) => record.toolName === 'large' && record.status === 'succeeded')
+    assert(largeExecutionRecord, `MCP local_runtime proxy 大输出应写入执行记录: ${largeText}`)
+    assert.equal(largeExecutionRecord.outputTruncated, true)
+    assert.equal(largeExecutionRecord.omissionMetadata?.output_truncated, true)
+    assert.equal(largeExecutionRecord.omissionMetadata?.output_limit_bytes, runtimeConfig.mcpProxy.maxOutputBytes)
+    assert.match(largeExecutionRecord.outputDigest ?? '', /^[0-9a-f]{64}$/)
+    assert.equal(largeCall.metadata?.execution_record_id, largeExecutionRecord.id)
+    assert.doesNotMatch(JSON.stringify(largeExecutionRecord), /mock MCP large output/, 'MCP large execution record 不应保存远程输出正文')
   } finally {
     runtimeConfig.hostedToolRuntimes.mcp = previousMode
   }
+}
+
+async function createMcpApprovalFixture(baseUrl: string, localApiKey: string): Promise<{ id: string; name?: string }> {
+  upstreamHits.length = 0
+  mcpProxyHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'responses mcp local runtime proxy approval required',
+      tools: [{
+        type: 'mcp',
+        server_label: 'real-mcp',
+        server_url: runtimeConfig.mcpProxy.servers[0]?.serverUrl,
+        allowed_tools: ['echo']
+      }],
+      tool_choice: { type: 'mcp' },
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `MCP approval fixture 应返回审批请求，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { output?: Array<{ id?: string; type?: string; name?: string }> }
+  const item = body.output?.find((outputItem) => outputItem.type === 'mcp_approval_request')
+  assert(item?.id, `MCP approval fixture 应包含 mcp_approval_request: ${text}`)
+  assert.equal(upstreamHits.length, 0, 'MCP approval fixture 不应请求 Anthropic 上游')
+  assert.deepEqual(mcpProxyHits.map((hit) => String(hit.body.method ?? '')), [
+    'initialize',
+    'notifications/initialized',
+    'tools/list'
+  ])
+  return { id: item.id, name: item.name }
 }
 
 async function assertResponsesImageGenerationJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -4474,6 +6086,42 @@ async function assertResponsesCompactEndpointBridge(baseUrl: string, localApiKey
   assert.doesNotMatch(followupBodyText, /juhecmp\.v2\./, '上游不应看到 compact snapshot envelope')
 
   upstreamHits.length = 0
+  const tamperedCompactItem = {
+    ...compactItem,
+    encrypted_content: tamperCompactReferenceDigest(String(compactItem?.encrypted_content ?? ''))
+  }
+  const tamperedResponse = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({
+        turn_id: 'turn-openai-anthropic-bridge-compact-tampered',
+        session_id: 'session-openai-anthropic-bridge-compact-tampered',
+        thread_id: 'thread-openai-anthropic-bridge-compact-tampered'
+      })
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [
+        tamperedCompactItem,
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'tampered compact must not reach upstream' }]
+        }
+      ],
+      stream: true,
+      store: false
+    })
+  })
+  const tamperedText = await tamperedResponse.text()
+  assert.equal(tamperedResponse.status, 404, `篡改 digest 的 compact snapshot 应受控拒绝，实际 HTTP ${tamperedResponse.status}: ${tamperedText}`)
+  assert.match(tamperedText, /codex_bridge_compact_snapshot_not_found/, '篡改 digest 的 compact snapshot 应返回稳定错误码')
+  assert.equal(upstreamHits.length, 0, '篡改 digest 的 compact snapshot 受控失败时不应命中上游')
+
+  upstreamHits.length = 0
   const boundaryResponse = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: {
@@ -4504,6 +6152,16 @@ async function assertResponsesCompactEndpointBridge(baseUrl: string, localApiKey
   assert.equal(boundaryResponse.status, 403, `跨 API Key compact snapshot 应受控拒绝，实际 HTTP ${boundaryResponse.status}: ${boundaryText}`)
   assert.match(boundaryText, /codex_bridge_compact_boundary_mismatch/, '跨 API Key compact snapshot 应返回稳定错误码')
   assert.equal(upstreamHits.length, 0, '跨 API Key compact snapshot 受控失败时不应命中上游')
+}
+
+function tamperCompactReferenceDigest(value: string): string {
+  const prefix = 'juhecmp.v2.'
+  const separatorIndex = value.lastIndexOf('.')
+  assert(value.startsWith(prefix) && separatorIndex > prefix.length, `compact reference 外形不符合预期，无法构造篡改用例：${value}`)
+  const digest = value.slice(separatorIndex + 1)
+  assert.match(digest, /^[a-f0-9]{64}$/i, `compact reference digest 外形不符合预期：${value}`)
+  const replacement = digest.endsWith('0') ? '1' : '0'
+  return `${value.slice(0, separatorIndex + 1)}${digest.slice(0, -1)}${replacement}`
 }
 
 async function assertCodexPreviousResponseBridge(baseUrl: string, localApiKey: string): Promise<void> {
@@ -4569,6 +6227,203 @@ async function assertCodexPreviousResponseBridge(baseUrl: string, localApiKey: s
   assert.doesNotMatch(upstreamBodyText, /previous_response_id/, '续链上游请求不应把 OpenAI previous_response_id 直传给 Anthropic')
 }
 
+async function assertGenericResponsesPreviousResponseJsonBridge(baseUrl: string, localApiKey: string, otherLocalApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const first = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'generic previous bridge json start' }]
+      }],
+      stream: false,
+      store: false
+    })
+  })
+  const firstText = await first.text()
+  assert.equal(first.status, 200, `Generic Responses previous_response_id JSON 首轮桥接应成功，实际 HTTP ${first.status}: ${firstText}`)
+  const firstBody = JSON.parse(firstText) as { id?: string }
+  const responseId = firstBody.id
+  assert(responseId, `Generic Responses previous_response_id JSON 首轮响应应包含 response id: ${firstText}`)
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'generic previous bridge json start')
+
+  upstreamHits.length = 0
+  const second = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      previous_response_id: responseId,
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'generic previous bridge json continuation' }]
+      }],
+      stream: false,
+      store: false
+    })
+  })
+  const secondText = await second.text()
+  assert.equal(second.status, 200, `Generic Responses previous_response_id JSON 续链桥接应成功，实际 HTTP ${second.status}: ${secondText}`)
+  const secondBody = JSON.parse(secondText) as { previous_response_id?: string }
+  assert.equal(secondBody.previous_response_id, responseId, 'Generic Responses JSON 续链响应应保留下游 previous_response_id')
+  assertBridgeUpstreamHit(upstreamHits[0], false, 'generic previous bridge json continuation')
+  const upstreamBodyText = JSON.stringify(upstreamHits[0]?.body ?? {})
+  assert.match(upstreamBodyText, /generic previous bridge json start/, 'Generic Responses JSON 续链上游请求应包含已恢复的历史输入')
+  assert.match(upstreamBodyText, /generic previous bridge json continuation/, 'Generic Responses JSON 续链上游请求应包含当前输入')
+  assert.doesNotMatch(upstreamBodyText, /previous_response_id/, 'Generic Responses JSON 续链上游请求不应把 OpenAI previous_response_id 直传给 Anthropic')
+
+  upstreamHits.length = 0
+  const boundary = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${otherLocalApiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      previous_response_id: responseId,
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'generic previous bridge cross key must not reach upstream' }]
+      }],
+      stream: false,
+      store: false
+    })
+  })
+  const boundaryText = await boundary.text()
+  assert.equal(boundary.status, 403, `Generic Responses previous_response_id 跨 API Key 应受控拒绝，实际 HTTP ${boundary.status}: ${boundaryText}`)
+  assert.match(boundaryText, /codex_bridge_previous_response_boundary_mismatch/, 'Generic Responses previous_response_id 跨 API Key 应返回稳定错误码')
+  assert.equal(upstreamHits.length, 0, 'Generic Responses previous_response_id 跨 API Key 受控失败时不应命中上游')
+}
+
+async function assertGenericResponsesPreviousResponseSseBridge(baseUrl: string, localApiKey: string, otherLocalApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const first = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'generic previous bridge sse start' }]
+      }],
+      stream: true,
+      store: false
+    })
+  })
+  const firstText = await first.text()
+  assert.equal(first.status, 200, `Generic Responses previous_response_id SSE 首轮桥接应成功，实际 HTTP ${first.status}: ${firstText}`)
+  const responseId = responseIdFromResponsesSse(firstText)
+  assert(responseId, `Generic Responses previous_response_id SSE 首轮响应应包含 response id: ${firstText}`)
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'generic previous bridge sse start')
+
+  upstreamHits.length = 0
+  const second = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      previous_response_id: responseId,
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'generic previous bridge sse continuation' }]
+      }],
+      stream: true,
+      store: false
+    })
+  })
+  const secondText = await second.text()
+  assert.equal(second.status, 200, `Generic Responses previous_response_id SSE 续链桥接应成功，实际 HTTP ${second.status}: ${secondText}`)
+  const completedPayload = sseEventPayloads(secondText, 'response.completed')[0]
+  const completedResponse = typeof completedPayload?.response === 'object' && completedPayload.response !== null && !Array.isArray(completedPayload.response)
+    ? completedPayload.response as Record<string, unknown>
+    : undefined
+  assert.equal(completedResponse?.previous_response_id, responseId, 'Generic Responses SSE 续链 response.completed 应保留下游 previous_response_id')
+  assertBridgeUpstreamHit(upstreamHits[0], true, 'generic previous bridge sse continuation')
+  const upstreamBodyText = JSON.stringify(upstreamHits[0]?.body ?? {})
+  assert.match(upstreamBodyText, /generic previous bridge sse start/, 'Generic Responses SSE 续链上游请求应包含已恢复的历史输入')
+  assert.match(upstreamBodyText, /generic previous bridge sse continuation/, 'Generic Responses SSE 续链上游请求应包含当前输入')
+  assert.doesNotMatch(upstreamBodyText, /previous_response_id/, 'Generic Responses SSE 续链上游请求不应把 OpenAI previous_response_id 直传给 Anthropic')
+
+  upstreamHits.length = 0
+  const boundary = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${otherLocalApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      previous_response_id: responseId,
+      input: [{
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'generic previous bridge sse cross key must not reach upstream' }]
+      }],
+      stream: true,
+      store: false
+    })
+  })
+  const boundaryText = await boundary.text()
+  assert.equal(boundary.status, 403, `Generic Responses previous_response_id SSE 跨 API Key 应受控拒绝，实际 HTTP ${boundary.status}: ${boundaryText}`)
+  assert.match(boundaryText, /codex_bridge_previous_response_boundary_mismatch/, 'Generic Responses previous_response_id SSE 跨 API Key 应返回稳定错误码')
+  assert.equal(upstreamHits.length, 0, 'Generic Responses previous_response_id SSE 跨 API Key 受控失败时不应命中上游')
+}
+
+async function assertGenericResponsesPreviousResponseMissingBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  for (const input of [
+    { label: 'JSON', stream: false, previousResponseId: 'resp_openai_anthropic_bridge_missing_json' },
+    { label: 'SSE', stream: true, previousResponseId: 'resp_openai_anthropic_bridge_missing_sse' }
+  ]) {
+    upstreamHits.length = 0
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json',
+        ...(input.stream ? { accept: 'text/event-stream' } : {})
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.5',
+        previous_response_id: input.previousResponseId,
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: `generic previous bridge missing ${input.label}` }]
+        }],
+        stream: input.stream,
+        store: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 404, `Generic Responses previous_response_id ${input.label} 未知 id 应受控 404，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /codex_bridge_previous_response_not_found/, `Generic Responses previous_response_id ${input.label} 未知 id 应返回稳定错误码`)
+    assert.equal(upstreamHits.length, 0, `Generic Responses previous_response_id ${input.label} 未知 id 受控失败时不应命中上游`)
+  }
+}
+
 function assertBridgeUpstreamHit(hit: UpstreamHit | undefined, stream: boolean, promptText: string): void {
   assert(hit, '缺少 Anthropic mock 上游命中记录')
   assert.equal(hit.path, '/v1/messages')
@@ -4618,7 +6473,7 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         && (bodyText.includes('chat multi tool sse bridge') || bodyText.includes('responses multi tool sse bridge'))
       ) {
         sendAnthropicMultiToolSse(res, `msg_openai_anthropic_bridge_multi_tool_sse_${hitIndex}`)
-      } else if (body.stream === true && bodyText.includes('responses mcp local runtime proxy sse') && anthropicRequestHasTool(body)) {
+      } else if (body.stream === true && bodyText.includes('responses mcp local runtime proxy') && anthropicRequestHasTool(body)) {
         sendAnthropicMcpToolSse(res, body, `msg_openai_anthropic_bridge_mcp_tool_sse_${hitIndex}`)
       } else if (body.stream === true) {
         sendAnthropicSse(res, `msg_openai_anthropic_bridge_sse_${hitIndex}`)
@@ -4640,6 +6495,45 @@ function createAnthropicBridgeMockUpstream(): http.Server {
         sendAnthropicFileSearchJson(res)
       } else if (bodyText.includes('responses thinking bridge')) {
         sendAnthropicThinkingJson(res)
+      } else if (bodyText.includes('responses code_interpreter local runtime worker') && anthropicRequestHasToolResult(body)) {
+        sendAnthropicCodeInterpreterFinalJson(res, body)
+      } else if (bodyText.includes('responses code_interpreter local runtime worker success') && anthropicRequestHasTool(body)) {
+        sendAnthropicCodeInterpreterToolJson(res, body, [
+          'import os',
+          'print("ci-success:", 2 + 3)',
+          'print("secret:", os.environ.get("JUHE_AI_SECRET", "missing"))'
+        ].join('\n'))
+      } else if (bodyText.includes('responses code_interpreter local runtime worker stderr') && anthropicRequestHasTool(body)) {
+        sendAnthropicCodeInterpreterToolJson(res, body, [
+          'import sys',
+          'print("ci-stdout-line")',
+          'print("ci-stderr-line", file=sys.stderr)'
+        ].join('\n'))
+      } else if (bodyText.includes('responses code_interpreter local runtime worker artifact large') && anthropicRequestHasTool(body)) {
+        sendAnthropicCodeInterpreterToolJson(res, body, [
+          'from pathlib import Path',
+          'Path("big.txt").write_text("X" * 2048, encoding="utf-8")',
+          'print("large artifact ready")'
+        ].join('\n'))
+      } else if (bodyText.includes('responses code_interpreter local runtime worker artifact') && anthropicRequestHasTool(body)) {
+        sendAnthropicCodeInterpreterToolJson(res, body, [
+          'from pathlib import Path',
+          'Path("result.txt").write_text("artifact" + "_body" + "_marker", encoding="utf-8")',
+          'print("artifact ready")'
+        ].join('\n'))
+      } else if (bodyText.includes('responses code_interpreter local runtime worker truncation') && anthropicRequestHasTool(body)) {
+        sendAnthropicCodeInterpreterToolJson(res, body, 'print("T" * 256)')
+      } else if (bodyText.includes('responses code_interpreter local runtime worker timeout') && anthropicRequestHasTool(body)) {
+        sendAnthropicCodeInterpreterToolJson(res, body, 'while True:\n    pass')
+      } else if (bodyText.includes('responses mcp local runtime proxy multi round') && anthropicRequestHasToolResult(body)) {
+        const resultTexts = anthropicToolResultTexts(body)
+        if (resultTexts.length < 2) {
+          sendAnthropicMcpMultiRoundToolJson(res, body, 2)
+        } else {
+          sendAnthropicMcpMultiRoundFinalJson(res, body)
+        }
+      } else if (bodyText.includes('responses mcp local runtime proxy multi round') && anthropicRequestHasTool(body)) {
+        sendAnthropicMcpMultiRoundToolJson(res, body, 1)
       } else if (bodyText.includes('responses mcp local runtime proxy') && anthropicRequestHasToolResult(body)) {
         sendAnthropicMcpToolResultJson(res, body)
       } else if (anthropicRequestHasTool(body)) {
@@ -4743,6 +6637,7 @@ function createImageGenerationMockProvider(): http.Server {
 }
 
 function createMcpProxyMockServer(): http.Server {
+  let legacySseClient: http.ServerResponse | undefined
   return http.createServer((req, res) => {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
@@ -4757,18 +6652,68 @@ function createMcpProxyMockServer(): http.Server {
         sessionId,
         body
       })
-      if ((req.url?.split('?', 1)[0] ?? '') !== '/mcp') {
+      const path = req.url?.split('?', 1)[0] ?? ''
+      const useSseTransport = path === '/mcp-sse'
+      const useLegacySseTransport = path === '/mcp-legacy-message'
+      if (path === '/mcp-legacy-sse' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+        res.write('event: endpoint\n')
+        res.write('data: /mcp-legacy-message\n\n')
+        legacySseClient = res
+        res.on('close', () => {
+          if (legacySseClient === res) legacySseClient = undefined
+        })
+        return
+      }
+      if (path === '/mcp-legacy-sse') {
+        res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { type: 'method_not_allowed', message: 'legacy SSE uses GET endpoint discovery' } }))
+        return
+      }
+      if (path !== '/mcp' && path !== '/mcp-sse' && path !== '/mcp-legacy-message' && path !== '/mcp-retry' && path !== '/mcp-redirect') {
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ error: { type: 'not_found_error', message: 'mock mcp path not found' } }))
         return
       }
       const jsonRpcMethod = String(body.method ?? '')
+      if (path === '/mcp-redirect') {
+        res.writeHead(302, {
+          location: 'https://redirect.example/mcp?token=secret-redirect-token',
+          'content-type': 'application/json; charset=utf-8'
+        })
+        res.end(JSON.stringify({ error: { message: 'redirect should be blocked' } }))
+        return
+      }
       if (jsonRpcMethod === 'notifications/initialized') {
         res.writeHead(202, { 'content-type': 'application/json; charset=utf-8' })
         res.end('{}')
         return
       }
       if (jsonRpcMethod === 'initialize') {
+        if (path === '/mcp-retry' && mcpProxyRetryInitializeFailures === 0) {
+          mcpProxyRetryInitializeFailures += 1
+          res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: { message: 'temporary MCP retry fixture failure' } }))
+          return
+        }
+        const result = {
+          protocolVersion: '2025-06-18',
+          capabilities: {
+            tools: {}
+          },
+          serverInfo: {
+            name: 'juhe-ai mock mcp',
+            version: '0.1.0'
+          }
+        }
+        if (useSseTransport) {
+          sendMcpJsonRpcSseResult(res, body.id, result, { 'mcp-session-id': 'mcp_session_mock_sse' })
+          return
+        }
+        if (useLegacySseTransport) {
+          sendMcpJsonRpcLegacySseResult(res, legacySseClient, body.id, result, { 'mcp-session-id': 'mcp_session_mock_legacy_sse' })
+          return
+        }
         res.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
           'mcp-session-id': 'mcp_session_mock'
@@ -4776,51 +6721,61 @@ function createMcpProxyMockServer(): http.Server {
         res.end(JSON.stringify({
           jsonrpc: '2.0',
           id: body.id,
-          result: {
-            protocolVersion: '2025-06-18',
-            capabilities: {
-              tools: {}
-            },
-            serverInfo: {
-              name: 'juhe-ai mock mcp',
-              version: '0.1.0'
-            }
-          }
+          result
         }))
         return
       }
       if (jsonRpcMethod === 'tools/list') {
+        const result = {
+          tools: [
+            {
+              name: 'echo',
+              description: 'Mock MCP echo tool for local runtime regression.',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  query: { type: 'string' }
+                },
+                required: ['query'],
+                additionalProperties: false
+              },
+              annotations: null
+            },
+            {
+              name: 'large',
+              description: 'Mock MCP large output tool for truncation regression.',
+              inputSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false
+              },
+              annotations: null
+            },
+            {
+              name: 'fail',
+              description: 'Mock MCP failing tool for execution record regression.',
+              inputSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: true
+              },
+              annotations: null
+            }
+          ]
+        }
+        if (useSseTransport) {
+          sendMcpJsonRpcSseResult(res, body.id, result)
+          return
+        }
+        if (useLegacySseTransport) {
+          sendMcpJsonRpcLegacySseResult(res, legacySseClient, body.id, result)
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({
           jsonrpc: '2.0',
           id: body.id,
-          result: {
-            tools: [
-              {
-                name: 'echo',
-                description: 'Mock MCP echo tool for local runtime regression.',
-                inputSchema: {
-                  type: 'object',
-                  properties: {
-                    query: { type: 'string' }
-                  },
-                  required: ['query'],
-                  additionalProperties: false
-                },
-                annotations: null
-              },
-              {
-                name: 'large',
-                description: 'Mock MCP large output tool for truncation regression.',
-                inputSchema: {
-                  type: 'object',
-                  properties: {},
-                  additionalProperties: false
-                },
-                annotations: null
-              }
-            ]
-          }
+          result
         }))
         return
       }
@@ -4832,20 +6787,42 @@ function createMcpProxyMockServer(): http.Server {
         const args = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
           ? params.arguments as Record<string, unknown>
           : {}
+        const query = String(args.query ?? '')
+        if (name === 'fail' || (name === 'echo' && query.includes('deliberate failure'))) {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: body.id,
+            error: {
+              code: 'mock_mcp_tool_failed',
+              message: 'mock MCP tool failed'
+            }
+          }))
+          return
+        }
         const text = name === 'large'
           ? `mock MCP large output ${'x'.repeat(2048)}`
-          : `mock MCP echo: ${String(args.query ?? '')}`
+          : `mock MCP echo: ${query}`
+        const result = {
+          content: [{
+            type: 'text',
+            text
+          }],
+          isError: false
+        }
+        if (useSseTransport) {
+          sendMcpJsonRpcSseResult(res, body.id, result)
+          return
+        }
+        if (useLegacySseTransport) {
+          sendMcpJsonRpcLegacySseResult(res, legacySseClient, body.id, result)
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({
           jsonrpc: '2.0',
           id: body.id,
-          result: {
-            content: [{
-              type: 'text',
-              text
-            }],
-            isError: false
-          }
+          result
         }))
         return
       }
@@ -4859,6 +6836,44 @@ function createMcpProxyMockServer(): http.Server {
         }
       }))
     })
+  })
+}
+
+function sendMcpJsonRpcSseResult(
+  res: http.ServerResponse,
+  id: unknown,
+  result: Record<string, unknown>,
+  headers: Record<string, string> = {}
+): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    ...headers
+  })
+  writeSse(res, 'message', {
+    jsonrpc: '2.0',
+    id,
+    result
+  })
+  res.end()
+}
+
+function sendMcpJsonRpcLegacySseResult(
+  res: http.ServerResponse,
+  sseClient: http.ServerResponse | undefined,
+  id: unknown,
+  result: Record<string, unknown>,
+  headers: Record<string, string> = {}
+): void {
+  res.writeHead(202, {
+    'content-type': 'application/json; charset=utf-8',
+    ...headers
+  })
+  res.end('{}')
+  if (!sseClient) return
+  writeSse(sseClient, 'message', {
+    jsonrpc: '2.0',
+    id,
+    result
   })
 }
 
@@ -4967,8 +6982,19 @@ function sendAnthropicImageGenerationCustomPromptJson(res: http.ServerResponse, 
 
 function sendAnthropicToolJson(res: http.ServerResponse, body: Record<string, unknown>): void {
   const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'lookup_weather'
-  const input = toolName.includes('real-mcp__echo')
-    ? { query: 'responses mcp local runtime proxy json' }
+  const bodyText = JSON.stringify(body)
+  const input = toolName.includes('real-mcp') && toolName.includes('__echo')
+    ? {
+      query: bodyText.includes('responses mcp local runtime proxy deliberate failure')
+        ? 'responses mcp local runtime proxy deliberate failure'
+        : bodyText.includes('responses mcp local runtime proxy sse transport')
+        ? 'responses mcp local runtime proxy sse transport'
+        : bodyText.includes('responses mcp local runtime proxy legacy sse transport')
+          ? 'responses mcp local runtime proxy legacy sse transport'
+        : bodyText.includes('responses mcp local runtime proxy retry transport')
+          ? 'responses mcp local runtime proxy retry transport'
+        : 'responses mcp local runtime proxy json'
+    }
     : toolName.includes('list_open_orders')
       ? { customer_id: 'CUST-12345' }
       : { city: 'Shanghai' }
@@ -4992,6 +7018,49 @@ function sendAnthropicToolJson(res: http.ServerResponse, body: Record<string, un
   }))
 }
 
+function sendAnthropicCodeInterpreterToolJson(
+  res: http.ServerResponse,
+  body: Record<string, unknown>,
+  code: string
+): void {
+  const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'python'
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_code_interpreter_tool',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{
+      type: 'tool_use',
+      id: 'toolu_bridge_code_interpreter',
+      name: toolName,
+      input: { code }
+    }],
+    stop_reason: 'tool_use',
+    usage: {
+      input_tokens: 16,
+      output_tokens: 8
+    }
+  }))
+}
+
+function sendAnthropicCodeInterpreterFinalJson(res: http.ServerResponse, body: Record<string, unknown>): void {
+  const toolResultText = anthropicToolResultText(body)
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_code_interpreter_final',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text: `Code interpreter final answer: ${toolResultText}` }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 18,
+      output_tokens: 10
+    }
+  }))
+}
+
 function sendAnthropicMcpToolResultJson(res: http.ServerResponse, body: Record<string, unknown>): void {
   const toolResultText = anthropicToolResultText(body)
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -5005,6 +7074,50 @@ function sendAnthropicMcpToolResultJson(res: http.ServerResponse, body: Record<s
     usage: {
       input_tokens: 17,
       output_tokens: 9
+    }
+  }))
+}
+
+function sendAnthropicMcpMultiRoundToolJson(
+  res: http.ServerResponse,
+  body: Record<string, unknown>,
+  round: number
+): void {
+  const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'real-mcp__echo'
+  const suffix = round === 1 ? 'first' : 'second'
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: `msg_openai_anthropic_bridge_mcp_multi_${round}`,
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{
+      type: 'tool_use',
+      id: `toolu_mcp_multi_${round}`,
+      name: toolName,
+      input: { query: `responses mcp local runtime proxy multi round ${suffix}` }
+    }],
+    stop_reason: 'tool_use',
+    usage: {
+      input_tokens: 15 + round,
+      output_tokens: 7
+    }
+  }))
+}
+
+function sendAnthropicMcpMultiRoundFinalJson(res: http.ServerResponse, body: Record<string, unknown>): void {
+  const toolResultTexts = anthropicToolResultTexts(body)
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({
+    id: 'msg_openai_anthropic_bridge_mcp_multi_final',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-haiku-4-5',
+    content: [{ type: 'text', text: `MCP proxy multi final answer: ${toolResultTexts.join(' | ')}` }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 21,
+      output_tokens: 11
     }
   }))
 }
@@ -5304,6 +7417,10 @@ function sendAnthropicMultiToolSse(res: http.ServerResponse, messageId: string):
 
 function sendAnthropicMcpToolSse(res: http.ServerResponse, body: Record<string, unknown>, messageId: string): void {
   const toolName = upstreamToolNames({ body } as UpstreamHit)[0] ?? 'real-mcp__echo'
+  const bodyText = JSON.stringify(body)
+  const query = bodyText.includes('responses mcp local runtime proxy deliberate failure')
+    ? 'responses mcp local runtime proxy deliberate failure'
+    : 'responses mcp local runtime proxy sse'
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   writeSse(res, 'message_start', {
     type: 'message_start',
@@ -5334,7 +7451,7 @@ function sendAnthropicMcpToolSse(res: http.ServerResponse, body: Record<string, 
   writeSse(res, 'content_block_delta', {
     type: 'content_block_delta',
     index: 0,
-    delta: { type: 'input_json_delta', partial_json: ':"responses mcp local runtime proxy sse"}' }
+    delta: { type: 'input_json_delta', partial_json: `:${JSON.stringify(query)}}` }
   })
   writeSse(res, 'content_block_stop', {
     type: 'content_block_stop',
@@ -5449,6 +7566,11 @@ function anthropicRequestHasToolResult(body: Record<string, unknown>): boolean {
 }
 
 function anthropicToolResultText(body: Record<string, unknown>): string {
+  return anthropicToolResultTexts(body)[0] ?? ''
+}
+
+function anthropicToolResultTexts(body: Record<string, unknown>): string[] {
+  const resultTexts: string[] = []
   const messages = Array.isArray(body.messages) ? body.messages : []
   for (const message of messages) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) continue
@@ -5459,10 +7581,10 @@ function anthropicToolResultText(body: Record<string, unknown>): string {
       if (!block || typeof block !== 'object' || Array.isArray(block)) continue
       const item = block as Record<string, unknown>
       if (item.type !== 'tool_result') continue
-      return String(item.content ?? '')
+      resultTexts.push(String(item.content ?? ''))
     }
   }
-  return ''
+  return resultTexts
 }
 
 function anthropicRequestHasStructuredOutputTool(body: Record<string, unknown>): boolean {
@@ -5475,6 +7597,87 @@ function upstreamToolNames(hit: UpstreamHit | undefined): string[] {
     .filter((tool): tool is Record<string, unknown> => typeof tool === 'object' && tool !== null && !Array.isArray(tool))
     .map((tool) => typeof tool.name === 'string' ? tool.name : '')
     .filter(Boolean)
+}
+
+function sseEventPayloads(text: string, eventName: string): Record<string, unknown>[] {
+  const payloads: Record<string, unknown>[] = []
+  for (const frame of text.split(/\r?\n\r?\n/)) {
+    let event = ''
+    const dataLines: string[] = []
+    for (const line of frame.split(/\r?\n/)) {
+      if (line.startsWith('event: ')) event = line.slice('event: '.length)
+      if (line.startsWith('data: ')) dataLines.push(line.slice('data: '.length))
+    }
+    if (event !== eventName || dataLines.length === 0) continue
+    payloads.push(safeParseJson(dataLines.join('\n')))
+  }
+  return payloads
+}
+
+function aggregateArgumentDeltasByItem(payloads: Record<string, unknown>[]): Record<string, string> {
+  const output: Record<string, string> = {}
+  for (const payload of payloads) {
+    const itemId = typeof payload.item_id === 'string' ? payload.item_id : ''
+    const delta = typeof payload.delta === 'string' ? payload.delta : ''
+    if (!itemId || !delta) continue
+    output[itemId] = `${output[itemId] ?? ''}${delta}`
+  }
+  return output
+}
+
+function assertMcpCallSseLifecycle(text: string, label: string, expectedName?: string, expectedErrorCode?: string): void {
+  const outputDonePayloads = sseEventPayloads(text, 'response.output_item.done')
+  const mcpCallItems = outputDonePayloads
+    .map((payload) => payload.item)
+    .filter((item): item is Record<string, unknown> => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) return false
+      return (item as Record<string, unknown>).type === 'mcp_call'
+    })
+  assert.equal(mcpCallItems.length, 1, `${label} 应输出一个 mcp_call output_item.done`)
+  const item = mcpCallItems[0]
+  assert(item, `${label} 应输出 mcp_call item`)
+  if (expectedName) assert.equal(item.name, expectedName, `${label} mcp_call.name 应匹配`)
+  const itemId = typeof item.id === 'string' ? item.id : ''
+  const argumentsText = typeof item.arguments === 'string' ? item.arguments : ''
+  assert(itemId, `${label} mcp_call 应包含 id`)
+  assert(argumentsText, `${label} mcp_call 应包含 arguments`)
+  const itemError = typeof item.error === 'object' && item.error !== null && !Array.isArray(item.error)
+    ? item.error as Record<string, unknown>
+    : undefined
+  if (expectedErrorCode) {
+    assert.equal(itemError?.code, expectedErrorCode, `${label} mcp_call.error.code 应匹配`)
+    assert.equal(item.output, null, `${label} 失败 mcp_call.output 应为 null`)
+  } else {
+    assert.equal(item.error, null, `${label} 成功 mcp_call.error 应为 null`)
+  }
+
+  const argumentDeltas = sseEventPayloads(text, 'response.mcp_call_arguments.delta')
+  assert.deepEqual(
+    aggregateArgumentDeltasByItem(argumentDeltas),
+    { [itemId]: argumentsText },
+    `${label} mcp_call arguments delta 聚合结果应与最终 item.arguments 一致`
+  )
+
+  const donePayloads = sseEventPayloads(text, 'response.mcp_call_arguments.done')
+    .filter((payload) => payload.item_id === itemId)
+  assert.equal(donePayloads.length, 1, `${label} 应输出一个 mcp_call_arguments.done`)
+  assert.equal(donePayloads[0]?.arguments, argumentsText, `${label} mcp_call_arguments.done.arguments 应匹配最终 item.arguments`)
+
+  const inProgressPayloads = sseEventPayloads(text, 'response.mcp_call.in_progress')
+    .filter((payload) => payload.item_id === itemId)
+  assert.equal(inProgressPayloads.length, 1, `${label} 应输出一个 mcp_call.in_progress`)
+
+  const failedPayloads = sseEventPayloads(text, 'response.mcp_call.failed')
+    .filter((payload) => payload.item_id === itemId)
+  if (expectedErrorCode) {
+    assert.equal(failedPayloads.length, 1, `${label} 应输出一个 mcp_call.failed`)
+    const failedError = typeof failedPayloads[0]?.error === 'object' && failedPayloads[0]?.error !== null && !Array.isArray(failedPayloads[0]?.error)
+      ? failedPayloads[0]?.error as Record<string, unknown>
+      : undefined
+    assert.equal(failedError?.code, expectedErrorCode, `${label} mcp_call.failed.error.code 应匹配`)
+  } else {
+    assert.equal(failedPayloads.length, 0, `${label} 成功路径不应输出 mcp_call.failed`)
+  }
 }
 
 function responseIdFromResponsesSse(text: string): string | undefined {

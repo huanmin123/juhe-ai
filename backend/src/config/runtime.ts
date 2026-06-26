@@ -5,8 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'dotenv'
 
 export interface RuntimeConfig {
+  runtimeMode: RuntimeMode
   processRole: ProcessRole
   workerRole: WorkerRuntimeRole
+  databaseDriver: DatabaseDriver
+  cacheDriver: CacheDriver
+  runtimeStateDriver: RuntimeStateDriver
   host: string
   port: number
   httpSecurity: {
@@ -26,6 +30,16 @@ export interface RuntimeConfig {
   }
   dbServiceHttpHost: string
   dbServiceHttpPort: number
+  postgres: {
+    url?: string
+    poolMax: number
+    writeMaxConcurrency: number
+    writeQueueMaxItems: number
+  }
+  redis: {
+    cacheUrl?: string
+    stateUrl?: string
+  }
   databasePath: string
   datasetDatabasePath: string
   usageCatalogDatabasePath: string
@@ -62,9 +76,28 @@ export interface RuntimeConfig {
     timeoutMs: number
     maxBodyBytes: number
   }
+  codeInterpreter: {
+    pythonCommand: string
+    timeoutMs: number
+    maxCodeBytes: number
+    maxOutputBytes: number
+    maxArtifactCount: number
+    maxArtifactBytes: number
+    tempRoot: string
+    cleanupTempDirectory: boolean
+  }
+  computerAdapter: {
+    enabled: boolean
+    endpoint?: string
+    timeoutMs: number
+    maxBodyBytes: number
+  }
   mcpProxy: {
     servers: McpProxyServerRuntimeConfig[]
     timeoutMs: number
+    maxRetries: number
+    retryDelayMs: number
+    approvalTtlSeconds: number
     maxBodyBytes: number
     maxOutputBytes: number
   }
@@ -97,7 +130,11 @@ export interface RuntimeConfig {
 }
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
+export type RuntimeMode = 'standalone' | 'performance'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
+export type DatabaseDriver = 'sqlite' | 'postgres'
+export type CacheDriver = 'memory' | 'redis'
+export type RuntimeStateDriver = 'memory' | 'redis'
 export type WorkerRuntimeRole =
   | 'worker'
   | 'ingest-worker'
@@ -114,6 +151,12 @@ export interface McpProxyServerRuntimeConfig {
   allowedTools: string[]
   authorization?: string
   allowRequestAuthorization: boolean
+  defaultApprovalPolicy?: 'always' | 'never'
+  timeoutMs?: number
+  maxRetries?: number
+  retryDelayMs?: number
+  maxBodyBytes?: number
+  maxOutputBytes?: number
 }
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
@@ -124,19 +167,60 @@ export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-st
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
 export const defaultOpenAICompatibleFilesRoot = resolve(backendRoot, 'data', 'openai-compatible-files')
+export const defaultCodeInterpreterTempRoot = resolve(backendRoot, 'data', 'code-interpreter-tmp')
 export const defaultCodexContextStateShardRoot = resolve(defaultCodexContextRoot, 'state-shards')
 export const defaultRuntimeSecret = 'juhe-ai-dev-secret-change-me'
 const minimumProductionSecretLength = 32
 
 const localEnv = loadLocalEnv(localEnvPath)
+const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', 'standalone')
+const configuredDatabaseDriver = databaseDriverConfig(
+  'JUHE_AI_DATABASE_DRIVER',
+  configuredRuntimeMode === 'performance' ? 'postgres' : 'sqlite'
+)
+const configuredCacheDriver = cacheDriverConfig(
+  'JUHE_AI_CACHE_DRIVER',
+  configuredRuntimeMode === 'performance' ? 'redis' : 'memory'
+)
+const configuredRuntimeStateDriver = runtimeStateDriverConfig(
+  'JUHE_AI_RUNTIME_STATE_DRIVER',
+  configuredRuntimeMode === 'performance' ? 'redis' : 'memory'
+)
+const configuredPostgresUrl = optionalStringConfig('JUHE_AI_POSTGRES_URL')
+const configuredRedisCacheUrl = optionalStringConfig('JUHE_AI_REDIS_CACHE_URL')
+const configuredRedisStateUrl = optionalStringConfig('JUHE_AI_REDIS_STATE_URL')
+
+assertRuntimeModeDrivers({
+  runtimeMode: configuredRuntimeMode,
+  databaseDriver: configuredDatabaseDriver,
+  cacheDriver: configuredCacheDriver,
+  runtimeStateDriver: configuredRuntimeStateDriver,
+  postgresUrl: configuredPostgresUrl,
+  redisCacheUrl: configuredRedisCacheUrl,
+  redisStateUrl: configuredRedisStateUrl
+})
 
 export const runtimeConfig: RuntimeConfig = {
+  runtimeMode: configuredRuntimeMode,
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
   workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker'),
+  databaseDriver: configuredDatabaseDriver,
+  cacheDriver: configuredCacheDriver,
+  runtimeStateDriver: configuredRuntimeStateDriver,
   host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
+  postgres: {
+    url: configuredPostgresUrl,
+    poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
+    writeMaxConcurrency: numberConfig('JUHE_AI_DB_WRITE_MAX_CONCURRENCY', 100, 1, 1000),
+    writeQueueMaxItems: numberConfig('JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS', 50000, 100, 1000000)
+  },
+  redis: {
+    cacheUrl: configuredRedisCacheUrl,
+    stateUrl: configuredRedisStateUrl
+  },
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
   usageCatalogDatabasePath: pathConfig('JUHE_AI_USAGE_CATALOG_DATABASE_PATH', defaultUsageCatalogDatabasePath),
@@ -175,9 +259,23 @@ export const runtimeConfig: RuntimeConfig = {
     timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 120000, 1000, 300000),
     maxBodyBytes: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB', 64, 1, 256) * 1024 * 1024
   },
+  codeInterpreter: {
+    pythonCommand: stringConfig('JUHE_AI_CODE_INTERPRETER_PYTHON_COMMAND', 'python'),
+    timeoutMs: numberConfig('JUHE_AI_CODE_INTERPRETER_TIMEOUT_MS', 5000, 100, 120000),
+    maxCodeBytes: numberConfig('JUHE_AI_CODE_INTERPRETER_MAX_CODE_KB', 64, 1, 1024) * 1024,
+    maxOutputBytes: numberConfig('JUHE_AI_CODE_INTERPRETER_MAX_OUTPUT_KB', 64, 4, 1024) * 1024,
+    maxArtifactCount: numberConfig('JUHE_AI_CODE_INTERPRETER_MAX_ARTIFACTS', 8, 0, 128),
+    maxArtifactBytes: numberConfig('JUHE_AI_CODE_INTERPRETER_MAX_ARTIFACT_KB', 256, 1, 10240) * 1024,
+    tempRoot: pathConfig('JUHE_AI_CODE_INTERPRETER_TEMP_ROOT', defaultCodeInterpreterTempRoot),
+    cleanupTempDirectory: booleanConfig('JUHE_AI_CODE_INTERPRETER_CLEANUP_TEMP_DIR', true)
+  },
+  computerAdapter: computerAdapterConfig(),
   mcpProxy: {
     servers: mcpProxyServersConfig('JUHE_AI_MCP_PROXY_SERVERS_JSON'),
     timeoutMs: numberConfig('JUHE_AI_MCP_PROXY_TIMEOUT_MS', 10000, 1000, 120000),
+    maxRetries: numberConfig('JUHE_AI_MCP_PROXY_MAX_RETRIES', 1, 0, 3),
+    retryDelayMs: numberConfig('JUHE_AI_MCP_PROXY_RETRY_DELAY_MS', 100, 0, 5000),
+    approvalTtlSeconds: numberConfig('JUHE_AI_MCP_PROXY_APPROVAL_TTL_SECONDS', 300, 30, 86400),
     maxBodyBytes: numberConfig('JUHE_AI_MCP_PROXY_MAX_BODY_KB', 512, 16, 4096) * 1024,
     maxOutputBytes: numberConfig('JUHE_AI_MCP_PROXY_MAX_OUTPUT_KB', 64, 4, 1024) * 1024
   },
@@ -253,6 +351,81 @@ function booleanConfig(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
   return fallback
+}
+
+function runtimeModeConfig(name: string, fallback: RuntimeMode): RuntimeMode {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'standalone' || value === 'performance') return value
+  return fallback
+}
+
+function databaseDriverConfig(name: string, fallback: DatabaseDriver): DatabaseDriver {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'sqlite' || value === 'postgres') return value
+  return fallback
+}
+
+function cacheDriverConfig(name: string, fallback: CacheDriver): CacheDriver {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'memory' || value === 'redis') return value
+  return fallback
+}
+
+function runtimeStateDriverConfig(name: string, fallback: RuntimeStateDriver): RuntimeStateDriver {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'memory' || value === 'redis') return value
+  return fallback
+}
+
+function assertRuntimeModeDrivers(config: {
+  runtimeMode: RuntimeMode
+  databaseDriver: DatabaseDriver
+  cacheDriver: CacheDriver
+  runtimeStateDriver: RuntimeStateDriver
+  postgresUrl?: string
+  redisCacheUrl?: string
+  redisStateUrl?: string
+}): void {
+  if (config.runtimeMode === 'standalone') {
+    if (config.databaseDriver !== 'sqlite') {
+      throw new Error('JUHE_AI_RUNTIME_MODE=standalone 时 JUHE_AI_DATABASE_DRIVER 必须为 sqlite')
+    }
+    if (config.cacheDriver !== 'memory') {
+      throw new Error('JUHE_AI_RUNTIME_MODE=standalone 时 JUHE_AI_CACHE_DRIVER 必须为 memory')
+    }
+    if (config.runtimeStateDriver !== 'memory') {
+      throw new Error('JUHE_AI_RUNTIME_MODE=standalone 时 JUHE_AI_RUNTIME_STATE_DRIVER 必须为 memory')
+    }
+    return
+  }
+
+  if (config.databaseDriver !== 'postgres') {
+    throw new Error('JUHE_AI_RUNTIME_MODE=performance 时 JUHE_AI_DATABASE_DRIVER 必须为 postgres')
+  }
+  if (config.cacheDriver !== 'redis') {
+    throw new Error('JUHE_AI_RUNTIME_MODE=performance 时 JUHE_AI_CACHE_DRIVER 必须为 redis')
+  }
+  if (config.runtimeStateDriver !== 'redis') {
+    throw new Error('JUHE_AI_RUNTIME_MODE=performance 时 JUHE_AI_RUNTIME_STATE_DRIVER 必须为 redis')
+  }
+  assertUrlConfig('JUHE_AI_POSTGRES_URL', config.postgresUrl, ['postgres:', 'postgresql:'])
+  assertUrlConfig('JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl, ['redis:', 'rediss:'])
+  assertUrlConfig('JUHE_AI_REDIS_STATE_URL', config.redisStateUrl, ['redis:', 'rediss:'])
+}
+
+function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {
+  if (!value) {
+    throw new Error(`${name} 在高性能模式下必须配置`)
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${name} 必须是有效 URL`)
+  }
+  if (!protocols.includes(url.protocol)) {
+    throw new Error(`${name} 只允许协议：${protocols.join(', ')}`)
+  }
 }
 
 function logLevelConfig(name: string, fallback: LogLevel): LogLevel {
@@ -385,6 +558,51 @@ function imageGenerationProviderApiConfig(name: string, fallback: ImageGeneratio
   return fallback
 }
 
+function computerAdapterConfig(): RuntimeConfig['computerAdapter'] {
+  const enabled = strictBooleanConfig('JUHE_AI_COMPUTER_BROWSER_ADAPTER_ENABLED', false)
+  const endpoint = computerAdapterEndpointConfig('JUHE_AI_COMPUTER_BROWSER_ADAPTER_ENDPOINT', enabled)
+  return {
+    enabled,
+    endpoint,
+    timeoutMs: numberConfig('JUHE_AI_COMPUTER_BROWSER_ADAPTER_TIMEOUT_MS', 30000, 1000, 300000),
+    maxBodyBytes: numberConfig('JUHE_AI_COMPUTER_BROWSER_ADAPTER_MAX_BODY_KB', 512, 16, 4096) * 1024
+  }
+}
+
+function computerAdapterEndpointConfig(name: string, required: boolean): string | undefined {
+  const value = optionalStringConfig(name)
+  if (!value) {
+    if (required) {
+      throw new Error(`${name} 在启用 Computer browser adapter 时必须配置`)
+    }
+    return undefined
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${name} 必须是有效 URL`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${name} 只允许 http 或 https URL`)
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error(`${name} 不能包含用户名密码、查询参数或片段标识`)
+  }
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    throw new Error(`${name} 使用 http 时只能指向 loopback 本机地址；远程 sandbox adapter 必须使用 https`)
+  }
+  return url.toString()
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase().replace(/^\[/, '').replace(/\]$/, '')
+  return normalized === 'localhost'
+    || normalized === '::1'
+    || normalized === '0:0:0:0:0:0:0:1'
+    || normalized.startsWith('127.')
+}
+
 function mcpProxyServersConfig(name: string): McpProxyServerRuntimeConfig[] {
   const rawValue = rawStringConfig(name)
   if (!rawValue) return []
@@ -422,7 +640,15 @@ function normalizeMcpProxyServerConfig(name: string, item: unknown, index: numbe
     enabled,
     allowedTools,
     authorization: stringFromRecord(item, 'authorization'),
-    allowRequestAuthorization: item.allow_request_authorization === true || item.allowRequestAuthorization === true
+    allowRequestAuthorization: item.allow_request_authorization === true || item.allowRequestAuthorization === true,
+    defaultApprovalPolicy: stringFromRecord(item, 'default_approval_policy') === 'never' || stringFromRecord(item, 'defaultApprovalPolicy') === 'never'
+      ? 'never'
+      : undefined,
+    timeoutMs: numberFromRecord(item, 'timeout_ms') ?? numberFromRecord(item, 'timeoutMs'),
+    maxRetries: numberFromRecord(item, 'max_retries') ?? numberFromRecord(item, 'maxRetries'),
+    retryDelayMs: numberFromRecord(item, 'retry_delay_ms') ?? numberFromRecord(item, 'retryDelayMs'),
+    maxBodyBytes: numberFromRecord(item, 'max_body_bytes') ?? numberFromRecord(item, 'maxBodyBytes'),
+    maxOutputBytes: numberFromRecord(item, 'max_output_bytes') ?? numberFromRecord(item, 'maxOutputBytes')
   }
 }
 
@@ -439,6 +665,11 @@ function arrayStringFromRecord(record: Record<string, unknown>, key: string): st
   const value = record[key]
   if (!Array.isArray(value)) return undefined
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
+}
+
+function numberFromRecord(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : undefined
 }
 
 function upstreamUrlSecurityConfig(): RuntimeConfig['upstreamUrlSecurity'] {

@@ -28,6 +28,7 @@ export interface SqliteDatabaseRuntimeInfo {
 }
 
 export function getBusinessDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
   if (businessDatabase) {
     return businessDatabase
@@ -46,6 +47,7 @@ export function getBusinessDatabase(): DatabaseSync {
 }
 
 export function getDatasetDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
   const databasePath = datasetDatabasePath()
   if (datasetDatabase) {
@@ -56,6 +58,7 @@ export function getDatasetDatabase(): DatabaseSync {
 }
 
 export function getUsageCatalogDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
   const databasePath = usageCatalogDatabasePath()
   if (usageCatalogDatabase) {
@@ -66,6 +69,7 @@ export function getUsageCatalogDatabase(): DatabaseSync {
 }
 
 export function getStatsDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
   const databasePath = statsDatabasePath()
   if (statsDatabase) {
@@ -76,6 +80,7 @@ export function getStatsDatabase(): DatabaseSync {
 }
 
 export function getCodexContextStateShardDatabase(shardIndex: number): DatabaseSync {
+  assertSqliteDatabaseDriver()
   assertDistinctStoragePaths()
   const normalizedShardIndex = normalizeCodexContextStateShardIndex(shardIndex)
   const existing = codexContextStateShardDatabases.get(normalizedShardIndex)
@@ -238,6 +243,12 @@ function configureDatabase(database: DatabaseSync, kind: SqliteMainDatabaseKind)
     PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};
   `)
   applySqliteWriterBoundary(database, kind)
+}
+
+function assertSqliteDatabaseDriver(): void {
+  if (runtimeConfig.databaseDriver !== 'sqlite') {
+    throw new Error('当前代码阶段尚未接入 PostgreSQL 数据库 driver，JUHE_AI_DATABASE_DRIVER=postgres 不能回退写入 SQLite')
+  }
 }
 
 function closeDatabaseHandle(database: DatabaseSync | undefined): void {

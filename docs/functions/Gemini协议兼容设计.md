@@ -8,8 +8,9 @@
 
 - Gemini native 是独立协议 `gemini/v1beta`，使用自己的请求体、路径模型、SSE chunk、usage 和错误结构。
 - Gemini 官方 OpenAI compatibility 是 OpenAI Chat Completions 兼容入口，在本项目中落为 `profile_gemini_openai_chat_v1beta`，不是本项目自研协议转换。
-- 本项目不做 Gemini 专属 OpenAI Chat / Responses -> Gemini native 映射。
-- 客户端使用什么协议，网关就选择什么协议档案：Gemini native 请求走 Gemini native 档案；OpenAI Chat 请求走 Gemini OpenAI Chat 档案；Codex / Responses 使用 Gemini 时只能通过显式 `responses -> chat_completions` 模型映射落到 Gemini OpenAI Chat。
+- 本项目不做 OpenAI Chat / Responses -> Gemini native 映射，也不把 Gemini native 账号伪装成 OpenAI Chat / Responses 上游。
+- Gemini native `generateContent` / `streamGenerateContent` 可以作为下游来源，通过显式账号模型映射桥接到 OpenAI Chat Completions 上游；下游响应仍渲染为 Gemini JSON / SSE。
+- 客户端使用什么协议，网关先按什么协议解析：Gemini native 请求默认走 Gemini native 档案；如果命中 `generate_content|stream_generate_content -> chat_completions` 显式账号映射，则由目标 Chat 上游承接；OpenAI Chat 请求走 Gemini OpenAI Chat 档案；Codex / Responses 使用 Gemini 时只能通过显式 `responses -> chat_completions` 模型映射落到 Gemini OpenAI Chat。
 
 ## 协议形态对比
 
@@ -18,7 +19,7 @@
 | 下游路径 | `/v1beta/models/{model}:generateContent` | `/v1/chat/completions` 或 OpenAI SDK 等价路径 | 按路径识别协议，不按模型名猜 |
 | 上游默认 Base URL | `https://generativelanguage.googleapis.com` | `https://generativelanguage.googleapis.com/v1beta/openai` | 分属不同协议档案 |
 | 模型字段 | 路径 `{model}` | 请求体 `model` | 各自协议适配器提取 |
-| 请求内容 | `contents[].parts[]`、`systemInstruction`、`tools`、`generationConfig` | `messages[]`、`tools`、`tool_choice` 等 OpenAI Chat 字段 | 不互相转换 |
+| 请求内容 | `contents[].parts[]`、`systemInstruction`、`tools`、`generationConfig` | `messages[]`、`tools`、`tool_choice` 等 OpenAI Chat 字段 | 默认不互转；只有显式 `generate_content|stream_generate_content -> chat_completions` 映射会把 Gemini 请求重构为 Chat 请求 |
 | 流式 | `:streamGenerateContent?alt=sse`，`data: GenerateContentResponse` | OpenAI Chat SSE chunk | 保持各自原始事件 |
 | usage | `usageMetadata` | OpenAI compatible `usage` | 单独 usage semantic |
 | 错误 | Google API error shape | OpenAI error shape | 按下游协议渲染本地错误 |
@@ -28,18 +29,20 @@
 
 运行时必须按“请求协议 + endpoint family + model route + API Key 绑定分组”共同收敛：
 
-1. 先由路径识别协议。
-2. Gemini native 路径只进入 `protocolCode = gemini` 的候选流程。
-3. OpenAI Chat 路径只进入 `protocolCode = openai` 的候选流程。
-4. 模型名只在已识别协议内参与路由，不跨协议猜测。
-5. 当前 API Key 没有绑定目标协议档案分组时，返回本地错误，不全局兜底。
+1. 先由路径识别下游协议和 endpoint family。
+2. Gemini native 路径解析为 `protocolCode = gemini`、`endpointFamily = generate_content|stream_generate_content|count_tokens|...` 和路径模型。
+3. Gemini native `generate_content` / `stream_generate_content` 先在当前 API Key 已绑定账号池内查显式账号模型映射；命中 `upstreamEndpointFamily = chat_completions` 时进入对应 OpenAI Chat 上游账号，不命中时再走 Gemini native 档案候选。
+4. OpenAI Chat 路径只进入 `protocolCode = openai` 的候选流程。
+5. 模型名只在已识别协议和显式映射范围内参与路由，不跨协议猜测。
+6. 当前 API Key 没有绑定目标协议档案分组或目标映射账号不可用时，返回本地错误，不全局兜底。
 
 禁止行为：
 
 - 看到 `model = gemini-*` 就把 OpenAI Chat 请求发往 Gemini native。
-- 看到 `/v1beta/models/*` 就把 Gemini native 请求转换成 OpenAI Chat。
+- 看到 `/v1beta/models/*` 就在没有显式账号模型映射时把 Gemini native 请求转换成 OpenAI Chat。
 - 把 Gemini native 账号的 `supported_endpoint_modes` 伪装成 `chat_json`、`responses_json`。
 - 在账号模型映射中新增 `chat_completions -> generate_content` 或 `responses -> generate_content`。
+- 在账号模型映射中新增 `generate_content|stream_generate_content -> responses/messages`、`count_tokens -> chat_completions` 或 `embed_content -> chat_completions`。
 - 为了让 Codex / OpenAI SDK 使用 Gemini，临时合成 Responses 状态机。
 
 允许行为：
@@ -47,6 +50,11 @@
 - 用户创建 Gemini OpenAI Chat 账号，协议档案为 `profile_gemini_openai_chat_v1beta`，Base URL 默认为 `https://generativelanguage.googleapis.com/v1beta/openai`。
 - OpenAI Chat 客户端直连该档案的 Chat Completions。
 - Codex / OpenAI Responses 客户端通过账号模型映射显式配置 `sourceEndpointFamily = responses`、`upstreamEndpointFamily = chat_completions`，上游模型选择 Gemini 模型。
+- Gemini native 客户端通过账号模型映射显式配置 `sourceEndpointFamily = generate_content` 或 `stream_generate_content`、`upstreamEndpointFamily = chat_completions`，上游模型选择 GLM、DeepSeek、OpenAI-compatible、GPT API Key 或 Gemini OpenAI Chat 等真实 Chat 模型。
+
+第三方 NewAPI / OpenAI-compatible 聚合入口如果给的是根地址，例如 `https://vsllm.com`，Gemini OpenAI Chat 档案仍按 OpenAI-compatible 规则拼接 `/v1/chat/completions`；只有官方形态 `.../v1beta/openai` 会去掉本地下游 `/v1` 前缀后拼接 `/chat/completions`。真实账号导入时不要靠模型名猜测协议，必须按该账号实际暴露的 Base URL 填写。
+
+同一 NewAPI 根地址如果按通用 OpenAI-compatible 账号导入，可以保留 `https://vsllm.com`；如果按 GLM 专用 OpenAI v1 档案导入，应填写 `https://vsllm.com/v1` 这类真实 OpenAI v1 根路径。否则 GLM 专用档案会按其协议规则访问 `/chat/completions`，在只暴露 OpenAI-compatible 根地址的中转站上可能命中 HTML 根站。
 
 ### 模型映射边界
 
@@ -57,9 +65,10 @@ Gemini 相关模型映射只允许下面两类：
 | OpenAI Chat Completions | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 直连，不需要协议转换 |
 | OpenAI Responses / Codex | `profile_gemini_openai_chat_v1beta` | Chat Completions | 支持 | 必须显式配置 `responses -> chat_completions` 模型映射 |
 | Gemini native | `profile_gemini_native_v1beta` | Gemini native | 支持 | 原生直连，不进入模型映射协议转换 |
+| Gemini native GenerateContent / StreamGenerateContent | OpenAI 协议 Chat 上游档案 | Chat Completions | 支持范围内 | 必须显式配置 `generate_content|stream_generate_content -> chat_completions` 模型映射，响应还原为 Gemini JSON / SSE |
 | Anthropic Messages | Gemini 任意档案 | 任意 | 不支持 | 不做 `messages -> chat_completions` 到 Gemini，避免 Anthropic 与 Gemini 交叉转换 |
 | OpenAI Responses / Chat | `profile_gemini_native_v1beta` | Gemini native | 不支持 | 不做 `responses/chat -> generateContent` |
-| Gemini native | OpenAI / Anthropic 上游 | 任意 | 不支持 | 不做 `generateContent -> chat/messages/responses` |
+| Gemini native CountTokens / EmbedContent / Files / Cache / Live | OpenAI / Anthropic 上游 | 任意 | 不支持 | 只放开生成类 `generateContent` / `streamGenerateContent` 到 Chat Completions |
 
 ## Gemini native 端点族
 
@@ -129,7 +138,7 @@ ProtocolDriver 必须能提取：
 
 ### 请求体透传
 
-Gemini native 请求体字段扩展较快，默认保持 raw passthrough。ProtocolDriver 只解析轻量元数据，不重构未知字段。
+Gemini native 直连请求体字段扩展较快，默认保持 raw passthrough。ProtocolDriver 只解析轻量元数据，不重构未知字段。
 
 需要识别的顶层字段：
 
@@ -142,7 +151,7 @@ Gemini native 请求体字段扩展较快，默认保持 raw passthrough。Proto
 - `cachedContent`
 - `labels`
 
-如果需要应用账号级路径模型映射，只改 URL 中的 `{model}`，不改请求体。
+如果命中 Gemini native 直连账号级路径模型映射，只改 URL 中的 `{model}`，不改请求体。如果命中 `generate_content|stream_generate_content -> chat_completions` 桥接映射，才由共享 bridge 将 `contents`、`systemInstruction`、`generationConfig`、`tools.functionDeclarations` 和 `toolConfig` 转为 OpenAI Chat 请求；不支持的 Gemini native 能力返回 Gemini 形态的 agent guidance。
 
 ## 响应兼容细节
 
@@ -213,7 +222,7 @@ Gemini 官方 OpenAI compatibility 允许 OpenAI Chat Completions 客户端直�
 本项目策略：
 
 - 不在 Gemini native adapter 中实现 `messages[] -> contents[]`。
-- 不在 OpenAI Chat adapter 中实现 `contents[] -> messages[]`。
+- 只有显式 `generate_content|stream_generate_content -> chat_completions` 桥接实现 `contents[] -> messages[]`；不作为 Gemini OpenAI compatibility 默认行为，也不做无映射自动转换。
 - 不把 Codex Responses 请求桥接到 Gemini native。
 - 不把 Anthropic Messages 请求桥接到 Gemini OpenAI Chat。
 - 不把 Gemini native tools 转成 OpenAI tools。
@@ -230,13 +239,13 @@ baseUrl = https://generativelanguage.googleapis.com/v1beta/openai
 endpointFamilies = [chat_completions]
 ```
 
-该档案只是 Gemini 供应商下的 OpenAI Chat 直连 surface，不改变“无 Gemini native 专属协议映射”的决策。
+该档案只是 Gemini 供应商下的 OpenAI Chat 直连 surface，不改变“OpenAI Chat / Responses 不转 Gemini native”的决策；Gemini native 到 Chat 的方向只能通过账号模型映射显式触发。
 
 ## gemini-cli 请求矩阵
 
 | gemini-cli 模式 | 是否本次支持 | 说明 |
 | --- | --- | --- |
-| `GEMINI_API_KEY + GOOGLE_GEMINI_BASE_URL` | 支持 | 主验收路径，走 `AuthType.GATEWAY` |
+| `GEMINI_API_KEY + GOOGLE_GEMINI_BASE_URL` | 支持 | 主验收路径，自动化脚本使用临时 settings 选择 `gemini-api-key`，同时用 Base URL 指向本项目 |
 | `GEMINI_API_KEY` 直连官方 | 不经过本项目 | 用于对照排障 |
 | `GOOGLE_GENAI_API_VERSION=v1beta` | 支持 | 本地和上游版本一致 |
 | `GEMINI_API_KEY_AUTH_MECHANISM=bearer` | 支持 | 本地认证读取 `Authorization` |
@@ -245,6 +254,27 @@ endpointFamilies = [chat_completions]
 | Vertex AI | 不支持 | 后续单独供应商档案 |
 | `--output-format json` | 支持 | 非流式 E2E |
 | `--output-format stream-json` | 支持 | 流式 E2E |
+
+`gemini-cli` `0.47.0` 在 headless 模式下如果只靠 `GOOGLE_GEMINI_BASE_URL` 推断 `AuthType.GATEWAY`，非交互认证校验会拒绝 Gateway。真实验收脚本应在临时 HOME 下写入 `.gemini/settings.json`，将 `security.auth.selectedType` 设为 `gemini-api-key`；不要写用户全局 Gemini CLI 配置。
+
+## gemini-cli 客户端画像与响应策略
+
+`gemini-cli` 是下游客户端画像，不是供应商、协议档案或账号能力。服务端识别只用于本地响应策略和审计，不改变上游认证方式，不把本地画像 header 透传上游。
+
+识别规则：
+
+- 显式本地 header：Gemini native 请求携带 `x-juhe-client-profile: gemini_cli` 时识别为 `gemini_cli`。
+- 自动签名：请求必须是 Gemini native `generateContent` 或 `streamGenerateContent`，并且 `User-Agent` 包含 `GeminiCLI` 或 `proxy_client=geminicli`，同时存在 Gemini 本地认证信号（`Authorization`、`x-goog-api-key`、`x-api-key` 或 query `key`）。
+- 未命中以上条件时，Gemini native 请求统一识别为 `generic_gemini`。
+- `x-goog-api-client` 来自 `@google/genai` SDK，不是 `gemini-cli` 专属信号，不能单独用于升级客户端画像。
+
+响应策略：
+
+- 通用 Gemini 默认规则只检查 Gemini JSON / SSE `error` 对象，动作为 `retry_no_avoidance`，不根据上游 HTTP 状态码或 `error.status` 泛化切号。
+- `gemini_cli` 专属默认规则只在 `clientProfiles = ['gemini_cli']` 时匹配 Google canonical `error.status`：`RESOURCE_EXHAUSTED`、`UNAVAILABLE`、`DEADLINE_EXCEEDED`、`INTERNAL`、`CANCELLED`。
+- 该专属规则动作为 `retry_next_account`，并进入服务端写出前重试白名单；普通 `generic_gemini`、OpenAI、Anthropic 客户端不会继承。
+- 不伪造 `TOS_VIOLATION`、`VALIDATION_REQUIRED` 等 Google 特定 reason；这些会触发 `gemini-cli` 账号封禁或验证流程语义。
+- 对安全拦截、空输出和坏 SSE，优先返回可解析的 Gemini error shape 或带文本的正常 Gemini 响应，不返回空成功 chunk。
 
 真实 E2E 前置条件：
 
@@ -270,9 +300,14 @@ endpointFamilies = [chat_completions]
 | countTokens | `countTokens` | 返回 token count，不写生成文本 |
 | models list | `GET /v1beta/models` | 本地目录 shape |
 | auth header | `x-goog-api-key` / bearer / query key | 均可本地认证，均不泄漏上游 |
+| gemini-cli 客户端画像 | `GeminiCLI` User-Agent + Gemini 认证信号 | 识别为 `gemini_cli`，审计写入客户端画像 |
+| 通用 Gemini 隔离 | 普通 SDK / curl 请求 | 识别为 `generic_gemini`，不继承 CLI 专属切号 |
+| CLI 专属可重试错误 | `gemini_cli` + `error.status=UNAVAILABLE` | 写出前请求下一个账号，成功后返回 Gemini native 响应 |
 | OpenAI 路径隔离 | `/v1/chat/completions` | 不进入 Gemini native |
 | Gemini OpenAI Chat | `/v1/chat/completions` | 命中 `/v1beta/openai/chat/completions`，使用账号 Bearer Key |
 | Codex 映射 | `/v1/responses` + `responses -> chat_completions` | 命中 Gemini OpenAI Chat，不命中 Gemini native |
+| Gemini native 到 Chat | `/v1beta/models/{model}:generateContent` + `generate_content -> chat_completions` | 命中目标 Chat 上游，返回 Gemini JSON |
+| Gemini native 流式到 Chat | `/v1beta/models/{model}:streamGenerateContent?alt=sse` + `stream_generate_content -> chat_completions` | 命中目标 Chat SSE 上游，返回 Gemini SSE，并移除上游 URL 中的 `alt` / `key` |
 | Anthropic 映射禁用 | `messages -> chat_completions` | Gemini OpenAI Chat 档案保存失败 |
 
 真实账号补测再覆盖：
@@ -287,11 +322,11 @@ endpointFamilies = [chat_completions]
 
 ## 非目标
 
-- 不实现 Gemini native 与 OpenAI Chat / Responses 的双向转换。
+- 不实现 OpenAI Chat / Responses 到 Gemini native 的转换，也不实现 Gemini native 与 OpenAI / Anthropic 的自动或双向转换；Gemini native 生成类请求到 Chat Completions 只允许显式账号模型映射。
 - 不实现 Gemini OAuth、Code Assist、Vertex AI 或 Workspace 账号。
 - 不实现 Live API WebSocket 代理。
-- 不让 Gemini native 账号进入 OpenAI Chat / Responses 调度。
-- 不让 OpenAI Chat 账号进入 Gemini native 调度。
+- 不让 Gemini native 直连账号进入 OpenAI Chat / Responses 调度。
+- 不让 OpenAI Chat 账号在没有显式 `generate_content|stream_generate_content -> chat_completions` 映射时进入 Gemini native 调度。
 - 不把 `gemini-*` 模型名作为跨协议自动路由依据。
 
 ## 自审清单
@@ -303,4 +338,5 @@ endpointFamilies = [chat_completions]
 - 本地错误是否按 Gemini / Google API error shape 返回。
 - usage 是否使用 `usage_semantic = gemini`。
 - OpenAI Chat 到 Gemini 是否只走官方 OpenAI-compatible 直连档案，不走 Gemini native bridge。
+- Gemini native 到 Chat 是否只通过显式账号模型映射触发，并保持下游 Gemini JSON / SSE 形态。
 - `gemini-cli` 真实验证是否使用 `GOOGLE_GEMINI_BASE_URL`，而不是 Google 登录。

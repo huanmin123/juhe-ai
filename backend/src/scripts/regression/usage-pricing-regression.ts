@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-import { ANTHROPIC_PROVIDER_CODE, DEEPSEEK_PROVIDER_CODE, GLM_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, DEEPSEEK_PROVIDER_CODE, GEMINI_PROVIDER_CODE, GLM_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { getExternalPublicApiCatalog } from '../../modules/external-integrations/external-public-api-catalog.js'
 import {
   parseOpenAIUsageFromJsonBuffer
@@ -468,6 +468,55 @@ assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5.2-20260620')?.mod
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5-turbo-20260620')?.model, 'glm-5-turbo')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4.7-flashx-20260620')?.model, 'glm-4.7-flashx')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4-flashx-250414-20260620')?.model, 'glm-4-flashx-250414')
+
+const gemini35FlashCost = estimateProviderCostUsd({
+  providerCode: GEMINI_PROVIDER_CODE,
+  model: 'gemini-3.5-flash',
+  inputTokens: 1000,
+  outputTokens: 100,
+  cacheReadTokens: 400
+})
+assert.equal(gemini35FlashCost, 0.00186, 'Gemini 3.5 Flash 成本应按官方 Standard 价格和 cache read 拆分')
+const geminiModelPricingList = listProviderModelPricing(GEMINI_PROVIDER_CODE)
+assert.deepEqual(geminiModelPricingList.map((item) => item.model), [
+  'gemini-3.5-flash',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-embedding-2',
+  'gemini-embedding-001'
+], 'Gemini 价格目录应只包含当前收录的 Google 官方模型')
+const geminiPricingById = new Map(geminiModelPricingList.map((item) => [item.model, item]))
+for (const id of [
+  'gemini-3.5-flash',
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite'
+]) {
+  assert(geminiPricingById.has(id), `Gemini 模型价格目录应包含 ${id}`)
+  assert.deepEqual(geminiPricingById.get(id)?.supportedApiProtocols, ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens'])
+  assert.equal(geminiPricingById.get(id)?.maxInputTokens, 1_048_576)
+  assert.equal(geminiPricingById.get(id)?.maxOutputTokens, 65_536)
+}
+assert.deepEqual(geminiPricingById.get('gemini-embedding-2')?.supportedApiProtocols, ['embed_content'])
+assert.deepEqual(geminiPricingById.get('gemini-embedding-001')?.supportedApiProtocols, ['embed_content'])
+assert.equal(geminiPricingById.get('gemini-3.5-flash')?.inputUsdPer1M, 1.5)
+assert.equal(geminiPricingById.get('gemini-3.5-flash')?.cachedInputUsdPer1M, 0.15)
+assert.equal(geminiPricingById.get('gemini-3.5-flash')?.outputUsdPer1M, 9)
+assert.equal(geminiPricingById.get('gemini-3.1-flash-lite')?.inputUsdPer1M, 0.25)
+assert.equal(geminiPricingById.get('gemini-2.5-flash-lite')?.outputUsdPer1M, 0.4)
+assert.equal(geminiPricingById.get('gemini-embedding-2')?.inputUsdPer1M, 0.15)
+assert.equal(getProviderModelPricing(GEMINI_PROVIDER_CODE, 'models/gemini-3.5-flash')?.model, 'gemini-3.5-flash')
+assert.equal(getProviderModelPricing(GEMINI_PROVIDER_CODE, 'gemini-3.5-flash-antigravity'), undefined, '中转自定义 Gemini 型号不应回落到官方模型价格')
+assert.equal(geminiPricingById.has('gemini-3.5-flash-antigravity'), false, '中转自定义 Gemini 型号不应进入官方 Gemini 价格目录')
 
 const openAIModelPricingList = listProviderModelPricing(GPT_VENDOR_CODE)
 const genericOpenAIModelPricingList = listProviderModelPricing(OPENAI_COMPATIBLE_PROVIDER_CODE)

@@ -7,6 +7,7 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { nowIso, runInDatabaseTransaction } from '../../storage/database.js'
 import {
   getSettings,
+  getSettingsAsync,
   type OperationLogChange,
   type OperationLogInput,
   type OperationLogTargetInput,
@@ -87,6 +88,58 @@ export function runLoggedOperation<T>(operation: () => LoggedOperationResult<T>,
   }
   runAfterCommitEffect(afterCommit)
   return result
+}
+
+export async function runLoggedOperationAsync<T>(operation: () => Promise<LoggedOperationResult<T>>, req?: Request): Promise<T> {
+  const outcome = await operation()
+  const logs = Array.isArray(outcome.log) ? outcome.log : outcome.log ? [outcome.log] : []
+  for (const log of logs) {
+    await recordOperationLogAsync(log, req)
+  }
+  runAfterCommitEffect(outcome.afterCommit)
+  return outcome.result
+}
+
+async function recordOperationLogAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
+  try {
+    await recordOperationLogUnsafeAsync(input, req)
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'operation_log_enqueue_failed'
+    }), '操作日志入队失败')
+  }
+}
+
+async function recordOperationLogUnsafeAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
+  const actor = getRequestAuthContext()
+  const requestContext = getRequestContext()
+  const actorSystemAccountId = input.actorSystemAccountId ?? actor?.systemAccountId
+  if (!actorSystemAccountId) {
+    return
+  }
+
+  const settings = await getSettingsAsync()
+  if (!input.force && settings.operationLogEnabled === false) {
+    return
+  }
+
+  const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
+  enqueueOperationLog({
+    ...input,
+    actorSystemAccountId,
+    actorUsername: input.actorUsername ?? actor?.username,
+    actorDisplayName: input.actorDisplayName ?? actor?.displayName,
+    actorRole: input.actorRole ?? actor?.role ?? 'user',
+    traceId: input.traceId ?? requestContext?.traceId,
+    method: input.method ?? req?.method ?? requestContext?.method,
+    path: requestPath,
+    clientIp: input.clientIp ?? requestContext?.clientIp,
+    userAgent: input.userAgent ?? req?.header('user-agent'),
+    changes: sanitizeOperationChanges(input.changes ?? [], operationLogMaxChangesPerRecord(settings)),
+    targets: input.targets,
+    viewers: input.viewers,
+    createdAt: input.createdAt ?? nowIso()
+  })
 }
 
 export function operationMode(access?: Pick<AccessScope, 'role'>): 'admin' | 'self' {

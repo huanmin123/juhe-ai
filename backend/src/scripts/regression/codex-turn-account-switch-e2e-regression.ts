@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -111,6 +112,7 @@ async function main(): Promise<void> {
     const codexSwitch = seedTwoAccountGateway(upstreamBaseUrl, 'codex-switch')
     const latentCodexSwitch = seedThreeAccountGateway(upstreamBaseUrl, 'codex-latent-switch')
     const probeFailCodexSwitch = seedProbeFailureGateway(upstreamBaseUrl, 'codex-probe-fail')
+    const turnProbeFailCodexSwitch = seedProbeFailureGateway(upstreamBaseUrl, 'codex-turn-probe-fail')
     const httpFailCodex = seedProbeFailureGateway(upstreamBaseUrl, 'codex-http-fail')
     const nonCodex = seedTwoAccountGateway(upstreamBaseUrl, 'non-codex')
     const nonCodexAllFail = seedProbeFailureGateway(upstreamBaseUrl, 'non-codex-all-fail')
@@ -126,6 +128,7 @@ async function main(): Promise<void> {
     await assertCodexPreCommitFailureSwitchesAccountOnServer(baseUrl, codexSwitch, upstreamState)
     await assertCodexPreCommitFailureWalksCandidatesOnServer(baseUrl, latentCodexSwitch, upstreamState)
     await assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
+    await assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(baseUrl, turnProbeFailCodexSwitch, upstreamState)
     await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, httpFailCodex, upstreamState)
     await assertGenericPreCommitFailureSwitchesAccountOnServer(baseUrl, nonCodex, upstreamState)
     await assertGenericPreCommitFailureReturnsOrdinaryFailureWhenAllCandidatesFail(baseUrl, nonCodexAllFail, upstreamState)
@@ -141,6 +144,10 @@ async function main(): Promise<void> {
       ...probeFailCodexSwitch,
       freshAccountId: probeFailCodexSwitch.probeFailedAccountId,
       freshUpstreamKey: probeFailCodexSwitch.probeFailedUpstreamKey
+    }, {
+      ...turnProbeFailCodexSwitch,
+      freshAccountId: turnProbeFailCodexSwitch.probeFailedAccountId,
+      freshUpstreamKey: turnProbeFailCodexSwitch.probeFailedUpstreamKey
     }, {
       ...httpFailCodex,
       freshAccountId: httpFailCodex.probeFailedAccountId,
@@ -248,6 +255,39 @@ async function assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '全部失败场景应先命中首选死号')
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '全部失败场景应隐藏重试唯一备用号')
   assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 0, '服务端隐藏重试耗尽前不应消耗 Codex turn 探针')
+}
+
+async function assertCodexTurnProbeFailureReturnsRetryableWithoutProbeDetails(
+  baseUrl: string,
+  seeded: SeededProbeFailureGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const turnId = 'turn-codex-probe-visible-fail'
+  rememberVisibleCodexTurnFailures(seeded, turnId, [
+    seeded.failedAccountId,
+    seeded.failedAccountId
+  ])
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeProbeFailedHits = hitCount(upstreamState, seeded.probeFailedUpstreamKey)
+  const beforeProbeHits = testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey)
+
+  const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-turn-probe-fail',
+    turnId,
+    codex: true,
+    retryTag: 'turn-probe-exhausted'
+  })
+  assert(streamText.includes('response.failed'), `Codex turn 探针耗尽时应返回 SSE 失败事件：${streamText}`)
+  assert(streamText.includes('upstream_retryable_error'), `Codex turn 探针耗尽时应返回客户端可重试错误：${streamText}`)
+  assert(streamText.includes('上游流式响应在输出前失败，请重试'), `Codex turn 探针耗尽时应返回统一可重试文案：${streamText}`)
+  assert(!streamText.includes('codex_switch_probe_failed'), `Codex turn 探针耗尽不应向客户端暴露内部探针错误码：${streamText}`)
+  assert(!streamText.includes('Codex 切号失败'), `Codex turn 探针耗尽不应向客户端暴露内部探针摘要：${streamText}`)
+  assert(!streamText.includes('mock latent account real test failed'), `Codex turn 探针耗尽不应向客户端暴露上游探针错误：${streamText}`)
+  assert(!streamText.includes('response.completed'), `Codex turn 探针耗尽不应伪成功：${streamText}`)
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 0, 'Codex turn 避让后不应再次命中已失败账号')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 0, 'Codex turn 探针失败后不应继续发起正式上游请求')
+  assert.equal(testProbeHitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeHits, 1, 'Codex turn 应探测唯一备用账号并在失败后兜底')
 }
 
 async function assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(
@@ -1040,6 +1080,31 @@ function assertAccountsStillActive(gateways: SeededGateway[]): void {
       const account = accounts.find((item) => item.id === accountId)
       assert.equal(account?.status, 'active', `账号 ${accountId} 不应被 turn 级策略改成非 active`)
     }
+  }
+}
+
+function rememberVisibleCodexTurnFailures(
+  seeded: Pick<SeededGateway, 'systemAccountId' | 'apiKeyId'>,
+  turnId: string,
+  accountIds: string[]
+): void {
+  const stateKey = createHash('sha256').update(JSON.stringify({
+    systemAccountId: seeded.systemAccountId,
+    apiKeyId: seeded.apiKeyId,
+    endpoint: 'POST /v1/responses',
+    codexTurnId: turnId
+  })).digest('hex')
+  const strategy = {
+    allowCodexTurnAccountAvoidance: true,
+    codexTurn: {
+      stateKey
+    }
+  } as never
+  for (const accountId of accountIds) {
+    codexTurnRetry.rememberCodexTurnStreamFailure(strategy, accountId, {
+      errorCode: 'upstream_retryable_error',
+      message: '上游流式响应在输出前失败，请重试'
+    })
   }
 }
 

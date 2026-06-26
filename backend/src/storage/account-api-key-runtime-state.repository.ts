@@ -2,6 +2,10 @@ import type { AccountApiKeyRuntimeSelectionState, AccountApiKeyRuntimeStatus } f
 import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { runtimeConfig } from '../config/runtime.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
@@ -80,6 +84,7 @@ interface AccountApiKeyRuntimeTarget {
 
 const initialProbeBackoffSeconds = 3
 const maxProbeBackoffSeconds = 60 * 60
+const businessSchemaName = 'juhe_business'
 
 export function loadAccountApiKeyRuntimeStatesByAccountIds(
   accountIds: string[]
@@ -103,6 +108,44 @@ export function loadAccountApiKeyRuntimeStatesByAccountIds(
         cooldown_until: string | null
         next_probe_at: string | null
       }>
+    for (const row of rows) {
+      const states = result.get(row.account_id) ?? []
+      states.push({
+        keyFingerprint: row.key_fingerprint,
+        status: row.status,
+        keyIndex: Number.isInteger(row.key_index) ? row.key_index : undefined,
+        cooldownUntil: row.cooldown_until ?? undefined,
+        nextProbeAt: row.next_probe_at ?? undefined
+      })
+      result.set(row.account_id, states)
+    }
+  }
+  return result
+}
+
+export async function loadAccountApiKeyRuntimeStatesByAccountIdsAsync(
+  accountIds: string[]
+): Promise<Map<string, AccountApiKeyRuntimeSelectionState[]>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadAccountApiKeyRuntimeStatesByAccountIds(accountIds)
+  }
+  const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
+  const result = new Map<string, AccountApiKeyRuntimeSelectionState[]>()
+  if (!ids.length) return result
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = await client.query<{
+      account_id: string
+      key_fingerprint: string
+      key_index: number
+      status: AccountApiKeyRuntimeStatus
+      cooldown_until: string | null
+      next_probe_at: string | null
+    }>(`
+      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at
+      FROM ${accountApiKeyRuntimeStatesTable(client)}
+      WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
     for (const row of rows) {
       const states = result.get(row.account_id) ?? []
       states.push({
@@ -556,6 +599,19 @@ function loadAccountApiKeyRuntimeDetailRowsByAccountIds(accountIds: string[]): M
     }
   }
   return output
+}
+
+async function getAccountApiKeyRuntimeStateDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function accountApiKeyRuntimeStatesTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'account_api_key_runtime_states')
+    : client.dialect.quoteIdentifier('account_api_key_runtime_states')
 }
 
 function markRuntimeStateChanged(sourceAccountId: string): void {

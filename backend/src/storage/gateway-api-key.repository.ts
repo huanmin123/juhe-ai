@@ -9,8 +9,12 @@ import {
   parseHybridRoutingConfigJson
 } from '../domain/api-key-hybrid-routing.js'
 import type { ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyRouteMode } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { hashSecret } from './crypto.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getBusinessDatabase, nowIso } from './database.js'
+import { getPostgresPool } from './postgres-client.js'
 
 export interface GatewayApiKeyRow {
   id: string
@@ -50,6 +54,7 @@ type GatewayApiKeyCacheEntry = {
 
 const GATEWAY_API_KEY_CACHE_TTL_MS = 60_000
 const GATEWAY_API_KEY_CACHE_MAX_STALE_MS = 5 * 60_000
+const businessSchemaName = 'juhe_business'
 const gatewayApiKeyCache = createAppCache<string, GatewayApiKeyCacheEntry>({
   name: 'gateway:api-key-validation',
   max: 10000,
@@ -121,6 +126,69 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
   return row
+}
+
+export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayApiKeyRow | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return validateGatewayApiKey(key)
+  }
+  if (!key.startsWith('sk-')) {
+    return undefined
+  }
+  const keyHash = hashSecret(key)
+  const now = Date.now()
+  const cached = gatewayApiKeyCache.get(keyHash)
+  if (
+    cached
+    && cached.forceRevalidateAtMs > now
+    && !isGatewayApiKeyRowExpired(cached.row, now)
+  ) {
+    return cloneGatewayApiKeyRow(cached.row)
+  }
+
+  const client = await getGatewayApiKeyDatabaseClient()
+  const row = await client.one<GatewayApiKeyRow>(`
+    SELECT
+      api_keys.id,
+      api_keys.system_account_id,
+      '' AS selected_group_id,
+      api_keys.status,
+      api_keys.availability_schedule_active,
+      api_keys.expires_at,
+      api_keys.quota_limits_json,
+      api_keys.route_mode,
+      api_keys.group_route_strategy,
+      api_keys.hybrid_routing_config_json,
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+    FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
+    INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id
+    WHERE api_keys.key_hash = ?
+      AND system_accounts.status = 'active'
+  `, [keyHash])
+  if (!row) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
+  if (isGatewayApiKeyRowExpired(row, now)) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
+  if (row.status !== 'active' || Number(row.availability_schedule_active) !== 1) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
+  normalizeGatewayApiKeyRouteFields(row)
+  row.group_bindings = await loadActiveGatewayApiKeyGroupBindingsAsync(row.id, row.system_account_id, client)
+  if (!row.group_bindings.length) {
+    gatewayApiKeyCache.delete(keyHash)
+    return undefined
+  }
+  row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
+  setGatewayApiKeyCacheEntry(keyHash, {
+    row: cloneGatewayApiKeyRow(row),
+    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
+  }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
+  return cloneGatewayApiKeyRow(row)
 }
 
 export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | undefined {
@@ -269,4 +337,84 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
       ...(row as unknown as GatewayApiKeyGroupBindingRow),
       weight: normalizeApiKeyGroupBindingWeight((row as unknown as GatewayApiKeyGroupBindingRow).weight)
     })) as GatewayApiKeyGroupBindingRow[]
+}
+
+export async function loadActiveGatewayApiKeyGroupBindingsAsync(
+  apiKeyId: string,
+  systemAccountId: string,
+  client?: DatabaseClient
+): Promise<GatewayApiKeyGroupBindingRow[]> {
+  const activeClient = client ?? await getGatewayApiKeyDatabaseClient()
+  if (activeClient.driver === 'sqlite') {
+    return loadActiveGatewayApiKeyGroupBindings(apiKeyId, systemAccountId)
+  }
+  const now = nowIso()
+  const rows = await activeClient.query<GatewayApiKeyGroupBindingRow>(`
+    SELECT
+      api_key_group_bindings.id,
+      api_key_group_bindings.api_key_id,
+      api_key_group_bindings.system_account_id,
+      api_key_group_bindings.group_id,
+      api_key_group_bindings.priority,
+      api_key_group_bindings.weight,
+      api_key_group_bindings.status,
+      groups.provider_code,
+      groups.provider_protocol_profile_id,
+      groups.protocol_code,
+      groups.protocol_version,
+      groups.enabled AS group_enabled
+    FROM ${gatewayApiKeyTable(activeClient, 'api_key_group_bindings')} api_key_group_bindings
+    INNER JOIN ${gatewayApiKeyTable(activeClient, 'groups')} groups
+      ON groups.id = api_key_group_bindings.group_id
+      LEFT JOIN ${gatewayApiKeyTable(activeClient, 'resource_authorizations')} group_authorization
+        ON group_authorization.resource_type = 'group'
+        AND group_authorization.resource_id = groups.id
+        AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization.status = 'active'
+        AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+      LEFT JOIN ${gatewayApiKeyTable(activeClient, 'group_authorization_settings')} group_authorization_settings
+        ON group_authorization_settings.authorization_id = group_authorization.id
+        AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization_settings.group_id = groups.id
+    WHERE api_key_group_bindings.api_key_id = ?
+      AND api_key_group_bindings.system_account_id = ?
+      AND api_key_group_bindings.status = 'active'
+      AND groups.enabled = 1
+      AND (
+        groups.system_account_id = api_key_group_bindings.system_account_id
+        OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
+      )
+    ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
+    LIMIT ?
+  `, [now, apiKeyId, systemAccountId, maxApiKeyGroupBindings])
+  return rows.map((row) => ({
+    ...row,
+    weight: normalizeApiKeyGroupBindingWeight(row.weight)
+  }))
+}
+
+async function getGatewayApiKeyDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function gatewayApiKeyTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
+function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
+  return {
+    ...row,
+    hybrid_routing_config: row.hybrid_routing_config
+      ? {
+        ...row.hybrid_routing_config,
+        levelRoutes: row.hybrid_routing_config.levelRoutes.map((route) => ({ ...route }))
+      }
+      : undefined,
+    group_bindings: row.group_bindings?.map((binding) => ({ ...binding }))
+  }
 }

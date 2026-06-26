@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { buildAccountDraftTestPayload } from '../../src/views/accounts/accountDraftTestPayload'
 import { accountCreatePayloadWithActivationTest } from '../../src/views/accounts/accountEditFormPayload'
 import type { AccountFormModel } from '../../src/views/accounts/accountFormTypes'
-import { buildAccountSavePayload } from '../../src/views/accounts/accountSavePayload'
+import { buildAccountSavePayload, validateAccountSaveForm } from '../../src/views/accounts/accountSavePayload'
+import { FALLBACK_PROVIDERS } from '../../src/views/accounts/accountOptions'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -47,6 +48,7 @@ assertIncludes(testModalSource, "successfulDraftActivationTest.value = { taskId:
 assertIncludes(savePayloadSource, 'supported_endpoint_modes?: AccountFormModel', 'OAuth 创建 payload 应允许透传接口能力限制')
 assertIncludes(savePayloadSource, 'credentialsPatch.supported_endpoint_modes', 'OAuth 创建 common payload 应把接口能力写入 credentialsPatch')
 assertApiKeyDraftActivationPayload()
+assertModelMappingProtocolValidation()
 
 for (const marker of [
   "submitAction('accounts.save'",
@@ -206,4 +208,153 @@ function assertApiKeyDraftActivationPayload(): void {
 
   assert.equal(activatedPayload.status, 'active', 'API Key 新增账户成功草稿测试后保存 payload 应创建为正常状态')
   assert.equal(activatedPayload.activationTestTaskId, 'accttest_api_key_activation', 'API Key 新增账户成功草稿测试后保存 payload 应携带测试任务')
+}
+
+function assertModelMappingProtocolValidation(): void {
+  const baseForm = apiKeyFormFixture()
+  assert.equal(validateForm(baseForm), undefined, 'OpenAI 协议账号应允许 Messages -> Chat Completions 映射')
+  assert.equal(validateForm({
+    ...baseForm,
+    supportedEndpointModes: ['responses_json', 'responses_sse'],
+    modelMappings: [{
+      sourceModel: 'gpt-5.5',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'gpt-5.5-responses-native',
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }), undefined, '前端保存前应允许真实 Responses 上游的 Responses -> Responses 直连映射')
+  assert.equal(validateForm({
+    ...baseForm,
+    supportedEndpointModes: ['responses_json', 'responses_sse'],
+    modelMappings: [{
+      sourceModel: 'gpt-5.5-chat',
+      sourceEndpointFamily: 'chat_completions',
+      upstreamModel: 'gpt-5.5-responses-native',
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }), undefined, '前端保存前应允许真实 Responses 上游承接 Chat Completions -> Responses')
+  assert.equal(validateForm({
+    ...baseForm,
+    supportedEndpointModes: ['chat_json', 'chat_sse'],
+    modelMappings: [{
+      sourceModel: 'gpt-5.5',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'gpt-5.5-chat-latest',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }]
+  }), undefined, '前端保存前应允许 Chat-only 上游承接 Responses -> Chat Completions')
+  assert.equal(validateForm({
+    ...baseForm,
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    supportedEndpointModes: ['messages_json', 'messages_sse'],
+    supportedModels: ['claude-sonnet-4-6'],
+    modelMappings: [{
+      sourceModel: 'gpt-5.5',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'claude-sonnet-4-6',
+      upstreamEndpointFamily: 'messages',
+      enabled: true
+    }]
+  }), undefined, '前端保存前应允许 OpenAI Responses -> Anthropic Messages 显式映射')
+  assert.match(validateForm({
+    ...baseForm,
+    modelMappings: [{
+      sourceModel: 'claude-sonnet-4-6',
+      sourceEndpointFamily: 'messages',
+      upstreamModel: 'gpt-5.5-chat-latest',
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }) ?? '', /Messages 下游协议当前只支持桥接到 Chat Completions/, '前端保存前应拒绝 Messages -> Responses')
+  assert.match(validateForm({
+    ...baseForm,
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    supportedEndpointModes: ['messages_json', 'messages_sse'],
+    modelMappings: [{
+      sourceModel: 'gpt-5.5',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'claude-sonnet-4-6',
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }) ?? '', /当前供应商协议不支持 OpenAI 模型映射/, '前端保存前应拒绝 Anthropic 档案配置 OpenAI 上游协议')
+  assert.match(validateForm({
+    ...baseForm,
+    providerCode: 'deepseek',
+    providerProtocolProfileId: 'profile_deepseek_openai_v1',
+    clientCompatibility: 'openai_standard',
+    supportedEndpointModes: ['chat_json', 'chat_sse'],
+    modelMappings: [{
+      sourceModel: 'gpt-5.5',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'gpt-5.5-chat-latest',
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  }) ?? '', /上游协议 Responses 只能用于账号真实支持 Responses API/, '前端保存前应拒绝无原生 Responses endpoint mode 的右侧 Responses')
+  assert.match(validateForm({
+    ...baseForm,
+    providerCode: 'gemini',
+    providerProtocolProfileId: 'profile_gemini_openai_chat_v1beta',
+    supportedEndpointModes: ['chat_json', 'chat_sse'],
+    modelMappings: [{
+      sourceModel: 'claude-sonnet-4-6',
+      sourceEndpointFamily: 'messages',
+      upstreamModel: 'gemini-2.5-pro',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }]
+  }) ?? '', /Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射/, '前端保存前应拒绝 Gemini OpenAI Chat 的 Messages 来源映射')
+}
+
+function apiKeyFormFixture(): AccountFormModel {
+  return {
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
+    name: '协议矩阵校验账户',
+    type: 'api_key',
+    groupId: 'grp_protocol_matrix',
+    group: { id: 'grp_protocol_matrix', name: '协议矩阵分组' },
+    apiKey: '',
+    apiKeys: ['sk-regression-protocol-matrix'],
+    apiKeyStrategy: 'round_robin',
+    apiKeyWeights: [],
+    baseUrl: 'https://api.openai.com/v1',
+    accessToken: '',
+    refreshToken: '',
+    oauthMode: 'manual',
+    callbackUrl: '',
+    accountExpiresAt: undefined,
+    concurrencyLimit: 20,
+    priority: 0,
+    clientCompatibility: 'codex_responses',
+    supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+    supportedModels: ['gpt-5.5'],
+    modelMappings: [{
+      sourceModel: 'claude-sonnet-4-6',
+      sourceEndpointFamily: 'messages',
+      upstreamModel: 'gpt-5.5-chat-latest',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }],
+    tags: [],
+    proxyProfileId: undefined,
+    availabilitySchedule: { enabled: false, mode: 'weekly', timezone: 'Asia/Shanghai', weekly: [] },
+    notes: ''
+  }
+}
+
+function validateForm(form: AccountFormModel): string | undefined {
+  return validateAccountSaveForm({
+    form,
+    hasAuthSession: false,
+    errorPolicyRules: [],
+    responseInspectionRules: [],
+    providers: FALLBACK_PROVIDERS
+  })
 }

@@ -11,7 +11,8 @@ import type { StreamRetryResponseState } from './stream-retry-decision.js'
 import type { StreamPipeResult } from './stream.js'
 
 const serverRetryableSystemDefaultResponseInspectionPolicyIds = new Set([
-  'default_codex_compaction_contract'
+  'default_codex_compaction_contract',
+  'default_gemini_cli_retryable_error'
 ])
 
 export type StreamServerRetryReason =

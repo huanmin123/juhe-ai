@@ -3,12 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroupsPage, listProviders, returnGroupAuthorizationForGrantee, updateGroup, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummary, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupOptionsAsync, listGroupsPageAsync, listProvidersAsync, returnGroupAuthorizationForGrantee, updateGroupAsync, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToGroupList } from '../gateway/runtime/runtime-snapshot.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
 
@@ -33,7 +33,7 @@ const groupPatchSchema = groupSchema.partial().refine((value) => Object.keys(val
 
 groupsRouter.get('/', async (req, res, next) => {
   try {
-    const page = listGroupsPage(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
+    const page = await listGroupsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
     res.json(ok(await applyServerAccountConcurrencyToGroupList(page)))
   } catch (error) {
     next(error)
@@ -47,17 +47,17 @@ function parseGroupListOptions(query: Record<string, unknown>) {
   }
 }
 
-groupsRouter.get('/options', (req, res, next) => {
+groupsRouter.get('/options', async (req, res, next) => {
   try {
-    res.json(ok(listGroupOptions(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
+    res.json(ok(await listGroupOptionsAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
   } catch (error) {
     next(error)
   }
 })
 
-groupsRouter.get('/account-options', (req, res, next) => {
+groupsRouter.get('/account-options', async (req, res, next) => {
   try {
-    res.json(ok(listAccountGroupOptions(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
+    res.json(ok(await listAccountGroupOptionsAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
   } catch (error) {
     next(error)
   }
@@ -98,7 +98,7 @@ groupsRouter.post('/', mutationGuard({
     providerCode: normalizedText(bodyField(req, 'providerCode')),
     name: normalizedText(bodyField(req, 'name'))
   })
-}), (req, res) => {
+}), async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -111,7 +111,13 @@ groupsRouter.post('/', mutationGuard({
     return
   }
   const providerCode = parsed.data.providerCode.trim()
-  const provider = listProviders().find((item) => item.code === providerCode)
+  let provider: Awaited<ReturnType<typeof listProvidersAsync>>[number] | undefined
+  try {
+    provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
+  } catch (error) {
+    next(error)
+    return
+  }
   if (!provider) {
     res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
     return
@@ -121,8 +127,8 @@ groupsRouter.post('/', mutationGuard({
     return
   }
   try {
-    const group = runLoggedOperation(() => {
-      const group = createGroup({ ...parsed.data, providerCode }, requestAccess)
+    const group = await runLoggedOperationAsync(async () => {
+      const group = await createGroupAsync({ ...parsed.data, providerCode }, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
       return {
         result: group,
@@ -153,7 +159,7 @@ groupsRouter.post('/', mutationGuard({
   }
 })
 
-groupsRouter.patch('/:id', (req, res) => {
+groupsRouter.patch('/:id', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -167,7 +173,13 @@ groupsRouter.patch('/:id', (req, res) => {
   }
   const providerCode = parsed.data.providerCode?.trim()
   if (providerCode) {
-    const provider = listProviders().find((item) => item.code === providerCode)
+    let provider: Awaited<ReturnType<typeof listProvidersAsync>>[number] | undefined
+    try {
+      provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
+    } catch (error) {
+      next(error)
+      return
+    }
     if (!provider) {
       res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
       return
@@ -177,10 +189,16 @@ groupsRouter.patch('/:id', (req, res) => {
       return
     }
   }
-  const before = findGroupSummary(req.params.id, requestAccess)
+  let before: Awaited<ReturnType<typeof findGroupSummaryAsync>>
   try {
-    const group = runLoggedOperation(() => {
-      const group = updateGroup(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
+    before = await findGroupSummaryAsync(req.params.id, requestAccess)
+  } catch (error) {
+    next(error)
+    return
+  }
+  try {
+    const group = await runLoggedOperationAsync(async () => {
+      const group = await updateGroupAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
       if (!group) {
         throw new Error('分组不存在')
       }
@@ -294,18 +312,24 @@ groupsRouter.post('/:id/return-authorization', mutationGuard({
   }
 })
 
-groupsRouter.delete('/:id', (req, res) => {
+groupsRouter.delete('/:id', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = findGroupSummary(req.params.id, requestAccess)
+  let before: Awaited<ReturnType<typeof findGroupSummaryAsync>>
+  try {
+    before = await findGroupSummaryAsync(req.params.id, requestAccess)
+  } catch (error) {
+    next(error)
+    return
+  }
   const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
-    runLoggedOperation(() => {
-      const deleteResult = deleteGroup(req.params.id, requestAccess)
+    await runLoggedOperationAsync(async () => {
+      const deleteResult = await deleteGroupAsync(req.params.id, requestAccess)
       if (!deleteResult.deleted) {
         throw new Error('分组不存在')
       }

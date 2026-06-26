@@ -1,0 +1,177 @@
+services:
+  postgres:
+    image: ${JUHE_AI_POSTGRES_IMAGE:-postgres:18-bookworm}
+    container_name: ${JUHE_AI_POSTGRES_CONTAINER_NAME:-juhe-ai-postgres}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${JUHE_AI_POSTGRES_DB:-juhe_ai}
+      POSTGRES_USER: ${JUHE_AI_POSTGRES_USER:-juhe_ai}
+      POSTGRES_PASSWORD: ${JUHE_AI_POSTGRES_PASSWORD:?JUHE_AI_POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - max_connections=300
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - log_min_duration_statement=1000
+    ports:
+      - "${JUHE_AI_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - juhe-ai-postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  pgbouncer:
+    image: ${JUHE_AI_PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.25.2-p0}
+    container_name: ${JUHE_AI_PGBOUNCER_CONTAINER_NAME:-juhe-ai-pgbouncer}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${JUHE_AI_POSTGRES_DB:-juhe_ai}
+      DB_USER: ${JUHE_AI_POSTGRES_USER:-juhe_ai}
+      DB_PASSWORD: ${JUHE_AI_POSTGRES_PASSWORD:?JUHE_AI_POSTGRES_PASSWORD is required}
+      POOL_MODE: ${JUHE_AI_PGBOUNCER_POOL_MODE:-transaction}
+      MAX_CLIENT_CONN: ${JUHE_AI_PGBOUNCER_MAX_CLIENT_CONN:-1000}
+      DEFAULT_POOL_SIZE: ${JUHE_AI_PGBOUNCER_DEFAULT_POOL_SIZE:-50}
+      RESERVE_POOL_SIZE: ${JUHE_AI_PGBOUNCER_RESERVE_POOL_SIZE:-20}
+      SERVER_RESET_QUERY: DISCARD ALL
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "${JUHE_AI_PGBOUNCER_PORT:-6432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$${DB_USER}\" -d \"$${DB_NAME}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis-cache:
+    image: ${JUHE_AI_REDIS_IMAGE:-redis:8.2.7-bookworm}
+    container_name: ${JUHE_AI_REDIS_CACHE_CONTAINER_NAME:-juhe-ai-redis-cache}
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >
+        exec redis-server
+        --appendonly no
+        --save ""
+        --maxmemory "$${REDIS_CACHE_MAXMEMORY:-512mb}"
+        --maxmemory-policy allkeys-lru
+        --requirepass "$${REDIS_CACHE_PASSWORD}"
+    environment:
+      REDIS_CACHE_PASSWORD: ${JUHE_AI_REDIS_CACHE_PASSWORD:?JUHE_AI_REDIS_CACHE_PASSWORD is required}
+      REDIS_CACHE_MAXMEMORY: ${JUHE_AI_REDIS_CACHE_MAXMEMORY:-512mb}
+    ports:
+      - "${JUHE_AI_REDIS_CACHE_PORT:-6379}:6379"
+    volumes:
+      - juhe-ai-redis-cache-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_CACHE_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis-state:
+    image: ${JUHE_AI_REDIS_IMAGE:-redis:8.2.7-bookworm}
+    container_name: ${JUHE_AI_REDIS_STATE_CONTAINER_NAME:-juhe-ai-redis-state}
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory "$${REDIS_STATE_MAXMEMORY:-512mb}"
+        --maxmemory-policy noeviction
+        --requirepass "$${REDIS_STATE_PASSWORD}"
+    environment:
+      REDIS_STATE_PASSWORD: ${JUHE_AI_REDIS_STATE_PASSWORD:?JUHE_AI_REDIS_STATE_PASSWORD is required}
+      REDIS_STATE_MAXMEMORY: ${JUHE_AI_REDIS_STATE_MAXMEMORY:-512mb}
+    ports:
+      - "${JUHE_AI_REDIS_STATE_PORT:-6380}:6379"
+    volumes:
+      - juhe-ai-redis-state-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_STATE_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  juhe-ai:
+    image: ${JUHE_AI_IMAGE:-juhe-ai:local}
+    container_name: ${JUHE_AI_CONTAINER_NAME:-juhe-ai-performance}
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        NODE_IMAGE: ${JUHE_AI_NODE_IMAGE:-node:22-bookworm-slim}
+        PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-state:
+        condition: service_healthy
+    ports:
+      - "${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
+      JUHE_AI_PORT: ${JUHE_AI_PORT:-3000}
+      JUHE_AI_PUBLIC_PORT: ${JUHE_AI_PUBLIC_PORT:-3000}
+      JUHE_AI_PUBLIC_ORIGIN: ${JUHE_AI_PUBLIC_ORIGIN:-}
+      JUHE_AI_ALLOWED_ORIGINS: ${JUHE_AI_ALLOWED_ORIGINS:-}
+      JUHE_AI_SECRET: ${JUHE_AI_SECRET:?JUHE_AI_SECRET is required}
+      JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-false}
+      JUHE_AI_COOKIE_SAME_SITE: ${JUHE_AI_COOKIE_SAME_SITE:-lax}
+      JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-false}
+      JUHE_AI_DB_SERVICE_HTTP_HOST: ${JUHE_AI_DB_SERVICE_HTTP_HOST:-127.0.0.1}
+      JUHE_AI_DB_SERVICE_HTTP_PORT: ${JUHE_AI_DB_SERVICE_HTTP_PORT:-0}
+      JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-performance}
+      JUHE_AI_DATABASE_DRIVER: ${JUHE_AI_DATABASE_DRIVER:-postgres}
+      JUHE_AI_CACHE_DRIVER: ${JUHE_AI_CACHE_DRIVER:-redis}
+      JUHE_AI_RUNTIME_STATE_DRIVER: ${JUHE_AI_RUNTIME_STATE_DRIVER:-redis}
+      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL:?JUHE_AI_POSTGRES_URL is required}
+      JUHE_AI_REDIS_CACHE_URL: ${JUHE_AI_REDIS_CACHE_URL:?JUHE_AI_REDIS_CACHE_URL is required}
+      JUHE_AI_REDIS_STATE_URL: ${JUHE_AI_REDIS_STATE_URL:?JUHE_AI_REDIS_STATE_URL is required}
+      JUHE_AI_DB_POOL_MAX: ${JUHE_AI_DB_POOL_MAX:-50}
+      JUHE_AI_DB_WRITE_MAX_CONCURRENCY: ${JUHE_AI_DB_WRITE_MAX_CONCURRENCY:-100}
+      JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: ${JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS:-50000}
+      JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
+      JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
+      JUHE_AI_LOG_CONSOLE_ENABLED: ${JUHE_AI_LOG_CONSOLE_ENABLED:-true}
+      JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: ${JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS:-false}
+      JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST: ${JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST:-}
+      JUHE_AI_OAUTH_PROXY_URL: ${JUHE_AI_OAUTH_PROXY_URL:-}
+      JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED: ${JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED:-false}
+    volumes:
+      - juhe-ai-data:/app/backend/data
+      - juhe-ai-logs:/app/backend/logs
+
+volumes:
+  juhe-ai-data:
+  juhe-ai-logs:
+  juhe-ai-postgres-data:
+  juhe-ai-redis-cache-data:
+  juhe-ai-redis-state-data:

@@ -146,7 +146,7 @@ Anthropic Messages 上游不认识 OpenAI `previous_response_id`，因此 Respon
 4. 状态缺失、过期、跨分组、跨供应商、工具调用不完整或摘要校验失败时，返回本地受控错误，不把缺失历史的请求发给上游。
 5. `/v1/responses/compact` 不能透传给 Anthropic。需要 compact 时，由网关在当前授权边界内执行 summary compact，保存为网关自有 compact snapshot，再返回 OpenAI CompactResource 兼容外形：`object=response.compaction`，`output` 中恰好 1 个 `type=compaction` item，`encrypted_content=juhecmp.v2.<compact_id>.<digest>`。后续 `/v1/responses` 携带该 item 时，状态层先校验 API Key、分组、供应商档案、TTL 和 digest，再恢复为 inline summary。OpenAI 到 Anthropic bridge 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`，只把已恢复摘要写入 Anthropic 顶层 `system`；不会把 compact envelope 发给上游。
 
-这套机制可以复用现有 Chat-only Responses bridge 的状态存储思路，但需要抽象为“非原生 Responses 上游桥接状态”，不能继续命名为只服务 Chat Completions。
+这套机制复用现有 Chat-only Responses bridge 的状态存储思路，并作为“非原生 Responses 上游桥接状态”继续扩展。当前已覆盖 Codex SSE 续链和普通 Responses JSON / SSE 续链；后续如果继续新增跨供应商 Responses 状态能力，命名和文档应从 Chat-only 语义逐步收敛到通用 Responses bridge state。
 
 ## 7. 响应渲染
 
@@ -190,7 +190,7 @@ Anthropic SSE 事件要渲染为 Responses SSE：
 - 请求开始后生成 `response.created` 和必要的 in-progress 事件。
 - 文本 block 首次出现时生成 `response.output_item.added`，随后用 `response.output_text.delta` 增量输出。
 - reasoning block 生成 Responses reasoning item 或 reasoning summary delta。
-- tool_use block 生成 function_call output item，参数增量可累积，最终在 `response.output_item.done` 给出完整 arguments。
+- tool_use block 生成 function_call output item：`content_block_start/tool_use` 先输出 `response.output_item.added`，Anthropic `input_json_delta.partial_json` 必须转成 `response.function_call_arguments.delta`，`content_block_stop` 必须输出 `response.function_call_arguments.done` 和最终 `response.output_item.done`，让客户端可以实时聚合 arguments。
 - `message_stop` 后生成所有未完成 item 的 done 事件和 `response.completed`。
 - 上游流内错误或桥接内部错误在可见输出前可触发服务端换号；最终失败时对 Codex profile 输出 `response.failed`，普通 Responses 客户端按 Responses 错误事件输出。
 

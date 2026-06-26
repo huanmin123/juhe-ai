@@ -28,9 +28,23 @@ const realBaseUrl = envText('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_BASE_URL', [
   'HYBRID_REAL_BASE_URL'
 ]) || 'https://vsllm.com'
 const sourceModel = envText('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_SOURCE_MODEL') || 'claude-sonnet-4-6'
-const upstreamModel = envText('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_UPSTREAM_MODEL') || 'gpt-5.4-mini'
+const requestedUpstreamModel = envText('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_UPSTREAM_MODEL')
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_REQUEST_TIMEOUT_MS') ?? 120_000
+const imageProbeTimeoutMs = positiveIntegerEnv('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_IMAGE_PROBE_TIMEOUT_MS') ?? 30_000
 const runImageCase = truthyEnv('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_RUN_IMAGE')
+const runOnlyImageCase = truthyEnv('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_ONLY_IMAGE')
+const imageModelCandidates = envText('JUHE_REAL_ANTHROPIC_OPENAI_CHAT_IMAGE_MODEL_CANDIDATES')
+  ?.split(',')
+  .map((item) => item.trim())
+  .filter(Boolean) ?? [
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-image-preview',
+  'gpt-image-2-chat',
+  'gpt-5.4-mini',
+  'gpt-5.5',
+  'glm-4.6v-flash'
+]
+let upstreamModel = requestedUpstreamModel || 'gpt-5.4-mini'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-anthropic-openai-chat-real-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'anthropic-openai-chat-real.sqlite3')
@@ -75,6 +89,7 @@ try {
   gatewayCache.clearGatewayRuntimeCache()
   let appServer: http.Server | undefined
   try {
+    upstreamModel = await resolveUpstreamModel()
     registerCustomModels()
     const group = repositories.createGroup({
       name: 'Anthropic Messages 到 OpenAI Chat 真实 E2E 分组',
@@ -110,15 +125,18 @@ try {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    const messagesJson = await assertMessagesJson(baseUrl, apiKey.key)
-    const messagesSse = await assertMessagesSse(baseUrl, apiKey.key)
-    const toolUse = await assertMessagesToolUse(baseUrl, apiKey.key)
-    const guidance = await assertUnsupportedGuidance(baseUrl, apiKey.key)
-    const image = runImageCase ? await assertMessagesImage(baseUrl, apiKey.key) : { skipped: true }
+    const messagesJson = runOnlyImageCase ? { skipped: true } : await assertMessagesJson(baseUrl, apiKey.key)
+    const messagesSse = runOnlyImageCase ? { skipped: true } : await assertMessagesSse(baseUrl, apiKey.key)
+    const toolUse = runOnlyImageCase ? { skipped: true } : await assertMessagesToolUse(baseUrl, apiKey.key)
+    const guidance = runOnlyImageCase ? { skipped: true } : await assertUnsupportedGuidance(baseUrl, apiKey.key)
+    const image = runImageCase || runOnlyImageCase ? await assertMessagesImage(baseUrl, apiKey.key) : { skipped: true }
 
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
-    assertUsageAndAuditRecords(account.id, group.id)
+    assertUsageAndAuditRecords(account.id, group.id, {
+      expectedMinSuccessfulRecords: runOnlyImageCase ? 1 : 3,
+      requireStreamRecord: !runOnlyImageCase
+    })
 
     console.log(JSON.stringify({
       ok: true,
@@ -126,6 +144,7 @@ try {
       baseUrl: sanitizeBaseUrl(realBaseUrl),
       sourceModel,
       upstreamModel,
+      onlyImage: runOnlyImageCase,
       messagesJson,
       messagesSse,
       toolUse,
@@ -325,7 +344,82 @@ function messagesToChatMappings(): AccountModelMapping[] {
   }]
 }
 
-function assertUsageAndAuditRecords(accountId: string, groupId: string): void {
+async function resolveUpstreamModel(): Promise<string> {
+  if (requestedUpstreamModel) return requestedUpstreamModel
+  if (!runOnlyImageCase) return upstreamModel
+  const candidate = await probeImageUpstreamModel()
+  if (candidate) return candidate
+  throw new Error('未找到可用于 Messages 图片输入复测的真实视觉 Chat 模型；请设置 JUHE_REAL_ANTHROPIC_OPENAI_CHAT_UPSTREAM_MODEL 或调整 JUHE_REAL_ANTHROPIC_OPENAI_CHAT_IMAGE_MODEL_CANDIDATES')
+}
+
+async function probeImageUpstreamModel(): Promise<string | undefined> {
+  const candidates = [...new Set(imageModelCandidates)]
+  const failures: Array<{ error?: string, model: string, status: number }> = []
+  for (const model of candidates) {
+    const result = await probeChatImageModel(model)
+    if (result.ok) return model
+    failures.push(result)
+  }
+  if (failures.length) {
+    console.log(JSON.stringify({ ok: false, probe: 'image-upstream', failures }, null, 2))
+  }
+  return undefined
+}
+
+async function probeChatImageModel(model: string): Promise<{ error?: string, model: string, ok: boolean, status: number }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), imageProbeTimeoutMs)
+  timer.unref()
+  try {
+    const response = await fetch(chatCompletionsUrl(realBaseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${realApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: '这是一张 1x1 PNG。只输出 image-ok。' },
+            {
+              type: 'image_url',
+              image_url: {
+                url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l5yV4wAAAABJRU5ErkJggg=='
+              }
+            }
+          ]
+        }],
+        max_tokens: 20,
+        temperature: 0
+      }),
+      signal: controller.signal
+    })
+    const text = await response.text()
+    const content = firstChatCompletionText(safeJsonObject(text))
+    return {
+      model,
+      ok: response.ok && Boolean(content?.trim()),
+      status: response.status
+    }
+  } catch (error) {
+    return {
+      error: sanitizeSecretText(error instanceof Error ? error.message : String(error)),
+      model,
+      ok: false,
+      status: 0
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function assertUsageAndAuditRecords(
+  accountId: string,
+  groupId: string,
+  options: { expectedMinSuccessfulRecords: number, requireStreamRecord: boolean }
+): void {
   const usageRecords = repositories.listUsageRecords(access, { pageSize: 200, result: 'all' }).items
   const successfulRecords = usageRecords.filter((record) =>
     record.accountId === accountId
@@ -334,9 +428,14 @@ function assertUsageAndAuditRecords(accountId: string, groupId: string): void {
     && record.upstreamModel === upstreamModel
     && record.modelMappingApplied === true
   )
-  assert(successfulRecords.length >= 3, `真实 Messages -> Chat 应至少写入 JSON/SSE/tool 三条成功使用记录，实际 ${successfulRecords.length}`)
+  assert(
+    successfulRecords.length >= options.expectedMinSuccessfulRecords,
+    `真实 Messages -> Chat 成功使用记录不足，实际 ${successfulRecords.length}，期望至少 ${options.expectedMinSuccessfulRecords}`
+  )
   assert(successfulRecords.some((record) => record.stream === false), '真实 Messages -> Chat usage 应包含非流式请求')
-  assert(successfulRecords.some((record) => record.stream === true), '真实 Messages -> Chat usage 应包含流式请求')
+  if (options.requireStreamRecord) {
+    assert(successfulRecords.some((record) => record.stream === true), '真实 Messages -> Chat usage 应包含流式请求')
+  }
 
   const auditLogs = databaseModule.getDatasetDatabase()
     .prepare(`
@@ -432,6 +531,20 @@ function sseDataObjects(text: string): Array<Record<string, unknown>> {
   return output
 }
 
+function firstChatCompletionText(body: Record<string, unknown>): string | undefined {
+  const choices = Array.isArray(body.choices) ? body.choices : []
+  const first = choices[0] as { message?: { content?: unknown } } | undefined
+  const content = first?.message?.content
+  if (typeof content === 'string' && content.trim()) return content
+  if (!Array.isArray(content)) return choices.length > 0 ? '[non-empty-choice]' : undefined
+  const text = content
+    .map((item) => item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string'
+      ? (item as { text: string }).text
+      : '')
+    .join('')
+  return text.trim() ? text : undefined
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(requestTimeoutMs)
   return await fetch(url, {
@@ -481,6 +594,24 @@ function sanitizeBaseUrl(value: string): string {
   } catch {
     return sanitizeSecretText(value)
   }
+}
+
+function safeJsonObject(text: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function chatCompletionsUrl(baseUrl: string): string {
+  const url = new URL(baseUrl)
+  const normalizedPath = url.pathname.replace(/\/+$/, '')
+  url.pathname = `${normalizedPath.endsWith('/v1') ? normalizedPath : `${normalizedPath}/v1`}/chat/completions`
+  return url.toString()
 }
 
 function sanitizeSecretText(value: string): string {

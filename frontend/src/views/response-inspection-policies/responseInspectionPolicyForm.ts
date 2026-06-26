@@ -58,7 +58,9 @@ export const responseInspectionClientProfileOptions: Array<{ label: string; valu
   { label: 'Codex', value: 'codex' },
   { label: '通用 OpenAI', value: 'generic_openai' },
   { label: 'Claude Code', value: 'claude_code' },
-  { label: '通用 Anthropic', value: 'generic_anthropic' }
+  { label: '通用 Anthropic', value: 'generic_anthropic' },
+  { label: 'Gemini CLI', value: 'gemini_cli' },
+  { label: '通用 Gemini', value: 'generic_gemini' }
 ]
 
 export const responseInspectionAccountCompatibilityOptions: Array<{ label: string; value: AccountClientCompatibility }> = [

@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { isAdminRole } from '../../domain/types.js'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
-import { listProviders } from '../../storage/repositories.js'
+import { listProviders, listProvidersAsync } from '../../storage/repositories.js'
 import {
   listAnthropicProtocolProviderCodes,
   listGeminiProtocolProviderCodes,
@@ -28,12 +28,20 @@ interface ProviderModelOption {
   model: string
 }
 
-providersRouter.get('/', requireAdmin, (_req, res) => {
-  res.json(ok(listProviders()))
+providersRouter.get('/', requireAdmin, async (_req, res, next) => {
+  try {
+    res.json(ok(await listProvidersAsync()))
+  } catch (error) {
+    next(error)
+  }
 })
 
-providersRouter.get('/options', (_req, res) => {
-  res.json(ok(listProviders().filter((provider) => provider.enabled)))
+providersRouter.get('/options', async (_req, res, next) => {
+  try {
+    res.json(ok((await listProvidersAsync()).filter((provider) => provider.enabled)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 providersRouter.get('/models/options', (req, res) => {

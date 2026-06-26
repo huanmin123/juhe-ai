@@ -1,6 +1,10 @@
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../domain/provider-protocol.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { isProtocolProviderCode } from './provider.repository.js'
 import {
   ACCOUNT_CLIENT_COMPATIBILITIES,
@@ -9,7 +13,13 @@ import {
 
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
 export type ResponseInspectionPolicySource = 'system_default' | 'management' | 'account'
-export type ResponseInspectionPolicyClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic'
+export type ResponseInspectionPolicyClientProfile =
+  | 'codex'
+  | 'generic_openai'
+  | 'claude_code'
+  | 'generic_anthropic'
+  | 'generic_gemini'
+  | 'gemini_cli'
 export type ResponseInspectionPolicyAction =
   | 'observe'
   | 'drop_event'
@@ -108,11 +118,12 @@ const inputKeys = new Set([
   'notes'
 ])
 
-const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
+const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic', 'generic_gemini', 'gemini_cli'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
 const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
 const accountClientCompatibilityValues = new Set<AccountClientCompatibility>(ACCOUNT_CLIENT_COMPATIBILITIES)
 const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE])
 const codexCompactionContractMismatchErrorCode = 'codex_compaction_contract_mismatch'
+const businessSchemaName = 'juhe_business'
 
 const matchKeys = [
   'clientProfiles',
@@ -248,12 +259,28 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     notes: 'Anthropic Messages JSON / SSE event:error 默认检查规则；错误类型只作为响应语义输入，不直接写账号状态。'
   },
   {
+    id: 'default_gemini_cli_retryable_error',
+    defaultRule: true,
+    editable: false,
+    name: 'Gemini CLI 可重试错误',
+    enabled: true,
+    priority: 1,
+    scopeType: 'protocol',
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    match: {
+      clientProfiles: ['gemini_cli'],
+      errorTypes: ['RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'DEADLINE_EXCEEDED', 'INTERNAL', 'CANCELLED']
+    },
+    action: 'retry_next_account',
+    notes: 'gemini-cli 已知会把 429、499、5xx 和超时类 Google canonical error 当作可重试错误；该规则只在 gemini_cli 客户端画像下请求下一个账号，不扩散到普通 Gemini 客户端。'
+  },
+  {
     id: 'default_gemini_error_object',
     defaultRule: true,
     editable: false,
     name: 'Gemini error 对象',
     enabled: true,
-    priority: 1,
+    priority: 20,
     scopeType: 'protocol',
     protocolCode: GEMINI_PROTOCOL_CODE,
     match: {
@@ -305,6 +332,44 @@ export function listActiveResponseInspectionPoliciesForGateway(input: {
       LIMIT ?
     `)
     .all(...params) as unknown as ResponseInspectionPolicyRow[]
+  return [
+    ...listResponseInspectionPolicyDefaultRules().filter((policy) => policyMatchesGatewayScope(policy, protocolCode, providerCode)),
+    ...rows.map(policyFromRow)
+  ]
+}
+
+export async function listActiveResponseInspectionPoliciesForGatewayAsync(input: {
+  protocolCode: string
+  providerCode?: string
+}): Promise<ResponseInspectionPolicySummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listActiveResponseInspectionPoliciesForGateway(input)
+  }
+  const protocolCode = normalizeGatewayPolicyProtocolCode(input.protocolCode)
+  if (!protocolCode) {
+    return []
+  }
+  const providerCode = normalizeOptionalText(input.providerCode, '供应商编码')
+  const scopeFilter = providerCode
+    ? `AND (
+        (scope_type = 'protocol' AND provider_code IS NULL)
+        OR (scope_type = 'provider' AND provider_code = ?)
+      )`
+    : `AND scope_type = 'protocol'
+      AND provider_code IS NULL`
+  const params = providerCode
+    ? [protocolCode, providerCode, maxManagementResponseInspectionPolicies]
+    : [protocolCode, maxManagementResponseInspectionPolicies]
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  const rows = await client.query<ResponseInspectionPolicyRow>(`
+    SELECT *
+    FROM ${responseInspectionPoliciesTable(client)}
+    WHERE enabled = 1
+      AND protocol_code = ?
+      ${scopeFilter}
+    ORDER BY CASE scope_type WHEN 'provider' THEN 0 ELSE 1 END ASC, priority ASC, updated_at DESC, id ASC
+    LIMIT ?
+  `, params)
   return [
     ...listResponseInspectionPolicyDefaultRules().filter((policy) => policyMatchesGatewayScope(policy, protocolCode, providerCode)),
     ...rows.map(policyFromRow)
@@ -645,4 +710,17 @@ function clonePolicy(policy: ResponseInspectionPolicySummary): ResponseInspectio
     ...policy,
     match: { ...policy.match }
   }
+}
+
+async function getResponseInspectionPolicyDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function responseInspectionPoliciesTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'response_inspection_policies')
+    : client.dialect.quoteIdentifier('response_inspection_policies')
 }

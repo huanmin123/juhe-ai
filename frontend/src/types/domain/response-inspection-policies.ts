@@ -9,7 +9,13 @@ export type ResponseInspectionPolicyAction =
   | 'avoid_upstream_bucket_ttl'
 
 export type ResponseInspectionPolicyScopeType = 'protocol' | 'provider'
-export type ResponseInspectionPolicyClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic'
+export type ResponseInspectionPolicyClientProfile =
+  | 'codex'
+  | 'generic_openai'
+  | 'claude_code'
+  | 'generic_anthropic'
+  | 'generic_gemini'
+  | 'gemini_cli'
 
 export interface ResponseInspectionPolicyMatch {
   clientProfiles?: ResponseInspectionPolicyClientProfile[]

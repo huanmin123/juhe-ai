@@ -426,7 +426,7 @@ export type GatewayRequestEndpointFamily =
   | 'stream_generate_content'
   | 'count_tokens'
   | 'embed_content'
-export type AccountModelMappingSourceEndpointFamily = 'chat_completions' | 'responses' | 'messages'
+export type AccountModelMappingSourceEndpointFamily = 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
 export type AccountModelMappingUpstreamEndpointFamily = 'chat_completions' | 'responses' | 'messages'
 export type AccountModelMappingEndpointFamily = AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
 

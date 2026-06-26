@@ -1,21 +1,25 @@
 import { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { getSettings, listGlobalSettings, updateGlobalSettings, updateSettings } from '../../storage/repositories.js'
+import { getSettingsAsync, listGlobalSettingsAsync, updateGlobalSettingsAsync, updateSettingsAsync } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { diffSafeFields, runLoggedOperation } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, runLoggedOperationAsync } from '../operation-logs/operation-log.service.js'
 
 export const settingsRouter = Router()
 
-settingsRouter.get('/global', requireAdmin, (_req, res) => {
-  res.json(ok(listGlobalSettings()))
+settingsRouter.get('/global', requireAdmin, async (_req, res, next) => {
+  try {
+    res.json(ok(await listGlobalSettingsAsync()))
+  } catch (error) {
+    next(error)
+  }
 })
 
-settingsRouter.patch('/global', requireAdmin, (req, res) => {
-  const before = listGlobalSettings()
+settingsRouter.patch('/global', requireAdmin, async (req, res) => {
   try {
-    const settings = runLoggedOperation(() => {
-      const settings = updateGlobalSettings(req.body as Record<string, unknown>)
+    const before = await listGlobalSettingsAsync()
+    const settings = await runLoggedOperationAsync(async () => {
+      const settings = await updateGlobalSettingsAsync(req.body as Record<string, unknown>)
       return {
         result: settings,
         log: {
@@ -42,16 +46,20 @@ settingsRouter.patch('/global', requireAdmin, (req, res) => {
   }
 })
 
-settingsRouter.get('/', requireAdmin, (_req, res) => {
-  res.json(ok(getSettings()))
+settingsRouter.get('/', requireAdmin, async (_req, res, next) => {
+  try {
+    res.json(ok(await getSettingsAsync()))
+  } catch (error) {
+    next(error)
+  }
 })
 
-settingsRouter.patch('/', requireAdmin, (req, res) => {
+settingsRouter.patch('/', requireAdmin, async (req, res) => {
   const body = req.body as Record<string, unknown>
-  const before = getSettings()
   try {
-    const settings = runLoggedOperation(() => {
-      const settings = updateSettings(body)
+    const before = await getSettingsAsync()
+    const settings = await runLoggedOperationAsync(async () => {
+      const settings = await updateSettingsAsync(body)
       return {
         result: settings,
         log: {

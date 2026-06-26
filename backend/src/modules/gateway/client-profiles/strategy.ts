@@ -9,9 +9,9 @@ import { codexCompactionExpectedForRequest } from '../response/codex-compaction-
 
 export const gatewayClientProfileHeader = 'x-juhe-client-profile'
 
-export type OpenAIGatewayClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic'
-export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'messages_sse' | 'json' | 'unknown_stream'
-export type OpenAIGatewayUpstreamAdapter = 'openai_api_key' | 'openai_oauth_codex' | 'openai_mixed' | 'anthropic_api_key'
+export type OpenAIGatewayClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic' | 'gemini_cli' | 'generic_gemini'
+export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'messages_sse' | 'gemini_stream_generate_content_sse' | 'json' | 'unknown_stream'
+export type OpenAIGatewayUpstreamAdapter = 'openai_api_key' | 'openai_oauth_codex' | 'openai_mixed' | 'anthropic_api_key' | 'gemini_api_key'
 
 export interface OpenAIGatewayClientStrategyIdentity {
   systemAccountId: string
@@ -39,7 +39,7 @@ export interface OpenAIGatewayClientStrategyContext {
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
   codexCompactionExpected: boolean
   codexTurn?: OpenAIGatewayCodexTurnContext
-  clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature'
+  clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature' | 'gemini_cli_request_signature'
   allowCodexStreamClientRetry: boolean
   allowCodexTurnAccountAvoidance: boolean
 }
@@ -64,8 +64,12 @@ export function resolveOpenAIGatewayClientStrategy(
   req: Request,
   identity: OpenAIGatewayClientStrategyIdentity
 ): OpenAIGatewayClientStrategyContext {
-  if (gatewayProtocolResponseProtocolForRequest(req, identity) === 'anthropic_v1') {
+  const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, identity)
+  if (responseProtocol === 'anthropic_v1') {
     return resolveAnthropicGatewayClientStrategy(req)
+  }
+  if (responseProtocol === 'gemini_v1beta') {
+    return resolveGeminiGatewayClientStrategy(req)
   }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)
   const codexCompactionExpected = codexCompactionExpectedForRequest(req)
@@ -108,6 +112,25 @@ export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatew
   }
 }
 
+export function resolveGeminiGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
+  const downstreamProtocol = resolveGeminiGatewayDownstreamProtocol(req)
+  const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
+  const supportedGeminiShape = downstreamProtocol !== 'unknown_stream'
+  const explicitGeminiCli = explicitProfile === 'gemini_cli' && supportedGeminiShape
+  const signatureGeminiCli = !explicitGeminiCli && supportedGeminiShape && isGeminiCliRequestSignature(req)
+  const geminiCli = explicitGeminiCli || signatureGeminiCli
+  return {
+    clientProfile: geminiCli ? 'gemini_cli' : 'generic_gemini',
+    requestClientCompatibility: 'openai_standard',
+    downstreamProtocol,
+    upstreamAdapter: 'gemini_api_key',
+    codexCompactionExpected: false,
+    clientProfileSource: explicitGeminiCli ? 'explicit_header' : signatureGeminiCli ? 'gemini_cli_request_signature' : 'default',
+    allowCodexStreamClientRetry: false,
+    allowCodexTurnAccountAvoidance: false
+  }
+}
+
 export function resolveOpenAIGatewayDownstreamProtocol(req: Request): OpenAIGatewayDownstreamProtocol {
   const normalizedPath = normalizedOpenAIRequestPath(req)
   const acceptsEventStream = requestAcceptsEventStream(req)
@@ -137,6 +160,22 @@ export function resolveAnthropicGatewayDownstreamProtocol(req: Request): OpenAIG
   return 'json'
 }
 
+export function resolveGeminiGatewayDownstreamProtocol(req: Request): OpenAIGatewayDownstreamProtocol {
+  const normalizedPath = normalizedGeminiRequestPath(req)
+  const acceptsEventStream = requestAcceptsEventStream(req)
+  const streamRequested = requestStream(req) || acceptsEventStream || geminiAltSseQuery(req)
+  if (req.method.toUpperCase() === 'POST' && /^\/models\/[^/]+:streamgeneratecontent$/.test(normalizedPath)) {
+    return 'gemini_stream_generate_content_sse'
+  }
+  if (req.method.toUpperCase() === 'POST' && /^\/models\/[^/]+:generatecontent$/.test(normalizedPath) && streamRequested) {
+    return 'gemini_stream_generate_content_sse'
+  }
+  if (streamRequested || acceptsEventStream) {
+    return 'unknown_stream'
+  }
+  return 'json'
+}
+
 export function openAIGatewayClientStrategyAuditMetadata(
   strategy: OpenAIGatewayClientStrategyContext
 ): Record<string, unknown> {
@@ -159,7 +198,9 @@ export function openAIGatewayClientStrategyAuditMetadata(
 
 function parseGatewayClientProfileHeader(value: string | undefined): OpenAIGatewayClientProfile | undefined {
   const normalized = stringValue(value)?.toLowerCase().replace(/[-\s]+/g, '_')
-  return normalized === 'claude_code' ? 'claude_code' : undefined
+  if (normalized === 'claude_code') return 'claude_code'
+  if (normalized === 'gemini_cli') return 'gemini_cli'
+  return undefined
 }
 
 function isClaudeCodeAnthropicRequestSignature(req: Request): boolean {
@@ -205,6 +246,48 @@ function hasAnthropicBetaQuery(req: Request): boolean {
     return false
   }
   return new URLSearchParams(originalUrl.slice(queryIndex + 1)).get('beta') === 'true'
+}
+
+function isGeminiCliRequestSignature(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') {
+    return false
+  }
+  if (!/^\/models\/[^/]+:(generatecontent|streamgeneratecontent)$/.test(normalizedGeminiRequestPath(req))) {
+    return false
+  }
+  return hasGeminiCliUserAgent(req) && hasGeminiAuthSignal(req)
+}
+
+function hasGeminiCliUserAgent(req: Request): boolean {
+  const userAgent = stringValue(req.header('user-agent'))
+  if (!userAgent) return false
+  return /\bGeminiCLI(?:[-/]|$)/i.test(userAgent) || /proxy_client=geminicli\b/i.test(userAgent)
+}
+
+function hasGeminiAuthSignal(req: Request): boolean {
+  return Boolean(
+    stringValue(req.header('x-goog-api-key'))
+      || stringValue(req.header('x-api-key'))
+      || stringValue(req.header('authorization'))
+      || geminiKeyQuery(req)
+  )
+}
+
+function geminiAltSseQuery(req: Request): boolean {
+  return geminiQueryParam(req, 'alt')?.toLowerCase() === 'sse'
+}
+
+function geminiKeyQuery(req: Request): boolean {
+  return Boolean(geminiQueryParam(req, 'key'))
+}
+
+function geminiQueryParam(req: Request, name: string): string | undefined {
+  const originalUrl = req.originalUrl || req.path || ''
+  const queryIndex = originalUrl.indexOf('?')
+  if (queryIndex < 0) {
+    return undefined
+  }
+  return stringValue(new URLSearchParams(originalUrl.slice(queryIndex + 1)).get(name))
 }
 
 function buildCodexTurnContext(
@@ -406,6 +489,12 @@ function normalizedAnthropicRequestPath(req: Request): string {
   const rawPath = (req.originalUrl || req.path || '').split('?', 1)[0] || '/'
   const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
   return path.replace(/^\/v1(?=\/|$)/, '') || '/'
+}
+
+function normalizedGeminiRequestPath(req: Request): string {
+  const rawPath = (req.originalUrl || req.path || '').split('?', 1)[0] || '/'
+  const path = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
+  return path.replace(/^\/v1beta(?=\/|$)/i, '').toLowerCase() || '/'
 }
 
 function requestAcceptsEventStream(req: Request): boolean {

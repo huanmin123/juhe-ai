@@ -32,6 +32,7 @@ let pendingUsageRecordBytes = 0
 let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
 let activeAsyncFlush: Promise<void> | undefined
+const activeConcurrentFlushes = new Set<Promise<void>>()
 let retainedOverflowWarningCount = 0
 let flushFailureCount = 0
 let lastFlushMs = 0
@@ -98,7 +99,7 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
 }
 
 export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): void {
-  if (usageRecordWriterPoolEnabled()) {
+  if (usageRecordWriterPoolEnabled() || shouldUseConcurrentUsageRecordFlush()) {
     void flushUsageRecordQueueAsync(options)
     return
   }
@@ -161,6 +162,10 @@ function flushUsageRecordQueueSync(options: UsageRecordFlushOptions = {}): void 
 }
 
 export async function flushUsageRecordQueueAsync(options: UsageRecordFlushOptions = {}): Promise<void> {
+  if (shouldUseConcurrentUsageRecordFlush()) {
+    await flushUsageRecordQueueConcurrentAsync(options)
+    return
+  }
   if (!isLocalUsageRecordWriteAllowed()) {
     return
   }
@@ -238,7 +243,7 @@ export function flushAllUsageRecordQueue(): void {
 }
 
 export async function flushAllUsageRecordQueueAsync(): Promise<void> {
-  if (usageRecordWriterPoolEnabled()) {
+  if (usageRecordWriterPoolEnabled() || shouldUseConcurrentUsageRecordFlush()) {
     await waitForActiveUsageRecordFlush()
     await flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false })
     return
@@ -247,7 +252,7 @@ export async function flushAllUsageRecordQueueAsync(): Promise<void> {
 }
 
 export async function flushUsageRecordQueueForShutdown(): Promise<void> {
-  if (usageRecordWriterPoolEnabled()) {
+  if (usageRecordWriterPoolEnabled() || shouldUseConcurrentUsageRecordFlush()) {
     await waitForActiveUsageRecordFlush()
     await flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false, maxBatches: usageRecordShutdownFlushMaxBatches })
     return
@@ -258,6 +263,9 @@ export async function flushUsageRecordQueueForShutdown(): Promise<void> {
 async function waitForActiveUsageRecordFlush(): Promise<void> {
   if (activeAsyncFlush) {
     await activeAsyncFlush
+  }
+  while (activeConcurrentFlushes.size > 0) {
+    await Promise.race(activeConcurrentFlushes)
   }
 }
 
@@ -412,6 +420,7 @@ export function clearUsageRecordQueueForTest(): void {
   pendingUsageRecordBytes = 0
   flushing = false
   activeAsyncFlush = undefined
+  activeConcurrentFlushes.clear()
   retainedOverflowWarningCount = 0
   flushFailureCount = 0
   lastFlushMs = 0
@@ -618,6 +627,115 @@ function peekUsageRecordFlushBatch(maxItems: number, maxBytes: number): { batch:
 function removeUsageRecordFlushBatch(count: number, bytes: number): void {
   pendingUsageRecords.splice(0, count)
   pendingUsageRecordBytes = Math.max(0, pendingUsageRecordBytes - bytes)
+}
+
+async function flushUsageRecordQueueConcurrentAsync(options: UsageRecordFlushOptions = {}): Promise<void> {
+  if (!isLocalUsageRecordWriteAllowed()) {
+    return
+  }
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+
+  const spawned = new Set<Promise<void>>()
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
+  let spawnedBatches = 0
+
+  while (
+    pendingUsageRecords.length > 0
+    && activeConcurrentFlushes.size < usageRecordConcurrentFlushLimit()
+    && spawnedBatches < maxBatches
+  ) {
+    const { batch, bytes } = takeUsageRecordFlushBatch(usageRecordBatchSize, usageRecordFlushBatchMaxBytes)
+    if (batch.length === 0) break
+    spawnedBatches += 1
+    const promise = flushUsageRecordBatchAsync(batch, bytes, options)
+    activeConcurrentFlushes.add(promise)
+    spawned.add(promise)
+    void promise.finally(() => {
+      activeConcurrentFlushes.delete(promise)
+    })
+  }
+
+  if (options.drain) {
+    while ((pendingUsageRecords.length > 0 && spawnedBatches < maxBatches) || activeConcurrentFlushes.size > 0) {
+      if (activeConcurrentFlushes.size > 0) {
+        await Promise.race(activeConcurrentFlushes)
+      }
+      while (
+        pendingUsageRecords.length > 0
+        && activeConcurrentFlushes.size < usageRecordConcurrentFlushLimit()
+        && spawnedBatches < maxBatches
+      ) {
+        const { batch, bytes } = takeUsageRecordFlushBatch(usageRecordBatchSize, usageRecordFlushBatchMaxBytes)
+        if (batch.length === 0) break
+        spawnedBatches += 1
+        const promise = flushUsageRecordBatchAsync(batch, bytes, options)
+        activeConcurrentFlushes.add(promise)
+        spawned.add(promise)
+        void promise.finally(() => {
+          activeConcurrentFlushes.delete(promise)
+        })
+      }
+      if (pendingUsageRecords.length === 0 && activeConcurrentFlushes.size === 0) {
+        break
+      }
+      if (spawnedBatches >= maxBatches) {
+        break
+      }
+    }
+  }
+
+  if (spawned.size > 0) {
+    await Promise.allSettled(spawned)
+  }
+  if (pendingUsageRecords.length > 0 && !options.drain) {
+    scheduleUsageRecordFlush(0)
+  }
+}
+
+async function flushUsageRecordBatchAsync(batch: QueuedUsageRecord[], batchBytes: number, options: UsageRecordFlushOptions): Promise<void> {
+  try {
+    const startedAt = Date.now()
+    await createUsageRecordsBatchAsync(batch.map((item) => item.input))
+    recordUsageRecordFlushDuration(Date.now() - startedAt)
+    flushFailureCount = 0
+  } catch (error) {
+    requeueUsageRecordFlushBatch(batch, batchBytes)
+    flushFailureCount += 1
+    logger.error(errorLogFields(error, {
+      event: 'usage_record_queue_flush_failed',
+      batchSize: batch.length,
+      pendingCount: pendingUsageRecords.length,
+      pendingBytes: pendingUsageRecordBytes,
+      flushFailureCount
+    }), '使用记录队列写入失败，已保留记录等待重试')
+    if (options.retryOnFailure !== false) {
+      scheduleUsageRecordFlush(retryDelayMs(usageRecordRetryPolicy))
+    }
+  }
+}
+
+function takeUsageRecordFlushBatch(maxItems: number, maxBytes: number): { batch: QueuedUsageRecord[]; bytes: number } {
+  const { batch, bytes } = peekUsageRecordFlushBatch(maxItems, maxBytes)
+  if (batch.length > 0) {
+    removeUsageRecordFlushBatch(batch.length, bytes)
+  }
+  return { batch, bytes }
+}
+
+function requeueUsageRecordFlushBatch(batch: QueuedUsageRecord[], bytes: number): void {
+  pendingUsageRecords.unshift(...batch)
+  pendingUsageRecordBytes += bytes
+}
+
+function shouldUseConcurrentUsageRecordFlush(): boolean {
+  return runtimeConfig.databaseDriver === 'postgres'
+}
+
+function usageRecordConcurrentFlushLimit(): number {
+  return Math.max(1, Math.min(Math.trunc(runtimeConfig.postgres.writeMaxConcurrency), 100))
 }
 
 function estimateUsageRecordBytes(input: UsageRecordInput): number {

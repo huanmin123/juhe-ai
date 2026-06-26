@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
@@ -78,23 +78,32 @@ import {
 } from './account-usage.repository.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
-import { createApiKeyRecord, deleteApiKey, findApiKeySecret, findApiKeySummary, listApiKeys, listApiKeysPage, refreshApiKeySecret, updateApiKey } from './api-key.repository.js'
+import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
 import {
   listAccountGroupOptions,
+  listAccountGroupOptionsAsync,
   listGroupOptions,
+  listGroupOptionsAsync,
   listGroups,
-  listGroupsPage
+  listGroupsAsync,
+  listGroupsPage,
+  listGroupsPageAsync
 } from './group-summary.repository.js'
 export {
   findGroupSummary,
+  findGroupSummaryAsync,
   listAccountGroupOptions,
+  listAccountGroupOptionsAsync,
   listGroupOptions,
+  listGroupOptionsAsync,
   listGroups,
-  listGroupsPage
+  listGroupsAsync,
+  listGroupsPage,
+  listGroupsPageAsync
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
@@ -219,6 +228,7 @@ function assertAccountEndpointModesCompatible(
   },
   input: {
     modes: readonly AccountSupportedEndpointMode[]
+    modelMappings?: readonly AccountModelMapping[]
     accountType?: string
     clientCompatibility: AccountClientCompatibility
   }
@@ -233,6 +243,7 @@ function assertAccountEndpointModesCompatible(
   if (isOpenAIProtocolProfile(protocolProfile)) {
     assertOpenAIEndpointModesCompatible({
       modes: input.modes,
+      modelMappings: input.modelMappings,
       providerCode: protocolProfile.providerCode,
       providerProtocolProfileId: protocolProfile.providerProtocolProfileId ?? protocolProfile.id,
       accountType: input.accountType,
@@ -281,8 +292,11 @@ export { normalizeAccountCredentialsForWrite } from './account-credentials-norma
 export {
   DefaultGroupReadonlyError,
   createGroup,
+  createGroupAsync,
   deleteGroup,
-  updateGroup
+  deleteGroupAsync,
+  updateGroup,
+  updateGroupAsync
 } from './group-write.repository.js'
 export type {
   DeletedGroupApiKeyRouteChange,
@@ -346,40 +360,83 @@ export {
 } from './api-key-record-cleanup.js'
 export {
   createApiKeyRecord,
+  createApiKeyRecordAsync,
   deleteApiKey,
+  deleteApiKeyAsync,
   deleteApiKeyWithRelatedCleanup,
+  deleteApiKeyWithRelatedCleanupAsync,
   findApiKeySecret,
+  findApiKeySecretAsync,
   findApiKeySummary,
+  findApiKeySummaryAsync,
   listApiKeys,
+  listApiKeysAsync,
   listApiKeysPage,
+  listApiKeysPageAsync,
   refreshApiKeySecret,
-  updateApiKey
+  refreshApiKeySecretAsync,
+  updateApiKey,
+  updateApiKeyAsync
 } from './api-key.repository.js'
 export {
   listAuthorizationGranteeAccounts,
   listAuthorizationGranteeGroups,
   listAuthorizationGranteeTeams
 } from './authorization-options.repository.js'
-export { defaultProviderProtocolProfile, findProviderDefaultTestModel, findProviderProtocolProfile, isOpenAIProtocolProviderCode, listGeminiProtocolProviderCodes, listOpenAIProtocolProfileIds, listOpenAIProtocolProviderCodes, listProviders } from './provider.repository.js'
+export {
+  defaultProviderProtocolProfile,
+  defaultProviderProtocolProfileAsync,
+  findProviderDefaultTestModel,
+  findProviderDefaultTestModelAsync,
+  findProviderProtocolProfile,
+  findProviderProtocolProfileAsync,
+  isOpenAIProtocolProviderCode,
+  isOpenAIProtocolProviderCodeAsync,
+  isProtocolProviderCodeAsync,
+  listAnthropicProtocolProviderCodesAsync,
+  listGeminiProtocolProviderCodes,
+  listGeminiProtocolProviderCodesAsync,
+  listOpenAIProtocolProfileIds,
+  listOpenAIProtocolProfileIdsAsync,
+  listOpenAIProtocolProviderCodes,
+  listOpenAIProtocolProviderCodesAsync,
+  listProviders,
+  listProvidersAsync,
+  requireEnabledProviderProtocolProfileAsync
+} from './provider.repository.js'
 export {
   createSession,
+  createSessionAsync,
   createSystemAccount,
   createSystemAccountAsync,
   createSystemAccountWithPasswordHash,
+  createSystemAccountWithPasswordHashAsync,
   findSessionByToken,
+  findSessionByTokenAsync,
   findSystemAccountById,
+  findSystemAccountByIdAsync,
   findSystemAccountByUsername,
+  findSystemAccountByUsernameAsync,
   listSystemAccountOptions,
+  listSystemAccountOptionsAsync,
   listSystemAccounts,
+  listSystemAccountsAsync,
   listSystemAccountsPage,
+  listSystemAccountsPageAsync,
   revokeAllSessionsForAccount,
+  revokeAllSessionsForAccountAsync,
   revokeOtherSessionsForAccount,
+  revokeOtherSessionsForAccountAsync,
   revokeSession,
+  revokeSessionAsync,
   touchSession,
+  touchSessionAsync,
   updateSystemAccount,
   updateSystemAccountAsync,
   updateSystemAccountLastLogin,
+  updateSystemAccountLastLoginAsync,
   updateSystemAccountWithPasswordHash,
+  updateSystemAccountWithPasswordHashAsync,
   verifySystemAccountCredentials,
   verifySystemAccountCredentialsAsync,
   type SessionWithAccount,
@@ -412,15 +469,21 @@ export {
 } from './proxy.repository.js'
 export {
   getSettings,
+  getSettingsAsync,
   listPublicGlobalSettings,
+  listPublicGlobalSettingsAsync,
   listGlobalSettings,
+  listGlobalSettingsAsync,
   updateGlobalSettings,
-  updateSettings
+  updateGlobalSettingsAsync,
+  updateSettings,
+  updateSettingsAsync
 } from './settings.repository.js'
 export {
   clearGatewayApiKeyValidationCache,
   findActiveGatewayApiKeyById,
   validateGatewayApiKey,
+  validateGatewayApiKeyAsync,
   type GatewayApiKeyRow
 } from './gateway-api-key.repository.js'
 export {
@@ -564,8 +627,10 @@ export {
   findOpenAIAccountForGroup,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
+  listOpenAIAccountsForGroupResultAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
+  resolveGroupUsageAccessMetadataAsync,
   runtimeOpenAIAccountCredentials,
   selectOpenAIAccountForGroup,
   type DispatchAccountSecret,
@@ -968,6 +1033,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
   assertAccountEndpointModesCompatible(providerProfile, {
     modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelMappings,
     accountType,
     clientCompatibility
   })
@@ -1274,6 +1340,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   }
   assertAccountEndpointModesCompatible(current, {
     modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelMappings: nextModelMappings,
     accountType: current.type,
     clientCompatibility: nextClientCompatibility
   })

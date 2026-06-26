@@ -3,10 +3,10 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
-import { createSession, findSessionByToken, findSystemAccountById, revokeOtherSessionsForAccount, revokeSession, touchSession, updateSystemAccount, updateSystemAccountAsync, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { createSessionAsync, findSessionByTokenAsync, findSystemAccountById, revokeOtherSessionsForAccount, revokeSessionAsync, touchSessionAsync, updateSystemAccount, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
 import { consumeCaptchaIssueAllowance, createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
-import { checkLoginAllowed, getLoginClientIp, recordFailedLogin, recordSuccessfulLogin } from './login-guard.service.js'
+import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recordSuccessfulLoginAsync } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
 export const authRouter = Router()
@@ -64,7 +64,7 @@ authRouter.post('/login', async (req, res, next) => {
       return
     }
 
-    const loginAllowed = checkLoginAllowed(clientIp, parsed.data.username)
+    const loginAllowed = await checkLoginAllowedAsync(clientIp, parsed.data.username)
     if (loginAllowed.blocked) {
       if (loginAllowed.retryAfterSeconds) {
         res.setHeader('Retry-After', String(loginAllowed.retryAfterSeconds))
@@ -75,7 +75,7 @@ authRouter.post('/login', async (req, res, next) => {
 
     const account = await verifySystemAccountCredentialsAsync(parsed.data.username, parsed.data.password)
     if (!account) {
-      const loginBlock = recordFailedLogin(clientIp, parsed.data.username)
+      const loginBlock = await recordFailedLoginAsync(clientIp, parsed.data.username)
       if (loginBlock.blocked) {
         if (loginBlock.retryAfterSeconds) {
           res.setHeader('Retry-After', String(loginBlock.retryAfterSeconds))
@@ -87,9 +87,9 @@ authRouter.post('/login', async (req, res, next) => {
       return
     }
 
-    recordSuccessfulLogin(clientIp, account.username)
-    const session = createSession(account.id)
-    updateSystemAccountLastLogin(account.id)
+    await recordSuccessfulLoginAsync(clientIp, account.username)
+    const session = await createSessionAsync(account.id)
+    await updateSystemAccountLastLoginAsync(account.id)
     res.cookie(sessionCookieName, session.token, sessionCookieOptions({ maxAge: sessionMaxAgeMs }))
     res.json(ok({ ...account, lastLoginAt: new Date().toISOString() }))
   } catch (error) {
@@ -97,13 +97,17 @@ authRouter.post('/login', async (req, res, next) => {
   }
 })
 
-authRouter.post('/logout', (req, res) => {
-  const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
-  if (token) {
-    revokeSession(token)
+authRouter.post('/logout', async (req, res, next) => {
+  try {
+    const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
+    if (token) {
+      await revokeSessionAsync(token)
+    }
+    clearSessionCookie(res)
+    res.json(ok({ loggedOut: true }))
+  } catch (error) {
+    next(error)
   }
-  clearSessionCookie(res)
-  res.json(ok({ loggedOut: true }))
 })
 
 authRouter.get('/me', requireSessionContext, (_req, res) => {
@@ -236,28 +240,32 @@ export function clearSessionCookie(res: { cookie: (name: string, value: string, 
   res.cookie(sessionCookieName, '', sessionCookieOptions({ maxAge: 0 }))
 }
 
-function requireSessionContext(req: Request, res: Response, next: NextFunction): void {
+async function requireSessionContext(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
   if (!token) {
     res.status(401).json({ message: '请先登录' })
     return
   }
 
-  const session = findSessionByToken(token)
-  if (!session) {
-    res.status(401).json({ message: '登录会话已过期' })
-    return
-  }
+  try {
+    const session = await findSessionByTokenAsync(token)
+    if (!session) {
+      res.status(401).json({ message: '登录会话已过期' })
+      return
+    }
 
-  touchSession(session.sessionId, session.lastSeenAt)
-  withRequestAuthContext({
-    systemAccountId: session.account.id,
-    username: session.account.username,
-    displayName: session.account.displayName,
-    role: session.account.role,
-    mustChangePassword: session.account.mustChangePassword,
-    sessionId: session.sessionId
-  }, next)
+    await touchSessionAsync(session.sessionId, session.lastSeenAt)
+    withRequestAuthContext({
+      systemAccountId: session.account.id,
+      username: session.account.username,
+      displayName: session.account.displayName,
+      role: session.account.role,
+      mustChangePassword: session.account.mustChangePassword,
+      sessionId: session.sessionId
+    }, next)
+  } catch (error) {
+    next(error)
+  }
 }
 
 function currentUserSummary(account: {

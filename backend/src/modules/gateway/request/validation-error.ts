@@ -17,7 +17,7 @@ export class GatewayRequestValidationError extends Error {
   }
 }
 
-export type GatewayAgentGuidanceProtocol = 'chat_completions' | 'responses' | 'messages'
+export type GatewayAgentGuidanceProtocol = 'chat_completions' | 'responses' | 'messages' | 'gemini'
 
 export class GatewayAgentGuidanceResponse extends Error {
   readonly statusCode = 200

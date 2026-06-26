@@ -11,7 +11,7 @@ Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖
 - OpenAI 兼容网关：`/v1`
 - background worker 和本地 DB service 子进程
 
-默认不需要 Nginx、Redis、PostgreSQL 或额外 worker 容器。
+默认 standalone 模式不需要 Nginx、Redis、PostgreSQL 或额外 worker 容器。如果需要 PostgreSQL + Redis 高性能模式，使用 `docker/compose.performance.yml`，并先阅读 [高性能模式部署指南](高性能模式部署指南.md)。
 
 ## 2. 构建产物
 
@@ -52,6 +52,17 @@ docker compose up -d --build
 ```text
 http://localhost:3000/__aisys__/
 ```
+
+高性能模式启动：
+
+```bash
+cd docker
+cp .env.performance.example .env.performance
+# 编辑 .env.performance 中的 PostgreSQL / Redis 密码和 JUHE_AI_SECRET
+docker compose --env-file .env.performance -f compose.performance.yml up -d --build
+```
+
+当前 PostgreSQL repository adapter 完成前，高性能模式应用容器会 fail-fast，不会回退写 SQLite；中间件容器和 PostgreSQL schema 初始化可先用于部署验证。
 
 ## 4. 配置
 

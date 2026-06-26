@@ -1,26 +1,32 @@
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountClientCompatibility, AccountType, GatewayRequestEndpointFamily, GroupType, ProviderCode } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountType, GatewayRequestEndpointFamily, GroupType, ProviderCode, ResourceAuthorizationResourceType } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../domain/gemini-endpoint-modes.js'
 import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile } from '../domain/provider-protocol.js'
-import { loadModelMappingsByAccountIds, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
-import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync, loadModelMappingsForAccount } from './account-model-mappings.repository.js'
+import { loadSupportedModelsByAccountIds, loadSupportedModelsByAccountIdsAsync, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, nowIso } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import {
   applyGatewayDispatchCandidateQualityRows,
   emptyGatewayDispatchCandidateDiagnostics,
   gatewayDispatchCandidateQualityFreshAfterIso,
   listGatewayDispatchCandidateRows,
+  listGatewayDispatchCandidateRowsAsync,
   listGatewayDispatchModelCandidateRows,
+  listGatewayDispatchModelCandidateRowsAsync,
   loadFreshGatewayDispatchCandidateQualityRows,
+  loadFreshGatewayDispatchCandidateQualityRowsAsync,
   orderGatewayDispatchCandidateRowsForDispatch
 } from './gateway-dispatch-candidate-window.repository.js'
-import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
+import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, resolveProxyUrlsForProfilesAsync, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled } from './account-api-key-rotation.js'
-import { loadAccountApiKeyRuntimeStatesByAccountIds } from './account-api-key-runtime-state.repository.js'
+import { loadAccountApiKeyRuntimeStatesByAccountIds, loadAccountApiKeyRuntimeStatesByAccountIdsAsync } from './account-api-key-runtime-state.repository.js'
 import {
   gatewayDispatchAccountCandidateLimit,
   gatewayDispatchAccountCandidateScanLimit
@@ -38,9 +44,13 @@ import type {
   OpenAIGroupAccountSelectionRow
 } from './openai-account-selector.types.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
-import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds } from './resource-authorization-helpers.js'
+import { activeResourceAuthorization, activeResourceAuthorizationById, activeResourceAuthorizationsByIds, resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
+import { getPostgresPool } from './postgres-client.js'
+import { chunkValues } from './query-utils.js'
+
+const businessSchemaName = 'juhe_business'
 
 export type {
   DispatchAccountSecret,
@@ -187,6 +197,68 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
   }
 }
 
+export async function resolveGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return resolveGroupUsageAccessMetadata(groupId, systemAccountId)
+  }
+  const client = await getOpenAIAccountSelectorDatabaseClient()
+  const groupRow = await client.one<{
+    system_account_id?: string
+    provider_code?: ProviderCode
+    provider_protocol_profile_id?: string
+    protocol_code?: string
+    protocol_version?: string
+    enabled?: number
+    group_type?: GroupType | null
+    scheduling_policy_json?: string | null
+  }>(`
+    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, enabled, group_type, scheduling_policy_json
+    FROM ${selectorTable(client, 'groups')}
+    WHERE id = ?
+  `, [groupId])
+  const groupOwnerSystemAccountId = groupRow?.system_account_id
+  if (!groupOwnerSystemAccountId) return undefined
+  const providerCode = groupRow.provider_code
+  if (!providerCode) return undefined
+  const providerProtocolProfileId = groupRow.provider_protocol_profile_id?.trim()
+  const protocolCode = groupRow.protocol_code?.trim()
+  const protocolVersion = groupRow.protocol_version?.trim()
+  if (!providerProtocolProfileId || !protocolCode || !protocolVersion) return undefined
+  if (!isGatewaySupportedProtocolProfile({ protocolCode, protocolVersion })) return undefined
+  if (groupRow.enabled !== 1) return undefined
+  const groupType = normalizeGroupType(groupRow?.group_type)
+  const schedulingPolicy = parseGroupSchedulingPolicyJson(groupRow?.scheduling_policy_json ?? null, groupType)
+  if (groupOwnerSystemAccountId === systemAccountId) {
+    return { groupOwnerSystemAccountId, providerCode, providerProtocolProfileId, protocolCode, protocolVersion, groupAccessType: 'owner', groupType, schedulingPolicy }
+  }
+  const authorization = await activeResourceAuthorizationForSelectorAsync(client, 'group', groupId, systemAccountId)
+  if (!authorization) return undefined
+  const localSettings = await client.one<{ enabled?: number; group_type?: GroupType | null; scheduling_policy_json?: string | null }>(`
+    SELECT enabled, group_type, scheduling_policy_json
+    FROM ${selectorTable(client, 'group_authorization_settings')}
+    WHERE authorization_id = ? AND system_account_id = ? AND group_id = ?
+    LIMIT 1
+  `, [authorization.id, systemAccountId, groupId])
+  if (localSettings?.enabled === 0) return undefined
+  const localGroupType = normalizeGroupType(localSettings?.group_type ?? groupRow.group_type)
+  const localSchedulingPolicy = parseGroupSchedulingPolicyJson(localSettings?.scheduling_policy_json ?? groupRow.scheduling_policy_json ?? null, localGroupType)
+  return {
+    groupOwnerSystemAccountId,
+    providerCode,
+    providerProtocolProfileId,
+    protocolCode,
+    protocolVersion,
+    groupAccessType: 'authorized',
+    groupType: localGroupType,
+    schedulingPolicy: localSchedulingPolicy,
+    groupAuthorizationId: authorization.id,
+    groupAuthorizationExpiresAt: authorization.expires_at ?? undefined,
+    groupAuthorizationQuotaLimited: resourceAuthorizationQuotaLimited(authorization),
+    groupAuthorizationSourceType: authorization.effective_source_type ?? undefined,
+    groupAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
+  }
+}
+
 export function listOpenAIAccountsForGroup(
   groupId: string,
   systemAccountId: string,
@@ -284,6 +356,89 @@ export function listOpenAIAccountsForGroupResult(
     const modelMappingsByAccountId = loadModelMappingsByAccountIds(resourceAccountIds)
     const apiKeyRuntimeStatesByAccountId = loadAccountApiKeyRuntimeStatesByAccountIds(resourceAccountIds)
     const proxyProfilesById = loadProxyProfilesForSelection(hydrationRows.map((item) => item.row))
+    for (const { row, accountAccess } of hydrationRows) {
+      const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, modelMappingsByAccountId, apiKeyRuntimeStatesByAccountId, accountAccess })
+      if (account) {
+        accounts.push(account)
+        if (accounts.length >= gatewayDispatchAccountCandidateLimit) {
+          break
+        }
+      } else {
+        hydrationDroppedCount += 1
+      }
+    }
+  }
+
+  return {
+    accounts,
+    diagnostics: {
+      scanLimit: gatewayDispatchAccountCandidateScanLimit,
+      finalLimit: gatewayDispatchAccountCandidateLimit,
+      candidateRowCount: groupAccountRows.length,
+      scannedRowCount: groupAccountRows.length,
+      eligibleRowCount: eligibleRows.length,
+      hydrationBatchCount,
+      hydratedAccountCount: accounts.length,
+      hydrationDroppedCount,
+      finalAccountCount: accounts.length,
+      scanLimitReached: groupAccountRows.length >= gatewayDispatchAccountCandidateScanLimit
+    }
+  }
+}
+
+export async function listOpenAIAccountsForGroupResultAsync(
+  groupId: string,
+  systemAccountId: string,
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata; requestedModel?: string; requestedEndpointFamily?: GatewayRequestEndpointFamily; includeUnavailable?: boolean } = {}
+): Promise<OpenAIAccountsForGroupResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listOpenAIAccountsForGroupResult(groupId, systemAccountId, options)
+  }
+  const client = await getOpenAIAccountSelectorDatabaseClient()
+  const now = nowIso()
+  const qualityFreshAfter = gatewayDispatchCandidateQualityFreshAfterIso()
+  const groupAccess = options.preResolvedGroupAccess ?? await resolveGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+  if (!groupAccess) {
+    return {
+      accounts: [],
+      diagnostics: emptyGatewayDispatchCandidateDiagnostics()
+    }
+  }
+  const candidateWindowOptions = { includeUnavailable: options.includeUnavailable === true }
+  const modelCandidateRows = options.requestedModel?.trim()
+    ? await listGatewayDispatchModelCandidateRowsAsync(client, groupId, groupAccess, now, options.requestedModel, options.requestedEndpointFamily, candidateWindowOptions)
+    : undefined
+  const groupAccountRows = modelCandidateRows
+    ? mergeOpenAIGroupAccountRowsForDispatch(
+      modelCandidateRows.rows,
+      await listGatewayDispatchCandidateRowsAsync(client, groupId, groupAccess, now, candidateWindowOptions)
+    )
+    : await listGatewayDispatchCandidateRowsAsync(client, groupId, groupAccess, now, candidateWindowOptions)
+  const accountAuthorizationsByIdOrResourceId = await loadAccountAuthorizationsForSelectionAsync(client, groupAccountRows, groupAccess, systemAccountId)
+  const eligibleRows = groupAccountRows
+    .map((row) => ({
+      row,
+      accountAccess: resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId })
+    }))
+    .filter((item): item is EligibleOpenAIGroupAccountSelection => Boolean(item.accountAccess))
+    .filter((item) => isOpenAIAccountAvailableForSelection(item.row, item.row, item.accountAccess, now, options.includeUnavailable === true))
+  const qualityByAccountId = await loadFreshGatewayDispatchCandidateQualityRowsAsync(client, eligibleRows.map((item) => item.row.account_id), qualityFreshAfter)
+  applyGatewayDispatchCandidateQualityRows(eligibleRows, qualityByAccountId)
+
+  const accounts: OpenAIAccountSecret[] = []
+  const orderedEligibleRows = orderGatewayDispatchCandidateRowsForDispatch(eligibleRows, {
+    modelRankByAccountId: modelCandidateRows?.modelRankByAccountId
+  })
+  let hydrationBatchCount = 0
+  let hydrationDroppedCount = 0
+  for (let offset = 0; offset < orderedEligibleRows.length && accounts.length < gatewayDispatchAccountCandidateLimit; offset += gatewayDispatchAccountCandidateLimit) {
+    const hydrationRows = orderedEligibleRows.slice(offset, offset + gatewayDispatchAccountCandidateLimit)
+    hydrationBatchCount += 1
+    const resourceAccountIds = hydrationRows.map((item) => openAIAccountResourceAccountId(item.row))
+    const supportedModelsByAccountId = await loadSupportedModelsByAccountIdsAsync(resourceAccountIds)
+    const modelMappingsByAccountId = await loadModelMappingsByAccountIdsAsync(resourceAccountIds)
+    const apiKeyRuntimeStatesByAccountId = await loadAccountApiKeyRuntimeStatesByAccountIdsAsync(resourceAccountIds)
+    const proxyProfilesById = await loadProxyProfilesForSelectionAsync(hydrationRows.map((item) => item.row))
     for (const { row, accountAccess } of hydrationRows) {
       const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByIdOrResourceId, proxyProfilesById, supportedModelsByAccountId, modelMappingsByAccountId, apiKeyRuntimeStatesByAccountId, accountAccess })
       if (account) {
@@ -680,12 +835,38 @@ function loadAccountAuthorizationsForSelection(
   return result.size ? result : undefined
 }
 
+async function loadAccountAuthorizationsForSelectionAsync(
+  client: DatabaseClient,
+  rows: OpenAIGroupAccountSelectionRow[],
+  groupAccess: GroupUsageAccessMetadata,
+  systemAccountId: string
+): Promise<Map<string, ResourceAuthorizationRow> | undefined> {
+  if (groupAccess.groupAccessType === 'authorized') return undefined
+  const result = new Map<string, ResourceAuthorizationRow>()
+  const authorizationIds = rows
+    .map((row) => row.authorization_instance_authorization_id ?? '')
+    .filter(Boolean)
+  for (const authorization of (await activeResourceAuthorizationsByIdsForSelectorAsync(client, authorizationIds, systemAccountId)).values()) {
+    result.set(authorization.id, authorization)
+    result.set(authorization.resource_id, authorization)
+  }
+  return result.size ? result : undefined
+}
+
 function loadProxyProfilesForSelection(rows: OpenAIGroupAccountSelectionRow[]): Map<string, ProxyProfileUrlResolution> | undefined {
   const proxyProfileIds = rows
     .map((row) => openAIAccountResourceProxyProfileId(row) ?? '')
     .filter(Boolean)
   if (!proxyProfileIds.length) return undefined
   return resolveProxyUrlsForProfiles(proxyProfileIds)
+}
+
+async function loadProxyProfilesForSelectionAsync(rows: OpenAIGroupAccountSelectionRow[]): Promise<Map<string, ProxyProfileUrlResolution> | undefined> {
+  const proxyProfileIds = rows
+    .map((row) => openAIAccountResourceProxyProfileId(row) ?? '')
+    .filter(Boolean)
+  if (!proxyProfileIds.length) return undefined
+  return await resolveProxyUrlsForProfilesAsync(proxyProfileIds)
 }
 
 function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null, proxyProfilesById?: Map<string, ProxyProfileUrlResolution>): ProxyProfileUrlResolution {
@@ -779,4 +960,58 @@ function canScheduleAuthorizedAccount(input: {
     ? input.accountAuthorizationsByIdOrResourceId.get(input.authorizationId) ?? input.accountAuthorizationsByIdOrResourceId.get(input.accountId)
     : activeResourceAuthorizationById(input.authorizationId, input.systemAccountId)
   return authorization?.id === input.authorizationId
+}
+
+async function activeResourceAuthorizationForSelectorAsync(
+  client: DatabaseClient,
+  resourceType: ResourceAuthorizationResourceType,
+  resourceId: string,
+  granteeSystemAccountId: string
+): Promise<ResourceAuthorizationRow | undefined> {
+  const now = nowIso()
+  return await client.one<ResourceAuthorizationRow>(`
+    SELECT ${resourceAuthorizationSelectColumns()}
+    FROM ${selectorTable(client, 'resource_authorizations')}
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_system_account_id = ?
+      AND status = 'active'
+      AND (expires_at IS NULL OR expires_at > ?)
+    LIMIT 1
+  `, [resourceType, resourceId, granteeSystemAccountId, now])
+}
+
+async function activeResourceAuthorizationsByIdsForSelectorAsync(
+  client: DatabaseClient,
+  authorizationIds: string[],
+  granteeSystemAccountId: string
+): Promise<Map<string, ResourceAuthorizationRow>> {
+  const ids = [...new Set(authorizationIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const now = nowIso()
+  const rows: ResourceAuthorizationRow[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...await client.query<ResourceAuthorizationRow>(`
+      SELECT ${resourceAuthorizationSelectColumns()}
+      FROM ${selectorTable(client, 'resource_authorizations')}
+      WHERE grantee_system_account_id = ?
+        AND status = 'active'
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND id IN (${chunk.map(() => '?').join(', ')})
+    `, [granteeSystemAccountId, now, ...chunk]))
+  }
+  return new Map(rows.map((row) => [row.id, row]))
+}
+
+async function getOpenAIAccountSelectorDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function selectorTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }

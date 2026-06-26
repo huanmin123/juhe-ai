@@ -13,7 +13,7 @@ const providerOptionsCache = createShortLivedRequestCache<ProviderDefinition[]>(
 const providerModelOptionsCache = createShortLivedRequestCache<ProviderModelOption[]>({ ttlMs: 30_000, maxEntries: 6 })
 
 export interface ProviderModelOptionsParams extends ListParams {
-  protocol?: 'openai' | 'anthropic'
+  protocol?: 'openai' | 'anthropic' | 'gemini'
 }
 
 export const providersApi = {

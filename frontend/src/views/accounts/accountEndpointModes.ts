@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountClientCompatibility, AccountModelMapping, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
@@ -77,6 +77,7 @@ export function validateAccountEndpointModes(input: {
   modes: AccountSupportedEndpointMode[]
   type: AccountType
   clientCompatibility: AccountClientCompatibility
+  modelMappings?: AccountModelMapping[]
   allowedModes?: AccountSupportedEndpointMode[]
   profile?: AccountProviderProfileLike
 }): string | undefined {
@@ -113,7 +114,11 @@ export function validateAccountEndpointModes(input: {
       return `OAuth 账户必须支持 ${accountEndpointModeLabel('responses_sse', input.profile)}`
     }
   }
-  if (input.clientCompatibility === 'codex_responses' && hasOpenAIMode && profileSupportsCodexResponsesChatBridge(input.profile)) {
+  if (
+    input.clientCompatibility === 'codex_responses'
+    && hasOpenAIMode
+    && (profileSupportsCodexResponsesChatBridge(input.profile) || hasResponsesToChatCompletionsMapping(input.modelMappings))
+  ) {
     if (!input.modes.includes('chat_sse')) {
       return `Codex Responses 桥接能力必须启用 ${accountEndpointModeLabel('chat_sse', input.profile)}`
     }
@@ -195,4 +200,10 @@ function contextProfileId(context?: AccountEndpointModeLabelContext): string | u
 
 function stableEndpointModeKey(value: AccountSupportedEndpointMode[]): string {
   return [...new Set(value)].sort().join('\n')
+}
+
+function hasResponsesToChatCompletionsMapping(value: AccountModelMapping[] | undefined): boolean {
+  return (value ?? []).some((mapping) => mapping.enabled !== false
+    && mapping.sourceEndpointFamily === 'responses'
+    && mapping.upstreamEndpointFamily === 'chat_completions')
 }

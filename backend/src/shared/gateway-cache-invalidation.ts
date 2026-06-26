@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from './logger.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
 
 type CacheInvalidationHandler = () => void
@@ -48,6 +49,10 @@ export function notifyApiKeyQuotaCacheInvalidation(apiKeyId: string | undefined,
 }
 
 export function runGatewayCacheInvalidatorsAfterCommit(effect: () => void): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    effect()
+    return
+  }
   runAfterDatabaseCommit(effect, getBusinessDatabase())
 }
 

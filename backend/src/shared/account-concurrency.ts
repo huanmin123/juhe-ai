@@ -1,8 +1,12 @@
+import { runtimeConfig } from '../config/runtime.js'
+import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+
 const currentConcurrencyByAccountId = new Map<string, number>()
 const currentConcurrencyByAccountLaneKey = new Map<string, number>()
 const inFlightSlotsByAccountId = new Map<string, Map<number, AccountInFlightSlot>>()
 const releaseListeners = new Set<(event: AccountConcurrencyReleaseEvent) => void>()
 let nextSlotId = 1
+const redisAccountConcurrencyTtlMs = 2 * 60 * 60 * 1000
 
 export type AccountConcurrencyLane = 'text' | 'image'
 
@@ -84,6 +88,50 @@ export function tryAcquireAccountConcurrency(
       if (released) return
       released = true
       releaseAccountConcurrency(accountId, slotId)
+    }
+  }
+}
+
+export async function tryAcquireAccountConcurrencyAsync(
+  accountId: string,
+  concurrencyLimit: number,
+  options: AccountConcurrencyAcquireOptions = {}
+): Promise<AccountConcurrencySlot> {
+  if (runtimeConfig.runtimeStateDriver === 'memory') {
+    return tryAcquireAccountConcurrency(accountId, concurrencyLimit, options)
+  }
+  const limit = normalizeConcurrencyLimit(concurrencyLimit)
+  const lane = normalizeConcurrencyLane(options.lane)
+  const laneLimit = normalizeLaneLimit(options.laneLimit, limit, lane)
+  const [acquired, current, laneCurrent] = await acquireRedisAccountConcurrency(accountId, limit, lane, laneLimit)
+  if (!acquired) {
+    return {
+      acquired: false,
+      current,
+      limit,
+      lane,
+      laneCurrent,
+      laneLimit,
+      release: noop,
+      markFirstOutput: noop
+    }
+  }
+
+  let released = false
+  return {
+    acquired: true,
+    current,
+    limit,
+    lane,
+    laneCurrent,
+    laneLimit,
+    markFirstOutput: noop,
+    release: () => {
+      if (released) return
+      released = true
+      void releaseRedisAccountConcurrency(accountId, lane).catch(() => undefined).finally(() => {
+        notifyAccountConcurrencyReleased({ accountId, lane })
+      })
     }
   }
 }
@@ -252,3 +300,91 @@ function accountLaneKey(accountId: string, lane: AccountConcurrencyLane): string
 }
 
 function noop(): void {}
+
+async function acquireRedisAccountConcurrency(
+  accountId: string,
+  limit: number,
+  lane: AccountConcurrencyLane,
+  laneLimit: number
+): Promise<[boolean, number, number]> {
+  const result = await (await redisStateClient()).eval(redisAcquireAccountConcurrencyScript, {
+    keys: [
+      redisAccountConcurrencyKey(accountId),
+      redisAccountConcurrencyLaneKey(accountId, lane)
+    ],
+    arguments: [
+      String(limit),
+      String(laneLimit),
+      String(redisAccountConcurrencyTtlMs)
+    ]
+  })
+  const values = numericRedisArray(result)
+  return [values[0] === 1, values[1] ?? 0, values[2] ?? 0]
+}
+
+async function releaseRedisAccountConcurrency(accountId: string, lane: AccountConcurrencyLane): Promise<void> {
+  await (await redisStateClient()).eval(redisReleaseAccountConcurrencyScript, {
+    keys: [
+      redisAccountConcurrencyKey(accountId),
+      redisAccountConcurrencyLaneKey(accountId, lane)
+    ],
+    arguments: []
+  })
+}
+
+function redisStateClient(): Promise<RedisCommandClient> {
+  const redisUrl = runtimeConfig.redis.stateUrl
+  if (!redisUrl) {
+    throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
+  }
+  return getRedisClient(redisUrl)
+}
+
+function redisAccountConcurrencyKey(accountId: string): string {
+  return `juhe-ai:account-concurrency:${accountId}:total`
+}
+
+function redisAccountConcurrencyLaneKey(accountId: string, lane: AccountConcurrencyLane): string {
+  return `juhe-ai:account-concurrency:${accountId}:${lane}`
+}
+
+const redisAcquireAccountConcurrencyScript = `
+local current = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
+local lane_current = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+local total_limit = tonumber(ARGV[1])
+local lane_limit = tonumber(ARGV[2])
+if current >= total_limit or lane_current >= lane_limit then
+  return {0, current, lane_current}
+end
+current = redis.call('INCR', KEYS[1])
+lane_current = redis.call('INCR', KEYS[2])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+redis.call('PEXPIRE', KEYS[2], ARGV[3])
+return {1, current, lane_current}
+`
+
+const redisReleaseAccountConcurrencyScript = `
+local current = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
+if current <= 1 then
+  redis.call('DEL', KEYS[1])
+else
+  redis.call('DECR', KEYS[1])
+end
+local lane_current = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if lane_current <= 1 then
+  redis.call('DEL', KEYS[2])
+else
+  redis.call('DECR', KEYS[2])
+end
+return 1
+`
+
+function numericRedisArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => {
+    if (typeof item === 'number' && Number.isFinite(item)) return item
+    if (typeof item === 'bigint') return Number(item)
+    const parsed = Number(item)
+    return Number.isFinite(parsed) ? parsed : 0
+  })
+}

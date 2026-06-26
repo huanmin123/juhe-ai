@@ -5,9 +5,9 @@ import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
-import { createSystemAccountWithPasswordHash, findSystemAccountById, listSystemAccountOptions, listSystemAccountsPage, revokeAllSessionsForAccount, updateSystemAccountWithPasswordHash } from '../../storage/repositories.js'
+import { createSystemAccountWithPasswordHashAsync, findSystemAccountByIdAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, revokeAllSessionsForAccountAsync, updateSystemAccountWithPasswordHashAsync } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
@@ -33,12 +33,20 @@ const updateSchema = z.object({
   imageGenerationEnabled: z.boolean().optional()
 }).strict()
 
-systemAccountsRouter.get('/', requireAdmin, (req, res) => {
-  res.json(ok(listSystemAccountsPage(parseSystemAccountListOptions(req.query))))
+systemAccountsRouter.get('/', requireAdmin, async (req, res, next) => {
+  try {
+    res.json(ok(await listSystemAccountsPageAsync(parseSystemAccountListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
-systemAccountsRouter.get('/options', requireAdmin, (req, res) => {
-  res.json(ok(listSystemAccountOptions(parseSystemAccountOptionListOptions(req.query))))
+systemAccountsRouter.get('/options', requireAdmin, async (req, res, next) => {
+  try {
+    res.json(ok(await listSystemAccountOptionsAsync(parseSystemAccountOptionListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
 function parseSystemAccountOptionListOptions(query: Record<string, unknown>) {
@@ -80,8 +88,8 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
       return
     }
     const passwordHash = await hashPasswordAsync(parsed.data.password)
-    const account = runLoggedOperation(() => {
-      const account = createSystemAccountWithPasswordHash(parsed.data, passwordHash)
+    const account = await runLoggedOperationAsync(async () => {
+      const account = await createSystemAccountWithPasswordHashAsync(parsed.data, passwordHash)
       return {
         result: account,
         log: {
@@ -129,14 +137,14 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
       return
     }
     const passwordHash = parsed.data.password ? await hashPasswordAsync(parsed.data.password) : undefined
-    const before = findSystemAccountById(req.params.id)
-    const account = runLoggedOperation(() => {
-      const account = updateSystemAccountWithPasswordHash(req.params.id, parsed.data, passwordHash)
+    const before = await findSystemAccountByIdAsync(req.params.id)
+    const account = await runLoggedOperationAsync(async () => {
+      const account = await updateSystemAccountWithPasswordHashAsync(req.params.id, parsed.data, passwordHash)
       if (!account) {
         throw new Error('系统账户不存在')
       }
       if (parsed.data.status === 'disabled' || parsed.data.password) {
-        revokeAllSessionsForAccount(req.params.id)
+        await revokeAllSessionsForAccountAsync(req.params.id)
       }
       return {
         result: account,

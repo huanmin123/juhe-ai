@@ -232,6 +232,48 @@ try {
     'GLM 模型目录应按官方当前模型从新到旧排序'
   )
 
+  const geminiCatalog = catalogService.listProviderModelCatalog({
+    providerCode: 'gemini',
+    systemAccountId: 'sys_admin'
+  })
+  const geminiModels = new Set(geminiCatalog.map((item) => item.model))
+  for (const id of [
+    'gemini-3.5-flash',
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-pro-preview-customtools',
+    'gemini-3-flash-preview',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-embedding-2',
+    'gemini-embedding-001'
+  ]) {
+    assert(geminiModels.has(id), `Gemini 模型目录应包含 Google 官方模型 ${id}`)
+  }
+  for (const id of [
+    'gemini-3.5-flash-antigravity',
+    'gemini-3.5-flash-antigravity-ultra'
+  ]) {
+    assert.equal(geminiModels.has(id), false, `${id} 是中转自定义型号，不应进入 Gemini 官方内置目录`)
+  }
+  assert.deepEqual(
+    geminiCatalog.map((item) => item.model),
+    [
+      'gemini-3.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-pro-preview-customtools',
+      'gemini-3-flash-preview',
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      'gemini-embedding-2',
+      'gemini-embedding-001'
+    ],
+    'Gemini 模型目录应只包含当前收录的 Google 官方模型，并按官网当前主序排序'
+  )
+
   const managementCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',

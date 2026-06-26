@@ -1,7 +1,14 @@
 import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { parse } from 'dotenv'
 
 const recommendedNodeVersion = '官方 Node.js LTS：22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0）'
 const verifyCommand = 'pnpm --filter juhe-ai-backend check:runtime'
+const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+const localEnvPath = resolve(backendRoot, '.env')
 const sqliteCapabilityCheckScript = `
 const { DatabaseSync } = await import('node:sqlite')
 const database = new DatabaseSync(':memory:')
@@ -49,6 +56,14 @@ if (!process.release.lts) {
   exitWithRuntimeError('[juhe-ai] 当前 Node.js 不是官方 LTS 发行版，后端已停止启动。')
 }
 
+const runtimeMode = rawConfig('JUHE_AI_RUNTIME_MODE').toLowerCase() || 'standalone'
+const databaseDriver = rawConfig('JUHE_AI_DATABASE_DRIVER').toLowerCase()
+  || (runtimeMode === 'performance' ? 'postgres' : 'sqlite')
+
+if (runtimeMode === 'performance' || databaseDriver === 'postgres') {
+  process.exit(0)
+}
+
 const checkResult = spawnSync(process.execPath, [
   '--no-warnings',
   '--input-type=module',
@@ -63,4 +78,20 @@ if (checkResult.status !== 0 || checkResult.error) {
     '[juhe-ai] 当前 Node.js 的内置 SQLite 不完整，后端需要可用的 node:sqlite。',
     [`原始错误：${formatCheckError(checkResult)}`]
   )
+}
+
+function rawConfig(name: string): string {
+  return (process.env[name]?.trim() ?? loadLocalEnv()[name]?.trim() ?? '')
+}
+
+let cachedLocalEnv: Record<string, string> | undefined
+
+function loadLocalEnv(): Record<string, string> {
+  if (cachedLocalEnv) return cachedLocalEnv
+  if (!existsSync(localEnvPath)) {
+    cachedLocalEnv = {}
+    return cachedLocalEnv
+  }
+  cachedLocalEnv = parse(readFileSync(localEnvPath))
+  return cachedLocalEnv
 }

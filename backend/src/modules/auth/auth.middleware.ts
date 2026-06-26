@@ -1,44 +1,48 @@
 import type { NextFunction, Request, Response } from 'express'
 
 import { isAdminRole, isSuperAdminRole } from '../../domain/types.js'
-import { findSessionByToken, touchSession } from '../../storage/repositories.js'
+import { findSessionByTokenAsync, touchSessionAsync } from '../../storage/repositories.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
 import { parseCookie, sessionCookieName } from './auth.routes.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
   if (!token) {
     res.status(401).json({ message: '请先登录' })
     return
   }
 
-  const session = findSessionByToken(token)
-  if (!session) {
-    res.status(401).json({ message: '登录会话已过期' })
-    return
-  }
+  try {
+    const session = await findSessionByTokenAsync(token)
+    if (!session) {
+      res.status(401).json({ message: '登录会话已过期' })
+      return
+    }
 
-  touchSession(session.sessionId, session.lastSeenAt)
-  const context = {
-    systemAccountId: session.account.id,
-    username: session.account.username,
-    displayName: session.account.displayName,
-    role: session.account.role,
-    mustChangePassword: session.account.mustChangePassword,
-    sessionId: session.sessionId
-  }
+    await touchSessionAsync(session.sessionId, session.lastSeenAt)
+    const context = {
+      systemAccountId: session.account.id,
+      username: session.account.username,
+      displayName: session.account.displayName,
+      role: session.account.role,
+      mustChangePassword: session.account.mustChangePassword,
+      sessionId: session.sessionId
+    }
 
-  if (context.mustChangePassword) {
-    res.status(403).json({ message: '请先修改初始密码', code: 'must_change_password' })
-    return
-  }
+    if (context.mustChangePassword) {
+      res.status(403).json({ message: '请先修改初始密码', code: 'must_change_password' })
+      return
+    }
 
-  bindRequestContextFields({
-    systemAccountId: context.systemAccountId,
-    role: context.role
-  })
-  withRequestAuthContext(context, next)
+    bindRequestContextFields({
+      systemAccountId: context.systemAccountId,
+      role: context.role
+    })
+    withRequestAuthContext(context, next)
+  } catch (error) {
+    next(error)
+  }
 }
 
 export function requireAdmin(_req: Request, res: Response, next: NextFunction): void {

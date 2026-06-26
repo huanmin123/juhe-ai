@@ -8,6 +8,8 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GEMINI_PROTOCOL_CODE,
@@ -107,6 +109,21 @@ try {
         base_url: upstreamOrigin
       },
       groupId: group.id,
+      priority: 0,
+      status: 'active',
+      schedulable: true
+    }, access)
+    repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: 'Gemini Mock AI 回归备用账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-upstream-fallback',
+        base_url: upstreamOrigin
+      },
+      groupId: group.id,
+      priority: 10,
       status: 'active',
       schedulable: true
     }, access)
@@ -209,6 +226,74 @@ try {
     }, access)
     assert(openAIChatRootApiKey.key, 'Gemini OpenAI Chat 根地址回归 API Key 未返回明文密钥')
 
+    const glmBridgeGroup = repositories.createGroup({
+      name: 'Gemini Native 转 GLM Chat 回归分组',
+      providerCode: GLM_PROVIDER_CODE,
+      providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+      enabled: true
+    }, access)
+    repositories.createAccount({
+      providerCode: GLM_PROVIDER_CODE,
+      providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+      name: 'Gemini Native 转 GLM Chat 回归账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-glm-upstream',
+        base_url: upstreamOrigin
+      },
+      groupId: glmBridgeGroup.id,
+      modelMappings: [
+        {
+          sourceModel: 'gemini-3.5-flash',
+          sourceEndpointFamily: 'generate_content',
+          upstreamModel: 'glm-5.2',
+          upstreamEndpointFamily: 'chat_completions',
+          enabled: true
+        },
+        {
+          sourceModel: 'gemini-3.5-flash',
+          sourceEndpointFamily: 'stream_generate_content',
+          upstreamModel: 'glm-5.2',
+          upstreamEndpointFamily: 'chat_completions',
+          enabled: true
+        }
+      ],
+      status: 'active',
+      schedulable: true
+    }, access)
+    assert.throws(
+      () => repositories.createAccount({
+        providerCode: GLM_PROVIDER_CODE,
+        providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+        name: 'Gemini Native 转 GLM Chat 非法映射账户',
+        type: 'api_key',
+        credentials: {
+          api_key: 'sk-glm-invalid-upstream',
+          base_url: upstreamOrigin
+        },
+        groupId: glmBridgeGroup.id,
+        modelMappings: [
+          {
+            sourceModel: 'gemini-3.5-flash',
+            sourceEndpointFamily: 'generate_content',
+            upstreamModel: 'glm-5.2',
+            upstreamEndpointFamily: 'responses',
+            enabled: true
+          }
+        ],
+        status: 'active',
+        schedulable: true
+      }, access),
+      /Gemini GenerateContent/,
+      'Gemini GenerateContent 下游协议不应允许桥接到非 Chat Completions 上游'
+    )
+    const glmBridgeApiKey = repositories.createApiKeyRecord({
+      name: 'Gemini Native 转 GLM Chat 回归 Key',
+      groupBindings: [{ groupId: glmBridgeGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(glmBridgeApiKey.key, 'Gemini Native 转 GLM Chat 回归 API Key 未返回明文密钥')
+
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
@@ -220,12 +305,16 @@ try {
     await assertGeminiGenerateContentKeyQuery(baseUrl, apiKey.key)
     await assertGeminiStreamGenerateContent(baseUrl, apiKey.key)
     await assertGeminiCountTokens(baseUrl, apiKey.key)
+    await assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl, apiKey.key)
+    await assertGeminiCliRetryableErrorSwitchesAccount(baseUrl, apiKey.key)
     await assertGeminiUpstreamError(baseUrl, apiKey.key)
     await assertGeminiLocalAuthError(baseUrl)
     await assertGeminiOpenAIChatPathRejected(baseUrl, apiKey.key)
     await assertGeminiOpenAIChatDirect(baseUrl, openAIChatApiKey.key)
     await assertGeminiOpenAIChatRootBaseUrl(baseUrl, openAIChatRootApiKey.key)
     await assertGeminiCodexResponsesMapping(baseUrl, openAIChatApiKey.key)
+    await assertGeminiGenerateContentToGlmChatJson(baseUrl, glmBridgeApiKey.key)
+    await assertGeminiStreamGenerateContentToGlmChatSse(baseUrl, glmBridgeApiKey.key)
     assertGeminiPolicyDefaults()
 
     console.log('gemini gateway mock ai regression passed')
@@ -252,6 +341,11 @@ function assertGeminiSeeds(): void {
   const geminiFlash = catalog.find((item) => item.model === 'gemini-3.5-flash')
   assert(geminiFlash, 'Gemini 模型目录必须包含 gemini-3.5-flash')
   assert(geminiFlash.supportedApiProtocols.includes('chat_completions'), 'Gemini 文本模型必须可作为 OpenAI Chat 映射上游')
+  assert(geminiFlash.supportedApiProtocols.includes('generate_content'), 'Gemini 文本模型必须可作为 Gemini GenerateContent 映射下游')
+  assert(catalog.some((item) => item.model === 'gemini-3.1-pro-preview'), 'Gemini 模型目录必须包含官方 Gemini 3.1 Pro Preview')
+  assert(modelCatalog.listProviderModelCatalog({ providerCode: GLM_PROVIDER_CODE }).some((item) => item.model === 'glm-5.2'), 'GLM 模型目录必须包含 glm-5.2')
+  assert(catalog.some((item) => item.model === 'gemini-embedding-2'), 'Gemini 模型目录必须包含官方 Gemini Embedding 2')
+  assert.equal(catalog.some((item) => item.model.includes('antigravity')), false, 'Gemini 官方内置目录不应包含中转自定义 Antigravity 型号')
 }
 
 function assertGeminiProtocolHelpers(): void {
@@ -315,6 +409,8 @@ async function assertGeminiModels(baseUrl: string, localApiKey: string): Promise
   assert.equal(response.status, 200)
   const body = await response.json() as { models?: Array<{ name?: string }> }
   assert(body.models?.some((item) => item.name === 'models/gemini-3.5-flash'), 'Gemini models 响应必须包含内置模型')
+  assert(body.models?.some((item) => item.name === 'models/gemini-3.1-pro-preview'), 'Gemini models 响应必须包含官方 Pro Preview 模型')
+  assert.equal(body.models?.some((item) => item.name?.includes('antigravity')), false, 'Gemini models 响应不应包含中转自定义型号')
   assert.equal(upstreamHits.length, before, 'Gemini models 请求不应命中上游')
 }
 
@@ -459,6 +555,54 @@ async function assertGeminiUpstreamError(baseUrl: string, localApiKey: string): 
   assert(upstreamHits.every((hit) => hit.rawUrl.includes('case=quota')), 'Gemini 上游错误重试必须保持原始查询参数')
 }
 
+async function assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?case=generic-retryable-json', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'generic retryable error should not switch' }] }
+      ]
+    })
+  })
+  assert.equal(response.status, 503)
+  await response.text()
+  assert.equal(upstreamHits.length, 1, '通用 Gemini 客户端不应触发 Gemini CLI 专属服务端换账号')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
+}
+
+async function assertGeminiCliRetryableErrorSwitchesAccount(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?case=cli-retryable-json', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json',
+      'user-agent': 'GeminiCLI/0.12.0/gemini-3.5-flash (win32; x64)'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'gemini cli should switch account' }] }
+      ]
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'gemini cli retry ok')
+  assert.deepEqual(
+    upstreamHits.map((hit) => hit.xGoogApiKey),
+    ['sk-gemini-upstream', 'sk-gemini-upstream-fallback'],
+    'Gemini CLI 专属可重试错误应先命中主账号，再由服务端切到下一个账号'
+  )
+}
+
 async function assertGeminiLocalAuthError(baseUrl: string): Promise<void> {
   const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent', baseUrl), {
     method: 'POST',
@@ -574,9 +718,129 @@ async function assertGeminiCodexResponsesMapping(baseUrl: string, localApiKey: s
   assert(Array.isArray(upstreamBody.messages) && upstreamBody.messages.length > 0, 'Codex Responses -> Chat 桥接必须生成 Chat messages')
 }
 
+async function assertGeminiGenerateContentToGlmChatJson(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?trace=gemini-native-to-glm-chat-json', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: '只输出简短中文' }]
+      },
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with glm gemini bridge json ok' }] }
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        topP: 0.9,
+        maxOutputTokens: 64,
+        responseMimeType: 'application/json'
+      },
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: 'lookup_order',
+              description: '查询订单',
+              parameters: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      toolConfig: {
+        functionCallingConfig: {
+          mode: 'AUTO'
+        }
+      }
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  const body = JSON.parse(responseText) as {
+    candidates?: Array<{ content?: { role?: string; parts?: Array<{ text?: string }> }; finishReason?: string }>
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number }
+  }
+  assert.equal(body.candidates?.[0]?.content?.role, 'model')
+  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'glm gemini bridge json ok')
+  assert.equal(body.candidates?.[0]?.finishReason, 'STOP')
+  assert.equal(body.usageMetadata?.promptTokenCount, 13)
+  assert.equal(body.usageMetadata?.candidatesTokenCount, 5)
+  assert.equal(body.usageMetadata?.totalTokenCount, 18)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/chat/completions?trace=gemini-native-to-glm-chat-json')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-glm-upstream')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, '', 'Gemini -> Chat 桥接上游不应使用 Gemini 原生 x-goog-api-key')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as {
+    model?: string
+    stream?: boolean
+    messages?: Array<{ role?: string; content?: unknown }>
+    temperature?: number
+    top_p?: number
+    max_tokens?: number
+    response_format?: { type?: string }
+    tools?: unknown[]
+    tool_choice?: unknown
+  }
+  assert.equal(upstreamBody.model, 'glm-5.2', 'Gemini -> Chat 显式模型映射必须改写 GLM 上游模型')
+  assert.equal(upstreamBody.stream, false)
+  assert.equal(upstreamBody.messages?.[0]?.role, 'system')
+  assert.equal(upstreamBody.messages?.[1]?.role, 'user')
+  assert.equal(upstreamBody.temperature, 0.2)
+  assert.equal(upstreamBody.top_p, 0.9)
+  assert.equal(upstreamBody.max_tokens, 64)
+  assert.equal(upstreamBody.response_format?.type, 'json_object')
+  assert(Array.isArray(upstreamBody.tools) && upstreamBody.tools.length === 1, 'Gemini functionDeclarations 必须转换为 Chat tools')
+  assert.equal(upstreamBody.tool_choice, 'auto')
+}
+
+async function assertGeminiStreamGenerateContentToGlmChatSse(baseUrl: string, localApiKey: string): Promise<void> {
+  upstreamHits.length = 0
+  const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse&trace=gemini-native-to-glm-chat-sse', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'reply with glm gemini bridge stream ok' }] }
+      ],
+      generationConfig: {
+        maxOutputTokens: 64
+      }
+    })
+  })
+  const responseText = await response.text()
+  assert.equal(response.status, 200, responseText)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(responseText, /glm gemini /)
+  assert.match(responseText, /bridge stream ok/)
+  assert.match(responseText, /usageMetadata/)
+  assert.equal(upstreamHits.length, 1)
+  assert.equal(upstreamHits[0]?.rawUrl, '/chat/completions?trace=gemini-native-to-glm-chat-sse')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-glm-upstream')
+  assert.equal(upstreamHits[0]?.xGoogApiKey, '')
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { model?: string; stream?: boolean; messages?: unknown[]; max_tokens?: number }
+  assert.equal(upstreamBody.model, 'glm-5.2')
+  assert.equal(upstreamBody.stream, true)
+  assert.equal(upstreamBody.max_tokens, 64)
+  assert(Array.isArray(upstreamBody.messages) && upstreamBody.messages.length === 1, 'Gemini stream -> Chat 桥接必须生成 Chat messages')
+}
+
 function assertGeminiPolicyDefaults(): void {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.id === 'default_gemini_error_object'), 'Gemini 默认响应检查策略必须存在')
+  assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.id === 'default_gemini_cli_retryable_error' && rule.match.clientProfiles?.includes('gemini_cli')), 'Gemini CLI 专属默认响应检查策略必须存在')
 }
 
 function createGeminiMockUpstream(): http.Server {
@@ -616,6 +880,33 @@ function createGeminiMockUpstream(): http.Server {
     }
 
     if (req.method === 'POST' && url.pathname === '/v1beta/models/gemini-3.5-flash:generateContent') {
+      if (url.searchParams.get('case') === 'generic-retryable-json' || url.searchParams.get('case') === 'cli-retryable-json') {
+        if (headerText(req, 'x-goog-api-key') === 'sk-gemini-upstream') {
+          sendJson(res, 200, {
+            error: {
+              code: 503,
+              message: 'primary account temporarily unavailable',
+              status: 'UNAVAILABLE'
+            }
+          })
+          return
+        }
+        sendJson(res, 200, {
+          candidates: [
+            {
+              content: {
+                parts: [{ text: 'gemini cli retry ok' }]
+              },
+              finishReason: 'STOP'
+            }
+          ],
+          usageMetadata: {
+            promptTokenCount: 12,
+            candidatesTokenCount: 5
+          }
+        })
+        return
+      }
       if (url.searchParams.get('case') === 'quota') {
         sendJson(res, 429, {
           error: {
@@ -661,7 +952,7 @@ function createGeminiMockUpstream(): http.Server {
       return
     }
 
-    if (req.method === 'POST' && (url.pathname === '/v1beta/openai/chat/completions' || url.pathname === '/v1/chat/completions')) {
+    if (req.method === 'POST' && (url.pathname === '/v1beta/openai/chat/completions' || url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions')) {
       const body = parseJsonObject(bodyText)
       if (body.stream === true) {
         res.writeHead(200, {
@@ -669,25 +960,28 @@ function createGeminiMockUpstream(): http.Server {
           'cache-control': 'no-cache, no-transform',
           connection: 'keep-alive'
         })
+        const streamText = url.pathname === '/chat/completions'
+          ? 'glm gemini bridge stream ok'
+          : 'gemini openai bridge ok'
         res.write(`data: ${JSON.stringify({
           id: 'chatcmpl-gemini-openai',
           object: 'chat.completion.chunk',
           created: 0,
-          model: 'gemini-3.5-flash',
+          model: body.model ?? 'gemini-3.5-flash',
           choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]
         })}\n\n`)
         res.write(`data: ${JSON.stringify({
           id: 'chatcmpl-gemini-openai',
           object: 'chat.completion.chunk',
           created: 0,
-          model: 'gemini-3.5-flash',
-          choices: [{ index: 0, delta: { content: 'gemini openai bridge ok' }, finish_reason: null }]
+          model: body.model ?? 'gemini-3.5-flash',
+          choices: [{ index: 0, delta: { content: streamText }, finish_reason: null }]
         })}\n\n`)
         res.write(`data: ${JSON.stringify({
           id: 'chatcmpl-gemini-openai',
           object: 'chat.completion.chunk',
           created: 0,
-          model: 'gemini-3.5-flash',
+          model: body.model ?? 'gemini-3.5-flash',
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
           usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 }
         })}\n\n`)
@@ -703,11 +997,13 @@ function createGeminiMockUpstream(): http.Server {
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: 'gemini openai direct ok' },
+            message: { role: 'assistant', content: url.pathname === '/chat/completions' ? 'glm gemini bridge json ok' : 'gemini openai direct ok' },
             finish_reason: 'stop'
           }
         ],
-        usage: { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 }
+        usage: url.pathname === '/chat/completions'
+          ? { prompt_tokens: 13, completion_tokens: 5, total_tokens: 18 }
+          : { prompt_tokens: 7, completion_tokens: 4, total_tokens: 11 }
       })
       return
     }

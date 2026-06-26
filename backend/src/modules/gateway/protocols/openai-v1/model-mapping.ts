@@ -9,6 +9,8 @@ import type {
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
 } from '../../../../domain/provider-protocol.js'
@@ -119,6 +121,15 @@ export function isAnthropicMessagesToChatCompletionsModelMapping(
     && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
 }
 
+export function isGeminiGenerateContentToChatCompletionsModelMapping(
+  mapping: ResolvedOpenAIModelMapping | undefined
+): boolean {
+  return (
+    mapping?.sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY
+    || mapping?.sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  ) && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+}
+
 export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: ResolvedOpenAIModelMapping): string {
   const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
   if (isOpenAIResponsesToChatCompletionsModelMapping(mapping)) {
@@ -126,6 +137,9 @@ export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: Res
   }
   if (isAnthropicMessagesToChatCompletionsModelMapping(mapping)) {
     return `/chat/completions${query}`
+  }
+  if (isGeminiGenerateContentToChatCompletionsModelMapping(mapping)) {
+    return `/chat/completions${geminiGenerateContentToChatCompletionsQuery(req)}`
   }
   if (isOpenAIChatCompletionsToResponsesModelMapping(mapping)) {
     return `/responses${query}`
@@ -194,6 +208,16 @@ function modelMappingRequestError(message: string): OpenAIOAuthCodexAdapterError
   })
 }
 
+function geminiGenerateContentToChatCompletionsQuery(req: Request): string {
+  const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
+  if (!query) return ''
+  const params = new URLSearchParams(query.slice(1))
+  params.delete('alt')
+  params.delete('key')
+  const text = params.toString()
+  return text ? `?${text}` : ''
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -202,4 +226,6 @@ function isAccountModelMappingSourceEndpointFamily(value: GatewayRequestEndpoint
   return value === OPENAI_CHAT_COMPLETIONS_FAMILY
     || value === OPENAI_RESPONSES_FAMILY
     || value === ANTHROPIC_MESSAGES_FAMILY
+    || value === GEMINI_GENERATE_CONTENT_FAMILY
+    || value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 }

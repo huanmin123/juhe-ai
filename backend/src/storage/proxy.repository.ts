@@ -1,5 +1,9 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
+import { runtimeConfig } from '../config/runtime.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
@@ -10,6 +14,7 @@ const proxyTestStatusValues = ['unknown', 'passed', 'warning', 'failed'] as cons
 const proxyInputKeys = new Set(['name', 'description', 'type', 'host', 'port', 'username', 'password', 'enabled'])
 const proxyUsagePreviewLimit = 3
 const proxyUsageWindowLimit = proxyUsagePreviewLimit + 1
+const businessSchemaName = 'juhe_business'
 export type ProxyProfileTestStatus = typeof proxyTestStatusValues[number]
 
 interface ProxyRow {
@@ -457,6 +462,39 @@ export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<stri
   return output
 }
 
+export async function resolveProxyUrlsForProfilesAsync(proxyProfileIds: string[]): Promise<Map<string, ProxyProfileUrlResolution>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return resolveProxyUrlsForProfiles(proxyProfileIds)
+  }
+  const ids = [...new Set(proxyProfileIds.map((id) => id.trim()).filter(Boolean))]
+  const output = new Map<string, ProxyProfileUrlResolution>()
+  if (!ids.length) return output
+
+  const client = await getProxyDatabaseClient()
+  const rows: Array<Pick<ProxyRow, 'id' | 'type' | 'host' | 'port' | 'username' | 'password_encrypted' | 'enabled'>> = []
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...await client.query<Pick<ProxyRow, 'id' | 'type' | 'host' | 'port' | 'username' | 'password_encrypted' | 'enabled'>>(`
+      SELECT id, type, host, port, username, password_encrypted, enabled
+      FROM ${proxyProfilesTable(client)}
+      WHERE id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk))
+  }
+  const rowsById = new Map(rows.map((row) => [row.id, row]))
+  for (const id of ids) {
+    const row = rowsById.get(id)
+    if (!row || row.enabled !== 1) {
+      output.set(id, { unavailable: true, errorMessage: new ProxyProfileUnavailableError(id).message })
+      continue
+    }
+    try {
+      output.set(id, { proxyUrl: proxyUrlFromRow(row) })
+    } catch {
+      output.set(id, { unavailable: true, errorMessage: '代理凭据不可解密，请检查代理配置' })
+    }
+  }
+  return output
+}
+
 export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
   const row = getBusinessDatabase()
@@ -477,6 +515,19 @@ function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined 
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
   return proxyUrlFromRow(row)
+}
+
+async function getProxyDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function proxyProfilesTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'proxy_profiles')
+    : client.dialect.quoteIdentifier('proxy_profiles')
 }
 
 function proxyUrlFromRow(row: Pick<ProxyRow, 'type' | 'host' | 'port' | 'username' | 'password_encrypted'>): string {

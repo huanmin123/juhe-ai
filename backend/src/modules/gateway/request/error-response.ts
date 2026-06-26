@@ -95,6 +95,19 @@ export function handleGatewayRequestKnownErrorResponse(input: HandleGatewayReque
 }
 
 function sendAgentGuidanceResponse(res: Response, guidance: GatewayAgentGuidanceResponse): string {
+  if (guidance.protocol === 'gemini') {
+    if (guidance.stream) {
+      const body = geminiGuidanceSse(guidance)
+      res.status(200)
+      res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+      res.setHeader('cache-control', 'no-cache')
+      res.end(body)
+      return body
+    }
+    const body = geminiGuidanceJson(guidance)
+    res.status(200).json(body)
+    return JSON.stringify(body)
+  }
   if (guidance.protocol === 'messages') {
     if (guidance.stream) {
       const body = anthropicMessagesGuidanceSse(guidance)
@@ -186,6 +199,41 @@ function anthropicMessagesGuidanceSse(guidance: GatewayAgentGuidanceResponse): s
     }),
     anthropicSse('message_stop', {
       type: 'message_stop'
+    })
+  ].join('')
+}
+
+function geminiGuidanceJson(guidance: GatewayAgentGuidanceResponse): Record<string, unknown> {
+  return {
+    candidates: [{
+      content: {
+        role: 'model',
+        parts: [{ text: guidance.message }]
+      },
+      finishReason: 'STOP'
+    }],
+    usageMetadata: zeroGeminiUsage(),
+    modelVersion: guidance.model
+  }
+}
+
+function geminiGuidanceSse(guidance: GatewayAgentGuidanceResponse): string {
+  return [
+    geminiSse({
+      candidates: [{
+        content: {
+          role: 'model',
+          parts: [{ text: guidance.message }]
+        }
+      }],
+      modelVersion: guidance.model
+    }),
+    geminiSse({
+      candidates: [{
+        finishReason: 'STOP'
+      }],
+      usageMetadata: zeroGeminiUsage(),
+      modelVersion: guidance.model
     })
   ].join('')
 }
@@ -365,6 +413,10 @@ function anthropicSse(event: string, payload: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
 }
 
+function geminiSse(payload: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(payload)}\n\n`
+}
+
 function zeroChatUsage(): Record<string, unknown> {
   return {
     prompt_tokens: 0,
@@ -387,5 +439,13 @@ function zeroAnthropicMessagesUsage(): Record<string, unknown> {
   return {
     input_tokens: 0,
     output_tokens: 0
+  }
+}
+
+function zeroGeminiUsage(): Record<string, unknown> {
+  return {
+    promptTokenCount: 0,
+    candidatesTokenCount: 0,
+    totalTokenCount: 0
   }
 }

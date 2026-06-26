@@ -108,7 +108,7 @@ try {
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const systemAccountOptionSqls: string[] = []
   database.prepare = ((sql: string) => {
-    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+system_accounts\b/i.test(sql)) {
+    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+"?system_accounts"?\b/i.test(sql)) {
       systemAccountOptionSqls.push(sql)
     }
     return originalPrepare(sql)

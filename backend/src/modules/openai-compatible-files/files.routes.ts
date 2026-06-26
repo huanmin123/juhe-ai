@@ -42,6 +42,9 @@ class OpenAICompatibleFilesRequestError extends Error {
   }
 }
 
+openAICompatibleFilesRouter.get('/v1/containers/:containerId/files', handleOpenAICompatibleFilesRoute(listOpenAICompatibleContainerFiles))
+openAICompatibleFilesRouter.get('/v1/containers/:containerId/files/:fileId/content', handleOpenAICompatibleFilesRoute(downloadOpenAICompatibleContainerFileContent))
+openAICompatibleFilesRouter.get('/v1/containers/:containerId/files/:fileId', handleOpenAICompatibleFilesRoute(getOpenAICompatibleContainerFile))
 openAICompatibleFilesRouter.get('/v1/files', handleOpenAICompatibleFilesRoute(listOpenAICompatibleFiles))
 openAICompatibleFilesRouter.post('/v1/files', handleOpenAICompatibleFilesRoute(uploadOpenAICompatibleFile))
 openAICompatibleFilesRouter.get('/v1/files/:fileId/content', handleOpenAICompatibleFilesRoute(downloadOpenAICompatibleFileContent))
@@ -101,6 +104,31 @@ async function listOpenAICompatibleFiles(req: Request, res: Response): Promise<v
   })
 }
 
+async function listOpenAICompatibleContainerFiles(req: Request, res: Response): Promise<void> {
+  const runtime = requireGatewayRuntime(req)
+  const containerId = pathContainerId(req)
+  const result = await requestDbService({
+    type: 'list_openai_compatible_files',
+    options: {
+      systemAccountId: runtime.apiKey.system_account_id,
+      apiKeyId: runtime.apiKey.id,
+      purpose: 'code_interpreter_output',
+      containerId,
+      limit: queryInteger(req.query.limit),
+      order: queryString(req.query.order) === 'asc' ? 'asc' : 'desc',
+      after: queryString(req.query.after)
+    }
+  })
+  const data = result.items.map(openAICompatibleContainerFileObject)
+  res.json({
+    object: 'list',
+    data,
+    first_id: data[0]?.id,
+    last_id: data[data.length - 1]?.id,
+    has_more: result.hasMore
+  })
+}
+
 async function getOpenAICompatibleFile(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleFileForRequest(req)
   if (!record) {
@@ -109,10 +137,30 @@ async function getOpenAICompatibleFile(req: Request, res: Response): Promise<voi
   res.json(openAICompatibleFileObject(record))
 }
 
+async function getOpenAICompatibleContainerFile(req: Request, res: Response): Promise<void> {
+  const record = await findOpenAICompatibleContainerFileForRequest(req)
+  if (!record) {
+    throw new OpenAICompatibleFilesRequestError('Container file not found', 404, 'invalid_request_error', 'container_file_not_found')
+  }
+  res.json(openAICompatibleContainerFileObject(record))
+}
+
 async function downloadOpenAICompatibleFileContent(req: Request, res: Response): Promise<void> {
   const record = await findOpenAICompatibleFileForRequest(req)
   if (!record) {
     throw new OpenAICompatibleFilesRequestError('File not found', 404, 'invalid_request_error', 'file_not_found')
+  }
+  const filePath = openAICompatibleFileObjectPath(record.storageKey)
+  res.status(200)
+  res.setHeader('content-type', record.mediaType ?? 'application/octet-stream')
+  res.setHeader('content-length', String(record.bytes))
+  await pipeline(createReadStream(filePath), res)
+}
+
+async function downloadOpenAICompatibleContainerFileContent(req: Request, res: Response): Promise<void> {
+  const record = await findOpenAICompatibleContainerFileForRequest(req)
+  if (!record) {
+    throw new OpenAICompatibleFilesRequestError('Container file not found', 404, 'invalid_request_error', 'container_file_not_found')
   }
   const filePath = openAICompatibleFileObjectPath(record.storageKey)
   res.status(200)
@@ -149,6 +197,19 @@ async function findOpenAICompatibleFileForRequest(req: Request): Promise<OpenAIC
     systemAccountId: runtime.apiKey.system_account_id,
     apiKeyId: runtime.apiKey.id
   })
+}
+
+async function findOpenAICompatibleContainerFileForRequest(req: Request): Promise<OpenAICompatibleFileRecord | undefined> {
+  const runtime = requireGatewayRuntime(req)
+  const containerId = pathContainerId(req)
+  const record = await requestDbService({
+    type: 'get_openai_compatible_file',
+    fileId: pathFileId(req),
+    systemAccountId: runtime.apiKey.system_account_id,
+    apiKeyId: runtime.apiKey.id
+  })
+  if (!record || record.purpose !== 'code_interpreter_output' || record.containerId !== containerId) return undefined
+  return record
 }
 
 async function readOpenAICompatibleMultipartUpload(req: Request): Promise<{
@@ -285,6 +346,27 @@ function openAICompatibleFileObject(record: OpenAICompatibleFileRecord): Record<
     status: record.status,
     ...(record.expiresAt ? { expires_at: openAITimestamp(record.expiresAt) } : {})
   }
+}
+
+function openAICompatibleContainerFileObject(record: OpenAICompatibleFileRecord): Record<string, unknown> {
+  return {
+    id: record.id,
+    object: 'container.file',
+    created_at: openAITimestamp(record.createdAt),
+    bytes: record.bytes,
+    filename: record.filename,
+    container_id: record.containerId ?? null,
+    purpose: record.purpose,
+    status: record.status
+  }
+}
+
+function pathContainerId(req: Request): string {
+  const value = typeof req.params.containerId === 'string' ? req.params.containerId.trim() : ''
+  if (!value) {
+    throw new OpenAICompatibleFilesRequestError('Missing container id', 400, 'invalid_request_error', 'missing_container_id')
+  }
+  return value
 }
 
 function pathFileId(req: Request): string {

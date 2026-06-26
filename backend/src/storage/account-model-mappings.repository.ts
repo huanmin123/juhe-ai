@@ -6,10 +6,16 @@ import type {
 } from '../domain/types.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
+  GEMINI_GENERATE_CONTENT_FAMILY,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY
 } from '../domain/provider-protocol.js'
 import { getBusinessDatabase, nowIso } from './database.js'
+import { runtimeConfig } from '../config/runtime.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 interface AccountModelMappingRow {
@@ -20,6 +26,8 @@ interface AccountModelMappingRow {
   upstream_endpoint_family: AccountModelMappingUpstreamEndpointFamily
   enabled: number
 }
+
+const businessSchemaName = 'juhe_business'
 
 export function normalizeAccountModelMappingsInput(value: unknown): AccountModelMapping[] | undefined {
   if (value === undefined) return undefined
@@ -86,6 +94,38 @@ export function replaceAccountModelMappings(accountId: string, providerCode: str
   }
 }
 
+export async function replaceAccountModelMappingsAsync(accountId: string, providerCode: string, mappings: AccountModelMapping[] | undefined): Promise<void> {
+  if (mappings === undefined) return
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    replaceAccountModelMappings(accountId, providerCode, mappings)
+    return
+  }
+
+  const normalizedMappings = normalizeAccountModelMappingsInput(mappings) ?? []
+  const timestamp = nowIso()
+  const client = await getAccountModelMappingsDatabaseClient()
+  await client.transaction(async (tx) => {
+    await tx.execute(`DELETE FROM ${accountModelMappingsTable(tx)} WHERE account_id = ?`, [accountId])
+    for (const mapping of normalizedMappings) {
+      await tx.execute(`
+        INSERT INTO ${accountModelMappingsTable(tx)} (
+          account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        accountId,
+        providerCode,
+        mapping.sourceModel,
+        mapping.sourceEndpointFamily,
+        mapping.upstreamModel,
+        mapping.upstreamEndpointFamily,
+        mapping.enabled ? 1 : 0,
+        timestamp,
+        timestamp
+      ])
+    }
+  })
+}
+
 export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string, AccountModelMapping[]> {
   const ids = [...new Set(accountIds.filter(Boolean))]
   if (!ids.length) return new Map()
@@ -122,11 +162,56 @@ export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string,
   return output
 }
 
+export async function loadModelMappingsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, AccountModelMapping[]>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadModelMappingsByAccountIds(accountIds)
+  }
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const client = await getAccountModelMappingsDatabaseClient()
+  const rows: AccountModelMappingRow[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...await client.query<AccountModelMappingRow>(`
+      SELECT account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
+      FROM ${accountModelMappingsTable(client)}
+      WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+      ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC
+    `, chunk))
+  }
+  return accountModelMappingsFromRows(rows)
+}
+
+function accountModelMappingsFromRows(rows: AccountModelMappingRow[]): Map<string, AccountModelMapping[]> {
+  const output = new Map<string, AccountModelMapping[]>()
+  for (const row of rows) {
+    const mapping: AccountModelMapping = {
+      sourceModel: row.source_model,
+      sourceEndpointFamily: row.source_endpoint_family,
+      upstreamModel: row.upstream_model,
+      upstreamEndpointFamily: row.upstream_endpoint_family,
+      enabled: row.enabled === 1
+    }
+    const mappings = output.get(row.account_id)
+    if (mappings) {
+      mappings.push(mapping)
+    } else {
+      output.set(row.account_id, [mapping])
+    }
+  }
+  return output
+}
+
 function sourceEndpointFamilyValue(value: unknown): AccountModelMappingSourceEndpointFamily {
-  if (value === OPENAI_CHAT_COMPLETIONS_FAMILY || value === OPENAI_RESPONSES_FAMILY || value === ANTHROPIC_MESSAGES_FAMILY) {
+  if (
+    value === OPENAI_CHAT_COMPLETIONS_FAMILY
+    || value === OPENAI_RESPONSES_FAMILY
+    || value === ANTHROPIC_MESSAGES_FAMILY
+    || value === GEMINI_GENERATE_CONTENT_FAMILY
+    || value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  ) {
     return value
   }
-  throw new Error(`下游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)} 或 ${endpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}`)
+  throw new Error(`下游协议必须是 ${endpointFamilyLabel(OPENAI_CHAT_COMPLETIONS_FAMILY)}、${endpointFamilyLabel(OPENAI_RESPONSES_FAMILY)}、${endpointFamilyLabel(ANTHROPIC_MESSAGES_FAMILY)}、${endpointFamilyLabel(GEMINI_GENERATE_CONTENT_FAMILY)} 或 ${endpointFamilyLabel(GEMINI_STREAM_GENERATE_CONTENT_FAMILY)}`)
 }
 
 function upstreamEndpointFamilyValue(value: unknown): AccountModelMappingUpstreamEndpointFamily {
@@ -146,6 +231,12 @@ function assertSupportedEndpointFamilyConversion(
     }
     return
   }
+  if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
+    if (upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+      throw new Error('Gemini GenerateContent 下游协议当前只支持显式桥接到 Chat Completions 上游')
+    }
+    return
+  }
   if (sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
     if (upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY || upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
       return
@@ -157,11 +248,26 @@ function assertSupportedEndpointFamilyConversion(
 function endpointFamilyLabel(value: AccountModelMappingEndpointFamily): string {
   if (value === OPENAI_RESPONSES_FAMILY) return 'Responses'
   if (value === ANTHROPIC_MESSAGES_FAMILY) return 'Messages'
+  if (value === GEMINI_GENERATE_CONTENT_FAMILY) return 'Gemini GenerateContent'
+  if (value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) return 'Gemini StreamGenerateContent'
   return 'Chat Completions'
 }
 
 export function loadModelMappingsForAccount(accountId: string): AccountModelMapping[] {
   return loadModelMappingsByAccountIds([accountId]).get(accountId) ?? []
+}
+
+async function getAccountModelMappingsDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function accountModelMappingsTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'account_model_mappings')
+    : client.dialect.quoteIdentifier('account_model_mappings')
 }
 
 function stringModelValue(value: unknown, label: string): string {

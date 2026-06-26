@@ -238,6 +238,7 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
     )
     assertImportEndpointModesCompatible(account, {
       modes: account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+      modelMappings: account.modelMappings,
       accountType: account.type,
       clientCompatibility
     })
@@ -275,6 +276,7 @@ function assertImportEndpointModesCompatible(
   account: Pick<NormalizedImportAccount, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>,
   input: {
     modes: readonly AccountSupportedEndpointMode[]
+    modelMappings?: readonly AccountModelMapping[]
     accountType?: string
     clientCompatibility: AccountClientCompatibility
   }
@@ -289,6 +291,7 @@ function assertImportEndpointModesCompatible(
   if (isOpenAIProtocolProfile(account)) {
     assertOpenAIEndpointModesCompatible({
       modes: input.modes,
+      modelMappings: input.modelMappings,
       providerCode: account.providerCode,
       providerProtocolProfileId: account.providerProtocolProfileId,
       accountType: input.accountType,

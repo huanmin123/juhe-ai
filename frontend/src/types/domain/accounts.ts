@@ -186,7 +186,7 @@ export interface GroupAccountStats {
 
 export interface AccountModelMapping {
   sourceModel: string
-  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages'
+  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
   upstreamModel: string
   upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages'
   enabled: boolean

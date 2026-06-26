@@ -27,7 +27,7 @@
 
 `GET /models` / `GET /v1/models` 始终读取本地供应商模型目录，不请求某个上游账号。默认 OpenAI-compatible 客户端返回标准 `{"object":"list","data":[...]}`；Codex 模型刷新请求会携带 `client_version` query 参数，或带有可识别的 Codex `originator` / User-Agent，此时返回 Codex `{"models":[...]}` 包装和 `ModelInfo` 字段，避免 Codex 客户端初始化阶段把标准 OpenAI 列表解析失败。两种响应使用同一套本地可见模型目录，只改变客户端响应形态。
 
-单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时对下游尚未提交的流式失败优先做服务端内部重试：关闭当前上游，本次请求排除失败账号，继续尝试后续账号 / 后续分组；只有服务端可承接账号耗尽后，才按客户端策略写最终失败。Codex 的 `response.failed/upstream_retryable_error` 只在命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时作为最终可见兜底；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时对下游尚未提交的流式失败优先做服务端内部重试：关闭当前上游，本次请求排除失败账号，继续尝试后续账号 / 后续分组；只有服务端可承接账号耗尽后，才按客户端策略写最终失败。Codex 的 `response.failed/upstream_retryable_error` 只在命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时作为最终可见兜底；客户端可见文案固定为统一可重试提示，上游错误码、状态码、错误文案和 Codex turn 探针摘要只进日志 / 审计 / 诊断，不作为客户端终局失败内容。未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
 Codex Responses SSE 请求如果在建流前遇到上游 HTTP 非 `2xx`，仍先进入普通账户错误处理、同账号确认、切后续账号和后续分组流程；当所有可承接账号都失败时，命中 Codex profile 的最终响应不返回裸 `503/429/400` JSON，而是返回 `200 text/event-stream`，写入 `response.failed/upstream_retryable_error` 后立即结束连接，防止 Codex 客户端因初始化或建流阶段错误断开整轮。该兜底只处理已通过本地认证、额度、JSON 校验和调度预检后的上游耗尽；无效本地 API Key、缺少 Bearer、本地 JSON 非法、额度不可用等本地硬失败仍按 OpenAI-compatible JSON 错误返回。
 

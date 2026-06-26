@@ -465,7 +465,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     clientIp: gatewayClientIp
   })
-  if (clientStrategy.clientProfile === 'codex' || clientStrategy.clientProfile === 'claude_code') {
+  if (clientStrategy.clientProfile === 'codex' || clientStrategy.clientProfile === 'claude_code' || clientStrategy.clientProfile === 'gemini_cli') {
     auditCapture.addGatewayMetadata({
       label: 'client_strategy',
       metadata: openAIGatewayClientStrategyAuditMetadata(clientStrategy)

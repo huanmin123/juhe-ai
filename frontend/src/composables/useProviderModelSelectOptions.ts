@@ -11,7 +11,7 @@ export interface ProviderModelSelectOption {
 
 interface UseProviderModelSelectOptionsOptions {
   scopeParams?: ComputedRef<ListParams | undefined>
-  protocol?: 'openai' | 'anthropic'
+  protocol?: 'openai' | 'anthropic' | 'gemini'
   onLoadError?: (error: unknown) => void
 }
 

@@ -190,13 +190,11 @@ function buildGlmModelCandidates(model: string): string[] {
 
 function buildGeminiModelCandidates(model: string): string[] {
   const candidates = new Set<string>()
-  const withoutDate = model.replace(modelDateSuffixPattern, '')
-  if (withoutDate !== model) candidates.add(withoutDate)
   const withoutModelsPrefix = model.replace(/^models\//, '')
   if (withoutModelsPrefix !== model) candidates.add(withoutModelsPrefix)
 
   for (const base of geminiModelCandidateBasesBySpecificity) {
-    if (model === base || withoutModelsPrefix === base || model.startsWith(`${base}-`) || withoutModelsPrefix.startsWith(`${base}-`)) {
+    if (model === base || withoutModelsPrefix === base) {
       candidates.add(base)
     }
   }
@@ -229,13 +227,7 @@ const glmModelCandidateBases = [
 const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]
   .sort((left, right) => right.length - left.length)
 
-const geminiModelCandidateBases = [
-  'gemini-3.5-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-embedding-001'
-]
+const geminiModelCandidateBases = geminiModels.map((item) => item.model)
 const geminiModelCandidateBasesBySpecificity = [...geminiModelCandidateBases]
   .sort((left, right) => right.length - left.length)
 

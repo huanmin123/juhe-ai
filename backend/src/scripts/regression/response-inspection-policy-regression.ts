@@ -28,12 +28,15 @@ import {
   extractAnthropicJsonSemanticFrames,
   extractAnthropicSseSemanticFrames
 } from '../../modules/gateway/protocols/anthropic-v1/response-semantics.js'
+import {
+  extractGeminiJsonSemanticFrames
+} from '../../modules/gateway/protocols/gemini-v1beta/response-semantics.js'
 import { parseOpenAISseEventText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import {
   shouldRetryResponseInspectionDecisionOnServer
 } from '../../modules/gateway/response/stream-finalization-retry-decision.js'
-import { ANTHROPIC_PROVIDER_CODE, ANTHROPIC_PROTOCOL_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, GEMINI_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
 import {
   createResponseInspectionPolicy,
@@ -260,6 +263,18 @@ assert.equal(validateAccountResponseInspectionRules([
 assert.equal(validateAccountResponseInspectionRules([
   {
     enabled: true,
+    name: 'Gemini CLI 响应检查',
+    priority: 10,
+    match: {
+      clientProfiles: ['gemini_cli', 'generic_gemini'],
+      errorTypes: ['UNAVAILABLE']
+    },
+    action: 'retry_next_account'
+  }
+]).valid, true, '账户级响应检查规则应接受 Gemini 客户端画像')
+assert.equal(validateAccountResponseInspectionRules([
+  {
+    enabled: true,
     name: '无效客户端维度',
     priority: 10,
     match: {
@@ -459,9 +474,54 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
+  const frames = extractGeminiJsonSemanticFrames({
+    error: {
+      code: 503,
+      status: 'UNAVAILABLE',
+      message: 'Gemini upstream temporary unavailable'
+    }
+  }, 'generate_content')
+  const policies = [
+    responsePolicy({
+      scopeType: 'protocol',
+      protocolCode: GEMINI_PROTOCOL_CODE,
+      providerCode: undefined,
+      match: {
+        clientProfiles: ['gemini_cli'],
+        errorTypes: ['UNAVAILABLE']
+      }
+    })
+  ]
+  const genericResult = inspectResponseSemanticFrames({
+    frames,
+    policies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_gemini'
+    }
+  })
+  assert.equal(genericResult.decision, undefined, 'Gemini CLI 专属响应检查不能污染通用 Gemini 客户端')
+  const cliResult = inspectResponseSemanticFrames({
+    frames,
+    policies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'gemini_cli'
+    }
+  })
+  assert.equal(cliResult.decision?.matchedField, 'errorTypes', 'Gemini CLI 专属规则应由 Gemini error.status 语义字段触发')
+  assert.equal(cliResult.decision?.clientProfile, 'gemini_cli', 'Gemini CLI 画像应作为策略上下文记录')
+  assert.equal(cliResult.decision?.policyProtocolCode, GEMINI_PROTOCOL_CODE, 'Gemini CLI 响应策略必须保留 Gemini 协议维度')
+}
+
+{
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   assert(defaultRules.some((rule) => rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 OpenAI JSON / SSE error 对象')
   assert(defaultRules.some((rule) => rule.protocolCode === ANTHROPIC_PROTOCOL_CODE && rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 Anthropic JSON / SSE error 对象')
+  assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 Gemini JSON / SSE error 对象')
+  assert(defaultRules.some((rule) => rule.id === 'default_gemini_cli_retryable_error' && rule.match.clientProfiles?.includes('gemini_cli') && rule.match.errorTypes?.includes('UNAVAILABLE')), '默认规则必须覆盖 Gemini CLI 专属可重试错误')
   assert(defaultRules.some((rule) => rule.match.clientProfiles?.includes('codex') && rule.match.finishReasons?.includes('incomplete')), '默认规则必须覆盖 Codex response.incomplete')
   assert(defaultRules.some((rule) => rule.id === 'default_codex_compaction_contract' && rule.match.errorCodes?.includes('codex_compaction_contract_mismatch')), '默认规则必须覆盖 Codex compact 输出契约错误')
   assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 只能作为 GPT provider 规则存在')
@@ -492,10 +552,54 @@ assert.equal(validateAccountResponseInspectionRules([
     } as never,
     managementPolicies: defaultRules
   })
+  const geminiPolicies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_gemini',
+      protocolCode: GEMINI_PROTOCOL_CODE,
+      providerCode: GEMINI_PROVIDER_CODE,
+      credentials: {}
+    } as never,
+    managementPolicies: defaultRules
+  })
   assert(gptPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), 'GPT 供应商应加载 cyber_policy 默认规则')
   assert.equal(genericPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, '通用 OpenAI-compatible 供应商不应继承 GPT cyber_policy 规则')
   assert(anthropicPolicies.some((policy) => policy.protocolCode === ANTHROPIC_PROTOCOL_CODE && policy.match.jsonPathsExists?.includes('error')), 'Anthropic 供应商应加载 Anthropic 协议默认 error 对象规则')
   assert.equal(anthropicPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, 'Anthropic 供应商不应继承 GPT cyber_policy 规则')
+  assert(geminiPolicies.some((policy) => policy.id === 'default_gemini_cli_retryable_error' && policy.match.clientProfiles?.includes('gemini_cli')), 'Gemini 供应商应加载 Gemini CLI 专属默认响应策略')
+  assert(geminiPolicies.some((policy) => policy.id === 'default_gemini_error_object' && policy.match.jsonPathsExists?.includes('error')), 'Gemini 供应商应加载通用 Gemini error 对象规则')
+  const retryableGeminiFrames = extractGeminiJsonSemanticFrames({
+    error: {
+      code: 503,
+      status: 'UNAVAILABLE',
+      message: 'transient gemini error'
+    }
+  }, 'generate_content')
+  const genericGeminiInspection = inspectResponseSemanticFrames({
+    frames: retryableGeminiFrames,
+    policies: geminiPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_gemini'
+    }
+  })
+  assert.equal(genericGeminiInspection.decision?.policyId, 'default_gemini_error_object', '通用 Gemini 客户端只应命中通用 error 对象规则')
+  const geminiCliInspection = inspectResponseSemanticFrames({
+    frames: retryableGeminiFrames,
+    policies: geminiPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'gemini_cli'
+    }
+  })
+  assert.equal(geminiCliInspection.decision?.policyId, 'default_gemini_cli_retryable_error', 'Gemini CLI 客户端应优先命中专属可重试规则')
+  assert.equal(geminiCliInspection.decision?.accountSwitch, 'request_next_account', 'Gemini CLI 可重试默认规则必须请求下一个账号')
+  assert.equal(shouldRetryResponseInspectionDecisionOnServer(geminiCliInspection.decision, {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false
+  }), true, 'Gemini CLI 可重试默认规则必须允许下游写出前服务端换账号')
 }
 
 {
@@ -922,7 +1026,9 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(result.intercepted?.policySource, 'system_default', 'Responses SSE failed 默认规则应保留 system_default 来源')
   assert.equal(result.intercepted?.upstreamErrorCode, 'internal_server_error', '响应检查决策应保留上游原始错误码')
   assert(responseBody.includes('upstream_retryable_error'), `Codex 客户端预输出失败应改写为客户端可重试码：${responseBody}`)
+  assert(responseBody.includes('上游流式响应在输出前失败，请重试'), `Codex 客户端预输出失败应返回统一可重试文案：${responseBody}`)
   assert(!responseBody.includes('internal_server_error'), `Codex 客户端失败事件不应透出上游原始错误码：${responseBody}`)
+  assert(!responseBody.includes('mock upstream failed before output'), `Codex 客户端失败事件不应透出上游原始错误文案：${responseBody}`)
 }
 
 {

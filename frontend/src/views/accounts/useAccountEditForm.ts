@@ -125,7 +125,19 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       message.error(options.extractApiErrorMessage(error, '加载 Anthropic 协议模型池失败'))
     }
   })
-  const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value || anthropicProviderModelsLoading.value)
+  const {
+    loading: geminiProviderModelsLoading,
+    loadModelOptions: loadGeminiProviderModelOptions,
+    resetModelOptions: resetGeminiProviderModelOptions,
+    selectOptions: mappingGeminiSourceModelOptions
+  } = useProviderModelSelectOptions({
+    protocol: 'gemini',
+    scopeParams: allProviderModelScopeParams,
+    onLoadError: (error) => {
+      message.error(options.extractApiErrorMessage(error, '加载 Gemini 协议模型池失败'))
+    }
+  })
+  const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value || anthropicProviderModelsLoading.value || geminiProviderModelsLoading.value)
   const {
     accountTagOptions,
     accountTagOptionsLoading,
@@ -226,6 +238,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     Object.assign(form, defaultForm(providerCode, type))
     resetProviderModelOptions()
     resetAnthropicProviderModelOptions()
+    resetGeminiProviderModelOptions()
     ensureDefaultGroupSelected(form.providerCode, form.providerProtocolProfileId)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
@@ -283,6 +296,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderModelOptions(form.providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
+    void loadGeminiProviderModelOptions()
     modalOpen.value = true
   }
 
@@ -307,6 +321,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
+    void loadGeminiProviderModelOptions()
   }
 
   function selectAccountType(type: AccountType) {
@@ -343,6 +358,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderModelOptions(providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
+    void loadGeminiProviderModelOptions()
     ensureDefaultGroupSelected(providerCode, providerProtocolProfileId)
     authResult.value = undefined
   }
@@ -394,6 +410,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderModelOptions(sourceAccount.providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
+    void loadGeminiProviderModelOptions()
   }
 
   async function openClone(account: AccountSummary) {
@@ -447,6 +464,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderModelOptions(sourceAccount.providerCode)
     void loadAllProviderModelOptions()
     void loadAnthropicProviderModelOptions()
+    void loadGeminiProviderModelOptions()
   }
 
   async function loadProviderGroupOptions(providerCode: string, providerProtocolProfileId = form.providerProtocolProfileId): Promise<void> {
@@ -518,6 +536,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isOAuthForm,
     isOpenAIOAuthForm,
     mappingAnthropicSourceModelOptions,
+    mappingGeminiSourceModelOptions,
     mappingSourceModelOptions,
     modalConfirmLoading,
     modalOkButtonProps,

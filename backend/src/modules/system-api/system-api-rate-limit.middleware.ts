@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 
 import { getRequestAuthContext } from '../auth/request-context.js'
-import { getSettings } from '../../storage/repositories.js'
+import { getSettingsAsync } from '../../storage/repositories.js'
 import { getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 
 type MethodClass = 'read' | 'write'
@@ -59,7 +59,7 @@ const ipMinuteStore: RateLimitStore = createStore('system_api_ip_minute', minute
 const ipBurstStore: RateLimitStore = createStore('system_api_ip_burst', burstWindowMs)
 const userMinuteStore: RateLimitStore = createStore('system_api_user_minute', minuteWindowMs)
 
-export function systemApiIpRateLimit(req: Request, res: Response, next: NextFunction): void {
+export async function systemApiIpRateLimit(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (isSystemApiHealthPath(req)) {
     next()
     return
@@ -67,7 +67,7 @@ export function systemApiIpRateLimit(req: Request, res: Response, next: NextFunc
 
   let settings: SystemApiRateLimitSettings
   try {
-    settings = currentSystemApiRateLimitSettings()
+    settings = await currentSystemApiRateLimitSettings()
   } catch (error) {
     respondRateLimitFailure(req, res, error)
     return
@@ -102,10 +102,10 @@ export function systemApiIpRateLimit(req: Request, res: Response, next: NextFunc
   next()
 }
 
-export function systemApiAuthenticatedRateLimit(req: Request, res: Response, next: NextFunction): void {
+export async function systemApiAuthenticatedRateLimit(req: Request, res: Response, next: NextFunction): Promise<void> {
   let settings: SystemApiRateLimitSettings
   try {
-    settings = currentSystemApiRateLimitSettings()
+    settings = await currentSystemApiRateLimitSettings()
   } catch (error) {
     next(error)
     return
@@ -158,8 +158,8 @@ function createStore(name: string, windowMs: number): RateLimitStore {
   }
 }
 
-function currentSystemApiRateLimitSettings(): SystemApiRateLimitSettings {
-  const settings = getSettings()
+async function currentSystemApiRateLimitSettings(): Promise<SystemApiRateLimitSettings> {
+  const settings = await getSettingsAsync()
   return {
     enabled: booleanSetting(settings.systemApiRateLimitEnabled, 'systemApiRateLimitEnabled'),
     ipReadPerMinute: integerSetting(settings.systemApiRateLimitIpReadPerMinute, 'systemApiRateLimitIpReadPerMinute'),

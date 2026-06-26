@@ -25,6 +25,7 @@ export function responseInspectionPolicyScopeText(policy: Pick<ResponseInspectio
 export function responseInspectionPolicyProtocolText(protocolCode: string): string {
   if (protocolCode === 'openai') return 'OpenAI v1'
   if (protocolCode === 'anthropic') return 'Anthropic v1'
+  if (protocolCode === 'gemini') return 'Gemini v1beta'
   return protocolCode || '-'
 }
 

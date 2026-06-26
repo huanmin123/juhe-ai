@@ -286,8 +286,8 @@ function isChatOnlyCodexResponsesCompactRequest(
   requestClientCompatibility: ClientCompatibilityCapability,
   accounts: readonly UpstreamAccount[]
 ): boolean {
-  return requestClientCompatibility === 'codex_responses'
-    && isOpenAIResponsesCompactPostRequest(req)
+  void requestClientCompatibility
+  return isOpenAIResponsesCompactPostRequest(req)
     && accounts.some((account) => account.clientCompatibility === 'codex_responses')
 }
 

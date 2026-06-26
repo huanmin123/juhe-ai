@@ -1,4 +1,24 @@
+import { createHash } from 'node:crypto'
+
 import { runtimeConfig, type McpProxyServerRuntimeConfig } from '../../config/runtime.js'
+import { stableJsonStringify } from '../../storage/audit-log-stable-json.js'
+import {
+  consumeOpenAICompatibleMcpApprovalRequest,
+  createOpenAICompatibleMcpApprovalRequest,
+  resolveOpenAICompatibleMcpApprovalResponse,
+  type OpenAICompatibleMcpApprovalScope
+} from '../../storage/openai-compatible-mcp-approval.repository.js'
+import { createOpenAICompatibleMcpExecutionRecord } from '../../storage/openai-compatible-mcp-execution.repository.js'
+import {
+  createOpenAICompatibleMcpServerDiagnostic,
+  listOpenAICompatibleMcpServerLabelsForSystemAccount,
+  listRuntimeOpenAICompatibleMcpServers,
+  replaceOpenAICompatibleMcpToolCache,
+  type OpenAICompatibleMcpServerDiagnosticRecord,
+  type OpenAICompatibleMcpServerRecord,
+  type OpenAICompatibleMcpToolCacheRecord
+} from '../../storage/openai-compatible-mcp-server.repository.js'
+import { getRequestContext } from '../../shared/request-context.js'
 import { GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../gateway/request/validation-error.js'
 import type {
   OpenAIToAnthropicMcpProxyExecutor,
@@ -21,6 +41,7 @@ interface McpPreparedContext {
   server: McpProxyServerRuntimeConfig
   authorization?: string
   sessionId?: string
+  legacySse?: McpLegacySseSession
 }
 
 interface McpJsonRpcResult {
@@ -28,20 +49,132 @@ interface McpJsonRpcResult {
   sessionId?: string
 }
 
+class RetryableMcpProxyError extends GatewayRequestValidationError {}
+
+class McpProxyHttpError extends GatewayRequestValidationError {
+  readonly httpStatus: number
+
+  constructor(
+    message: string,
+    code: string,
+    options: { statusCode?: number; type?: string },
+    httpStatus: number
+  ) {
+    super(message, code, options)
+    this.httpStatus = httpStatus
+  }
+}
+
+interface McpLegacySseSession {
+  endpointUrl: string
+  reader: ReadableStreamDefaultReader<Uint8Array>
+  decoder: TextDecoder
+  abortController: AbortController
+  buffer: string
+  bytesRead: number
+  closed: boolean
+  sessionId?: string
+}
+
+export interface OpenAICompatibleMcpServerDiagnosticResult {
+  diagnostic: OpenAICompatibleMcpServerDiagnosticRecord
+  tools: OpenAICompatibleMcpToolCacheRecord[]
+}
+
 export function openAICompatibleMcpProxyExecutorForGatewayRequest(): OpenAIToAnthropicMcpProxyExecutor | undefined {
-  const servers = runtimeConfig.mcpProxy.servers.filter((server) => server.enabled)
+  const servers = runtimeMcpProxyServersForRequest()
   if (!servers.length) return undefined
   return {
     async prepare(input) {
       return prepareOpenAICompatibleMcpProxy(input, servers)
     },
     async callTool(input) {
-      return callOpenAICompatibleMcpProxyTool(input.prepared, input.toolName, input.arguments, input.signal)
+      return callOpenAICompatibleMcpProxyTool(input.prepared, input.toolName, input.arguments, {
+        signal: input.signal
+      })
+    },
+    close(prepared) {
+      closeMcpLegacySseSession(mcpPreparedContext(prepared).legacySse)
     },
     async run(input) {
       return runOpenAICompatibleMcpProxy(input, servers)
     }
   }
+}
+
+export async function diagnoseOpenAICompatibleMcpServer(input: {
+  server: OpenAICompatibleMcpServerRecord
+  authorization?: string
+  signal?: AbortSignal
+}): Promise<OpenAICompatibleMcpServerDiagnosticResult> {
+  const runtimeServer = mcpServerRuntimeConfigFromRecord(input.server)
+  const authorization = input.authorization && input.server.allowRequestAuthorization
+    ? input.authorization
+    : undefined
+  const startedAtMs = Date.now()
+  const startedAt = new Date(startedAtMs).toISOString()
+  let initialized: { sessionId?: string; legacySse?: McpLegacySseSession } | undefined
+  try {
+    initialized = await initializeMcpServer(runtimeServer, authorization, input.signal)
+    const listed = await requestMcpJsonRpc(runtimeServer, {
+      method: 'tools/list',
+      params: {},
+      authorization,
+      sessionId: initialized.sessionId,
+      legacySse: initialized.legacySse,
+      signal: input.signal
+    })
+    const tools = filteredMcpTools({}, runtimeServer, listed.result)
+    const checkedAt = new Date().toISOString()
+    const cachedTools = replaceOpenAICompatibleMcpToolCache({
+      serverId: input.server.id,
+      systemAccountId: input.server.systemAccountId,
+      serverLabel: input.server.label,
+      serverUrl: input.server.serverUrl,
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.input_schema,
+        annotations: tool.annotations
+      })),
+      checkedAt
+    })
+    return {
+      diagnostic: createMcpServerDiagnosticRecord(input.server, {
+        startedAt,
+        startedAtMs,
+        status: 'succeeded',
+        toolCount: cachedTools.length
+      }),
+      tools: cachedTools
+    }
+  } catch (error) {
+    const diagnostic = createMcpServerDiagnosticRecord(input.server, {
+      startedAt,
+      startedAtMs,
+      status: 'failed',
+      error
+    })
+    return {
+      diagnostic,
+      tools: []
+    }
+  } finally {
+    closeMcpLegacySseSession(initialized?.legacySse)
+  }
+}
+
+function runtimeMcpProxyServersForRequest(): McpProxyServerRuntimeConfig[] {
+  const systemAccountId = getRequestContext()?.systemAccountId
+  const databaseServers = listRuntimeOpenAICompatibleMcpServers(systemAccountId)
+  const servers = [...databaseServers]
+  const labels = listOpenAICompatibleMcpServerLabelsForSystemAccount(systemAccountId)
+  for (const server of runtimeConfig.mcpProxy.servers) {
+    if (!server.enabled || labels.has(server.label)) continue
+    servers.push(server)
+    labels.add(server.label)
+  }
+  return servers
 }
 
 async function runOpenAICompatibleMcpProxy(
@@ -50,15 +183,19 @@ async function runOpenAICompatibleMcpProxy(
 ): Promise<GatewayLocalProtocolResponse> {
   const prepared = await prepareOpenAICompatibleMcpProxy(input, servers)
   const context = mcpPreparedContext(prepared)
-  const payload = await responsesMcpProxyResponsePayload(input, prepared, context)
-  return new GatewayLocalProtocolResponse({
-    code: 'openai_anthropic_bridge_mcp_proxy_runtime',
-    message: 'Responses MCP proxy runtime completed',
-    body: input.stream ? responsesMcpProxySse(payload) : JSON.stringify(payload.response),
-    contentType: input.stream
-      ? 'text/event-stream; charset=utf-8'
-      : 'application/json; charset=utf-8'
-  })
+  try {
+    const payload = await responsesMcpProxyResponsePayload(input, prepared, context)
+    return new GatewayLocalProtocolResponse({
+      code: 'openai_anthropic_bridge_mcp_proxy_runtime',
+      message: 'Responses MCP proxy runtime completed',
+      body: input.stream ? responsesMcpProxySse(payload) : JSON.stringify(payload.response),
+      contentType: input.stream
+        ? 'text/event-stream; charset=utf-8'
+        : 'application/json; charset=utf-8'
+    })
+  } finally {
+    closeMcpLegacySseSession(context.legacySse)
+  }
 }
 
 async function prepareOpenAICompatibleMcpProxy(
@@ -67,24 +204,32 @@ async function prepareOpenAICompatibleMcpProxy(
 ): Promise<OpenAIToAnthropicMcpProxyPreparedServer> {
   const server = resolveMcpProxyServer(input.tool, servers)
   const authorization = mcpProxyAuthorization(input.tool, server)
-  const initialized = await initializeMcpServer(server, authorization, input.signal)
-  const listed = await requestMcpJsonRpc(server, {
-    method: 'tools/list',
-    params: {},
-    authorization,
-    sessionId: initialized.sessionId,
-    signal: input.signal
-  })
-  const tools = filteredMcpTools(input.tool, server, listed.result)
-  return {
-    serverLabel: server.label,
-    serverUrl: server.serverUrl,
-    tools: tools.map(toBridgeMcpToolDefinition),
-    context: {
-      server,
+  let initialized: { sessionId?: string; legacySse?: McpLegacySseSession } | undefined
+  try {
+    initialized = await initializeMcpServer(server, authorization, input.signal)
+    const listed = await requestMcpJsonRpc(server, {
+      method: 'tools/list',
+      params: {},
       authorization,
-      sessionId: initialized.sessionId
-    } satisfies McpPreparedContext
+      sessionId: initialized.sessionId,
+      legacySse: initialized.legacySse,
+      signal: input.signal
+    })
+    const tools = filteredMcpTools(input.tool, server, listed.result)
+    return {
+      serverLabel: server.label,
+      serverUrl: server.serverUrl,
+      tools: tools.map(toBridgeMcpToolDefinition),
+      context: {
+        server,
+        authorization,
+        sessionId: initialized.sessionId,
+        legacySse: initialized.legacySse
+      } satisfies McpPreparedContext
+    }
+  } catch (error) {
+    closeMcpLegacySseSession(initialized?.legacySse)
+    throw error
   }
 }
 
@@ -92,26 +237,65 @@ async function callOpenAICompatibleMcpProxyTool(
   prepared: OpenAIToAnthropicMcpProxyPreparedServer,
   toolName: string,
   toolArguments: JsonRecord,
-  signal?: AbortSignal
+  options: {
+    signal?: AbortSignal
+    approvalRequestId?: string
+  } = {}
 ): Promise<OpenAIToAnthropicMcpProxyToolCallResult> {
   const context = mcpPreparedContext(prepared)
-  const callResult = await requestMcpJsonRpc(context.server, {
-    method: 'tools/call',
-    params: {
-      name: toolName,
-      arguments: toolArguments
-    },
-    authorization: context.authorization,
-    sessionId: context.sessionId,
-    signal
-  })
-  const output = limitedMcpOutput(callResult.result)
-  return {
-    outputText: output.text,
-    truncated: output.truncated,
-    metadata: output.truncated
-      ? { output_limit_bytes: runtimeConfig.mcpProxy.maxOutputBytes }
-      : undefined
+  const startedAtMs = Date.now()
+  const startedAt = new Date(startedAtMs).toISOString()
+  const argumentsDigest = mcpApprovalArgumentsDigest(prepared.serverLabel, prepared.serverUrl, toolName, toolArguments)
+  const argumentsPreview = mcpApprovalArgumentsPreview(toolArguments)
+  try {
+    const callResult = await requestMcpJsonRpc(context.server, {
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments: toolArguments
+      },
+      authorization: context.authorization,
+      sessionId: context.sessionId,
+      legacySse: context.legacySse,
+      signal: options.signal
+    })
+    const output = limitedMcpOutput(callResult.result, context.server)
+    const executionRecord = recordMcpExecution({
+      approvalRequestId: options.approvalRequestId,
+      prepared,
+      toolName,
+      argumentsDigest,
+      argumentsPreview,
+      startedAt,
+      startedAtMs,
+      status: 'succeeded',
+      output
+    })
+    return {
+      outputText: output.text,
+      truncated: output.truncated,
+      metadata: output.truncated
+        ? {
+            execution_record_id: executionRecord.id,
+            output_limit_bytes: mcpProxyMaxOutputBytes(context.server)
+          }
+        : {
+            execution_record_id: executionRecord.id
+          }
+    }
+  } catch (error) {
+    recordMcpExecution({
+      approvalRequestId: options.approvalRequestId,
+      prepared,
+      toolName,
+      argumentsDigest,
+      argumentsPreview,
+      startedAt,
+      startedAtMs,
+      status: 'failed',
+      error
+    })
+    throw error
   }
 }
 
@@ -140,8 +324,9 @@ async function initializeMcpServer(
   server: McpProxyServerRuntimeConfig,
   authorization: string | undefined,
   signal: AbortSignal | undefined
-): Promise<{ sessionId?: string }> {
-  const initialized = await requestMcpJsonRpc(server, {
+): Promise<{ sessionId?: string; legacySse?: McpLegacySseSession }> {
+  let legacySse: McpLegacySseSession | undefined
+  const initializeInput = {
     method: 'initialize',
     params: {
       protocolVersion: '2025-06-18',
@@ -153,17 +338,34 @@ async function initializeMcpServer(
     },
     authorization,
     signal
-  })
-  if (initialized.sessionId) {
+  }
+  let initialized: McpJsonRpcResult
+  try {
+    initialized = await requestMcpJsonRpc(server, initializeInput)
+  } catch (error) {
+    if (!shouldFallbackToLegacySse(error)) throw error
+    legacySse = await openMcpLegacySseSession(server, { authorization, signal })
+    try {
+      initialized = await requestMcpJsonRpc(server, {
+        ...initializeInput,
+        legacySse
+      })
+    } catch (legacyError) {
+      closeMcpLegacySseSession(legacySse)
+      throw legacyError
+    }
+  }
+  if (initialized.sessionId || legacySse) {
     await notifyMcpJsonRpc(server, {
       method: 'notifications/initialized',
       params: {},
       authorization,
       sessionId: initialized.sessionId,
+      legacySse,
       signal
     })
   }
-  return { sessionId: initialized.sessionId }
+  return { sessionId: initialized.sessionId, legacySse }
 }
 
 async function responsesMcpProxyResponsePayload(
@@ -192,17 +394,93 @@ async function responsesMcpProxyResponsePayload(
     text = 'MCP proxy found no allowed tools.'
     items.push(responsesMcpProxyMessageItem(responseId, text))
   } else {
+    const toolArguments = mcpProxyToolArguments(input.body, selectedTool)
+    const requiresApproval = mcpRequiresApproval(input.tool, selectedTool.name, context.server)
     const approval = mcpApprovalResponseFromResponsesInput(input.body.input)
-    if (approval?.approved === false) {
+    if (requiresApproval && approval) {
+      const approvalDecision = resolveMcpApprovalDecision({
+        approval,
+        prepared,
+        toolName: selectedTool.name,
+        toolArguments
+      })
+      if (!approvalDecision.approved) {
+        text = 'MCP proxy tool call was not approved.'
+        items.push(responsesMcpProxyMessageItem(responseId, text))
+      } else {
+        const consumed = consumeOpenAICompatibleMcpApprovalRequest(approvalDecision.approvalRequestId)
+        if (consumed?.status !== 'consumed') {
+          throw new GatewayRequestValidationError(
+            'MCP approval_request_id 状态无法消费，已拒绝执行远程工具',
+            'openai_anthropic_bridge_mcp_approval_not_pending',
+            { statusCode: 400, type: 'invalid_request_error' }
+          )
+        }
+        try {
+          const callResult = await callOpenAICompatibleMcpProxyTool(prepared, selectedTool.name, toolArguments, {
+            approvalRequestId: approvalDecision.approvalRequestId,
+            signal: input.signal
+          })
+          items.push(responsesMcpProxyCallItem(
+            responseId,
+            prepared.serverLabel,
+            selectedTool.name,
+            toolArguments,
+            callResult,
+            approvalDecision.approvalRequestId
+          ))
+          text = 'MCP proxy completed remote tool call.'
+        } catch (error) {
+          items.push(responsesMcpProxyFailedCallItem(
+            responseId,
+            prepared.serverLabel,
+            selectedTool.name,
+            toolArguments,
+            error,
+            approvalDecision.approvalRequestId
+          ))
+          text = 'MCP proxy tool call failed.'
+        }
+        items.push(responsesMcpProxyMessageItem(responseId, text))
+      }
+    } else if (approval?.approved === false) {
       text = 'MCP proxy tool call was not approved.'
       items.push(responsesMcpProxyMessageItem(responseId, text))
-    } else if (mcpRequiresApproval(input.tool, selectedTool.name) && !approval?.approved) {
-      items.push(responsesMcpProxyApprovalRequestItem(responseId, prepared.serverLabel, selectedTool.name, mcpProxyToolArguments(input.body, selectedTool)))
+    } else if (requiresApproval) {
+      const approvalRequest = createOpenAICompatibleMcpApprovalRequest({
+        scope: currentMcpApprovalScope(),
+        serverLabel: prepared.serverLabel,
+        serverUrl: prepared.serverUrl,
+        toolName: selectedTool.name,
+        argumentsDigest: mcpApprovalArgumentsDigest(prepared.serverLabel, prepared.serverUrl, selectedTool.name, toolArguments),
+        argumentsPreview: mcpApprovalArgumentsPreview(toolArguments),
+        traceId: getRequestContext()?.traceId,
+        ttlSeconds: runtimeConfig.mcpProxy.approvalTtlSeconds
+      })
+      items.push(responsesMcpProxyApprovalRequestItem(prepared.serverLabel, selectedTool.name, toolArguments, approvalRequest.id))
     } else {
-      const toolArguments = mcpProxyToolArguments(input.body, selectedTool)
-      const callResult = await callOpenAICompatibleMcpProxyTool(prepared, selectedTool.name, toolArguments, input.signal)
-      items.push(responsesMcpProxyCallItem(responseId, prepared.serverLabel, selectedTool.name, toolArguments, callResult, approval?.approvalRequestId))
-      text = 'MCP proxy completed remote tool call.'
+      try {
+        const callResult = await callOpenAICompatibleMcpProxyTool(prepared, selectedTool.name, toolArguments, {
+          signal: input.signal
+        })
+        items.push(responsesMcpProxyCallItem(
+          responseId,
+          prepared.serverLabel,
+          selectedTool.name,
+          toolArguments,
+          callResult
+        ))
+        text = 'MCP proxy completed remote tool call.'
+      } catch (error) {
+        items.push(responsesMcpProxyFailedCallItem(
+          responseId,
+          prepared.serverLabel,
+          selectedTool.name,
+          toolArguments,
+          error
+        ))
+        text = 'MCP proxy tool call failed.'
+      }
       items.push(responsesMcpProxyMessageItem(responseId, text))
     }
   }
@@ -272,15 +550,19 @@ function filteredMcpTools(
   server: McpProxyServerRuntimeConfig,
   listed: unknown
 ): McpToolDefinition[] {
-  const result = objectValue(listed)
-  const rawTools = Array.isArray(result?.tools) ? result.tools : []
   const serverAllowed = new Set(server.allowedTools)
   const requestAllowed = new Set(stringArrayValue(tool.allowed_tools))
+  return normalizeMcpToolDefinitions(listed)
+    .filter((definition) => !serverAllowed.size || serverAllowed.has(definition.name))
+    .filter((definition) => !requestAllowed.size || requestAllowed.has(definition.name))
+}
+
+function normalizeMcpToolDefinitions(listed: unknown): McpToolDefinition[] {
+  const result = objectValue(listed)
+  const rawTools = Array.isArray(result?.tools) ? result.tools : []
   return rawTools
     .map(normalizeMcpToolDefinition)
     .filter((definition): definition is McpToolDefinition => Boolean(definition))
-    .filter((definition) => !serverAllowed.size || serverAllowed.has(definition.name))
-    .filter((definition) => !requestAllowed.size || requestAllowed.has(definition.name))
 }
 
 function normalizeMcpToolDefinition(value: unknown): McpToolDefinition | undefined {
@@ -325,6 +607,7 @@ async function requestMcpJsonRpc(
     params?: JsonRecord
     authorization?: string
     sessionId?: string
+    legacySse?: McpLegacySseSession
     signal?: AbortSignal
   }
 ): Promise<McpJsonRpcResult> {
@@ -338,6 +621,7 @@ async function requestMcpJsonRpc(
     },
     authorization: input.authorization,
     sessionId: input.sessionId,
+    legacySse: input.legacySse,
     signal: input.signal
   })
   const record = objectValue(parsed.body)
@@ -365,6 +649,7 @@ async function notifyMcpJsonRpc(
     params?: JsonRecord
     authorization?: string
     sessionId?: string
+    legacySse?: McpLegacySseSession
     signal?: AbortSignal
   }
 ): Promise<void> {
@@ -376,6 +661,7 @@ async function notifyMcpJsonRpc(
     },
     authorization: input.authorization,
     sessionId: input.sessionId,
+    legacySse: input.legacySse,
     signal: input.signal
   })
 }
@@ -386,8 +672,40 @@ async function postMcpJsonRpc(
     body: JsonRecord
     authorization?: string
     sessionId?: string
+    legacySse?: McpLegacySseSession
     signal?: AbortSignal
   }
+): Promise<{ body: unknown; sessionId?: string }> {
+  if (input.legacySse) {
+    return await postMcpLegacySseJsonRpc(server, input.legacySse, input)
+  }
+  const bodyText = JSON.stringify(input.body)
+  const maxAttempts = Math.max(1, mcpProxyMaxRetries(server) + 1)
+  let lastError: GatewayRequestValidationError | undefined
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await postMcpJsonRpcAttempt(server, input, bodyText)
+    } catch (error) {
+      if (!(error instanceof GatewayRequestValidationError)) throw error
+      lastError = error
+      if (!(error instanceof RetryableMcpProxyError) || attempt >= maxAttempts || input.signal?.aborted) {
+        throw error
+      }
+      await waitMcpProxyRetryDelay(server, input.signal)
+    }
+  }
+  throw lastError ?? invalidMcpResponse('MCP JSON-RPC 请求未返回结果')
+}
+
+async function postMcpJsonRpcAttempt(
+  server: McpProxyServerRuntimeConfig,
+  input: {
+    body: JsonRecord
+    authorization?: string
+    sessionId?: string
+    signal?: AbortSignal
+  },
+  bodyText: string
 ): Promise<{ body: unknown; sessionId?: string }> {
   const headers = new Headers()
   headers.set('accept', 'application/json, text/event-stream')
@@ -396,7 +714,7 @@ async function postMcpJsonRpc(
   if (input.sessionId) headers.set('mcp-session-id', input.sessionId)
   if (input.authorization) headers.set('authorization', input.authorization)
   const timeoutController = new AbortController()
-  const timeout = setTimeout(() => timeoutController.abort(), runtimeConfig.mcpProxy.timeoutMs)
+  const timeout = setTimeout(() => timeoutController.abort(), mcpProxyTimeoutMs(server))
   const requestSignal = input.signal
     ? AbortSignal.any([input.signal, timeoutController.signal])
     : timeoutController.signal
@@ -404,19 +722,34 @@ async function postMcpJsonRpc(
     const response = await fetch(server.serverUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify(input.body),
+      body: bodyText,
       signal: requestSignal,
-      redirect: 'error'
+      redirect: 'manual'
     })
-    if (!response.ok) {
-      const text = await readResponseTextWithLimit(response, runtimeConfig.mcpProxy.maxBodyBytes)
+    if (isMcpRedirectStatus(response.status)) {
       throw new GatewayRequestValidationError(
-        `MCP server ${server.label} 返回 HTTP ${response.status}${text ? `: ${truncateForError(text)}` : ''}`,
-        'openai_anthropic_bridge_mcp_proxy_http_error',
-        { statusCode: response.status >= 400 && response.status < 500 ? 400 : 502, type: 'upstream_error' }
+        `MCP server ${server.label} 返回 HTTP ${response.status} 重定向，已按 allowlist 策略拒绝：${mcpRedirectLocationSummary(response.headers.get('location'))}`,
+        'openai_anthropic_bridge_mcp_proxy_redirect_blocked',
+        { statusCode: 502, type: 'upstream_error' }
       )
     }
-    const text = await readResponseTextWithLimit(response, runtimeConfig.mcpProxy.maxBodyBytes)
+    if (!response.ok) {
+      const text = await readResponseTextWithLimit(response, mcpProxyMaxBodyBytes(server))
+      if (isRetryableMcpHttpStatus(response.status)) {
+        throw new RetryableMcpProxyError(
+          `MCP server ${server.label} 返回 HTTP ${response.status}${text ? `: ${truncateForError(text)}` : ''}`,
+          'openai_anthropic_bridge_mcp_proxy_http_error',
+          { statusCode: response.status >= 400 && response.status < 500 ? 400 : 502, type: 'upstream_error' }
+        )
+      }
+      throw new McpProxyHttpError(
+        `MCP server ${server.label} 返回 HTTP ${response.status}${text ? `: ${truncateForError(text)}` : ''}`,
+        'openai_anthropic_bridge_mcp_proxy_http_error',
+        { statusCode: response.status >= 400 && response.status < 500 ? 400 : 502, type: 'upstream_error' },
+        response.status
+      )
+    }
+    const text = await readResponseTextWithLimit(response, mcpProxyMaxBodyBytes(server))
     return {
       body: responseIsSse(response) ? parseMcpSseResponse(text) : safeParseJson(text),
       sessionId: response.headers.get('mcp-session-id') ?? undefined
@@ -424,20 +757,396 @@ async function postMcpJsonRpc(
   } catch (error) {
     if (error instanceof GatewayRequestValidationError) throw error
     if (timeoutController.signal.aborted) {
-      throw new GatewayRequestValidationError(
+      throw new RetryableMcpProxyError(
         `MCP server ${server.label} 请求超时`,
         'openai_anthropic_bridge_mcp_proxy_timeout',
         { statusCode: 504, type: 'upstream_error' }
       )
     }
-    throw new GatewayRequestValidationError(
-      error instanceof Error ? `MCP server ${server.label} 请求失败：${error.message}` : `MCP server ${server.label} 请求失败`,
+    throw new RetryableMcpProxyError(
+      error instanceof Error ? `MCP server ${server.label} 请求失败：${truncateForError(error.message)}` : `MCP server ${server.label} 请求失败`,
       'openai_anthropic_bridge_mcp_proxy_request_failed',
       { statusCode: 502, type: 'upstream_error' }
     )
   } finally {
     clearTimeout(timeout)
   }
+}
+
+function shouldFallbackToLegacySse(error: unknown): boolean {
+  return error instanceof McpProxyHttpError && [404, 405, 410, 415].includes(error.httpStatus)
+}
+
+async function openMcpLegacySseSession(
+  server: McpProxyServerRuntimeConfig,
+  input: {
+    authorization?: string
+    signal?: AbortSignal
+  }
+): Promise<McpLegacySseSession> {
+  const headers = new Headers()
+  headers.set('accept', 'text/event-stream')
+  headers.set('mcp-protocol-version', '2025-06-18')
+  if (input.authorization) headers.set('authorization', input.authorization)
+  const sessionAbortController = new AbortController()
+  const timeoutController = new AbortController()
+  const timeout = setTimeout(() => timeoutController.abort(), mcpProxyTimeoutMs(server))
+  const requestSignal = input.signal
+    ? AbortSignal.any([input.signal, sessionAbortController.signal, timeoutController.signal])
+    : AbortSignal.any([sessionAbortController.signal, timeoutController.signal])
+  let session: McpLegacySseSession | undefined
+  try {
+    const response = await fetch(server.serverUrl, {
+      method: 'GET',
+      headers,
+      signal: requestSignal,
+      redirect: 'manual'
+    })
+    if (isMcpRedirectStatus(response.status)) {
+      throw new GatewayRequestValidationError(
+        `MCP legacy SSE server ${server.label} 返回 HTTP ${response.status} 重定向，已按 allowlist 策略拒绝：${mcpRedirectLocationSummary(response.headers.get('location'))}`,
+        'openai_anthropic_bridge_mcp_proxy_redirect_blocked',
+        { statusCode: 502, type: 'upstream_error' }
+      )
+    }
+    if (!response.ok) {
+      const text = await readResponseTextWithLimit(response, mcpProxyMaxBodyBytes(server))
+      throw new McpProxyHttpError(
+        `MCP legacy SSE server ${server.label} 返回 HTTP ${response.status}${text ? `: ${truncateForError(text)}` : ''}`,
+        'openai_anthropic_bridge_mcp_proxy_http_error',
+        { statusCode: response.status >= 400 && response.status < 500 ? 400 : 502, type: 'upstream_error' },
+        response.status
+      )
+    }
+    if (!responseIsSse(response)) {
+      throw new GatewayRequestValidationError(
+        `MCP legacy SSE server ${server.label} 未返回 text/event-stream`,
+        'openai_anthropic_bridge_mcp_proxy_sse_invalid_response',
+        { statusCode: 502, type: 'upstream_error' }
+      )
+    }
+    if (!response.body) {
+      throw new GatewayRequestValidationError(
+        `MCP legacy SSE server ${server.label} 缺少响应流`,
+        'openai_anthropic_bridge_mcp_proxy_sse_missing_body',
+        { statusCode: 502, type: 'upstream_error' }
+      )
+    }
+    session = {
+      endpointUrl: '',
+      reader: response.body.getReader(),
+      decoder: new TextDecoder(),
+      abortController: sessionAbortController,
+      buffer: '',
+      bytesRead: 0,
+      closed: false
+    }
+    while (true) {
+      const frame = await readMcpLegacySseFrame(server, session)
+      if (!frame) {
+        throw new GatewayRequestValidationError(
+          `MCP legacy SSE server ${server.label} 在 endpoint 事件前关闭连接`,
+          'openai_anthropic_bridge_mcp_proxy_sse_endpoint_missing',
+          { statusCode: 502, type: 'upstream_error' }
+        )
+      }
+      if (frame.event !== 'endpoint') continue
+      session.endpointUrl = resolveMcpLegacySseEndpointUrl(server, frame.data)
+      return session
+    }
+  } catch (error) {
+    closeMcpLegacySseSession(session)
+    if (error instanceof GatewayRequestValidationError) throw error
+    if (timeoutController.signal.aborted) {
+      throw new RetryableMcpProxyError(
+        `MCP legacy SSE server ${server.label} 等待 endpoint 超时`,
+        'openai_anthropic_bridge_mcp_proxy_sse_timeout',
+        { statusCode: 504, type: 'upstream_error' }
+      )
+    }
+    throw new RetryableMcpProxyError(
+      error instanceof Error ? `MCP legacy SSE server ${server.label} 请求失败：${truncateForError(error.message)}` : `MCP legacy SSE server ${server.label} 请求失败`,
+      'openai_anthropic_bridge_mcp_proxy_request_failed',
+      { statusCode: 502, type: 'upstream_error' }
+    )
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function postMcpLegacySseJsonRpc(
+  server: McpProxyServerRuntimeConfig,
+  session: McpLegacySseSession,
+  input: {
+    body: JsonRecord
+    authorization?: string
+    sessionId?: string
+    signal?: AbortSignal
+  }
+): Promise<{ body: unknown; sessionId?: string }> {
+  if (session.closed || !session.endpointUrl) {
+    throw new GatewayRequestValidationError(
+      `MCP legacy SSE server ${server.label} 会话已关闭`,
+      'openai_anthropic_bridge_mcp_proxy_sse_closed',
+      { statusCode: 502, type: 'upstream_error' }
+    )
+  }
+  const requestId = stringValue(input.body.id)
+  const response = await postMcpLegacySseEndpoint(server, session, input)
+  const responseSessionId = response.headers.get('mcp-session-id') ?? input.sessionId ?? session.sessionId
+  if (responseSessionId) session.sessionId = responseSessionId
+  await response.body?.cancel().catch(() => undefined)
+  if (!requestId) {
+    return { body: {}, sessionId: session.sessionId }
+  }
+  const body = await readMcpLegacySseJsonRpcResponse(server, session, requestId, input.signal)
+  return { body, sessionId: session.sessionId }
+}
+
+async function postMcpLegacySseEndpoint(
+  server: McpProxyServerRuntimeConfig,
+  session: McpLegacySseSession,
+  input: {
+    body: JsonRecord
+    authorization?: string
+    sessionId?: string
+    signal?: AbortSignal
+  }
+): Promise<Response> {
+  const headers = new Headers()
+  headers.set('accept', 'application/json, text/event-stream')
+  headers.set('content-type', 'application/json')
+  headers.set('mcp-protocol-version', '2025-06-18')
+  const sessionId = input.sessionId ?? session.sessionId
+  if (sessionId) headers.set('mcp-session-id', sessionId)
+  if (input.authorization) headers.set('authorization', input.authorization)
+  const timeoutController = new AbortController()
+  const timeout = setTimeout(() => timeoutController.abort(), mcpProxyTimeoutMs(server))
+  const requestSignal = input.signal
+    ? AbortSignal.any([input.signal, session.abortController.signal, timeoutController.signal])
+    : AbortSignal.any([session.abortController.signal, timeoutController.signal])
+  try {
+    const response = await fetch(session.endpointUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(input.body),
+      signal: requestSignal,
+      redirect: 'manual'
+    })
+    if (isMcpRedirectStatus(response.status)) {
+      throw new GatewayRequestValidationError(
+        `MCP legacy SSE endpoint ${server.label} 返回 HTTP ${response.status} 重定向，已按 allowlist 策略拒绝：${mcpRedirectLocationSummary(response.headers.get('location'))}`,
+        'openai_anthropic_bridge_mcp_proxy_redirect_blocked',
+        { statusCode: 502, type: 'upstream_error' }
+      )
+    }
+    if (!response.ok) {
+      const text = await readResponseTextWithLimit(response, mcpProxyMaxBodyBytes(server))
+      throw new McpProxyHttpError(
+        `MCP legacy SSE endpoint ${server.label} 返回 HTTP ${response.status}${text ? `: ${truncateForError(text)}` : ''}`,
+        'openai_anthropic_bridge_mcp_proxy_http_error',
+        { statusCode: response.status >= 400 && response.status < 500 ? 400 : 502, type: 'upstream_error' },
+        response.status
+      )
+    }
+    return response
+  } catch (error) {
+    if (error instanceof GatewayRequestValidationError) throw error
+    if (timeoutController.signal.aborted) {
+      closeMcpLegacySseSession(session)
+      throw new RetryableMcpProxyError(
+        `MCP legacy SSE endpoint ${server.label} 请求超时`,
+        'openai_anthropic_bridge_mcp_proxy_timeout',
+        { statusCode: 504, type: 'upstream_error' }
+      )
+    }
+    closeMcpLegacySseSession(session)
+    throw new RetryableMcpProxyError(
+      error instanceof Error ? `MCP legacy SSE endpoint ${server.label} 请求失败：${truncateForError(error.message)}` : `MCP legacy SSE endpoint ${server.label} 请求失败`,
+      'openai_anthropic_bridge_mcp_proxy_request_failed',
+      { statusCode: 502, type: 'upstream_error' }
+    )
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function readMcpLegacySseJsonRpcResponse(
+  server: McpProxyServerRuntimeConfig,
+  session: McpLegacySseSession,
+  requestId: string,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const timeout = setTimeout(() => session.abortController.abort(), mcpProxyTimeoutMs(server))
+  const abortSession = () => session.abortController.abort()
+  signal?.addEventListener('abort', abortSession, { once: true })
+  try {
+    while (true) {
+      const frame = await readMcpLegacySseFrame(server, session)
+      if (!frame) {
+        throw new GatewayRequestValidationError(
+          `MCP legacy SSE server ${server.label} 在返回 JSON-RPC response 前关闭连接`,
+          'openai_anthropic_bridge_mcp_proxy_sse_response_missing',
+          { statusCode: 502, type: 'upstream_error' }
+        )
+      }
+      if (frame.data === '[DONE]') continue
+      if (frame.event && frame.event !== 'message') continue
+      const parsed = safeParseJson(frame.data)
+      const record = objectValue(parsed)
+      if (!record || record.id !== requestId) continue
+      return record
+    }
+  } catch (error) {
+    if (error instanceof GatewayRequestValidationError) throw error
+    if (session.abortController.signal.aborted) {
+      throw new RetryableMcpProxyError(
+        `MCP legacy SSE server ${server.label} 等待 JSON-RPC response 超时或被取消`,
+        'openai_anthropic_bridge_mcp_proxy_sse_timeout',
+        { statusCode: 504, type: 'upstream_error' }
+      )
+    }
+    throw new RetryableMcpProxyError(
+      error instanceof Error ? `MCP legacy SSE server ${server.label} 读取响应失败：${truncateForError(error.message)}` : `MCP legacy SSE server ${server.label} 读取响应失败`,
+      'openai_anthropic_bridge_mcp_proxy_request_failed',
+      { statusCode: 502, type: 'upstream_error' }
+    )
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abortSession)
+  }
+}
+
+async function readMcpLegacySseFrame(
+  server: McpProxyServerRuntimeConfig,
+  session: McpLegacySseSession
+): Promise<{ event?: string; data: string } | undefined> {
+  while (true) {
+    const boundary = findSseFrameBoundary(session.buffer)
+    if (boundary) {
+      const frameText = session.buffer.slice(0, boundary.index)
+      session.buffer = session.buffer.slice(boundary.index + boundary.length)
+      const frame = parseSseFrame(frameText)
+      if (frame) return frame
+      continue
+    }
+    const { done, value } = await session.reader.read()
+    if (done) return undefined
+    if (!value) continue
+    session.bytesRead += value.byteLength
+    if (session.bytesRead > mcpProxyMaxBodyBytes(server)) {
+      closeMcpLegacySseSession(session)
+      throw new GatewayRequestValidationError(
+        'MCP legacy SSE 响应体超过读取上限',
+        'openai_anthropic_bridge_mcp_proxy_response_too_large',
+        { statusCode: 502, type: 'upstream_error' }
+      )
+    }
+    session.buffer += session.decoder.decode(value, { stream: true })
+  }
+}
+
+function findSseFrameBoundary(buffer: string): { index: number; length: number } | undefined {
+  const lfIndex = buffer.indexOf('\n\n')
+  const crlfIndex = buffer.indexOf('\r\n\r\n')
+  if (lfIndex < 0 && crlfIndex < 0) return undefined
+  if (lfIndex >= 0 && (crlfIndex < 0 || lfIndex < crlfIndex)) {
+    return { index: lfIndex, length: 2 }
+  }
+  return { index: crlfIndex, length: 4 }
+}
+
+function resolveMcpLegacySseEndpointUrl(server: McpProxyServerRuntimeConfig, value: string): string {
+  const rawEndpoint = value.trim()
+  if (!rawEndpoint) {
+    throw new GatewayRequestValidationError(
+      `MCP legacy SSE server ${server.label} 返回空 endpoint`,
+      'openai_anthropic_bridge_mcp_proxy_sse_endpoint_missing',
+      { statusCode: 502, type: 'upstream_error' }
+    )
+  }
+  const baseUrl = new URL(server.serverUrl)
+  const endpointUrl = new URL(rawEndpoint, baseUrl)
+  if (endpointUrl.origin !== baseUrl.origin) {
+    throw new GatewayRequestValidationError(
+      `MCP legacy SSE server ${server.label} 返回跨域 endpoint，已拒绝：${mcpLegacyEndpointSummary(endpointUrl)}`,
+      'openai_anthropic_bridge_mcp_proxy_sse_endpoint_not_allowed',
+      { statusCode: 502, type: 'upstream_error' }
+    )
+  }
+  return endpointUrl.toString()
+}
+
+function mcpLegacyEndpointSummary(endpointUrl: URL): string {
+  return truncateForError(`${endpointUrl.protocol}//${endpointUrl.host}${endpointUrl.pathname || '/'}`)
+}
+
+function closeMcpLegacySseSession(session?: McpLegacySseSession): void {
+  if (!session || session.closed) return
+  session.closed = true
+  session.abortController.abort()
+  void session.reader.cancel().catch(() => undefined)
+}
+
+function isRetryableMcpHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599)
+}
+
+function isMcpRedirectStatus(status: number): boolean {
+  return status >= 300 && status <= 399
+}
+
+function mcpRedirectLocationSummary(location: string | null): string {
+  if (!location) return '<missing>'
+  try {
+    const parsed = new URL(location, 'https://mcp.local')
+    const isAbsolute = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(location)
+    const target = isAbsolute
+      ? `${parsed.protocol}//${parsed.host}${parsed.pathname}`
+      : parsed.pathname || '/'
+    return truncateForError(target)
+  } catch {
+    return truncateForError(location.split(/[?#]/, 1)[0] ?? '<invalid>')
+  }
+}
+
+async function waitMcpProxyRetryDelay(server: McpProxyServerRuntimeConfig, signal?: AbortSignal): Promise<void> {
+  const delayMs = mcpProxyRetryDelayMs(server)
+  if (delayMs <= 0 || signal?.aborted) return
+  await new Promise<void>((resolve) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      if (timeout) clearTimeout(timeout)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+    timeout = setTimeout(finish, delayMs)
+    signal?.addEventListener('abort', finish, { once: true })
+  })
+}
+
+function mcpProxyTimeoutMs(server: McpProxyServerRuntimeConfig): number {
+  return normalizedServerNumber(server.timeoutMs, runtimeConfig.mcpProxy.timeoutMs)
+}
+
+function mcpProxyMaxRetries(server: McpProxyServerRuntimeConfig): number {
+  return normalizedServerNumber(server.maxRetries, runtimeConfig.mcpProxy.maxRetries)
+}
+
+function mcpProxyRetryDelayMs(server: McpProxyServerRuntimeConfig): number {
+  return normalizedServerNumber(server.retryDelayMs, runtimeConfig.mcpProxy.retryDelayMs)
+}
+
+function mcpProxyMaxBodyBytes(server: McpProxyServerRuntimeConfig): number {
+  return normalizedServerNumber(server.maxBodyBytes, runtimeConfig.mcpProxy.maxBodyBytes)
+}
+
+function mcpProxyMaxOutputBytes(server: McpProxyServerRuntimeConfig): number {
+  return normalizedServerNumber(server.maxOutputBytes, runtimeConfig.mcpProxy.maxOutputBytes)
+}
+
+function normalizedServerNumber(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value ?? fallback)) : fallback
 }
 
 function parseMcpSseResponse(text: string): unknown {
@@ -519,16 +1228,143 @@ function responsesMcpProxyCallItem(
   return item
 }
 
-function limitedMcpOutput(value: unknown): { text: string; truncated: boolean } {
+function responsesMcpProxyFailedCallItem(
+  responseId: string,
+  serverLabel: string,
+  toolName: string,
+  toolArguments: JsonRecord,
+  error: unknown,
+  approvalRequestId?: string
+): JsonRecord {
+  return {
+    id: `mcp_${safeIdSegment(responseId)}`,
+    type: 'mcp_call',
+    approval_request_id: approvalRequestId ?? null,
+    arguments: JSON.stringify(toolArguments),
+    error: mcpProxyToolCallErrorObject(error),
+    name: toolName,
+    output: null,
+    server_label: serverLabel
+  }
+}
+
+function mcpProxyToolCallErrorObject(error: unknown): JsonRecord {
+  const code = error instanceof GatewayRequestValidationError
+    ? error.code
+    : 'openai_anthropic_bridge_mcp_proxy_tool_call_failed'
+  const type = error instanceof GatewayRequestValidationError
+    ? error.type
+    : 'upstream_error'
+  return {
+    message: code,
+    type,
+    code
+  }
+}
+
+function limitedMcpOutput(value: unknown, server: McpProxyServerRuntimeConfig): { text: string; truncated: boolean } {
   const raw = mcpOutputText(value)
   const buffer = Buffer.from(raw, 'utf8')
-  if (buffer.byteLength <= runtimeConfig.mcpProxy.maxOutputBytes) {
+  const maxOutputBytes = mcpProxyMaxOutputBytes(server)
+  if (buffer.byteLength <= maxOutputBytes) {
     return { text: raw, truncated: false }
   }
-  const limited = buffer.subarray(0, runtimeConfig.mcpProxy.maxOutputBytes).toString('utf8')
+  const limited = buffer.subarray(0, maxOutputBytes).toString('utf8')
   return {
     text: `${limited}\n[truncated by juhe-ai MCP proxy output limit]`,
     truncated: true
+  }
+}
+
+function recordMcpExecution(input: {
+  approvalRequestId?: string
+  prepared: OpenAIToAnthropicMcpProxyPreparedServer
+  toolName: string
+  argumentsDigest: string
+  argumentsPreview: string
+  startedAt: string
+  startedAtMs: number
+  status: 'succeeded' | 'failed'
+  output?: { text: string; truncated: boolean }
+  error?: unknown
+}): { id: string } {
+  const finishedAtMs = Date.now()
+  const outputBytes = input.output ? Buffer.byteLength(input.output.text, 'utf8') : 0
+  const error = input.error instanceof GatewayRequestValidationError ? input.error : undefined
+  const errorCode = input.status === 'failed'
+    ? error?.code ?? 'openai_anthropic_bridge_mcp_proxy_tool_call_failed'
+    : undefined
+  const record = createOpenAICompatibleMcpExecutionRecord({
+    scope: currentMcpApprovalScope(),
+    traceId: getRequestContext()?.traceId,
+    approvalRequestId: input.approvalRequestId,
+    serverLabel: input.prepared.serverLabel,
+    serverUrl: input.prepared.serverUrl,
+    toolName: input.toolName,
+    argumentsDigest: input.argumentsDigest,
+    argumentsPreview: input.argumentsPreview,
+    status: input.status,
+    outputDigest: input.output ? sha256Hex(input.output.text) : undefined,
+    outputBytes,
+    outputTruncated: input.output?.truncated === true,
+    errorCode,
+    errorMessage: errorCode,
+    omissionMetadata: input.output?.truncated
+      ? { output_truncated: true, output_limit_bytes: mcpProxyMaxOutputBytes(mcpPreparedContext(input.prepared).server) }
+      : undefined,
+    startedAt: input.startedAt,
+    finishedAt: new Date(finishedAtMs).toISOString(),
+    durationMs: finishedAtMs - input.startedAtMs
+  })
+  return { id: record.id }
+}
+
+function createMcpServerDiagnosticRecord(
+  server: OpenAICompatibleMcpServerRecord,
+  input: {
+    startedAt: string
+    startedAtMs: number
+    status: 'succeeded' | 'failed'
+    toolCount?: number
+    error?: unknown
+  }
+): OpenAICompatibleMcpServerDiagnosticRecord {
+  const finishedAtMs = Date.now()
+  const error = input.error instanceof GatewayRequestValidationError ? input.error : undefined
+  const errorCode = input.status === 'failed'
+    ? error?.code ?? 'openai_anthropic_bridge_mcp_proxy_diagnostic_failed'
+    : undefined
+  return createOpenAICompatibleMcpServerDiagnostic({
+    serverId: server.id,
+    systemAccountId: server.systemAccountId,
+    serverLabel: server.label,
+    serverUrl: server.serverUrl,
+    status: input.status,
+    toolCount: input.toolCount ?? 0,
+    errorCode,
+    errorMessage: input.status === 'failed' ? errorCode : undefined,
+    omissionMetadata: input.status === 'failed'
+      ? { error_message_omitted: true }
+      : undefined,
+    startedAt: input.startedAt,
+    finishedAt: new Date(finishedAtMs).toISOString(),
+    durationMs: finishedAtMs - input.startedAtMs
+  })
+}
+
+function mcpServerRuntimeConfigFromRecord(record: OpenAICompatibleMcpServerRecord): McpProxyServerRuntimeConfig {
+  return {
+    label: record.label,
+    serverUrl: record.serverUrl,
+    enabled: record.enabled,
+    allowedTools: record.allowedTools,
+    defaultApprovalPolicy: record.defaultApprovalPolicy,
+    timeoutMs: record.timeoutMs,
+    maxRetries: record.maxRetries,
+    retryDelayMs: record.retryDelayMs,
+    maxBodyBytes: record.maxBodyBytes,
+    maxOutputBytes: record.maxOutputBytes,
+    allowRequestAuthorization: record.allowRequestAuthorization
   }
 }
 
@@ -544,13 +1380,13 @@ function mcpOutputText(value: unknown): string {
 }
 
 function responsesMcpProxyApprovalRequestItem(
-  responseId: string,
   serverLabel: string,
   toolName: string,
-  toolArguments: JsonRecord
+  toolArguments: JsonRecord,
+  approvalRequestId: string
 ): JsonRecord {
   return {
-    id: `mcpr_${safeIdSegment(responseId)}`,
+    id: approvalRequestId,
     type: 'mcp_approval_request',
     arguments: JSON.stringify(toolArguments),
     name: toolName,
@@ -650,6 +1486,9 @@ function responsesMcpProxySse(input: { response: JsonRecord; items: JsonRecord[]
         })
       )
     }
+    if (item.type === 'mcp_call') {
+      output.push(...responsesMcpCallLifecycleSse(response, item, index))
+    }
     output.push(sse('response.output_item.done', {
       type: 'response.output_item.done',
       output_index: index,
@@ -673,17 +1512,160 @@ function mcpProxyInProgressItem(item: JsonRecord): JsonRecord {
   }
 }
 
-function mcpRequiresApproval(tool: JsonRecord, toolName: string): boolean {
+function responsesMcpCallLifecycleSse(response: JsonRecord, item: JsonRecord, outputIndex: number): string[] {
+  const responseId = stringValue(response.id) ?? ''
+  const itemId = stringValue(item.id) ?? ''
+  const argumentsText = typeof item.arguments === 'string' ? item.arguments : ''
+  const output: string[] = []
+  if (argumentsText) {
+    output.push(
+      sse('response.mcp_call_arguments.delta', {
+        type: 'response.mcp_call_arguments.delta',
+        response_id: responseId,
+        item_id: itemId,
+        output_index: outputIndex,
+        delta: argumentsText
+      }),
+      sse('response.mcp_call_arguments.done', {
+        type: 'response.mcp_call_arguments.done',
+        response_id: responseId,
+        item_id: itemId,
+        output_index: outputIndex,
+        arguments: argumentsText
+      })
+    )
+  }
+  output.push(sse('response.mcp_call.in_progress', {
+    type: 'response.mcp_call.in_progress',
+    response_id: responseId,
+    item_id: itemId,
+    output_index: outputIndex
+  }))
+  const error = objectValue(item.error)
+  if (error) {
+    output.push(sse('response.mcp_call.failed', {
+      type: 'response.mcp_call.failed',
+      response_id: responseId,
+      item_id: itemId,
+      output_index: outputIndex,
+      error
+    }))
+  }
+  return output
+}
+
+function mcpRequiresApproval(tool: JsonRecord, toolName: string, server?: McpProxyServerRuntimeConfig): boolean {
+  if (server?.defaultApprovalPolicy === 'always') return true
   const requireApproval = tool.require_approval
   if (requireApproval === 'never') return false
   if (requireApproval === 'always') return true
   const requireApprovalObject = objectValue(requireApproval)
   const never = objectValue(requireApprovalObject?.never)
   if (stringArrayValue(never?.tool_names).includes(toolName)) return false
+  if (server?.defaultApprovalPolicy === 'never') return false
   return true
 }
 
-function mcpApprovalResponseFromResponsesInput(value: unknown): { approved: boolean; approvalRequestId?: string } | undefined {
+function resolveMcpApprovalDecision(input: {
+  approval: { approved: boolean; approvalRequestId?: string; rejectReason?: string }
+  prepared: OpenAIToAnthropicMcpProxyPreparedServer
+  toolName: string
+  toolArguments: JsonRecord
+}): { approved: boolean; approvalRequestId: string } {
+  const approvalRequestId = input.approval.approvalRequestId
+  if (!approvalRequestId) {
+    throw new GatewayRequestValidationError(
+      'MCP approval_response 缺少 approval_request_id，已拒绝执行远程工具',
+      'openai_anthropic_bridge_mcp_approval_missing_id',
+      { statusCode: 400, type: 'invalid_request_error' }
+    )
+  }
+  const decision = resolveOpenAICompatibleMcpApprovalResponse({
+    approvalRequestId,
+    scope: currentMcpApprovalScope(),
+    serverLabel: input.prepared.serverLabel,
+    serverUrl: input.prepared.serverUrl,
+    toolName: input.toolName,
+    argumentsDigest: mcpApprovalArgumentsDigest(input.prepared.serverLabel, input.prepared.serverUrl, input.toolName, input.toolArguments),
+    approved: input.approval.approved,
+    rejectReason: input.approval.rejectReason
+  })
+  if (decision.ok) {
+    return { approved: decision.approved, approvalRequestId }
+  }
+  if (decision.reason === 'scope_mismatch') {
+    throw new GatewayRequestValidationError(
+      'MCP approval_request_id 不属于当前 API Key / 分组，已拒绝执行远程工具',
+      'openai_anthropic_bridge_mcp_approval_scope_mismatch',
+      { statusCode: 403, type: 'permission_error' }
+    )
+  }
+  if (decision.reason === 'expired') {
+    throw new GatewayRequestValidationError(
+      'MCP approval_request_id 已过期，已拒绝执行远程工具',
+      'openai_anthropic_bridge_mcp_approval_expired',
+      { statusCode: 400, type: 'invalid_request_error' }
+    )
+  }
+  if (decision.reason === 'not_pending') {
+    throw new GatewayRequestValidationError(
+      'MCP approval_request_id 已被处理，不能重复执行远程工具',
+      'openai_anthropic_bridge_mcp_approval_not_pending',
+      { statusCode: 400, type: 'invalid_request_error' }
+    )
+  }
+  const mismatch = decision.reason === 'target_mismatch' || decision.reason === 'arguments_mismatch'
+  throw new GatewayRequestValidationError(
+    mismatch
+      ? 'MCP approval_request_id 与当前 server/tool/arguments 不匹配，已拒绝执行远程工具'
+      : 'MCP approval_request_id 不存在，已拒绝执行远程工具',
+    mismatch
+      ? 'openai_anthropic_bridge_mcp_approval_mismatch'
+      : 'openai_anthropic_bridge_mcp_approval_not_found',
+    { statusCode: 400, type: 'invalid_request_error' }
+  )
+}
+
+function currentMcpApprovalScope(): OpenAICompatibleMcpApprovalScope {
+  const context = getRequestContext()
+  if (context?.systemAccountId && context.apiKeyId && context.groupId) {
+    return {
+      systemAccountId: context.systemAccountId,
+      apiKeyId: context.apiKeyId,
+      groupId: context.groupId
+    }
+  }
+  throw new GatewayRequestValidationError(
+    'MCP approval 需要当前 API Key / 分组请求上下文，已拒绝执行远程工具',
+    'openai_anthropic_bridge_mcp_approval_scope_missing',
+    { statusCode: 503, type: 'service_unavailable' }
+  )
+}
+
+function mcpApprovalArgumentsDigest(
+  serverLabel: string,
+  serverUrl: string,
+  toolName: string,
+  toolArguments: JsonRecord
+): string {
+  return sha256Hex(stableJsonStringify({
+      arguments: toolArguments,
+      server_label: serverLabel,
+      server_url: serverUrl,
+      tool_name: toolName
+    }))
+}
+
+function mcpApprovalArgumentsPreview(toolArguments: JsonRecord): string {
+  const text = stableJsonStringify(toolArguments)
+  return text.length > 1000 ? `${text.slice(0, 1000)}...` : text
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function mcpApprovalResponseFromResponsesInput(value: unknown): { approved: boolean; approvalRequestId?: string; rejectReason?: string } | undefined {
   const items = Array.isArray(value)
     ? value
     : isPlainObject(value) ? [value] : []
@@ -693,7 +1675,8 @@ function mcpApprovalResponseFromResponsesInput(value: unknown): { approved: bool
     if (stringValue(item.type) !== 'mcp_approval_response') continue
     return {
       approved: item.approve === true,
-      approvalRequestId: stringValue(item.approval_request_id)
+      approvalRequestId: stringValue(item.approval_request_id),
+      rejectReason: stringValue(item.reason)
     }
   }
   return undefined
