@@ -28,19 +28,13 @@ const [
   { proxiesRouter },
   { statsRouter },
   { myTeamsRouter, systemTeamsRouter },
-  { usageRecordsRouter },
-  { mcpApprovalRequestsRouter },
-  { mcpExecutionRecordsRouter },
-  { mcpServersRouter },
+  { usageRecordsRouter },,
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   databaseModule,
   repositories,
   usageStatsRepository,
-  usageStatsHelpers,
-  mcpApprovalRepository,
-  mcpExecutionRepository,
-  mcpServerRepository
+  usageStatsHelpers
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/api-keys/api-keys.routes.js'),
@@ -51,19 +45,13 @@ const [
   import('../../modules/proxies/proxies.routes.js'),
   import('../../modules/stats/stats.routes.js'),
   import('../../modules/system-teams/system-teams.routes.js'),
-  import('../../modules/usage-records/usage-records.routes.js'),
-  import('../../modules/openai-compatible-mcp/mcp-approval-requests.routes.js'),
-  import('../../modules/openai-compatible-mcp/mcp-execution-records.routes.js'),
-  import('../../modules/openai-compatible-mcp/mcp-servers.routes.js'),
+  import('../../modules/usage-records/usage-records.routes.js'),,
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-stats.repository.js'),
-  import('../../storage/usage-stats-helpers.js'),
-  import('../../storage/openai-compatible-mcp-approval.repository.js'),
-  import('../../storage/openai-compatible-mcp-execution.repository.js'),
-  import('../../storage/openai-compatible-mcp-server.repository.js')
+  import('../../storage/usage-stats-helpers.js')
 ])
 
 const app = express()
@@ -79,9 +67,6 @@ app.use('/__aisys__/api/my-authorizations', forceSelfAccessScope, authorizations
 app.use('/__aisys__/api/my-usage-records', forceSelfAccessScope, usageRecordsRouter)
 app.use('/__aisys__/api/my-stats', forceSelfAccessScope, statsRouter)
 app.use('/__aisys__/api/my-teams', forceSelfAccessScope, myTeamsRouter)
-app.use('/__aisys__/api/my-mcp-servers', forceSelfAccessScope, mcpServersRouter)
-app.use('/__aisys__/api/my-mcp-approval-requests', forceSelfAccessScope, mcpApprovalRequestsRouter)
-app.use('/__aisys__/api/my-mcp-execution-records', forceSelfAccessScope, mcpExecutionRecordsRouter)
 app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 app.use('/__aisys__/api/groups', requireAdmin, groupsRouter)
 app.use('/__aisys__/api/api-keys', requireAdmin, apiKeysRouter)
@@ -92,9 +77,6 @@ app.use('/__aisys__/api/providers', providersRouter)
 app.use('/__aisys__/api/proxies', proxiesRouter)
 app.use('/__aisys__/api/stats', requireAdmin, statsRouter)
 app.use('/__aisys__/api/system-teams', systemTeamsRouter)
-app.use('/__aisys__/api/mcp-servers', requireAdmin, mcpServersRouter)
-app.use('/__aisys__/api/mcp-approval-requests', requireAdmin, mcpApprovalRequestsRouter)
-app.use('/__aisys__/api/mcp-execution-records', requireAdmin, mcpExecutionRecordsRouter)
 
 interface ApiEnvelope<T> {
   data: T
@@ -200,48 +182,6 @@ interface UsageRecordListResult {
   items: UsageRecordSummary[]
   total: number
   hasMore: boolean
-  page: number
-  pageSize: number
-}
-
-interface McpServerSummary {
-  id: string
-  systemAccountId: string
-  label: string
-  enabled: boolean
-}
-
-interface McpServerListResult {
-  items: McpServerSummary[]
-  total: number
-  page: number
-  pageSize: number
-}
-
-interface McpApprovalSummary {
-  id: string
-  systemAccountId: string
-  status: string
-  serverLabel: string
-}
-
-interface McpApprovalListResult {
-  items: McpApprovalSummary[]
-  total: number
-  page: number
-  pageSize: number
-}
-
-interface McpExecutionSummary {
-  id: string
-  systemAccountId: string
-  status: string
-  serverLabel: string
-}
-
-interface McpExecutionListResult {
-  items: McpExecutionSummary[]
-  total: number
   page: number
   pageSize: number
 }
@@ -362,12 +302,6 @@ interface SeedState {
   inboundRuntimeAuthorizationId: string
   teamInboundAuthorizationId: string
   userBGroupId: string
-  userAMcpApprovalId: string
-  userAMcpExecutionId: string
-  userAMcpServerId: string
-  userBMcpApprovalId: string
-  userBMcpExecutionId: string
-  userBMcpServerId: string
   usageToday: string
   usageYesterday: string
 }
@@ -537,28 +471,6 @@ async function main(): Promise<void> {
     assert(activeUserBKeys.items.every((item) => item.status === 'active' && ((item as unknown as { groupBindings: Array<{ groupId: string }> }).groupBindings.some((binding) => binding.groupId === seed.userBGroupId))), '管理 API Key 状态或分组筛选异常')
     summary.push('API Key 分页筛选检查通过')
 
-    await assertForbidden(`${baseUrl}/__aisys__/api/mcp-servers`, seed.userACookie, '普通用户不能访问管理侧 MCP Server 接口')
-    await assertForbidden(`${baseUrl}/__aisys__/api/mcp-approval-requests`, seed.userACookie, '普通用户不能访问管理侧 MCP 审批接口')
-    await assertForbidden(`${baseUrl}/__aisys__/api/mcp-execution-records`, seed.userACookie, '普通用户不能访问管理侧 MCP 执行记录接口')
-    const userAMcpServers = await getEnvelope<McpServerListResult>(baseUrl, `/__aisys__/api/my-mcp-servers?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.userACookie)
-    assert(userAMcpServers.items.some((item) => item.id === seed.userAMcpServerId), '用户 A 我的 MCP Server 应返回自身配置')
-    assert(!userAMcpServers.items.some((item) => item.id === seed.userBMcpServerId), '用户 A 我的 MCP Server 不应混入用户 B 配置')
-    const userBMcpServersForAdmin = await getEnvelope<McpServerListResult>(baseUrl, `/__aisys__/api/mcp-servers?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.adminCookie)
-    assert(userBMcpServersForAdmin.items.some((item) => item.id === seed.userBMcpServerId), '管理员 MCP Server 管理接口应能按用户 B 查询')
-    assert(!userBMcpServersForAdmin.items.some((item) => item.id === seed.userAMcpServerId), '管理员 MCP Server 按用户 B 筛选不应混入用户 A')
-    const userAMcpApprovals = await getEnvelope<McpApprovalListResult>(baseUrl, `/__aisys__/api/my-mcp-approval-requests?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.userACookie)
-    assert(userAMcpApprovals.items.some((item) => item.id === seed.userAMcpApprovalId), '用户 A 我的 MCP 审批应返回自身记录')
-    assert(!userAMcpApprovals.items.some((item) => item.id === seed.userBMcpApprovalId), '用户 A 我的 MCP 审批不应混入用户 B 记录')
-    const userBMcpApprovalsForAdmin = await getEnvelope<McpApprovalListResult>(baseUrl, `/__aisys__/api/mcp-approval-requests?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.adminCookie)
-    assert(userBMcpApprovalsForAdmin.items.some((item) => item.id === seed.userBMcpApprovalId), '管理员 MCP 审批接口应能按用户 B 查询')
-    assert(!userBMcpApprovalsForAdmin.items.some((item) => item.id === seed.userAMcpApprovalId), '管理员 MCP 审批按用户 B 筛选不应混入用户 A')
-    const userAMcpExecutions = await getEnvelope<McpExecutionListResult>(baseUrl, `/__aisys__/api/my-mcp-execution-records?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.userACookie)
-    assert(userAMcpExecutions.items.some((item) => item.id === seed.userAMcpExecutionId), '用户 A 我的 MCP 执行记录应返回自身记录')
-    assert(!userAMcpExecutions.items.some((item) => item.id === seed.userBMcpExecutionId), '用户 A 我的 MCP 执行记录不应混入用户 B 记录')
-    const userBMcpExecutionsForAdmin = await getEnvelope<McpExecutionListResult>(baseUrl, `/__aisys__/api/mcp-execution-records?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.adminCookie)
-    assert(userBMcpExecutionsForAdmin.items.some((item) => item.id === seed.userBMcpExecutionId), '管理员 MCP 执行记录接口应能按用户 B 查询')
-    assert(!userBMcpExecutionsForAdmin.items.some((item) => item.id === seed.userAMcpExecutionId), '管理员 MCP 执行记录按用户 B 筛选不应混入用户 A')
-    summary.push('MCP 运行时用户侧和管理侧作用域检查通过')
 
     const userAUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/my-usage-records?systemAccountId=${seed.userBId}&page=1&pageSize=2`, seed.userACookie)
     assert(userAUsage.items.length === 2, `用户 A 使用记录分页数量异常：${userAUsage.items.length}`)
@@ -913,7 +825,7 @@ function seedData(): SeedState {
     groupBindings: [{ groupId: userAOwnedGroup, priority: 1, status: 'active' }],
   }, userAAccess)
   const userBApiKey = repositories.createApiKeyRecord({
-    name: '用户 B MCP Key',
+    name: '用户 B Key',
     groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
   }, userBAccess)
   const usageToday = localDateKey(addDays(new Date(), -1))
@@ -928,74 +840,6 @@ function seedData(): SeedState {
   ])
   while (usageStatsRepository.aggregateUsageStatsBatch(1000) > 0) {}
   usageStatsRepository.refreshUsageRankSnapshots()
-  const userAMcpServer = mcpServerRepository.createOpenAICompatibleMcpServer({
-    label: 'scope-user-a-mcp',
-    serverUrl: 'https://mcp.scope-user-a.example/runtime',
-    enabled: true,
-    allowedTools: ['echo'],
-    defaultApprovalPolicy: 'always'
-  }, userAAccess)
-  const userBMcpServer = mcpServerRepository.createOpenAICompatibleMcpServer({
-    label: 'scope-user-b-mcp',
-    serverUrl: 'https://mcp.scope-user-b.example/runtime',
-    enabled: true,
-    allowedTools: ['echo'],
-    defaultApprovalPolicy: 'always'
-  }, userBAccess)
-  const userAMcpApproval = mcpApprovalRepository.createOpenAICompatibleMcpApprovalRequest({
-    scope: { systemAccountId: userA.id, apiKeyId: userAApiKey.id, groupId: userATargetGroup.id },
-    serverLabel: userAMcpServer.label,
-    serverUrl: userAMcpServer.serverUrl,
-    toolName: 'echo',
-    argumentsDigest: 'scope-user-a-approval-digest',
-    argumentsPreview: '{"message":"a"}',
-    traceId: 'scope_user_a_mcp_trace',
-    ttlSeconds: 300
-  })
-  const userBMcpApproval = mcpApprovalRepository.createOpenAICompatibleMcpApprovalRequest({
-    scope: { systemAccountId: userB.id, apiKeyId: userBApiKey.id, groupId: userBGroup.id },
-    serverLabel: userBMcpServer.label,
-    serverUrl: userBMcpServer.serverUrl,
-    toolName: 'echo',
-    argumentsDigest: 'scope-user-b-approval-digest',
-    argumentsPreview: '{"message":"b"}',
-    traceId: 'scope_user_b_mcp_trace',
-    ttlSeconds: 300
-  })
-  const userAMcpExecution = mcpExecutionRepository.createOpenAICompatibleMcpExecutionRecord({
-    scope: { systemAccountId: userA.id, apiKeyId: userAApiKey.id, groupId: userATargetGroup.id },
-    traceId: 'scope_user_a_mcp_trace',
-    approvalRequestId: userAMcpApproval.id,
-    serverLabel: userAMcpServer.label,
-    serverUrl: userAMcpServer.serverUrl,
-    toolName: 'echo',
-    argumentsDigest: 'scope-user-a-execution-digest',
-    argumentsPreview: '{"message":"a"}',
-    status: 'succeeded',
-    outputDigest: 'scope-user-a-output-digest',
-    outputBytes: 12,
-    outputTruncated: false,
-    startedAt: '2026-04-04T10:00:00.000Z',
-    finishedAt: '2026-04-04T10:00:00.012Z',
-    durationMs: 12
-  })
-  const userBMcpExecution = mcpExecutionRepository.createOpenAICompatibleMcpExecutionRecord({
-    scope: { systemAccountId: userB.id, apiKeyId: userBApiKey.id, groupId: userBGroup.id },
-    traceId: 'scope_user_b_mcp_trace',
-    approvalRequestId: userBMcpApproval.id,
-    serverLabel: userBMcpServer.label,
-    serverUrl: userBMcpServer.serverUrl,
-    toolName: 'echo',
-    argumentsDigest: 'scope-user-b-execution-digest',
-    argumentsPreview: '{"message":"b"}',
-    status: 'succeeded',
-    outputDigest: 'scope-user-b-output-digest',
-    outputBytes: 13,
-    outputTruncated: false,
-    startedAt: '2026-04-04T10:00:01.000Z',
-    finishedAt: '2026-04-04T10:00:01.013Z',
-    durationMs: 13
-  })
 
   return {
     adminId: admin.id,
@@ -1018,12 +862,6 @@ function seedData(): SeedState {
     inboundRuntimeAuthorizationId,
     teamInboundAuthorizationId: teamInboundAuthorization.id,
     userBGroupId: userBGroup.id,
-    userAMcpApprovalId: userAMcpApproval.id,
-    userAMcpExecutionId: userAMcpExecution.id,
-    userAMcpServerId: userAMcpServer.id,
-    userBMcpApprovalId: userBMcpApproval.id,
-    userBMcpExecutionId: userBMcpExecution.id,
-    userBMcpServerId: userBMcpServer.id,
     usageToday,
     usageYesterday
   }

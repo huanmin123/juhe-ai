@@ -19,6 +19,7 @@ import { requestBackgroundWorkerDbService, requestIngestWorkerDrainStatus, reque
 import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
+import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
 import {
   runAccountApiKeyCooldownRetest,
   runAccountHealthCheck,
@@ -65,6 +66,7 @@ const usageOverviewWindowStageNames: UsageRankSnapshotStageName[] = ['usage_over
 const usageScopeRangeWindowStageNames: UsageRankSnapshotStageName[] = ['usage_scope_range_windows']
 const authorizationUsageRangeWindowStageNames: UsageRankSnapshotStageName[] = ['authorization_usage_range_windows']
 const scheduler = new WorkerScheduler()
+const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
 
 export function startBackgroundJobs(): void {
   if (started) return
@@ -72,6 +74,9 @@ export function startBackgroundJobs(): void {
 
   switch (runtimeConfig.workerRole) {
     case 'ingest-worker':
+      if (isPostgresHighPerformanceMode()) {
+        return
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
@@ -84,6 +89,10 @@ export function startBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
       return
     case 'stats-worker':
+      if (isPostgresHighPerformanceMode()) {
+        scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
+        return
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, task: runUsageStatsAggregation })
       scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
@@ -98,6 +107,9 @@ export function startBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
     case 'ops-worker':
+      if (isPostgresHighPerformanceMode()) {
+        return
+      }
       scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
       scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
@@ -111,6 +123,10 @@ export function startBackgroundJobs(): void {
     default:
       return
   }
+}
+
+function isPostgresHighPerformanceMode(): boolean {
+  return runtimeConfig.databaseDriver === 'postgres'
 }
 
 export function getBackgroundJobRuntimeSnapshots() {
@@ -363,7 +379,9 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
 }
 
 function settingsNumber(key: string, min: number, max: number): number {
-  const value = getSettings()[key]
+  const value = runtimeConfig.databaseDriver === 'postgres'
+    ? defaultSystemSettingsByKey.get(key)
+    : getSettings()[key]
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`系统设置 ${key} 必须是整数`)
   }

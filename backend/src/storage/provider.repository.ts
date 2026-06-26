@@ -6,6 +6,8 @@ import {
   GEMINI_PROVIDER_CODE,
   GEMINI_PROTOCOL_CODE,
   GEMINI_PROTOCOL_VERSION,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_PROVIDER_CODE,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION
 } from '../domain/provider-protocol.js'
@@ -309,13 +311,13 @@ export async function findProviderProtocolProfileAsync(profileId: string): Promi
 export function defaultProviderProtocolProfile(providerCode: string): ProviderProtocolProfileDefinition | undefined {
   const code = providerCode.trim()
   if (!code) return undefined
-  return listProviderProtocolProfiles([code]).find((profile) => profile.providerCode === code)
+  return preferredDefaultProtocolProfile(listProviderProtocolProfiles([code]).filter((profile) => profile.providerCode === code))
 }
 
 export async function defaultProviderProtocolProfileAsync(providerCode: string): Promise<ProviderProtocolProfileDefinition | undefined> {
   const code = providerCode.trim()
   if (!code) return undefined
-  return (await listProviderProtocolProfilesAsync([code])).find((profile) => profile.providerCode === code)
+  return preferredDefaultProtocolProfile((await listProviderProtocolProfilesAsync([code])).filter((profile) => profile.providerCode === code))
 }
 
 export function requireEnabledProviderProtocolProfile(providerCode: string, profileIdInput: unknown): ProviderProtocolProfileDefinition {
@@ -566,5 +568,9 @@ function preferredDefaultProtocolProfile(profiles: ProviderProtocolProfileDefini
     profile.providerCode === GEMINI_PROVIDER_CODE
     && profile.id === GEMINI_NATIVE_V1BETA_PROFILE_ID
   ))
-  return geminiNativeProfile ?? candidates[0]
+  const glmCodingPlanProfile = candidates.find((profile) => (
+    profile.providerCode === GLM_PROVIDER_CODE
+    && profile.id === GLM_CODING_OPENAI_V1_PROFILE_ID
+  ))
+  return geminiNativeProfile ?? glmCodingPlanProfile ?? candidates[0]
 }

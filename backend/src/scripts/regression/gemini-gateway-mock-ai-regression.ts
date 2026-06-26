@@ -1102,7 +1102,7 @@ async function assertGeminiGenerateContentToAnthropicMessagesJson(baseUrl: strin
     tool_choice?: { type?: string; name?: string }
   }
   assert.equal(upstreamBody.model, 'claude-haiku-4-5', 'Gemini -> Anthropic Messages 显式模型映射必须改写 Anthropic 上游模型')
-  assert.equal(upstreamBody.stream, false)
+  assert.equal(upstreamBody.stream, undefined)
   assert.equal(upstreamBody.system, '只输出简短中文')
   assert.equal(upstreamBody.messages?.[0]?.role, 'user')
   assert.equal(upstreamBody.messages?.[0]?.content?.[0]?.type, 'text')

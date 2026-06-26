@@ -23,7 +23,7 @@
         show-search
       />
     </a-form-item>
-    <a-form-item label="模型映射" tooltip="把客户端请求的下游模型改写为该账号实际请求的上游模型。常用于私有部署名、Codex Responses 到 Chat Completions 桥接等场景。">
+    <a-form-item label="账号模型别名" tooltip="只在当前供应商和当前协议内做模型名改写；跨供应商或跨协议映射请在 API Key 显式混合路由中配置。">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
           <div class="model-mapping-side">
@@ -33,7 +33,7 @@
               :disabled="authorizedEditing"
               option-filter-prop="label"
               :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
-              placeholder="下游模型"
+              placeholder="来源模型"
               show-search
             />
             <a-select
@@ -41,7 +41,7 @@
               :disabled="authorizedEditing"
               :options="sourceEndpointFamilyOptions"
               class="model-mapping-endpoint"
-              placeholder="下游协议"
+              placeholder="来源协议"
             />
           </div>
           <SwapRightOutlined class="model-mapping-arrow" />
@@ -52,7 +52,7 @@
               :disabled="authorizedEditing"
               option-filter-prop="label"
               :options="mappingUpstreamModelOptions"
-              placeholder="上游模型"
+              placeholder="目标模型"
               show-search
             />
             <a-select
@@ -60,7 +60,7 @@
               :disabled="authorizedEditing"
               :options="upstreamEndpointFamilyOptions(mapping.sourceEndpointFamily)"
               class="model-mapping-endpoint"
-              placeholder="上游协议"
+              placeholder="目标协议"
             />
           </div>
           <div class="model-mapping-actions">
@@ -75,34 +75,8 @@
       </div>
       <a-button v-if="!authorizedEditing" block type="dashed" @click="addModelMapping">
         <template #icon><PlusOutlined /></template>
-        新增映射
+        新增别名
       </a-button>
-    </a-form-item>
-    <a-form-item label="客户端兼容" tooltip="选择这个账号面向哪类客户端协议工作；切换后会同步调整下方接口能力限制。">
-      <a-radio-group
-        v-if="showClientCompatibilityControl"
-        v-model:value="form.clientCompatibility"
-        :disabled="authorizedEditing"
-        button-style="solid"
-        @change="syncEndpointModesForClientCompatibility"
-      >
-        <a-radio-button
-          v-for="option in clientCompatibilitySelectOptions"
-          :key="option.value"
-          :value="option.value"
-        >
-          {{ option.label }}
-        </a-radio-button>
-      </a-radio-group>
-      <div v-else class="compatibility-capability-list">
-        <a-tag
-          v-for="capability in clientCompatibilityCapabilities"
-          :key="capability"
-          color="blue"
-        >
-          {{ clientCompatibilityCapabilityLabel(capability) }}
-        </a-tag>
-      </div>
     </a-form-item>
     <a-form-item label="接口能力限制" tooltip="限制这个账号可承接的接口形态。未勾选的请求不会进入该账号候选；OAuth 账号按来源能力只读。">
       <a-checkbox-group
@@ -153,10 +127,6 @@ import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import {
-  accountClientCompatibilityCapabilities,
-  clientCompatibilityCapabilityLabel,
-  canSelectClientCompatibility,
-  defaultEndpointModesForAccount,
   endpointModesForProfile
 } from './accountProviderCapabilities'
 import {
@@ -182,27 +152,6 @@ const props = defineProps<{
 }>()
 
 const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
-const clientCompatibilityCapabilities = computed(() => accountClientCompatibilityCapabilities({
-  ...activeProfile.value,
-  providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
-  providerProtocolProfileId: activeProfileId(),
-  type: props.form.type,
-  clientCompatibility: props.form.clientCompatibility
-}))
-const showClientCompatibilityControl = computed(() => canSelectClientCompatibility({
-  ...activeProfile.value,
-  providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
-  providerProtocolProfileId: activeProfileId(),
-  type: props.form.type,
-  clientCompatibility: props.form.clientCompatibility
-}))
-const clientCompatibilitySelectOptions = computed(() => clientCompatibilityCapabilities.value
-  .filter((value): value is AccountFormModel['clientCompatibility'] => value === 'openai_standard' || value === 'codex_responses')
-  .map((value) => ({
-    label: clientCompatibilityCapabilityLabel(value),
-    value
-  })))
-
 const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
@@ -242,13 +191,8 @@ watch(() => [
 })
 
 function mappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  if (sourceEndpointFamily === 'messages') {
-    return props.mappingAnthropicSourceModelOptions
-  }
-  if (isGeminiGenerateContentMappingSource(sourceEndpointFamily)) {
-    return props.mappingGeminiSourceModelOptions
-  }
-  return props.mappingSourceModelOptions
+  void sourceEndpointFamily
+  return props.modelOptions
 }
 
 function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
@@ -287,18 +231,6 @@ function addModelMapping(): void {
 
 function removeModelMapping(index: number): void {
   props.form.modelMappings.splice(index, 1)
-}
-
-function syncEndpointModesForClientCompatibility(): void {
-  props.form.supportedEndpointModes = defaultEndpointModesForAccount({
-    profile: {
-      ...activeProfile.value,
-      providerCode: activeProfile.value?.providerCode ?? props.form.providerCode,
-      providerProtocolProfileId: activeProfileId()
-    },
-    type: props.form.type,
-    clientCompatibility: props.form.clientCompatibility
-  })
 }
 
 function activeProfileId(): string | undefined {

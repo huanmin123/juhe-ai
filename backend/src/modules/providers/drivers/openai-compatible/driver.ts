@@ -116,7 +116,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
     return {
       upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
       modelMappingApplied: Boolean(modelMapping),
-      modelMappingSource: modelMapping ? 'account' : undefined
+      modelMappingSource: modelMapping ? modelMapping.runtimeSource ?? 'account' : undefined
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {

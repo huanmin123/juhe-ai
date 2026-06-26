@@ -135,7 +135,7 @@ export const DEFAULT_GLM_CODING_GROUP = {
 export const DEFAULT_GLM_CODING_ANTHROPIC_GROUP = {
   id: 'grp_default_glm_coding_anthropic_sys_admin',
   systemAccountId: 'sys_admin',
-  name: '默认 GLM Coding Claude Code 分组',
+  name: '默认 GLM Coding Anthropic 分组',
   providerCode: GLM_PROVIDER_CODE,
   providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
@@ -211,7 +211,7 @@ export const GLM_PROVIDER_SEED = {
   code: GLM_PROVIDER_CODE,
   name: '智谱 GLM',
   parentCode: null,
-  description: '智谱 GLM 官方供应商，支持通用 GLM API Key、GLM Coding Plan OpenAI Chat 档案，以及 GLM Coding Anthropic v1 档案兼容 Claude Code',
+  description: '智谱 GLM 官方供应商，支持通用 GLM API Key、GLM Coding Plan OpenAI Chat 档案，以及 GLM Coding Anthropic v1 Messages 档案',
   enabled: 1
 } as const
 
@@ -486,7 +486,7 @@ export const GLM_CODING_ANTHROPIC_V1_PROFILE_SEED = {
   id: GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   providerCode: GLM_PROVIDER_CODE,
   name: '智谱 GLM Coding / Anthropic v1',
-  description: '智谱 GLM Coding Plan Key 的 Anthropic v1 Messages 协议档案，面向 Claude Code 原生协议直连',
+  description: '智谱 GLM Coding Plan Key 的 Anthropic v1 Messages 协议档案，面向 Anthropic Messages 客户端直连',
   enabled: 1,
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,

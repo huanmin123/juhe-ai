@@ -10,7 +10,6 @@ import { ipStatsApi } from './domains/ipStats'
 import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, runtimeLogsApi } from './domains/logs'
 import { modelChecksApi, myModelChecksApi } from './domains/modelChecks'
 import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
-import { myOpenAICompatibleMcpRuntimeApi, openAICompatibleMcpRuntimeApi } from './domains/openaiCompatibleMcp'
 import { providersApi } from './domains/providers'
 import { proxiesApi } from './domains/proxies'
 import { responseInspectionPoliciesApi } from './domains/responseInspectionPolicies'
@@ -58,8 +57,6 @@ export const api = {
   externalIntegrationSources: externalIntegrationSourcesApi,
   modelChecks: modelChecksApi,
   myModelChecks: myModelChecksApi,
-  mcpRuntime: openAICompatibleMcpRuntimeApi,
-  myMcpRuntime: myOpenAICompatibleMcpRuntimeApi,
   myStats: myStatsApi,
   settings: settingsApi
 }

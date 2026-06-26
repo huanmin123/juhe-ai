@@ -14,7 +14,10 @@
   - [../架构总览.md](../架构总览.md)
   - [../../functions/请求处理分层设计.md](../../functions/请求处理分层设计.md)
   - [../../functions/OpenAI账号接入.md](../../functions/OpenAI账号接入.md)
+  - [../../functions/Anthropic账号接入.md](../../functions/Anthropic账号接入.md)
   - [../../functions/智谱GLM账号接入.md](../../functions/智谱GLM账号接入.md)
+  - [../../functions/DeepSeek账号接入.md](../../functions/DeepSeek账号接入.md)
+  - [../../functions/Gemini账号接入.md](../../functions/Gemini账号接入.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
   - [../../functions/SQLite单写者写队列治理设计.md](../../functions/SQLite单写者写队列治理设计.md)
   - [后台任务使用说明](后台任务使用说明.md)
@@ -25,7 +28,7 @@
 ## 2. 后端范围
 
 - 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、使用记录、原始审计日志、统计聚合和后台任务承载层。
-- 当前后端已覆盖 GPT 供应商、OpenAI v1 协议适配、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、原始审计日志、统计缓存、系统设置、后台 worker、DB service 和 GPT OAuth/API Key 账号接入闭环；目标新增智谱 GLM 供应商，分为通用 GLM API Key 和 GLM Coding Plan Key 两套 OpenAI v1 Chat 档案。
+- 当前后端已覆盖 OpenAI-compatible 中转、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、原始审计日志、统计缓存、系统设置、后台 worker、DB service，以及 `openai`、`gpt`、`anthropic`、`deepseek`、`glm`、`gemini` 内置供应商闭环。供应商、协议和档案矩阵以 [架构总览](../架构总览.md) 与 [功能文档索引](../../functions/README.md) 为准，本文不重复维护展开事实。
 - 后端只暴露两类入口：系统管理面 `/__aisys__/api/*` 和 OpenAI 兼容网关 `/*` / `/v1/*`；客户端不直接访问上游账号凭据。
 - 后端是业务事实源；前端不传系统账户归属字段，不自行决定数据隔离、调度状态或敏感字段展示。
 
@@ -34,10 +37,10 @@
 - 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 `node:sqlite` 必须可用。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行。新写入的 `usage_records` 已通过 `JUHE_AI_USAGE_SHARD_ROOT` / `JUHE_AI_USAGE_SHARD_COUNT` 拆到多个本地 SQLite shard 文件；数据集目录库继续保存审计、操作日志、运行日志索引、模型检测和 shard 元数据。
+- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行。新写入的 `usage_records` 已通过 `JUHE_AI_USAGE_SHARD_ROOT` / `JUHE_AI_USAGE_SHARD_COUNT` 拆到多个本地 SQLite shard 文件；数据集目录库保存审计、操作日志、运行日志索引、模型检测和清理目标，使用记录目录库保存 usage shard 注册表、列表筛选目录和账号 / API Key scope catalog。
 - 写入边界：同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
-- 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前启用 `openai` 通用 OpenAI-compatible 供应商和 `gpt` 子供应商，目标新增 `glm` 子供应商；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。
+- 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。当前供应商协议档案不要在本文硬编码，新增或调整时同步 [核心功能设计](../../functions/核心功能设计.md) 和对应供应商接入文档。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
 
 ## 4. 目录规划
@@ -71,7 +74,7 @@
 | 模块 | 后端落点 | 说明 |
 | --- | --- | --- |
 | 登录与系统账户 | `modules/auth/`、`modules/system-accounts/` | 登录、会话、验证码、失败防护和系统账户管理 |
-| 协议与供应商 | `modules/providers/` | 当前内置并启用 `openai` 通用供应商、`gpt` 子供应商、`profile_openai_openai_v1` 和 `profile_gpt_openai_v1` 协议档案；目标新增 `glm` 供应商、`profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1`，`openai/v1` 属于协议层 |
+| 协议与供应商 | `modules/providers/` | 内置供应商、协议档案、模型目录和供应商 driver；当前矩阵以 `docs/functions/核心功能设计.md` 为准，`openai/v1` 属于协议层 |
 | AI 账户 | `modules/accounts/` | 账号 CRUD、账号测试、凭据展示边界和调度属性 |
 | OpenAI OAuth | `modules/openai-oauth/` | PKCE、refresh token 创建账户和 token 刷新；额度快照由网关响应头被动写入 |
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
@@ -156,7 +159,7 @@ flowchart LR
 - 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
 - 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
 - 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引。
-- 启动时通过 `seedDefaults()` 写入默认超级管理员、OpenAI v1 协议、`openai` 通用供应商、`gpt` 子供应商、目标 `glm` 供应商、OpenAI / GPT / GLM 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、全局设置和系统设置。
+- 启动时通过 `seedDefaults()` 写入默认超级管理员、当前内置协议、供应商、供应商协议档案、各启用档案默认分组、全局设置和系统设置；具体矩阵以 [核心功能设计](../../functions/核心功能设计.md) 为准。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
 - 当前项目以最新完整模型为准，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
 - 禁止在后端启动、repository、routes 或前端页面里挂载一次性数据处理、临时同步修复、临时表改名或迁移标记代码。

@@ -10,6 +10,11 @@ import {
   normalizeApiKeyRouteMode,
   normalizeHybridRoutingConfig
 } from '../domain/api-key-hybrid-routing.js'
+import {
+  explicitHybridRouteRulesJson,
+  normalizeApiKeyClientProfile,
+  normalizeExplicitHybridRouteRules
+} from '../domain/api-key-explicit-hybrid-routing.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
@@ -45,6 +50,8 @@ const apiKeyMutationInputKeys = new Set([
   'routeMode',
   'groupRouteStrategy',
   'hybridRoutingConfig',
+  'clientProfile',
+  'explicitHybridRouteRules',
   'status',
   'expiresAt',
   'quotaLimits',
@@ -222,9 +229,11 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
     'api_keys.key_prefix',
     'api_keys.key_suffix',
     'api_keys.status',
+    'api_keys.client_profile',
     'api_keys.route_mode',
     'api_keys.group_route_strategy',
     'api_keys.hybrid_routing_config_json',
+    'api_keys.explicit_hybrid_route_rules_json',
     'system_accounts.display_name AS group_owner_system_account_name',
     'api_keys.expires_at',
     'api_keys.quota_limits_json',
@@ -251,6 +260,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     throw new Error('API Key 至少需要绑定一个分组')
   }
   const routeMode = normalizeApiKeyRouteMode(input.routeMode)
+  const clientProfile = normalizeApiKeyClientProfile(input.clientProfile)
   const firstExplicitGroupId = rawBindings?.[0]?.groupId
   const firstGroup = firstExplicitGroupId ? apiKeyGroupOwnerAndProvider(firstExplicitGroupId) : undefined
   if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
@@ -258,6 +268,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   }
   const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId)
   const hybridRoutingConfig = normalizeApiKeyHybridRoutingConfigForWrite(input.hybridRoutingConfig, routeMode, bindings)
+  const explicitHybridRouteRules = normalizeApiKeyExplicitHybridRouteRulesForWrite(input.explicitHybridRouteRules, bindings)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
@@ -275,9 +286,11 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     keyPrefix,
     keySuffix,
     status: normalizeApiKeyStatus(input.status, 'active'),
+    clientProfile,
     routeMode,
     groupRouteStrategy,
     hybridRoutingConfig,
+    explicitHybridRouteRules,
     groupBindings,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
@@ -302,9 +315,11 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       'key_suffix',
       'key_secret_encrypted',
       'status',
+      'client_profile',
       'route_mode',
       'group_route_strategy',
       'hybrid_routing_config_json',
+      'explicit_hybrid_route_rules_json',
       'expires_at',
       'quota_limits_json',
       'availability_schedule_json',
@@ -323,9 +338,11 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       record.keySuffix,
       encryptJson({ key }),
       record.status,
+      record.clientProfile,
       record.routeMode,
       record.groupRouteStrategy,
       hybridRoutingConfigJson(record.hybridRoutingConfig),
+      explicitHybridRouteRulesJson(record.explicitHybridRouteRules),
       record.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
@@ -376,6 +393,7 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
     throw new Error('API Key 至少需要绑定一个分组')
   }
   const routeMode = normalizeApiKeyRouteMode(input.routeMode)
+  const clientProfile = normalizeApiKeyClientProfile(input.clientProfile)
   const firstExplicitGroupId = rawBindings?.[0]?.groupId
   const firstGroup = firstExplicitGroupId ? await apiKeyGroupOwnerAndProviderAsync(firstExplicitGroupId) : undefined
   if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
@@ -383,6 +401,7 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
   }
   const bindings = await normalizeApiKeyGroupBindingsAsync(rawBindings, systemAccountId)
   const hybridRoutingConfig = normalizeApiKeyHybridRoutingConfigForWrite(input.hybridRoutingConfig, routeMode, bindings)
+  const explicitHybridRouteRules = normalizeApiKeyExplicitHybridRouteRulesForWrite(input.explicitHybridRouteRules, bindings)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
@@ -400,9 +419,11 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
     keyPrefix,
     keySuffix,
     status: normalizeApiKeyStatus(input.status, 'active'),
+    clientProfile,
     routeMode,
     groupRouteStrategy,
     hybridRoutingConfig,
+    explicitHybridRouteRules,
     groupBindings,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
@@ -427,9 +448,11 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
         'key_suffix',
         'key_secret_encrypted',
         'status',
+        'client_profile',
         'route_mode',
         'group_route_strategy',
         'hybrid_routing_config_json',
+        'explicit_hybrid_route_rules_json',
         'expires_at',
         'quota_limits_json',
         'availability_schedule_json',
@@ -448,9 +471,11 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
         record.keySuffix,
         encryptJson({ key }),
         record.status,
+        record.clientProfile,
         record.routeMode,
         record.groupRouteStrategy,
         hybridRoutingConfigJson(record.hybridRoutingConfig),
+        explicitHybridRouteRulesJson(record.explicitHybridRouteRules),
         record.expiresAt ?? null,
         quotaLimitsJson,
         apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
@@ -518,6 +543,17 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       effectiveBindings
     )
     : current.hybridRoutingConfig
+  const hasExplicitHybridRouteRulesInput = Object.prototype.hasOwnProperty.call(input, 'explicitHybridRouteRules')
+  const nextExplicitHybridRouteRules = (hasExplicitHybridRouteRulesInput || hasBindingInput)
+    ? normalizeApiKeyExplicitHybridRouteRulesForWrite(
+      hasExplicitHybridRouteRulesInput ? input.explicitHybridRouteRules : current.explicitHybridRouteRules,
+      effectiveBindings
+    )
+    : current.explicitHybridRouteRules
+  const hasClientProfileInput = Object.prototype.hasOwnProperty.call(input, 'clientProfile')
+  const nextClientProfile = hasClientProfileInput
+    ? normalizeApiKeyClientProfile(input.clientProfile, current.clientProfile)
+    : current.clientProfile
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
   const nextExpiresAt = hasExpiresAtInput
     ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
@@ -549,9 +585,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextManualStatus,
+    clientProfile: nextClientProfile,
     routeMode: nextRouteMode,
     groupRouteStrategy: nextGroupRouteStrategy,
     hybridRoutingConfig: nextHybridRoutingConfig,
+    explicitHybridRouteRules: nextExplicitHybridRouteRules,
     groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
     expiresAt: nextExpiresAt,
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
@@ -569,9 +607,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       'name = ?',
       'description = ?',
       'status = ?',
+      'client_profile = ?',
       'route_mode = ?',
       'group_route_strategy = ?',
       'hybrid_routing_config_json = ?',
+      'explicit_hybrid_route_rules_json = ?',
       'expires_at = ?',
       'quota_limits_json = ?',
       'availability_schedule_json = ?',
@@ -583,9 +623,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
       next.name,
       next.description ?? null,
       next.status,
+      next.clientProfile,
       next.routeMode,
       next.groupRouteStrategy,
       hybridRoutingConfigJson(next.hybridRoutingConfig),
+      explicitHybridRouteRulesJson(next.explicitHybridRouteRules),
       next.expiresAt ?? null,
       quotaLimitsJson,
       apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
@@ -661,6 +703,17 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
       effectiveBindings
     )
     : current.hybridRoutingConfig
+  const hasExplicitHybridRouteRulesInput = Object.prototype.hasOwnProperty.call(input, 'explicitHybridRouteRules')
+  const nextExplicitHybridRouteRules = (hasExplicitHybridRouteRulesInput || hasBindingInput)
+    ? normalizeApiKeyExplicitHybridRouteRulesForWrite(
+      hasExplicitHybridRouteRulesInput ? input.explicitHybridRouteRules : current.explicitHybridRouteRules,
+      effectiveBindings
+    )
+    : current.explicitHybridRouteRules
+  const hasClientProfileInput = Object.prototype.hasOwnProperty.call(input, 'clientProfile')
+  const nextClientProfile = hasClientProfileInput
+    ? normalizeApiKeyClientProfile(input.clientProfile, current.clientProfile)
+    : current.clientProfile
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
   const nextExpiresAt = hasExpiresAtInput
     ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
@@ -692,9 +745,11 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextManualStatus,
+    clientProfile: nextClientProfile,
     routeMode: nextRouteMode,
     groupRouteStrategy: nextGroupRouteStrategy,
     hybridRoutingConfig: nextHybridRoutingConfig,
+    explicitHybridRouteRules: nextExplicitHybridRouteRules,
     groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
     expiresAt: nextExpiresAt,
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
@@ -711,9 +766,11 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
         'name = ?',
         'description = ?',
         'status = ?',
+        'client_profile = ?',
         'route_mode = ?',
         'group_route_strategy = ?',
         'hybrid_routing_config_json = ?',
+        'explicit_hybrid_route_rules_json = ?',
         'expires_at = ?',
         'quota_limits_json = ?',
         'availability_schedule_json = ?',
@@ -725,9 +782,11 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
         next.name,
         next.description ?? null,
         next.status,
+        next.clientProfile,
         next.routeMode,
         next.groupRouteStrategy,
         hybridRoutingConfigJson(next.hybridRoutingConfig),
+        explicitHybridRouteRulesJson(next.explicitHybridRouteRules),
         next.expiresAt ?? null,
         quotaLimitsJson,
         apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
@@ -1108,6 +1167,26 @@ function normalizeApiKeyHybridRoutingConfigForWrite(
     return undefined
   }
   return normalizeHybridRoutingConfig(value)
+}
+
+function normalizeApiKeyExplicitHybridRouteRulesForWrite(
+  value: unknown,
+  bindings: Array<Pick<ApiKeyGroupBindingWrite, 'groupId' | 'status' | 'groupEnabled'>>
+): ApiKeySummary['explicitHybridRouteRules'] {
+  const rules = normalizeExplicitHybridRouteRules(value)
+  if (!rules?.length) return undefined
+  const activeBindingGroupIds = new Set(
+    bindings
+      .filter((binding) => binding.status === 'active' && binding.groupEnabled)
+      .map((binding) => binding.groupId)
+  )
+  const invalidTargetGroupIds = rules
+    .map((rule) => rule.targetGroupId)
+    .filter((groupId) => !activeBindingGroupIds.has(groupId))
+  if (invalidTargetGroupIds.length) {
+    throw new Error(`显式混合路由目标分组必须是当前 API Key 已绑定且启用的分组：${[...new Set(invalidTargetGroupIds)].slice(0, 5).join('、')}`)
+  }
+  return rules
 }
 
 function replaceApiKeyGroupBindings(

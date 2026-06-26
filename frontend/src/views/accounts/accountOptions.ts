@@ -234,7 +234,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
   code: GLM_PROVIDER_CODE,
   name: '智谱 GLM',
   enabled: true,
-  defaultProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  defaultProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',

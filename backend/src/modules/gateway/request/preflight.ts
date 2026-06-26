@@ -76,6 +76,7 @@ import {
 } from './authorization-preflight.js'
 import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
 import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
+import { resolveExplicitHybridGatewayRoute } from '../routing/explicit-hybrid-route.service.js'
 import { applyCodexResponsesChatBridgeStatePreflight } from '../codex-responses/chat-bridge-state.js'
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
 import {
@@ -146,6 +147,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
   let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined = options.responseInspectionPolicies
   let selectedHybridRoute: HybridGatewayRuntimeRoute | undefined
+  let explicitHybridRouteSelected = false
 
   let identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
@@ -254,8 +256,103 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     endpoint
+  }, {
+    defaultClientProfile: apiKeyRecord?.client_profile
   })
-  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'normal') {
+  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.explicit_hybrid_route_rules?.length) {
+    const previousGroupId = groupId
+    const explicitRoute = await resolveExplicitHybridGatewayRoute({
+      req,
+      apiKeyRecord,
+      clientStrategy: initialClientStrategy
+    })
+    if (explicitRoute.outcome === 'selected') {
+      groupFallbackApiKeyRecord ??= apiKeyRecord
+      apiKeyRecord = explicitRoute.apiKeyRecord
+      groupId = explicitRoute.groupId
+      identity = {
+        systemAccountId,
+        apiKeyId,
+        groupId
+      }
+      runtimeGroupAccess = explicitRoute.groupAccess
+      runtimeAccounts = explicitRoute.accounts
+      runtimeAccountDispatchDiagnostics = undefined
+      runtimeResponseInspectionPolicies = explicitRoute.responseInspectionPolicies
+      options.responseInspectionPolicies = explicitRoute.responseInspectionPolicies
+      explicitHybridRouteSelected = true
+      auditCapture.addGatewayMetadata({
+        label: 'explicit_hybrid_route',
+        metadata: {
+          ruleId: explicitRoute.rule.id,
+          requestedModel: explicitRoute.requestedModel,
+          sourceEndpointFamily: explicitRoute.rule.sourceEndpointFamily,
+          sourceClientProfile: explicitRoute.rule.sourceClientProfile,
+          fromGroupId: previousGroupId,
+          toGroupId: explicitRoute.groupId,
+          upstreamModel: explicitRoute.rule.upstreamModel,
+          upstreamEndpointFamily: explicitRoute.rule.upstreamEndpointFamily,
+          adapterMode: explicitRoute.rule.adapterMode
+        }
+      })
+      auditCapture.bindContext({ groupId })
+      bindRequestContextFields({
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        trafficSource
+      })
+      const targetClientIpErrorCircuit = inspectClientIpErrorCircuit({
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp,
+        endpoint
+      })
+      if (sendClientIpErrorCircuitGatewayResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: { ...baseUsageContext, groupId },
+        startedAt,
+        circuit: targetClientIpErrorCircuit,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        clientIp: gatewayClientIp
+      })) {
+        return undefined
+      }
+    }
+    if (explicitRoute.outcome === 'failed') {
+      auditCapture.addGatewayMetadata({
+        label: 'explicit_hybrid_route_failed',
+        metadata: {
+          requestedModel: explicitRoute.requestedModel,
+          ruleId: explicitRoute.ruleId,
+          reason: explicitRoute.code
+        }
+      })
+      const responsePayload = gatewayErrorPayload(explicitRoute.message, explicitRoute.type, explicitRoute.code)
+      sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: baseUsageContext,
+        startedAt,
+        statusCode: explicitRoute.statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: explicitRoute.statusCode >= 500 ? 'dispatch' : 'request_validation',
+          errorCode: explicitRoute.code,
+          errorMessage: explicitRoute.message
+        }
+      })
+      return undefined
+    }
+  }
+  if (!explicitHybridRouteSelected && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'normal') {
     const previousGroupId = groupId
     const previousBindingCount = apiKeyRecord.group_bindings?.length ?? 0
     const normalRoute = await resolveNormalGatewayModelRoute({
@@ -348,7 +445,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (!options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'hybrid') {
+  if (!explicitHybridRouteSelected && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_mode === 'hybrid') {
     const hybridRoute = await resolveHybridGatewayRoute({
       req,
       apiKeyRecord,
@@ -463,6 +560,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     providerProtocolProfileId: groupAccess?.providerProtocolProfileId,
     protocolCode: groupAccess?.protocolCode,
     protocolVersion: groupAccess?.protocolVersion
+  }, {
+    defaultClientProfile: apiKeyRecord?.client_profile
   })
   const clientIpAccountAvoidanceTracker = createClientIpAccountAvoidanceTracker({
     systemAccountId,

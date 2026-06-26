@@ -9,9 +9,6 @@ import type {
   AuthorizationPrincipalOptionsParams,
   GroupListParams,
   GroupOptionParams,
-  OpenAICompatibleMcpApprovalRequestListParams,
-  OpenAICompatibleMcpExecutionRecordListParams,
-  OpenAICompatibleMcpServerListParams,
   OperationLogListParams,
   SystemAccountListParams,
   SystemAccountOptionsParams,
@@ -126,27 +123,6 @@ export function scopedListParams<T extends object>(params?: T, includeSystemAcco
     }
   }
   return Object.keys(output).length ? output : undefined
-}
-
-export function openAICompatibleMcpServerListParams(
-  params?: OpenAICompatibleMcpServerListParams,
-  includeSystemAccount = true
-): Record<string, unknown> | undefined {
-  return scopedListParams(params, includeSystemAccount)
-}
-
-export function openAICompatibleMcpApprovalRequestListParams(
-  params?: OpenAICompatibleMcpApprovalRequestListParams,
-  includeSystemAccount = true
-): Record<string, unknown> | undefined {
-  return scopedListParams(params, includeSystemAccount)
-}
-
-export function openAICompatibleMcpExecutionRecordListParams(
-  params?: OpenAICompatibleMcpExecutionRecordListParams,
-  includeSystemAccount = true
-): Record<string, unknown> | undefined {
-  return scopedListParams(params, includeSystemAccount)
 }
 
 export function teamListParams(params?: TeamListParams | Omit<TeamListParams, 'systemAccountId'>, includeSystemAccount = true): Record<string, unknown> | undefined {

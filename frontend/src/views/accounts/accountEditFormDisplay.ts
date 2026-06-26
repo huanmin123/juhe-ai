@@ -167,7 +167,7 @@ function accountTypeChoiceLabel(
     if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'DeepSeek OpenAI-compatible API Key'
   }
   if (isGlmProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'GLM Coding Claude Code Key'
+    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'GLM Coding Anthropic Key'
     if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'GLM Coding Plan Key'
     if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用 GLM API Key'
   }
@@ -188,7 +188,7 @@ function accountTypeChoiceTag(
     if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'OpenAI'
   }
   if (isGlmProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Claude Code'
+    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Anthropic'
     if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'Coding'
     if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用'
   }

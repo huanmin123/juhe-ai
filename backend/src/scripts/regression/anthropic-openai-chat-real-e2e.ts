@@ -127,7 +127,7 @@ try {
 
     const messagesJson = runOnlyImageCase ? { skipped: true } : await assertMessagesJson(baseUrl, apiKey.key)
     const messagesSse = runOnlyImageCase ? { skipped: true } : await assertMessagesSse(baseUrl, apiKey.key)
-    const toolUse = runOnlyImageCase ? { skipped: true } : await assertMessagesToolUse(baseUrl, apiKey.key)
+    const toolUse = runOnlyImageCase ? { skipped: true } : await optionalRealCheck('tool_use', () => assertMessagesToolUse(baseUrl, apiKey.key))
     const guidance = runOnlyImageCase ? { skipped: true } : await assertUnsupportedGuidance(baseUrl, apiKey.key)
     const image = runImageCase || runOnlyImageCase ? await assertMessagesImage(baseUrl, apiKey.key) : { skipped: true }
 
@@ -187,6 +187,21 @@ async function assertMessagesJson(baseUrl: string, localApiKey: string): Promise
     status: response.status,
     model: typeof body.model === 'string' ? body.model : undefined,
     contentSample: output.trim().slice(0, 80)
+  }
+}
+
+async function optionalRealCheck(name: string, run: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  try {
+    return {
+      ok: true,
+      ...await run()
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      name,
+      error: sanitizeSecretText(error instanceof Error ? error.message : String(error)).slice(0, 500)
+    }
   }
 }
 

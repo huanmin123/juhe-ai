@@ -175,8 +175,8 @@ function assertApiKeyDraftActivationPayload(): void {
     supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
     supportedModels: ['gpt-5.5'],
     modelMappings: [{
-      sourceModel: 'claude-sonnet-4-6',
-      sourceEndpointFamily: 'messages',
+      sourceModel: 'gpt-5.5-alias',
+      sourceEndpointFamily: 'chat_completions',
       upstreamModel: 'gpt-5.5-chat-latest',
       upstreamEndpointFamily: 'chat_completions',
       enabled: true
@@ -198,19 +198,19 @@ function assertApiKeyDraftActivationPayload(): void {
   assert.equal(savePayload.clientCompatibility, 'codex_responses', '账号保存 payload 必须显式提交账号级客户端兼容字段')
   assert.equal(draftPayload.clientCompatibility, 'codex_responses', '草稿测试账号 payload 必须显式提交账号级客户端兼容字段')
   assert.deepEqual(savePayload.modelMappings, [{
-    sourceModel: 'claude-sonnet-4-6',
-    sourceEndpointFamily: 'messages',
+    sourceModel: 'gpt-5.5-alias',
+    sourceEndpointFamily: 'chat_completions',
     upstreamModel: 'gpt-5.5-chat-latest',
     upstreamEndpointFamily: 'chat_completions',
     enabled: true
-  }], '账号保存 payload 应保留 Messages -> Chat Completions 协议映射')
+  }], '账号保存 payload 应保留 Chat Completions 同协议模型别名')
   assert.deepEqual(draftPayload.modelMappings, [{
-    sourceModel: 'claude-sonnet-4-6',
-    sourceEndpointFamily: 'messages',
+    sourceModel: 'gpt-5.5-alias',
+    sourceEndpointFamily: 'chat_completions',
     upstreamModel: 'gpt-5.5-chat-latest',
     upstreamEndpointFamily: 'chat_completions',
     enabled: true
-  }], '草稿测试 payload 应保留 Messages -> Chat Completions 协议映射')
+  }], '草稿测试 payload 应保留 Chat Completions 同协议模型别名')
   const activatedPayload = accountCreatePayloadWithActivationTest(savePayload, {
     taskId: 'accttest_api_key_activation',
     account: draftPayload
@@ -222,7 +222,7 @@ function assertApiKeyDraftActivationPayload(): void {
 
 function assertModelMappingProtocolValidation(): void {
   const baseForm = apiKeyFormFixture()
-  assert.equal(validateForm(baseForm), undefined, 'OpenAI 协议账号应允许 Messages -> Chat Completions 映射')
+  assert.equal(validateForm(baseForm), undefined, 'OpenAI 协议账号应允许 Chat Completions 同协议模型别名')
   assert.equal(validateForm({
     ...baseForm,
     supportedEndpointModes: ['responses_json', 'responses_sse'],
@@ -244,8 +244,8 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'responses',
       enabled: true
     }]
-  }) ?? '', /暂不支持 Chat Completions 到 Responses 的协议转换/, '前端保存前应拒绝 Chat Completions -> Responses')
-  assert.equal(validateForm({
+  }) ?? '', /账号模型别名只支持同协议映射/, '前端保存前应拒绝 Chat Completions -> Responses')
+  assert.match(validateForm({
     ...baseForm,
     supportedEndpointModes: ['chat_json', 'chat_sse'],
     modelMappings: [{
@@ -255,8 +255,8 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'chat_completions',
       enabled: true
     }]
-  }), undefined, '前端保存前应允许 Chat-only 上游承接 Responses -> Chat Completions')
-  assert.equal(validateForm({
+  }) ?? '', /账号模型别名只支持同协议映射/, '前端保存前应拒绝 Chat-only 上游承接 Responses -> Chat Completions')
+  assert.match(validateForm({
     ...baseForm,
     providerCode: 'anthropic',
     providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
@@ -269,8 +269,8 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'messages',
       enabled: true
     }]
-  }), undefined, '前端保存前应允许 OpenAI Responses -> Anthropic Messages 显式映射')
-  assert.equal(validateForm({
+  }) ?? '', /账号模型别名只支持同协议映射/, '前端保存前应拒绝 OpenAI Responses -> Anthropic Messages 显式映射')
+  assert.match(validateForm({
     ...baseForm,
     providerCode: 'anthropic',
     providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
@@ -292,7 +292,7 @@ function assertModelMappingProtocolValidation(): void {
         enabled: true
       }
     ]
-  }), undefined, '前端保存前应允许 Gemini GenerateContent / StreamGenerateContent -> Anthropic Messages 显式映射')
+  }) ?? '', /账号模型别名不支持 Gemini GenerateContent 跨协议映射/, '前端保存前应拒绝 Gemini GenerateContent / StreamGenerateContent -> Anthropic Messages 显式映射')
   assert.match(validateForm({
     ...baseForm,
     modelMappings: [{
@@ -302,7 +302,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'responses',
       enabled: true
     }]
-  }) ?? '', /Messages 下游协议当前只支持桥接到 Chat Completions/, '前端保存前应拒绝 Messages -> Responses')
+  }) ?? '', /账号模型别名不支持 Anthropic Messages 跨协议映射/, '前端保存前应拒绝 Messages -> Responses')
   assert.match(validateForm({
     ...baseForm,
     providerCode: 'anthropic',
@@ -316,7 +316,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'responses',
       enabled: true
     }]
-  }) ?? '', /Gemini GenerateContent 下游协议当前只支持桥接到 Chat Completions 或 Messages/, '前端保存前应拒绝 Gemini GenerateContent -> Responses')
+  }) ?? '', /账号模型别名不支持 Gemini GenerateContent 跨协议映射/, '前端保存前应拒绝 Gemini GenerateContent -> Responses')
   assert.match(validateForm({
     ...baseForm,
     modelMappings: [{
@@ -326,7 +326,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'messages',
       enabled: true
     }]
-  }) ?? '', /Gemini GenerateContent 到 Anthropic Messages 桥接只能配置在 Anthropic Messages 协议档案账号上/, '前端保存前应拒绝 OpenAI 档案配置 Gemini GenerateContent -> Anthropic Messages')
+  }) ?? '', /账号模型别名不支持 Gemini GenerateContent 跨协议映射/, '前端保存前应拒绝 OpenAI 档案配置 Gemini GenerateContent -> Anthropic Messages')
   assert.match(validateForm({
     ...baseForm,
     providerCode: 'anthropic',
@@ -339,7 +339,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'responses',
       enabled: true
     }]
-  }) ?? '', /当前供应商协议不支持 OpenAI 模型映射/, '前端保存前应拒绝 Anthropic 档案配置 OpenAI 上游协议')
+  }) ?? '', /当前供应商协议不支持 OpenAI 账号模型别名|Anthropic 协议账号模型别名只能使用 Messages/, '前端保存前应拒绝 Anthropic 档案配置 OpenAI 上游协议')
   assert.match(validateForm({
     ...baseForm,
     providerCode: 'deepseek',
@@ -353,7 +353,7 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'responses',
       enabled: true
     }]
-  }) ?? '', /上游协议 Responses 只能用于账号真实支持 Responses API/, '前端保存前应拒绝无原生 Responses endpoint mode 的右侧 Responses')
+  }) ?? '', /Responses 模型别名只能用于账号真实支持 Responses API/, '前端保存前应拒绝无原生 Responses endpoint mode 的右侧 Responses')
   assert.match(validateForm({
     ...baseForm,
     providerCode: 'gemini',
@@ -366,19 +366,25 @@ function assertModelMappingProtocolValidation(): void {
       upstreamEndpointFamily: 'chat_completions',
       enabled: true
     }]
-  }) ?? '', /Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射/, '前端保存前应拒绝 Gemini OpenAI Chat 的 Messages 来源映射')
+  }) ?? '', /Gemini OpenAI Chat 账号模型别名只能使用 Chat Completions|账号模型别名不支持 Anthropic Messages 跨协议映射/, '前端保存前应拒绝 Gemini OpenAI Chat 的 Messages 来源映射')
 }
 
 function assertModelMappingProtocolMatrixHelper(): void {
   const gptProfile = protocolProfile('gpt', 'profile_gpt_openai_v1')
   const anthropicProfile = protocolProfile('anthropic', 'profile_anthropic_anthropic_v1')
   const geminiOpenAIChatProfile = protocolProfile('gemini', 'profile_gemini_openai_chat_v1beta')
+  const geminiNativeProfile = protocolProfile('gemini', 'profile_gemini_native_v1beta')
 
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: 'chat_completions',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
+  }), true, '矩阵 helper 应允许 Chat Completions 同协议模型别名')
   assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'chat_completions',
     context: { providerProfile: gptProfile, supportedEndpointModes: ['chat_json', 'chat_sse'] }
-  }), true, '矩阵 helper 应允许 Responses -> Chat Completions 命中 Chat-only OpenAI 档案')
+  }), false, '矩阵 helper 应拒绝 Responses -> Chat Completions')
   assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'chat_completions',
     upstreamEndpointFamily: 'responses',
@@ -391,19 +397,34 @@ function assertModelMappingProtocolMatrixHelper(): void {
   }), false, '矩阵 helper 应拒绝真实 Responses 能力下的 Chat -> Responses')
   assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'responses',
+    context: { providerProfile: gptProfile, supportedEndpointModes: ['responses_json'] }
+  }), true, '矩阵 helper 应允许 Responses 同协议模型别名')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'messages',
     context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json', 'messages_sse'] }
-  }), true, '矩阵 helper 应允许 OpenAI Responses -> Anthropic Messages')
+  }), false, '矩阵 helper 应拒绝 OpenAI Responses -> Anthropic Messages')
   assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'responses',
     context: { providerProfile: gptProfile, supportedEndpointModes: ['responses_json'] }
   }), false, '矩阵 helper 应拒绝 Anthropic Messages -> Responses')
   assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'messages',
+    upstreamEndpointFamily: 'messages',
+    context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] }
+  }), true, '矩阵 helper 应允许 Anthropic Messages 同协议模型别名')
+  assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'generate_content',
     upstreamEndpointFamily: 'messages',
     context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] }
-  }), true, '矩阵 helper 应允许 Gemini GenerateContent -> Anthropic Messages')
+  }), false, '矩阵 helper 应拒绝 Gemini GenerateContent -> Anthropic Messages')
+  assert.equal(isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'stream_generate_content',
+    upstreamEndpointFamily: 'generate_content',
+    context: { providerProfile: geminiNativeProfile, supportedEndpointModes: ['generate_content_json'] }
+  }), true, '矩阵 helper 应允许 Gemini StreamGenerateContent 到 GenerateContent 别名')
   assert.equal(isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'stream_generate_content',
     upstreamEndpointFamily: 'responses',
@@ -414,9 +435,9 @@ function assertModelMappingProtocolMatrixHelper(): void {
     supportedEndpointModes: ['chat_json', 'chat_sse']
   }), false, 'Gemini OpenAI Chat UI 不应允许选择 Messages 下游来源')
   assert.equal(defaultAccountModelMappingUpstreamEndpointFamily('generate_content', {
-    providerProfile: anthropicProfile,
-    supportedEndpointModes: ['messages_json', 'messages_sse']
-  }), 'messages', 'Anthropic 档案下 Gemini 来源默认右侧协议应是 Messages')
+    providerProfile: geminiNativeProfile,
+    supportedEndpointModes: ['generate_content_json']
+  }), 'generate_content', 'Gemini native 档案下 Gemini 来源默认右侧协议应是 GenerateContent')
 }
 
 function apiKeyFormFixture(): AccountFormModel {
@@ -443,8 +464,8 @@ function apiKeyFormFixture(): AccountFormModel {
     supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
     supportedModels: ['gpt-5.5'],
     modelMappings: [{
-      sourceModel: 'claude-sonnet-4-6',
-      sourceEndpointFamily: 'messages',
+      sourceModel: 'gpt-5.5-alias',
+      sourceEndpointFamily: 'chat_completions',
       upstreamModel: 'gpt-5.5-chat-latest',
       upstreamEndpointFamily: 'chat_completions',
       enabled: true

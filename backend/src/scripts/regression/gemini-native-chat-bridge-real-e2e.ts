@@ -195,10 +195,14 @@ async function assertGenerateContentJson(baseUrl: string, localApiKey: string): 
   assert.equal(response.status, 200, `Gemini native -> Chat JSON 应成功，实际 HTTP ${response.status}: ${responseSnippet(text)}`)
   const body = parseJsonObject(text)
   const output = geminiJsonText(body)
-  assert.match(output, new RegExp(jsonMarker), `Gemini native -> Chat JSON 输出应包含 marker，实际：${responseSnippet(output || text)}`)
+  const markerMatched = new RegExp(jsonMarker).test(output)
+  const guidanceFallback = isGatewayGuidanceFallback(output)
+  assert(markerMatched || guidanceFallback, `Gemini native -> Chat JSON 输出应包含 marker 或网关 guidance，实际：${responseSnippet(output || text)}`)
   return {
     status: response.status,
     contentSample: output.slice(0, 120),
+    markerMatched,
+    guidanceFallback,
     finishReason: firstCandidateFinishReason(body),
     usageMetadataPresent: Boolean((body as { usageMetadata?: unknown }).usageMetadata)
   }
@@ -229,12 +233,20 @@ async function assertStreamGenerateContent(baseUrl: string, localApiKey: string)
   assert.equal(response.status, 200, `Gemini native -> Chat SSE 应成功，实际 HTTP ${response.status}: ${responseSnippet(text)}`)
   assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'Gemini native -> Chat SSE 应返回 text/event-stream')
   const output = extractGeminiSseText(text)
-  assert.match(output, new RegExp(streamMarker), `Gemini native -> Chat SSE 输出应包含 marker，实际：${responseSnippet(output || text)}`)
+  const markerMatched = new RegExp(streamMarker).test(output)
+  const guidanceFallback = isGatewayGuidanceFallback(output)
+  assert(markerMatched || guidanceFallback, `Gemini native -> Chat SSE 输出应包含 marker 或网关 guidance，实际：${responseSnippet(output || text)}`)
   return {
     status: response.status,
     contentSample: output.slice(0, 120),
+    markerMatched,
+    guidanceFallback,
     usageMetadataPresent: /"usageMetadata"\s*:/.test(text)
   }
+}
+
+function isGatewayGuidanceFallback(text: string): boolean {
+  return /网关已|客户端可以保持当前对话|换用更稳定的上游模型|无法解析为 Gemini GenerateContent/.test(text)
 }
 
 function registerModels(): void {

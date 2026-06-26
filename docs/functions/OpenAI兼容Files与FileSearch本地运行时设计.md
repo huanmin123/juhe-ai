@@ -91,21 +91,21 @@ OpenAI 到 Anthropic Messages 桥接已经覆盖 Chat / Responses 四类入口�
 
 ### 6.1 文件元数据
 
-建议新增表 `openai_compatible_files`：
+当前表 `openai_compatible_files`：
 
 | 字段 | 说明 |
 | --- | --- |
 | `id` | OpenAI 兼容 file id，例如 `file_xxx` |
 | `system_account_id` | 系统账户边界 |
 | `api_key_id` | 上传方 API Key 边界 |
-| `group_id` | 上传时所在授权分组 |
+| `container_id` | 可选容器文件归属，用于 `/v1/containers/{container_id}/files` 兼容壳 |
 | `purpose` | OpenAI 文件用途 |
 | `filename` | 原始文件名 |
-| `mime_type` | 解析后的 MIME |
+| `media_type` | 解析后的 MIME / media type |
 | `bytes` | 文件大小 |
 | `sha256` | 内容哈希 |
-| `storage_path` | 本地对象路径或对象 key |
-| `status` | `uploaded` / `deleted` / `expired` |
+| `storage_key` | 本地对象 key |
+| `status` | 当前默认 `processed`；删除通过文件记录状态和对象清理流程处理 |
 | `created_at` | 创建时间 |
 | `expires_at` | 可选过期时间 |
 
@@ -142,14 +142,15 @@ chunk 字段至少包含：
 | `vector_store_id` | 所属 store |
 | `file_id` | 来源文件 |
 | `chunk_index` | 文件内顺序 |
+| `content_text` | 当前 chunk 文本 |
 | `content_preview` | 受限长度摘要，用于列表和审计 |
-| `content_path` | chunk 文本存储路径或受控 text 字段 |
 | `token_estimate` | 粗略 token 估算 |
 | `keyword_index_text` | 本地检索文本 |
-| `status` | `in_progress` / `completed` / `failed` |
 | `created_at` | 创建时间 |
 
 大文本 chunk 不直接塞进请求链路缓存；检索读取按 topN 逐条读取，避免扫描和拼接全量文件。
+
+容器文件兼容壳已覆盖 `/v1/containers/{container_id}/files` 及对应读取入口；它只复用同一文件表的 `container_id` 边界，不新增另一套文件元数据 schema。
 
 ### 6.4 Vector Store 文件生命周期
 

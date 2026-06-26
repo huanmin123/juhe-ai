@@ -29,6 +29,7 @@ export interface UsageRecordCostBreakdown {
 }
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 
 export interface UsageRecordSummary {
   id: string
@@ -55,6 +56,7 @@ export interface UsageRecordSummary {
   stream: boolean
   statusCode?: number
   success: boolean
+  failureAttribution?: UsageFailureAttribution
   firstTokenMs?: number
   durationMs?: number
   inputTokens?: number

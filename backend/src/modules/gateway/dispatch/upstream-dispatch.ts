@@ -188,7 +188,8 @@ export async function fetchFirstAvailableUpstream(
         recordFailedUpstreamAttempt(req, usageContext, originalAccount, {
           upstreamUrl: 'concurrency:limit',
           startedAt: Date.now(),
-          errorMessage: message
+          errorMessage: message,
+          failureAttribution: 'gateway_capacity'
         })
         continue
       }
@@ -417,6 +418,31 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               } catch (error) {
+                if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
+                  auditCapture.completeAttempt(auditAttemptId, {
+                    success: false,
+                    errorPhase: 'request_validation',
+                    errorMessage: error.message
+                  })
+                  lastAttempt = accountScopedGuidanceAttempt(account, error)
+                  agentGuidanceResponse = error
+                  failedAccountIds.add(account.id)
+                  skipAccount = true
+                  break
+                }
+                if (
+                  error instanceof GatewayAgentGuidanceResponse
+                  || error instanceof GatewayLocalProtocolResponse
+                  || error instanceof GatewayRequestValidationError
+                  || error instanceof OpenAIOAuthCodexAdapterError
+                ) {
+                  auditCapture.completeAttempt(auditAttemptId, {
+                    success: false,
+                    errorPhase: 'request_validation',
+                    errorMessage: error.message
+                  })
+                  throw error
+                }
                 const requestErrorResult = await handleUpstreamRequestError({
                   req,
                   usageContext,

@@ -11,7 +11,7 @@ import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
-  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
@@ -88,7 +88,7 @@ try {
   assert(createdOpenAICompatibleDefault?.id, '缺失默认 OpenAI 兼容分组时应创建 is_default = 1 的当前默认分组')
   assert(createdDeepSeekDefault?.id, '缺失默认 DeepSeek 分组时应创建 is_default = 1 的当前默认分组')
   assert(createdDeepSeekAnthropicDefault?.id, '缺失默认 DeepSeek Claude Code 分组时应创建 is_default = 1 的当前默认分组')
-  assert(createdGlmCodingAnthropicDefault?.id, '缺失默认 GLM Coding Claude Code 分组时应创建 is_default = 1 的当前默认分组')
+  assert(createdGlmCodingAnthropicDefault?.id, '缺失默认 GLM Coding Anthropic 分组时应创建 is_default = 1 的当前默认分组')
   assert.equal(defaultGroupRepository.defaultGptGroupIdForSystemAccount(missingDefaultUserId), createdDefault.id)
 
   await assertGroupProviderCodeUsesProviderLayer()
@@ -155,17 +155,17 @@ async function assertGroupProviderCodeUsesProviderLayer(): Promise<void> {
     providerCode: GLM_PROVIDER_CODE
   }, access)
   assert.equal(glmGroup.providerCode, GLM_PROVIDER_CODE, 'GLM 分组创建应落在 GLM 独立供应商层')
-  assert.equal(glmGroup.providerProtocolProfileId, GLM_GENERAL_OPENAI_V1_PROFILE_ID, 'GLM 默认分组应使用通用 GLM OpenAI v1 档案')
+  assert.equal(glmGroup.providerProtocolProfileId, GLM_CODING_OPENAI_V1_PROFILE_ID, 'GLM 默认分组应使用 GLM Coding Plan OpenAI v1 档案')
 
   const glmCodingAnthropicGroup = repositories.createGroup({
-    name: 'GLM Coding Claude Code 供应商分组回归',
+    name: 'GLM Coding Anthropic 供应商分组回归',
     providerCode: GLM_PROVIDER_CODE,
     providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   }, access)
-  assert.equal(glmCodingAnthropicGroup.providerCode, GLM_PROVIDER_CODE, 'GLM Coding Claude Code 分组仍应落在 GLM 独立供应商层')
-  assert.equal(glmCodingAnthropicGroup.providerProtocolProfileId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID, 'GLM Coding Claude Code 分组应使用 GLM Coding Anthropic v1 档案')
-  assert.equal(glmCodingAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'GLM Coding Claude Code 分组应使用 Anthropic 协议代码')
-  assert.equal(glmCodingAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'GLM Coding Claude Code 分组应使用 Anthropic v1 协议版本')
+  assert.equal(glmCodingAnthropicGroup.providerCode, GLM_PROVIDER_CODE, 'GLM Coding Anthropic 分组仍应落在 GLM 独立供应商层')
+  assert.equal(glmCodingAnthropicGroup.providerProtocolProfileId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID, 'GLM Coding Anthropic 分组应使用 GLM Coding Anthropic v1 档案')
+  assert.equal(glmCodingAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'GLM Coding Anthropic 分组应使用 Anthropic 协议代码')
+  assert.equal(glmCodingAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'GLM Coding Anthropic 分组应使用 Anthropic v1 协议版本')
 
   const moved = repositories.updateGroup(group.id, {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE

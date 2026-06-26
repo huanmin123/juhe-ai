@@ -314,10 +314,7 @@ try {
 
   assertNativeResponsesUpstreamRequiresEndpointModes()
   assertRuntimeIgnoresUnsupportedChatToResponsesMapping()
-  assertAnthropicMessagesToChatMapping(group.id)
-  assertGeminiNativeToAnthropicMessagesMapping()
-  assertOpenAIAndAnthropicToGeminiNativeMapping()
-  assertUnsupportedAnthropicMessagesMappingsRejected(group.id)
+  assertCrossProtocolAccountMappingsRejected(group.id)
   await assertInvalidMappingBodyRejected()
   await assertInvalidMappingBodyDoesNotSwitchAccount(group.id)
   await assertUsageRecordFields(runtimeAccount, group.id)
@@ -344,7 +341,7 @@ try {
     modelMappings: [
       responsesMapping(sourceModel, crossProviderUpstreamModel)
     ]
-  }, ownerAccess), /映射上游模型不在当前账号可用模型池中/, '定制供应商映射上游模型必须来自当前供应商模型池')
+  }, ownerAccess), /账号模型别名目标模型不在当前供应商模型目录中/, '定制供应商映射上游模型必须来自当前供应商模型池')
   const crossProviderUpstreamBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderUpstreamModel,
@@ -352,20 +349,17 @@ try {
   })
   assert.equal(crossProviderUpstreamBindings.mappingUpstreamAccountCount, 0, '被供应商边界拒绝的上游映射不应计入绑定统计')
 
-  const crossProviderSourceUpdated = repositories.updateAccount(account.id, {
+  assert.throws(() => repositories.updateAccount(account.id, {
     modelMappings: [
       responsesMapping(crossProviderSourceModel, replacementUpstreamModel)
     ]
-  }, ownerAccess)
-  assert.deepEqual(crossProviderSourceUpdated?.modelMappings, [
-    responsesMapping(crossProviderSourceModel, replacementUpstreamModel)
-  ], '映射下游模型允许来自 OpenAI 协议客户端模型池')
+  }, ownerAccess), /账号模型别名来源模型不在当前供应商模型目录中/, '账号模型别名来源模型必须来自当前供应商模型池')
   const crossProviderSourceBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderSourceModel,
     scope: 'global'
   })
-  assert.equal(crossProviderSourceBindings.mappingSourceAccountCount, 1, '跨供应商下游映射应计入 source 绑定统计')
+  assert.equal(crossProviderSourceBindings.mappingSourceAccountCount, 0, '被供应商边界拒绝的下游映射不应计入 source 绑定统计')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -373,7 +367,7 @@ try {
         responsesMapping(unavailableSourceModel, replacementUpstreamModel)
       ]
     }, ownerAccess)
-  }, /映射下游模型不在对应协议客户端模型池中/, '草稿模型不能作为下游映射源')
+  }, /账号模型别名来源模型不在当前供应商模型目录中/, '草稿模型不能作为下游映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -381,7 +375,7 @@ try {
         responsesMapping(sourceModel, 'gpt-mapping-regression-missing')
       ]
     }, ownerAccess)
-  }, /映射上游模型不在当前账号可用模型池中/, '映射上游模型必须存在于当前账号可用模型池')
+  }, /账号模型别名目标模型不在当前供应商模型目录中/, '映射上游模型必须存在于当前账号可用模型池')
   assertImportPreviewRejectsInvalidMapping(group.id)
   assertImportPreviewRejectsNonNativeResponsesMapping(group.id)
   assertImportPreviewRejectsUnsupportedMessagesMapping(group.id)
@@ -438,7 +432,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       ],
       groupId: group.id
     }, ownerAccess)
-  }, /暂不支持 Chat Completions 到 Responses 的协议转换/, 'Chat-only 账号不能配置 Chat Completions 转 Responses')
+  }, /账号模型别名只支持同协议映射/, 'Chat-only 账号不能配置 Chat Completions 转 Responses')
 
   assert.throws(() => {
     repositories.createAccount({
@@ -457,47 +451,45 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       ],
       groupId: group.id
     }, ownerAccess)
-  }, /暂不支持 Chat Completions 到 Responses 的协议转换/, '即使账号真实支持 Responses，也不能配置 Chat Completions 转 Responses')
+  }, /账号模型别名只支持同协议映射/, '即使账号真实支持 Responses，也不能配置 Chat Completions 转 Responses')
 
-  const chatBridgeAccount = repositories.createAccount({
-    providerCode: GPT_VENDOR_CODE,
-    name: 'Chat-only 账号允许 Responses 转 Chat',
-    type: 'api_key',
-    clientCompatibility: 'openai_standard',
-    credentials: {
-      api_key: 'sk-account-model-mapping-chat-only-responses-to-chat',
-      base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['chat_json', 'chat_sse']
-    },
-    supportedModels: [upstreamModel],
-    modelMappings: [
-      responsesToChatMapping(sourceModel, upstreamModel)
-    ],
-    groupId: group.id
-  }, ownerAccess)
-  assert.deepEqual(chatBridgeAccount.modelMappings, [
-    responsesToChatMapping(sourceModel, upstreamModel)
-  ], 'Chat-only 账号仍允许显式 Responses 转 Chat Completions bridge')
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Chat-only 账号不能配置 Responses 转 Chat',
+      type: 'api_key',
+      clientCompatibility: 'openai_standard',
+      credentials: {
+        api_key: 'sk-account-model-mapping-chat-only-responses-to-chat',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [upstreamModel],
+      modelMappings: [
+        responsesToChatMapping(sourceModel, upstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /账号模型别名只支持同协议映射/, 'Chat-only 账号不能配置 Responses 转 Chat Completions bridge')
 
-  const codexChatBridgeAccount = repositories.createAccount({
-    providerCode: GPT_VENDOR_CODE,
-    name: 'Codex Chat-only 账号允许 Responses 转 Chat',
-    type: 'api_key',
-    clientCompatibility: 'codex_responses',
-    credentials: {
-      api_key: 'sk-account-model-mapping-codex-chat-only-responses-to-chat',
-      base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['chat_json', 'chat_sse']
-    },
-    supportedModels: [chatCompletionsUpstreamModel],
-    modelMappings: [
-      responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
-    ],
-    groupId: group.id
-  }, ownerAccess)
-  assert.deepEqual(codexChatBridgeAccount.modelMappings, [
-    responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
-  ], 'Codex Responses 兼容的 Chat-only 账号可通过显式 Responses -> Chat Completions 映射保存真实 Chat endpoint modes')
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: 'Codex Chat-only 账号不能配置 Responses 转 Chat',
+      type: 'api_key',
+      clientCompatibility: 'codex_responses',
+      credentials: {
+        api_key: 'sk-account-model-mapping-codex-chat-only-responses-to-chat',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /账号模型别名只支持同协议映射/, 'Codex Responses 兼容账号也不能在账号模型别名里配置 Responses -> Chat Completions')
 }
 
 function assertRuntimeIgnoresUnsupportedChatToResponsesMapping(): void {
@@ -507,6 +499,73 @@ function assertRuntimeIgnoresUnsupportedChatToResponsesMapping(): void {
     ]
   }, sourceModel, 'chat_completions')
   assert.equal(mapping, undefined, '运行时解析器不应返回历史残留的 Chat Completions -> Responses 映射')
+}
+
+function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: '账号模型别名不能配置 Messages 到 Chat',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-alias-messages-to-chat',
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        messagesToChatMapping(anthropicMessagesSourceModel, chatCompletionsUpstreamModel)
+      ],
+      groupId
+    }, ownerAccess)
+  }, /账号模型别名不支持 Anthropic Messages 跨协议映射/, '账号模型别名不应允许 Anthropic Messages -> Chat Completions')
+
+  const anthropicGroup = repositories.createGroup({
+    name: '账号模型别名拒绝 Gemini 到 Messages 分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID
+  }, ownerAccess)
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+      name: '账号模型别名不能配置 Gemini 到 Messages',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-alias-gemini-to-messages',
+        base_url: 'https://api.anthropic.com',
+        supported_endpoint_modes: ['messages_json']
+      },
+      supportedModels: [anthropicMessagesUpstreamModel],
+      modelMappings: [
+        geminiGenerateContentToMessagesMapping(geminiGenerateContentSourceModel, anthropicMessagesUpstreamModel)
+      ],
+      groupId: anthropicGroup.id
+    }, ownerAccess)
+  }, /账号模型别名不支持 Gemini GenerateContent 跨协议映射/, '账号模型别名不应允许 Gemini GenerateContent -> Anthropic Messages')
+
+  const geminiGroup = repositories.createGroup({
+    name: '账号模型别名拒绝 OpenAI 到 Gemini 分组',
+    providerCode: GEMINI_PROVIDER_CODE,
+    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID
+  }, ownerAccess)
+  assert.throws(() => {
+    repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: '账号模型别名不能配置 Responses 到 Gemini',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-alias-responses-to-gemini',
+        base_url: 'https://generativelanguage.googleapis.com/v1beta',
+        supported_endpoint_modes: ['generate_content_json']
+      },
+      supportedModels: [geminiNativeUpstreamModel],
+      modelMappings: [
+        toGeminiGenerateContentMapping(sourceModel, geminiNativeUpstreamModel, 'responses')
+      ],
+      groupId: geminiGroup.id
+    }, ownerAccess)
+  }, /账号模型别名只支持同协议映射/, '账号模型别名不应允许 OpenAI Responses -> Gemini GenerateContent')
 }
 
 function assertProtocolMatrixHelper(): void {
@@ -523,84 +582,73 @@ function assertProtocolMatrixHelper(): void {
     protocolVersion: 'v1'
   }
   assert(accountModelMappingProtocolRules.some((rule) => (
-    rule.source === 'generate_content' && rule.upstream === 'messages'
-  )), '后端协议矩阵必须显式包含 Gemini GenerateContent -> Messages')
+    rule.source === 'chat_completions' && rule.upstream === 'chat_completions'
+  )), '后端协议矩阵必须显式包含 Chat Completions 同协议别名')
   assert(accountModelMappingProtocolRules.some((rule) => (
-    rule.source === 'responses' && rule.upstream === 'generate_content'
-  )), '后端协议矩阵必须显式包含 OpenAI Responses -> Gemini GenerateContent')
+    rule.source === 'responses' && rule.upstream === 'responses'
+  )), '后端协议矩阵必须显式包含 Responses 同协议别名')
   assert(accountModelMappingProtocolRules.some((rule) => (
-    rule.source === 'messages' && rule.upstream === 'generate_content'
-  )), '后端协议矩阵必须显式包含 Anthropic Messages -> Gemini GenerateContent')
-  assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
+    rule.source === 'messages' && rule.upstream === 'messages'
+  )), '后端协议矩阵必须显式包含 Anthropic Messages 同协议别名')
+  assert(accountModelMappingProtocolRules.some((rule) => (
+    rule.source === 'stream_generate_content' && rule.upstream === 'generate_content'
+  )), '后端协议矩阵必须显式包含 Gemini StreamGenerateContent 到 GenerateContent 别名')
+  assert.throws(() => assertAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: 'responses'
+  }, {
+    providerProfile: openAIProfile,
+    supportedEndpointModes: ['chat_json', 'chat_sse']
+  }), /账号模型别名只支持同协议映射/, '后端矩阵应拒绝无原生 Responses 能力的 Chat -> Responses')
+  assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'chat_completions'
   }, {
     providerProfile: openAIProfile,
-    supportedEndpointModes: ['chat_json', 'chat_sse']
-  }), '后端矩阵应允许 Responses -> Chat Completions 命中 Chat-only OpenAI 档案')
-  assert.throws(() => assertAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'chat_completions',
-    upstreamEndpointFamily: 'responses'
-  }, {
-    providerProfile: openAIProfile,
-    supportedEndpointModes: ['chat_json', 'chat_sse']
-  }), /暂不支持 Chat Completions 到 Responses 的协议转换/, '后端矩阵应拒绝无原生 Responses 能力的 Chat -> Responses')
-  assert.throws(() => assertAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'chat_completions',
-    upstreamEndpointFamily: 'responses'
-  }, {
-    providerProfile: openAIProfile,
     supportedEndpointModes: ['responses_json']
-  }), /暂不支持 Chat Completions 到 Responses 的协议转换/, '后端矩阵应拒绝原生 Responses 能力下的 Chat -> Responses')
-  assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'responses',
-    upstreamEndpointFamily: 'messages'
-  }, {
-    providerProfile: anthropicProfile,
-    supportedEndpointModes: ['messages_json']
-  }), '后端矩阵应允许 OpenAI Responses -> Anthropic Messages')
+  }), /账号模型别名只支持同协议映射/, '后端矩阵应拒绝原生 Responses 能力下的 Responses -> Chat')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'responses'
   }, {
     providerProfile: openAIProfile,
     supportedEndpointModes: ['responses_json']
-  }), /Anthropic Messages 下游协议当前只支持.*Chat Completions/, '后端矩阵应拒绝 Anthropic Messages -> Responses')
+  }), /账号模型别名不支持 Anthropic Messages 跨协议映射/, '后端矩阵应拒绝 Anthropic Messages -> Responses')
   assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'generate_content',
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'responses'
+  }, {
+    providerProfile: openAIProfile,
+    supportedEndpointModes: ['responses_json']
+  }), '后端矩阵应允许原生 Responses 同协议别名')
+  assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'messages'
   }, {
     providerProfile: anthropicProfile,
     supportedEndpointModes: ['messages_json']
-  }), '后端矩阵应允许 Gemini GenerateContent -> Anthropic Messages')
+  }), '后端矩阵应允许 Anthropic Messages 同协议别名')
   assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'responses',
+    sourceEndpointFamily: 'stream_generate_content',
     upstreamEndpointFamily: 'generate_content'
   }, {
     providerProfile: geminiNativeProfile,
     supportedEndpointModes: ['generate_content_json', 'generate_content_sse']
-  }), '后端矩阵应允许 OpenAI Responses -> Gemini GenerateContent')
-  assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily: 'messages',
-    upstreamEndpointFamily: 'generate_content'
-  }, {
-    providerProfile: geminiNativeProfile,
-    supportedEndpointModes: ['generate_content_json']
-  }), '后端矩阵应允许 Anthropic Messages -> Gemini GenerateContent')
+  }), '后端矩阵应允许 Gemini StreamGenerateContent 到 GenerateContent 别名')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'generate_content'
   }, {
     providerProfile: geminiOpenAIChatProfile,
     supportedEndpointModes: ['chat_json']
-  }), /Gemini OpenAI Chat 档案的模型映射上游协议只能是 Chat Completions/, '后端矩阵应拒绝 Gemini OpenAI Chat 作为 Gemini native 右侧目标')
+  }), /Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions|账号模型别名只支持同协议映射/, '后端矩阵应拒绝 Gemini OpenAI Chat 作为 Gemini native 右侧目标')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'chat_completions'
   }, {
     providerProfile: geminiOpenAIChatProfile,
     supportedEndpointModes: ['chat_json']
-  }), /Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射/, '后端矩阵应拒绝 Gemini OpenAI Chat 的 Messages 来源')
+  }), /Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions|账号模型别名不支持 Anthropic Messages 跨协议映射/, '后端矩阵应拒绝 Gemini OpenAI Chat 的 Messages 来源')
 }
 
 function assertOpenAIAndAnthropicToGeminiNativeMapping(): void {
@@ -881,7 +929,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('映射下游模型不在对应协议客户端模型池中')), '导入预览应在预览阶段暴露模型映射目录错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名来源模型不在当前供应商模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
 }
 
 function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): void {
@@ -937,7 +985,7 @@ function assertImportPreviewRejectsUnsupportedMessagesMapping(groupId: string): 
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, 'Messages 到 Responses 非法映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', 'Messages 到 Responses 非法映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('Anthropic Messages 下游协议当前只支持')), '导入预览应暴露 Messages 下游协议方向约束错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名不支持 Anthropic Messages 跨协议映射')), '导入预览应暴露 Messages 下游协议方向约束错误')
 }
 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {

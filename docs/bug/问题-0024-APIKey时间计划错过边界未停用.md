@@ -28,7 +28,7 @@
 
 ## 环境信息
 
-- 分支 / 版本：`F:\sub2api-lite` 当前工作区，生产 release 来自该仓库打包。
+- 分支 / 版本：`<项目根目录>` 当前工作区，生产 release 来自该仓库打包。
 - 数据状态：API Key 已配置 `availability_schedule_json`。
 - 浏览器 / 系统 / Node 版本：后端 Node 22 系列。
 - 是否稳定复现：在同步任务错过边界分钟时稳定复现。

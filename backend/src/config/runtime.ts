@@ -72,6 +72,9 @@ export interface RuntimeConfig {
   gateway: {
     bodyInFlightMaxBytes: number
   }
+  audit: {
+    fullBodyCaptureEnabled: boolean
+  }
   codexWebSearch: {
     endpoint?: string
     apiKey?: string
@@ -103,19 +106,9 @@ export interface RuntimeConfig {
     timeoutMs: number
     maxBodyBytes: number
   }
-  mcpProxy: {
-    servers: McpProxyServerRuntimeConfig[]
-    timeoutMs: number
-    maxRetries: number
-    retryDelayMs: number
-    approvalTtlSeconds: number
-    maxBodyBytes: number
-    maxOutputBytes: number
-  }
   hostedToolRuntimes: {
     codeInterpreter: HostedToolRuntimeMode
     computer: HostedToolRuntimeMode
-    mcp: HostedToolRuntimeMode
     shell: HostedToolRuntimeMode
     skills: HostedToolRuntimeMode
     toolSearch: HostedToolRuntimeMode
@@ -156,20 +149,6 @@ export type WorkerRuntimeRole =
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export type HostedToolRuntimeMode = 'guidance' | 'reject' | 'mock' | 'local_runtime'
 export type ImageGenerationProviderApi = 'images' | 'responses'
-export interface McpProxyServerRuntimeConfig {
-  label: string
-  serverUrl: string
-  enabled: boolean
-  allowedTools: string[]
-  authorization?: string
-  allowRequestAuthorization: boolean
-  defaultApprovalPolicy?: 'always' | 'never'
-  timeoutMs?: number
-  maxRetries?: number
-  retryDelayMs?: number
-  maxBodyBytes?: number
-  maxOutputBytes?: number
-}
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -287,6 +266,9 @@ export const runtimeConfig: RuntimeConfig = {
   gateway: {
     bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024
   },
+  audit: {
+    fullBodyCaptureEnabled: booleanConfig('JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED', true)
+  },
   codexWebSearch: {
     endpoint: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT'),
     apiKey: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_API_KEY'),
@@ -313,19 +295,9 @@ export const runtimeConfig: RuntimeConfig = {
     cleanupTempDirectory: booleanConfig('JUHE_AI_CODE_INTERPRETER_CLEANUP_TEMP_DIR', true)
   },
   computerAdapter: computerAdapterConfig(),
-  mcpProxy: {
-    servers: mcpProxyServersConfig('JUHE_AI_MCP_PROXY_SERVERS_JSON'),
-    timeoutMs: numberConfig('JUHE_AI_MCP_PROXY_TIMEOUT_MS', 10000, 1000, 120000),
-    maxRetries: numberConfig('JUHE_AI_MCP_PROXY_MAX_RETRIES', 1, 0, 3),
-    retryDelayMs: numberConfig('JUHE_AI_MCP_PROXY_RETRY_DELAY_MS', 100, 0, 5000),
-    approvalTtlSeconds: numberConfig('JUHE_AI_MCP_PROXY_APPROVAL_TTL_SECONDS', 300, 30, 86400),
-    maxBodyBytes: numberConfig('JUHE_AI_MCP_PROXY_MAX_BODY_KB', 512, 16, 4096) * 1024,
-    maxOutputBytes: numberConfig('JUHE_AI_MCP_PROXY_MAX_OUTPUT_KB', 64, 4, 1024) * 1024
-  },
   hostedToolRuntimes: {
     codeInterpreter: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE', 'guidance'),
     computer: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_COMPUTER_MODE', 'guidance'),
-    mcp: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_MCP_MODE', 'guidance'),
     shell: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_SHELL_MODE', 'guidance'),
     skills: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_SKILLS_MODE', 'guidance'),
     toolSearch: hostedToolRuntimeModeConfig('JUHE_AI_HOSTED_TOOL_TOOL_SEARCH_MODE', 'guidance')
@@ -664,75 +636,6 @@ function isLoopbackHost(hostname: string): boolean {
     || normalized === '::1'
     || normalized === '0:0:0:0:0:0:0:1'
     || normalized.startsWith('127.')
-}
-
-function mcpProxyServersConfig(name: string): McpProxyServerRuntimeConfig[] {
-  const rawValue = rawStringConfig(name)
-  if (!rawValue) return []
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(rawValue)
-  } catch {
-    throw new Error(`${name} 必须是 JSON 数组`)
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error(`${name} 必须是 JSON 数组`)
-  }
-  return parsed.map((item, index) => normalizeMcpProxyServerConfig(name, item, index))
-}
-
-function normalizeMcpProxyServerConfig(name: string, item: unknown, index: number): McpProxyServerRuntimeConfig {
-  if (!isRecord(item)) {
-    throw new Error(`${name}[${index}] 必须是对象`)
-  }
-  const label = stringFromRecord(item, 'label')
-  const serverUrl = stringFromRecord(item, 'server_url') ?? stringFromRecord(item, 'serverUrl')
-  if (!label) {
-    throw new Error(`${name}[${index}].label 不能为空`)
-  }
-  if (!serverUrl) {
-    throw new Error(`${name}[${index}].server_url 不能为空`)
-  }
-  const enabled = item.enabled === undefined ? true : item.enabled === true
-  const allowedTools = arrayStringFromRecord(item, 'allowed_tools')
-    ?? arrayStringFromRecord(item, 'allowedTools')
-    ?? []
-  return {
-    label,
-    serverUrl,
-    enabled,
-    allowedTools,
-    authorization: stringFromRecord(item, 'authorization'),
-    allowRequestAuthorization: item.allow_request_authorization === true || item.allowRequestAuthorization === true,
-    defaultApprovalPolicy: stringFromRecord(item, 'default_approval_policy') === 'never' || stringFromRecord(item, 'defaultApprovalPolicy') === 'never'
-      ? 'never'
-      : undefined,
-    timeoutMs: numberFromRecord(item, 'timeout_ms') ?? numberFromRecord(item, 'timeoutMs'),
-    maxRetries: numberFromRecord(item, 'max_retries') ?? numberFromRecord(item, 'maxRetries'),
-    retryDelayMs: numberFromRecord(item, 'retry_delay_ms') ?? numberFromRecord(item, 'retryDelayMs'),
-    maxBodyBytes: numberFromRecord(item, 'max_body_bytes') ?? numberFromRecord(item, 'maxBodyBytes'),
-    maxOutputBytes: numberFromRecord(item, 'max_output_bytes') ?? numberFromRecord(item, 'maxOutputBytes')
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function stringFromRecord(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key]
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function arrayStringFromRecord(record: Record<string, unknown>, key: string): string[] | undefined {
-  const value = record[key]
-  if (!Array.isArray(value)) return undefined
-  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim())
-}
-
-function numberFromRecord(record: Record<string, unknown>, key: string): number | undefined {
-  const value = record[key]
-  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : undefined
 }
 
 function upstreamUrlSecurityConfig(): RuntimeConfig['upstreamUrlSecurity'] {

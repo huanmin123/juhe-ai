@@ -16,6 +16,7 @@ const auditLogFlushBatchYieldMs = 5
 const auditLogShutdownFlushMaxBatches = 100
 const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
 const auditLogEstimateMaxStringChars = 16 * 1024
+const auditLogPostgresFlushBatchSize = 25
 
 let pendingAuditLogs: QueuedAuditLog[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -130,7 +131,15 @@ function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: s
 export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
   if (shouldDispatchAuditLogToIngestWorker()) {
-    if (!sendAuditLogsToWorker([queuedInput])) {
+    const dispatched = sendAuditLogsToWorker([queuedInput])
+    logger.debug({
+      event: 'audit_log_dispatch_to_ingest_worker',
+      traceId: queuedInput.traceId,
+      auditOutcome: queuedInput.auditOutcome,
+      success: queuedInput.success,
+      dispatched
+    }, '审计日志已投递 ingest-worker')
+    if (!dispatched) {
       recordAuditLogDispatchFailure(queuedInput)
     }
     return
@@ -171,8 +180,17 @@ function enqueueAuditLogLocal(input: AuditLogInput): void {
 
   pendingAuditLogs.push(queued)
   pendingBytes += queued.bytes
+  logger.debug({
+    event: 'audit_log_local_queue_enqueued',
+    traceId: input.traceId,
+    auditOutcome: input.auditOutcome,
+    success: input.success,
+    queueLength: pendingAuditLogs.length,
+    queueBytes: pendingBytes
+  }, '审计日志已进入本地写入队列')
   enforceAuditQueueLimits(settings)
-  scheduleAuditLogFlush(pendingAuditLogs.length >= settings.batchSize ? 0 : settings.flushIntervalSeconds * 1000)
+  const batchSize = effectiveAuditLogFlushBatchSize(settings.batchSize)
+  scheduleAuditLogFlush(pendingAuditLogs.length >= batchSize ? 0 : settings.flushIntervalSeconds * 1000)
 }
 
 export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
@@ -194,7 +212,7 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
   try {
     const settings = readAuditLogSettings()
     do {
-      const { batch, bytes: batchBytes } = peekAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
+      const { batch, bytes: batchBytes } = peekAuditLogFlushBatch(effectiveAuditLogFlushBatchSize(settings.batchSize), auditLogFlushBatchMaxBytes)
       if (batch.length === 0) break
       flushedBatches += 1
 
@@ -262,7 +280,7 @@ async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}):
   try {
     const settings = readAuditLogSettings()
     do {
-      const { batch, bytes: batchBytes } = peekAuditLogFlushBatch(settings.batchSize, auditLogFlushBatchMaxBytes)
+      const { batch, bytes: batchBytes } = peekAuditLogFlushBatch(effectiveAuditLogFlushBatchSize(settings.batchSize), auditLogFlushBatchMaxBytes)
       if (batch.length === 0) break
       flushedBatches += 1
 
@@ -271,6 +289,13 @@ async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}):
         removeAuditLogFlushBatch(batch.length, batchBytes)
         lastFlushSuccessAt = nowIso()
         lastFlushError = undefined
+        logger.debug({
+          event: 'audit_log_queue_async_flush_completed',
+          batchSize: batch.length,
+          batchBytes,
+          pendingCount: pendingAuditLogs.length,
+          pendingBytes
+        }, '审计日志队列异步 flush 完成')
         if (options.drain && pendingAuditLogs.length > 0 && flushedBatches < maxBatches) {
           await yieldBetweenAuditLogFlushBatches()
         }
@@ -547,6 +572,13 @@ function boundedStringBytes(value: string, maxBytes: number): number {
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+}
+
+function effectiveAuditLogFlushBatchSize(settingsBatchSize: number): number {
+  const normalized = Math.max(1, Math.trunc(settingsBatchSize))
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? Math.min(normalized, auditLogPostgresFlushBatchSize)
+    : normalized
 }
 
 function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {

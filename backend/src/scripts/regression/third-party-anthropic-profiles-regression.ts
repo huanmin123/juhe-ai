@@ -34,9 +34,9 @@ const glmCodingAccount = anthropicProfileAccount({
 })
 
 assert.equal(providerDriverForAccount(deepSeekAccount)?.id, 'anthropic', 'DeepSeek Claude Code profile 应复用 Anthropic provider driver')
-assert.equal(providerDriverForAccount(glmCodingAccount)?.id, 'anthropic', 'GLM Coding Claude Code profile 应复用 Anthropic provider driver')
+assert.equal(providerDriverForAccount(glmCodingAccount)?.id, 'anthropic', 'GLM Coding Anthropic profile 应复用 Anthropic provider driver')
 assert.equal(usageSemanticForProfile(deepSeekAccount), 'anthropic', 'DeepSeek Claude Code 使用记录应按 Anthropic usage 语义解析')
-assert.equal(usageSemanticForProfile(glmCodingAccount), 'anthropic', 'GLM Coding Claude Code 使用记录应按 Anthropic usage 语义解析')
+assert.equal(usageSemanticForProfile(glmCodingAccount), 'anthropic', 'GLM Coding Anthropic 使用记录应按 Anthropic usage 语义解析')
 
 const deepSeekMessagesRequest = anthropicRequest({
   body: {
@@ -73,12 +73,12 @@ const glmSseRequest = anthropicRequest({
 assert.deepEqual(
   buildGatewayUpstreamUrlsForAccount(glmCodingAccount, glmSseRequest),
   ['https://open.bigmodel.cn/api/anthropic/v1/messages'],
-  'GLM Coding Claude Code Base URL 应拼接到 /api/anthropic/v1/messages'
+  'GLM Coding Anthropic Base URL 应拼接到 /api/anthropic/v1/messages'
 )
 assert.equal(
   accountSupportsGatewayRequest(glmSseRequest, glmCodingAccount),
   true,
-  'GLM Coding Claude Code profile 应支持 Messages Streaming'
+  'GLM Coding Anthropic profile 应支持 Messages Streaming'
 )
 
 const countTokensRequest = anthropicRequest({
@@ -96,7 +96,7 @@ assert.equal(
 assert.equal(
   accountSupportsGatewayRequest(countTokensRequest, glmCodingAccount),
   false,
-  'GLM Coding Claude Code profile 不应默认承接 Anthropic count_tokens'
+  'GLM Coding Anthropic profile 不应默认承接 Anthropic count_tokens'
 )
 
 const modelsRequest = anthropicRequest({
@@ -112,7 +112,7 @@ assert.equal(
 assert.equal(
   accountSupportsGatewayRequest(modelsRequest, glmCodingAccount),
   true,
-  'GLM Coding Claude Code profile 应支持本地模型列表透传'
+  'GLM Coding Anthropic profile 应支持本地模型列表透传'
 )
 
 const deepSeekParts = await buildGatewayUpstreamRequestParts(deepSeekMessagesRequest, deepSeekAccount, {
@@ -134,7 +134,7 @@ assert.equal(glmParts.headers.get('x-api-key'), null, 'GLM Coding Anthropic-comp
 assert.equal(glmParts.headers.get('accept'), 'text/event-stream', 'GLM Coding Messages Streaming 上游 accept 应保留 SSE')
 assert.equal(bodyJson(glmParts.body).model, 'glm-5.2', 'GLM Coding Anthropic-compatible 上游请求体应原样保留模型')
 
-console.log('第三方 Anthropic profile 回归通过：DeepSeek/GLM Claude Code 的 URL、鉴权、能力和 usage 语义符合预期')
+console.log('第三方 Anthropic profile 回归通过：DeepSeek Claude Code / GLM Coding Anthropic 的 URL、鉴权、能力和 usage 语义符合预期')
 
 function anthropicProfileAccount(input: {
   id: string

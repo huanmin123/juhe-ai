@@ -88,7 +88,7 @@ JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 
 ## 部署边界
 
-测试环境使用本地 Linux Docker 主机 `192.168.1.203` 搭建；凭据只保存在部署目录和服务器安全配置中，不写入仓库文档。后续生产环境复用同一套 compose / env / backup / monitoring 结构。
+测试环境使用本地 Linux Docker 主机 `<测试主机IP>` 搭建；凭据只保存在部署目录和服务器安全配置中，不写入仓库文档。后续生产环境复用同一套 compose / env / backup / monitoring 结构。
 
 首期推荐 Docker 服务：
 
@@ -119,7 +119,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 
 表名可以保留当前语义，代码通过 repository / dialect 选择 schema，不把 schema 名写进业务服务层。
 
-当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`192.168.1.203` 已验证 5 个 schema、570 条 schema 语句和 138 条默认种子语句可以成功执行。
+当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`<测试主机IP>` 已验证 5 个 schema、570 条 schema 语句和 138 条默认种子语句可以成功执行。
 
 ### usage_records 目标形态
 
@@ -341,7 +341,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 
 ## PostgreSQL 调优基线
 
-具体数值按 `192.168.1.203` 和生产机器 CPU / 内存 / 磁盘测试后写入部署文档。默认基线：
+具体数值按 `<测试主机IP>` 和生产机器 CPU / 内存 / 磁盘测试后写入部署文档。默认基线：
 
 - 应用连接 PgBouncer，不直接把每个 Node 进程的连接池打到 PostgreSQL。
 - PostgreSQL `max_connections` 按 PgBouncer 后端池设置，不为每个 worker 并发开同等连接。
@@ -389,14 +389,14 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 | usage | 高并发写入和统计聚合 | 明细无丢失，统计游标与结果同事务推进 |
 | 网关 | API Key 校验、调度、使用记录、审计 | 主链路成功，缓存失效后能读到新事实 |
 | 运维 | PostgreSQL / Redis 重启 | 可读错误、重连、短 TTL 状态丢失可恢复 |
-| 部署 | Docker host `192.168.1.203` | compose 启动、健康检查、备份、恢复和日志路径明确 |
+| 部署 | Docker host `<测试主机IP>` | compose 启动、健康检查、备份、恢复和日志路径明确 |
 
 ## 落地顺序
 
 1. 新增配置模型、运行模式校验和文档。已完成基础配置、`.env` 示例和 fail-fast 校验。
 2. 抽象 `DatabaseClient` / `SqlDialect`，先让 SQLite 在新接口下通过现有回归。基础层已完成并接入 PostgreSQL 初始化脚本；provider 只读 repository、登录 / 会话最小 repository、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、授权列表 / options / usage 详情读取、公共设置读取、系统 API 限流设置读取和系统设置管理读写已完成，主要写路径和其他 repository 迁移待完成。
 3. 抽象 `AppCache` / `SharedJsonCache` / `RuntimeStateStore`，先让 memory driver 行为不变。已完成基础 driver，仍需迁移全部调用点。
-4. 搭建 `192.168.1.203` Docker 测试栈：PostgreSQL、PgBouncer、Redis cache、Redis state。
+4. 搭建 `<测试主机IP>` Docker 测试栈：PostgreSQL、PgBouncer、Redis cache、Redis state。
 5. 新增 PostgreSQL schema、schema 初始化脚本和 repository PG adapter。已完成 PostgreSQL pool、schema 映射初始化脚本、默认种子写入、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、授权列表 / options / usage 详情读取 adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter 和系统设置管理读写 adapter；其他 repository adapter 待完成。
 6. 新增 Redis cache / runtime state driver，迁移网关运行态缓存调用点。已完成登录失败窗口、账号并发槽和网关缓存失效版本广播，其他运行态待迁移。
 7. 调整写队列 drain 策略，performance 模式启用最大并发 `100` 和连接池背压。已完成使用记录 Redis Streams 首批队列和 PG 并发 drain 骨架，其他写队列待迁移。

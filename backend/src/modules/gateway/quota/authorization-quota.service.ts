@@ -1,4 +1,4 @@
-import { createAppCache } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { registerAuthorizationQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -66,6 +66,11 @@ const authorizationQuotaCache = createAppCache<string, AuthorizationQuotaCacheEn
   ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS,
   updateAgeOnGet: false
 })
+const authorizationQuotaSharedCache = createSharedJsonCache<AuthorizationQuotaCacheEntry>({
+  name: 'gateway:authorization-quota',
+  max: 10000,
+  ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS
+})
 
 export function checkGatewayAuthorizationQuota(input: {
   groupAccess: GroupUsageAccessMetadata
@@ -93,6 +98,11 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
   if (cached) {
     return cached
   }
+  const sharedCached = await getAuthorizationQuotaSharedCacheEntry(cacheKey)
+  if (sharedCached) {
+    setAuthorizationQuotaCacheEntry(cacheKey, sharedCached, { skipSharedCache: true })
+    return sharedCached
+  }
   if (runtimeConfig.processRole === 'server') {
     const snapshotInput = {
       groupAuthorizationId: input.groupAccess.groupAuthorizationId,
@@ -108,7 +118,7 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
           groupAuthorizationId: input.groupAccess.groupAuthorizationId,
           accountAuthorizationId: input.account?.accountAuthorizationId
         }, { timeoutMs: 1000 })
-        authorizationQuotaCache.set(cacheKey, {
+        await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
           ...decision,
           checkedAtMs: Date.now()
         })
@@ -122,7 +132,7 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
       }
     }
     const decision = authorizationQuotaDecisionFromSnapshot(snapshotInput)
-    authorizationQuotaCache.set(cacheKey, {
+    await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
       ...decision,
       checkedAtMs: Date.now()
     })
@@ -132,7 +142,7 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     groupAuthorizationId: input.groupAccess.groupAuthorizationId,
     accountAuthorizationId: input.account?.accountAuthorizationId
   })
-  authorizationQuotaCache.set(cacheKey, {
+  await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
     ...decision,
     checkedAtMs: Date.now()
   })
@@ -177,6 +187,34 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     })
     return output
   }
+  if (runtimeConfig.cacheDriver === 'redis') {
+    const sharedCacheReads = await Promise.all(
+      missingAccounts.map(async (account) => ({
+        account,
+        cacheKey: missingCacheKeys.get(account.id),
+        entry: missingCacheKeys.get(account.id)
+          ? await getAuthorizationQuotaSharedCacheEntry(missingCacheKeys.get(account.id) as string)
+          : undefined
+      }))
+    )
+    const stillMissingAccounts: OpenAIAccountSecret[] = []
+    for (const result of sharedCacheReads) {
+      if (result.cacheKey && result.entry) {
+        setAuthorizationQuotaCacheEntry(result.cacheKey, result.entry, { skipSharedCache: true })
+        cachedDecisionsByAccountId.set(result.account.id, result.entry)
+        continue
+      }
+      stillMissingAccounts.push(result.account)
+    }
+    missingAccounts.splice(0, missingAccounts.length, ...stillMissingAccounts)
+    if (!missingAccounts.length) {
+      const output = new Map<string, AuthorizationQuotaDecision>()
+      input.accounts.forEach((account) => {
+        output.set(account.id, cachedDecisionsByAccountId.get(account.id) ?? { allowed: true })
+      })
+      return output
+    }
+  }
   if (runtimeConfig.processRole === 'server') {
     const output = new Map<string, AuthorizationQuotaDecision>()
     for (const [accountId, decision] of cachedDecisionsByAccountId.entries()) {
@@ -199,7 +237,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
           const cacheKey = missingCacheKeys.get(account.id)
           if (cacheKey) {
             missingDecisionsByCacheKey.set(cacheKey, decision)
-            authorizationQuotaCache.set(cacheKey, {
+            setAuthorizationQuotaCacheEntry(cacheKey, {
               ...decision,
               checkedAtMs: Date.now()
             })
@@ -232,7 +270,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
       })
       output.set(account.id, decision)
       if (cacheKey) {
-        authorizationQuotaCache.set(cacheKey, {
+        setAuthorizationQuotaCacheEntry(cacheKey, {
           ...decision,
           checkedAtMs: Date.now()
         })
@@ -248,7 +286,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
           accountAuthorizationQuotaLimited: account?.accountAuthorizationQuotaLimited
         })
         output.set(accountId, decision)
-        authorizationQuotaCache.set(cacheKey, {
+        setAuthorizationQuotaCacheEntry(cacheKey, {
           ...decision,
           checkedAtMs: Date.now()
         })
@@ -278,7 +316,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     const cacheKey = missingCacheKeys.get(account.id)
     if (cacheKey) {
       missingDecisionsByCacheKey.set(cacheKey, decision)
-      authorizationQuotaCache.set(cacheKey, {
+      setAuthorizationQuotaCacheEntry(cacheKey, {
         ...decision,
         checkedAtMs: Date.now()
       })
@@ -351,12 +389,65 @@ function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[])
     message: allowed ? undefined : AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
     checkedAtMs: Date.now()
   }
-  authorizationQuotaCache.set(cacheKey, decision)
+  setAuthorizationQuotaCacheEntry(cacheKey, decision)
   return decision
 }
 
 export function clearAuthorizationQuotaCache(): void {
   authorizationQuotaCache.clear()
+  clearAuthorizationQuotaSharedCache()
+}
+
+function setAuthorizationQuotaCacheEntry(
+  cacheKey: string,
+  entry: AuthorizationQuotaCacheEntry,
+  options: { skipSharedCache?: boolean } = {}
+): void {
+  authorizationQuotaCache.set(cacheKey, entry)
+  if (!options.skipSharedCache) {
+    void setAuthorizationQuotaSharedCacheEntry(cacheKey, entry)
+  }
+}
+
+async function setAuthorizationQuotaCacheEntryAsync(cacheKey: string, entry: AuthorizationQuotaCacheEntry): Promise<void> {
+  setAuthorizationQuotaCacheEntry(cacheKey, entry, { skipSharedCache: true })
+  await setAuthorizationQuotaSharedCacheEntry(cacheKey, entry)
+}
+
+async function getAuthorizationQuotaSharedCacheEntry(cacheKey: string): Promise<AuthorizationQuotaCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    return await authorizationQuotaSharedCache.get(sharedQuotaCacheKey(cacheKey))
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_authorization_quota_shared_cache_read_failed'
+    }), '读取授权额度 Redis 共享缓存失败，继续使用本地判定')
+    return undefined
+  }
+}
+
+async function setAuthorizationQuotaSharedCacheEntry(cacheKey: string, entry: AuthorizationQuotaCacheEntry): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await authorizationQuotaSharedCache.set(sharedQuotaCacheKey(cacheKey), entry, { ttlMs: AUTHORIZATION_QUOTA_CACHE_TTL_MS })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_authorization_quota_shared_cache_write_failed'
+    }), '写入授权额度 Redis 共享缓存失败')
+  }
+}
+
+function clearAuthorizationQuotaSharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void authorizationQuotaSharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_authorization_quota_shared_cache_clear_failed'
+    }), '清理授权额度 Redis 共享缓存失败')
+  })
+}
+
+function sharedQuotaCacheKey(cacheKey: string): string {
+  return Buffer.from(cacheKey).toString('base64url')
 }
 
 interface AuthorizationQuotaCheck {

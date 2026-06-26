@@ -400,7 +400,8 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
           errorPhase: 'dispatch',
           errorCode: 'rate_limit_exceeded',
           errorMessage: responsePayload.error.message
-        }
+        },
+        failureAttribution: 'gateway_capacity'
       })
       return { outcome: 'completed' }
     }
@@ -457,7 +458,8 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
         errorPhase: 'dispatch',
         errorCode: 'rate_limit_exceeded',
         errorMessage: responsePayload.error.message
-      }
+      },
+      failureAttribution: 'gateway_capacity'
     })
     return { outcome: 'completed' }
   }

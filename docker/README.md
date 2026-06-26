@@ -42,11 +42,11 @@ http://localhost:3000/__aisys__/
 ```bash
 cd docker
 cp .env.performance.example .env.performance
-# 编辑 .env.performance，替换 JUHE_AI_SECRET、PostgreSQL 密码、Redis 密码和访问 Origin
+# 填写 JUHE_AI_SECRET、PostgreSQL / Redis 密码、对应 URL 和访问 Origin
 docker compose --env-file .env.performance -f compose.performance.yml up -d --build
 ```
 
-当前 PostgreSQL repository adapter 未整体完成，provider 只读、登录 / 会话、系统账户管理读写、分组管理读写、AI 账户最小创建与常规读写、账户授权实例归还、授权列表个人归还、分组个人归还、API Key 管理读写与网关 Key 校验入口、公共设置读取、系统 API 限流设置读取、系统设置管理读写和使用记录 Redis Streams 队列首批链路已完成双 driver / 高性能模式适配；其他仍未迁移的 SQLite 数据库入口会在 performance 模式下 fail-fast，避免误回退到 SQLite。PostgreSQL、PgBouncer 和 Redis 容器可以先独立完成部署验证，PostgreSQL schema 和默认种子数据可通过初始化脚本先落库。
+当前 PostgreSQL repository adapter 未整体完成；未迁移入口会在 performance 模式下 fail-fast，避免误回退到 SQLite。PostgreSQL、PgBouncer、Redis、schema 初始化和已迁移链路按 `docs/deploy/高性能模式部署指南.md` 验证。
 
 中间件启动后，在项目根目录执行：
 
@@ -66,21 +66,35 @@ cd docker
 cp .env.example .env
 ```
 
-最常用配置：
+公网 HTTPS 常用配置：
 
 ```env
+JUHE_AI_PUBLIC_BIND=127.0.0.1
 JUHE_AI_PUBLIC_PORT=3000
-JUHE_AI_PUBLIC_ORIGIN=http://你的服务器IP:3000
+JUHE_AI_PUBLIC_ORIGIN=https://ai.example.com
 JUHE_AI_SECRET=
+JUHE_AI_COOKIE_SECURE=true
+JUHE_AI_TRUST_PROXY=true
+```
+
+本机或临时 HTTP 验证：
+
+```env
+JUHE_AI_PUBLIC_BIND=127.0.0.1
+JUHE_AI_PUBLIC_PORT=3000
+JUHE_AI_PUBLIC_ORIGIN=http://localhost:3000
 JUHE_AI_COOKIE_SECURE=false
+JUHE_AI_TRUST_PROXY=false
 ```
 
 说明：
 
+- `JUHE_AI_PUBLIC_BIND` 是宿主机绑定地址；宿主机 Caddy/HTTPS 反代建议 `127.0.0.1`，直接局域网 HTTP 临时验证才用 `0.0.0.0`。
 - `JUHE_AI_PUBLIC_PORT` 是宿主机端口，默认 `3000`。
-- `JUHE_AI_PUBLIC_ORIGIN` 是浏览器实际访问的完整 Origin，例如 `http://1.2.3.4:3000` 或 `https://ai.example.com`。
+- `JUHE_AI_PUBLIC_ORIGIN` 是 Docker entrypoint 的便捷变量，会在 `JUHE_AI_ALLOWED_ORIGINS` 留空时转换成后端 CORS 白名单；直接运行 Node / PM2 / systemd 时必须配置 `JUHE_AI_ALLOWED_ORIGINS`。
+- `JUHE_AI_PUBLIC_ORIGIN` 填浏览器实际访问的完整 Origin，例如 `http://1.2.3.4:3000` 或 `https://ai.example.com`。
 - `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成并复用。迁移旧业务库时必须填写旧密钥，否则 OAuth token、上游 API Key、代理密码等敏感字段无法解密。
-- 直接 HTTP 访问时保持 `JUHE_AI_COOKIE_SECURE=false`；HTTPS 反向代理后建议改为 `true`，并按需设置 `JUHE_AI_TRUST_PROXY=true`。
+- 直接 HTTP 访问时保持 `JUHE_AI_COOKIE_SECURE=false` 和 `JUHE_AI_TRUST_PROXY=false`；HTTPS 反向代理后改为 `true`，并确保容器端口只被 Caddy 或可信入口访问。
 - Docker Hub 拉取慢时，可以在 `.env` 中覆盖 `JUHE_AI_NODE_IMAGE` 为可访问的 Node 22 slim 镜像。
 
 ## 数据持久化
@@ -92,7 +106,7 @@ juhe-ai-data -> /app/backend/data
 juhe-ai-logs -> /app/backend/logs
 ```
 
-业务库、数据集目录库、统计库、usage shard、自动生成的密钥和日志都会保留在 volume 中。生产环境不要执行 `docker compose down -v`。
+业务库、数据集目录库、使用记录目录库、统计库、usage shard、自动生成的密钥和日志都会保留在 volume 中。生产环境不要执行 `docker compose down -v`。
 
 ## 验证
 

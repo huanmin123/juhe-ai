@@ -81,16 +81,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/my-mcp-runtime',
-    component: () => import('@/views/openai-compatible-mcp/McpRuntimeView.vue'),
-    meta: {
-      title: '我的 MCP 运行时',
-      description: '管理自己的 MCP Server allowlist、人工审批请求和执行摘要。',
-      viewScope: 'self',
-      heavy: true
-    }
-  },
-  {
     path: '/my-authorizations',
     component: () => import('@/views/authorizations/AuthorizationsView.vue'),
     meta: {
@@ -437,19 +427,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '响应检查策略',
       description: '管理 OpenAI v1 Chat / Responses 的 JSON 与 SSE 响应语义检查策略。',
-      menuGroup: 'system-operations',
-      menuGroupTitle: '系统运维',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/mcp-runtime',
-    component: () => import('@/views/openai-compatible-mcp/McpRuntimeView.vue'),
-    meta: {
-      title: 'MCP 运行时',
-      description: '管理 OpenAI 兼容 MCP Server allowlist、审批请求和执行摘要审计。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

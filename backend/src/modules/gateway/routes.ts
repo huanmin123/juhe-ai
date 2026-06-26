@@ -812,6 +812,13 @@ export async function handleOpenAIGatewayRequest(
     }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : '没有可用的上游账户'
+    getRequestLogger().error(errorLogFields(error, {
+      event: 'gateway_request_unexpected_error',
+      endpoint: gatewayUsageContext.endpoint,
+      apiKeyId: gatewayUsageContext.apiKeyId,
+      groupId: gatewayUsageContext.groupId,
+      trafficSource: gatewayUsageContext.trafficSource
+    }), '网关请求处理出现未预期异常')
     notifyUpstreamAttemptDiagnostic(options, lastAttempt)
     if (shouldSendCodexDispatchExhaustedStreamRetry(currentPreflight, error, res)) {
       confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'codex_dispatch_exhausted_retryable_sse')

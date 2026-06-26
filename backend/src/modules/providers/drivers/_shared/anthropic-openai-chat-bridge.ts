@@ -535,7 +535,7 @@ function chatCompletionJsonToAnthropicMessage(value: unknown, fallbackModel: str
     type: 'message',
     role: 'assistant',
     model: stringValue(root.model) ?? fallbackModel,
-    content: contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: '' }],
+    content: contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: emptyChatCompletionGuidanceText() }],
     stop_reason: chatFinishReasonToAnthropicStopReason(stringValue(choice.finish_reason), contentBlocks),
     stop_sequence: null,
     usage: chatUsageToAnthropicUsage(objectValue(root.usage))
@@ -769,6 +769,9 @@ function completeAnthropicStream(state: AnthropicChatStreamState): string[] {
   if (state.completed || state.failed) return []
   state.completed = true
   const output = ensureAnthropicMessageStarted(state)
+  if (!state.textStarted && !state.hadToolUse && state.toolCalls.size === 0) {
+    output.push(...appendAnthropicTextDelta(state, emptyChatCompletionGuidanceText()))
+  }
   output.push(...closeTextBlock(state))
   output.push(...closeStartedToolBlocks(state, true))
   output.push(anthropicSse('message_delta', {
@@ -781,6 +784,10 @@ function completeAnthropicStream(state: AnthropicChatStreamState): string[] {
   }))
   output.push(anthropicSse('message_stop', { type: 'message_stop' }))
   return output
+}
+
+function emptyChatCompletionGuidanceText(): string {
+  return '上游 Chat Completions 返回了空 assistant 内容。客户端可以保持当前对话并重试，或换用更稳定的上游模型；网关已将空响应转换为可读提示，避免客户端因空消息中断。'
 }
 
 function closeTextBlock(state: AnthropicChatStreamState): string[] {

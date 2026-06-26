@@ -1,5 +1,8 @@
+import { runtimeConfig } from '../../config/runtime.js'
+
 export interface AuditLogSettings {
   enabled: boolean
+  fullBodyCaptureEnabled: boolean
   successSampleRate: number
   flushIntervalSeconds: number
   batchSize: number
@@ -17,6 +20,7 @@ const auditLogMb = 1024 * 1024
 // 原始审计日志是固定排障能力，不通过 system_settings 暴露配置。
 export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
   enabled: true,
+  fullBodyCaptureEnabled: true,
   successSampleRate: 0.1,
   flushIntervalSeconds: 5,
   batchSize: 500,
@@ -30,5 +34,16 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
 })
 
 export function readAuditLogSettings(): AuditLogSettings {
-  return fixedAuditLogSettings
+  const baseSettings = {
+    ...fixedAuditLogSettings,
+    fullBodyCaptureEnabled: runtimeConfig.audit.fullBodyCaptureEnabled
+  }
+  if (runtimeConfig.runtimeMode === 'performance' || runtimeConfig.databaseDriver === 'postgres') {
+    return {
+      ...baseSettings,
+      successSampleRate: 0.05,
+      successHotRetentionHours: 0
+    }
+  }
+  return baseSettings
 }

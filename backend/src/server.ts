@@ -85,7 +85,9 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
-setRuntimeLogLineSink((line, options) => sendRuntimeLogLineToWorker(line, options))
+if (runtimeConfig.databaseDriver === 'sqlite') {
+  setRuntimeLogLineSink((line, options) => sendRuntimeLogLineToWorker(line, options))
+}
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
   logger.warn({

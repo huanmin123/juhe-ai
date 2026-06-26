@@ -30,6 +30,7 @@ export interface UsageStatsRecordRow {
   model: string | null
   status_code: number | null
   success: number
+  failure_attribution: string | null
   first_token_ms: number | null
   duration_ms: number | null
   input_tokens: number | null
@@ -68,6 +69,7 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
   model,
   status_code,
   success,
+  failure_attribution,
   first_token_ms,
   duration_ms,
   input_tokens,

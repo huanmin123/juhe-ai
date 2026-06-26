@@ -73,6 +73,33 @@
           </a-button>
         </div>
       </a-form-item>
+      <a-form-item label="默认客户端画像" tooltip="auto 会按请求特征自动识别；显式选择后，仅在同协议请求上覆盖自动识别结果。">
+        <a-select v-model:value="form.clientProfile" :options="clientProfileOptions" />
+      </a-form-item>
+      <a-form-item label="显式混合路由规则" tooltip="在普通路由和混合智能路由之前匹配。适合跨供应商、跨协议或固定模型别名路由。">
+        <div class="explicit-route-rules-field">
+          <div v-for="(rule, index) in form.explicitHybridRouteRules" :key="rule.key" class="explicit-route-rule-row">
+            <a-switch v-model:checked="rule.enabled" />
+            <a-input-number v-model:value="rule.priority" :min="1" :max="10000" />
+            <a-select v-model:value="rule.sourceClientProfile" :options="clientProfileOptions" />
+            <a-select v-model:value="rule.sourceEndpointFamily" :options="explicitRouteSourceEndpointOptions" />
+            <a-input v-model:value="rule.sourceModel" placeholder="下游模型，留空匹配任意" />
+            <a-select v-model:value="rule.targetGroupId" :options="explicitRouteTargetGroupOptions" placeholder="目标分组" />
+            <a-select v-model:value="rule.upstreamEndpointFamily" :options="explicitRouteUpstreamEndpointOptions" />
+            <a-input v-model:value="rule.upstreamModel" placeholder="上游模型" />
+            <a-select v-model:value="rule.adapterMode" :options="explicitRouteAdapterModeOptions" />
+            <a-tooltip title="移除">
+              <a-button type="text" size="small" danger @click="removeExplicitRouteRule(index)">
+                <template #icon><delete-outlined /></template>
+              </a-button>
+            </a-tooltip>
+          </div>
+          <a-button type="dashed" block :disabled="!explicitRouteTargetGroupOptions.length" @click="addExplicitRouteRule">
+            <template #icon><plus-outlined /></template>
+            添加显式规则
+          </a-button>
+        </div>
+      </a-form-item>
       <template v-if="form.routeMode === 'hybrid'">
         <div class="hybrid-config-grid">
           <a-form-item label="评分模型" required tooltip="评分模型只从模型目录选择；运行时仍从当前 API Key 绑定分组池里选择能承接该模型的账号，不配置独立评分分组。">
@@ -218,7 +245,7 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
-import type { ApiKeyAvailabilitySchedule, ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyQuotaLimits, ApiKeyRouteMode, ApiKeySummary } from '@/types/domain'
+import type { ApiKeyAvailabilitySchedule, ApiKeyClientProfile, ApiKeyExplicitHybridRouteRule, ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyQuotaLimits, ApiKeyRouteMode, ApiKeySummary } from '@/types/domain'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 import {
@@ -251,6 +278,10 @@ interface CreatedKeyPayload {
 
 type ApiKeyHybridRoutingConfigForm = ApiKeyHybridRoutingConfig & {
   qualityInspection: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>
+}
+
+type ApiKeyExplicitHybridRouteRuleForm = ApiKeyExplicitHybridRouteRule & {
+  key: string
 }
 
 const props = defineProps<{
@@ -302,11 +333,40 @@ const hybridQualityInspectionUnavailableOptions = [
   { label: '放行原 200', value: 'pass_through' },
   { label: '返回错误', value: 'return_error' }
 ] satisfies Array<{ label: string; value: NonNullable<ApiKeyHybridRoutingConfig['qualityInspection']>['unavailableAction'] }>
+const clientProfileOptions = [
+  { label: '自动识别', value: 'auto' },
+  { label: 'OpenAI 通用', value: 'generic_openai' },
+  { label: 'Codex Responses', value: 'codex' },
+  { label: 'Anthropic 通用', value: 'generic_anthropic' },
+  { label: 'Claude Code', value: 'claude_code' },
+  { label: 'Gemini 通用', value: 'generic_gemini' },
+  { label: 'Gemini CLI', value: 'gemini_cli' }
+] satisfies Array<{ label: string; value: ApiKeyClientProfile }>
+const explicitRouteSourceEndpointOptions = [
+  { label: 'Chat Completions', value: 'chat_completions' },
+  { label: 'Responses', value: 'responses' },
+  { label: 'Messages', value: 'messages' },
+  { label: 'Gemini GenerateContent', value: 'generate_content' },
+  { label: 'Gemini StreamGenerateContent', value: 'stream_generate_content' }
+] satisfies Array<{ label: string; value: ApiKeyExplicitHybridRouteRule['sourceEndpointFamily'] }>
+const explicitRouteUpstreamEndpointOptions = [
+  { label: 'Chat Completions', value: 'chat_completions' },
+  { label: 'Responses', value: 'responses' },
+  { label: 'Messages', value: 'messages' },
+  { label: 'Gemini GenerateContent', value: 'generate_content' }
+] satisfies Array<{ label: string; value: ApiKeyExplicitHybridRouteRule['upstreamEndpointFamily'] }>
+const explicitRouteAdapterModeOptions = [
+  { label: '桥接', value: 'bridge' },
+  { label: '直连', value: 'direct' }
+] satisfies Array<{ label: string; value: ApiKeyExplicitHybridRouteRule['adapterMode'] }>
+let explicitRouteRuleFormKeySeed = 0
 const form = reactive({
   name: '',
+  clientProfile: 'auto' as ApiKeyClientProfile,
   routeMode: 'normal' as ApiKeyRouteMode,
   groupRouteStrategy: 'priority_failover' as ApiKeyGroupRouteStrategy,
   groupBindings: [] as ApiKeyGroupBindingFormRow[],
+  explicitHybridRouteRules: [] as ApiKeyExplicitHybridRouteRuleForm[],
   hybridRoutingConfig: createHybridRoutingConfigForm(),
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
@@ -391,6 +451,12 @@ const addHybridLevelRouteDisabledReason = computed(() => {
   }
   return undefined
 })
+const explicitRouteTargetGroupOptions = computed(() => form.groupBindings
+  .filter((binding) => binding.status === 'active' && binding.groupId)
+  .map((binding) => ({
+    label: binding.group?.name || binding.groupId,
+    value: binding.groupId
+  })))
 
 function handleHybridModelDropdownVisibleChange(open: boolean): void {
   if (open) void loadProviderModelOptions()
@@ -433,9 +499,11 @@ async function openCreate() {
   }
   Object.assign(form, {
     name: '',
+    clientProfile: 'auto',
     routeMode: 'normal',
     groupRouteStrategy: 'priority_failover',
     groupBindings: [createGroupBindingRow(defaultGroup)],
+    explicitHybridRouteRules: [],
     hybridRoutingConfig: createHybridRoutingConfigForm(),
     status: 'active',
     expiresAt: undefined,
@@ -473,9 +541,11 @@ async function openEdit(apiKey: ApiKeySummary) {
   editingSystemAccountId.value = editScopeParams?.systemAccountId
   Object.assign(form, {
     name: apiKey.name,
+    clientProfile: apiKey.clientProfile ?? 'auto',
     routeMode: apiKey.routeMode,
     groupRouteStrategy: apiKey.groupRouteStrategy,
     groupBindings: bindings,
+    explicitHybridRouteRules: createExplicitRouteRuleFormRows(apiKey.explicitHybridRouteRules),
     hybridRoutingConfig: createHybridRoutingConfigForm(apiKey.hybridRoutingConfig),
     status: apiKey.status,
     expiresAt,
@@ -511,6 +581,8 @@ const saveApiKey = submitAction('api_keys.save', async () => {
   try {
     const groupBindings = validateGroupBindingsPayload()
     if (!groupBindings) return
+    const explicitHybridRouteRules = explicitHybridRouteRulesPayload()
+    if (explicitHybridRouteRules === false) return
     if (form.routeMode === 'hybrid') {
       await loadProviderModelOptions()
     }
@@ -524,9 +596,11 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     const expiresAt = formatServerDateTimeInput(form.expiresAt)
     const payload = {
       name: form.name,
+      clientProfile: form.clientProfile,
       routeMode: form.routeMode,
       groupRouteStrategy: form.groupRouteStrategy,
       hybridRoutingConfig,
+      explicitHybridRouteRules,
       groupBindings,
       status: form.status,
       expiresAt: targetId ? expiresAt : expiresAt ?? undefined,
@@ -558,6 +632,136 @@ const saveApiKey = submitAction('api_keys.save', async () => {
 
 function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)
+}
+
+function nextExplicitRouteRuleFormKey(): string {
+  explicitRouteRuleFormKeySeed += 1
+  return `explicit_route_${Date.now()}_${explicitRouteRuleFormKeySeed}`
+}
+
+function createExplicitRouteRuleFormRows(rules: ApiKeyExplicitHybridRouteRule[] | undefined): ApiKeyExplicitHybridRouteRuleForm[] {
+  return (rules ?? []).map((rule, index) => {
+    const key = rule.id?.trim() || nextExplicitRouteRuleFormKey()
+    return {
+      id: key,
+      key,
+      enabled: rule.enabled !== false,
+      priority: rule.priority ?? index + 1,
+      sourceClientProfile: rule.sourceClientProfile ?? 'auto',
+      sourceEndpointFamily: rule.sourceEndpointFamily ?? 'chat_completions',
+      sourceModel: rule.sourceModel ?? '',
+      targetGroupId: rule.targetGroupId ?? '',
+      targetAccountId: rule.targetAccountId,
+      targetProviderProtocolProfileId: rule.targetProviderProtocolProfileId,
+      upstreamEndpointFamily: rule.upstreamEndpointFamily ?? 'chat_completions',
+      upstreamModel: rule.upstreamModel ?? '',
+      adapterMode: rule.adapterMode ?? 'bridge'
+    }
+  })
+}
+
+function addExplicitRouteRule(): void {
+  const key = nextExplicitRouteRuleFormKey()
+  form.explicitHybridRouteRules.push({
+    id: key,
+    key,
+    enabled: true,
+    priority: form.explicitHybridRouteRules.length + 1,
+    sourceClientProfile: 'auto',
+    sourceEndpointFamily: 'chat_completions',
+    sourceModel: '',
+    targetGroupId: explicitRouteTargetGroupOptions.value[0]?.value ?? '',
+    upstreamEndpointFamily: 'chat_completions',
+    upstreamModel: '',
+    adapterMode: 'bridge'
+  })
+}
+
+function removeExplicitRouteRule(index: number): void {
+  form.explicitHybridRouteRules.splice(index, 1)
+}
+
+function explicitHybridRouteRulesPayload(): ApiKeyExplicitHybridRouteRule[] | false {
+  const output: ApiKeyExplicitHybridRouteRule[] = []
+  const seenIds = new Set<string>()
+  for (let index = 0; index < form.explicitHybridRouteRules.length; index += 1) {
+    const rule = form.explicitHybridRouteRules[index]
+    const enabled = rule.enabled !== false
+    const sourceModel = rule.sourceModel?.trim()
+    const targetGroupId = rule.targetGroupId?.trim()
+    const upstreamModel = rule.upstreamModel?.trim()
+    if (!enabled && !sourceModel && !upstreamModel) continue
+    const priority = normalizeIntegerField(rule.priority, 1, 10000, `第 ${index + 1} 条显式规则优先级`)
+    if (priority === false) return false
+    if (!targetGroupId) {
+      message.warning(`第 ${index + 1} 条显式规则必须选择目标分组`)
+      return false
+    }
+    if (!upstreamModel) {
+      message.warning(`第 ${index + 1} 条显式规则必须填写上游模型`)
+      return false
+    }
+    if (!explicitRouteEndpointConversionAllowed(rule.sourceEndpointFamily, rule.upstreamEndpointFamily)) {
+      message.warning(`第 ${index + 1} 条显式规则暂不支持这个下游协议到上游协议的转换`)
+      return false
+    }
+    if (rule.adapterMode === 'direct' && !directExplicitRouteEndpointAllowed(rule.sourceEndpointFamily, rule.upstreamEndpointFamily)) {
+      message.warning(`第 ${index + 1} 条显式规则直连模式只能用于同协议模型别名`)
+      return false
+    }
+    const id = rule.id?.trim() || rule.key || `rule_${index + 1}`
+    if (seenIds.has(id)) {
+      message.warning(`显式规则 ID 重复：${id}`)
+      return false
+    }
+    seenIds.add(id)
+    output.push({
+      id,
+      enabled,
+      priority,
+      sourceClientProfile: rule.sourceClientProfile,
+      sourceEndpointFamily: rule.sourceEndpointFamily,
+      ...(sourceModel ? { sourceModel } : {}),
+      targetGroupId,
+      ...(rule.targetAccountId?.trim() ? { targetAccountId: rule.targetAccountId.trim() } : {}),
+      ...(rule.targetProviderProtocolProfileId?.trim() ? { targetProviderProtocolProfileId: rule.targetProviderProtocolProfileId.trim() } : {}),
+      upstreamEndpointFamily: rule.upstreamEndpointFamily,
+      upstreamModel,
+      adapterMode: rule.adapterMode
+    })
+  }
+  return output
+}
+
+function explicitRouteEndpointConversionAllowed(
+  sourceEndpointFamily: ApiKeyExplicitHybridRouteRule['sourceEndpointFamily'],
+  upstreamEndpointFamily: ApiKeyExplicitHybridRouteRule['upstreamEndpointFamily']
+): boolean {
+  if (sourceEndpointFamily === upstreamEndpointFamily) return true
+  if (sourceEndpointFamily === 'stream_generate_content' && upstreamEndpointFamily === 'generate_content') return true
+  if (sourceEndpointFamily === 'chat_completions') {
+    return upstreamEndpointFamily === 'messages' || upstreamEndpointFamily === 'generate_content'
+  }
+  if (sourceEndpointFamily === 'responses') {
+    return upstreamEndpointFamily === 'chat_completions'
+      || upstreamEndpointFamily === 'messages'
+      || upstreamEndpointFamily === 'generate_content'
+  }
+  if (sourceEndpointFamily === 'messages') {
+    return upstreamEndpointFamily === 'chat_completions' || upstreamEndpointFamily === 'generate_content'
+  }
+  if (sourceEndpointFamily === 'generate_content' || sourceEndpointFamily === 'stream_generate_content') {
+    return upstreamEndpointFamily === 'chat_completions' || upstreamEndpointFamily === 'messages'
+  }
+  return false
+}
+
+function directExplicitRouteEndpointAllowed(
+  sourceEndpointFamily: ApiKeyExplicitHybridRouteRule['sourceEndpointFamily'],
+  upstreamEndpointFamily: ApiKeyExplicitHybridRouteRule['upstreamEndpointFamily']
+): boolean {
+  return sourceEndpointFamily === upstreamEndpointFamily
+    || (sourceEndpointFamily === 'stream_generate_content' && upstreamEndpointFamily === 'generate_content')
 }
 
 function createHybridRoutingConfigForm(input: Partial<ApiKeyHybridRoutingConfig> = {}): ApiKeyHybridRoutingConfigForm {
@@ -930,6 +1134,29 @@ defineExpose({
   gap: 10px;
 }
 
+.explicit-route-rules-field {
+  display: grid;
+  gap: 8px;
+}
+
+.explicit-route-rule-row {
+  display: grid;
+  grid-template-columns: 48px 88px repeat(3, minmax(120px, 1fr)) 32px;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.explicit-route-rule-row :deep(.ant-input),
+.explicit-route-rule-row :deep(.ant-input-number),
+.explicit-route-rule-row :deep(.ant-select) {
+  width: 100%;
+  min-width: 0;
+}
+
 .hybrid-config-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -982,6 +1209,7 @@ defineExpose({
     justify-content: flex-start;
   }
 
+  .explicit-route-rule-row,
   .hybrid-config-grid,
   .hybrid-level-route-row {
     grid-template-columns: 1fr;

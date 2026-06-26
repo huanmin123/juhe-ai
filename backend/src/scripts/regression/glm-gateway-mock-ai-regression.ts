@@ -229,7 +229,7 @@ try {
 function assertGlmSeeds(): void {
   const glmProvider = repositories.listProviders().find((provider) => provider.code === GLM_PROVIDER_CODE)
   assert(glmProvider, '默认 provider seed 应包含 glm')
-  assert.equal(glmProvider.defaultProtocolProfileId, GLM_GENERAL_OPENAI_V1_PROFILE_ID, 'GLM 默认档案应是通用 API')
+  assert.equal(glmProvider.defaultProtocolProfileId, GLM_CODING_OPENAI_V1_PROFILE_ID, 'GLM 默认档案应是 Coding Plan API')
   assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_GENERAL_OPENAI_V1_PROFILE_ID), 'GLM provider 应包含通用 OpenAI Chat 档案')
   assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_CODING_OPENAI_V1_PROFILE_ID), 'GLM provider 应包含 Coding OpenAI Chat 档案')
   assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), 'GLM provider 应包含 Coding Anthropic Messages 档案')
@@ -237,7 +237,7 @@ function assertGlmSeeds(): void {
   const defaultGroups = repositories.listGroups(access).filter((group) => group.providerCode === GLM_PROVIDER_CODE && group.isDefault)
   assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID), '默认分组应包含 GLM 通用分组')
   assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID), '默认分组应包含 GLM Coding 分组')
-  assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), '默认分组应包含 GLM Coding Claude Code 分组')
+  assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), '默认分组应包含 GLM Coding Anthropic 分组')
 }
 
 function assertGlmModelCatalog(): void {

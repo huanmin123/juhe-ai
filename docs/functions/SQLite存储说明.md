@@ -123,7 +123,7 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 
 - 使用 Node 内置 `node:sqlite`，要求官方 Node.js LTS；当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 `node:sqlite` 必须可用。
 - 启动时自动建表
-- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1` 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、默认 Anthropic 分组、目标默认 DeepSeek OpenAI 分组、目标默认 DeepSeek Claude Code 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、目标默认 GLM Coding Claude Code 分组、默认全局设置和默认系统设置
+- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1` 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、默认 Anthropic 分组、目标默认 DeepSeek OpenAI 分组、目标默认 DeepSeek Claude Code 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、目标默认 GLM Coding Anthropic 分组、默认全局设置和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据

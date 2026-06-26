@@ -2,7 +2,8 @@ import type { Request } from 'express'
 
 import type {
   GroupUsageAccessMetadata,
-  OpenAIAccountSecret
+  OpenAIAccountSecret,
+  UsageFailureAttribution
 } from '../../../storage/repositories.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import { enqueueUsageRecord } from './record-queue.service.js'
@@ -116,6 +117,7 @@ export function recordFailedUpstreamAttempt(
     headers?: Headers | Record<string, string>
     bodyText?: string
     errorMessage?: string
+    failureAttribution?: UsageFailureAttribution
   }
 ): void {
   const model = requestModel(req)
@@ -164,6 +166,7 @@ export function recordFailedUpstreamAttempt(
     stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
+    failureAttribution: failedUpstreamAttemptAttribution(input),
     durationMs: Date.now() - input.startedAt,
     errorCode,
     errorMessage,
@@ -197,6 +200,7 @@ export function recordCompletedUpstreamAttempt(
     usage: ParsedUsage
     errorCode?: string
     errorMessage?: string
+    failureAttribution?: UsageFailureAttribution
     requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
@@ -228,6 +232,7 @@ export function recordCompletedUpstreamAttempt(
     stream: input.stream,
     statusCode: input.statusCode,
     success: input.success,
+    failureAttribution: input.success ? undefined : input.failureAttribution ?? 'account_upstream',
     firstTokenMs: input.firstTokenMs,
     durationMs: Date.now() - input.startedAt,
     inputTokens: input.usage.inputTokens,
@@ -289,6 +294,7 @@ export function recordHybridScoringAttempt(input: {
   usage: ParsedUsage
   errorCode?: string
   errorMessage?: string
+  failureAttribution?: UsageFailureAttribution
   requestSnapshot?: unknown
   responseSnapshot?: unknown
   trafficSource?: Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
@@ -316,6 +322,7 @@ export function recordHybridScoringAttempt(input: {
     stream: false,
     statusCode: input.statusCode,
     success: input.success,
+    failureAttribution: input.success ? undefined : input.failureAttribution ?? 'account_upstream',
     durationMs: Date.now() - input.startedAt,
     inputTokens: input.usage.inputTokens,
     outputTokens: input.usage.outputTokens,
@@ -385,7 +392,8 @@ export function recordClientAbortedUpstreamAttempt(
     success: false,
     usage: emptyUsage(),
     errorCode: 'client_aborted',
-    errorMessage: downstreamConnectionClosedMessage
+    errorMessage: downstreamConnectionClosedMessage,
+    failureAttribution: 'client_lifecycle'
   })
 }
 
@@ -398,6 +406,7 @@ export function recordGatewayFailure(
     responsePayload: GatewayErrorPayload
     errorMessage?: string
     errorCode?: string
+    failureAttribution?: UsageFailureAttribution
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
 ): void {
@@ -443,6 +452,7 @@ export function recordGatewayFailure(
     stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
+    failureAttribution: input.failureAttribution ?? 'gateway_policy',
     durationMs: Date.now() - input.startedAt,
     errorCode,
     errorMessage,
@@ -459,6 +469,30 @@ function usageRecordSnapshot(
   snapshot: unknown
 ): unknown {
   return usageContext.trafficSource === 'cooldown_retest' ? undefined : snapshot
+}
+
+function failedUpstreamAttemptAttribution(input: {
+  upstreamUrl: string
+  failureAttribution?: UsageFailureAttribution
+}): UsageFailureAttribution {
+  if (input.failureAttribution) {
+    return input.failureAttribution
+  }
+  if (input.upstreamUrl === 'concurrency:limit') {
+    return 'gateway_capacity'
+  }
+  if (
+    input.upstreamUrl.startsWith('proxy:')
+    || input.upstreamUrl === 'account:preparation'
+    || input.upstreamUrl === 'openai-oauth-codex:local-validation'
+    || input.upstreamUrl === 'gateway:local-validation'
+  ) {
+    return 'account_dependency'
+  }
+  if (input.upstreamUrl.startsWith('gateway:') || input.upstreamUrl.startsWith('account:')) {
+    return 'gateway_policy'
+  }
+  return 'account_upstream'
 }
 
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {

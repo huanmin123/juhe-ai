@@ -36,7 +36,11 @@
 - 具体样式规范见 `docs/architecture/frontend/样式规范.md`；产品、品牌和配置边界见 `docs/architecture/frontend/产品与品牌边界.md`。
 - 涉及新功能、字段、接口、存储、脚本或文档同步时，先参考 `docs/architecture/功能开发指导.md`。
 - 涉及需求计划、执行进度、关联文档或任务追踪时，先参考 `docs/plans/README.md`。
-- 涉及发布包、服务器部署、启动脚本或发布注意事项时，构建先参考 `docs/deploy/构建指南.md`，部署先参考 `docs/deploy/部署指南.md`，并同时确认构建平台与目标部署平台。
+- 涉及发布包、服务器部署、家庭宽带反代、启动脚本或发布注意事项时，构建先参考 `docs/deploy/构建指南.md`，部署先确认场景：云服务器 / VPS / 独立服务器看 `docs/deploy/scenarios/服务器部署方案.md`，家里电脑 / 家用主机 / 家庭宽带入口看 `docs/deploy/scenarios/家庭宽带反向代理方案.md`，通用发布包启动基线再看 `docs/deploy/部署指南.md`，并同时确认目标平台子目录：Linux 看 `docs/deploy/linux/README.md`，Windows 看 `docs/deploy/windows/README.md`，macOS 看 `docs/deploy/macos/README.md`。
+- 涉及公网 HTTPS、证书、反向代理 TLS、免费证书自动续期或 Caddy / Nginx / Certbot 时，先参考 `docs/deploy/https/README.md`；新部署默认优先使用 Caddy 自动 HTTPS，已有 Nginx 运维体系再使用 Nginx + Certbot。
+- 涉及状态检测、健康检查、自动重启、watchdog、launchd / systemd / Docker / Windows Service 自动恢复或防止重启风暴时，先参考 `docs/deploy/watchdog/README.md`；外部 watchdog 只负责主服务整体不可用时恢复，DB service / worker 子进程由主进程 supervisor 看护。
+- 涉及上游网络访问、服务器安全上网、账号代理、Docker 容器访问宿主机代理或 sing-box 部署时，先参考 `docs/deploy/proxy/README.md`；juhe-ai 普通上游模型请求优先使用后台“代理管理”绑定到 AI 账户，`JUHE_AI_OAUTH_PROXY_URL` 只作为 OpenAI OAuth token 换取 / 刷新的兜底代理。
+- 涉及独立压测报告、性能分析报告、容量结论或验证分析报告时，先参考 `docs/reports/README.md`；Markdown 报告写入 `docs/reports/`，脚本生成的 JSON、log、CPU profile 等原始产物继续写入仓库根目录 `reports/`。
 - 涉及开发环境、项目安装、本地启动、测试运行或验证流程时，先参考 `docs/develop/README.md`；安装看 `docs/develop/安装指南.md`，运行看 `docs/develop/运行说明.md`，测试看 `docs/develop/测试与验证说明.md`。
 - 涉及大文件、职责拆分、模块重构或重复逻辑收敛时，先参考 `docs/architecture/大文件重构指南.md`；可复用的重构案例再记录到 `docs/refactors/`。
 - 涉及 bug、异常、测试失败、数据不一致或运行问题时，先参考 `docs/architecture/问题修复指导.md`；如果问题有复用价值、容易复发或需要历史关联，再记录到 `docs/bug/README.md`。
@@ -50,6 +54,9 @@
 - `docs/architecture/`：架构设计、前端规范和通用开发 / 修复 / 重构指南。
 - `docs/functions/`：功能说明、专题调研和存储说明。
 - `docs/develop/`：开发环境安装、项目运行、测试和验证说明。
+- `docs/deploy/`：构建、发布包、部署场景、服务器部署、家庭宽带反代、三端部署差异、网络代理、HTTPS 证书、启动、备份恢复和部署排障说明。
+- `docs/reports/`：人工整理后的压测、性能分析、容量结论和验证分析报告。
+- `reports/`：脚本生成的 JSON、log、CPU profile 和临时采样结果等原始产物。
 - `docs/refactors/`：重构设计、拆分过程、验证结果和复盘案例。
 - `docs/plans/`：需求计划、执行记录、关联文档和索引。
 - `docs/bug/`：bug 编号、修复记录、复发记录和历史关联。

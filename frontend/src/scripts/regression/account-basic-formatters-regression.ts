@@ -30,6 +30,8 @@ import {
   defaultEndpointModesForAccount,
   profileSupportsCodexResponsesChatBridge
 } from '../../views/accounts/accountProviderCapabilities'
+import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
+import { GLM_CODING_OPENAI_V1_PROFILE_ID } from '../../shared/providerProtocol'
 
 const standardAccount = accountFixture({
   name: '标准账户',
@@ -54,6 +56,7 @@ assertEqual(accountTypeTitle('OpenAI', 'oauth'), 'OpenAI OAuth', 'OAuth 标题�
 assertEqual(accountTypeTitle('OpenAI', 'api_key'), 'OpenAI API Key', 'API Key 标题应包含供应商名')
 assertTrue(accountTypeDescription('gpt', 'oauth').includes('Responses / compact'), 'GPT OAuth 描述应说明网关路径限制')
 assertTrue(accountTypeDescription('gpt', 'api_key').includes('Base URL'), 'GPT API Key 描述应说明 Base URL')
+assertTrue(accountTypeDescription('glm', 'api_key', 'profile_glm_coding_anthropic_v1').includes('Anthropic Messages 接入'), 'GLM Coding Anthropic 描述不应把 Claude Code 当账户类型')
 assertTrue(accountTypeDescription('other', 'api_key').includes('供应商定义'), '非 GPT 描述应使用通用供应商流程文案')
 
 assertEqual(asString('hello'), 'hello', '字符串值应原样返回')
@@ -138,6 +141,11 @@ assertEqual(
   }).join(','),
   'chat_json,chat_sse',
   'DeepSeek Codex bridge 账号前端默认仍保存真实 Chat Completions JSON/Streaming 能力'
+)
+assertEqual(
+  defaultAccountForm('glm').providerProtocolProfileId,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  '前端新建 GLM 账户默认应选择 GLM Coding Plan Key'
 )
 
 console.log('账户基础 formatter 回归通过：基础文案、授权展示、OAuth 菜单能力、到期优先级、排序和门面导出均符合预期')

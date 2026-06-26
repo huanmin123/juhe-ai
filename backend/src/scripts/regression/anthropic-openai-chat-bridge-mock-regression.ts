@@ -13,6 +13,7 @@ type JsonRecord = Record<string, unknown>
 async function main(): Promise<void> {
   await testAnthropicMessagesRequestBodyToChat()
   await testChatJsonResponseToAnthropicMessage()
+  await testChatJsonEmptyContentGuidance()
   await testChatJsonRefusalToAnthropicText()
   await testInvalidChatJsonResponseToAnthropicError()
   await testChatSseResponseToAnthropicMessagesSse()
@@ -131,6 +132,35 @@ async function testChatJsonResponseToAnthropicMessage(): Promise<void> {
   assert.equal(content[0]?.type, 'text')
   assert.equal(content[1]?.type, 'tool_use')
   assert.deepEqual(content[1]?.input, { q: 'x' })
+}
+
+async function testChatJsonEmptyContentGuidance(): Promise<void> {
+  const req = fakeRequest('/v1/messages', { model: 'claude-sonnet-4-6', messages: [], stream: false })
+  const response = transformAnthropicMessagesChatBridgeUpstreamResponse(req, {
+    status: 200,
+    ok: true,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: asyncChunks([JSON.stringify({
+      id: 'chatcmpl_empty',
+      object: 'chat.completion',
+      created: 1,
+      model: 'glm-5.2',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: ''
+        },
+        finish_reason: 'stop'
+      }],
+      usage: { prompt_tokens: 7, completion_tokens: 0 }
+    })])
+  }, { enabled: true, model: 'glm-5.2' })
+  const parsed = JSON.parse(Buffer.concat(await collect(response.body!)).toString('utf8')) as JsonRecord
+  const content = parsed.content as JsonRecord[]
+  assert.equal(content[0]?.type, 'text')
+  assert.match(String(content[0]?.text ?? ''), /空 assistant 内容/)
+  assert.equal(parsed.stop_reason, 'end_turn')
 }
 
 async function testChatJsonRefusalToAnthropicText(): Promise<void> {

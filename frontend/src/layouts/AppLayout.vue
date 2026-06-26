@@ -177,7 +177,6 @@ const ApiKeyMenuIcon = () =>
 const menuIconMap = {
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
-  '/my-mcp-runtime': NodeIndexOutlined,
   '/my-accounts': UserSwitchOutlined,
   '/accounts': UserSwitchOutlined,
   '/my-groups': ApartmentOutlined,
@@ -212,7 +211,6 @@ const menuIconMap = {
   '/table-monitor': DatabaseOutlined,
   '/ip-stats': GlobalOutlined,
   '/response-inspection-policies': FilterOutlined,
-  '/mcp-runtime': NodeIndexOutlined,
   '/external-integration-sources': LinkOutlined,
   '/announcements': BellOutlined,
   '/settings': SettingOutlined,

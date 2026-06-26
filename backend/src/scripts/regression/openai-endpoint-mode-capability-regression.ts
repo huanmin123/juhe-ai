@@ -92,7 +92,7 @@ assert.deepEqual(
     protocolVersion: ANTHROPIC_PROTOCOL_VERSION
   }),
   ['messages_json', 'messages_sse'],
-  'GLM Coding Claude Code 档案默认只启用 Messages JSON/Streaming'
+  'GLM Coding Anthropic 档案默认只启用 Messages JSON/Streaming'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'gpt', accountType: 'api_key' }),
@@ -214,7 +214,7 @@ assert.deepEqual(
     providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   }).supported_endpoint_modes,
   ['messages_json', 'messages_sse'],
-  'GLM Coding Claude Code 凭据归一化应通过 provider driver 使用 Messages 默认能力'
+  'GLM Coding Anthropic 凭据归一化应通过 provider driver 使用 Messages 默认能力'
 )
 assert.throws(
   () => normalizeAccountCredentialsForWrite('api_key', {
@@ -229,7 +229,7 @@ assert.throws(
     providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   }),
   /智谱 GLM Coding Anthropic 账户接口能力只支持 Messages API/,
-  'GLM Coding Claude Code 凭据归一化应拒绝 count_tokens 能力'
+  'GLM Coding Anthropic 凭据归一化应拒绝 count_tokens 能力'
 )
 
 const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])

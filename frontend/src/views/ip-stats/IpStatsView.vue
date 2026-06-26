@@ -131,18 +131,24 @@
         :message="`${currentUsageWindowLabel}用量窗口尚未完成预聚合，请稍后刷新。`"
       />
 
-      <a-table
+      <ResponsiveDataList
         class="ip-detail-account-table"
+        table-class="page-table ip-detail-account-table-inner"
         :columns="detailColumns"
         :data-source="detailRows"
         row-key="accountId"
-        size="small"
         :loading="detailLoading"
         :pagination="detailTablePagination"
-        :locale="{ emptyText: detailEmptyDescription }"
-        :scroll="{ x: 980 }"
+        :pagination-summary="false"
+        :scroll-x="980"
+        size="small"
+        :lock-body-scroll="false"
+        :mobile-breakpoint="760"
         @change="handleDetailTableChange"
       >
+        <template #emptyText>
+          <a-empty class="page-empty-card" :description="detailEmptyDescription" />
+        </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'account'">
             <div class="ip-detail-account">
@@ -176,7 +182,46 @@
             <span :class="record.rangeUsage.lastUsedAt ? 'name-cell' : 'muted-cell'">{{ formatDateTime(record.rangeUsage.lastUsedAt) }}</span>
           </template>
         </template>
-      </a-table>
+        <template #card="{ record }">
+          <article class="ip-detail-mobile-card">
+            <div class="ip-detail-mobile-head">
+              <a-tooltip v-if="record.accountName" :title="record.accountName">
+                <span class="name-cell ip-detail-account-name">{{ record.accountName }}</span>
+              </a-tooltip>
+              <span v-else class="muted-cell">未匹配到账户名称</span>
+              <a-tag :color="record.rangeUsage.errorRate > 0.05 ? 'red' : 'green'">
+                {{ formatPercent(record.rangeUsage.errorRate * 100) }}
+              </a-tag>
+            </div>
+            <div class="mobile-list-meta-grid">
+              <div class="mobile-list-meta-item">
+                <span>请求</span>
+                <strong>{{ formatInteger(record.rangeUsage.requestCount) }}</strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>Token</span>
+                <strong>{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>成本</span>
+                <strong>{{ formatCost(record.rangeUsage.totalCost) }}</strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>平均首 Token</span>
+                <strong>{{ formatDuration(record.rangeUsage.averageFirstTokenMs) }}</strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>平均总耗时</span>
+                <strong>{{ formatDuration(record.rangeUsage.averageDurationMs) }}</strong>
+              </div>
+              <div class="mobile-list-meta-item mobile-list-meta-wide">
+                <span>最后使用</span>
+                <strong>{{ formatDateTime(record.rangeUsage.lastUsedAt) }}</strong>
+              </div>
+            </div>
+          </article>
+        </template>
+      </ResponsiveDataList>
     </a-drawer>
   </a-card>
 </template>
@@ -187,6 +232,7 @@ import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 
 import { api, type ClientIpStatsDetailParams, type ClientIpStatsListParams, type SortDirection } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -566,6 +612,29 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ip-detail-mobile-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ip-detail-mobile-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ip-detail-mobile-head .ip-detail-account-name {
+  flex: 1;
+  min-width: 0;
 }
 
 @media (max-width: 768px) {

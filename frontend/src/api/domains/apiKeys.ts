@@ -1,5 +1,7 @@
 import type {
   ApiKeyAvailabilitySchedule,
+  ApiKeyClientProfile,
+  ApiKeyExplicitHybridRouteRule,
   ApiKeyGroupBindingStatus,
   ApiKeyGroupRouteStrategy,
   ApiKeyHybridRoutingConfig,
@@ -24,8 +26,10 @@ export interface ApiKeyMutationPayload {
     status?: ApiKeyGroupBindingStatus
   }>
   routeMode?: ApiKeyRouteMode
+  clientProfile?: ApiKeyClientProfile
   groupRouteStrategy?: ApiKeyGroupRouteStrategy
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
+  explicitHybridRouteRules?: ApiKeyExplicitHybridRouteRule[]
   status?: 'active' | 'disabled'
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits

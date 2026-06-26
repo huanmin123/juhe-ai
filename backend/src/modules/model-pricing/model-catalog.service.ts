@@ -27,6 +27,7 @@ import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync }
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
+import { runtimeConfig } from '../../config/runtime.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -150,11 +151,13 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
   const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
     .filter((item) => item.catalogVisible)
     .map(toBuiltInCatalogItem))
-  const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
-    providerCode,
-    systemAccountId: options.systemAccountId,
-    includeInactive: options.includeInactive
-  }).map(toCustomCatalogItem))
+  const custom = runtimeConfig.databaseDriver === 'postgres'
+    ? []
+    : sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
+      providerCode,
+      systemAccountId: options.systemAccountId,
+      includeInactive: options.includeInactive
+    }).map(toCustomCatalogItem))
   const merged = mergeModelCatalogItems([...builtIn, ...custom])
 
   return merged

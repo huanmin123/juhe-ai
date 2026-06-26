@@ -30,18 +30,10 @@ type ProtocolConversionRule = {
 
 export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
-  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
-  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
-  { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_RESPONSES_FAMILY, upstreamProfile: 'openai', requiresNativeResponses: true },
-  { source: OPENAI_RESPONSES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
-  { source: OPENAI_RESPONSES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
-  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
-  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
-  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
-  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
-  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
-  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' }
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
 ] as const
 
 export function assertSupportedAccountModelMappingEndpointFamilyConversion(
@@ -73,14 +65,14 @@ export function assertAccountModelMappingProtocolAllowed(
   if (!openAIProfile && !anthropicProfile && !geminiProfile) {
     throw new Error('当前供应商协议不支持模型映射')
   }
-  if (geminiOpenAIChatProfile && mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-    throw new Error('Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射；Codex 使用 Gemini 时只配置 Responses 到 Chat Completions')
+  if (geminiOpenAIChatProfile && mapping.sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+    throw new Error('Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions')
   }
   if (geminiOpenAIChatProfile && mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
-    throw new Error('Gemini OpenAI Chat 档案的模型映射上游协议只能是 Chat Completions')
+    throw new Error('Gemini OpenAI Chat 档案的账号模型别名上游协议只能是 Chat Completions')
   }
   if (geminiProfile && !geminiNativeProfile && !geminiOpenAIChatProfile) {
-    throw new Error('当前 Gemini 协议档案暂不支持模型映射')
+    throw new Error('当前 Gemini 协议档案暂不支持账号模型别名')
   }
 
   const rule = accountModelMappingProtocolRules.find((item) => (
@@ -90,25 +82,14 @@ export function assertAccountModelMappingProtocolAllowed(
     throw new Error(unsupportedProtocolConversionMessage(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily))
   }
 
-  if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && !openAIProfile) {
-    if (mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
-      throw new Error('Anthropic Messages 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上')
-    }
+  if ((mapping.sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) && !openAIProfile) {
+    throw new Error('当前供应商协议不支持 OpenAI 账号模型别名')
   }
-  if (isGeminiGenerateContentMappingSource(mapping.sourceEndpointFamily) && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY && !openAIProfile) {
-    throw new Error('Gemini GenerateContent 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上')
+  if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && !anthropicProfile) {
+    throw new Error('当前供应商协议不支持 Anthropic Messages 账号模型别名')
   }
-  if (isGeminiGenerateContentMappingSource(mapping.sourceEndpointFamily) && mapping.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && !anthropicProfile) {
-    throw new Error('Gemini GenerateContent 到 Anthropic Messages 桥接只能配置在 Anthropic Messages 协议档案账号上')
-  }
-  if (mapping.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && !anthropicProfile) {
-    throw new Error('只有 Anthropic Messages 协议档案可以把上游协议配置为 Messages')
-  }
-  if (mapping.upstreamEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY && !geminiNativeProfile) {
-    throw new Error('只有 Gemini native 协议档案可以把上游协议配置为 Gemini GenerateContent')
-  }
-  if ((mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) && !openAIProfile) {
-    throw new Error('当前供应商协议不支持 OpenAI 模型映射：只有 OpenAI 协议档案可以把上游协议配置为 Chat Completions 或 Responses')
+  if (isGeminiGenerateContentMappingSource(mapping.sourceEndpointFamily) && !geminiNativeProfile) {
+    throw new Error('当前供应商协议不支持 Gemini native 账号模型别名')
   }
   if (rule.requiresNativeResponses && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
     throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
@@ -159,10 +140,10 @@ function unsupportedProtocolConversionMessage(
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): string {
   if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-    return 'Anthropic Messages 下游协议当前只支持显式桥接到 Chat Completions 或 Gemini GenerateContent 上游'
+    return '账号模型别名不支持 Anthropic Messages 跨协议映射，请改用 API Key 显式混合路由'
   }
   if (isGeminiGenerateContentMappingSource(sourceEndpointFamily)) {
-    return 'Gemini GenerateContent 下游协议当前只支持显式桥接到 Chat Completions 或 Messages 上游'
+    return '账号模型别名不支持 Gemini GenerateContent 跨协议映射，请改用 API Key 显式混合路由'
   }
-  return `暂不支持 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 的协议转换`
+  return `账号模型别名只支持同协议映射；跨协议 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 请改用 API Key 显式混合路由`
 }

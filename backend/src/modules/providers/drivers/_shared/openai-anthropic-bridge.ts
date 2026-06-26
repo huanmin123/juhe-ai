@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
@@ -7,7 +6,6 @@ import type {
   AccountSupportedEndpointMode
 } from '../../../../domain/types.js'
 import { runtimeConfig } from '../../../../config/runtime.js'
-import { stableJsonStringify } from '../../../../storage/audit-log-stable-json.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
@@ -51,7 +49,6 @@ export interface OpenAIToAnthropicBridgeBodyOptions {
   imageGenerationExecutor?: OpenAIToAnthropicImageGenerationExecutor
   codeInterpreterExecutor?: OpenAIToAnthropicCodeInterpreterExecutor
   computerExecutor?: OpenAIToAnthropicComputerExecutor
-  mcpProxyExecutor?: OpenAIToAnthropicMcpProxyExecutor
 }
 
 export interface OpenAIToAnthropicFileResolveInput {
@@ -194,46 +191,6 @@ export interface OpenAIToAnthropicComputerExecutor {
   run(input: OpenAIToAnthropicComputerRuntimeInput): Promise<OpenAIToAnthropicComputerRuntimeResult>
 }
 
-export interface OpenAIToAnthropicMcpProxyInput {
-  body: JsonRecord
-  tool: JsonRecord
-  model: string
-  stream: boolean
-  signal?: AbortSignal
-}
-
-export interface OpenAIToAnthropicMcpProxyToolDefinition {
-  name: string
-  description?: string
-  inputSchema: JsonRecord
-  annotations?: unknown
-}
-
-export interface OpenAIToAnthropicMcpProxyPreparedServer {
-  serverLabel: string
-  serverUrl: string
-  tools: OpenAIToAnthropicMcpProxyToolDefinition[]
-  context?: unknown
-}
-
-export interface OpenAIToAnthropicMcpProxyToolCallResult {
-  outputText: string
-  truncated?: boolean
-  metadata?: JsonRecord
-}
-
-export interface OpenAIToAnthropicMcpProxyExecutor {
-  prepare?(input: Omit<OpenAIToAnthropicMcpProxyInput, 'model' | 'stream'>): Promise<OpenAIToAnthropicMcpProxyPreparedServer>
-  callTool?(input: {
-    prepared: OpenAIToAnthropicMcpProxyPreparedServer
-    toolName: string
-    arguments: JsonRecord
-    signal?: AbortSignal
-  }): Promise<OpenAIToAnthropicMcpProxyToolCallResult>
-  close?(prepared: OpenAIToAnthropicMcpProxyPreparedServer): void | Promise<void>
-  run(input: OpenAIToAnthropicMcpProxyInput): Promise<GatewayLocalProtocolResponse>
-}
-
 interface OpenAIToAnthropicBridgeTransformOptions {
   model?: string
   previousResponseId?: string
@@ -254,8 +211,6 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   codeInterpreterLocalRuntime?: OpenAIToAnthropicCodeInterpreterLocalRuntimePlan
   computerMock?: OpenAIToAnthropicComputerMockPlan
   computerLocalRuntime?: OpenAIToAnthropicComputerLocalRuntimePlan
-  mcpMock?: OpenAIToAnthropicMcpMockPlan
-  mcpProxy?: OpenAIToAnthropicMcpProxyPlan
   anthropicRequestBody?: JsonRecord
 }
 
@@ -330,31 +285,10 @@ interface OpenAIToAnthropicComputerLocalRuntimePlan {
   tool: JsonRecord
 }
 
-interface OpenAIToAnthropicMcpMockPlan {
-  tool: JsonRecord
-}
-
-interface OpenAIToAnthropicMcpProxyPlan {
-  tool: JsonRecord
-  executor?: OpenAIToAnthropicMcpProxyExecutor
-  prepared?: OpenAIToAnthropicMcpProxyPreparedServer
-  adaptersByAnthropicName?: Map<string, OpenAIToAnthropicMcpProxyToolAdapter>
-  emittedListTools?: boolean
-}
-
-interface OpenAIToAnthropicMcpProxyToolLoopResult {
+interface OpenAIToAnthropicLocalRuntimeToolLoopResult {
   responseItems: JsonRecord[]
   toolResultBlocks: JsonRecord[]
   failed?: boolean
-}
-
-interface OpenAIToAnthropicMcpProxyToolAdapter {
-  anthropicName: string
-  toolName: string
-  serverLabel: string
-  description: string
-  inputSchema: JsonRecord
-  annotations?: unknown
 }
 
 interface OpenAIToAnthropicResponsesToolSearchPlan {
@@ -437,7 +371,7 @@ interface AnthropicStreamState {
 const defaultAnthropicMaxTokens = 4096
 const structuredOutputSyntheticToolName = 'emit_structured_output'
 const structuredOutputSchemaMismatchCode = 'openai_anthropic_bridge_structured_output_schema_mismatch'
-const mcpProxyMaxModelToolLoopRounds = 4
+const localRuntimeMaxModelToolLoopRounds = 4
 const supportedAnthropicBridgeReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high'])
 const supportedAnthropicBridgeReasoningSummaries = new Set(['auto', 'concise', 'detailed', 'none'])
 const supportedOpenAIResponsesIncludesForAnthropicBridge = new Set(['file_search_call.results'])
@@ -527,7 +461,6 @@ export async function buildOpenAIToAnthropicBridgeBody(
     throw bridgeValidationError('OpenAI 到 Anthropic 桥接请求缺少 model', 'openai_anthropic_bridge_missing_model')
   }
   const requestPlan = createOpenAIToAnthropicBridgeRequestPlan(sourceEndpointFamily, body)
-  validateOpenAIToAnthropicMcpToolDefinitions(sourceEndpointFamily, body)
   const guidanceContext = { req, sourceEndpointFamily, model, stream: requestStream(req) }
   validateOpenAIToAnthropicUnsupportedIncludes(body, requestPlan, guidanceContext)
   validateOpenAIToAnthropicReasoningOptions(body, guidanceContext)
@@ -538,23 +471,12 @@ export async function buildOpenAIToAnthropicBridgeBody(
   validateOpenAIToAnthropicSemanticControlOptions(body, guidanceContext)
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
   prepareOpenAIToAnthropicCodeInterpreterTool(sourceEndpointFamily, body, requestPlan, options.codeInterpreterExecutor)
-  await prepareOpenAIToAnthropicMcpProxyTools(sourceEndpointFamily, body, requestPlan, options.mcpProxyExecutor, {
-    model,
-    stream: requestStream(req)
-  }, signal)
   const guidance = openAIToAnthropicUnsupportedToolGuidance(sourceEndpointFamily, body, requestPlan, options, {
     model,
     stream: requestStream(req)
   })
   if (guidance) {
     throw guidance
-  }
-  const localMcpProxyResponse = await openAIToAnthropicMcpProxyRuntimeResponse(body, requestPlan, options.mcpProxyExecutor, {
-    model,
-    stream: requestStream(req)
-  }, signal)
-  if (localMcpProxyResponse) {
-    throw localMcpProxyResponse
   }
   const localCodeInterpreterRuntimeResponse = await openAIToAnthropicCodeInterpreterRuntimeResponse(body, requestPlan, options.codeInterpreterExecutor, {
     model,
@@ -583,13 +505,6 @@ export async function buildOpenAIToAnthropicBridgeBody(
   })
   if (localComputerMockResponse) {
     throw localComputerMockResponse
-  }
-  const localMcpMockResponse = openAIToAnthropicMcpMockResponse(body, requestPlan, {
-    model,
-    stream: requestStream(req)
-  })
-  if (localMcpMockResponse) {
-    throw localMcpMockResponse
   }
   await applyOpenAIToAnthropicImageGenerationEmulation(sourceEndpointFamily, body, requestPlan, options.imageGenerationExecutor)
   setOpenAIToAnthropicBridgeRequestPlan(req, requestPlan)
@@ -1500,10 +1415,6 @@ function responsesToolsToAnthropicTools(
         appendResponsesNamespaceToolToAnthropicTools(tools, item, allowedFunctionTools, requestPlan)
         continue
       }
-      if (isOpenAIMcpTool(item) && requestPlan?.mcpProxy?.prepared) {
-        appendMcpProxyToolsToAnthropicTools(tools, requestPlan)
-        continue
-      }
       if (isOpenAICodeInterpreterTool(item) && requestPlan?.codeInterpreterLocalRuntime?.anthropicToolName) {
         appendCodeInterpreterToolToAnthropicTools(tools, requestPlan)
         continue
@@ -1545,17 +1456,6 @@ function appendCodeInterpreterToolToAnthropicTools(
       additionalProperties: false
     }
   ))
-}
-
-function appendMcpProxyToolsToAnthropicTools(
-  tools: JsonRecord[],
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan
-): void {
-  const adapters = requestPlan.mcpProxy?.adaptersByAnthropicName
-  if (!adapters) return
-  for (const adapter of adapters.values()) {
-    tools.push(anthropicToolFromFunctionDefinition(adapter.anthropicName, adapter.description, adapter.inputSchema))
-  }
 }
 
 function responsesToolSearchPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicResponsesToolSearchPlan | undefined {
@@ -1935,12 +1835,6 @@ function createOpenAIToAnthropicBridgeRequestPlan(
   const computerLocalRuntime = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
     ? computerLocalRuntimePlanFromResponsesBody(body)
     : undefined
-  const mcpMock = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    ? mcpMockPlanFromResponsesBody(body)
-    : undefined
-  const mcpProxy = sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    ? mcpProxyPlanFromResponsesBody(body)
-    : undefined
   return {
     structuredOutput: sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
       ? structuredOutputPlanFromResponsesBody(body)
@@ -1957,9 +1851,7 @@ function createOpenAIToAnthropicBridgeRequestPlan(
     codeInterpreterMock,
     codeInterpreterLocalRuntime,
     computerMock,
-    computerLocalRuntime,
-    mcpMock,
-    mcpProxy
+    computerLocalRuntime
   }
 }
 
@@ -2040,129 +1932,6 @@ function validateOpenAIToAnthropicToolCallControlOptions(
     'Anthropic Messages 不能等价承接 OpenAI Responses max_tool_calls 工具调用次数上限；请移除 max_tool_calls，或改用原生 Responses 上游',
     'openai_anthropic_bridge_max_tool_calls_unsupported'
   )
-}
-
-function validateOpenAIToAnthropicMcpToolDefinitions(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord
-): void {
-  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY && sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) return
-  const tools = Array.isArray(body.tools) ? body.tools.filter(isOpenAIMcpTool) : []
-  if (!tools.length) return
-
-  const seenLabels = new Set<string>()
-  for (const tool of tools) {
-    const serverLabel = stringValue(tool.server_label)
-    if (!serverLabel) {
-      throw bridgeValidationError(
-        'MCP tool 缺少 server_label；请为每个 MCP server 配置唯一 server_label',
-        'openai_anthropic_bridge_mcp_definition_invalid'
-      )
-    }
-    if (seenLabels.has(serverLabel)) {
-      throw bridgeValidationError(
-        `MCP tool server_label 重复：${serverLabel}；同一请求中每个 MCP server_label 必须唯一`,
-        'openai_anthropic_bridge_mcp_definition_invalid'
-      )
-    }
-    seenLabels.add(serverLabel)
-
-    const hasServerUrl = hasMeaningfulField(tool, 'server_url')
-    const hasConnectorId = hasMeaningfulField(tool, 'connector_id')
-    if (hasServerUrl && hasConnectorId) {
-      throw bridgeValidationError(
-        `MCP tool ${serverLabel} 不能同时设置 server_url 和 connector_id；远程 MCP server 与 OpenAI connector 需要二选一`,
-        'openai_anthropic_bridge_mcp_definition_invalid'
-      )
-    }
-    if (!hasServerUrl && !hasConnectorId) {
-      throw bridgeValidationError(
-        `MCP tool ${serverLabel} 缺少 server_url 或 connector_id；当前网关不会猜测远程 MCP server`,
-        'openai_anthropic_bridge_mcp_definition_invalid'
-      )
-    }
-    if (hasServerUrl) {
-      const serverUrl = stringValue(tool.server_url)
-      if (!serverUrl || !isAllowedMcpServerUrlForBridge(serverUrl)) {
-        throw bridgeValidationError(
-          `MCP tool ${serverLabel} 的 server_url 必须是 HTTPS URL；仅 mockai / 本地回归可在私有上游 allowlist 开启时使用 loopback HTTP`,
-          'openai_anthropic_bridge_mcp_definition_invalid'
-        )
-      }
-    }
-    validateMcpAllowedToolsDefinition(serverLabel, tool.allowed_tools)
-    validateMcpRequireApprovalDefinition(serverLabel, tool.require_approval)
-    validateMcpAuthorizationDefinition(serverLabel, tool)
-  }
-}
-
-function validateMcpAllowedToolsDefinition(serverLabel: string, value: unknown): void {
-  if (!hasMeaningfulValue(value)) return
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
-    throw bridgeValidationError(
-      `MCP tool ${serverLabel} 的 allowed_tools 必须是字符串数组`,
-      'openai_anthropic_bridge_mcp_definition_invalid'
-    )
-  }
-}
-
-function validateMcpRequireApprovalDefinition(serverLabel: string, value: unknown): void {
-  if (!hasMeaningfulValue(value)) return
-  if (value === 'always' || value === 'never') return
-  const config = objectValue(value)
-  const never = objectValue(config?.never)
-  const always = objectValue(config?.always)
-  if (never && always) {
-    throw bridgeValidationError(
-      `MCP tool ${serverLabel} 的 require_approval 不能同时设置 always 和 never 策略`,
-      'openai_anthropic_bridge_mcp_definition_invalid'
-    )
-  }
-  const neverToolNames = never ? never.tool_names : undefined
-  const alwaysToolNames = always ? always.tool_names : undefined
-  const validNever = never === undefined || stringArrayValue(neverToolNames).length === arrayLength(neverToolNames)
-  const validAlways = always === undefined || stringArrayValue(alwaysToolNames).length === arrayLength(alwaysToolNames)
-  if (config && validNever && validAlways && (never !== undefined || always !== undefined)) return
-  throw bridgeValidationError(
-    `MCP tool ${serverLabel} 的 require_approval 只支持 always、never，或包含 always/never.tool_names 的对象`,
-    'openai_anthropic_bridge_mcp_definition_invalid'
-  )
-}
-
-function validateMcpAuthorizationDefinition(serverLabel: string, tool: JsonRecord): void {
-  if (!hasMeaningfulField(tool, 'authorization')) return
-  const headers = objectValue(tool.headers)
-  if (!headers) return
-  if (hasMeaningfulField(headers, 'Authorization') || hasMeaningfulField(headers, 'authorization')) {
-    throw bridgeValidationError(
-      `MCP tool ${serverLabel} 不能同时设置 authorization 和 headers.Authorization；请只保留一个凭据来源`,
-      'openai_anthropic_bridge_mcp_definition_invalid'
-    )
-  }
-}
-
-function arrayLength(value: unknown): number {
-  return Array.isArray(value) ? value.length : -1
-}
-
-function isAllowedMcpServerUrlForBridge(value: string): boolean {
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    return false
-  }
-  if (url.protocol === 'https:') return true
-  if (url.protocol !== 'http:' || !runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls) return false
-  return isLoopbackMcpHost(url.hostname)
-}
-
-function isLoopbackMcpHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase()
-  return normalized === 'localhost'
-    || normalized === '127.0.0.1'
-    || normalized === '::1'
-    || normalized === '[::1]'
 }
 
 function validateOpenAIToAnthropicResponseStateOptions(
@@ -2535,28 +2304,6 @@ function computerLocalRuntimePlanFromResponsesBody(body: JsonRecord): OpenAIToAn
   return { tool }
 }
 
-function mcpMockPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicMcpMockPlan | undefined {
-  const tool = responsesMcpToolFromBody(body)
-  if (!tool) return undefined
-  const decision = resolveOpenAIHostedToolRuntimeDecision({
-    toolType: 'mcp',
-    sourceEndpointFamily: OPENAI_RESPONSES_FAMILY
-  })
-  if (decision?.mode !== 'mock') return undefined
-  return { tool }
-}
-
-function mcpProxyPlanFromResponsesBody(body: JsonRecord): OpenAIToAnthropicMcpProxyPlan | undefined {
-  const tool = responsesMcpToolFromBody(body)
-  if (!tool) return undefined
-  const decision = resolveOpenAIHostedToolRuntimeDecision({
-    toolType: 'mcp',
-    sourceEndpointFamily: OPENAI_RESPONSES_FAMILY
-  })
-  if (decision?.mode !== 'local_runtime') return undefined
-  return { tool }
-}
-
 function reasoningEffortFromOpenAIBody(body: JsonRecord): string | undefined {
   const reasoning = objectValue(body.reasoning)
   return normalizedOpenAIEnumValue(reasoning?.effort) ?? normalizedOpenAIEnumValue(body.reasoning_effort)
@@ -2636,11 +2383,6 @@ function responsesComputerToolFromBody(body: JsonRecord): JsonRecord | undefined
 function responsesComputerToolChoiceFromBody(body: JsonRecord): JsonRecord | undefined {
   const toolChoice = objectValue(body.tool_choice)
   return isOpenAIComputerTool(toolChoice) ? toolChoice : undefined
-}
-
-function responsesMcpToolFromBody(body: JsonRecord): JsonRecord | undefined {
-  const tools = Array.isArray(body.tools) ? body.tools : []
-  return tools.find(isOpenAIMcpTool)
 }
 
 function chatFileSearchToolFromBody(body: JsonRecord): OpenAIToAnthropicFileSearchToolConfig | undefined {
@@ -3544,133 +3286,6 @@ function prepareOpenAIToAnthropicCodeInterpreterTool(
   runtime.containerId = localCodeInterpreterContainerId(runtime.tool)
 }
 
-const mcpMockServerLabel = 'mock-mcp'
-const mcpMockServerUrl = 'https://mock.mcp.local/mcp'
-const mcpMockToolDefinitions: JsonRecord[] = [
-  {
-    annotations: null,
-    description: 'Mock MCP echo tool for juhe-ai protocol regression.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string' }
-      },
-      required: ['query'],
-      additionalProperties: false
-    },
-    name: 'echo'
-  },
-  {
-    annotations: null,
-    description: 'Mock MCP status tool for juhe-ai protocol regression.',
-    input_schema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false
-    },
-    name: 'status'
-  }
-]
-
-async function openAIToAnthropicMcpProxyRuntimeResponse(
-  body: JsonRecord,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  executor: OpenAIToAnthropicMcpProxyExecutor | undefined,
-  response: { model: string; stream: boolean },
-  signal?: AbortSignal
-): Promise<GatewayLocalProtocolResponse | undefined> {
-  if (!requestPlan.mcpProxy) return undefined
-  validateMcpProxyRuntimeDefinitions(body)
-  if (
-    requestPlan.mcpProxy.prepared
-    && requestPlan.mcpProxy.executor?.callTool
-    && mcpProxyPreparedToolsAreApprovalFree(requestPlan.mcpProxy.tool, requestPlan.mcpProxy.prepared.tools)
-  ) {
-    return undefined
-  }
-  if (!executor) {
-    throw bridgeValidationError(
-      'MCP local_runtime 已启用，但当前网关未配置 MCP proxy executor；请求不会转发给 Anthropic，也不会连接远程 MCP server',
-      'openai_anthropic_bridge_mcp_proxy_unavailable',
-      503,
-      'service_unavailable'
-    )
-  }
-  return executor.run({
-    body,
-    tool: requestPlan.mcpProxy.tool,
-    model: response.model,
-    stream: response.stream,
-    signal
-  })
-}
-
-async function prepareOpenAIToAnthropicMcpProxyTools(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  executor: OpenAIToAnthropicMcpProxyExecutor | undefined,
-  response: { model: string; stream: boolean },
-  signal?: AbortSignal
-): Promise<void> {
-  const mcpProxy = requestPlan.mcpProxy
-  if (!mcpProxy || sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY) return
-  validateMcpProxyRuntimeDefinitions(body)
-  if (!executor?.prepare || !executor.callTool) return
-  if (!mcpProxyRequestDeclaresModelDrivenApprovalFree(mcpProxy.tool)) return
-  const prepared = await executor.prepare({
-    body,
-    tool: mcpProxy.tool,
-    signal
-  })
-  if (!mcpProxyPreparedToolsAreApprovalFree(mcpProxy.tool, prepared.tools)) return
-  const usedNames = existingAnthropicToolNamesFromResponsesBody(body)
-  const adaptersByAnthropicName = new Map<string, OpenAIToAnthropicMcpProxyToolAdapter>()
-  for (const tool of prepared.tools) {
-    const anthropicName = uniqueAnthropicToolName(
-      `${prepared.serverLabel}__${tool.name}`,
-      usedNames
-    )
-    adaptersByAnthropicName.set(anthropicName, {
-      anthropicName,
-      toolName: tool.name,
-      serverLabel: prepared.serverLabel,
-      description: mcpProxyToolDescription(prepared, tool),
-      inputSchema: tool.inputSchema,
-      annotations: tool.annotations
-    })
-  }
-  mcpProxy.executor = executor
-  mcpProxy.prepared = prepared
-  mcpProxy.adaptersByAnthropicName = adaptersByAnthropicName
-}
-
-function mcpProxyRequestDeclaresModelDrivenApprovalFree(tool: JsonRecord): boolean {
-  if (tool.require_approval === 'never') return true
-  const requireApproval = objectValue(tool.require_approval)
-  const never = objectValue(requireApproval?.never)
-  const approvalFreeTools = new Set(stringArrayValue(never?.tool_names))
-  const allowedTools = stringArrayValue(tool.allowed_tools)
-  return allowedTools.length > 0 && allowedTools.every((toolName) => approvalFreeTools.has(toolName))
-}
-
-function mcpProxyPreparedToolsAreApprovalFree(
-  tool: JsonRecord,
-  tools: OpenAIToAnthropicMcpProxyToolDefinition[]
-): boolean {
-  return tools.length > 0 && tools.every((item) => !mcpProxyRequiresApproval(tool, item.name))
-}
-
-function mcpProxyRequiresApproval(tool: JsonRecord, toolName: string): boolean {
-  const requireApproval = tool.require_approval
-  if (requireApproval === 'never') return false
-  if (requireApproval === 'always') return true
-  const requireApprovalObject = objectValue(requireApproval)
-  const never = objectValue(requireApprovalObject?.never)
-  if (stringArrayValue(never?.tool_names).includes(toolName)) return false
-  return true
-}
-
 function existingAnthropicToolNamesFromResponsesBody(body: JsonRecord): Set<string> {
   const usedNames = new Set<string>()
   const tools = Array.isArray(body.tools) ? body.tools : []
@@ -3682,142 +3297,6 @@ function existingAnthropicToolNamesFromResponsesBody(body: JsonRecord): Set<stri
     }
   }
   return usedNames
-}
-
-function mcpProxyToolDescription(
-  prepared: OpenAIToAnthropicMcpProxyPreparedServer,
-  tool: OpenAIToAnthropicMcpProxyToolDefinition
-): string {
-  return [
-    `OpenAI Responses MCP server: ${prepared.serverLabel}.`,
-    tool.description
-  ].filter(Boolean).join('\n\n')
-}
-
-function validateMcpProxyRuntimeDefinitions(body: JsonRecord): void {
-  const tools = Array.isArray(body.tools) ? body.tools.filter(isOpenAIMcpTool) : []
-  for (const tool of tools) {
-    if (!hasMeaningfulField(tool, 'connector_id')) continue
-    const serverLabel = stringValue(tool.server_label) ?? '<missing_server_label>'
-    throw bridgeValidationError(
-      `MCP tool ${serverLabel} 使用 connector_id；OpenAI connector 需要独立 connector adapter，不能由 remote MCP proxy 伪装支持`,
-      'openai_anthropic_bridge_mcp_connector_unsupported'
-    )
-  }
-}
-
-function openAIToAnthropicMcpMockResponse(
-  body: JsonRecord,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  response: { model: string; stream: boolean }
-): GatewayLocalProtocolResponse | undefined {
-  if (!requestPlan.mcpMock) return undefined
-  validateMcpMockAllowlistForBody(body)
-  const payload = responsesMcpMockResponsePayload(body, requestPlan, response.model)
-  return new GatewayLocalProtocolResponse({
-    code: 'openai_anthropic_bridge_mcp_mock_runtime',
-    message: 'Responses MCP mock proxy completed',
-    body: response.stream ? responsesMcpMockSse(payload) : JSON.stringify(payload.response),
-    contentType: response.stream
-      ? 'text/event-stream; charset=utf-8'
-      : 'application/json; charset=utf-8'
-  })
-}
-
-function responsesMcpMockResponsePayload(
-  body: JsonRecord,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  model: string
-): { response: JsonRecord; items: JsonRecord[]; text: string } {
-  const mcpMock = requestPlan.mcpMock
-  if (!mcpMock) {
-    throw new Error('mcp mock plan is required')
-  }
-  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
-  const responseId = `resp_mcp_mock_${suffix}`
-  const createdAt = Math.floor(Date.now() / 1000)
-  const toolDefinitions = filteredMcpMockToolDefinitions(mcpMock.tool)
-  const listToolsItem: JsonRecord = {
-    id: `mcpl_${safeIdSegment(responseId)}`,
-    type: 'mcp_list_tools',
-    server_label: mcpMockServerLabel,
-    tools: toolDefinitions
-  }
-  const items: JsonRecord[] = [listToolsItem]
-  let text = ''
-
-  const selectedTool = toolDefinitions[0]
-  const selectedToolName = stringValue(selectedTool?.name)
-  if (!selectedToolName) {
-    text = 'MCP mock proxy found no allowed mock tools.'
-    items.push(responsesMcpMockMessageItem(responseId, text))
-  } else {
-    const toolArguments = mcpMockToolArguments()
-    const approvalRequestId = mcpApprovalRequestId(mcpMockServerLabel, selectedToolName, toolArguments)
-    const requiresApproval = mcpMockRequiresApproval(mcpMock.tool, selectedToolName)
-    const approval = mcpApprovalResponseFromResponsesInput(body.input)
-    if (requiresApproval && approval) {
-      assertMcpApprovalRequestMatches(approval, approvalRequestId)
-    }
-    if (approval?.approved === false) {
-      text = 'MCP mock proxy tool call was not approved.'
-      items.push(responsesMcpMockMessageItem(responseId, text))
-    } else if (requiresApproval && !approval?.approved) {
-      items.push(responsesMcpMockApprovalRequestItem(selectedToolName, toolArguments, approvalRequestId))
-    } else {
-      const callItem = responsesMcpMockCallItem(
-        responseId,
-        selectedToolName,
-        toolArguments,
-        requiresApproval && approval?.approved ? approvalRequestId : undefined
-      )
-      items.push(callItem)
-      text = 'MCP mock proxy completed without contacting a remote MCP server.'
-      items.push(responsesMcpMockMessageItem(responseId, text))
-    }
-  }
-
-  return {
-    response: {
-      id: responseId,
-      object: 'response',
-      created_at: createdAt,
-      status: 'completed',
-      completed_at: createdAt,
-      error: null,
-      incomplete_details: null,
-      instructions: null,
-      max_output_tokens: null,
-      model,
-      output: items,
-      output_text: text,
-      parallel_tool_calls: false,
-      previous_response_id: stringValue(body.previous_response_id) ?? null,
-      reasoning: {
-        effort: requestPlan.reasoningEffort ?? null,
-        summary: requestPlan.reasoningSummary ?? null
-      },
-      store: false,
-      temperature: null,
-      text: { format: { type: 'text' } },
-      tool_choice: 'auto',
-      tools: [responsesMcpToolSnapshot(mcpMock.tool)],
-      top_p: null,
-      truncation: 'disabled',
-      usage: zeroResponsesUsage(),
-      user: null,
-      metadata: {
-        gateway_runtime: 'mock',
-        gateway_tool: 'mcp'
-      }
-    },
-    items,
-    text
-  }
-}
-
-function responsesMcpMockSse(input: { response: JsonRecord; items: JsonRecord[]; text: string }): string {
-  return responsesResponseSse(input.response)
 }
 
 function responsesResponseSse(response: JsonRecord): string {
@@ -3883,9 +3362,6 @@ function responsesResponseSse(response: JsonRecord): string {
         })
       )
     }
-    if (item.type === 'mcp_call') {
-      output.push(...responsesMcpCallLifecycleSse(response, item, index))
-    }
     output.push(sse('response.output_item.done', {
       type: 'response.output_item.done',
       output_index: index,
@@ -3907,196 +3383,6 @@ function responsesInProgressOutputItem(item: JsonRecord): JsonRecord {
     status: 'in_progress',
     content: []
   }
-}
-
-function responsesMcpCallLifecycleSse(response: JsonRecord, item: JsonRecord, outputIndex: number): string[] {
-  const responseId = stringValue(response.id) ?? ''
-  const itemId = stringValue(item.id) ?? ''
-  const argumentsText = typeof item.arguments === 'string' ? item.arguments : ''
-  const output: string[] = []
-  if (argumentsText) {
-    output.push(
-      sse('response.mcp_call_arguments.delta', {
-        type: 'response.mcp_call_arguments.delta',
-        response_id: responseId,
-        item_id: itemId,
-        output_index: outputIndex,
-        delta: argumentsText
-      }),
-      sse('response.mcp_call_arguments.done', {
-        type: 'response.mcp_call_arguments.done',
-        response_id: responseId,
-        item_id: itemId,
-        output_index: outputIndex,
-        arguments: argumentsText
-      })
-    )
-  }
-  output.push(sse('response.mcp_call.in_progress', {
-    type: 'response.mcp_call.in_progress',
-    response_id: responseId,
-    item_id: itemId,
-    output_index: outputIndex
-  }))
-  const error = objectValue(item.error)
-  if (error) {
-    output.push(sse('response.mcp_call.failed', {
-      type: 'response.mcp_call.failed',
-      response_id: responseId,
-      item_id: itemId,
-      output_index: outputIndex,
-      error
-    }))
-  }
-  return output
-}
-
-function validateMcpMockAllowlist(tool: JsonRecord): void {
-  const serverLabel = stringValue(tool.server_label)
-  const serverUrl = stringValue(tool.server_url)
-  if (serverLabel === mcpMockServerLabel && serverUrl === mcpMockServerUrl && !hasMeaningfulField(tool, 'connector_id')) {
-    return
-  }
-  throw bridgeValidationError(
-    `MCP mock proxy 只允许 server_label=${mcpMockServerLabel} 且 server_url=${mcpMockServerUrl}；真实远程 MCP 需要后续 allowlist / auth / approval runtime`,
-    'openai_anthropic_bridge_mcp_mock_server_not_allowed'
-  )
-}
-
-function validateMcpMockAllowlistForBody(body: JsonRecord): void {
-  const tools = Array.isArray(body.tools) ? body.tools.filter(isOpenAIMcpTool) : []
-  for (const tool of tools) {
-    validateMcpMockAllowlist(tool)
-  }
-}
-
-function filteredMcpMockToolDefinitions(tool: JsonRecord): JsonRecord[] {
-  const allowed = stringArrayValue(tool.allowed_tools)
-  if (!allowed.length) return mcpMockToolDefinitions.map((definition) => ({ ...definition }))
-  const allowedSet = new Set(allowed)
-  return mcpMockToolDefinitions
-    .filter((definition) => {
-      const name = stringValue(definition.name)
-      return name ? allowedSet.has(name) : false
-    })
-    .map((definition) => ({ ...definition }))
-}
-
-function responsesMcpMockCallItem(
-  responseId: string,
-  toolName: string,
-  toolArguments: JsonRecord,
-  approvalRequestId?: string
-): JsonRecord {
-  return {
-    id: `mcp_${safeIdSegment(responseId)}`,
-    type: 'mcp_call',
-    approval_request_id: approvalRequestId ?? null,
-    arguments: JSON.stringify(toolArguments),
-    error: null,
-    name: toolName,
-    output: JSON.stringify({
-      ok: true,
-      message: 'juhe-ai mcp mock runtime: remote MCP call skipped'
-    }),
-    server_label: mcpMockServerLabel
-  }
-}
-
-function responsesMcpMockApprovalRequestItem(
-  toolName: string,
-  toolArguments: JsonRecord,
-  approvalRequestId: string
-): JsonRecord {
-  return {
-    id: approvalRequestId,
-    type: 'mcp_approval_request',
-    arguments: JSON.stringify(toolArguments),
-    name: toolName,
-    server_label: mcpMockServerLabel
-  }
-}
-
-function mcpMockToolArguments(): JsonRecord {
-  return { query: 'juhe-ai mcp mock runtime' }
-}
-
-function responsesMcpMockMessageItem(responseId: string, text: string): JsonRecord {
-  return {
-    id: `msg_${safeIdSegment(responseId)}`,
-    type: 'message',
-    status: 'completed',
-    role: 'assistant',
-    content: [{
-      type: 'output_text',
-      text,
-      annotations: []
-    }]
-  }
-}
-
-function mcpMockRequiresApproval(tool: JsonRecord, toolName: string): boolean {
-  const requireApproval = tool.require_approval
-  if (requireApproval === 'never') return false
-  if (requireApproval === 'always') return true
-  const requireApprovalObject = objectValue(requireApproval)
-  const never = objectValue(requireApprovalObject?.never)
-  if (stringArrayValue(never?.tool_names).includes(toolName)) return false
-  return true
-}
-
-function mcpApprovalRequestId(serverLabel: string, toolName: string, toolArguments: JsonRecord): string {
-  const digest = createHash('sha256')
-    .update(stableJsonStringify({
-      arguments: toolArguments,
-      server_label: serverLabel,
-      tool_name: toolName
-    }))
-    .digest('hex')
-    .slice(0, 24)
-  return `mcpr_${safeIdSegment(serverLabel).slice(0, 24)}_${safeIdSegment(toolName).slice(0, 32)}_${digest}`
-}
-
-function assertMcpApprovalRequestMatches(
-  approval: { approved: boolean; approvalRequestId?: string },
-  expectedApprovalRequestId: string
-): void {
-  if (approval.approvalRequestId === expectedApprovalRequestId) return
-  throw bridgeValidationError(
-    'MCP approval_request_id 与当前 server/tool/arguments 不匹配，已拒绝执行远程工具',
-    'openai_anthropic_bridge_mcp_approval_mismatch'
-  )
-}
-
-function mcpApprovalResponseFromResponsesInput(value: unknown): { approved: boolean; approvalRequestId?: string } | undefined {
-  const items = Array.isArray(value)
-    ? value
-    : isPlainObject(value) ? [value] : []
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index]
-    if (!isPlainObject(item)) continue
-    if (stringValue(item.type) !== 'mcp_approval_response') continue
-    return {
-      approved: item.approve === true,
-      approvalRequestId: stringValue(item.approval_request_id)
-    }
-  }
-  return undefined
-}
-
-function responsesMcpToolSnapshot(tool: JsonRecord): JsonRecord {
-  const snapshot: JsonRecord = {
-    type: 'mcp',
-    server_label: mcpMockServerLabel,
-    server_url: mcpMockServerUrl
-  }
-  const serverDescription = stringValue(tool.server_description)
-  if (serverDescription) snapshot.server_description = serverDescription
-  const allowedTools = stringArrayValue(tool.allowed_tools)
-  if (allowedTools.length) snapshot.allowed_tools = allowedTools
-  if (tool.require_approval !== undefined) snapshot.require_approval = tool.require_approval
-  if (tool.defer_loading === true) snapshot.defer_loading = true
-  return snapshot
 }
 
 function rejectedOpenAIHostedRuntimeLabels(
@@ -4201,16 +3487,6 @@ function unsupportedOpenAIHostedToolLabel(
   if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isOpenAIComputerTool(tool) && requestPlan.computerLocalRuntime) {
     return undefined
   }
-  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isOpenAIMcpTool(tool) && requestPlan.mcpMock) {
-    const isSelectedMockTool = requestPlan.mcpMock.tool === tool
-    const isMcpToolChoice = !hasMeaningfulField(tool, 'server_label')
-      && !hasMeaningfulField(tool, 'server_url')
-      && !hasMeaningfulField(tool, 'connector_id')
-    if (isSelectedMockTool || isMcpToolChoice) return undefined
-  }
-  if (sourceEndpointFamily === OPENAI_RESPONSES_FAMILY && isOpenAIMcpTool(tool) && requestPlan.mcpProxy) {
-    return undefined
-  }
   const runtimeDecision = resolveOpenAIHostedToolRuntimeDecision({ toolType: type, sourceEndpointFamily })
   if (runtimeDecision) return runtimeDecision.mode === 'reject' ? undefined : runtimeDecision.toolType
   return type
@@ -4280,7 +3556,7 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
   try {
     const parsed = await readJsonBody(body)
     const message = isPlainObject(parsed) ? parsed : {}
-    const payload = await anthropicMessageToResponsesResponseWithMcpToolLoop(message, {
+    const payload = await anthropicMessageToResponsesResponseWithLocalRuntimeToolLoop(message, {
       model: options.model,
       requestPlan: options.requestPlan,
       previousResponseId: options.previousResponseId,
@@ -4296,8 +3572,8 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
       })
     }
     yield Buffer.from(JSON.stringify(payload), 'utf8')
-  } finally {
-    await closeOpenAIToAnthropicMcpProxyRuntime(options.requestPlan)
+  } catch (error) {
+    throw error
   }
 }
 
@@ -4348,7 +3624,7 @@ async function * transformAnthropicMessagesSseToResponsesSse(
       return
     }
     if (requestPlanHasLocalRuntimeToolLoop(options.requestPlan)) {
-      yield * transformAnthropicMessagesSseToResponsesMcpToolLoopSse(body, options)
+      yield * transformAnthropicMessagesSseToResponsesLocalRuntimeToolLoopSse(body, options)
       return
     }
     const state = createAnthropicStreamState(OPENAI_RESPONSES_FAMILY, options.model, options.previousResponseId, options.requestPlan)
@@ -4368,12 +3644,12 @@ async function * transformAnthropicMessagesSseToResponsesSse(
       }
       await notifyResponsesCompletion(state, options.onResponsesCompleted)
     }
-  } finally {
-    await closeOpenAIToAnthropicMcpProxyRuntime(options.requestPlan)
+  } catch (error) {
+    throw error
   }
 }
 
-async function * transformAnthropicMessagesSseToResponsesMcpToolLoopSse(
+async function * transformAnthropicMessagesSseToResponsesLocalRuntimeToolLoopSse(
   body: AsyncIterable<Uint8Array>,
   options: {
     model: string
@@ -4391,14 +3667,14 @@ async function * transformAnthropicMessagesSseToResponsesMcpToolLoopSse(
     state.responseId = responseIdFromAnthropicId(state.id)
     state.responseMessageId = `msg_${safeIdSegment(state.responseId)}`
     state.model = stringValue(message.model) ?? state.model
-    payload = await anthropicMessageToResponsesResponseWithMcpToolLoop(message, {
+    payload = await anthropicMessageToResponsesResponseWithLocalRuntimeToolLoop(message, {
       model: options.model,
       requestPlan: options.requestPlan,
       previousResponseId: options.previousResponseId,
       continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
     })
   } catch (error) {
-    for (const output of failResponsesStream(state, openAIErrorObjectFromBridgeError(error, 'MCP proxy SSE tool loop 执行失败'))) {
+    for (const output of failResponsesStream(state, openAIErrorObjectFromBridgeError(error, '本地工具 SSE 循环执行失败'))) {
       yield Buffer.from(output, 'utf8')
     }
     return
@@ -4580,7 +3856,7 @@ async function anthropicMessageToResponsesResponse(
   }
 }
 
-async function anthropicMessageToResponsesResponseWithMcpToolLoop(
+async function anthropicMessageToResponsesResponseWithLocalRuntimeToolLoop(
   message: JsonRecord,
   options: {
     model: string
@@ -4596,22 +3872,22 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
   let toolLoopUsage = zeroResponsesUsage()
   let completedRounds = 0
   const responseItems: JsonRecord[] = []
-  const conversationMessages = mcpProxyOriginalAnthropicMessages(options.requestPlan)
+  const conversationMessages = localRuntimeOriginalAnthropicMessages(options.requestPlan)
 
   while (true) {
     const loopResult = await localRuntimeToolLoopResultFromAnthropicMessage(currentMessage, options.requestPlan)
     if (!loopResult) {
       const payload = await anthropicMessageToResponsesResponse(currentMessage, options)
       const output = Array.isArray(payload.output) ? payload.output.filter(isPlainObject) : []
-      insertResponsesMcpToolLoopItems(output, responseItems)
+      insertResponsesLocalRuntimeToolLoopItems(output, responseItems)
       payload.output = output
       payload.output_text = responsesOutputTextFromItems(output)
       payload.usage = combineResponsesUsage(toolLoopUsage, objectValue(payload.usage))
       if (responseItems.length) {
         payload.metadata = {
           ...(objectValue(payload.metadata) ?? {}),
-          gateway_mcp_tool_loop: 'completed',
-          gateway_mcp_tool_loop_rounds: completedRounds
+          gateway_local_runtime_tool_loop: 'completed',
+          gateway_local_runtime_tool_loop_rounds: completedRounds
         }
       }
       return payload
@@ -4624,7 +3900,7 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
     completedRounds += 1
     responseItems.push(...loopResult.responseItems)
     if (loopResult.failed) {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4633,8 +3909,8 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
         completedRounds
       )
     }
-    if (!appendMcpProxyToolLoopConversationMessages(conversationMessages, currentMessage, loopResult)) {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+    if (!appendLocalRuntimeToolLoopConversationMessages(conversationMessages, currentMessage, loopResult)) {
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4644,10 +3920,10 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
       )
     }
 
-    const disableTools = completedRounds >= mcpProxyMaxModelToolLoopRounds
-    const nextBody = mcpProxyContinuationAnthropicBody(conversationMessages, options.requestPlan, disableTools)
+    const disableTools = completedRounds >= localRuntimeMaxModelToolLoopRounds
+    const nextBody = localRuntimeContinuationAnthropicBody(conversationMessages, options.requestPlan, disableTools)
     if (!nextBody) {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4660,7 +3936,7 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
     try {
       nextResponse = await options.continueAnthropicMessagesRequest(nextBody)
     } catch {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4670,7 +3946,7 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
       )
     }
     if (!nextResponse.ok || !nextResponse.body) {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4683,7 +3959,7 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
     try {
       parsed = await readJsonBody(nextResponse.body)
     } catch {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4694,7 +3970,7 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
     }
     currentMessage = isPlainObject(parsed) ? parsed : {}
     if (disableTools && localRuntimeMessageHasExecutableToolUse(currentMessage, options.requestPlan)) {
-      return mcpProxyToolLoopFallbackResponsesResponse(
+      return localRuntimeToolLoopFallbackResponsesResponse(
         currentMessage,
         options,
         { responseItems, toolResultBlocks: [] },
@@ -4706,10 +3982,10 @@ async function anthropicMessageToResponsesResponseWithMcpToolLoop(
   }
 }
 
-function mcpProxyToolLoopFallbackResponsesResponse(
+function localRuntimeToolLoopFallbackResponsesResponse(
   message: JsonRecord,
   options: { model: string; requestPlan?: OpenAIToAnthropicBridgeRequestPlan; previousResponseId?: string },
-  loopResult: OpenAIToAnthropicMcpProxyToolLoopResult,
+  loopResult: OpenAIToAnthropicLocalRuntimeToolLoopResult,
   fallbackReason: string,
   usage?: JsonRecord,
   completedRounds?: number
@@ -4718,15 +3994,15 @@ function mcpProxyToolLoopFallbackResponsesResponse(
   const responseId = responseIdFromAnthropicId(stringValue(message.id))
   const createdAt = Math.floor(Date.now() / 1000)
   const output: JsonRecord[] = [...loopResult.responseItems, {
-    id: `msg_${safeIdSegment(responseId)}_mcp_fallback`,
+    id: `msg_${safeIdSegment(responseId)}_local_runtime_fallback`,
     type: 'message',
     status: 'completed',
     role: 'assistant',
     content: [{
       type: 'output_text',
       text: fallbackReason === 'tool_call_failed'
-        ? 'MCP proxy tool call failed.'
-        : 'MCP proxy completed remote tool call.',
+        ? '本地工具调用失败。'
+        : '本地工具调用已结束。',
       annotations: []
     }]
   }]
@@ -4761,8 +4037,8 @@ function mcpProxyToolLoopFallbackResponsesResponse(
     user: null,
     metadata: {
       ...responsesBridgeMetadata(options.requestPlan),
-      gateway_mcp_tool_loop: fallbackReason,
-      gateway_mcp_tool_loop_rounds: completedRounds ?? 1
+      gateway_local_runtime_tool_loop: fallbackReason,
+      gateway_local_runtime_tool_loop_rounds: completedRounds ?? 1
     }
   }
 }
@@ -4770,7 +4046,7 @@ function mcpProxyToolLoopFallbackResponsesResponse(
 async function localRuntimeToolLoopResultFromAnthropicMessage(
   message: JsonRecord,
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
-): Promise<OpenAIToAnthropicMcpProxyToolLoopResult | undefined> {
+): Promise<OpenAIToAnthropicLocalRuntimeToolLoopResult | undefined> {
   const blocks = Array.isArray(message.content) ? message.content : []
   const responseId = responseIdFromAnthropicId(stringValue(message.id))
   const responseItems: JsonRecord[] = []
@@ -4788,16 +4064,7 @@ async function localRuntimeToolLoopResultFromAnthropicMessage(
           idSegment: callId,
           input
         }, requestPlan)
-      : requestPlan?.mcpProxy?.adaptersByAnthropicName?.has(name)
-        ? await responsesOutputItemFromAnthropicToolUseBlock({
-            responseId,
-            idSegment: callId,
-            status: 'completed',
-            callId,
-            name,
-            input
-          }, requestPlan)
-        : undefined
+      : undefined
     if (!item) continue
     responseItems.push(item)
     if (objectValue(item.error)) {
@@ -4957,23 +4224,22 @@ function localRuntimeMessageHasExecutableToolUse(
   for (const block of blocks) {
     if (!isPlainObject(block) || block.type !== 'tool_use') continue
     const name = stringValue(block.name)
-    if (name && requestPlan?.mcpProxy?.adaptersByAnthropicName?.has(name)) return true
     if (name && requestPlan?.codeInterpreterLocalRuntime?.anthropicToolName === name) return true
   }
   return false
 }
 
-function mcpProxyOriginalAnthropicMessages(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): JsonRecord[] {
+function localRuntimeOriginalAnthropicMessages(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): JsonRecord[] {
   const originalBody = requestPlan?.anthropicRequestBody
   return Array.isArray(originalBody?.messages)
     ? originalBody.messages.filter(isPlainObject).map((item) => jsonRecordClone(item))
     : []
 }
 
-function appendMcpProxyToolLoopConversationMessages(
+function appendLocalRuntimeToolLoopConversationMessages(
   conversationMessages: JsonRecord[],
   message: JsonRecord,
-  loopResult: OpenAIToAnthropicMcpProxyToolLoopResult
+  loopResult: OpenAIToAnthropicLocalRuntimeToolLoopResult
 ): boolean {
   const content = Array.isArray(message.content)
     ? message.content.filter(isPlainObject).map((item) => jsonRecordClone(item))
@@ -4986,7 +4252,7 @@ function appendMcpProxyToolLoopConversationMessages(
   return true
 }
 
-function mcpProxyContinuationAnthropicBody(
+function localRuntimeContinuationAnthropicBody(
   conversationMessages: JsonRecord[],
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan,
   disableTools = false
@@ -5003,10 +4269,9 @@ function mcpProxyContinuationAnthropicBody(
   return body
 }
 
-function insertResponsesMcpToolLoopItems(output: JsonRecord[], items: JsonRecord[]): void {
+function insertResponsesLocalRuntimeToolLoopItems(output: JsonRecord[], items: JsonRecord[]): void {
   if (!items.length) return
-  const listToolsIndex = output.findIndex((item) => item.type === 'mcp_list_tools')
-  output.splice(listToolsIndex >= 0 ? listToolsIndex + 1 : 0, 0, ...items)
+  output.splice(0, 0, ...items)
 }
 
 function responsesOutputTextFromItems(output: JsonRecord[]): string {
@@ -5038,12 +4303,6 @@ function jsonRecordClone(value: JsonRecord): JsonRecord {
 }
 
 function responsesBridgeMetadata(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): JsonRecord {
-  if (requestPlan?.mcpProxy?.prepared) {
-    return {
-      gateway_runtime: 'local_runtime',
-      gateway_tool: 'mcp'
-    }
-  }
   if (requestPlan?.codeInterpreterLocalRuntime?.anthropicToolName) {
     return {
       gateway_runtime: 'local_runtime',
@@ -5054,17 +4313,7 @@ function responsesBridgeMetadata(requestPlan?: OpenAIToAnthropicBridgeRequestPla
 }
 
 function requestPlanHasLocalRuntimeToolLoop(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): boolean {
-  return Boolean(
-    requestPlan?.mcpProxy?.prepared
-    || requestPlan?.codeInterpreterLocalRuntime?.anthropicToolName
-  )
-}
-
-async function closeOpenAIToAnthropicMcpProxyRuntime(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): Promise<void> {
-  const prepared = requestPlan?.mcpProxy?.prepared
-  const executor = requestPlan?.mcpProxy?.executor
-  if (!prepared || !executor?.close) return
-  await executor.close(prepared)
+  return Boolean(requestPlan?.codeInterpreterLocalRuntime?.anthropicToolName)
 }
 
 async function anthropicContentBlocksToResponsesOutputItems(
@@ -5103,9 +4352,9 @@ async function anthropicContentBlocksToResponsesOutputItems(
       }
     }
   }
-  const shouldAppendMessage = messageText || output.length === 0 || responsesOutputHasMcpProxyCall(output)
+  const shouldAppendMessage = messageText || output.length === 0
   if (shouldAppendMessage) {
-    const text = messageText || 'MCP proxy completed remote tool call.'
+    const text = messageText || '本地工具调用已完成。'
     const item: JsonRecord = {
       id: `msg_${safeIdSegment(responseId)}_${textIndex++}`,
       type: 'message',
@@ -5126,10 +4375,6 @@ async function anthropicContentBlocksToResponsesOutputItems(
   return output
 }
 
-function responsesOutputHasMcpProxyCall(output: JsonRecord[]): boolean {
-  return output.some((item) => item.type === 'mcp_call')
-}
-
 async function responsesOutputItemFromAnthropicToolUseBlock(
   input: {
     responseId: string
@@ -5141,47 +4386,6 @@ async function responsesOutputItemFromAnthropicToolUseBlock(
   },
   requestPlan?: OpenAIToAnthropicBridgeRequestPlan
 ): Promise<JsonRecord> {
-  const mcpAdapter = requestPlan?.mcpProxy?.adaptersByAnthropicName?.get(input.name)
-  const mcpPrepared = requestPlan?.mcpProxy?.prepared
-  const mcpExecutor = requestPlan?.mcpProxy?.executor
-  if (mcpAdapter && mcpPrepared && mcpExecutor?.callTool) {
-    let callResult: OpenAIToAnthropicMcpProxyToolCallResult
-    try {
-      callResult = await mcpExecutor.callTool({
-        prepared: mcpPrepared,
-        toolName: mcpAdapter.toolName,
-        arguments: input.input
-      })
-    } catch (error) {
-      return {
-        id: `mcp_${safeIdSegment(input.idSegment)}`,
-        type: 'mcp_call',
-        approval_request_id: null,
-        arguments: JSON.stringify(input.input),
-        error: mcpProxyToolCallErrorObject(error),
-        name: mcpAdapter.toolName,
-        output: null,
-        server_label: mcpAdapter.serverLabel
-      }
-    }
-    const item: JsonRecord = {
-      id: `mcp_${safeIdSegment(input.idSegment)}`,
-      type: 'mcp_call',
-      approval_request_id: null,
-      arguments: JSON.stringify(input.input),
-      error: null,
-      name: mcpAdapter.toolName,
-      output: callResult.outputText,
-      server_label: mcpAdapter.serverLabel
-    }
-    if (callResult.truncated || callResult.metadata) {
-      item.metadata = {
-        ...(callResult.metadata ?? {}),
-        ...(callResult.truncated ? { output_truncated: true } : {})
-      }
-    }
-    return item
-  }
   return responsesFunctionCallItemFromAnthropicTool({
     idSegment: input.idSegment,
     status: input.status,
@@ -5189,20 +4393,6 @@ async function responsesOutputItemFromAnthropicToolUseBlock(
     name: input.name,
     argumentsText: JSON.stringify(input.input)
   }, requestPlan)
-}
-
-function mcpProxyToolCallErrorObject(error: unknown): JsonRecord {
-  const code = error instanceof GatewayRequestValidationError
-    ? error.code
-    : 'openai_anthropic_bridge_mcp_proxy_tool_call_failed'
-  const type = error instanceof GatewayRequestValidationError
-    ? error.type
-    : 'upstream_error'
-  return {
-    message: code,
-    type,
-    code
-  }
 }
 
 function shouldEmitResponsesReasoningItem(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): boolean {
@@ -6135,7 +5325,7 @@ async function notifyResponsesCompletion(
 
 function shouldNotifyResponsesCompletedPayload(payload: JsonRecord): boolean {
   if (payload.status !== 'completed') return false
-  return objectValue(payload.metadata)?.gateway_mcp_tool_loop !== 'tool_call_failed'
+  return objectValue(payload.metadata)?.gateway_local_runtime_tool_loop !== 'tool_call_failed'
 }
 
 function createAnthropicStreamState(
@@ -6439,29 +5629,8 @@ function responsesLocalToolCallItems(
   responseId: string
 ): JsonRecord[] {
   return [
-    responsesMcpProxyListToolsItem(requestPlan, responseId),
     responsesFileSearchCallItem(requestPlan, responseId)
   ].filter((item): item is JsonRecord => Boolean(item))
-}
-
-function responsesMcpProxyListToolsItem(
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan | undefined,
-  responseId: string
-): JsonRecord | undefined {
-  const mcpProxy = requestPlan?.mcpProxy
-  if (!mcpProxy?.prepared || mcpProxy.emittedListTools) return undefined
-  mcpProxy.emittedListTools = true
-  return {
-    id: `mcpl_${safeIdSegment(responseId)}`,
-    type: 'mcp_list_tools',
-    server_label: mcpProxy.prepared.serverLabel,
-    tools: mcpProxy.prepared.tools.map((tool) => ({
-      annotations: tool.annotations ?? null,
-      description: tool.description ?? '',
-      input_schema: tool.inputSchema,
-      name: tool.name
-    }))
-  }
 }
 
 function responsesFileSearchCallItem(

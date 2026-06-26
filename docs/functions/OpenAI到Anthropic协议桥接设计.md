@@ -44,7 +44,7 @@ v1 不强制承接：
 
 - 没有上游原生能力或本地 runtime 的 OpenAI hosted/native tools。
 - OpenAI 专有输出扩展、sources / citations、logprobs、audio、prompt template、`store=true`、background、conversation、自动截断、encrypted reasoning。
-- 完整 computer browser 会话、完整 code interpreter 容器生命周期、MCP 管理 / 人工审批 UI、第三方 HTTP-SSE 长连接和真实全矩阵抽样。
+- 完整 computer browser 会话、完整 code interpreter 容器生命周期、服务端 MCP runtime / proxy / 管理 / 人工审批 UI，以及真实全矩阵抽样。
 
 能力缺口返回的 agent guidance 是符合下游协议的正常响应，不是网关失败；只有请求非法、权限越界、状态链损坏、schema 校验失败或安全策略命中时，才返回本地协议错误。后续如果某能力有真实 Anthropic profile、本地 runtime 或 provider，必须先补能力声明、mock 覆盖和真实抽样，再从 guidance-first 升级为承接路径。
 
@@ -145,7 +145,7 @@ Responses 内置工具不能默认直传 Anthropic。当前策略：
 
 - `web_search` / `web_search_preview`：当前不做本地预取模拟。没有 Anthropic 上游原生等价能力时返回正常 agent guidance，不输出 `web_search_call` 或 `url_citation`。
 - `file_search`：由 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md) 承接。未实现或未配置本地 Vector Store / retrieval 时返回受控错误；启用后先做本地预检索，把结果注入 Anthropic system context，并在 Responses 输出中渲染 `file_search_call`、`file_citation` annotations 和可选 `file_search_call.results`。
-- `code_interpreter`、`computer`、MCP tool、namespace tool 和 custom tool：没有对应运行时时返回正常 agent guidance，不能静默丢弃。`image_generation` 首批已由本地图像 provider 承接无输入图片的 generate 路径：Anthropic Messages 只生成 revised prompt，图像 provider 返回 OpenAI Images JSON `data[0].b64_json`，桥接层渲染 Responses `image_generation_call.result`；无 provider 时返回 OpenAI 形态 guidance 且不请求 Anthropic。provider `moderation_blocked` 返回 Responses `status=failed` 并保留 `image_generation_user_error`、`moderation_blocked` 和 `moderation_details`；edit / mask 首批返回 guidance，历史图片复用、partial image streaming 继续按 [PLAN-0061](../plans/计划-0061-Responses图像生成本地Provider桥接.md) 后续推进。
+- `code_interpreter`、`computer`、namespace tool 和 custom tool：没有对应运行时时返回正常 agent guidance，不能静默丢弃。MCP tool 固定返回客户端 / 本地 agent guidance，不在网关服务端建立 runtime、proxy、allowlist、approval 或 execution record。`image_generation` 首批已由本地图像 provider 承接无输入图片的 generate 路径：Anthropic Messages 只生成 revised prompt，图像 provider 返回 OpenAI Images JSON `data[0].b64_json`，桥接层渲染 Responses `image_generation_call.result`；无 provider 时返回 OpenAI 形态 guidance 且不请求 Anthropic。provider `moderation_blocked` 返回 Responses `status=failed` 并保留 `image_generation_user_error`、`moderation_blocked` 和 `moderation_details`；edit / mask 首批返回 guidance，历史图片复用、partial image streaming 继续按 [PLAN-0061](../plans/计划-0061-Responses图像生成本地Provider桥接.md) 后续推进。
 
 Responses `store`、`background`、`conversation`、`include`、`truncation`、`reasoning.encrypted_content`、OpenAI 原生 compact 和 hosted tool 输出不承诺等价。涉及无法执行的 hosted/native 能力时，桥接层必须返回可读 agent guidance；涉及非法历史、权限、状态边界或 schema 校验失败时返回对应协议错误，或在明确不会影响客户端正确性的情况下记录降级。`text.format=json_schema` 校验失败时会生成 Responses failed 语义；当前非流式请求会被 response-inspection 改写为 503，并保留 `openai_anthropic_bridge_structured_output_schema_mismatch`。
 
@@ -380,7 +380,7 @@ mock 回归必须覆盖：
 
 - 不做 Anthropic Messages 到 OpenAI Chat / Responses 的反向转换。
 - 不做 OpenAI Chat 到 Responses 或 Responses 到 Chat 的新能力；既有 `responses -> chat_completions` bridge 继续归原文档维护。
-- `PLAN-0058` 首版不做 OpenAI 内置 hosted tools 到 Anthropic 的自动仿真；后续 web_search、file_search、image_generation、code_interpreter、computer 和 MCP 的承接方式以 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md) 和 `PLAN-0059` 为准。
-- `PLAN-0058` 首版不把 MCP 当成上游模型协议；MCP tool 如需桥接必须按高兼容矩阵补 server allowlist、auth、approval 和审计映射。
+- `PLAN-0058` 首版不做 OpenAI 内置 hosted tools 到 Anthropic 的自动仿真；后续 web_search、file_search、image_generation、code_interpreter 和 computer 的承接方式以 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md) 和 `PLAN-0059` 为准。
+- `PLAN-0058` 首版及当前实现都不把 MCP 当成上游模型协议，也不在网关服务端桥接 MCP tool；MCP 统一返回客户端本地 MCP / 原生上游 guidance。
 - `PLAN-0058` 首版不把严格 Structured Outputs 宣称为完全等价；后续 strict schema 必须通过合成工具、Anthropic 原生 structured output 或本地 schema 校验后才能宣称成功。
 - 不把 Anthropic 官方账号、DeepSeek Anthropic-compatible、GLM Anthropic-compatible 合并成一个账号池。

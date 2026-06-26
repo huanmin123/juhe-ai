@@ -9,6 +9,7 @@ const recommendedNodeVersion = '官方 Node.js LTS：22.x LTS（>=22.13.0）或 
 const verifyCommand = 'pnpm --filter juhe-ai-backend check:runtime'
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const localEnvPath = resolve(backendRoot, '.env')
+let cachedLocalEnv: Record<string, string> | undefined
 const sqliteCapabilityCheckScript = `
 const { DatabaseSync } = await import('node:sqlite')
 const database = new DatabaseSync(':memory:')
@@ -83,8 +84,6 @@ if (checkResult.status !== 0 || checkResult.error) {
 function rawConfig(name: string): string {
   return (process.env[name]?.trim() ?? loadLocalEnv()[name]?.trim() ?? '')
 }
-
-let cachedLocalEnv: Record<string, string> | undefined
 
 function loadLocalEnv(): Record<string, string> {
   if (cachedLocalEnv) return cachedLocalEnv

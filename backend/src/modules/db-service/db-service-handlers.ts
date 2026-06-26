@@ -29,6 +29,7 @@ import {
   listOpenAIAccountsForGroupResultAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
   listPublicGlobalSettings,
+  listPublicGlobalSettingsAsync,
   markAccountException,
   markAccountCooldown,
   markAccountDisabledByFailure,
@@ -96,7 +97,7 @@ import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/quota
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/quota/authorization-quota.service.js'
 import { applyAccountErrorHandling, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
-import { listProviderModelCatalog } from '../model-pricing/model-catalog.service.js'
+import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
   recordAccountApiKeyRuntimeFailure,
   recordAccountApiKeyRuntimeSuccess
@@ -180,10 +181,60 @@ export async function handleDbServiceOperation<T extends DbServiceOperation>(ope
 
 async function handleDbServiceOperationDispatch(operation: DbServiceOperation): Promise<unknown> {
   switch (operation.type) {
+    case 'list_public_global_settings':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listPublicGlobalSettingsAsync()
+      }
+      break
     case 'validate_gateway_api_key':
       return await validateGatewayApiKeyAsync(operation.key)
+    case 'read_gateway_settings':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await readGatewaySettingsAsync()
+      }
+      break
+    case 'resolve_group_usage_access':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await resolveGroupUsageAccessMetadataAsync(operation.groupId, operation.systemAccountId)
+      }
+      break
+    case 'list_openai_accounts_for_group':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return (await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily
+        })).accounts
+      }
+      break
+    case 'list_openai_accounts_for_group_result':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily
+        })
+      }
+      break
+    case 'list_recoverable_unavailable_openai_accounts_for_group':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return recoverableUnavailableOpenAIAccounts(await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
+          requestedModel: operation.requestedModel,
+          requestedEndpointFamily: operation.requestedEndpointFamily,
+          includeUnavailable: true
+        }), operation.windowMs)
+      }
+      break
     case 'read_gateway_runtime':
       return await readGatewayRuntimeAsync(operation)
+    case 'list_provider_model_catalog':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listProviderModelCatalogAsync({
+          providerCode: operation.providerCode,
+          systemAccountId: operation.systemAccountId,
+          includeInactive: operation.includeInactive,
+          includeUnpriced: operation.includeUnpriced
+        })
+      }
+      break
     case 'save_codex_context_response_state':
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
@@ -727,6 +778,25 @@ function applyPrecheckErrorPolicyTarget(
         reason: operation.reason
       })
     : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
+}
+
+function recoverableUnavailableOpenAIAccounts(
+  result: { accounts: OpenAIAccountSecret[] },
+  windowMsInput: number | undefined
+): OpenAIAccountSecret[] {
+  const nowMs = Date.now()
+  const windowMs = Math.max(0, Math.min(Math.trunc(Number(windowMsInput ?? 0)), 60_000))
+  const latestRecoverableAtMs = nowMs + windowMs
+  return result.accounts.filter((account) => {
+    const cooldownUntilMs = account.cooldownUntil ? Date.parse(account.cooldownUntil) : undefined
+    if (cooldownUntilMs === undefined || !Number.isFinite(cooldownUntilMs) || cooldownUntilMs > latestRecoverableAtMs) {
+      return false
+    }
+    if (account.status === 'active') {
+      return cooldownUntilMs > nowMs
+    }
+    return account.status === 'temporary_unavailable' || account.status === 'rate_limited'
+  })
 }
 
 function authorizedBindingRuntimeTarget(account: OpenAIAccountSecret | undefined): {

@@ -13,6 +13,7 @@ import {
   type GatewayFailureUsageContext
 } from '../usage/records.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
+import type { UsageFailureAttribution } from '../../../storage/repositories.js'
 
 interface SendGatewayFailureResponseInput {
   req: Request
@@ -30,6 +31,7 @@ interface SendGatewayFailureResponseInput {
   }
   recordUsage?: boolean
   usageErrorMessage?: string
+  failureAttribution?: UsageFailureAttribution
 }
 
 export function sendGatewayFailureResponse(input: SendGatewayFailureResponseInput): void {
@@ -54,6 +56,7 @@ export function sendGatewayFailureResponse(input: SendGatewayFailureResponseInpu
       startedAt,
       responsePayload,
       errorMessage: usageErrorMessage,
+      failureAttribution: input.failureAttribution,
       responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, clientPayload)
     })
   }

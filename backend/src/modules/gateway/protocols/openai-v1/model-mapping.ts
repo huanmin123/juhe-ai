@@ -44,6 +44,8 @@ export interface ResolvedOpenAIModelMapping {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamModel: string
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+  runtimeSource?: AccountModelMapping['runtimeSource']
+  runtimeRouteRuleId?: string
 }
 
 export function resolveOpenAIAccountModelMapping(
@@ -68,7 +70,9 @@ export function resolveOpenAIAccountModelMapping(
     sourceModel: mapping.sourceModel,
     sourceEndpointFamily: mapping.sourceEndpointFamily,
     upstreamModel: mapping.upstreamModel,
-    upstreamEndpointFamily: mapping.upstreamEndpointFamily
+    upstreamEndpointFamily: mapping.upstreamEndpointFamily,
+    ...(mapping.runtimeSource ? { runtimeSource: mapping.runtimeSource } : {}),
+    ...(mapping.runtimeRouteRuleId ? { runtimeRouteRuleId: mapping.runtimeRouteRuleId } : {})
   }
 }
 
@@ -162,6 +166,12 @@ function isOpenAIModelMappingRuntimeConversionSupported(
   source: AccountModelMappingSourceEndpointFamily,
   upstream: AccountModelMappingUpstreamEndpointFamily
 ): boolean {
+  if (source === upstream) {
+    return true
+  }
+  if (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY) {
+    return true
+  }
   if (source === OPENAI_CHAT_COMPLETIONS_FAMILY) {
     return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
       || upstream === ANTHROPIC_MESSAGES_FAMILY

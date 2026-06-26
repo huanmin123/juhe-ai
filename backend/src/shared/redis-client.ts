@@ -29,6 +29,21 @@ export function createDedicatedRedisClient(url: string): Promise<RedisCommandCli
   return createRedisClient(normalizeRedisUrl(url))
 }
 
+export async function closeRedisClients(): Promise<void> {
+  const clientPromises = Array.from(redisClients.values())
+  redisClients.clear()
+  const settledClients = await Promise.allSettled(clientPromises)
+  for (const settledClient of settledClients) {
+    if (settledClient.status !== 'fulfilled') continue
+    const client = settledClient.value
+    if (client.quit) {
+      await client.quit().catch(() => undefined)
+    } else {
+      client.destroy?.()
+    }
+  }
+}
+
 async function createRedisClient(url: string): Promise<RedisCommandClient> {
   const { createClient } = await import('redis')
   const client = createClient({

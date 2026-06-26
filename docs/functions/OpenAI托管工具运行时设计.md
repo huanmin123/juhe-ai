@@ -35,7 +35,7 @@ OpenAI 到 Anthropic Messages 的高兼容桥接已经把普通 function tools�
 | --- | --- | --- | --- |
 | `code_interpreter` | 隔离代码沙箱，本地 worker / 子进程 / 容器执行 | Anthropic code execution 原生能力，需账号 profile 显式声明 | OpenAI 形态 guidance，不请求 Anthropic |
 | `computer` | Anthropic computer use 原生能力或本地 computer adapter | 受控浏览器 / 桌面自动化 adapter，需显式人工授权 | OpenAI 形态 guidance，不请求 Anthropic |
-| `mcp` | 网关 MCP proxy，按 server allowlist、auth 和 approval 执行 | Anthropic MCP connector，需 beta / profile / 账号能力声明 | OpenAI 形态 guidance，不请求 Anthropic |
+| `mcp` | 客户端本地 MCP 或原生支持 MCP 的上游 | 不由网关服务端承接 | OpenAI 形态 guidance，不请求 Anthropic、不连接 MCP server |
 | Codex `shell` | 受限本地命令 worker | 无 | OpenAI 形态 guidance，不请求 Anthropic |
 | Responses `tool_search` + `namespace` functions | 请求内工具清单本地展开为 Anthropic client tools，回包恢复 `namespace` | 完整 hosted search 事件只能由原生 Responses 或后续本地检索运行时承接 | 无可展开工具时 guidance，不请求 Anthropic |
 | Codex `skills` / 本地 `tool_search` | 网关本地工具目录和只读检索 | 无 | OpenAI 形态 guidance，不请求 Anthropic |
@@ -70,16 +70,15 @@ Bridge 层只读取 registry 决策，不直接判断具体运行时实现细节
 | --- | --- |
 | `guidance` | 默认值。返回 OpenAI 形态 agent guidance，不请求 Anthropic，不执行本地工具。 |
 | `reject` | 返回本地 OpenAI 风格错误，不请求 Anthropic，不执行本地工具。 |
-| `mock` | 仅用于 mockai / 回归验证的本地模拟输出。不得执行外部命令、不得访问网络、不得宣称生产可用。首批允许 Responses `code_interpreter` 输出模拟的 `code_interpreter_call` 生命周期，并允许 Responses `mcp` 走固定 allowlist 的本地 mock proxy。 |
-| `local_runtime` | 首批用于需要真实执行器的受限运行时入口。MCP real proxy 和 code interpreter 都可以先挂到该闸门；如果对应 executor 尚未接入，必须返回本地 OpenAI 风格 `service_unavailable`，不得继续请求 Anthropic、不得在主 Web 进程执行。 |
+| `mock` | 仅用于 mockai / 回归验证的本地模拟输出。不得执行外部命令、不得访问网络、不得宣称生产可用。首批允许 Responses `code_interpreter` 输出模拟的 `code_interpreter_call` 生命周期。MCP 不提供 mock/proxy runtime。 |
+| `local_runtime` | 用于需要真实执行器的受限运行时入口，例如 code interpreter 和 computer adapter；如果对应 executor 尚未接入，必须返回本地 OpenAI 风格 `service_unavailable`，不得继续请求 Anthropic、不得在主 Web 进程执行。MCP 不进入该模式。 |
 
-除 MCP 外，真实 `native_upstream` / `local_runtime` 模式必须等对应执行器、权限、审计和 mock 回归齐全后再加入配置枚举，避免通过环境变量提前宣称能力可用。MCP 的 `local_runtime` 只是 real proxy 的显式闸门：没有 executor hook、server allowlist、transport 和 approval 时，必须本地失败。`mock` 不属于真实执行器，只用于固定协议形态、审计边界和不请求上游的回归。
+真实 `native_upstream` / `local_runtime` 模式必须等对应执行器、权限、审计和 mock 回归齐全后再加入配置枚举，避免通过环境变量提前宣称能力可用。MCP 固定为 guidance，不提供服务端 runtime、mock、proxy、approval、execution record 或管理 UI。
 
 | 环境变量 | 工具 | 默认 |
 | --- | --- | --- |
 | `JUHE_AI_HOSTED_TOOL_CODE_INTERPRETER_MODE` | `code_interpreter` / `container` | `guidance` |
 | `JUHE_AI_HOSTED_TOOL_COMPUTER_MODE` | `computer` | `guidance` |
-| `JUHE_AI_HOSTED_TOOL_MCP_MODE` | `mcp` | `guidance` |
 | `JUHE_AI_HOSTED_TOOL_SHELL_MODE` | `shell` | `guidance` |
 | `JUHE_AI_HOSTED_TOOL_SKILLS_MODE` | `skills` | `guidance` |
 | `JUHE_AI_HOSTED_TOOL_TOOL_SEARCH_MODE` | `tool_search` | `guidance` |
@@ -169,153 +168,19 @@ mock runtime 的目的只是先固定协议外形和运行时分支，不代表�
 - 符号链接、特殊文件和无法 stat 的路径不作为可用产物暴露；下载必须走受控 Files 存储和授权校验，不能直接暴露临时目录路径。
 - 该 container files 兼容壳只覆盖本地 code interpreter 产物的列表、摘要和内容下载；暂不支持创建 container、向 container 上传文件、容器生命周期租约、容器删除、完整 OpenAI `cfile_*` ID 语义或 VM 级隔离。
 
-### 5.3 MCP Proxy
+### 5.3 MCP 边界
 
-MCP 只允许访问 allowlist 中的 server：
+MCP 不在网关服务端执行。OpenAI Responses `tools[].type=mcp`、Anthropic server tool 中的 MCP 语义，以及客户端本地 MCP 能力，都不由本项目中转层扩展协议或代理执行。
 
-- server label 和 URL 必须匹配 allowlist。
-- auth token 只能来自加密配置，不从用户 prompt 注入。
-- `require_approval` 需要映射为本地 approval policy；没有 approval 实现时必须 guidance 或拒绝。
-- 每次 tool call 记录 server、tool name、arguments 摘要、耗时、状态和错误码。
-- MCP 返回的大内容必须按大小上限截断或转文件引用。
+当前固定策略：
 
-#### 5.3.1 MCP mock proxy
+- Runtime Registry 对 `mcp` 固定返回 `guidance`，不读取 `JUHE_AI_HOSTED_TOOL_MCP_MODE`。
+- Bridge 不校验、登记、连接或代理 `server_label`、`server_url`、`connector_id`、`authorization`、`allowed_tools`、`require_approval` 等 MCP 执行字段。
+- 网关不输出 `mcp_list_tools`、`mcp_call`、`mcp_approval_request` 或 `mcp_approval_response` 的服务端执行结果；如果上游原生返回这些 OpenAI Responses item，只按普通协议事件处理，不代表网关执行过 MCP。
+- 不新增 MCP server allowlist、auth reference、approval 状态机、execution record、诊断接口、工具缓存、管理 API 或前端 UI。
+- 命中 MCP 能力缺口时返回 OpenAI 形态 agent guidance，提示客户端使用本地 MCP、调用方 agent 自行执行，或切换到原生支持该 MCP 能力的上游；本轮不请求 Anthropic、不连接远程 MCP server、不伪造工具结果。
 
-首批 MCP proxy 只做 mockai，不连接真实远程 MCP server：
-
-- 只在 `JUHE_AI_HOSTED_TOOL_MCP_MODE=mock` 时启用。
-- 只支持 Responses 入口；Chat 入口继续 guidance。
-- 固定 allowlist：`server_label=mock-mcp` 且 `server_url=https://mock.mcp.local/mcp`。其他 label / URL 视为未授权 server，本地拒绝。
-- 不请求 Anthropic，不请求远程 MCP，不访问网络，不使用或回显请求中的 `authorization`。
-- 返回 OpenAI Responses 形态的 `mcp_list_tools` item；`allowed_tools` 只过滤 mock 工具清单，不加载外部工具。
-- `require_approval` 省略或为 `always` 时返回 `mcp_approval_request`，不执行 mock tool call。
-- `require_approval=never`，或 `require_approval.never.tool_names` 命中 mock 工具时，返回 `mcp_call` 和一条普通 assistant message。
-- SSE 模式只输出 OpenAI Responses `response.output_item.*` 和 `response.completed` 事件，不使用 Chat `[DONE]`。
-- mock 输出必须带稳定 marker，方便回归断言；不得把用户 prompt、OAuth token、远程 URL 响应或真实第三方数据写入工具输出。
-
-mock proxy 的目的只是固定 MCP 输出 item、approval 和 allowlist 边界。真实 MCP proxy 仍需要 server allowlist 存储、认证引用、approval 状态机、远程 MCP transport、输出大小限制、审计省略和失败语义。
-
-当前已实现的 mock 子集：
-
-- Responses JSON：返回 `status=completed`，`output` 包含 `mcp_list_tools`，并按 approval 决策返回 `mcp_approval_request` 或 `mcp_call` 和 assistant message，`usage` 为 0。
-- Responses SSE：返回 OpenAI Responses 事件序列，不使用 Chat `[DONE]`，并在 `response.completed` snapshot 中带完整输出。
-- `allowed_tools`：只过滤固定 mock 工具清单；没有可用 mock tool 时返回普通 assistant message，不访问外部 registry。
-- 安全边界：只允许固定 `mock-mcp` server，不连接远程 MCP，不请求 Anthropic，不使用或回显 `authorization`，不把用户 prompt 写入工具输出。
-
-#### 5.3.2 MCP real proxy
-
-真实 MCP proxy 是网关本地运行时，不是 Anthropic Messages 字段映射。首批只承接 `server_url` 形式的远程 MCP server；OpenAI `connector_id` 属于 OpenAI 维护连接器，需要单独 connector adapter，不得用 remote MCP proxy 伪装支持。
-
-当前首批代码已启用 runtime gate、allowlist executor hook 和 mock-server transport 子集：
-
-- `JUHE_AI_HOSTED_TOOL_MCP_MODE=local_runtime` 时，Responses `tools[].type=mcp` 不再进入普通 guidance。
-- 请求仍先执行 MCP 定义校验；重复 `server_label`、`server_url` / `connector_id` 冲突、缺少 server 标识、非 HTTPS `server_url`、凭据 header 冲突等错误本地拒绝。
-- `connector_id` 在 local runtime 下固定返回本地错误，直到 connector adapter 独立实现。
-- 如果未配置 MCP proxy executor，返回本地 OpenAI 风格 `service_unavailable` / `openai_anthropic_bridge_mcp_proxy_unavailable`，并且不请求 Anthropic、不连接远程 MCP。
-- JSON 非流式和 Responses SSE 免批路径已经完成模型驱动工具循环：仅当 `require_approval=never`，或请求 `allowed_tools` 全部命中 `require_approval.never.tool_names` 时，`tools/list` 结果才会导入 Anthropic client tools；Anthropic 返回 `tool_use` 后，网关执行 MCP `tools/call`，把结果作为 Anthropic `tool_result` 二次回灌，并输出 OpenAI Responses `mcp_list_tools` / `mcp_call` / 最终 assistant message。
-- `runtimeConfig.mcpProxy.servers` 命中 allowlist 后，executor 使用 MCP JSON-RPC POST 顺序执行 `initialize`、`notifications/initialized`、`tools/list` 和 `tools/call`。
-- allowlist server 字段包含 `label`、`serverUrl`、`enabled`、`allowedTools`、可选 `authorization` 和 `allowRequestAuthorization`；请求里的 `authorization` 只有在 allowlist 明确允许时才发给 MCP server，不写响应。
-- `allowed_tools` 会同时受 server allowlist 和请求字段过滤；没有可用工具时返回普通 assistant message，不调用 `tools/call`。
-- `require_approval` 省略或为 `always` 时返回 `mcp_approval_request`；`require_approval=never` 或免批工具命中时才执行 `tools/call`。
-- 默认审批路径会写入业务库 `pending` 记录，并生成绑定 `server_label`、`server_url`、`tool_name`、`arguments_digest` 和当前 scope 的 `approval_request_id`；收到 `mcp_approval_response` 时必须命中该记录，否则本地 400 / 403，且不请求 Anthropic、不执行 `tools/call`。
-- MCP approval 真实路径必须落入业务库状态机，审批记录绑定当前 `system_account_id`、`api_key_id`、`group_id`、`server_label`、`server_url`、`tool_name` 和 `arguments_digest`；跨 API Key / 分组复用 approval id 必须本地拒绝，不执行远程工具。
-- approval 状态首段包含 `pending`、`approved`、`rejected`、`expired`、`consumed`：生成 `mcp_approval_request` 时写入 `pending`；收到 `approve=false` 时写入 `rejected` 并返回普通 assistant guidance；收到 `approve=true` 时仅允许从未过期 `pending` 进入 `approved`，执行前标记 `consumed`，防止同一个 approval id 被重复执行。
-- 人工审批 API 首段只允许把 `pending` approval 标记为 `approved` 或 `rejected`，用于后台队列管理；该 API 不执行远程 MCP `tools/call`。真正远程执行仍必须由客户端后续请求携带匹配的 OpenAI Responses `mcp_approval_response` 触发，执行前再把 `approved` 标记为 `consumed`。
-- 每次进入远程 MCP `tools/call` 都必须写入 execution record，绑定当前 `system_account_id`、`api_key_id`、`group_id`、`trace_id`、`approval_request_id`、server、tool、arguments digest、耗时、状态和错误摘要；成功记录 output digest / bytes / truncated，不保存远程输出正文。
-- execution record 必须提供管理侧和用户侧分页查询入口：管理侧可按 `systemAccountId`、`apiKeyId`、`groupId`、`traceId`、`approvalRequestId`、server、tool、status 和时间窗口筛选；用户侧只能查看当前系统账户 scope。查询结果仍只返回摘要、digest、字节数、truncated、错误码和省略元数据，不提供远程输出正文读取接口。
-- `tools/call` 输出按 `mcpProxy.maxOutputBytes` 截断，并在 `mcp_call.metadata.output_truncated` 标记省略。
-- 当前 JSON 非流式免批路径会把 MCP `tool_result` 回灌给 Anthropic 生成最终 `output_text`；Responses SSE 免批路径会先缓冲首轮 Anthropic SSE，再执行同一套受限多轮工具循环，并以 OpenAI Responses typed SSE 输出完整 terminal snapshot；默认 approval 或非免批工具仍只返回本地 `mcp_approval_request`。
-- MCP JSON-RPC transport 已补齐有限重试和重定向拒绝诊断：连接失败、超时和可重试 HTTP 状态可以在当前 MCP server 上重试；3xx 不跟随，返回稳定本地错误码并只暴露状态码和目标摘要。重试次数和延迟由 `JUHE_AI_MCP_PROXY_MAX_RETRIES` / `JUHE_AI_MCP_PROXY_RETRY_DELAY_MS` 控制。
-- MCP approval pending 记录默认 5 分钟过期，由 `JUHE_AI_MCP_PROXY_APPROVAL_TTL_SECONDS` 控制；过期 approval response 本地拒绝，不调用远程 MCP。
-- mockai 可在显式开启私有上游 allowlist 时使用 loopback HTTP MCP server；生产路径仍要求 HTTPS。
-
-当前首批 executor 仍不是完整 hosted MCP 等价实现：
-
-- JSON 非流式和 Responses SSE 免批路径已完成“模型选择工具 + 网关执行工具 + Anthropic tool_result 回灌 + OpenAI Responses 工具轨迹”第一段；默认 approval 或非免批工具仍返回本地 `mcp_approval_request`，不请求 Anthropic，也不执行 `tools/call`。
-- 当前 MCP 工具循环支持受限多轮，默认上限为 4 轮；达到上限后会受控收口，不继续无限递归调用工具。
-- Responses SSE 当前采用缓冲式受限多轮工具循环：首轮 Anthropic SSE 被聚合成完整 `tool_use` 后再执行 MCP 和二次回灌，最终一次性输出 OpenAI typed SSE。普通 function call 已按 Anthropic `input_json_delta.partial_json` 输出 `response.function_call_arguments.delta/done`；MCP `mcp_call` 在完整参数已知后输出单片段 `response.mcp_call_arguments.delta`、`response.mcp_call_arguments.done` 和 `response.mcp_call.in_progress`，成功时输出最终 `response.output_item.done`，失败时输出 `response.mcp_call.failed` 和带 `error` 的最终 `mcp_call` item，再用 `response.completed` 收口。这不是 OpenAI 原生远程 MCP 的实时逐片段执行流；`response.mcp_call.failed` 只表示单次工具调用失败，不能被响应检查策略当作整个 Responses 流失败事件。
-- approval request 当前已完成业务库状态机和人工审批 API 首段：`pending` / `approved` / `rejected` / `expired` / `consumed` 与当前 API Key / 分组 scope 绑定；后台 API 只改审批状态，不执行远程 MCP。execution record 首段已写入业务库并提供管理侧 / 用户侧摘要查询 API，后续再补 UI 审批队列、完整查询页面和长期审计视图。
-- 远程 Streamable HTTP JSON 响应、Streamable HTTP POST 返回 `text/event-stream` 的 JSON-RPC result frame、legacy HTTP+SSE 双端点长连接状态机、有限重试和重定向拒绝诊断已有 mock 回归；真实第三方 HTTP-SSE server 联调仍需继续补齐。
-- server allowlist 首段已进入业务库并提供管理侧 / 用户侧 API；运行时先读取当前系统账户 scope 下的 DB enabled server，再合并 `JUHE_AI_MCP_PROXY_SERVERS_JSON` bootstrap / 应急来源。环境变量不再作为唯一生产配置面。
-- server 可用性诊断和工具 schema 缓存必须是显式人工 / 后台动作，不能由列表页或普通详情页隐式触发远程 `tools/list`。诊断入口只执行 `initialize`、`notifications/initialized` 和 `tools/list`，复用 MCP proxy 的超时、重试、重定向拒绝、响应体上限和输出省略规则；诊断结果只保存状态、工具数量、错误码、错误摘要、耗时和工具 schema 摘要，不保存明文 authorization、远程输出正文或请求中的临时授权。
-
-OpenAI Responses 的 MCP 契约决定了真实 proxy 需要同时处理四类状态：
-
-- server 定义：`type=mcp`、`server_label`、`server_url` 或 `connector_id`、可选 `server_description`、`authorization`、`allowed_tools`、`defer_loading` 和 `require_approval`。
-- 工具导入：成功时输出 `mcp_list_tools`，并把工具定义保留在后续上下文；失败时输出可诊断的失败 item 或本地协议错误。
-- 工具审批：默认应生成 `mcp_approval_request`；只有 `require_approval=never` 或策略明确免批的工具才允许直接调用。
-- 工具调用：成功时输出 `mcp_call`，失败时在 `mcp_call.error` 中保留 MCP 协议、执行或 transport 错误摘要。
-
-首批 real proxy 的长期 schema 边界：
-
-| 数据对象 | 用途 | 关键字段 |
-| --- | --- | --- |
-| MCP server allowlist | 管理允许访问的远程 MCP server | `id`、`system_account_id`、`label`、`server_url`、`description`、`enabled`、`allowed_tool_names`、`default_approval_policy`、`timeout_ms`、`max_retries`、`max_body_bytes`、`output_limit_bytes`、`allow_request_authorization`、`authorization_ref`、`created_at`、`updated_at` |
-| MCP auth reference | 保存或引用访问远程 MCP 的凭据 | `server_id`、`credential_ref`、`auth_type`、`expires_at`、`scope_summary`；不保存明文 token 到普通业务字段 |
-| MCP tool cache | 缓存 `mcp_list_tools` 结果，降低每轮导入成本 | `server_id`、`tool_name`、`input_schema`、`description`、`annotations`、`etag`、`expires_at`、`last_checked_at` |
-| MCP server diagnostic | 记录显式诊断结果 | `id`、`server_id`、`system_account_id`、`status`、`tool_count`、`error_code`、`error_message`、`started_at`、`finished_at`、`duration_ms`、`omission_metadata` |
-| MCP approval request | 记录待审批调用 | `approval_request_id`、`server_id`、`tool_name`、`arguments_digest`、`arguments_preview`、`status`、`created_by_api_key_id`、`expires_at` |
-| MCP execution record | 审计真实调用 | `call_id`、`system_account_id`、`api_key_id`、`group_id`、`trace_id`、`approval_request_id`、`server_label`、`server_url`、`tool_name`、`arguments_digest`、`output_digest`、`output_bytes`、`duration_ms`、`status`、`error_code`、`omission_metadata`；只提供摘要查询，不提供远程输出正文读取 |
-
-首批 real proxy 的执行流程：
-
-1. Bridge 发现 Responses `tools[].type=mcp` 且 Runtime Registry 判定为 `local_runtime`。
-2. 校验 `server_label` / `server_url` 命中 allowlist；同一请求内 `server_label` 不能重复，`server_url` 和 `connector_id` 不能同时存在。长期路径先读业务库 allowlist，再合并环境 bootstrap allowlist；冲突时业务库明确禁用优先。
-3. 从加密凭据引用或本次请求 `authorization` 构造 MCP transport header；`authorization` 只进入远程请求，不写入响应、审计正文或普通日志。
-4. 如果上下文已有可信 `mcp_list_tools` 且未过期，可复用；否则向远程 server 执行 tools/list，再按 `allowed_tools` 过滤。
-5. 根据 `require_approval`、server 默认策略和工具风险等级决定是否生成 `mcp_approval_request`。
-6. 后台人工审批 API 可把匹配当前系统账户 scope 的 `pending` approval 标记为 `approved` 或 `rejected`；该 API 只改变状态，不调用远程 MCP。
-7. 收到匹配当前 server / tool / arguments、当前 API Key / 分组 scope 且未过期的 `mcp_approval_response` 后再执行 tools/call；`approval_request_id` 不存在、scope 不匹配、状态不是 `approved` 或 `pending`、已过期或 arguments digest 不匹配时本地拒绝，拒绝审批时写入 `rejected` 并生成普通 assistant guidance，不调用远程 MCP。
-8. 执行 `tools/call` 时写入 execution record；成功时记录 output digest / bytes / truncation，失败时记录错误码和错误摘要，但不保存远程输出正文。
-9. 审计查询通过 `/__aisys__/api/mcp-execution-records` 和 `/__aisys__/api/my-mcp-execution-records` 分页读取摘要，按系统账户权限裁剪 scope。
-10. 将远程工具输出转成 Responses `mcp_call.output` 字符串；超限内容截断或转文件引用，并在审计里记录 omission metadata。
-11. SSE 路径按 Responses 事件输出 `response.output_item.added`、`response.output_item.done`、必要的 text delta 和最终 `response.completed`；不使用 Chat `[DONE]`。
-
-server 诊断与工具缓存流程：
-
-1. 管理侧或用户侧对自己 scope 内的 enabled MCP server 显式调用诊断接口；列表页、详情页和普通筛选不触发远程访问。
-2. 诊断接口按 allowlist 记录构造 runtime server，只允许使用已保存的安全字段；如需要一次性请求 authorization，只能在 server 开启 `allow_request_authorization` 时由本次诊断请求携带，且不保存、不回显。
-3. 诊断复用 MCP proxy transport 执行 `initialize`、可选 `notifications/initialized` 和 `tools/list`，按 server 级 timeout / retry / max body bytes 限制收口。
-4. 成功时用 `tools/list` 结果替换当前 server 的工具 schema cache：按工具名唯一保存 `description`、`input_schema`、`annotations`、`last_checked_at` 和 `expires_at`；返回给前端的仍是本地缓存摘要。
-5. 失败时写入 diagnostic record，保留稳定错误码和短错误摘要，不清空已有成功缓存，避免一次网络波动导致运行期失去历史工具定义参考。
-6. 诊断接口不执行 `tools/call`，不生成 approval request，不写 execution record；它只证明远程 server 可连接、工具可导入和 schema 可缓存。
-
-首批 real proxy 的拒绝边界：
-
-- `connector_id`：返回 guidance 或本地错误，直到 connector adapter 独立实现。
-- 未命中 allowlist 的 `server_label` / `server_url`：本地 OpenAI 错误，不连接远程 server。
-- 请求同时提供 `server_url` 和 `connector_id`、同请求重复 `server_label`、没有任何 server 标识：本地 OpenAI 错误。
-- `authorization` 与自定义 `headers.Authorization` 同时出现：本地 OpenAI 错误，避免凭据来源不清。
-- `allowed_tools` 指定不存在的工具：工具导入失败或返回空工具集，不把未允许工具暴露给模型。
-- 诊断请求未命中 scope、server disabled、server URL 非 HTTPS、请求 authorization 未被 allowlist 允许：本地拒绝，不访问远程 server。
-- approval request 过期、跨 API Key / 分组 / 授权边界、approval id 不匹配：本地 OpenAI 错误，不调用远程 MCP。
-- 远程输出超限、非 UTF-8 文本、大二进制、URL 回传、图片 URL 回传：按输出策略截断、引用或拒绝；不能把远程大 payload 原样写入审计正文。
-
-server allowlist 存储化首段：
-
-- 新增业务库 `openai_compatible_mcp_servers`，按 `system_account_id` 归属；管理侧可按系统账户查看 / 管理，用户侧只能管理自身 scope。
-- 唯一性以 `system_account_id + label` 为准，同一系统账户下 label 不能重复；请求执行时必须同时匹配 label 和 `server_url`，避免 label 被重定向到其他 server。
-- 字段只保存安全摘要和引用：`authorization_ref` 只引用凭据，不把明文 token 放入普通字段、响应、审计正文或前端表格。
-- `allowed_tool_names` 为空表示允许远程 `tools/list` 返回的所有工具；非空时还要继续受请求 `allowed_tools` 过滤。
-- `default_approval_policy` 首段只允许 `always` / `never`；默认 `always`。请求声明 `require_approval=never` 时仍不能覆盖 server 上更严格的 `always` 策略。
-- 运行时合并规则：业务库 enabled server 优先；环境变量 server 可作为 bootstrap，仅在没有同 scope 同 label 禁用记录时参与；生产 UI 应提示环境变量项不可在数据库内直接编辑。
-- 管理 API 不触发远程 `tools/list`。server 可用性检测、工具缓存和 schema 校验后续单独做诊断任务，避免列表页请求链路访问外部 MCP。
-
-首批 real proxy 的 transport 策略：
-
-- 仅支持 HTTPS `server_url`。
-- 支持 MCP Streamable HTTP 和 legacy HTTP+SSE transport。按 MCP 2025-06-18 规范，客户端先向用户配置的 `server_url` POST `initialize`；如果成功，视为 Streamable HTTP；如果返回 4xx，例如 404 / 405，再 GET 同一个 `server_url`，等待 SSE 首个 `endpoint` 事件，并把后续 JSON-RPC 通过该 endpoint POST。
-- Streamable HTTP 路径必须继续支持两种响应：`application/json` 单个 JSON-RPC 对象，以及 POST 响应直接升级为 `text/event-stream` 并在 `message` 帧里返回匹配 `id` 的 JSON-RPC response。
-- legacy HTTP+SSE 路径必须保持 GET SSE 连接，等待 `event: endpoint` 后解析 endpoint URI；endpoint 必须按 `server_url` 相对解析且与原 `server_url` 同 origin，禁止跨域 endpoint、禁止跟随重定向、禁止把 endpoint query 中的敏感内容写入错误正文。
-- legacy HTTP+SSE 后续请求必须向 endpoint POST JSON-RPC；请求型 JSON-RPC 要从 GET SSE 流的 `message` 事件里读取匹配 `id` 的 response，忽略无关 notification / request；notification 型 JSON-RPC 只要求 endpoint POST 成功，不等待 response。
-- legacy HTTP+SSE 连接必须受 server 级 timeout、SSE 累计字节上限和请求 abort signal 控制；连接 EOF、超时、endpoint 缺失、endpoint 跨域、未收到匹配 `id` 都返回稳定本地 transport 错误码。
-- 每次 initialize、tools/list 和 tools/call 都有独立超时、总字节上限和重试上限；重试只针对连接失败、超时和可重试 HTTP 状态，不重放 JSON-RPC 协议错误。legacy HTTP+SSE 只有在尚未向 endpoint 成功 POST 具体 JSON-RPC 前允许按初始化探测重试；已经发送的 `tools/call` 不自动重放，避免远程副作用重复执行。
-- 默认不跟随任何重定向；收到 3xx 时本地拒绝并返回 `openai_anthropic_bridge_mcp_proxy_redirect_blocked`，如后续允许，必须在 allowlist 中记录最终域名。
-- 远程错误只影响当前工具运行，不把上游模型账号标记为不可用。
-- 参考官方规范：[MCP 2025-06-18 Transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) 和 [MCP 2024-11-05 HTTP with SSE](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports)。
-
-真实 MCP proxy 启用前必须新增专门 mockai：本机 mock MCP server 覆盖 tools/list 成功、tools/list 失败、tools/call 成功、tools/call 错误、SSE transport、auth 缺失、output 超限、approval required、approval reject、approval expired、allowlist reject 和敏感字段扫描。
-
+这条边界是产品决策，不是暂缺实现。后续如需 MCP，应优先引导客户端本地 MCP 或选择原生支持该能力的供应商，而不是在中转服务端扩展 MCP 协议。
 ### 5.4 Computer Adapter
 
 `computer` 需要状态和动作协议，不能只给模型一段说明：
@@ -354,7 +219,7 @@ OpenAI 官方 hosted tool search 支持把 function、namespace 或 MCP server �
 - 回包时把 Anthropic `tool_use.name` 映射回 Responses `function_call.name`，并在有 namespace 时补 `function_call.namespace`。
 - 不输出伪造的 `tool_search_call` / `tool_search_output`。需要这些精确事件的客户端应直连原生 OpenAI Responses，或等待后续本地 tool search runtime。
 - `tool_choice.type=allowed_tools` 仍按展开后的函数集合过滤；强制指定 namespace function 时必须能映射到唯一 Anthropic 工具名。
-- `mcp`、远程 registry、权限化动态工具发现仍按 MCP Proxy / Runtime Registry 计划推进，不纳入本地展开。
+- `mcp`、远程 registry、权限化动态工具发现不纳入本地展开；MCP 统一返回客户端 / 本地 agent guidance。
 
 ## 6. 协议输出
 
@@ -389,7 +254,7 @@ Chat 入口没有完整 hosted tool item 结构时，只输出合法 Chat Comple
 | guidance | 未配置执行器时 Responses / Chat 返回 OpenAI 形态 guidance 且不请求上游 |
 | 权限 | API Key / 分组 / 账号未授权时拒绝，不执行本地工具 |
 | code interpreter | mock 模式 JSON / SSE 生命周期、`include=code_interpreter_call.outputs` 固定 logs、不执行代码、不请求 Anthropic；local_runtime worker 覆盖成功、stderr、超时、输出超限、安全 env 不泄漏、文件产物元数据摘要、本地 Files `file_id` 下载和 `/v1/containers/{container_id}/files` / content 兼容壳；真实容器沙箱后再补 create/upload/delete container、生命周期和更强网络隔离 |
-| MCP | mock 模式 allowlist 命中、未授权 server、authorization 不回显、approval request、allowed_tools 过滤、JSON / SSE `mcp_list_tools` / `mcp_call` 生命周期；local_runtime 覆盖 approval 状态机、scope、reject、expired、replay、execution record、Streamable HTTP / POST-SSE / legacy HTTP+SSE mock transport 和 tool 输出超限；后续再补真实第三方 HTTP-SSE 联调、人工审批 UI 和 execution record 查询页面 |
+| MCP | Responses `tools[].type=mcp` 返回正常 guidance，文案指向客户端本地 MCP / 原生上游；不请求 Anthropic、不连接远程 MCP、不输出网关生成的 `mcp_list_tools` / `mcp_call` / `mcp_approval_request` |
 | computer | adapter 未配置、`computer=mock` JSON / SSE 固定 `computer_call`、`computer_call_output` 收口且不回显截图正文、不请求上游；`computer=local_runtime` 首段覆盖 adapter gate、测试 adapter `computer_call` 输出、动作/会话 metadata、截图正文省略和不上游；HTTP sandbox adapter 首段覆盖显式配置、adapter HTTP 调用、响应大小限制、JSON schema 归一化、动作/metadata 脱敏和不上游；后续完整 Playwright / container adapter 再补动作执行、域名 allowlist、截图引用持久化、人工确认和审计摘要 |
 | SSE | tool in_progress、delta / action、completed、failed、response terminal |
 | 审计 | 工具大输出和截图正文省略，metadata 保留 |

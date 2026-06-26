@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
-import type { ClientCompatibilityCapability } from '../../../domain/types.js'
+import type { ApiKeyClientProfile, ClientCompatibilityCapability } from '../../../domain/types.js'
 import { gatewayProtocolResponseProtocolForRequest } from '../protocols/registry.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { requestStream } from '../request/metadata.js'
@@ -39,7 +39,7 @@ export interface OpenAIGatewayClientStrategyContext {
   upstreamAdapter: OpenAIGatewayUpstreamAdapter
   codexCompactionExpected: boolean
   codexTurn?: OpenAIGatewayCodexTurnContext
-  clientProfileSource?: 'default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature' | 'gemini_cli_request_signature'
+  clientProfileSource?: 'default' | 'api_key_default' | 'explicit_header' | 'codex_turn_metadata' | 'claude_code_request_signature' | 'gemini_cli_request_signature'
   allowCodexStreamClientRetry: boolean
   allowCodexTurnAccountAvoidance: boolean
 }
@@ -62,14 +62,15 @@ const gatewayClientStrategyBodyHashStringEdgeChars = 4 * 1024
 
 export function resolveOpenAIGatewayClientStrategy(
   req: Request,
-  identity: OpenAIGatewayClientStrategyIdentity
+  identity: OpenAIGatewayClientStrategyIdentity,
+  options: { defaultClientProfile?: ApiKeyClientProfile } = {}
 ): OpenAIGatewayClientStrategyContext {
   const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, identity)
   if (responseProtocol === 'anthropic_v1') {
-    return resolveAnthropicGatewayClientStrategy(req)
+    return resolveAnthropicGatewayClientStrategy(req, options)
   }
   if (responseProtocol === 'gemini_v1beta') {
-    return resolveGeminiGatewayClientStrategy(req)
+    return resolveGeminiGatewayClientStrategy(req, options)
   }
   const downstreamProtocol = resolveOpenAIGatewayDownstreamProtocol(req)
   const codexCompactionExpected = codexCompactionExpectedForRequest(req)
@@ -80,52 +81,58 @@ export function resolveOpenAIGatewayClientStrategy(
     ? buildCodexTurnContext(req, identity, codexMetadata)
     : undefined
 
+  const forcedCodexProfile = options.defaultClientProfile === 'codex'
+  const forcedGenericOpenAIProfile = options.defaultClientProfile === 'generic_openai'
   return {
-    clientProfile: codexTurn ? 'codex' : 'generic_openai',
-    requestClientCompatibility: codexTurn ? 'codex_responses' : 'openai_standard',
+    clientProfile: forcedCodexProfile ? 'codex' : forcedGenericOpenAIProfile ? 'generic_openai' : codexTurn ? 'codex' : 'generic_openai',
+    requestClientCompatibility: forcedCodexProfile || codexTurn ? 'codex_responses' : 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'openai_mixed',
     codexCompactionExpected: Boolean(codexTurn) && codexCompactionExpected,
     codexTurn,
-    clientProfileSource: codexTurn ? 'codex_turn_metadata' : 'default',
+    clientProfileSource: forcedCodexProfile || forcedGenericOpenAIProfile ? 'api_key_default' : codexTurn ? 'codex_turn_metadata' : 'default',
     allowCodexStreamClientRetry: Boolean(codexTurn),
     allowCodexTurnAccountAvoidance: Boolean(codexTurn)
   }
 }
 
-export function resolveAnthropicGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
+export function resolveAnthropicGatewayClientStrategy(req: Request, options: { defaultClientProfile?: ApiKeyClientProfile } = {}): OpenAIGatewayClientStrategyContext {
   const downstreamProtocol = resolveAnthropicGatewayDownstreamProtocol(req)
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
   const supportedAnthropicShape = downstreamProtocol !== 'unknown_stream'
   const explicitClaudeCode = explicitProfile === 'claude_code' && supportedAnthropicShape
   const signatureClaudeCode = !explicitClaudeCode && supportedAnthropicShape && isClaudeCodeAnthropicRequestSignature(req)
-  const claudeCode = explicitClaudeCode || signatureClaudeCode
+  const forcedClaudeCode = options.defaultClientProfile === 'claude_code' && supportedAnthropicShape
+  const forcedGenericAnthropic = options.defaultClientProfile === 'generic_anthropic' && supportedAnthropicShape
+  const claudeCode = forcedClaudeCode || (!forcedGenericAnthropic && (explicitClaudeCode || signatureClaudeCode))
   return {
     clientProfile: claudeCode ? 'claude_code' : 'generic_anthropic',
     requestClientCompatibility: claudeCode ? 'claude_code' : 'anthropic_native',
     downstreamProtocol,
     upstreamAdapter: 'anthropic_api_key',
     codexCompactionExpected: false,
-    clientProfileSource: explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
+    clientProfileSource: forcedClaudeCode || forcedGenericAnthropic ? 'api_key_default' : explicitClaudeCode ? 'explicit_header' : signatureClaudeCode ? 'claude_code_request_signature' : 'default',
     allowCodexStreamClientRetry: false,
     allowCodexTurnAccountAvoidance: false
   }
 }
 
-export function resolveGeminiGatewayClientStrategy(req: Request): OpenAIGatewayClientStrategyContext {
+export function resolveGeminiGatewayClientStrategy(req: Request, options: { defaultClientProfile?: ApiKeyClientProfile } = {}): OpenAIGatewayClientStrategyContext {
   const downstreamProtocol = resolveGeminiGatewayDownstreamProtocol(req)
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
   const supportedGeminiShape = downstreamProtocol !== 'unknown_stream'
   const explicitGeminiCli = explicitProfile === 'gemini_cli' && supportedGeminiShape
   const signatureGeminiCli = !explicitGeminiCli && supportedGeminiShape && isGeminiCliRequestSignature(req)
-  const geminiCli = explicitGeminiCli || signatureGeminiCli
+  const forcedGeminiCli = options.defaultClientProfile === 'gemini_cli' && supportedGeminiShape
+  const forcedGenericGemini = options.defaultClientProfile === 'generic_gemini' && supportedGeminiShape
+  const geminiCli = forcedGeminiCli || (!forcedGenericGemini && (explicitGeminiCli || signatureGeminiCli))
   return {
     clientProfile: geminiCli ? 'gemini_cli' : 'generic_gemini',
     requestClientCompatibility: 'openai_standard',
     downstreamProtocol,
     upstreamAdapter: 'gemini_api_key',
     codexCompactionExpected: false,
-    clientProfileSource: explicitGeminiCli ? 'explicit_header' : signatureGeminiCli ? 'gemini_cli_request_signature' : 'default',
+    clientProfileSource: forcedGeminiCli || forcedGenericGemini ? 'api_key_default' : explicitGeminiCli ? 'explicit_header' : signatureGeminiCli ? 'gemini_cli_request_signature' : 'default',
     allowCodexStreamClientRetry: false,
     allowCodexTurnAccountAvoidance: false
   }

@@ -7,11 +7,11 @@
 - `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合自身和显式纳入聚合的 OpenAI-compatible 子供应商模型，不自动包含 DeepSeek 等独立供应商。
 - `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。
 
-智谱 GLM 的接入细节单独写在 [智谱 GLM 账号接入](智谱GLM账号接入.md)，DeepSeek 的接入细节单独写在 [DeepSeek 账号接入](DeepSeek账号接入.md)。本文只维护 OpenAI 与 GPT 语义，避免把 GLM、DeepSeek 的厂商兼容差异和 OpenAI / GPT 账户接入混在一起。
+Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropic 账号接入](Anthropic账号接入.md)、[Gemini 账号接入](Gemini账号接入.md)、[智谱 GLM 账号接入](智谱GLM账号接入.md) 和 [DeepSeek 账号接入](DeepSeek账号接入.md)。本文只维护 OpenAI 与 GPT 语义，避免把其他厂商兼容差异和 OpenAI / GPT 账户接入混在一起。
 
-这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。智谱 GLM 和 DeepSeek 虽然都提供 OpenAI-compatible surface，但已按独立专题接入。
+这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。Gemini OpenAI Chat、智谱 GLM 和 DeepSeek 虽然都提供 OpenAI-compatible surface，但已按独立专题接入。
 
-本文覆盖的可创建和可调度供应商协议档案有两个：`profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。GLM 档案 `profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 与 `profile_glm_coding_anthropic_v1` 单独见 [智谱 GLM 账号接入](智谱GLM账号接入.md)；DeepSeek 档案 `profile_deepseek_openai_v1` 与 `profile_deepseek_anthropic_v1` 单独见 [DeepSeek 账号接入](DeepSeek账号接入.md)。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或由供应商解析出档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
+本文覆盖的可创建和可调度供应商协议档案只有 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。Anthropic、Gemini、GLM、DeepSeek 档案以各自专题为准。账户、分组、账号测试任务、导入协议和公开推送接口都必须带上或由供应商解析出档案；后端会把档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。`providerCode` 只说明供应商，不能单独表达上游协议、端点族和客户端策略。
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 `API Key 管理` 或 `我的 API Key` 页面生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
@@ -148,7 +148,7 @@ type GptAccountType = 'api_key' | 'oauth'
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
-- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；本文覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，GLM 当前另有 `profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 与 `profile_glm_coding_anthropic_v1`，DeepSeek 当前另有 `profile_deepseek_openai_v1` 与 `profile_deepseek_anthropic_v1`。
+- `accounts.provider_protocol_profile_id` 和 `groups.provider_protocol_profile_id` 是账户加入分组、授权实例绑定、API Key 号池路由和网关候选过滤的硬边界；本文覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 账户标签按系统账户维度保存，一个账户可以绑定多个标签；新增和编辑弹窗支持从下拉选择已有标签，也支持直接输入新标签。下拉内可删除未绑定任何账户的标签；标签已绑定账户时禁止删除。

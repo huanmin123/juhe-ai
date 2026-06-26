@@ -172,6 +172,9 @@ function refillManualAccountTestQueue(): void {
 }
 
 function accountTestTaskConcurrency(): number {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return defaultManualAccountTestConcurrency
+  }
   const value = getSettings().accountTestTaskConcurrency
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return defaultManualAccountTestConcurrency

@@ -25,7 +25,7 @@ services:
       - -c
       - log_min_duration_statement=1000
     ports:
-      - "${JUHE_AI_POSTGRES_PORT:-5432}:5432"
+      - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_POSTGRES_PORT:-5432}:5432"
     volumes:
       - juhe-ai-postgres-data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
@@ -55,7 +55,7 @@ services:
       SERVER_RESET_QUERY: DISCARD ALL
       AUTH_TYPE: scram-sha-256
     ports:
-      - "${JUHE_AI_PGBOUNCER_PORT:-6432}:5432"
+      - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_PGBOUNCER_PORT:-6432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$${DB_USER}\" -d \"$${DB_NAME}\""]
       interval: 10s
@@ -80,7 +80,7 @@ services:
       REDIS_CACHE_PASSWORD: ${JUHE_AI_REDIS_CACHE_PASSWORD:?JUHE_AI_REDIS_CACHE_PASSWORD is required}
       REDIS_CACHE_MAXMEMORY: ${JUHE_AI_REDIS_CACHE_MAXMEMORY:-512mb}
     ports:
-      - "${JUHE_AI_REDIS_CACHE_PORT:-6379}:6379"
+      - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_REDIS_CACHE_PORT:-6379}:6379"
     volumes:
       - juhe-ai-redis-cache-data:/data
     healthcheck:
@@ -107,7 +107,7 @@ services:
       REDIS_STATE_PASSWORD: ${JUHE_AI_REDIS_STATE_PASSWORD:?JUHE_AI_REDIS_STATE_PASSWORD is required}
       REDIS_STATE_MAXMEMORY: ${JUHE_AI_REDIS_STATE_MAXMEMORY:-512mb}
     ports:
-      - "${JUHE_AI_REDIS_STATE_PORT:-6380}:6379"
+      - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_REDIS_STATE_PORT:-6380}:6379"
     volumes:
       - juhe-ai-redis-state-data:/data
     healthcheck:
@@ -134,7 +134,7 @@ services:
       redis-state:
         condition: service_healthy
     ports:
-      - "${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
+      - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
@@ -143,9 +143,9 @@ services:
       JUHE_AI_PUBLIC_ORIGIN: ${JUHE_AI_PUBLIC_ORIGIN:-}
       JUHE_AI_ALLOWED_ORIGINS: ${JUHE_AI_ALLOWED_ORIGINS:-}
       JUHE_AI_SECRET: ${JUHE_AI_SECRET:?JUHE_AI_SECRET is required}
-      JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-false}
+      JUHE_AI_COOKIE_SECURE: ${JUHE_AI_COOKIE_SECURE:-true}
       JUHE_AI_COOKIE_SAME_SITE: ${JUHE_AI_COOKIE_SAME_SITE:-lax}
-      JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-false}
+      JUHE_AI_TRUST_PROXY: ${JUHE_AI_TRUST_PROXY:-true}
       JUHE_AI_DB_SERVICE_HTTP_HOST: ${JUHE_AI_DB_SERVICE_HTTP_HOST:-127.0.0.1}
       JUHE_AI_DB_SERVICE_HTTP_PORT: ${JUHE_AI_DB_SERVICE_HTTP_PORT:-0}
       JUHE_AI_RUNTIME_MODE: ${JUHE_AI_RUNTIME_MODE:-performance}
@@ -165,6 +165,12 @@ services:
       JUHE_AI_DB_POOL_MAX: ${JUHE_AI_DB_POOL_MAX:-150}
       JUHE_AI_DB_WRITE_MAX_CONCURRENCY: ${JUHE_AI_DB_WRITE_MAX_CONCURRENCY:-100}
       JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: ${JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS:-50000}
+      JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
+      JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
+      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: ${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-/app/backend/data/juhe-ai-usage-catalog.sqlite3}
+      JUHE_AI_STATS_DATABASE_PATH: ${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}
+      JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
+      JUHE_AI_USAGE_SHARD_COUNT: ${JUHE_AI_USAGE_SHARD_COUNT:-16}
       JUHE_AI_LOG_DIR: ${JUHE_AI_LOG_DIR:-/app/backend/logs}
       JUHE_AI_LOG_FILE_ENABLED: ${JUHE_AI_LOG_FILE_ENABLED:-true}
       JUHE_AI_LOG_CONSOLE_ENABLED: ${JUHE_AI_LOG_CONSOLE_ENABLED:-true}

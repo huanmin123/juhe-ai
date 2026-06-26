@@ -10,7 +10,7 @@ services:
         NODE_IMAGE: ${JUHE_AI_NODE_IMAGE:-node:22-bookworm-slim}
         PNPM_VERSION: ${JUHE_AI_PNPM_VERSION:-10.32.1}
     ports:
-      - "${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
+      - "${JUHE_AI_PUBLIC_BIND:-127.0.0.1}:${JUHE_AI_PUBLIC_PORT:-3000}:${JUHE_AI_PORT:-3000}"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       JUHE_AI_HOST: ${JUHE_AI_HOST:-0.0.0.0}
@@ -38,6 +38,7 @@ services:
       JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: ${JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS:-50000}
       JUHE_AI_DATABASE_PATH: ${JUHE_AI_DATABASE_PATH:-/app/backend/data/juhe-ai.sqlite3}
       JUHE_AI_DATASET_DATABASE_PATH: ${JUHE_AI_DATASET_DATABASE_PATH:-/app/backend/data/juhe-ai-dataset.sqlite3}
+      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: ${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-/app/backend/data/juhe-ai-usage-catalog.sqlite3}
       JUHE_AI_STATS_DATABASE_PATH: ${JUHE_AI_STATS_DATABASE_PATH:-/app/backend/data/juhe-ai-stats.sqlite3}
       JUHE_AI_USAGE_SHARD_ROOT: ${JUHE_AI_USAGE_SHARD_ROOT:-/app/backend/data/usage-shards}
       JUHE_AI_USAGE_SHARD_COUNT: ${JUHE_AI_USAGE_SHARD_COUNT:-16}

@@ -81,20 +81,30 @@ installProcessLogHandlers()
 startProcessEventLoopMonitor()
 installWorkerSignalShutdownHooks()
 if (isIngestWorker()) {
-  getDatasetDatabase()
-  getUsageCatalogDatabase()
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    getDatasetDatabase()
+    getUsageCatalogDatabase()
+  }
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
   installOperationLogQueueShutdownHooks()
-  installRuntimeLogIndexQueueShutdownHooks()
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    installRuntimeLogIndexQueueShutdownHooks()
+  }
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
-  setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
+  }
   startUsageRecordRedisStreamConsumer()
-  startRuntimeLogFileImport()
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    startRuntimeLogFileImport()
+  }
 } else if (isOpsWorker()) {
-  startAccountTestTaskQueue()
+  if (runtimeConfig.databaseDriver === 'sqlite') {
+    startAccountTestTaskQueue()
+  }
 }
 startBackgroundJobs()
 

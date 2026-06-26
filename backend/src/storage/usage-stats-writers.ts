@@ -222,9 +222,18 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
 }
 
 function shouldRecordAccountQualityStats(row: UsageStatsRecordRow): boolean {
-  return row.traffic_source !== 'cooldown_retest'
-    && row.traffic_source !== 'hybrid_scoring'
-    && row.traffic_source !== 'hybrid_quality_scoring'
+  if (
+    row.traffic_source === 'cooldown_retest'
+    || row.traffic_source === 'hybrid_scoring'
+    || row.traffic_source === 'hybrid_quality_scoring'
+  ) {
+    return false
+  }
+  if (row.success === 1) {
+    return true
+  }
+  return row.failure_attribution === 'account_upstream'
+    || row.failure_attribution === 'account_dependency'
 }
 
 function addAggregatedUsageStatsEntry(target: Map<string, AggregatedUsageStatsEntry>, entry: UsageStatsEntry): void {

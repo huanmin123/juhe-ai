@@ -28,7 +28,7 @@
 
 ## 环境信息
 
-- 分支 / 版本：`F:\sub2api-lite` 当前工作区。
+- 分支 / 版本：`<项目根目录>` 当前工作区。
 - 数据状态：API Key 已配置 `availability_schedule_json`，且 `availability_schedule_active = 0`。
 - 浏览器 / 系统 / Node 版本：Windows / Node 22 系列。
 - 是否稳定复现：是。

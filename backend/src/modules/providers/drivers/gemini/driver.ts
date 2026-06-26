@@ -5,10 +5,12 @@ import {
   geminiEndpointModeForRequestShape
 } from '../../../../domain/gemini-endpoint-modes.js'
 import {
+  GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_PROVIDER_CODE,
   GEMINI_PROTOCOL_CODE,
   GEMINI_PROTOCOL_VERSION,
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   isGeminiProtocolProfile
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
@@ -49,6 +51,15 @@ function geminiEndpointModeForGatewayRequest(req: Request, account: ProviderDriv
   })
 }
 
+function isGeminiNativeGenerateContentModelMapping(
+  mapping: ReturnType<typeof resolveOpenAIRequestModelMapping> | ReturnType<typeof resolveOpenAIAccountModelMapping>
+): mapping is NonNullable<typeof mapping> {
+  return (
+    mapping?.sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY
+    || mapping?.sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  ) && mapping.upstreamEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY
+}
+
 export const geminiProviderDriver: ProviderDriver = {
   id: 'gemini',
   providerCode: GEMINI_PROVIDER_CODE,
@@ -66,11 +77,11 @@ export const geminiProviderDriver: ProviderDriver = {
   },
   resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
     const mapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
-    if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)) {
+    if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping) || isGeminiNativeGenerateContentModelMapping(mapping)) {
       return {
         upstreamModel: mapping.upstreamModel,
         modelMappingApplied: true,
-        modelMappingSource: 'account'
+        modelMappingSource: mapping.runtimeSource ?? 'account'
       }
     }
     return {
@@ -80,7 +91,7 @@ export const geminiProviderDriver: ProviderDriver = {
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
     const mapping = resolveOpenAIRequestModelMapping(req, account)
-    if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)) {
+    if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping) || isGeminiNativeGenerateContentModelMapping(mapping)) {
       return [buildGeminiUpstreamUrl(account.baseUrl, geminiGenerateContentModelMappedUpstreamPathAndQuery(req, mapping))]
     }
     return buildGeminiUpstreamUrlsForAccount(account, req)

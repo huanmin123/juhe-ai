@@ -167,7 +167,7 @@ docker compose up -d --build
 http://localhost:3000/__aisys__/
 ```
 
-需要改端口、公网访问地址或复用旧数据时，复制并修改 `docker/.env.example` 为 `docker/.env`。完整说明见 [Docker 部署指南](docs/deploy/Docker部署指南.md)。
+需要改端口、公网访问地址、复用旧数据或让容器访问宿主机代理时，复制并修改 `docker/.env.example` 为 `docker/.env`。完整说明见 [Docker 部署指南](docs/deploy/Docker部署指南.md)。
 
 发布包部署：
 
@@ -207,7 +207,7 @@ bash ./start.sh
 http://服务器IP:3000/__aisys__/
 ```
 
-公网访问、反向代理、端口调整、开机自启和数据迁移见 [部署指南](docs/deploy/部署指南.md)。
+公网访问不要先通读所有部署文档。先按入口环境选择：[服务器部署方案](docs/deploy/scenarios/服务器部署方案.md) 或 [家庭宽带反向代理方案](docs/deploy/scenarios/家庭宽带反向代理方案.md)，再进入对应平台文档。公网域名默认推荐 [Caddy 自动 HTTPS 部署指南](docs/deploy/https/Caddy自动HTTPS部署指南.md)，免费证书会自动续期。如果服务器无法直连上游模型 API，先看 [sing-box 网络代理部署指南](docs/deploy/proxy/sing-box网络代理部署指南.md)，再在后台“代理管理”里把代理绑定到 AI 账户。
 
 ## 常用命令
 
@@ -242,8 +242,16 @@ pnpm test:smoke
 - [开发运行说明](docs/develop/运行说明.md)
 - [测试与验证说明](docs/develop/测试与验证说明.md)
 - [构建指南](docs/deploy/构建指南.md)
-- [部署指南](docs/deploy/部署指南.md)
+- [服务器部署方案](docs/deploy/scenarios/服务器部署方案.md)
+- [家庭宽带反向代理方案](docs/deploy/scenarios/家庭宽带反向代理方案.md)
+- [跨平台部署基线](docs/deploy/部署指南.md)
 - [Docker 部署指南](docs/deploy/Docker部署指南.md)
+- [Linux 部署指南](docs/deploy/linux/Linux部署指南.md)
+- [Windows 部署指南](docs/deploy/windows/Windows部署指南.md)
+- [macOS 部署指南](docs/deploy/macos/macOS部署指南.md)
+- [Caddy 自动 HTTPS 部署指南](docs/deploy/https/Caddy自动HTTPS部署指南.md)
+- [状态检测与自动恢复指南](docs/deploy/watchdog/状态检测与自动恢复指南.md)
+- [sing-box 网络代理部署指南](docs/deploy/proxy/sing-box网络代理部署指南.md)
 - [整体架构](docs/architecture/架构总览.md)
 - [核心功能设计](docs/functions/核心功能设计.md)
 - [高并发分组调度设计](docs/functions/高并发分组调度设计.md)

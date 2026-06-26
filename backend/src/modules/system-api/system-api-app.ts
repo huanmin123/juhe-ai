@@ -14,9 +14,6 @@ import { groupsRouter } from '../groups/groups.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
-import { mcpExecutionRecordsRouter } from '../openai-compatible-mcp/mcp-execution-records.routes.js'
-import { mcpApprovalRequestsRouter } from '../openai-compatible-mcp/mcp-approval-requests.routes.js'
-import { mcpServersRouter } from '../openai-compatible-mcp/mcp-servers.routes.js'
 import { openAIOAuthRouter } from '../openai-oauth/openai-oauth.routes.js'
 import { providersRouter } from '../providers/providers.routes.js'
 import { proxiesRouter } from '../proxies/proxies.routes.js'
@@ -90,9 +87,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-authorizations`, forceSelfAccessScope, authorizationsRouter)
   app.use(`${systemApiPrefix}/my-openai-oauth`, forceSelfAccessScope, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/my-usage-records`, forceSelfAccessScope, usageRecordsRouter)
-  app.use(`${systemApiPrefix}/my-mcp-servers`, forceSelfAccessScope, mcpServersRouter)
-  app.use(`${systemApiPrefix}/my-mcp-approval-requests`, forceSelfAccessScope, mcpApprovalRequestsRouter)
-  app.use(`${systemApiPrefix}/my-mcp-execution-records`, forceSelfAccessScope, mcpExecutionRecordsRouter)
   app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
@@ -106,9 +100,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/openai-oauth`, requireAdmin, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/proxies`, proxiesRouter)
   app.use(`${systemApiPrefix}/usage-records`, requireAdmin, usageRecordsRouter)
-  app.use(`${systemApiPrefix}/mcp-servers`, requireAdmin, mcpServersRouter)
-  app.use(`${systemApiPrefix}/mcp-approval-requests`, requireAdmin, mcpApprovalRequestsRouter)
-  app.use(`${systemApiPrefix}/mcp-execution-records`, requireAdmin, mcpExecutionRecordsRouter)
   app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)
   app.use(`${systemApiPrefix}/operation-logs`, requireAdmin, operationLogsRouter)
   app.use(`${systemApiPrefix}/public-api-logs`, requireAdmin, publicApiLogsRouter)

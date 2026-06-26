@@ -8,7 +8,11 @@ import {
   normalizeApiKeyRouteMode,
   parseHybridRoutingConfigJson
 } from '../domain/api-key-hybrid-routing.js'
-import type { ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyRouteMode } from '../domain/types.js'
+import {
+  normalizeApiKeyClientProfile,
+  parseExplicitHybridRouteRulesJson
+} from '../domain/api-key-explicit-hybrid-routing.js'
+import type { ApiKeyClientProfile, ApiKeyExplicitHybridRouteRule, ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyRouteMode } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { hashSecret } from './crypto.js'
 import type { DatabaseClient } from './database-client.js'
@@ -24,10 +28,13 @@ export interface GatewayApiKeyRow {
   availability_schedule_active: number
   expires_at: string | null
   quota_limits_json: string | null
+  client_profile: ApiKeyClientProfile
   route_mode: ApiKeyRouteMode
   group_route_strategy: ApiKeyGroupRouteStrategy
   hybrid_routing_config_json: string | null
   hybrid_routing_config?: ApiKeyHybridRoutingConfig
+  explicit_hybrid_route_rules_json: string | null
+  explicit_hybrid_route_rules?: ApiKeyExplicitHybridRouteRule[]
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
@@ -93,9 +100,11 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.client_profile,
       api_keys.route_mode,
       api_keys.group_route_strategy,
       api_keys.hybrid_routing_config_json,
+      api_keys.explicit_hybrid_route_rules_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -156,9 +165,11 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.client_profile,
       api_keys.route_mode,
       api_keys.group_route_strategy,
       api_keys.hybrid_routing_config_json,
+      api_keys.explicit_hybrid_route_rules_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
     INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -203,9 +214,11 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
+      api_keys.client_profile,
       api_keys.route_mode,
       api_keys.group_route_strategy,
       api_keys.hybrid_routing_config_json,
+      api_keys.explicit_hybrid_route_rules_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
@@ -232,11 +245,13 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
 }
 
 function normalizeGatewayApiKeyRouteFields(row: GatewayApiKeyRow): void {
+  row.client_profile = normalizeApiKeyClientProfile(row.client_profile)
   row.route_mode = normalizeApiKeyRouteMode(row.route_mode)
   row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
   row.hybrid_routing_config = row.route_mode === 'hybrid'
     ? parseHybridRoutingConfigJson(row.hybrid_routing_config_json)
     : undefined
+  row.explicit_hybrid_route_rules = parseExplicitHybridRouteRulesJson(row.explicit_hybrid_route_rules_json)
 }
 
 export function clearGatewayApiKeyValidationCache(): void {
@@ -415,6 +430,7 @@ function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
         levelRoutes: row.hybrid_routing_config.levelRoutes.map((route) => ({ ...route }))
       }
       : undefined,
+    explicit_hybrid_route_rules: row.explicit_hybrid_route_rules?.map((rule) => ({ ...rule })),
     group_bindings: row.group_bindings?.map((binding) => ({ ...binding }))
   }
 }

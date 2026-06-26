@@ -55,6 +55,14 @@ interface ApiKeySummary {
   key: string
   keyPrefix: string
   keySuffix: string
+  clientProfile?: string
+  explicitHybridRouteRules?: Array<{
+    id: string
+    enabled: boolean
+    sourceEndpointFamily: string
+    upstreamEndpointFamily: string
+    adapterMode: string
+  }>
   expiresAt?: string
   availabilitySchedule?: {
     enabled?: boolean
@@ -126,6 +134,82 @@ async function main(): Promise<void> {
       status: 'disabled'
     })
     assert(disabledApiKey.status === 'disabled', '仅更新 API Key 状态时不应要求重新提交分组绑定')
+
+    const explicitHybridApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
+      name: '显式混合路由回归 Key',
+      clientProfile: 'codex',
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      explicitHybridRouteRules: [
+        {
+          id: 'explicit_bridge_responses_to_messages',
+          enabled: true,
+          priority: 1,
+          sourceClientProfile: 'codex',
+          sourceEndpointFamily: 'responses',
+          sourceModel: 'gpt-5.5',
+          targetGroupId: 'grp_default_gpt_sys_admin',
+          upstreamEndpointFamily: 'messages',
+          upstreamModel: 'claude-opus-4-8',
+          adapterMode: 'bridge'
+        },
+        {
+          id: 'explicit_disabled_chat_alias',
+          enabled: false,
+          priority: 2,
+          sourceClientProfile: 'auto',
+          sourceEndpointFamily: 'chat_completions',
+          sourceModel: 'alias-chat-model',
+          targetGroupId: 'grp_default_gpt_sys_admin',
+          upstreamEndpointFamily: 'chat_completions',
+          upstreamModel: 'real-chat-model',
+          adapterMode: 'direct'
+        }
+      ]
+    })
+    assert(explicitHybridApiKey.clientProfile === 'codex', 'API Key 应保存默认客户端画像')
+    assert(explicitHybridApiKey.explicitHybridRouteRules?.length === 2, '显式混合路由应保留启用和禁用规则')
+    assert(explicitHybridApiKey.explicitHybridRouteRules?.[0]?.upstreamEndpointFamily === 'messages', '显式混合路由应允许跨协议 bridge')
+    assert(explicitHybridApiKey.explicitHybridRouteRules?.[1]?.enabled === false, '显式混合路由禁用规则保存后不应丢失')
+    const clearedExplicitHybridApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${explicitHybridApiKey.id}`, adminCookie, {
+      explicitHybridRouteRules: []
+    })
+    assert(!clearedExplicitHybridApiKey.explicitHybridRouteRules?.length, '更新 API Key 应支持清空显式混合路由规则')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '显式混合路由直连跨协议非法 Key',
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      explicitHybridRouteRules: [
+        {
+          id: 'explicit_direct_responses_to_messages',
+          enabled: true,
+          priority: 1,
+          sourceClientProfile: 'codex',
+          sourceEndpointFamily: 'responses',
+          targetGroupId: 'grp_default_gpt_sys_admin',
+          upstreamEndpointFamily: 'messages',
+          upstreamModel: 'claude-opus-4-8',
+          adapterMode: 'direct'
+        }
+      ]
+    }, '显式混合路由直连模式只能用于同协议模型别名')
+
+    await assertBadRequestMessage(baseUrl, adminCookie, {
+      name: '显式混合路由未绑定目标分组非法 Key',
+      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      explicitHybridRouteRules: [
+        {
+          id: 'explicit_unbound_target_group',
+          enabled: true,
+          priority: 1,
+          sourceClientProfile: 'auto',
+          sourceEndpointFamily: 'chat_completions',
+          targetGroupId: 'grp_not_bound',
+          upstreamEndpointFamily: 'chat_completions',
+          upstreamModel: 'gpt-5.5',
+          adapterMode: 'direct'
+        }
+      ]
+    }, '显式混合路由目标分组必须是当前 API Key 已绑定且启用的分组：grp_not_bound')
 
     const expiringApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '清空过期时间回归 Key',

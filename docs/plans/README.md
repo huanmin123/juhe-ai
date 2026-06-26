@@ -3,13 +3,15 @@
 > 面向 AI 和维护者。
 > 这里集中保存阶段计划，以及每次需求的具体计划、执行进度、完成情况、关联文档、验证结果和注意事项。
 > 阶段计划用于记录历史阶段范围和完成标准；`计划-*.md` 用于过程管理和需求追踪，不替代架构文档、功能文档或问题记录。
+> 独立压测报告、性能分析报告和容量结论统一放入 `docs/reports/`，计划中只保留报告链接和执行状态。
 
 ## 1. 目录目标
 
 - 集中放置阶段计划，避免阶段范围散落在 `docs/` 根目录；已完成阶段作为归档保留，当前功能事实以架构和 functions 文档为准。
 - 给每个有持续跟踪价值的需求建立稳定编号，方便后续回看“当时为什么这样做”。
 - 记录需求从方案、拆解、执行、验证到关闭的完整状态。
-- 维护需求与架构文档、阶段计划、运行说明、测试验证说明、bug 记录、调研文档之间的关联。
+- 维护需求与架构文档、阶段计划、运行说明、测试验证说明、报告、bug 记录、调研文档之间的关联。
+- 避免把独立测试报告正文写进计划目录，计划只记录执行过程、状态和报告链接。
 - 避免需求结论散落在对话里，导致后续实现时丢失上下文。
 
 ## 2. 阶段计划与需求计划
@@ -112,6 +114,7 @@ docs/plans/
 - 影响存储 schema 或本地数据清洗：同步链接并更新存储相关文档；运行路径只维护当前 schema，历史结构差异通过离线清洗或重建处理。
 - 来自 bug 或修复问题：关联 `docs/bug/*`，必要时补充 bug 记录。
 - 来自调研结论：关联对应调研文档，例如 `docs/functions/中转透传机制调研与定位修正.md`。
+- 来自压测、性能分析或容量验证：关联对应 `docs/reports/*` 报告；原始 JSON、log、CPU profile 等产物继续引用仓库根目录 `reports/`。
 
 需求计划文档只记录“本次需求怎么推进”。长期稳定结论应沉淀到架构、阶段计划、运行手册或专项调研文档，不要只留在需求计划里。
 
@@ -136,18 +139,18 @@ docs/plans/
 | --- | --- | --- | --- | --- | --- |
 | PLAN-0070 | Responses 目标映射收敛 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 文档 / 验证 | `docs/plans/计划-0070-Responses目标映射收敛.md` |
 | PLAN-0069 | 协议桥接框架与 Gemini Native 目标桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接框架 / Gemini native / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0069-协议桥接框架与GeminiNative目标桥接.md` |
-| PLAN-0068 | Gemini Native 转 Anthropic Messages 桥接 | 进行中 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / Anthropic Messages / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0068-GeminiNative转AnthropicMessages桥接.md` |
+| PLAN-0068 | Gemini Native 转 Anthropic Messages 桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / Anthropic Messages / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0068-GeminiNative转AnthropicMessages桥接.md` |
 | PLAN-0067 | Gemini Native 转 Chat 桥接 | 待真实验证 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / OpenAI Chat bridge / GLM / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0067-GeminiNative转Chat桥接.md` |
 | PLAN-0066 | PostgreSQL 与 Redis 高性能模式 | 进行中 | 2026-06-25 | 后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证 | `docs/plans/计划-0066-PostgreSQL与Redis高性能模式.md` |
-| PLAN-0065 | Gemini 原生协议接入 | 进行中 | 2026-06-25 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / Gemini native / gemini-cli / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0065-Gemini原生协议接入.md` |
+| PLAN-0065 | Gemini 原生协议接入 | 已完成 | 2026-06-25 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / Gemini native / gemini-cli / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0065-Gemini原生协议接入.md` |
 | PLAN-0064 | Anthropic Messages 转 Chat 协议桥接 | 已完成 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接 / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0064-AnthropicMessages转Chat协议桥接.md` |
-| PLAN-0063 | OpenAI 托管工具运行时适配 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / OpenAI hosted tools / MCP / code execution / computer use / 审计 / 文档 / 验证 | `docs/plans/计划-0063-OpenAI托管工具运行时适配.md` |
+| PLAN-0063 | OpenAI 托管工具运行时适配 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / OpenAI hosted tools / code execution / computer use / 文档 / 验证；MCP 固定 guidance，不做服务端 runtime | `docs/plans/计划-0063-OpenAI托管工具运行时适配.md` |
 | PLAN-0062 | 协议互转矩阵与模型映射约束 | 进行中 | 2026-06-24 | 前端 / 后端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 真实联调 / 文档 / 验证 | `docs/plans/计划-0062-协议互转矩阵与模型映射约束.md` |
 | PLAN-0061 | Responses 图像生成本地 Provider 桥接 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / Responses / 图像生成 / 权限 / 审计 / 文档 / 验证 | `docs/plans/计划-0061-Responses图像生成本地Provider桥接.md` |
 | PLAN-0060 | OpenAI 兼容 Files 与 File Search 本地运行时 | 已完成 | 2026-06-24 | 后端 / 网关 / OpenAI 兼容接口 / Anthropic bridge / 文件存储 / Vector Store / 本地检索 / 审计 / 文档 / 验证 | `docs/plans/计划-0060-OpenAI兼容Files与FileSearch本地运行时.md` |
 | PLAN-0059 | OpenAI 到 Anthropic 高兼容桥接增强 | 进行中 | 2026-06-24 | 后端 / 网关 / 供应商驱动 / 模型映射 / Responses 状态 / 工具 / 审计 / 文档 / 验证 | `docs/plans/计划-0059-OpenAI到Anthropic高兼容桥接增强.md` |
 | PLAN-0058 | OpenAI 到 Anthropic Messages 协议桥接 | 已完成 | 2026-06-24 | 后端 / 网关 / 供应商驱动 / 模型映射 / 混合智能路由 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0058-OpenAI到Anthropic协议桥接.md` |
-| PLAN-0057 | 客户端兼容与模型映射重设计 | 进行中 | 2026-06-23 | 前端 / 后端 / 存储 / 网关 / 账号 / 模型目录 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0057-客户端兼容与模型映射重设计.md` |
+| PLAN-0057 | 客户端兼容与模型映射重设计 | 已完成 | 2026-06-23 | 前端 / 后端 / 存储 / 网关 / 账号 / 模型目录 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0057-客户端兼容与模型映射重设计.md` |
 | PLAN-0056 | ops-worker 外部 I/O 并发控制 | 已完成 | 2026-06-23 | 后端 / 后台任务 / ops-worker / 账号探测 / 依赖 / 文档 / 验证 | `docs/plans/计划-0056-opsWorker外部IO并发控制.md` |
 | PLAN-0055 | 后台 Worker 三角色收敛 | 已完成 | 2026-06-23 | 后端 / 后台任务 / 统计 / 系统监控 / SQLite / 前端统计页 / 文档 / 验证 | `docs/plans/计划-0055-后台Worker三角色收敛.md` |
 | PLAN-0054 | DeepSeek 与 GLM Claude Code 兼容接入 | 进行中 | 2026-06-23 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / 导入导出 / 使用记录 / 文档 / 验证 | `docs/plans/计划-0054-DeepSeek与GLM-ClaudeCode兼容接入.md` |
@@ -203,7 +206,7 @@ docs/plans/
 | PLAN-0003 | 系统团队与统一授权新版 | 已完成 | 2026-05-04 | 系统团队 / 授权 / 前端 / 后端 / 存储 / 网关 / 文档 | `docs/plans/计划-0003-系统团队与统一授权新版.md` |
 | PLAN-0001 | 透传定位修正 | 已完成 | 2026-05-04 | 网关 / 账号 / 文档 | `docs/plans/计划-0001-透传定位修正.md` |
 
-历史旧方案不再列入当前计划入口：`PLAN-0002` 的账户 / 分组分散授权方案已被 `PLAN-0003` 系统团队与统一授权新版取代，旧文件已删除，当前实现和后续维护只参考统一授权模型。
+历史旧方案不再列入当前计划入口：`PLAN-0002` 的账户 / 分组分散授权方案已被 `PLAN-0003` 系统团队与统一授权新版取代，旧文件已删除，当前实现和后续维护只参考统一授权模型。`PLAN-0039` 和 `PLAN-0042` 为历史跳号 / 撤销号，不再补写、不复用编号。
 
 ## 12. 写作注意事项
 

@@ -85,7 +85,7 @@ export const gptProviderDriver: ProviderDriver = {
     return {
       upstreamModel: modelMapping?.upstreamModel ?? requestedModel,
       modelMappingApplied: Boolean(modelMapping),
-      modelMappingSource: modelMapping ? 'account' : undefined
+      modelMappingSource: modelMapping ? modelMapping.runtimeSource ?? 'account' : undefined
     }
   },
   async prepareAccountBeforeDispatch(account, context) {

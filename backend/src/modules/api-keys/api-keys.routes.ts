@@ -26,6 +26,7 @@ const apiKeyMutationSchema = z.object({
     status: z.enum(['active', 'disabled']).optional()
   }).strict()).min(1, 'API Key 至少需要绑定一个分组').max(20).optional(),
   routeMode: z.enum(['normal', 'hybrid']).optional(),
+  clientProfile: z.enum(['auto', 'generic_openai', 'codex', 'generic_anthropic', 'claude_code', 'generic_gemini', 'gemini_cli']).optional(),
   groupRouteStrategy: z.string().optional().refine((value) => value === undefined || value === 'priority_failover' || value === 'round_robin' || value === 'weighted_round_robin', '分组路由策略无效'),
   hybridRoutingConfig: z.object({
     scoringGroupId: z.string().trim().optional(),
@@ -57,6 +58,20 @@ const apiKeyMutationSchema = z.object({
       unavailableAction: z.enum(['pass_through', 'return_error']).optional()
     }).strict().optional()
   }).strict().nullable().optional(),
+  explicitHybridRouteRules: z.array(z.object({
+    id: z.string().trim().optional(),
+    enabled: z.boolean().optional(),
+    priority: z.number().int().positive().optional(),
+    sourceClientProfile: z.enum(['auto', 'generic_openai', 'codex', 'generic_anthropic', 'claude_code', 'generic_gemini', 'gemini_cli']).optional(),
+    sourceEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content', 'stream_generate_content']),
+    sourceModel: z.string().trim().optional(),
+    targetGroupId: z.string().trim().min(1, '目标分组不能为空'),
+    targetAccountId: z.string().trim().optional(),
+    targetProviderProtocolProfileId: z.string().trim().optional(),
+    upstreamEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content']),
+    upstreamModel: z.string().trim().min(1, '上游模型不能为空'),
+    adapterMode: z.enum(['direct', 'bridge']).optional()
+  }).strict()).max(100).nullable().optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
@@ -282,9 +297,11 @@ apiKeysRouter.post('/', mutationGuard({
           changes: [
             safeChange('name', '名称', undefined, apiKey.name),
             safeChange('status', '状态', undefined, apiKey.status),
+            safeChange('clientProfile', '默认客户端画像', undefined, apiKey.clientProfile),
             safeChange('routeMode', '路由模式', undefined, apiKey.routeMode),
             safeChange('groupRouteStrategy', '分组路由策略', undefined, apiKey.groupRouteStrategy),
             safeChange('hybridRoutingConfig', '混合路由配置', undefined, apiKey.hybridRoutingConfig),
+            safeChange('explicitHybridRouteRules', '显式混合路由规则', undefined, apiKey.explicitHybridRouteRules),
             safeChange('groupBindings', '绑定分组路由', undefined, apiKey.groupBindings),
             safeChange('availabilitySchedule', '时间计划', undefined, apiKey.availabilitySchedule),
             safeChange('key', '密钥标识', undefined, `${apiKey.keyPrefix}...${apiKey.keySuffix}`)
@@ -347,9 +364,11 @@ apiKeysRouter.patch('/:id', async (req, res, next) => {
             name: '名称',
             description: '说明',
             status: '状态',
+            clientProfile: '默认客户端画像',
             routeMode: '路由模式',
             groupRouteStrategy: '分组路由策略',
             hybridRoutingConfig: '混合路由配置',
+            explicitHybridRouteRules: '显式混合路由规则',
             groupBindings: '绑定分组路由',
             expiresAt: '过期时间',
             quotaLimits: '额度限制',

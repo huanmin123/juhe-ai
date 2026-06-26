@@ -63,6 +63,7 @@ export function usageRecordSummaryFromRow(
     stream,
     statusCode,
     success,
+    failureAttribution: usageFailureAttribution(row.failure_attribution),
     firstTokenMs: numberValue(row.first_token_ms),
     durationMs: numberValue(row.duration_ms),
     inputTokens,
@@ -95,6 +96,19 @@ function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSo
     return value
   }
   throw new Error('使用记录来源无效')
+}
+
+function usageFailureAttribution(value: unknown): UsageRecordSummary['failureAttribution'] {
+  if (
+    value === 'account_upstream'
+    || value === 'account_dependency'
+    || value === 'gateway_capacity'
+    || value === 'gateway_policy'
+    || value === 'client_lifecycle'
+  ) {
+    return value
+  }
+  return undefined
 }
 
 function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {

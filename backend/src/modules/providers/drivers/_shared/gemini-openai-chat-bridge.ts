@@ -46,6 +46,7 @@ interface GeminiChatStreamState {
   model: string
   completed: boolean
   failed: boolean
+  emittedContent: boolean
   finishReason?: string
   usage?: JsonRecord
   toolCalls: Map<number, GeminiToolCallState>
@@ -555,7 +556,10 @@ async function * transformChatCompletionsJsonToGeminiGenerateContentJson(
   try {
     parsed = await readJsonBody(body)
   } catch (error) {
-    yield Buffer.from(JSON.stringify(geminiChatBridgeResponseErrorJson(error)), 'utf8')
+    yield Buffer.from(JSON.stringify(geminiChatBridgeResponseGuidanceJson(
+      fallbackModel,
+      '上游 Chat Completions 返回了无法解析为 Gemini GenerateContent 的响应。客户端可以保持当前对话并重试，或换用更稳定的上游模型；网关已转换为 Gemini 文本提示，避免客户端因协议错误中断。'
+    )), 'utf8')
     return
   }
   const message = chatCompletionJsonToGeminiGenerateContent(parsed, fallbackModel)
@@ -572,7 +576,7 @@ function chatCompletionJsonToGeminiGenerateContent(value: unknown, fallbackModel
     const candidate: JsonRecord = {
       content: {
         role: 'model',
-        parts: parts.length > 0 ? parts : [{ text: '' }]
+        parts: parts.length > 0 ? parts : [{ text: emptyChatCompletionGeminiGuidanceText() }]
       },
       finishReason: chatFinishReasonToGeminiFinishReason(stringValue(choice.finish_reason), parts),
       index
@@ -581,7 +585,7 @@ function chatCompletionJsonToGeminiGenerateContent(value: unknown, fallbackModel
   })
   const output: JsonRecord = {
     candidates: candidates.length > 0 ? candidates : [{
-      content: { role: 'model', parts: [{ text: '' }] },
+      content: { role: 'model', parts: [{ text: emptyChatCompletionGeminiGuidanceText() }] },
       finishReason: 'STOP',
       index: 0
     }],
@@ -590,6 +594,24 @@ function chatCompletionJsonToGeminiGenerateContent(value: unknown, fallbackModel
   const usage = chatUsageToGeminiUsage(objectValue(root.usage))
   if (usage) output.usageMetadata = usage
   return output
+}
+
+function geminiChatBridgeResponseGuidanceJson(model: string, text: string): JsonRecord {
+  return {
+    candidates: [{
+      content: {
+        role: 'model',
+        parts: [{ text }]
+      },
+      finishReason: 'STOP',
+      index: 0
+    }],
+    modelVersion: model
+  }
+}
+
+function emptyChatCompletionGeminiGuidanceText(): string {
+  return '上游 Chat Completions 返回了空 assistant 内容。客户端可以保持当前对话并重试，或换用更稳定的上游模型；网关已将空响应转换为 Gemini 文本提示，避免客户端因空消息中断。'
 }
 
 function chatMessageToGeminiParts(message: JsonRecord): JsonRecord[] {
@@ -647,6 +669,7 @@ function createGeminiChatStreamState(model: string): GeminiChatStreamState {
     model,
     completed: false,
     failed: false,
+    emittedContent: false,
     toolCalls: new Map()
   }
 }
@@ -683,6 +706,7 @@ function processChatCompletionsSseEvent(state: GeminiChatStreamState, rawEventTe
     if (delta) {
       const text = stringValue(delta.content) ?? stringValue(delta.reasoning_content) ?? stringValue(delta.refusal)
       if (text) {
+        state.emittedContent = true
         output.push(geminiSse({
           candidates: [{
             content: {
@@ -737,6 +761,7 @@ function emitCompletedGeminiToolCalls(state: GeminiChatStreamState): string[] {
     }))
   if (!parts.length) return []
   state.toolCalls.clear()
+  state.emittedContent = true
   return [geminiSse({
     candidates: [{
       content: {
@@ -752,6 +777,17 @@ function completeGeminiStream(state: GeminiChatStreamState): string[] {
   if (state.completed || state.failed) return []
   state.completed = true
   const output = emitCompletedGeminiToolCalls(state)
+  if (!state.emittedContent) {
+    output.push(geminiSse({
+      candidates: [{
+        content: {
+          role: 'model',
+          parts: [{ text: emptyChatCompletionGeminiGuidanceText() }]
+        }
+      }],
+      modelVersion: state.model
+    }))
+  }
   const finalEvent: JsonRecord = {
     candidates: [{
       finishReason: state.finishReason ?? 'STOP'
