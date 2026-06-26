@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { runtimeConfig } from '../config/runtime.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { deleteAccountNameSearchTermsForAccounts } from './account-name-search.repository.js'
@@ -7,7 +8,10 @@ import { hasDeletedAccountRelatedRecordData, type DeletedAccountRecordCleanupTar
 import { deleteAccountTagBindingsForAccounts } from './account-tags.repository.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import { cleanupInactiveAuthorizationBindings, revokeResourceAuthorizationGrant, returnResourceAuthorizationGrant } from './resource-authorization-write-state.repository.js'
@@ -157,6 +161,47 @@ export function deleteAccountWithRelatedCleanup(id: string, access?: AccessScope
   }
 }
 
+export async function deleteAccountWithRelatedCleanupAsync(id: string, access?: AccessScope): Promise<AccountDeleteResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deleteAccountWithRelatedCleanup(id, access)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const scope = buildSystemAccountScopeClause(access, 'accounts.system_account_id')
+  const row = await client.one<AccountDeleteRow>(`
+    SELECT id, system_account_id, authorization_instance_authorization_id, authorization_instance_source_account_id, deleted_at
+    FROM ${accountDeleteCleanupTable(client, 'accounts')} accounts
+    WHERE accounts.id = ?
+      AND accounts.deleted_at IS NULL${scope.clause}
+  `, [id, ...scope.params])
+  if (!row) {
+    return { deleted: false }
+  }
+  if (row.authorization_instance_authorization_id) {
+    throw new Error('授权账户请使用归还操作')
+  }
+
+  const actor = currentSystemAccountId(access)
+  const deletedAt = nowIso()
+  let deletedAccountIds: string[] = []
+  await client.transaction(async (tx) => {
+    await revokeAccountAuthorizationsForDeletedResourceAsync(tx, row.id, actor, deletedAt)
+    deletedAccountIds = await logicallyDeleteSourceAccountWithInstancesAsync(tx, row, actor, deletedAt)
+  })
+
+  if (deletedAccountIds.length > 0) {
+    for (const accountId of deletedAccountIds) {
+      invalidateAccountLookupCache(accountId)
+    }
+    invalidateGroupAccountIdsCache()
+    clearResourceAuthorizationLookupCaches()
+    invalidateGatewayRuntimeAfterBusinessWrite('account_deleted')
+    invalidateAuthorizationRuntimeAfterBusinessWrite('account_deleted')
+  }
+  return {
+    deleted: deletedAccountIds.length > 0
+  }
+}
+
 function logicallyDeleteSourceAccountWithInstances(database: DatabaseSync, row: AccountDeleteRow, actor: string, deletedAt: string): string[] {
   const instanceRows = database
     .prepare(`
@@ -169,6 +214,18 @@ function logicallyDeleteSourceAccountWithInstances(database: DatabaseSync, row: 
     .all(row.id) as unknown as Array<{ id?: string | null }>
   const accountIds = uniqueNonEmpty([row.id, ...instanceRows.map((instance) => instance.id)])
   return logicallyDeleteAccounts(database, accountIds, actor, deletedAt)
+}
+
+async function logicallyDeleteSourceAccountWithInstancesAsync(client: DatabaseClient, row: AccountDeleteRow, actor: string, deletedAt: string): Promise<string[]> {
+  const instanceRows = await client.query<{ id?: string | null }>(`
+    SELECT id
+    FROM ${accountDeleteCleanupTable(client, 'accounts')}
+    WHERE authorization_instance_source_account_id = ?
+      AND deleted_at IS NULL
+    ORDER BY created_at ASC, id ASC
+  `, [row.id])
+  const accountIds = uniqueNonEmpty([row.id, ...instanceRows.map((instance) => instance.id)])
+  return await logicallyDeleteAccountsAsync(client, accountIds, actor, deletedAt)
 }
 
 function logicallyDeleteAccounts(database: DatabaseSync, accountIds: string[], actor: string, deletedAt: string): string[] {
@@ -197,6 +254,49 @@ function logicallyDeleteAccounts(database: DatabaseSync, accountIds: string[], a
   }
   deleteAccountTagBindingsForAccounts(deletedIds, database)
   deleteAccountNameSearchTermsForAccounts(deletedIds, database)
+  return deletedIds
+}
+
+async function logicallyDeleteAccountsAsync(client: DatabaseClient, accountIds: string[], actor: string, deletedAt: string): Promise<string[]> {
+  const ids = uniqueNonEmpty(accountIds)
+  if (!ids.length) return []
+  const deletedIds: string[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    await client.execute(`
+      UPDATE ${accountDeleteCleanupTable(client, 'accounts')}
+      SET status = 'disabled',
+          schedulable = 0,
+          cooldown_until = NULL,
+          deleted_at = ?,
+          deleted_by = ?,
+          updated_at = ?
+      WHERE deleted_at IS NULL
+        AND id IN (${chunk.map(() => '?').join(', ')})
+    `, [deletedAt, actor, deletedAt, ...chunk])
+    const rows = await client.query<{ id: string }>(`
+      SELECT id
+      FROM ${accountDeleteCleanupTable(client, 'accounts')}
+      WHERE deleted_at = ?
+        AND id IN (${chunk.map(() => '?').join(', ')})
+    `, [deletedAt, ...chunk])
+    deletedIds.push(...rows.map((row) => row.id))
+  }
+  if (deletedIds.length > 0) {
+    for (const chunk of chunkValues(deletedIds, 900)) {
+      await client.execute(`
+        DELETE FROM ${accountDeleteCleanupTable(client, 'account_tag_bindings')}
+        WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+      `, chunk)
+      await client.execute(`
+        DELETE FROM ${accountDeleteCleanupTable(client, 'account_name_search_terms')}
+        WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+      `, chunk)
+      await client.execute(`
+        DELETE FROM ${accountDeleteCleanupTable(client, 'account_name_search_documents')}
+        WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+      `, chunk)
+    }
+  }
   return deletedIds
 }
 
@@ -276,6 +376,56 @@ function revokeAuthorizationInstanceForDeletedAccount(database: DatabaseSync, ro
   cleanupInactiveAuthorizationBindings(database, [authorizationId])
 }
 
+async function revokeAccountAuthorizationsForDeletedResourceAsync(client: DatabaseClient, accountId: string, actor: string, deletedAt: string): Promise<void> {
+  const authorizationRows = await client.query<{ id: string }>(`
+    SELECT id
+    FROM ${accountDeleteCleanupTable(client, 'resource_authorizations')}
+    WHERE resource_type = 'account'
+      AND resource_id = ?
+      AND status <> 'returned'
+  `, [accountId])
+  const authorizationIds = uniqueNonEmpty(authorizationRows.map((row) => row.id))
+
+  await client.execute(`
+    UPDATE ${accountDeleteCleanupTable(client, 'resource_authorization_grants')}
+    SET status = 'revoked',
+        revoked_by = COALESCE(revoked_by, ?),
+        revoked_at = COALESCE(revoked_at, ?),
+        updated_at = ?
+    WHERE resource_type = 'account'
+      AND resource_id = ?
+      AND status NOT IN ('revoked', 'returned')
+  `, [actor, deletedAt, deletedAt, accountId])
+
+  if (!authorizationIds.length) return
+  for (const chunk of chunkValues(authorizationIds, 900)) {
+    await client.execute(`
+      UPDATE ${accountDeleteCleanupTable(client, 'resource_authorization_sources')}
+      SET status = 'revoked',
+          ended_at = COALESCE(ended_at, ?),
+          ended_reason = COALESCE(ended_reason, 'account_deleted'),
+          revoked_by = ?,
+          revoked_at = ?,
+          updated_at = ?
+      WHERE authorization_id IN (${chunk.map(() => '?').join(', ')})
+        AND status IN ('active', 'superseded')
+    `, [deletedAt, actor, deletedAt, deletedAt, ...chunk])
+    await client.execute(`
+      UPDATE ${accountDeleteCleanupTable(client, 'resource_authorizations')}
+      SET status = 'revoked',
+          effective_source_type = NULL,
+          effective_source_team_id = NULL,
+          revoked_by = COALESCE(revoked_by, ?),
+          revoked_at = COALESCE(revoked_at, ?),
+          revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
+          last_source_changed_at = ?,
+          updated_at = ?
+      WHERE id IN (${chunk.map(() => '?').join(', ')})
+        AND status <> 'returned'
+    `, [actor, deletedAt, deletedAt, deletedAt, ...chunk])
+  }
+}
+
 function revokeAccountAuthorizationsForDeletedResource(database: DatabaseSync, accountId: string, actor: string, deletedAt: string): void {
   const grants = database
     .prepare(`
@@ -290,6 +440,12 @@ function revokeAccountAuthorizationsForDeletedResource(database: DatabaseSync, a
   for (const grant of grants) {
     revokeResourceAuthorizationGrant(grant, actor, database, deletedAt)
   }
+}
+
+function accountDeleteCleanupTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 export function cleanupExpiredLogicallyDeletedAccounts(options: ExpiredDeletedAccountCleanupOptions = {}): ExpiredDeletedAccountCleanupResult {

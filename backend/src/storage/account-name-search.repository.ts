@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, nowIso, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 const accountNameSearchMinTermLength = 1
@@ -44,6 +45,43 @@ export function replaceAccountNameSearchTerms(
   `)
   for (const term of terms) {
     insert.run(accountId, systemAccountId, term, createdAt)
+  }
+}
+
+export async function replaceAccountNameSearchTermsAsync(
+  client: DatabaseClient,
+  accountId: string,
+  systemAccountId: string,
+  name: string,
+  createdAt = nowIso()
+): Promise<void> {
+  await client.execute(`DELETE FROM ${accountNameSearchTable(client, 'account_name_search_terms')} WHERE account_id = ?`, [accountId])
+  await client.execute(`DELETE FROM ${accountNameSearchTable(client, 'account_name_search_documents')} WHERE account_id = ?`, [accountId])
+  const normalizedName = normalizeAccountNameSearchText(name)
+  if (!normalizedName) return
+
+  await client.execute(`
+    INSERT INTO ${accountNameSearchTable(client, 'account_name_search_documents')} (
+      account_id, system_account_id, normalized_name, updated_at
+    ) VALUES (?, ?, ?, ?)
+  `, [accountId, systemAccountId, normalizedName, createdAt])
+
+  const terms = buildAccountNameSearchTermsFromNormalizedName(normalizedName)
+  for (const term of terms) {
+    if (client.driver === 'postgres') {
+      await client.execute(`
+        INSERT INTO ${accountNameSearchTable(client, 'account_name_search_terms')} (
+          account_id, system_account_id, term, created_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT (account_id, term) DO NOTHING
+      `, [accountId, systemAccountId, term, createdAt])
+    } else {
+      await client.execute(`
+        INSERT OR IGNORE INTO ${accountNameSearchTable(client, 'account_name_search_terms')} (
+          account_id, system_account_id, term, created_at
+        ) VALUES (?, ?, ?, ?)
+      `, [accountId, systemAccountId, term, createdAt])
+    }
   }
 }
 
@@ -150,7 +188,13 @@ function buildAccountNameSearchTermsFromNormalizedName(normalized: string): stri
   return [...terms]
 }
 
-function accountNameSearchQueryTerms(keyword: unknown): string[] {
+function accountNameSearchTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
+export function accountNameSearchQueryTerms(keyword: unknown): string[] {
   const normalized = normalizeAccountNameSearchText(keyword)
   if (!normalized) return []
   if ([...normalized].length > maxAccountNameLength) return []
@@ -176,12 +220,12 @@ function addAccountNameSearchGrams(
   }
 }
 
-function normalizeAccountNameSearchText(value: unknown): string {
+export function normalizeAccountNameSearchText(value: unknown): string {
   return typeof value === 'string'
     ? value.normalize('NFKC').toLowerCase().trim()
     : ''
 }
 
-function escapeAccountNameSearchLike(value: string): string {
+export function escapeAccountNameSearchLike(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }

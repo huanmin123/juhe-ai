@@ -7,6 +7,7 @@ import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
+import { RedisStreamQueue, type RedisStreamMessage } from '../../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
@@ -20,6 +21,9 @@ const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
 const slowUsageRecordFlushMs = 500
+const usageRecordRedisStreamKey = 'juhe-ai:queue:usage-records'
+const usageRecordRedisStreamGroup = 'juhe-ai:usage-record-writers'
+const usageRecordRedisConsumerErrorRetryMs = 1000
 
 interface QueuedUsageRecord {
   input: UsageRecordInput
@@ -44,6 +48,10 @@ let droppedOverflowCount = 0
 let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
 let allowDbServiceLocalUsageRecordWriteForTest = false
+let usageRecordRedisStreamQueueInstance: RedisStreamQueue<UsageRecordInput> | undefined
+let usageRecordRedisConsumerStarted = false
+let usageRecordRedisConsumerStopping = false
+let usageRecordRedisConsumerPromise: Promise<void> | undefined
 
 interface UsageRecordFlushOptions {
   drain?: boolean
@@ -53,6 +61,10 @@ interface UsageRecordFlushOptions {
 
 export function enqueueUsageRecord(input: UsageRecordInput): void {
   const queuedInput = normalizeUsageRecordInput(input)
+  if (shouldEnqueueUsageRecordToRedisStream()) {
+    void enqueueUsageRecordToRedisStream(queuedInput)
+    return
+  }
   if (shouldDispatchUsageRecordToIngestWorker()) {
     if (!sendUsageRecordsToWorker([queuedInput])) {
       recordUsageRecordDispatchFailure(new Error('ingest-worker IPC 不可用'), queuedInput)
@@ -74,6 +86,33 @@ export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordsLocal')
   for (const input of inputs) {
     enqueueUsageRecordLocal(normalizeUsageRecordInput(input))
+  }
+}
+
+export function startUsageRecordRedisStreamConsumer(): void {
+  if (!shouldUseRedisStreamUsageRecordQueue() || !isUsageRecordIngestWorker() || usageRecordRedisConsumerStarted) {
+    return
+  }
+  usageRecordRedisConsumerStarted = true
+  usageRecordRedisConsumerStopping = false
+  usageRecordRedisConsumerPromise = runUsageRecordRedisStreamConsumer().catch((error) => {
+    logger.error(errorLogFields(error, {
+      event: 'usage_record_redis_stream_consumer_stopped'
+    }), 'Redis Stream 使用记录消费循环异常退出')
+  }).finally(() => {
+    usageRecordRedisConsumerStarted = false
+    usageRecordRedisConsumerPromise = undefined
+  })
+}
+
+export async function stopUsageRecordRedisStreamConsumer(): Promise<void> {
+  usageRecordRedisConsumerStopping = true
+  const queue = usageRecordRedisStreamQueueInstance
+  if (queue) {
+    await queue.closeConsumer().catch(() => undefined)
+  }
+  if (usageRecordRedisConsumerPromise) {
+    await usageRecordRedisConsumerPromise.catch(() => undefined)
   }
 }
 
@@ -384,6 +423,103 @@ function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): boolean 
   }
 }
 
+async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise<void> {
+  try {
+    await usageRecordRedisStreamQueue().enqueue(input)
+  } catch (error) {
+    recordUsageRecordDispatchFailure(error, input)
+    fallbackUsageRecordAfterRedisStreamFailure(input)
+  }
+}
+
+function fallbackUsageRecordAfterRedisStreamFailure(input: UsageRecordInput): void {
+  if (shouldDispatchUsageRecordToIngestWorker()) {
+    if (!sendUsageRecordsToWorker([input])) {
+      recordUsageRecordDispatchFailure(new Error('ingest-worker IPC 不可用'), input)
+    }
+    return
+  }
+  if (runtimeConfig.processRole === 'db-service' && !isDbServiceLocalUsageRecordWriteAllowedForTest()) {
+    if (!sendUsageRecordFromDbServiceToServer(input)) {
+      recordUsageRecordDispatchFailure(new Error('DB service 无父进程 IPC'), input)
+    }
+    return
+  }
+  if (isLocalUsageRecordWriteAllowed()) {
+    enqueueUsageRecordLocal(input)
+  }
+}
+
+async function runUsageRecordRedisStreamConsumer(): Promise<void> {
+  const queue = usageRecordRedisStreamQueue()
+  while (!usageRecordRedisConsumerStopping) {
+    try {
+      const claimed = await queue.claimPending()
+      const messages = claimed.length > 0 ? claimed : await queue.readNew()
+      if (messages.length === 0) {
+        continue
+      }
+      await flushUsageRecordRedisStreamMessages(messages)
+    } catch (error) {
+      if (usageRecordRedisConsumerStopping) {
+        break
+      }
+      flushFailureCount += 1
+      logger.error(errorLogFields(error, {
+        event: 'usage_record_redis_stream_consume_failed',
+        flushFailureCount
+      }), 'Redis Stream 使用记录消费失败，稍后重试')
+      await delay(usageRecordRedisConsumerErrorRetryMs)
+    }
+  }
+}
+
+async function flushUsageRecordRedisStreamMessages(messages: Array<RedisStreamMessage<UsageRecordInput>>): Promise<void> {
+  if (messages.length === 0) return
+  const queue = usageRecordRedisStreamQueue()
+  const startedAt = Date.now()
+  const inputs = messages.map((message) => normalizeUsageRecordInput(message.payload))
+  try {
+    await createUsageRecordsBatchAsync(inputs)
+    recordUsageRecordFlushDuration(Date.now() - startedAt)
+    flushFailureCount = 0
+    await queue.ack(messages.map((message) => message.id))
+  } catch (error) {
+    flushFailureCount += 1
+    logger.error(errorLogFields(error, {
+      event: 'usage_record_redis_stream_flush_failed',
+      batchSize: messages.length,
+      firstMessageId: messages[0]?.id,
+      flushFailureCount
+    }), 'Redis Stream 使用记录落库失败，消息保持 pending 等待重投')
+  }
+}
+
+function usageRecordRedisStreamQueue(): RedisStreamQueue<UsageRecordInput> {
+  if (!usageRecordRedisStreamQueueInstance) {
+    usageRecordRedisStreamQueueInstance = new RedisStreamQueue<UsageRecordInput>({
+      streamKey: usageRecordRedisStreamKey,
+      groupName: usageRecordRedisStreamGroup
+    })
+  }
+  return usageRecordRedisStreamQueueInstance
+}
+
+function shouldUseRedisStreamUsageRecordQueue(): boolean {
+  return runtimeConfig.queueDriver === 'redis_stream'
+}
+
+function shouldEnqueueUsageRecordToRedisStream(): boolean {
+  return shouldUseRedisStreamUsageRecordQueue() && !isUsageRecordIngestWorker()
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
+}
+
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
   const createdAt = input.createdAt ?? nowIso()
   return {
@@ -432,6 +568,11 @@ export function clearUsageRecordQueueForTest(): void {
   droppedOversizeCount = 0
   shutdownHooksInstalled = false
   allowDbServiceLocalUsageRecordWriteForTest = false
+  usageRecordRedisConsumerStopping = true
+  usageRecordRedisConsumerStarted = false
+  usageRecordRedisConsumerPromise = undefined
+  void usageRecordRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
+  usageRecordRedisStreamQueueInstance = undefined
 }
 
 export function setDbServiceUsageRecordLocalWriteAllowedForTest(value: boolean): void {

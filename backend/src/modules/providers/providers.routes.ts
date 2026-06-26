@@ -1,7 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { isAdminRole } from '../../domain/types.js'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProviders, listProvidersAsync } from '../../storage/repositories.js'
 import {
@@ -10,14 +9,13 @@ import {
   listOpenAIProtocolProviderCodes
 } from '../../storage/provider.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
+import { getRequestAuthContext } from '../auth/request-context.js'
 import {
   findCustomProviderModel,
   customProviderModelBindings,
   listProviderModelCatalog,
   removeCustomProviderModel,
   saveCustomProviderModel,
-  compareProviderModelCatalogItems,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 
@@ -46,8 +44,7 @@ providersRouter.get('/options', async (_req, res, next) => {
 
 providersRouter.get('/models/options', (req, res) => {
   const context = getRequestAuthContext()
-  const access = getRequestAccessScope(req.query.systemAccountId)
-  const systemAccountId = modelCatalogSystemAccountId(access) ?? context?.systemAccountId
+  const systemAccountId = context?.systemAccountId
   const providerCodes = providerModelOptionProviderCodes(req.query.protocol)
   const options = dedupeProviderModelOptions(
     listProviders()
@@ -80,7 +77,6 @@ function providerModelOptionProviderCodes(protocol: unknown): Set<string> {
 
 providersRouter.get('/:code/models', (req, res) => {
   const context = getRequestAuthContext()
-  const access = getRequestAccessScope(req.query.systemAccountId)
   const provider = listProviders().find((item) => item.code === req.params.code)
   if (!provider) {
     res.status(404).json({ message: '供应商不存在' })
@@ -89,8 +85,7 @@ providersRouter.get('/:code/models', (req, res) => {
 
   res.json(ok(listProviderModelsForRequest({
     providerCode: provider.code,
-    systemAccountId: modelCatalogSystemAccountId(access),
-    admin: Boolean(context && isAdminRole(context.role)),
+    systemAccountId: context?.systemAccountId,
     includeInactive: booleanQueryValue(req.query.includeInactive),
     includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
   })))
@@ -104,7 +99,6 @@ const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().op
 
 const customModelSchema = z.object({
   model: z.string().trim().min(1),
-  scope: z.enum(['global', 'personal']).default('personal'),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
   mode: nullableModelModeSchema,
   supportedApiProtocols: z.array(z.enum([
@@ -159,11 +153,7 @@ providersRouter.post('/:code/models', (req, res) => {
     res.status(400).json(badRequest('自定义模型参数无效'))
     return
   }
-  if (parsed.data.scope === 'global' && !isAdminRole(context.role)) {
-    res.status(403).json({ message: '只有管理员可以维护全局模型' })
-    return
-  }
-  const ownerSystemAccountId = parsed.data.scope === 'personal' ? context.systemAccountId : undefined
+  const ownerSystemAccountId = context.systemAccountId
   const validation = validateCustomModelPricing({
     providerCode: provider.code,
     ownerSystemAccountId,
@@ -177,6 +167,7 @@ providersRouter.post('/:code/models', (req, res) => {
     const saved = saveCustomProviderModel({
       ...parsed.data,
       providerCode: provider.code,
+      scope: 'personal',
       systemAccountId: ownerSystemAccountId,
       actorSystemAccountId: context.systemAccountId
     })
@@ -286,53 +277,15 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
 function listProviderModelsForRequest(input: {
   providerCode: string
   systemAccountId?: string
-  admin: boolean
   includeInactive?: boolean
   includeUnpriced?: boolean
 }): ProviderModelCatalogItem[] {
-  const maintenanceView = input.includeInactive === true || input.includeUnpriced === true
-  if (!maintenanceView || input.admin || !input.systemAccountId) {
-    return listProviderModelCatalog({
-      providerCode: input.providerCode,
-      systemAccountId: input.systemAccountId,
-      includeInactive: input.admin ? input.includeInactive : undefined,
-      includeUnpriced: input.admin ? input.includeUnpriced : undefined
-    })
-  }
-
-  const publicCatalog = listProviderModelCatalog({
-    providerCode: input.providerCode
-  })
-  const personalCatalog = listProviderModelCatalog({
+  return listProviderModelCatalog({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
     includeInactive: input.includeInactive,
     includeUnpriced: input.includeUnpriced
-  }).filter((item) => item.scope === 'personal')
-  return mergeProviderModelsForRoute([...publicCatalog, ...personalCatalog])
-}
-
-function mergeProviderModelsForRoute(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
-  const merged = new Map<string, ProviderModelCatalogItem>()
-  for (const item of items) {
-    const key = item.model.trim().toLowerCase()
-    if (!key) continue
-    const previous = merged.get(key)
-    if (!previous || routeModelPriority(item) >= routeModelPriority(previous)) {
-      merged.set(key, item)
-    }
-  }
-  return [...merged.values()].sort(compareProviderModelCatalogItems)
-}
-
-function routeModelPriority(item: ProviderModelCatalogItem): number {
-  if (item.scope === 'personal') return 3
-  if (item.scope === 'global') return 2
-  return 1
-}
-
-function modelCatalogSystemAccountId(access: ReturnType<typeof getRequestAccessScope>): string | undefined {
-  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
+  })
 }
 
 function booleanQueryValue(value: unknown): boolean | undefined {
@@ -350,9 +303,7 @@ function canMutateCustomModel(
   ownerSystemAccountId: string | undefined,
   context: { systemAccountId: string; role: string }
 ): boolean {
-  if (isAdminRole(context.role)) return true
-  if (scope === 'global') return false
-  return ownerSystemAccountId === context.systemAccountId
+  return scope === 'personal' && ownerSystemAccountId === context.systemAccountId
 }
 
 function customModelBoundToAccountMessage(input: {

@@ -102,28 +102,32 @@ export async function replaceAccountModelMappingsAsync(accountId: string, provid
   }
 
   const normalizedMappings = normalizeAccountModelMappingsInput(mappings) ?? []
-  const timestamp = nowIso()
   const client = await getAccountModelMappingsDatabaseClient()
   await client.transaction(async (tx) => {
-    await tx.execute(`DELETE FROM ${accountModelMappingsTable(tx)} WHERE account_id = ?`, [accountId])
-    for (const mapping of normalizedMappings) {
-      await tx.execute(`
-        INSERT INTO ${accountModelMappingsTable(tx)} (
-          account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        accountId,
-        providerCode,
-        mapping.sourceModel,
-        mapping.sourceEndpointFamily,
-        mapping.upstreamModel,
-        mapping.upstreamEndpointFamily,
-        mapping.enabled ? 1 : 0,
-        timestamp,
-        timestamp
-      ])
-    }
+    await replaceAccountModelMappingsInClientAsync(tx, accountId, providerCode, normalizedMappings)
   })
+}
+
+export async function replaceAccountModelMappingsInClientAsync(client: DatabaseClient, accountId: string, providerCode: string, mappings: AccountModelMapping[]): Promise<void> {
+  const timestamp = nowIso()
+  await client.execute(`DELETE FROM ${accountModelMappingsTable(client)} WHERE account_id = ?`, [accountId])
+  for (const mapping of mappings) {
+    await client.execute(`
+      INSERT INTO ${accountModelMappingsTable(client)} (
+        account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      accountId,
+      providerCode,
+      mapping.sourceModel,
+      mapping.sourceEndpointFamily,
+      mapping.upstreamModel,
+      mapping.upstreamEndpointFamily,
+      mapping.enabled ? 1 : 0,
+      timestamp,
+      timestamp
+    ])
+  }
 }
 
 export function loadModelMappingsByAccountIds(accountIds: string[]): Map<string, AccountModelMapping[]> {

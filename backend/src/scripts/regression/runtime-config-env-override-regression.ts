@@ -20,6 +20,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.databaseDriver, 'sqlite', 'standalone 默认数据库 driver 应为 sqlite')
   assert.equal(runtimeConfig.cacheDriver, 'memory', 'standalone 默认缓存 driver 应为 memory')
   assert.equal(runtimeConfig.runtimeStateDriver, 'memory', 'standalone 默认运行态 driver 应为 memory')
+  assert.equal(runtimeConfig.queueDriver, 'memory', 'standalone 默认队列 driver 应为 memory')
 
   process.exit(0)
 }
@@ -39,12 +40,16 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.databaseDriver, 'postgres', '高性能模式数据库 driver 应为 postgres')
   assert.equal(runtimeConfig.cacheDriver, 'redis', '高性能模式缓存 driver 应为 redis')
   assert.equal(runtimeConfig.runtimeStateDriver, 'redis', '高性能模式运行态 driver 应为 redis')
+  assert.equal(runtimeConfig.queueDriver, 'redis_stream', '高性能模式队列 driver 应为 redis_stream')
   assert.equal(runtimeConfig.postgres.url, 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai', 'PostgreSQL URL 应正确读取')
   assert.equal(runtimeConfig.redis.cacheUrl, 'redis://:cache-secret@127.0.0.1:6379/0', 'Redis cache URL 应正确读取')
   assert.equal(runtimeConfig.redis.stateUrl, 'redis://:state-secret@127.0.0.1:6380/0', 'Redis state URL 应正确读取')
+  assert.equal(runtimeConfig.redis.queueUrl, 'redis://:queue-secret@127.0.0.1:6381/0', 'Redis queue URL 应正确读取')
   assert.equal(runtimeConfig.postgres.poolMax, 25, 'PostgreSQL pool max 应正确读取')
   assert.equal(runtimeConfig.postgres.writeMaxConcurrency, 100, 'PostgreSQL 写队列并发应正确读取')
   assert.equal(runtimeConfig.postgres.writeQueueMaxItems, 60000, 'PostgreSQL 写队列容量应正确读取')
+  assert.equal(runtimeConfig.queue.redisStreamMaxLen, 200000, 'Redis Stream 最大长度应正确读取')
+  assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
 
   process.exit(0)
 }
@@ -98,9 +103,12 @@ const performanceResult = spawnRegression({
   JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
   JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0',
   JUHE_AI_DB_POOL_MAX: '25',
   JUHE_AI_DB_WRITE_MAX_CONCURRENCY: '100',
-  JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000'
+  JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS: '60000',
+  JUHE_AI_REDIS_STREAM_MAXLEN: '200000',
+  JUHE_AI_REDIS_STREAM_READ_COUNT: '500'
 })
 
 assertRegressionSuccess(performanceResult)

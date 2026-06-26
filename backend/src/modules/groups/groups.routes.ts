@@ -3,12 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummary, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupOptionsAsync, listGroupsPageAsync, listProvidersAsync, returnGroupAuthorizationForGrantee, updateGroupAsync, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupOptionsAsync, listGroupsPageAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToGroupList } from '../gateway/runtime/runtime-snapshot.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
 
@@ -252,17 +252,23 @@ groupsRouter.post('/:id/return-authorization', mutationGuard({
     groupId: normalizedText(req.params.id),
     grantee: normalizedText(queryField(req, 'systemAccountId'))
   })
-}), (req, res) => {
+}), async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = findGroupSummary(req.params.id, requestAccess)
+  let before: Awaited<ReturnType<typeof findGroupSummaryAsync>>
   try {
-    runLoggedOperation(() => {
-      const authorization = returnGroupAuthorizationForGrantee(req.params.id, requestAccess)
+    before = await findGroupSummaryAsync(req.params.id, requestAccess)
+  } catch (error) {
+    next(error)
+    return
+  }
+  try {
+    await runLoggedOperationAsync(async () => {
+      const authorization = await returnGroupAuthorizationForGranteeAsync(req.params.id, requestAccess)
       if (!authorization) {
         throw new Error('授权分组不存在或不可归还')
       }

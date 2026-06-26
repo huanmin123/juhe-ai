@@ -1,5 +1,5 @@
 import { createAppCache } from '../../../shared/cache.js'
-import { registerApiKeyQuotaCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
+import { registerApiKeyQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getStatsDatabase } from '../../../storage/database.js'
@@ -65,6 +65,7 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
 }
 
 export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Promise<ApiKeyQuotaDecision> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const now = new Date()
   const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
   if (!hasEnabledRequestQuotaLimit(quotaLimits)) {

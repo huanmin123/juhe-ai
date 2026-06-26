@@ -1,11 +1,11 @@
 import type { Router } from 'express'
 
 import { badRequest } from '../../shared/http.js'
-import { findAccountSummary, returnAccountAuthorizationInstanceForGrantee } from '../../storage/repositories.js'
+import { findAccountSummaryAsync, returnAccountAuthorizationInstanceForGranteeAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export function registerAccountAuthorizationReturnRoutes(router: Router): void {
   router.post('/:id/return-authorization', mutationGuard({
@@ -15,17 +15,17 @@ export function registerAccountAuthorizationReturnRoutes(router: Router): void {
       accountId: normalizedText(req.params.id),
       grantee: normalizedText(queryField(req, 'systemAccountId'))
     })
-  }), (req, res) => {
+  }), async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const before = findAccountSummary(req.params.id, requestAccess)
+    const before = await findAccountSummaryAsync(req.params.id, requestAccess)
     try {
-      runLoggedOperation(() => {
-        const authorization = returnAccountAuthorizationInstanceForGrantee(req.params.id, requestAccess)
+      await runLoggedOperationAsync(async () => {
+        const authorization = await returnAccountAuthorizationInstanceForGranteeAsync(req.params.id, requestAccess)
         if (!authorization) {
           throw new Error('授权账户不存在或不可归还')
         }

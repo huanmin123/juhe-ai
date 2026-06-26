@@ -5,6 +5,9 @@ export interface RedisCommandClient {
   set(key: string, value: string, options?: Record<string, unknown>): Promise<string | null>
   del(key: string): Promise<number>
   eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
+  sendCommand(command: string[]): Promise<unknown>
+  quit?(): Promise<unknown>
+  destroy?(): void
   on(event: string, listener: (...args: unknown[]) => void): unknown
 }
 
@@ -20,6 +23,10 @@ export function getRedisClient(url: string): Promise<RedisCommandClient> {
   })
   redisClients.set(normalizedUrl, clientPromise)
   return clientPromise
+}
+
+export function createDedicatedRedisClient(url: string): Promise<RedisCommandClient> {
+  return createRedisClient(normalizeRedisUrl(url))
 }
 
 async function createRedisClient(url: string): Promise<RedisCommandClient> {

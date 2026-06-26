@@ -10,20 +10,6 @@
     <div class="model-modal-content">
       <div class="model-toolbar">
         <div class="model-toolbar-filters">
-          <SystemPrincipalSelect
-            v-if="showSystemAccountFilter"
-            v-model:value="systemAccountId"
-            v-model:selected-principal="selectedSystemAccount"
-            :accounts="systemAccounts"
-            :active-only="false"
-            :filter-option="false"
-            :loading="systemAccountsLoading"
-            placeholder="选择目标用户"
-            class="model-owner-select"
-            @change="emit('system-account-change')"
-            @dropdown-visible-change="emit('system-account-dropdown', $event)"
-            @search="emit('system-account-search', $event)"
-          />
           <a-input-search v-model:value="keyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
         </div>
         <a-space wrap>
@@ -153,9 +139,7 @@
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { ProviderModelPricing } from '@/types/domain'
 
 import {
   formatApiProtocol,
@@ -176,33 +160,21 @@ import {
 const open = defineModel<boolean>('open', { required: true })
 const keyword = defineModel<string>('keyword', { required: true })
 const selectedCategory = defineModel<ModelCategoryKey>('selectedCategory', { required: true })
-const systemAccountId = defineModel<string | undefined>('systemAccountId')
-const selectedSystemAccount = defineModel<PrincipalSelection | undefined>('selectedSystemAccount')
 
-withDefaults(defineProps<{
+defineProps<{
   title: string
   loading: boolean
-  showSystemAccountFilter?: boolean
-  systemAccounts?: SystemAccountPrincipalSummary[]
-  systemAccountsLoading?: boolean
   categoryTabs: Array<{ key: ModelCategoryKey; label: string }>
   columns: Array<Record<string, any>>
   models: ProviderModelPricing[]
   currentCategoryCount: number
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
-}>(), {
-  showSystemAccountFilter: false,
-  systemAccounts: () => [],
-  systemAccountsLoading: false
-})
+}>()
 
 const emit = defineEmits<{
   cancel: []
   create: []
   'model-action': [key: string, record: ProviderModelPricing]
-  'system-account-change': []
-  'system-account-dropdown': [open: boolean]
-  'system-account-search': [value: string]
 }>()
 </script>
 
@@ -264,10 +236,6 @@ const emit = defineEmits<{
 
 .model-search {
   width: 320px;
-}
-
-.model-owner-select {
-  width: 220px;
 }
 
 .model-table {
@@ -342,8 +310,5 @@ const emit = defineEmits<{
     width: 100%;
   }
 
-  .model-owner-select {
-    width: 100%;
-  }
 }
 </style>

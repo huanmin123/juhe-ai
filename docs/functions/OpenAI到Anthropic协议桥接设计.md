@@ -29,6 +29,25 @@ OpenAI 到 Anthropic Messages 桥接可以长期支持，但必须按显式桥�
 
 这四类都能转为 Anthropic 支持的 Messages 请求。限制是：桥接只承诺明确列出的 OpenAI 协议子集，不承诺完整 OpenAI Responses / Chat 全字段无损等价。遇到不能可靠映射的 hosted/native 能力时，必须返回本地可读 guidance；遇到非法请求边界时返回本地可读错误，或在明确不会影响客户端正确性的情况下记录降级，不能静默丢弃导致客户端误判成功。
 
+### 2.1 v1 收口边界
+
+v1 的交付目标是让 OpenAI Chat / Responses 客户端在混合路由命中 Anthropic Messages 上游时保持协议可用，而不是把 Anthropic Messages 扩展成完整 OpenAI Responses 运行时。
+
+v1 必须承接：
+
+- Chat / Responses JSON 和 SSE 四类入口的文本、usage、错误和结束事件外形。
+- system / developer / instructions / name、基础生成控制、metadata / user / safety_identifier。
+- function tools 新版 / legacy 请求、工具历史、工具结果、JSON 回包和 SSE delta。
+- 当前能力矩阵列出的图片、PDF / text 文件、`file_id` resolver、structured output、reasoning summary、`previous_response_id` 和 compact summary。
+
+v1 不强制承接：
+
+- 没有上游原生能力或本地 runtime 的 OpenAI hosted/native tools。
+- OpenAI 专有输出扩展、sources / citations、logprobs、audio、prompt template、`store=true`、background、conversation、自动截断、encrypted reasoning。
+- 完整 computer browser 会话、完整 code interpreter 容器生命周期、MCP 管理 / 人工审批 UI、第三方 HTTP-SSE 长连接和真实全矩阵抽样。
+
+能力缺口返回的 agent guidance 是符合下游协议的正常响应，不是网关失败；只有请求非法、权限越界、状态链损坏、schema 校验失败或安全策略命中时，才返回本地协议错误。后续如果某能力有真实 Anthropic profile、本地 runtime 或 provider，必须先补能力声明、mock 覆盖和真实抽样，再从 guidance-first 升级为承接路径。
+
 ## 3. 设计原则
 
 - 下游协议保持下游可见形态：Chat 请求必须返回 Chat 形态；Responses 请求必须返回 Responses 形态。
@@ -71,15 +90,22 @@ OpenAI 到 Anthropic Messages 桥接可以长期支持，但必须按显式桥�
 | `model` | `model` | 使用模型映射或混合路由后的上游模型 |
 | `messages[].role=system` | 顶层 `system` | 多条 system 以空行合并 |
 | `messages[].role=developer` | 顶层 `system` | 作为系统约束合并，标记来源为 developer |
-| `messages[].role=user` | `messages[].role=user` | text / image content block 转换 |
-| `messages[].role=assistant` | `messages[].role=assistant` | 普通文本转 text block；tool_calls 转 tool_use block |
-| `messages[].role=tool` | `messages[].role=user` + `tool_result` | 用 `tool_call_id` 关联 Anthropic `tool_use_id` |
+| `messages[].name` | 对应消息文本前缀 | Anthropic Messages 无 Chat `name` 顶层字段；非空 `name` 以 `参与者: <name>` 前缀保留在该条 user / assistant 文本内容中，不作为上游字段透传 |
+| `messages[].role=user` | `messages[].role=user` | text / image content block 转换；`image_url.url` 支持普通 URL / 图片 data URL，非图片 MIME 或非法 base64 本地拒绝且不请求 Anthropic |
+| `messages[].role=assistant` | `messages[].role=assistant` | 普通文本转 text block；新版 `tool_calls` 按客户端数组顺序转 tool_use block；旧版 `function_call` 在没有新版 `tool_calls` 时生成带网关合成 id 的 tool_use block；`function.arguments` 为 JSON object 时原样进入 Anthropic `input`，数组 / 标量 JSON 进入 `openai_arguments`，非法 JSON 进入 `openai_arguments_text` |
+| `messages[].role=tool` | `messages[].role=user` + `tool_result` | 用 `tool_call_id` 关联 Anthropic `tool_use_id`；多条工具结果按消息顺序保留，不能重排到对应 assistant 后或按 call id 排序 |
+| `messages[].role=function` | `messages[].role=user` + `tool_result` | 旧版 Chat 函数结果按 `name` 匹配最近一个未完成的旧版 `assistant.function_call` 合成 id；缺少 `name`、无匹配调用或重复返回时本地 OpenAI 错误拒绝 |
 | `tools[].type=function` | `tools[]` | 转为 Anthropic tool schema |
+| legacy `functions[]` | `tools[]` | 未提供新版 `tools` 时按 function tool schema 转换；同时存在 `tools` 和 `functions` 时以 `tools` 为准 |
 | `tools[].type=web_search` / 搜索模型 | 不做本地预取模拟 | Anthropic 上游没有在本 bridge 中声明原生等价能力时，返回正常 agent guidance 且不请求上游 |
 | `tool_choice` | `tool_choice` | 支持 `auto`、`none`、`required`、指定 function name |
+| legacy `function_call` | `tool_choice` | 未提供新版 `tool_choice` 时承接 `auto`、`none`、`{ name }`；同时存在新旧字段时以 `tool_choice` 为准 |
 | `max_completion_tokens` / `max_tokens` | `max_tokens` | 优先使用 OpenAI 显式值；缺失时由桥接层补默认上限 |
-| `temperature`、`top_p`、`stop`、`metadata` | 同名或等价字段 | 能等价表达时透传 |
+| `temperature`、`top_p`、`stop` | 同名或等价字段 | 能等价表达时透传；Anthropic 无等价语义或范围不一致的控制项按能力矩阵本地拒绝 |
+| `metadata` / `user` / `safety_identifier` / `prompt_cache_key` | Anthropic `metadata.user_id` 或网关本地信号 | `safety_identifier` 优先映射为 `metadata.user_id`，缺失时使用 `user`；业务 `metadata` 和 `prompt_cache_key` 不透传到 Anthropic |
 | `stream` | `stream` | 根据下游请求保持一致 |
+
+请求级控制字段必须按语义分层处理，不能因为 Anthropic Messages 不认识字段就静默丢弃：`service_tier=auto/default`、`store=false/null` 可作为默认路径进入桥接且不透传；`service_tier=flex/priority/unknown`、`prompt_cache_retention`、`store=true`、Responses `prompt` 模板和 Chat / Responses 顶层 `moderation` 当前没有等价服务档位、缓存保留、存储、托管 prompt 或审核策略，必须本地返回 OpenAI 形态错误且不请求 Anthropic。图像工具内部的 `moderation` 由本地图像 provider 路径单独承接，不属于顶层请求审核配置。
 
 Chat `response_format` 做受控结构化输出适配：
 
@@ -87,7 +113,7 @@ Chat `response_format` 做受控结构化输出适配：
 - `json_schema` 使用合成 Anthropic tool 和强制 `tool_choice` 生成结构化输出，再由网关做 JSON schema 子集二次校验。
 - `json_schema` 校验通过时，合成工具不会暴露为 Chat `tool_calls`，只把 tool input 反渲染为 `message.content` JSON 字符串。
 - `json_schema` 校验失败时，Chat JSON 返回合法 Chat Completion，`choices[0].message.content=null`，`choices[0].message.refusal` 携带 `openai_anthropic_bridge_structured_output_schema_mismatch` 和失败原因；Chat SSE 在流内输出 error frame。
-- 不支持 `n > 1`、`logprobs`、音频输出、`modalities` 音频、OpenAI 私有缓存字段的等价能力；命中时返回本地受控错误或明确忽略并写审计，具体策略在实现阶段按风险选择。
+- 不支持 `n > 1`、`logprobs`、音频输出、`modalities` 音频、非默认采样控制、`prediction`、`verbosity` 等等价能力；命中时返回本地受控错误或按能力矩阵明确忽略并写审计。
 
 Chat web search 边界：
 
@@ -105,10 +131,10 @@ Chat web search 边界：
 | `input` 字符串 | `messages[].role=user` | 作为单条用户消息 |
 | `input[].type=message` | `messages[]` / 顶层 `system` | `system/developer` 入 system；`user/assistant` 入 messages |
 | `input[].content[].type=input_text` | text block | 保留文本 |
-| `input[].content[].type=input_image` | image block | data URL / URL 按 Anthropic 支持的 image source 转换 |
-| `input[].content[].type=input_file` | document block | 支持 `file_data` inline PDF / text、PDF `file_url` 和本地 Files resolver `file_id`；未知或无权文件本地失败 |
-| `input[].type=function_call` | assistant `tool_use` | 保留 call id、name、arguments |
-| `input[].type=function_call_output` | user `tool_result` | 用 `call_id` 关联工具结果 |
+| `input[].content[].type=input_image` | image block | data URL / URL 按 Anthropic 支持的 image source 转换；`file_id` 经本地 Files resolver 转 image source；非图片 MIME、未知 file_id 或非法 base64 本地拒绝且不请求 Anthropic |
+| `input[].content[].type=input_file` | document block | 支持 `file_data` inline PDF / text/*、PDF `file_url` 和本地 Files resolver `file_id`；非法 base64、不支持 MIME、未知或无权文件本地失败且不上游 |
+| `input[].type=function_call` | assistant `tool_use` | 保留 call id、name、arguments；多个 function_call 按 Responses `input` 数组顺序生成 tool_use；`arguments` 为 JSON object 时原样进入 Anthropic `input`，数组 / 标量 JSON 进入 `openai_arguments`，非法 JSON 进入 `openai_arguments_text` |
+| `input[].type=function_call_output` | user `tool_result` | 用 `call_id` 关联工具结果；多条工具结果按 Responses `input` 数组顺序保留，不能重排到对应 function_call 后或按 call id 排序 |
 | `tools[].type=function` | Anthropic `tools[]` | function tools 转 Anthropic tool schema |
 | `tool_choice` | `tool_choice` | 支持 auto / none / required / 指定函数 |
 | `max_output_tokens` | `max_tokens` | 缺失时补默认上限 |
@@ -127,10 +153,10 @@ Responses `store`、`background`、`conversation`、`include`、`truncation`、`
 
 OpenAI 文件输入按“无需 resolver 的 inline / URL 子集”和“必须 resolver 的 `file_id`”分开处理。本地 Files resolver 的长期设计见 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)。
 
-- Chat `content[].type=file` 只承接 `file.file_data`。`file.file_id` 是 OpenAI 文件存储引用，不能直接转 Anthropic `file_id`。
-- Responses `input_file.file_data` 承接 PDF base64、`text/plain` 和 `text/*` inline 内容；PDF 转 Anthropic `document.source.type=base64`，文本转 Anthropic `document.source.type=text`。
-- Responses `input_file.file_url` 只按 PDF URL document source 转发；非 PDF URL 需要本地下载、格式解析和权限审计，本阶段不静默转发。
-- Chat / Responses 的 `file_id`、`input_image.file_id` 由本地 Files resolver 读取文件内容、校验 API Key 归属、MIME 和大小，再转 image / document block；未知、无权或不支持的文件返回 OpenAI 形态本地错误，不请求 Anthropic。
+- Chat `content[].type=file` 承接 `file.file_data` 和经本地 Files resolver 校验后的 `file.file_id`；`file.file_id` 是 OpenAI 文件存储引用，不能直接转 Anthropic `file_id`。Chat `file_url`、未知 `file_id` 或 resolver 返回不支持 MIME 时当前本地拒绝，不请求 Anthropic。
+- Responses `input_file.file_data` 承接 PDF base64、`text/plain` 和 `text/*` inline 内容；PDF 转 Anthropic `document.source.type=base64`，文本转 Anthropic `document.source.type=text`。非法 base64 或非 PDF/text MIME 本地拒绝，不请求 Anthropic。
+- Responses `input_file.file_url` 只按 PDF URL document source 转发；非 PDF URL 需要本地下载、格式解析和权限审计，本阶段本地拒绝且不静默转发。
+- Chat / Responses 的 `file_id`、`input_image.file_id` 由本地 Files resolver 读取文件内容、校验 API Key 归属、MIME、base64 和大小，再转 image / document block；未知、无权、不支持 MIME 或 resolver 内容非法的文件返回 OpenAI 形态本地错误，不请求 Anthropic。
 - resolver 不把本地文件路径或 OpenAI `file_id` 交给 Anthropic；Anthropic 上游只能看到已转换的 image / document source。
 - resolver 运行路径必须遵守大文件规则：上传和下载流式处理，只有目标 Anthropic block 需要 base64 且文件在受控大小上限内时才读取编码。
 
@@ -144,7 +170,7 @@ Anthropic Messages 上游不认识 OpenAI `previous_response_id`，因此 Respon
 2. 后续请求带 `previous_response_id` 时，网关先校验 API Key、系统账户、分组、供应商档案和模型映射边界。
 3. 校验通过后，读取历史状态并追加本轮 input，再构造新的 Anthropic Messages 请求。
 4. 状态缺失、过期、跨分组、跨供应商、工具调用不完整或摘要校验失败时，返回本地受控错误，不把缺失历史的请求发给上游。
-5. `/v1/responses/compact` 不能透传给 Anthropic。需要 compact 时，由网关在当前授权边界内执行 summary compact，保存为网关自有 compact snapshot，再返回 OpenAI CompactResource 兼容外形：`object=response.compaction`，`output` 中恰好 1 个 `type=compaction` item，`encrypted_content=juhecmp.v2.<compact_id>.<digest>`。后续 `/v1/responses` 携带该 item 时，状态层先校验 API Key、分组、供应商档案、TTL 和 digest，再恢复为 inline summary。OpenAI 到 Anthropic bridge 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`，只把已恢复摘要写入 Anthropic 顶层 `system`；不会把 compact envelope 发给上游。
+5. `/v1/responses/compact` 不能透传给 Anthropic。需要 compact 时，由网关在当前授权边界内执行 summary compact，保存为网关自有 compact snapshot，再返回 OpenAI CompactResource 兼容外形：`object=response.compaction`，`output` 中恰好 1 个 `type=compaction` item，`encrypted_content=juhecmp.v2.<compact_id>.<digest>`。后续 `/v1/responses` 携带该 item 时，状态层先校验 API Key、分组、供应商档案、TTL 和 digest，再恢复为 inline summary。OpenAI 到 Anthropic bridge 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`，只把已恢复摘要写入 Anthropic 顶层 `system`；不会把 compact envelope 发给上游。缺少 `encrypted_content`、`juhecmp.v1` inline summary 解析失败、解析后没有摘要或未知 compact envelope 时必须本地拒绝且不请求 Anthropic，不能静默丢弃压缩历史后继续生成。
 
 这套机制复用现有 Chat-only Responses bridge 的状态存储思路，并作为“非原生 Responses 上游桥接状态”继续扩展。当前已覆盖 Codex SSE 续链和普通 Responses JSON / SSE 续链；后续如果继续新增跨供应商 Responses 状态能力，命名和文档应从 Chat-only 语义逐步收敛到通用 Responses bridge state。
 
@@ -156,10 +182,10 @@ Anthropic JSON 响应要渲染为 OpenAI Chat Completions JSON：
 
 - `content[].type=text` 合并为 `choices[0].message.content`。
 - `content[].type=thinking` 可进入审计和 usage，默认不混入普通 content；如需可见 reasoning，按当前 OpenAI-compatible reasoning 字段策略输出。
-- `content[].type=tool_use` 转为 `choices[0].message.tool_calls[]`。
+- `content[].type=tool_use` 默认转为 `choices[0].message.tool_calls[]`；如果下游请求使用 legacy `functions[]` / `function_call` 且没有新版 `tools/tool_choice`，JSON 回包恢复为 `choices[0].message.function_call`。
 - `stop_reason=end_turn` 映射 `finish_reason=stop`。
 - `stop_reason=max_tokens` 映射 `finish_reason=length`。
-- `stop_reason=tool_use` 映射 `finish_reason=tool_calls`。
+- `stop_reason=tool_use` 默认映射 `finish_reason=tool_calls`；legacy function 回包映射为 `finish_reason=function_call`。
 - Anthropic usage 映射到 Chat `usage`，同时保留 Anthropic cache / thinking 扩展到使用记录。
 
 ### 7.2 Messages SSE 到 Chat SSE
@@ -168,7 +194,7 @@ Anthropic SSE 事件要渲染为 Chat Completions SSE：
 
 - `message_start` 生成首个 `chat.completion.chunk` 角色 delta。
 - `content_block_delta.text_delta` 生成 `delta.content`。
-- `content_block_start/tool_use` 和 `input_json_delta` 累积为 Chat `delta.tool_calls` 参数分片。
+- `content_block_start/tool_use` 和 `input_json_delta` 默认累积为 Chat `delta.tool_calls` 参数分片；legacy `functions[]` / `function_call` 请求且无新版 `tools/tool_choice` 时，恢复为旧版 Chat `delta.function_call.name` / `delta.function_call.arguments` 单工具流式形态。
 - `message_delta.usage` 更新 usage。
 - `message_stop` 输出最终 finish chunk 和 `[DONE]`。
 - `event: error` 在尚未写下游可见事件前允许服务端换号；已写出后按 Chat SSE 错误策略输出或中止。
@@ -321,7 +347,7 @@ mock 回归必须覆盖：
 | Responses JSON | OpenAI Responses 非流式请求转 Anthropic Messages JSON，返回 Responses JSON |
 | Responses SSE | OpenAI Responses 流式请求转 Anthropic Messages SSE，返回 Responses typed SSE |
 | 工具调用 | Chat tool_calls / tool result 与 Responses function_call / function_call_output 往返 |
-| 图片 / 文件输入 | Chat image_url、Responses input_image、Chat/Responses inline 文件、Responses PDF URL、本地 `/v1/files` 上传后的 file_id 转 Anthropic image / document block；未知 file_id 本地失败 |
+| 图片 / 文件输入 | Chat image_url、Responses input_image、Chat/Responses inline PDF / text/* 文件、Responses PDF URL、本地 `/v1/files` 上传后的 file_id 转 Anthropic image / document block；图片 file_id 非图片 MIME / 非法 base64、文件非法 base64、不支持 MIME、Chat file_url、Responses 非 PDF URL、Chat / Responses 未知或不支持 MIME 的 file_id 本地失败且不上游 |
 | JSON 输出 | JSON object / JSON schema 的受控支持与不支持错误 |
 | 错误转换 | Anthropic JSON error、SSE `event:error` 和本地桥接错误按下游协议渲染 |
 | 路由 | API Key 绑定多分组时，OpenAI 请求可命中 Anthropic 映射账号 |

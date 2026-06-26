@@ -2,8 +2,13 @@ import type { AccountOptionSummary, AccountStatus, AuthorizationStatus } from '.
 import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountOptionListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
+import { accountNameSearchQueryTerms, escapeAccountNameSearchLike, normalizeAccountNameSearchText } from './account-name-search.repository.js'
 import { authorizationRuntimeBlockingStatus, currentIsoSql, disableExpiredAccounts } from './account-runtime-status.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { escapeLikePrefix, sqlPlaceholders } from './query-utils.js'
 import { ensureRequestQuotaDatabaseAttached, requestQuotaExceededSql, type RequestQuotaSqlExpression } from './request-quota-sql.js'
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
@@ -63,6 +68,16 @@ export function listAccountOptions(access?: AccessScope, options?: AccountOption
   return accountOptionSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
+export async function listAccountOptionsAsync(access?: AccessScope, options?: AccountOptionListOptions): Promise<AccountOptionSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listAccountOptions(access, options)
+  }
+  const listOptions = normalizeAccountOptionListOptions(options)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await queryOwnerAccountOptionRowsAsync(client, access, listOptions)
+  return accountOptionSummariesFromOwnerRowsAsync(client, rows, access)
+}
+
 function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
@@ -101,6 +116,265 @@ function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: Access
       permissions: isAuthorizedView ? authorizedAccountPermissions(false) : ownerPermissions()
     }
   })
+}
+
+async function accountOptionSummariesFromOwnerRowsAsync(
+  client: DatabaseClient,
+  rows: AccountOptionRow[],
+  access: AccessScope | undefined
+): Promise<AccountOptionSummary[]> {
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const accountNames = shouldIncludeSystemAccountFields
+    ? await loadAccountOptionSystemAccountNamesAsync(client, rows.map((row) => row.system_account_id))
+    : new Map<string, string>()
+  return rows.map((row) => ({
+    id: row.id,
+    systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
+    systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: accountNames.get(row.system_account_id),
+    providerCode: row.provider_code,
+    providerProtocolProfileId: row.provider_protocol_profile_id,
+    protocolCode: row.protocol_code,
+    protocolVersion: row.protocol_version,
+    name: row.name,
+    type: row.type,
+    status: row.status,
+    accessType: 'owner',
+    accountExpiresAt: row.account_expires_at ?? undefined,
+    permissions: ownerPermissions()
+  }))
+}
+
+async function queryOwnerAccountOptionRowsAsync(
+  client: DatabaseClient,
+  access: AccessScope | undefined,
+  options: ReturnType<typeof normalizeAccountOptionListOptions>
+): Promise<AccountOptionRow[]> {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && !canAccessAll(access)) {
+    throw new Error('缺少系统账户上下文')
+  }
+  const filters = buildOwnerAccountOptionFilters(client, options, ownerSystemAccountId)
+  return await client.query<AccountOptionRow>(`
+    SELECT
+      accounts.id,
+      accounts.system_account_id,
+      accounts.provider_code,
+      accounts.provider_protocol_profile_id,
+      accounts.protocol_code,
+      accounts.protocol_version,
+      accounts.name,
+      accounts.type,
+      ${ownerAccountOptionEffectiveStatusSql()} AS status,
+      accounts.schedulable,
+      accounts.account_expires_at,
+      accounts.availability_schedule_json,
+      accounts.availability_schedule_active,
+      accounts.cooldown_until,
+      accounts.last_error_code,
+      accounts.priority,
+      accounts.created_at,
+      accounts.authorization_instance_source_account_id,
+      accounts.authorization_instance_authorization_id,
+      accounts.authorization_instance_owner_system_account_id,
+      accounts.deleted_at,
+      accounts.deleted_by,
+      'owner' AS access_type,
+      NULL AS authorization_id,
+      NULL AS authorization_status,
+      NULL AS authorization_expires_at,
+      NULL AS authorization_limits_json,
+      NULL AS authorization_effective_source_team_id,
+      NULL AS authorization_resource_owner_system_account_id,
+      NULL AS authorization_resource_id,
+      NULL AS bound_group_id,
+      NULL AS bound_group_account_authorization_id,
+      NULL AS source_status,
+      NULL AS source_schedulable,
+      NULL AS source_availability_schedule_json,
+      NULL AS source_availability_schedule_active,
+      NULL AS source_account_expires_at,
+      NULL AS source_cooldown_until,
+      NULL AS source_last_error_code
+    FROM ${accountOptionTable(client, 'accounts')} accounts
+    ${filters.clause}
+    ORDER BY accounts.priority ASC, accounts.created_at ASC, accounts.id ASC
+    LIMIT ? OFFSET ?
+  `, [
+    ...filters.params,
+    options.pageSize,
+    (options.page - 1) * options.pageSize
+  ])
+}
+
+function buildOwnerAccountOptionFilters(
+  client: DatabaseClient,
+  options: ReturnType<typeof normalizeAccountOptionListOptions>,
+  ownerSystemAccountId?: string
+): { clause: string; params: unknown[] } {
+  const clauses = [
+    'accounts.deleted_at IS NULL',
+    'accounts.authorization_instance_authorization_id IS NULL'
+  ]
+  const params: unknown[] = []
+  if (ownerSystemAccountId) {
+    clauses.push('accounts.system_account_id = ?')
+    params.push(ownerSystemAccountId)
+  }
+  if (options.ids.length) {
+    clauses.push(`accounts.id IN (${options.ids.map(() => '?').join(', ')})`)
+    params.push(...options.ids)
+  }
+  const keyword = options.keyword?.trim()
+  if (keyword) {
+    const keywordPrefix = `${escapeAccountNameSearchLike(keyword)}%`
+    const keywordClauses = [
+      'lower(accounts.name) = lower(?)',
+      "lower(accounts.name) LIKE lower(?) ESCAPE '\\'"
+    ]
+    const keywordParams: unknown[] = [keyword, keywordPrefix]
+    const containsSubquery = ownerAccountOptionNameContainsSubquery(client, keyword, ownerSystemAccountId)
+    if (containsSubquery) {
+      keywordClauses.push(`accounts.id IN (${containsSubquery.sql})`)
+      keywordParams.push(...containsSubquery.params)
+    }
+    clauses.push(`(${keywordClauses.join(' OR ')})`)
+    params.push(...keywordParams)
+  }
+  if (options.providerCode && options.providerCode !== 'all') {
+    clauses.push('accounts.provider_code = ?')
+    params.push(options.providerCode)
+  }
+  if (options.providerProtocolProfileId && options.providerProtocolProfileId !== 'all') {
+    clauses.push('accounts.provider_protocol_profile_id = ?')
+    params.push(options.providerProtocolProfileId)
+  }
+  const groupId = options.groupId?.trim()
+  if (groupId) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM ${accountOptionTable(client, 'group_accounts')} option_group_accounts
+      WHERE option_group_accounts.account_id = accounts.id
+        AND option_group_accounts.system_account_id = accounts.system_account_id
+        AND option_group_accounts.group_id = ?
+        AND option_group_accounts.enabled = 1
+    )`)
+    params.push(groupId)
+  }
+  if (options.tagIds.length) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM ${accountOptionTable(client, 'account_tag_bindings')} option_tag_bindings
+      WHERE option_tag_bindings.account_id = accounts.id
+        AND option_tag_bindings.system_account_id = accounts.system_account_id
+        AND option_tag_bindings.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
+    )`)
+    params.push(...options.tagIds)
+  }
+  if (options.type && options.type !== 'all') {
+    clauses.push('accounts.type = ?')
+    params.push(options.type)
+  }
+  const statuses = accountStatusFilterValues(options.status)
+  if (statuses.length === 1) {
+    clauses.push(`${ownerAccountOptionEffectiveStatusSql()} = ?`)
+    params.push(statuses[0])
+  } else if (statuses.length > 1) {
+    clauses.push(`${ownerAccountOptionEffectiveStatusSql()} IN (${statuses.map(() => '?').join(', ')})`)
+    params.push(...statuses)
+  }
+  if (options.schedulable === 'enabled') {
+    clauses.push(`${ownerAccountOptionEffectiveSchedulableSql()} = 1`)
+  } else if (options.schedulable === 'disabled') {
+    clauses.push(`(${ownerAccountOptionEffectiveSchedulableSql()} = 0 AND ${ownerAccountOptionCoolingSql()} = 0)`)
+  } else if (options.schedulable === 'cooling') {
+    clauses.push(`${ownerAccountOptionCoolingSql()} = 1`)
+  }
+  return {
+    clause: `WHERE ${clauses.join(' AND ')}`,
+    params
+  }
+}
+
+function ownerAccountOptionNameContainsSubquery(
+  client: DatabaseClient,
+  keyword: string,
+  ownerSystemAccountId?: string
+): { sql: string; params: unknown[] } | undefined {
+  const terms = accountNameSearchQueryTerms(keyword)
+  if (!terms.length) return undefined
+  const systemAccountClause = ownerSystemAccountId ? 'AND search.system_account_id = ?' : ''
+  const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
+  const params: unknown[] = ownerSystemAccountId
+    ? [...terms, ownerSystemAccountId, keywordContains, terms.length]
+    : [...terms, keywordContains, terms.length]
+  return {
+    sql: `
+      SELECT search.account_id
+      FROM ${accountOptionTable(client, 'account_name_search_terms')} search
+      INNER JOIN ${accountOptionTable(client, 'account_name_search_documents')} documents
+        ON documents.account_id = search.account_id
+      WHERE search.term IN (${terms.map(() => '?').join(', ')})
+        ${systemAccountClause}
+        AND documents.normalized_name LIKE ? ESCAPE '\\'
+      GROUP BY search.account_id
+      HAVING COUNT(DISTINCT search.term) = ?
+    `,
+    params
+  }
+}
+
+async function loadAccountOptionSystemAccountNamesAsync(client: DatabaseClient, systemAccountIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(systemAccountIds.map((id) => id.trim()).filter(Boolean))]
+  if (!ids.length) return new Map()
+  const rows = await client.query<{ id: string; username: string; display_name: string }>(`
+    SELECT id, username, display_name
+    FROM ${accountOptionTable(client, 'system_accounts')}
+    WHERE id IN (${ids.map(() => '?').join(', ')})
+  `, ids)
+  return new Map(rows.map((row) => [row.id, row.display_name || row.username || row.id]))
+}
+
+function ownerAccountOptionEffectiveStatusSql(): string {
+  return `CASE
+    WHEN accounts.last_error_code = 'account_expired'
+      OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at::timestamptz <= now())
+    THEN 'disabled'
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until::timestamptz > now() THEN 'temporary_unavailable'
+    WHEN COALESCE(accounts.availability_schedule_active, 1) = 0 THEN 'disabled'
+    WHEN accounts.schedulable <> 1 THEN 'disabled'
+    ELSE accounts.status
+  END`
+}
+
+function ownerAccountOptionEffectiveSchedulableSql(): string {
+  return `CASE
+    WHEN accounts.status = 'active'
+      AND accounts.schedulable = 1
+      AND COALESCE(accounts.availability_schedule_active, 1) <> 0
+      AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until::timestamptz <= now())
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at::timestamptz > now())
+      AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')
+    THEN 1
+    ELSE 0
+  END`
+}
+
+function ownerAccountOptionCoolingSql(): string {
+  return `CASE
+    WHEN accounts.status IN ('rate_limited', 'temporary_unavailable')
+      OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until::timestamptz > now())
+    THEN 1
+    ELSE 0
+  END`
+}
+
+function accountOptionTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 function queryAccountOptionRowsForAccess(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountOptionListOptions>): AccountOptionRow[] {

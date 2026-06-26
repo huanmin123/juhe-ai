@@ -1,5 +1,4 @@
 import type {
-  CustomProviderModelScope,
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
@@ -19,7 +18,6 @@ import {
 export interface CustomModelForm {
   id?: string
   model: string
-  scope: CustomProviderModelScope
   status: ProviderModelStatus
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
@@ -41,7 +39,6 @@ export interface CustomModelForm {
 
 export const emptyCustomModelForm: CustomModelForm = {
   model: '',
-  scope: 'personal',
   status: 'active',
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions']
@@ -54,7 +51,6 @@ export function createCustomModelFormFromPricing(
   const form: CustomModelForm = {
     id: record.id,
     model: record.model,
-    scope: record.scope === 'global' ? 'global' : 'personal',
     status: record.status ?? 'active',
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
@@ -89,7 +85,6 @@ export function buildCustomModelPayload(
   if (!model) return undefined
   return {
     model,
-    scope: form.scope,
     status: form.status,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],

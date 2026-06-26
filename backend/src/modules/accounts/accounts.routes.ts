@@ -3,13 +3,13 @@ import { Router } from 'express'
 import { type AccountStatus, type AccountSummary } from '../../domain/types.js'
 import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, findGroupSummary, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, setAccountGroupAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import {
   createAccountTestTask,
   failAccountTestTask,
@@ -112,7 +112,7 @@ accountsRouter.post('/', mutationGuard({
     status: normalizedText(bodyField(req, 'status')),
     activationTestTaskId: normalizedText(bodyField(req, 'activationTestTaskId'))
   })
-}), (req, res) => {
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -136,7 +136,7 @@ accountsRouter.post('/', mutationGuard({
   }
 
   const providerCode = parsed.data.providerCode
-  const provider = listProviders().find((item) => item.code === providerCode)
+  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
   if (!provider) {
     res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
     return
@@ -146,9 +146,9 @@ accountsRouter.post('/', mutationGuard({
     return
   }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
-  let group: ReturnType<typeof findGroupSummary> | undefined
+  let group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined
   if (groupId) {
-    group = findGroupSummary(groupId, requestAccess)
+    group = await findGroupSummaryAsync(groupId, requestAccess)
     if (!group || group.providerCode !== providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
       return
@@ -192,9 +192,9 @@ accountsRouter.post('/', mutationGuard({
   }
 
   try {
-    const account = runLoggedOperation(() => {
+    const account = await runLoggedOperationAsync(async () => {
       const { activationTestTaskId: _activationTestTaskId, connectionType: _connectionType, ...accountCreateInput } = parsed.data
-      const account = createAccount({
+      const account = await createAccountAsync({
         ...accountCreateInput,
         providerCode,
         providerProtocolProfileId: providerProfile.id,
@@ -282,7 +282,7 @@ accountsRouter.patch('/:id', async (req, res) => {
   }
   const body = parsed.data as Record<string, unknown>
   const { groupId: requestedGroupId, clearFailureState: requestedClearFailureState, ...accountUpdateInput } = parsed.data
-  const existingAccount = findAccountForTest(req.params.id, requestAccess)
+  const existingAccount = await findAccountForTestAsync(req.params.id, requestAccess)
   if (!existingAccount) {
     res.status(404).json({ message: '账户不存在' })
     return
@@ -298,7 +298,7 @@ accountsRouter.patch('/:id', async (req, res) => {
     return
   }
   if (hasGroupId) {
-    const group = findGroupSummary(groupIdToBind as string, requestAccess)
+    const group = await findGroupSummaryAsync(groupIdToBind as string, requestAccess)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
       return
@@ -319,19 +319,19 @@ accountsRouter.patch('/:id', async (req, res) => {
     accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
   }
   try {
-    const account = runLoggedOperation(() => {
+    const account = await runLoggedOperationAsync(async () => {
       if (requestedClearFailureState === true) {
-        const restoredAccount = clearAccountFailureState(req.params.id, requestAccess)
+        const restoredAccount = await clearAccountFailureStateAsync(req.params.id, requestAccess)
         if (!restoredAccount) {
           throw new Error('账户不存在')
         }
       }
-      let account = updateAccount(req.params.id, accountUpdateInput, requestAccess)
+      let account = await updateAccountAsync(req.params.id, accountUpdateInput, requestAccess)
       if (!account) {
         throw new Error('账户不存在')
       }
       if (hasGroupId) {
-        const nextAccount = setAccountGroup(account.id, groupIdToBind as string, requestAccess)
+        const nextAccount = await setAccountGroupAsync(account.id, groupIdToBind as string, requestAccess)
         if (!nextAccount) {
           throw new Error('账户分组无效')
         }

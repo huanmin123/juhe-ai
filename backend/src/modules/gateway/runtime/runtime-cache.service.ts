@@ -1,7 +1,7 @@
 import { createAppCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-concurrency.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { registerGatewayRuntimeCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
+import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
 import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
@@ -138,6 +138,7 @@ export function readCachedGatewaySettings(): GatewaySettings {
 }
 
 export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   if (runtimeConfig.processRole !== 'server') {
     return { ...readCachedGatewaySettings() }
   }
@@ -165,6 +166,7 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
 }
 
 export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   if (runtimeConfig.processRole !== 'server') {
     return resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
   }
@@ -214,6 +216,7 @@ export async function listCachedOpenAIAccountsForGroupAsync(
   systemAccountId: string,
   options: CachedOpenAIAccountsForGroupOptions = {}
 ): Promise<OpenAIAccountSecret[]> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   if (runtimeConfig.processRole !== 'server') {
     return listCachedOpenAIAccountsForGroup(groupId, systemAccountId, options)
   }
@@ -287,6 +290,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
   includeInactive?: boolean
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   if (runtimeConfig.processRole !== 'server') {
     return listProviderModelCatalog(input)
   }
@@ -317,6 +321,7 @@ export async function resolveCachedProviderModelRouteAsync(input: {
   systemAccountId?: string
   includeUnpriced?: boolean
 }): Promise<ProviderModelRouteResolution> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const modelKey = normalizeProviderModelRouteKey(input.model)
   const providerCodes = normalizedProviderRouteCodes(input.providerCodes)
   if (!modelKey || !providerCodes.length) {
@@ -358,6 +363,7 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
   protocolCode: string
   providerCode?: string
 }): Promise<ResponseInspectionPolicySummary[]> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const cacheKey = responseInspectionPolicyCacheKey(input.protocolCode, input.providerCode)
   const cached = responseInspectionPolicyCache.get(cacheKey)
   if (cached) {
@@ -380,6 +386,7 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
 }
 
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached !== undefined) {

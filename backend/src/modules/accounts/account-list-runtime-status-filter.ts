@@ -3,7 +3,7 @@ import type { AccountSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
 import { pagedTotalUpperBound } from '../../storage/query-utils.js'
-import { listAccountsPage, type AccountListResult } from '../../storage/repositories.js'
+import { listAccountsPageAsync, type AccountListResult } from '../../storage/repositories.js'
 import { requestServerAccountRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { applyServerAccountConcurrencyToAccountList, type AccountRuntimeSnapshotStatus } from '../gateway/runtime/runtime-snapshot.service.js'
 
@@ -33,7 +33,7 @@ export async function applyAccountListRuntimeStatusFilter(
   }
 
   while (!hasMore && sourcePage <= maxSourcePages) {
-    const candidatePage = listAccountsPage(access, {
+    const candidatePage = await listAccountsPageAsync(access, {
       ...listOptions,
       status: undefined,
       page: sourcePage,

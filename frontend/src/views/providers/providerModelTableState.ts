@@ -91,6 +91,6 @@ export function buildPricingTemplateOptions(
     .filter((item) => !item.pricingModel && hasDirectModelPrice(item))
     .map((item) => ({
       value: item.model,
-      label: `${item.model}${item.scope === 'built_in' ? '（内置）' : item.scope === 'global' ? '（全局）' : '（个人）'}`
+      label: `${item.model}${item.scope === 'built_in' ? '（内置）' : '（个人）'}`
     }))
 }

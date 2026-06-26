@@ -246,6 +246,7 @@ interface OpenAIToAnthropicBridgeRequestPlan {
   reasoningEffort?: string
   reasoningSummary?: string
   chatStreamIncludeUsage?: boolean
+  chatLegacyFunctionCallResponse?: boolean
   fileSearch?: OpenAIToAnthropicFileSearchPlan
   imageGeneration?: OpenAIToAnthropicImageGenerationPlan
   responsesToolSearch?: OpenAIToAnthropicResponsesToolSearchPlan
@@ -379,6 +380,8 @@ type AnthropicContentBlock = JsonRecord
 interface OpenAIToolResultHistory {
   toolCallIds: Set<string>
   completedToolCallIds: Set<string>
+  legacyFunctionCallIdsByName: Map<string, string[]>
+  legacyFunctionCallSequence: number
 }
 
 interface ParsedSseEvent {
@@ -688,11 +691,31 @@ async function chatBodyToAnthropicMessages(
       })
       continue
     }
+    if (role === 'function') {
+      const callId = validateOpenAIChatLegacyFunctionResultHistory(toolHistory, stringValue(item.name))
+      appendAnthropicMessage(messages, {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: callId,
+          content: openAIContentToText(item.content)
+        }]
+      })
+      continue
+    }
     if (role !== 'user' && role !== 'assistant') continue
-    const content = await openAIChatContentToAnthropicBlocks(item.content, contentContext)
+    const content = withOpenAIChatMessageNamePrefix(
+      await openAIChatContentToAnthropicBlocks(item.content, contentContext),
+      stringValue(item.name)
+    )
     if (role === 'assistant') {
       const toolUseBlocks = chatToolCallsToAnthropicToolUseBlocks(item.tool_calls)
-      rememberAnthropicToolUseBlocks(toolHistory, toolUseBlocks)
+      if (toolUseBlocks.length) {
+        rememberAnthropicToolUseBlocks(toolHistory, toolUseBlocks)
+      } else {
+        const legacyToolUseBlock = chatLegacyFunctionCallToAnthropicToolUseBlock(toolHistory, item.function_call)
+        if (legacyToolUseBlock) toolUseBlocks.push(legacyToolUseBlock)
+      }
       content.push(...toolUseBlocks)
     }
     appendAnthropicMessage(messages, {
@@ -709,8 +732,16 @@ async function chatBodyToAnthropicMessages(
   output.messages = messages
   const system = systemParts.join('\n\n').trim()
   if (system) output.system = system
-  const tools = chatToolsToAnthropicTools(body.tools, body.tool_choice, requestPlan)
-  applyStructuredOutputPlan(output, tools, body.tool_choice, requestPlan.structuredOutput, body.parallel_tool_calls === false, requestPlan)
+  const toolChoice = effectiveChatToolChoice(body)
+  const tools = chatToolsToAnthropicTools(effectiveChatTools(body), toolChoice, requestPlan)
+  applyStructuredOutputPlan(
+    output,
+    tools,
+    toolChoice,
+    requestPlan.structuredOutput,
+    body.parallel_tool_calls === false || requestPlan.chatLegacyFunctionCallResponse === true,
+    requestPlan
+  )
   validateAnthropicThinkingToolChoiceCompatibility(output)
   if (!requestPlan.structuredOutput?.syntheticToolName) {
     appendJsonOutputInstruction(output, jsonInstructionFromStructuredOutputPlan(requestPlan.structuredOutput))
@@ -879,7 +910,9 @@ function validateResponsesReasoningInputItem(item: JsonRecord): void {
 function createOpenAIToolResultHistory(): OpenAIToolResultHistory {
   return {
     toolCallIds: new Set<string>(),
-    completedToolCallIds: new Set<string>()
+    completedToolCallIds: new Set<string>(),
+    legacyFunctionCallIdsByName: new Map<string, string[]>(),
+    legacyFunctionCallSequence: 0
   }
 }
 
@@ -928,9 +961,51 @@ function validateOpenAIToolResultHistory(
   return callId
 }
 
+function validateOpenAIChatLegacyFunctionResultHistory(
+  history: OpenAIToolResultHistory,
+  name: string | undefined
+): string {
+  if (!name) {
+    throw bridgeValidationError(
+      'Chat role=function 缺少 name，无法匹配前文 assistant function_call',
+      'openai_anthropic_bridge_tool_result_missing_call_id'
+    )
+  }
+  const ids = history.legacyFunctionCallIdsByName.get(name) ?? []
+  const callId = ids.find((id) => !history.completedToolCallIds.has(id))
+  if (!callId) {
+    if (ids.length) {
+      throw bridgeValidationError(
+        `Chat role=function 的 name ${name} 已经返回过工具结果`,
+        'openai_anthropic_bridge_duplicate_tool_result'
+      )
+    }
+    throw bridgeValidationError(
+      `Chat role=function 的 name ${name} 未匹配任何前文 assistant function_call`,
+      'openai_anthropic_bridge_orphan_tool_result'
+    )
+  }
+  history.completedToolCallIds.add(callId)
+  return callId
+}
+
 function appendSystemText(parts: string[], value: string | undefined): void {
   const text = value?.trim()
   if (text) parts.push(text)
+}
+
+function withOpenAIChatMessageNamePrefix(blocks: AnthropicContentBlock[], rawName: string | undefined): AnthropicContentBlock[] {
+  const name = normalizeWhitespace(rawName)
+  if (!name) return blocks
+  const prefix = `参与者: ${name}`
+  if (!blocks.length) return [{ type: 'text', text: prefix }]
+  const first = blocks[0]
+  if (first?.type === 'text') {
+    const text = stringValue(first.text)
+    first.text = text ? `${prefix}\n${text}` : prefix
+    return blocks
+  }
+  return [{ type: 'text', text: prefix }, ...blocks]
 }
 
 async function openAIChatContentToAnthropicBlocks(
@@ -1307,6 +1382,32 @@ function chatToolCallsToAnthropicToolUseBlocks(value: unknown): AnthropicContent
   return blocks
 }
 
+function chatLegacyFunctionCallToAnthropicToolUseBlock(
+  history: OpenAIToolResultHistory,
+  value: unknown
+): AnthropicContentBlock | undefined {
+  if (!isPlainObject(value)) return undefined
+  const name = stringValue(value.name)
+  if (!name) return undefined
+  const callId = nextOpenAIChatLegacyFunctionCallId(history, name)
+  return {
+    type: 'tool_use',
+    id: callId,
+    name,
+    input: anthropicToolInputFromOpenAIArguments(value.arguments)
+  }
+}
+
+function nextOpenAIChatLegacyFunctionCallId(history: OpenAIToolResultHistory, name: string): string {
+  history.legacyFunctionCallSequence += 1
+  const callId = `legacy_function_call_${history.legacyFunctionCallSequence}_${safeIdSegment(name)}`
+  rememberOpenAIToolCall(history, callId)
+  const ids = history.legacyFunctionCallIdsByName.get(name) ?? []
+  ids.push(callId)
+  history.legacyFunctionCallIdsByName.set(name, ids)
+  return callId
+}
+
 function chatToolsToAnthropicTools(
   value: unknown,
   toolChoice: unknown,
@@ -1331,6 +1432,31 @@ function chatToolsToAnthropicTools(
     tools.push(anthropicToolFromFunctionDefinition(name, fn?.description, fn?.parameters))
   }
   return tools
+}
+
+function effectiveChatTools(body: JsonRecord): unknown {
+  if (Array.isArray(body.tools)) return body.tools
+  const functions = Array.isArray(body.functions) ? body.functions : []
+  return functions.map((item) => ({ type: 'function', function: item }))
+}
+
+function effectiveChatToolChoice(body: JsonRecord): unknown {
+  if (hasOwn(body, 'tool_choice')) return body.tool_choice
+  if (!hasOwn(body, 'function_call')) return undefined
+  const functionCall = body.function_call
+  if (functionCall === 'auto' || functionCall === 'none') return functionCall
+  if (!isPlainObject(functionCall)) return undefined
+  const name = stringValue(functionCall.name)
+  return name ? { type: 'function', function: { name } } : undefined
+}
+
+function isChatLegacyFunctionRequest(body: JsonRecord): boolean {
+  if (Array.isArray(body.tools) || hasOwn(body, 'tool_choice')) return false
+  if (Array.isArray(body.functions) && body.functions.length > 0) return true
+  if (!hasOwn(body, 'function_call')) return false
+  const functionCall = body.function_call
+  if (functionCall === 'auto' || functionCall === 'none') return true
+  return isPlainObject(functionCall) && Boolean(stringValue(functionCall.name))
 }
 
 function responsesToolsToAnthropicTools(
@@ -1799,6 +1925,9 @@ function createOpenAIToAnthropicBridgeRequestPlan(
     reasoningSummary: reasoningSummaryFromOpenAIBody(body),
     chatStreamIncludeUsage: sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
       ? objectValue(body.stream_options)?.include_usage === true
+      : undefined,
+    chatLegacyFunctionCallResponse: sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
+      ? isChatLegacyFunctionRequest(body)
       : undefined,
     responsesToolSearch,
     codeInterpreterMock,
@@ -4286,6 +4415,9 @@ function anthropicMessageToChatCompletion(
       arguments: JSON.stringify(isPlainObject(block.input) ? block.input : {})
     }
   })) : []
+  const legacyFunctionCall = requestPlan?.chatLegacyFunctionCallResponse === true
+    ? toolCalls[0]
+    : undefined
   const assistantMessage: JsonRecord = {
     role: 'assistant',
     content: text || (toolCalls.length ? null : '')
@@ -4294,7 +4426,14 @@ function anthropicMessageToChatCompletion(
   if (annotations.length) {
     assistantMessage.annotations = annotations
   }
-  if (toolCalls.length) assistantMessage.tool_calls = toolCalls
+  if (legacyFunctionCall) {
+    assistantMessage.function_call = {
+      name: legacyFunctionCall.function.name,
+      arguments: legacyFunctionCall.function.arguments
+    }
+  } else if (toolCalls.length) {
+    assistantMessage.tool_calls = toolCalls
+  }
   return {
     id: chatCompletionIdFromAnthropicId(stringValue(message.id)),
     object: 'chat.completion',
@@ -4304,7 +4443,7 @@ function anthropicMessageToChatCompletion(
       index: 0,
       message: assistantMessage,
       finish_reason: structuredOutputText === undefined
-        ? openAIChatFinishReasonFromAnthropic(stringValue(message.stop_reason))
+        ? openAIChatFinishReasonFromAnthropic(stringValue(message.stop_reason), requestPlan)
         : 'stop'
     }],
     usage: anthropicUsageToChatUsage(objectValue(message.usage))
@@ -5210,17 +5349,7 @@ function processAnthropicEventAsChat(state: AnthropicStreamState, event: ParsedS
     state.blocks.set(index, block)
     output.push(...ensureChatRoleChunk(state))
     if (block.type === 'tool_use' && !isStructuredOutputStreamBlock(state, block)) {
-      output.push(chatSseChunk(state, {
-        tool_calls: [{
-          index: block.toolCallIndex ?? 0,
-          id: block.id ?? `call_${index}`,
-          type: 'function',
-          function: {
-            name: block.name ?? '',
-            arguments: ''
-          }
-        }]
-      }))
+      output.push(chatToolUseStartSseChunk(state, block, index))
     }
     return output
   }
@@ -5237,12 +5366,7 @@ function processAnthropicEventAsChat(state: AnthropicStreamState, event: ParsedS
       const partial = stringValue(delta.partial_json) ?? ''
       if (block) block.inputJson += partial
       if (partial && block && !isStructuredOutputStreamBlock(state, block)) {
-        output.push(chatSseChunk(state, {
-          tool_calls: [{
-            index: block.toolCallIndex ?? 0,
-            function: { arguments: partial }
-          }]
-        }))
+        output.push(chatToolUseArgumentDeltaSseChunk(state, block, partial))
       }
     } else if (delta.type === 'thinking_delta') {
       const text = stringValue(delta.thinking) ?? stringValue(delta.text) ?? ''
@@ -5276,9 +5400,55 @@ function processAnthropicEventAsChat(state: AnthropicStreamState, event: ParsedS
   }
   if (data.type === 'message_stop') {
     state.terminalReceived = true
-    output.push(...completeChatStream(state, openAIChatFinishReasonFromAnthropic(state.stopReason)))
+    output.push(...completeChatStream(state, openAIChatFinishReasonFromAnthropic(state.stopReason, state.requestPlan)))
   }
   return output
+}
+
+function chatToolUseStartSseChunk(
+  state: AnthropicStreamState,
+  block: AnthropicStreamBlockState,
+  fallbackIndex: number
+): string {
+  if (state.requestPlan?.chatLegacyFunctionCallResponse === true) {
+    return chatSseChunk(state, {
+      function_call: {
+        name: block.name ?? '',
+        arguments: ''
+      }
+    })
+  }
+  return chatSseChunk(state, {
+    tool_calls: [{
+      index: block.toolCallIndex ?? 0,
+      id: block.id ?? `call_${fallbackIndex}`,
+      type: 'function',
+      function: {
+        name: block.name ?? '',
+        arguments: ''
+      }
+    }]
+  })
+}
+
+function chatToolUseArgumentDeltaSseChunk(
+  state: AnthropicStreamState,
+  block: AnthropicStreamBlockState,
+  partial: string
+): string {
+  if (state.requestPlan?.chatLegacyFunctionCallResponse === true) {
+    return chatSseChunk(state, {
+      function_call: {
+        arguments: partial
+      }
+    })
+  }
+  return chatSseChunk(state, {
+    tool_calls: [{
+      index: block.toolCallIndex ?? 0,
+      function: { arguments: partial }
+    }]
+  })
 }
 
 function processAnthropicEventAsResponses(state: AnthropicStreamState, event: ParsedSseEvent): string[] {
@@ -6652,9 +6822,14 @@ function estimatedResponsesUsageFromStreamState(state: AnthropicStreamState): Js
   }
 }
 
-function openAIChatFinishReasonFromAnthropic(reason: string | undefined): string {
+function openAIChatFinishReasonFromAnthropic(
+  reason: string | undefined,
+  requestPlan?: OpenAIToAnthropicBridgeRequestPlan
+): string {
   if (reason === 'max_tokens') return 'length'
-  if (reason === 'tool_use') return 'tool_calls'
+  if (reason === 'tool_use') return requestPlan?.chatLegacyFunctionCallResponse === true
+    ? 'function_call'
+    : 'tool_calls'
   if (reason === 'stop_sequence' || reason === 'end_turn' || !reason) return 'stop'
   return reason
 }
@@ -6768,7 +6943,12 @@ function responsesReasoningTextFromItem(item: JsonRecord): string {
 
 function responsesCompactionSummaryTextFromItem(item: JsonRecord): string {
   const encryptedContent = stringValue(item.encrypted_content)
-  if (!encryptedContent) return ''
+  if (!encryptedContent) {
+    throw bridgeValidationError(
+      'OpenAI 到 Anthropic 桥接不能恢复缺少 encrypted_content 的 compact 摘要；请重新 compact 或改用原生 Responses 上游',
+      'openai_anthropic_bridge_compact_summary_missing'
+    )
+  }
   if (encryptedContent.startsWith('juhecmp.v2.')) {
     throw bridgeValidationError(
       'Codex compact snapshot 未完成服务端恢复，不能直接桥接到 Anthropic Messages',
@@ -6776,13 +6956,23 @@ function responsesCompactionSummaryTextFromItem(item: JsonRecord): string {
     )
   }
   const prefix = 'juhecmp.v1.'
-  if (!encryptedContent.startsWith(prefix)) return encryptedContent
+  if (!encryptedContent.startsWith(prefix)) {
+    throw bridgeValidationError(
+      'OpenAI 到 Anthropic 桥接不能识别 compact encrypted_content envelope；请使用网关生成的 compact snapshot 或 juhecmp.v1 inline summary',
+      'openai_anthropic_bridge_compact_summary_unrecognized'
+    )
+  }
   try {
     const parsed = JSON.parse(Buffer.from(encryptedContent.slice(prefix.length), 'base64url').toString('utf8')) as unknown
-    return isPlainObject(parsed) ? stringValue(parsed.summary) ?? '' : ''
+    const summary = isPlainObject(parsed) ? stringValue(parsed.summary)?.trim() : undefined
+    if (summary) return summary
   } catch {
-    return ''
+    // Fall through to a stable OpenAI-shaped validation error.
   }
+  throw bridgeValidationError(
+    'OpenAI 到 Anthropic 桥接不能解析 juhecmp.v1 compact inline summary；请重新 compact 或改用原生 Responses 上游',
+    'openai_anthropic_bridge_compact_summary_invalid'
+  )
 }
 
 function imageUrlFromOpenAIImagePart(value: unknown): string | undefined {

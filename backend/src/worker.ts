@@ -41,7 +41,9 @@ import {
   enqueueUsageRecordsLocal,
   flushUsageRecordQueueForShutdown,
   getUsageRecordQueueRuntime,
-  installUsageRecordQueueShutdownHooks
+  installUsageRecordQueueShutdownHooks,
+  startUsageRecordRedisStreamConsumer,
+  stopUsageRecordRedisStreamConsumer
 } from './modules/gateway/usage/record-queue.service.js'
 import { closeUsageRecordWriterPool } from './storage/usage-record-writer-pool.js'
 import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
@@ -89,6 +91,7 @@ if (isIngestWorker()) {
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
   setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
+  startUsageRecordRedisStreamConsumer()
   startRuntimeLogFileImport()
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
@@ -370,6 +373,7 @@ async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
 
 async function flushWorkerQueuesForShutdown(): Promise<void> {
   if (isIngestWorker()) {
+    await stopUsageRecordRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()

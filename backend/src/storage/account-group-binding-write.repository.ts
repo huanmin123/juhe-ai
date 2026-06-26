@@ -1,11 +1,15 @@
 import type { AccountSummary, GroupSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { findAccountSummary } from './account-summary.repository.js'
+import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import type { AccessScope } from './access-scope.js'
 import { getBusinessDatabase, nowIso } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary } from './group-summary.repository.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import {
   accountSystemAccountId,
@@ -77,6 +81,34 @@ export function accountEnabledGroupId(accountId: string, systemAccountId: string
     `)
     .get(accountId, systemAccountId) as unknown as { group_id?: string } | undefined
   return row?.group_id
+}
+
+async function accountEnabledGroupIdAsync(client: DatabaseClient, accountId: string, systemAccountId: string): Promise<string | undefined> {
+  const row = await client.one<{ group_id?: string }>(`
+    SELECT group_id
+    FROM ${accountGroupBindingTable(client, 'group_accounts')}
+    WHERE account_id = ?
+      AND system_account_id = ?
+      AND enabled = 1
+    ORDER BY updated_at DESC, group_id ASC, account_id ASC
+    LIMIT 1
+  `, [accountId, systemAccountId])
+  return row?.group_id
+}
+
+async function groupOwnerAndProviderAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: string; providerProtocolProfileId: string } | undefined> {
+  const row = await client.one<{ system_account_id?: string; provider_code?: string; provider_protocol_profile_id?: string }>(`
+    SELECT system_account_id, provider_code, provider_protocol_profile_id
+    FROM ${accountGroupBindingTable(client, 'groups')}
+    WHERE id = ?
+  `, [groupId])
+  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id
+    ? {
+        systemAccountId: row.system_account_id,
+        providerCode: row.provider_code,
+        providerProtocolProfileId: row.provider_protocol_profile_id
+      }
+    : undefined
 }
 
 function validAccountIdsForGroup(providerCode: string, providerProtocolProfileId: string, accountIds: string[], systemAccountId: string): string[] {
@@ -170,6 +202,78 @@ export function setAccountGroup(
   notifyGatewayRuntimeCacheInvalidation('group_account_binding')
 
   return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
+}
+
+export async function setAccountGroupAsync(
+  accountId: string,
+  groupId: string | null,
+  access?: AccessScope
+): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return setAccountGroup(accountId, groupId, access)
+  }
+  if (!groupId) {
+    return undefined
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const group = await groupOwnerAndProviderAsync(client, groupId)
+  if (!group || !canManageResourceOwner(group.systemAccountId, access)) {
+    return undefined
+  }
+  const current = await findAccountSummaryAsync(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
+  if (!current || current.accessType === 'authorized' || current.accountAuthorizationId) {
+    return undefined
+  }
+  if (group.providerCode !== current.providerCode || group.providerProtocolProfileId !== current.providerProtocolProfileId) {
+    return undefined
+  }
+
+  const previousGroupId = await accountEnabledGroupIdAsync(client, accountId, group.systemAccountId)
+  const now = nowIso()
+  await client.transaction(async (tx) => {
+    await tx.execute(`
+      DELETE FROM ${accountGroupBindingTable(tx, 'group_accounts')}
+      WHERE account_id = ?
+        AND system_account_id = ?
+    `, [accountId, group.systemAccountId])
+    await tx.execute(`
+      INSERT INTO ${accountGroupBindingTable(tx, 'group_accounts')} (
+        system_account_id, group_id, account_id, account_authorization_id,
+        local_priority, local_super_priority_enabled, local_fallback_enabled,
+        enabled, created_at, updated_at
+      )
+      VALUES (?, ?, ?, NULL, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(group_id, account_id) DO UPDATE SET
+        account_authorization_id = excluded.account_authorization_id,
+        local_priority = excluded.local_priority,
+        local_super_priority_enabled = excluded.local_super_priority_enabled,
+        local_fallback_enabled = excluded.local_fallback_enabled,
+        enabled = 1,
+        updated_at = excluded.updated_at
+    `, [
+      group.systemAccountId,
+      groupId,
+      accountId,
+      current.priority,
+      current.superPriorityEnabled ? 1 : 0,
+      current.fallbackEnabled ? 1 : 0,
+      now,
+      now
+    ])
+  })
+  if (previousGroupId && previousGroupId !== groupId) {
+    invalidateGroupAccountIdsCache(previousGroupId)
+  }
+  invalidateGroupAccountIdsCache(groupId)
+  notifyGatewayRuntimeCacheInvalidation('group_account_binding')
+
+  return await findAccountSummaryAsync(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
+}
+
+function accountGroupBindingTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 export function addAccountToGroup(groupId: string, accountId: string): GroupSummary | undefined {

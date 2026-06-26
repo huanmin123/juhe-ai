@@ -74,24 +74,16 @@
       v-model:keyword="modelKeyword"
       v-model:open="modelModalOpen"
       v-model:selected-category="selectedModelCategory"
-      v-model:system-account-id="modelSystemAccountId"
-      v-model:selected-system-account="modelSystemAccountSelection"
       :category-tabs="modelCategoryTabs"
       :columns="modelColumns"
       :current-category-count="currentCategoryModels.length"
       :loading="modelLoading"
       :models="filteredModels"
       :row-actions="modelRowActions"
-      :show-system-account-filter="isManagementView"
-      :system-accounts="modelSystemAccounts"
-      :system-accounts-loading="modelSystemAccountOptionsLoading"
       :title="modelModalTitle"
       @cancel="resetModelModal"
       @create="openCreateCustomModel"
       @model-action="handleModelAction"
-      @system-account-change="handleModelSystemAccountChange"
-      @system-account-dropdown="handleModelSystemAccountOptionsDropdown"
-      @system-account-search="handleModelSystemAccountOptionsSearch"
     />
 
     <a-modal
@@ -106,9 +98,6 @@
         <div class="custom-model-grid">
           <a-form-item label="模型 ID" required>
             <a-input v-model:value="customModelForm.model" :disabled="customModelEditing" placeholder="例如 gpt-5.5-pro" />
-          </a-form-item>
-          <a-form-item label="范围">
-            <a-select v-model:value="customModelForm.scope" :disabled="customModelEditing" :options="modelScopeOptions" />
           </a-form-item>
           <a-form-item label="状态">
             <a-select v-model:value="customModelForm.status" :options="modelStatusOptions" />
@@ -197,8 +186,6 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
-import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
-import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
 import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
@@ -249,25 +236,9 @@ const customModelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
 const editingCustomModelId = ref<string>()
 const editingCustomModelProviderCode = ref<string>()
-const modelSystemAccountId = ref<string>()
-const modelSystemAccountSelection = ref<PrincipalSelection | undefined>()
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
-const canCreateGlobalModel = computed(() => authState.isAdmin.value && isManagementView.value)
-const canManageVisibleCustomModels = computed(() => authState.isAdmin.value && isManagementView.value)
-const canCreatePersonalModel = computed(() => !isManagementView.value || selectedModelCatalogSystemAccountId() === authState.currentUser.value?.id)
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
-const {
-  handleDropdown: handleModelSystemAccountOptionsDropdown,
-  handleSearch: handleModelSystemAccountOptionsSearch,
-  loading: modelSystemAccountOptionsLoading,
-  resetSearch: resetModelSystemAccountOptionsSearch,
-  systemAccounts: modelSystemAccounts
-} = useRemoteSystemAccountOptions({
-  enabled: () => isManagementView.value && modelModalOpen.value,
-  localCacheKeyParts: () => ['provider-model-catalog'],
-  selectedIds: () => [modelSystemAccountId.value]
-})
 
 const providerColumns = computed(() => providerColumnsForScope(isManagementView.value))
 const providerScrollX = computed(() => providerScrollXForScope(isManagementView.value))
@@ -286,17 +257,6 @@ const modelColumns = computed(() => buildProviderModelColumns(selectedModelCateg
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
 const customModelModalTitle = computed(() => customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
-
-const modelScopeOptions = computed(() => {
-  const options: Array<{ label: string; value: 'global' | 'personal' }> = []
-  if (canCreateGlobalModel.value) {
-    options.push({ label: '全局模型', value: 'global' })
-  }
-  if (canCreatePersonalModel.value) {
-    options.push({ label: '个人模型', value: 'personal' })
-  }
-  return options
-})
 
 const pricingTemplateOptions = computed(() => buildPricingTemplateOptions(
   providerModels.value,
@@ -325,7 +285,6 @@ async function openModelModal(provider: ProviderDefinition) {
   modelModalOpen.value = true
   modelKeyword.value = ''
   selectedModelCategory.value = 'text'
-  resetModelSystemAccountFilter()
   await reloadActiveProviderModels()
 }
 
@@ -340,16 +299,12 @@ function resetModelModal() {
   modelKeyword.value = ''
   selectedModelCategory.value = 'text'
   providerModels.value = []
-  modelSystemAccountId.value = undefined
-  modelSystemAccountSelection.value = undefined
-  resetModelSystemAccountOptionsSearch()
   resetCustomModelForm()
 }
 
 function openCreateCustomModel() {
   if (!activeProvider.value) return
   resetCustomModelForm()
-  customModelForm.scope = canCreateGlobalModel.value ? 'global' : 'personal'
   customModelForm.mode = selectedModelCategory.value
   customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value, selectedModelCategory.value)
   customModelModalOpen.value = true
@@ -453,32 +408,8 @@ function handlePricingTemplateChange(value?: string) {
   applyPricingTemplateToCustomModelForm(customModelForm, providerModels.value, value)
 }
 
-function handleModelSystemAccountChange() {
-  resetModelSystemAccountOptionsSearch()
-  void reloadActiveProviderModels()
-}
-
-function resetModelSystemAccountFilter() {
-  if (!isManagementView.value) {
-    modelSystemAccountId.value = undefined
-    modelSystemAccountSelection.value = undefined
-    return
-  }
-  const currentUser = authState.currentUser.value
-  modelSystemAccountId.value = currentUser?.id
-  modelSystemAccountSelection.value = currentUser
-    ? { id: currentUser.id, name: currentUser.displayName, kind: 'system_account' }
-    : undefined
-}
-
-function selectedModelCatalogSystemAccountId(): string | undefined {
-  if (!isManagementView.value) return undefined
-  return modelSystemAccountId.value?.trim() || authState.currentUser.value?.id
-}
-
 function modelCatalogQueryParams(): ProviderModelsParams {
   return {
-    systemAccountId: selectedModelCatalogSystemAccountId(),
     includeInactive: true,
     includeUnpriced: true
   }
@@ -504,8 +435,6 @@ function handleModelAction(key: string, record: ProviderModelPricing) {
 
 function canMutateModel(record: ProviderModelPricing): boolean {
   if (!record.id || record.scope === 'built_in') return false
-  if (record.scope === 'global') return canManageVisibleCustomModels.value
-  if (record.scope === 'personal' && canManageVisibleCustomModels.value) return true
   return record.systemAccountId === authState.currentUser.value?.id
 }
 

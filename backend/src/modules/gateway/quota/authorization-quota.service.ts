@@ -1,5 +1,5 @@
 import { createAppCache } from '../../../shared/cache.js'
-import { registerAuthorizationQuotaCacheInvalidator } from '../../../shared/gateway-cache-invalidation.js'
+import { registerAuthorizationQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { RequestQuotaLimits } from '../../../domain/types.js'
@@ -83,6 +83,7 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
   groupAccess: GroupUsageAccessMetadata
   account?: OpenAIAccountSecret
 }): Promise<AuthorizationQuotaDecision> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   if (!input.groupAccess.groupAuthorizationId && !input.account?.accountAuthorizationId) {
     return { allowed: true }
   }
@@ -142,6 +143,7 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
   groupAccess: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
 }): Promise<Map<string, AuthorizationQuotaDecision>> {
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const hasGroupAuthorizationQuota = Boolean(input.groupAccess.groupAuthorizationId)
   const now = new Date()
   const accountsToCheck = hasGroupAuthorizationQuota

@@ -1,24 +1,24 @@
 import { type Router } from 'express'
 
 import { badRequest } from '../../shared/http.js'
-import { deleteAccountWithRelatedCleanup, findAccountSummary } from '../../storage/repositories.js'
+import { deleteAccountWithRelatedCleanupAsync, findAccountSummaryAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export function registerAccountDeleteRoutes(router: Router): void {
-  router.delete('/:id', (req, res) => {
+  router.delete('/:id', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const before = findAccountSummary(req.params.id, requestAccess)
+    const before = await findAccountSummaryAsync(req.params.id, requestAccess)
     const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
     try {
-      runLoggedOperation(() => {
-        const deleteResult = deleteAccountWithRelatedCleanup(req.params.id, requestAccess)
+      await runLoggedOperationAsync(async () => {
+        const deleteResult = await deleteAccountWithRelatedCleanupAsync(req.params.id, requestAccess)
         if (!deleteResult.deleted) {
           throw new Error('账户不存在')
         }

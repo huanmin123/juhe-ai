@@ -9,7 +9,7 @@ import {
   getResourceAuthorizationUsage,
   listResourceAuthorizationsPage,
   revokeResourceAuthorization,
-  returnResourceAuthorizationForGrantee,
+  returnResourceAuthorizationForGranteeAsync,
   updateResourceAuthorization
 } from '../../storage/repositories.js'
 import { getBusinessDatabase } from '../../storage/database.js'
@@ -18,7 +18,7 @@ import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } fro
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { isAdminRole, type ResourceAuthorizationSummary } from '../../domain/types.js'
 
@@ -213,7 +213,7 @@ authorizationsRouter.post('/', mutationGuard({
   }
 })
 
-authorizationsRouter.delete('/:id/return', (req, res) => {
+authorizationsRouter.delete('/:id/return', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -226,8 +226,8 @@ authorizationsRouter.delete('/:id/return', (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    runLoggedOperation(() => {
-      const authorization = returnResourceAuthorizationForGrantee(paramsParsed.data.id, requestAccess)
+    await runLoggedOperationAsync(async () => {
+      const authorization = await returnResourceAuthorizationForGranteeAsync(paramsParsed.data.id, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
       }

@@ -1,7 +1,11 @@
 import type { SQLInputValue } from 'node:sqlite'
 
 import type { ProviderModelPricing } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
@@ -136,10 +140,10 @@ export function listCustomProviderModelsForCatalog(input: {
     clauses.push("status = 'active'")
   }
   if (input.systemAccountId) {
-    clauses.push("(scope = 'global' OR (scope = 'personal' AND system_account_id = ?))")
+    clauses.push("scope = 'personal' AND system_account_id = ?")
     params.push(input.systemAccountId)
   } else {
-    clauses.push("scope = 'global'")
+    clauses.push('1 = 0')
   }
 
   const rows = getBusinessDatabase()
@@ -153,6 +157,36 @@ export function listCustomProviderModelsForCatalog(input: {
   return rows.map(customProviderModelFromRow)
 }
 
+export async function listCustomProviderModelsForCatalogAsync(input: {
+  providerCode: string
+  systemAccountId?: string
+  includeInactive?: boolean
+}): Promise<CustomProviderModelRecord[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listCustomProviderModelsForCatalog(input)
+  }
+  const clauses = ['provider_code = ?']
+  const params: unknown[] = [input.providerCode]
+  if (!input.includeInactive) {
+    clauses.push("status = 'active'")
+  }
+  if (input.systemAccountId) {
+    clauses.push("scope = 'personal' AND system_account_id = ?")
+    params.push(input.systemAccountId)
+  } else {
+    clauses.push('1 = 0')
+  }
+
+  const client = await getCustomProviderModelsDatabaseClient()
+  const rows = await client.query<CustomProviderModelRow>(`
+    SELECT ${customProviderModelColumns()}
+    FROM ${customProviderModelsTable(client)}
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY scope ASC, lower(model) ASC, id ASC
+  `, params)
+  return rows.map(customProviderModelFromRow)
+}
+
 export function findCustomProviderModelById(id: string): CustomProviderModelRecord | undefined {
   const row = getBusinessDatabase()
     .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE id = ? LIMIT 1`)
@@ -163,10 +197,8 @@ export function findCustomProviderModelById(id: string): CustomProviderModelReco
 export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput): CustomProviderModelRecord {
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
-  const scope = normalizeScope(input.scope)
-  const systemAccountId = scope === 'personal'
-    ? requiredText(input.systemAccountId, '个人模型必须归属系统账户')
-    : undefined
+  const scope: CustomProviderModelScope = 'personal'
+  const systemAccountId = requiredText(input.systemAccountId ?? input.actorSystemAccountId, '自定义模型必须归属当前系统账户')
   const status = input.status ?? 'active'
   const now = nowIso()
   const existing = input.id
@@ -344,13 +376,11 @@ function findCustomProviderModelByScope(
   systemAccountId: string | undefined,
   model: string
 ): CustomProviderModelRecord | undefined {
-  const row = scope === 'global'
+  const row = scope === 'personal'
     ? getBusinessDatabase()
-      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'global' AND lower(model) = lower(?) LIMIT 1`)
-      .get(providerCode, model)
-    : getBusinessDatabase()
       .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND lower(model) = lower(?) LIMIT 1`)
       .get(providerCode, systemAccountId ?? '', model)
+    : undefined
   return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
 }
 
@@ -371,6 +401,19 @@ function customProviderModelColumns(): string {
     output_usd_per_image, currency, pricing_notes, capability_notes, notes,
     created_by, updated_by, created_at, updated_at
   `
+}
+
+async function getCustomProviderModelsDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  throw new Error('custom provider models async client is only available in PostgreSQL mode')
+}
+
+function customProviderModelsTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', 'custom_provider_models')
+    : client.dialect.quoteIdentifier('custom_provider_models')
 }
 
 function customProviderModelFromRow(row: CustomProviderModelRow): CustomProviderModelRecord {
@@ -406,13 +449,6 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
-}
-
-function normalizeScope(scope: CustomProviderModelScope): CustomProviderModelScope {
-  if (scope !== 'global' && scope !== 'personal') {
-    throw new Error('自定义模型 scope 无效')
-  }
-  return scope
 }
 
 function normalizeProtocols(values: string[] | null | undefined): CustomProviderModelApiProtocol[] {

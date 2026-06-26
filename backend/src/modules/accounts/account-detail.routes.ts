@@ -1,7 +1,7 @@
 import type { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { findAccountForTest, findAccountSummary } from '../../storage/repositories.js'
+import { findAccountForTestAsync, findAccountSummaryAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
@@ -16,7 +16,7 @@ export function registerAccountDetailRoutes(router: Router): void {
         return
       }
       const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-      const visibleAccount = findAccountSummary(req.params.id, requestAccess)
+      const visibleAccount = await findAccountSummaryAsync(req.params.id, requestAccess)
       if (!visibleAccount) {
         res.status(404).json({ message: '账户不存在' })
         return
@@ -30,7 +30,7 @@ export function registerAccountDetailRoutes(router: Router): void {
         res.status(403).json({ message: '无权查看账户凭据' })
         return
       }
-      const account = findAccountForTest(req.params.id, requestAccess)
+      const account = await findAccountForTestAsync(req.params.id, requestAccess)
       if (!account) {
         res.status(404).json({ message: '账户不存在' })
         return

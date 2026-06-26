@@ -115,7 +115,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       provider_code TEXT NOT NULL,
       model TEXT NOT NULL,
-      scope TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'personal',
       system_account_id TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       mode TEXT,
@@ -144,9 +144,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
-      CHECK (scope IN ('global', 'personal')),
+      CHECK (scope = 'personal'),
       CHECK (status IN ('draft', 'active', 'disabled')),
-      CHECK ((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id IS NOT NULL))
+      CHECK (system_account_id IS NOT NULL)
     );
 
     CREATE TABLE IF NOT EXISTS proxy_profiles (
@@ -913,9 +913,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON account_api_key_runtime_states(next_probe_at, status);
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_owner
       ON account_api_key_runtime_states(system_account_id, account_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique_lower
-      ON custom_provider_models(provider_code, lower(model))
-      WHERE scope = 'global';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique_lower
       ON custom_provider_models(provider_code, system_account_id, lower(model))
       WHERE scope = 'personal';

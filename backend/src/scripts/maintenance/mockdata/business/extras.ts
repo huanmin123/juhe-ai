@@ -15,7 +15,8 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
     {
       providerCode: GPT_VENDOR_CODE,
       model: 'mockdata-global-long-context',
-      scope: 'global' as const,
+      scope: 'personal' as const,
+      systemAccountId: adminId,
       status: 'active' as const,
       mode: 'text',
       supportedApiProtocols: ['responses', 'chat_completions'],
@@ -25,14 +26,15 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
       inputUsdPer1M: 0.2,
       outputUsdPer1M: 0.8,
       cachedInputUsdPer1M: 0.05,
-      capabilityNotes: 'Mockdata 全局长上下文模型，用于模型目录、账户支持模型和映射目标展示',
-      notes: 'Mockdata 全局模型样本',
+      capabilityNotes: 'Mockdata 管理员个人长上下文模型，用于模型目录、账户支持模型和映射目标展示',
+      notes: 'Mockdata 管理员个人模型样本',
       actorSystemAccountId: adminId
     },
     {
       providerCode: GPT_VENDOR_CODE,
       model: 'mockdata-global-image',
-      scope: 'global' as const,
+      scope: 'personal' as const,
+      systemAccountId: adminId,
       status: 'active' as const,
       mode: 'image_generation',
       supportedApiProtocols: ['images', 'responses'],
@@ -66,7 +68,8 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
     {
       providerCode: GPT_VENDOR_CODE,
       model: 'mockdata-draft-audio',
-      scope: 'global' as const,
+      scope: 'personal' as const,
+      systemAccountId: adminId,
       status: 'draft' as const,
       mode: 'audio',
       supportedApiProtocols: ['audio', 'responses'],
@@ -80,7 +83,8 @@ export function createCustomProviderModels(adminId: string, users: MockSystemAcc
     {
       providerCode: GPT_VENDOR_CODE,
       model: 'mockdata-disabled-legacy',
-      scope: 'global' as const,
+      scope: 'personal' as const,
+      systemAccountId: adminId,
       status: 'disabled' as const,
       mode: 'text',
       supportedApiProtocols: ['chat_completions'],

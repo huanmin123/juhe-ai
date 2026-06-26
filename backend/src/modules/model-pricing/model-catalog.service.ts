@@ -3,6 +3,7 @@ import {
   deleteCustomProviderModel,
   findCustomProviderModelById,
   listCustomProviderModelsForCatalog,
+  listCustomProviderModelsForCatalogAsync,
   upsertCustomProviderModel,
   type CustomProviderModelAccountBindingSummary,
   type CustomProviderModelRecord,
@@ -18,7 +19,7 @@ import {
   type ProviderModelPricing
 } from './model-pricing.service.js'
 import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
-import { listOpenAIProtocolProviderCodes } from '../../storage/provider.repository.js'
+import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
@@ -128,6 +129,17 @@ export function listProviderModelCatalog(options: ModelCatalogListOptions): Prov
   return cloneProviderModelCatalogItems(catalog)
 }
 
+export async function listProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
+  const cacheKey = modelCatalogCacheKey(options)
+  const cached = providerModelCatalogCache.get(cacheKey)
+  if (cached) {
+    return cloneProviderModelCatalogItems(cached)
+  }
+  const catalog = await buildProviderModelCatalogAsync(options)
+  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(catalog))
+  return cloneProviderModelCatalogItems(catalog)
+}
+
 function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
@@ -139,6 +151,26 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
     systemAccountId: options.systemAccountId,
     includeInactive: options.includeInactive
   }).map(toCustomCatalogItem))
+  const merged = mergeModelCatalogItems([...builtIn, ...custom])
+
+  return merged
+    .filter((item) => options.includeInactive || item.status === 'active')
+    .filter((item) => options.includeUnpriced || hasResolvablePrice(item, merged))
+    .sort(compareProviderModelCatalogItems)
+}
+
+async function buildProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
+  const sourceProviderCodes = await modelCatalogSourceProviderCodesAsync(options.providerCode)
+  const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
+  const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
+    .filter((item) => item.catalogVisible)
+    .map(toBuiltInCatalogItem))
+  const customCatalogs = await Promise.all(sourceProviderCodes.map((providerCode) => listCustomProviderModelsForCatalogAsync({
+    providerCode,
+    systemAccountId: options.systemAccountId,
+    includeInactive: options.includeInactive
+  })))
+  const custom = customCatalogs.flatMap((items) => items.map(toCustomCatalogItem))
   const merged = mergeModelCatalogItems([...builtIn, ...custom])
 
   return merged
@@ -387,7 +419,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportsServiceTier: false,
     catalogVisible: true,
-    source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
+    source: 'custom-personal',
     scope: item.scope,
     status: item.status,
     systemAccountId: item.systemAccountId,
@@ -500,6 +532,18 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
 
   const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
+    .map((code) => normalizeProviderToken(code))
+    .filter((code): code is string => Boolean(code))
+  const childCodes = openAIProtocolProviderCodes.filter((code) => code !== normalizedProviderCode)
+  return [...new Set([...childCodes, normalizedProviderCode])]
+}
+
+async function modelCatalogSourceProviderCodesAsync(providerCode: string): Promise<string[]> {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (!normalizedProviderCode) return []
+  if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
+
+  const openAIProtocolProviderCodes = (await listOpenAIProtocolProviderCodesAsync())
     .map((code) => normalizeProviderToken(code))
     .filter((code): code is string => Boolean(code))
   const childCodes = openAIProtocolProviderCodes.filter((code) => code !== normalizedProviderCode)

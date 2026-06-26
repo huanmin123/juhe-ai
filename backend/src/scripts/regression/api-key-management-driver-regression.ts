@@ -11,6 +11,7 @@ const createdApiKeyIds: string[] = []
 const createdGroupIds: string[] = []
 const createdAccountIds: string[] = []
 const adminAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
+const driverRegressionModel = 'gpt-5-mini'
 
 if (process.env.JUHE_API_KEY_MANAGEMENT_DRIVER_CHILD === 'postgres') {
   const repositories = await import('../../storage/repositories.js')
@@ -94,7 +95,7 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
     }
   }, adminAccess)
   createdApiKeyIds.push(created.id)
-  const accountId = await seedActiveGatewayAccountForGroup(group.id, suffix)
+  const accountId = await seedActiveGatewayAccountForGroup(repositories, group.id, group.providerProtocolProfileId, suffix)
   createdAccountIds.push(accountId)
   assert.equal(created.name, name, '异步创建 API Key 应返回名称')
   assert.ok(created.key.startsWith('sk-'), '异步创建 API Key 应返回一次性明文密钥')
@@ -111,11 +112,11 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   assert.equal(gatewayRuntime.accounts.length, 1, 'DB service 网关运行态应返回分组内可调度账号候选')
   assert.equal(gatewayRuntime.accounts[0]?.id, accountId, 'DB service 网关运行态候选账号应来自当前分组绑定')
   assert.equal(gatewayRuntime.accounts[0]?.apiKey, `sk-api-key-management-driver-${suffix}`, 'DB service 网关运行态应解密候选账号 API Key')
-  assert.deepEqual(gatewayRuntime.accounts[0]?.supportedModels, [`gpt-api-key-management-driver-${suffix}`], 'DB service 网关运行态应读取候选账号支持模型')
+  assert.deepEqual(gatewayRuntime.accounts[0]?.supportedModels, [driverRegressionModel], 'DB service 网关运行态应读取候选账号支持模型')
   assert.deepEqual(gatewayRuntime.accounts[0]?.modelMappings, [{
-    sourceModel: `downstream-api-key-management-driver-${suffix}`,
+    sourceModel: driverRegressionModel,
     sourceEndpointFamily: 'responses',
-    upstreamModel: `upstream-api-key-management-driver-${suffix}`,
+    upstreamModel: driverRegressionModel,
     upstreamEndpointFamily: 'chat_completions',
     enabled: true
   }], 'DB service 网关运行态应读取候选账号模型映射')
@@ -201,120 +202,35 @@ async function cleanupCreatedRows(): Promise<void> {
   }
 }
 
-async function seedActiveGatewayAccountForGroup(groupId: string, suffix: string): Promise<string> {
-  const [{ runtimeConfig }, { encryptJson }, { newId, nowIso }] = await Promise.all([
-    import('../../config/runtime.js'),
-    import('../../storage/crypto.js'),
-    import('../../storage/database.js')
-  ])
-  const accountId = newId('acct')
-  const now = nowIso()
+async function seedActiveGatewayAccountForGroup(
+  repositories: typeof import('../../storage/repositories.js'),
+  groupId: string,
+  providerProtocolProfileId: string | undefined,
+  suffix: string
+): Promise<string> {
   const apiKey = `sk-api-key-management-driver-${suffix}`
-  const credentialsEncrypted = encryptJson({
-    api_key: apiKey,
-    base_url: 'https://example.invalid/v1'
-  })
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    const [{ createPostgresDatabaseClient }, { getPostgresPool }] = await Promise.all([
-      import('../../storage/database-client.js'),
-      import('../../storage/postgres-client.js')
-    ])
-    const client = createPostgresDatabaseClient(await getPostgresPool())
-    const group = await client.one<{
-      system_account_id: string
-      provider_code: string
-      provider_protocol_profile_id: string
-      protocol_code: string
-      protocol_version: string
-    }>('SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version FROM "juhe_business"."groups" WHERE id = ?', [groupId])
-    assert.ok(group, '回归分组应存在')
-    await client.execute(`
-      INSERT INTO "juhe_business"."accounts" (
-        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-        name, type, status, credentials_encrypted, credential_mask, concurrency_limit, priority,
-        super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_active,
-        stream_failure_count, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', ?, ?, 20, 0, 0, 0, 'openai_standard', 1, 1, 0, ?, ?)
-    `, [
-      accountId,
-      group.system_account_id,
-      group.provider_code,
-      group.provider_protocol_profile_id,
-      group.protocol_code,
-      group.protocol_version,
-      `APIKey管理回归账号${suffix}`,
-      credentialsEncrypted,
-      'sk-****',
-      now,
-      now
-    ])
-    await client.execute(`
-      INSERT INTO "juhe_business"."group_accounts" (
-        system_account_id, group_id, account_id, local_priority, local_super_priority_enabled, local_fallback_enabled, enabled, created_at, updated_at
-      )
-      VALUES (?, ?, ?, 0, 0, 0, 1, ?, ?)
-    `, [group.system_account_id, groupId, accountId, now, now])
-    await seedGatewayAccountModelConfig(accountId, suffix)
-    return accountId
-  }
-
-  const { getBusinessDatabase } = await import('../../storage/database.js')
-  const database = getBusinessDatabase()
-  const group = database
-    .prepare('SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version FROM groups WHERE id = ?')
-    .get(groupId) as {
-      system_account_id: string
-      provider_code: string
-      provider_protocol_profile_id: string
-      protocol_code: string
-      protocol_version: string
-    } | undefined
-  assert.ok(group, '回归分组应存在')
-  database.prepare(`
-    INSERT INTO accounts (
-      id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, type, status, credentials_encrypted, credential_mask, concurrency_limit, priority,
-      super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_active,
-      stream_failure_count, created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', ?, ?, 20, 0, 0, 0, 'openai_standard', 1, 1, 0, ?, ?)
-  `).run(
-    accountId,
-    group.system_account_id,
-    group.provider_code,
-    group.provider_protocol_profile_id,
-    group.protocol_code,
-    group.protocol_version,
-    `APIKey管理回归账号${suffix}`,
-    credentialsEncrypted,
-    'sk-****',
-    now,
-    now
-  )
-  database.prepare(`
-    INSERT INTO group_accounts (
-      system_account_id, group_id, account_id, local_priority, local_super_priority_enabled, local_fallback_enabled, enabled, created_at, updated_at
-    )
-    VALUES (?, ?, ?, 0, 0, 0, 1, ?, ?)
-  `).run(group.system_account_id, groupId, accountId, now, now)
-  await seedGatewayAccountModelConfig(accountId, suffix)
-  return accountId
-}
-
-async function seedGatewayAccountModelConfig(accountId: string, suffix: string): Promise<void> {
-  const [{ replaceAccountSupportedModelsAsync }, { replaceAccountModelMappingsAsync }] = await Promise.all([
-    import('../../storage/account-supported-models.repository.js'),
-    import('../../storage/account-model-mappings.repository.js')
-  ])
-  await replaceAccountSupportedModelsAsync(accountId, 'gpt', [`gpt-api-key-management-driver-${suffix}`])
-  await replaceAccountModelMappingsAsync(accountId, 'gpt', [{
-    sourceModel: `downstream-api-key-management-driver-${suffix}`,
-    sourceEndpointFamily: 'responses',
-    upstreamModel: `upstream-api-key-management-driver-${suffix}`,
-    upstreamEndpointFamily: 'chat_completions',
-    enabled: true
-  }])
+  const account = await repositories.createAccountAsync({
+    name: `APIKey管理回归账号${suffix}`,
+    providerCode: 'gpt',
+    providerProtocolProfileId,
+    type: 'api_key',
+    status: 'active',
+    groupId,
+    credentials: {
+      api_key: apiKey,
+      base_url: 'https://example.invalid/v1'
+    },
+    concurrencyLimit: 20,
+    supportedModels: [driverRegressionModel],
+    modelMappings: [{
+      sourceModel: driverRegressionModel,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: driverRegressionModel,
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }]
+  }, adminAccess)
+  return account.id
 }
 
 async function closeStorage(): Promise<void> {

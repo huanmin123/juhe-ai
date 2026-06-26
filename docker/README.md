@@ -1,11 +1,11 @@
 # Docker 部署
 
-这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务。
+这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务，并默认复用 Redis state 承接 Redis Streams 队列。
 
 ## 文件说明
 
 - `compose.yml`：单容器 Compose 配置，包含端口、环境变量、数据卷和镜像构建参数。
-- `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务。
+- `compose.performance.yml`：高性能模式 Compose 配置，包含 PostgreSQL、PgBouncer、Redis cache、Redis state、Redis Streams 队列配置和应用服务。
 - `Dockerfile`：运行镜像构建文件，只组装已构建好的 `backend/dist`、`frontend/dist` 和后端生产依赖。
 - `entrypoint.sh`：容器启动入口，设置默认环境变量、创建数据目录、生成或复用 `JUHE_AI_SECRET`，并执行 SQLite 运行时预检。
 - `.env.example`：可选配置模板。不复制也能使用默认值启动；需要改端口、公网地址、密钥或镜像名时复制为 `.env`。
@@ -46,7 +46,7 @@ cp .env.performance.example .env.performance
 docker compose --env-file .env.performance -f compose.performance.yml up -d --build
 ```
 
-当前 PostgreSQL repository adapter 未整体完成，provider 只读、登录 / 会话、系统账户管理读写、分组管理读写、API Key 管理读写与网关 Key 校验入口、公共设置读取、系统 API 限流设置读取和系统设置管理读写已完成双 driver 适配；其他仍未迁移的 SQLite 数据库入口会在 performance 模式下 fail-fast，避免误回退到 SQLite。PostgreSQL、PgBouncer 和 Redis 容器可以先独立完成部署验证，PostgreSQL schema 和默认种子数据可通过初始化脚本先落库。
+当前 PostgreSQL repository adapter 未整体完成，provider 只读、登录 / 会话、系统账户管理读写、分组管理读写、AI 账户最小创建与常规读写、账户授权实例归还、授权列表个人归还、分组个人归还、API Key 管理读写与网关 Key 校验入口、公共设置读取、系统 API 限流设置读取、系统设置管理读写和使用记录 Redis Streams 队列首批链路已完成双 driver / 高性能模式适配；其他仍未迁移的 SQLite 数据库入口会在 performance 模式下 fail-fast，避免误回退到 SQLite。PostgreSQL、PgBouncer 和 Redis 容器可以先独立完成部署验证，PostgreSQL schema 和默认种子数据可通过初始化脚本先落库。
 
 中间件启动后，在项目根目录执行：
 
@@ -55,7 +55,7 @@ pnpm --filter juhe-ai-backend postgres:init-schema-only
 pnpm --filter juhe-ai-backend postgres:init-schema
 ```
 
-如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL` 和 `JUHE_AI_REDIS_STATE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`，不要把 redis-state 的容器内 `6379` 误当宿主机端口。
+如果命令在 Docker 宿主机执行，需要把 `JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL` 和显式配置时的 `JUHE_AI_REDIS_QUEUE_URL` 临时改为宿主机发布端口；详细命令见 `docs/deploy/高性能模式部署指南.md`。应用容器内使用 `pgbouncer:5432`、`redis-cache:6379`、`redis-state:6379`，宿主机验证默认使用 PgBouncer `6432`、redis-cache `6379`、redis-state `6380`，不要把 redis-state 的容器内 `6379` 误当宿主机端口。
 
 ## 按需配置
 

@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
@@ -10,20 +10,24 @@ import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, in
 import { normalizeAccountCredentialsForWrite, requiredAccountCredentialSource } from './account-credentials-normalization.js'
 import { accountCredentialFingerprint } from './account-identity.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
-import { maxAccountNameLength, replaceAccountNameSearchTerms } from './account-name-search.repository.js'
-import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags } from './account-tags.repository.js'
+import { maxAccountNameLength, replaceAccountNameSearchTerms, replaceAccountNameSearchTermsAsync } from './account-name-search.repository.js'
+import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags, replaceAccountTagsAsync } from './account-tags.repository.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
-  normalizeAccountSupportedModelsForProvider
+  normalizeAccountModelMappingsForProviderAsync,
+  normalizeAccountSupportedModelsForProvider,
+  normalizeAccountSupportedModelsForProviderAsync
 } from './account-model-normalization.js'
 export {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   normalizeAccountModelMappingsForProvider,
-  normalizeAccountSupportedModelsForProvider
+  normalizeAccountModelMappingsForProviderAsync,
+  normalizeAccountSupportedModelsForProvider,
+  normalizeAccountSupportedModelsForProviderAsync
 } from './account-model-normalization.js'
-import { replaceAccountModelMappings } from './account-model-mappings.repository.js'
-import { loadSupportedModelsByAccountIds, replaceAccountSupportedModels } from './account-supported-models.repository.js'
+import { replaceAccountModelMappings, replaceAccountModelMappingsInClientAsync } from './account-model-mappings.repository.js'
+import { loadSupportedModelsByAccountIds, replaceAccountSupportedModels, replaceAccountSupportedModelsInClientAsync } from './account-supported-models.repository.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson,
@@ -33,7 +37,7 @@ import {
   parseAccountAvailabilityScheduleJson
 } from './account-availability-schedule.js'
 import { accountCredentialsForList, findAccountRowForAccess, listAccountRowsForAccess, listAccountRowsPageForAccess } from './account-read.repository.js'
-import { deleteAccountWithRelatedCleanup } from './account-delete-cleanup.repository.js'
+import { deleteAccountWithRelatedCleanup, deleteAccountWithRelatedCleanupAsync } from './account-delete-cleanup.repository.js'
 import { authorizationRuntimeBlockingStatus, disableExpiredAccounts } from './account-runtime-status.js'
 import {
   isCoolingAccountStatus,
@@ -62,13 +66,17 @@ import {
   accountResourceProxyProfileId,
   accountResourceType,
   findAccountSummary,
+  findAccountSummaryAsync,
   listAccounts,
+  listAccountsPageAsync,
   listAccountsPage,
   type AccountListResult
 } from './account-summary.repository.js'
 export {
   findAccountSummary,
+  findAccountSummaryAsync,
   listAccounts,
+  listAccountsPageAsync,
   listAccountsPage,
   type AccountListResult
 } from './account-summary.repository.js'
@@ -82,6 +90,9 @@ import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKey
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { runtimeConfig } from '../config/runtime.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
 import {
   listAccountGroupOptions,
@@ -108,8 +119,9 @@ export {
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listOpenAIProtocolProfileIds } from './provider.repository.js'
-import { requireEnabledProviderProtocolProfile } from './provider.repository.js'
-import { resolveEnabledProxyProfileId } from './proxy.repository.js'
+import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
+import { getPostgresPool } from './postgres-client.js'
+import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import {
@@ -126,8 +138,11 @@ import { authorizedAccountPermissions, hasActiveManualAuthorizationSource, owner
 import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
 export {
   returnAccountAuthorizationInstanceForGrantee,
+  returnAccountAuthorizationInstanceForGranteeAsync,
   returnGroupAuthorizationForGrantee,
-  returnResourceAuthorizationForGrantee
+  returnGroupAuthorizationForGranteeAsync,
+  returnResourceAuthorizationForGrantee,
+  returnResourceAuthorizationForGranteeAsync
 } from './resource-authorization-return.repository.js'
 export {
   createResourceAuthorization,
@@ -304,7 +319,8 @@ export type {
 } from './group-write.repository.js'
 export {
   addAccountToGroup,
-  setAccountGroup
+  setAccountGroup,
+  setAccountGroupAsync
 } from './account-group-binding-write.repository.js'
 
 export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
@@ -336,7 +352,7 @@ export {
   type DeletedAccountRecordCleanupTarget,
   type PendingDeletedAccountRecordCleanupSummary
 } from './account-record-cleanup.js'
-export { listAccountOptions } from './account-options.repository.js'
+export { listAccountOptions, listAccountOptionsAsync } from './account-options.repository.js'
 export {
   AccountTagInUseError,
   deleteAccountTag,
@@ -764,6 +780,69 @@ function assertAccountNameAvailable(systemAccountId: string, name: string, exclu
   }
 }
 
+async function assertAccountNameAvailableAsync(client: DatabaseClient, systemAccountId: string, name: string, excludeId?: string): Promise<void> {
+  const params: string[] = [systemAccountId, name]
+  const excludeClause = excludeId ? ' AND id <> ?' : ''
+  if (excludeId) {
+    params.push(excludeId)
+  }
+  const row = await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${accountWriteTable(client, 'accounts')}
+    WHERE system_account_id = ? AND lower(name) = lower(?) AND deleted_at IS NULL${excludeClause}
+    LIMIT 1
+  `, params)
+  if (row?.id) {
+    throw new Error(`同一用户下账户名称已存在：${name}`)
+  }
+}
+
+async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient, groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; providerProtocolProfileId: string; protocolCode: string; protocolVersion: string; name?: string } | undefined> {
+  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string }>(`
+    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name
+    FROM ${accountWriteTable(client, 'groups')}
+    WHERE id = ?
+  `, [groupId])
+  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
+    ? {
+        systemAccountId: row.system_account_id,
+        providerCode: row.provider_code,
+        providerProtocolProfileId: row.provider_protocol_profile_id,
+        protocolCode: row.protocol_code,
+        protocolVersion: row.protocol_version,
+        name: row.name
+      }
+    : undefined
+}
+
+async function resolveEnabledProxyProfileIdForAccountWriteAsync(client: DatabaseClient, proxyProfileId?: string): Promise<string | undefined> {
+  if (!proxyProfileId) return undefined
+  const row = await client.one<{ id?: string; enabled?: number }>(`
+    SELECT id, enabled
+    FROM ${accountWriteTable(client, 'proxy_profiles')}
+    WHERE id = ?
+  `, [proxyProfileId])
+  if (!row?.id || row.enabled !== 1) {
+    throw new ProxyProfileUnavailableError(proxyProfileId)
+  }
+  return row.id
+}
+
+async function loadSystemAccountNameForAccountWriteAsync(client: DatabaseClient, systemAccountId: string): Promise<string | undefined> {
+  const row = await client.one<{ display_name?: string }>(`
+    SELECT display_name
+    FROM ${accountWriteTable(client, 'system_accounts')}
+    WHERE id = ?
+  `, [systemAccountId])
+  return row?.display_name
+}
+
+function accountWriteTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
 export function getAccountUsageStatsOverview(access?: AccessScope, range?: AccountUsageStatsRange): AccountUsageStatsOverview {
   const accountRows = listAccounts(access)
   const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
@@ -856,6 +935,18 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
     credentials: decryptJson<Record<string, unknown>>(credentialsRow.credentials_encrypted),
     proxyProfileId: credentialsRow.proxy_profile_id ?? undefined
   }
+}
+
+export async function findAccountForTestAsync(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findAccountForTest(accountId, access)
+  }
+  const accountAccess = access ?? internalAccountReadAccess
+  const visibleAccount = await findAccountSummaryAsync(accountId, accountAccess)
+  if (!visibleAccount?.permissions?.canUse) {
+    return undefined
+  }
+  return visibleAccount
 }
 
 export function recordAccountSuccessfulTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
@@ -1183,6 +1274,216 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   return { ...account, tags: savedTags }
 }
 
+export async function createAccountAsync(input: Record<string, unknown>, access?: AccessScope): Promise<AccountSummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createAccount(input, access)
+  }
+  assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  const id = newId('acc')
+  const providerCode = requiredTextInput(input.providerCode, '供应商')
+  const providerProfile = await requireEnabledProviderProtocolProfileAsync(providerCode, input.providerProtocolProfileId)
+  const explicitGroupId = hasOwnInput(input, 'groupId') ? normalizeNullableIdInput(input.groupId, '账户分组') : undefined
+  const explicitGroup = explicitGroupId ? await groupOwnerAndProviderForAccountWriteAsync(client, explicitGroupId) : undefined
+  const requestedSystemAccountId = writeSystemAccountId(access)
+  const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId, access) ? explicitGroup.systemAccountId : requestedSystemAccountId
+  const accountType = normalizedAccountType(input.type)
+  if (!providerProfile.accountTypes.includes(accountType as AccountType)) {
+    throw new Error(`供应商协议档案 ${providerProfile.name} 不支持账户类型 ${accountType}`)
+  }
+  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
+  const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials, {
+    providerCode,
+    accountType,
+    clientCompatibility,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
+  const credentialSource = requiredAccountCredentialSource(accountType, credentials)
+  const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
+    ? accountCredentialFingerprint(credentialSource)
+    : null
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials)
+  const accountExpiresAt = hasOwnInput(input, 'accountExpiresAt')
+    ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
+    : null
+  const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
+  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
+  const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, providerCode, systemAccountId) ?? []
+  const modelMappings = await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, providerCode, systemAccountId, providerProfile, {
+    supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  }) ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
+  const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
+  const expiredByPackage = isAccountExpired(accountExpiresAt)
+  const nextStatus = expiredByPackage ? 'disabled' : initialStatus
+  const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
+  const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
+  const groupId = explicitGroupId
+  if (!groupId) {
+    throw new Error('账户分组不能为空')
+  }
+  const group = explicitGroupId === groupId ? explicitGroup : await groupOwnerAndProviderForAccountWriteAsync(client, groupId)
+  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode || group.providerProtocolProfileId !== providerProfile.id) {
+    throw new Error('账户分组无效')
+  }
+  const requestedProxyProfileId = normalizeNullableIdInput(input.proxyProfileId, '代理配置')
+  const proxyProfileId = await resolveEnabledProxyProfileIdForAccountWriteAsync(client, requestedProxyProfileId)
+  const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled, false)
+  const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled, false)
+  assertAccountEndpointModesCompatible(providerProfile, {
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelMappings,
+    accountType,
+    clientCompatibility
+  })
+  if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
+    throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
+  }
+  if (createSuperPriorityEnabled && createFallbackEnabled) {
+    throw new Error('超级优先和降级备用不能同时开启')
+  }
+  const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
+  const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
+    ? normalizeAccountAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
+    : isAccountAvailabilityScheduleAllowed(accountAvailabilityScheduleJson(availabilitySchedule), new Date(nowMs))
+  const systemAccountName = includeSystemAccountFields(access)
+    ? await loadSystemAccountNameForAccountWriteAsync(client, systemAccountId)
+    : undefined
+  const account: AccountSummary = accountSummaryWithEffectiveAvailability({
+    id,
+    systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
+    systemAccountName,
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion,
+    name: normalizeAccountNameInput(input.name),
+    notes: normalizeNullableTextInput(input.notes, '账户备注'),
+    type: accountType,
+    credentials,
+    status: nextStatus,
+    concurrencyLimit: normalizedPositiveIntegerInput(input.concurrencyLimit, DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, '并发限制'),
+    currentConcurrency: 0,
+    priority: normalizedOptionalDispatchPriority(input.priority, 0),
+    superPriorityEnabled: createSuperPriorityEnabled,
+    fallbackEnabled: createFallbackEnabled,
+    clientCompatibility,
+    supportedModels,
+    modelMappings,
+    tags: tagNames.map((name) => ({ id: '', name })),
+    lastSuccessfulTestModel: undefined,
+    proxyProfileId,
+    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus) ? false : createSchedulable,
+    availabilitySchedule,
+    availabilityScheduleActive,
+    accountExpiresAt: accountExpiresAt ?? undefined,
+    cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
+    lastErrorCode: expiredByPackage ? 'account_expired' : undefined,
+    lastErrorMessage: expiredByPackage
+      ? '账户套餐已过期，已自动停用'
+      : initialStatus === 'pending_test'
+        ? '账户创建后需测试通过才能参与调度'
+        : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
+    cooldownRetestFailureCount: 0,
+    cooldownRetestObservationStartedAt: initialObservationStartedAt,
+    cooldownRetestLastAt: undefined,
+    cooldownRetestLastStatusCode: undefined,
+    lastUsedAt: undefined,
+    todayUsage: emptyAccountUsageSummary(),
+    usage: emptyAccountUsageSummary(),
+    boundGroupId: groupId,
+    boundGroupName: group.name ?? groupId,
+    groupBindStatus: 'bound'
+  })
+
+  await assertAccountNameAvailableAsync(client, systemAccountId, account.name)
+  const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(account.availabilitySchedule, new Date(nowMs))
+  let savedTags = account.tags ?? []
+  try {
+    await client.transaction(async (tx) => {
+      await tx.execute(`
+        INSERT INTO ${accountWriteTable(tx, 'accounts')} (
+          id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+          oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
+          priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        account.id,
+        systemAccountId,
+        account.providerCode,
+        providerProfile.id,
+        providerProfile.protocolCode,
+        providerProfile.protocolVersion,
+        account.name,
+        account.type,
+        account.status,
+        encryptJson(credentials),
+        credentialFingerprint,
+        maskSecret(credentialSource),
+        oauthRefreshMetadata.accessTokenExpiresAt,
+        oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
+        account.proxyProfileId ?? null,
+        account.concurrencyLimit,
+        account.priority,
+        account.superPriorityEnabled ? 1 : 0,
+        account.fallbackEnabled ? 1 : 0,
+        account.clientCompatibility,
+        account.schedulable ? 1 : 0,
+        accountAvailabilityScheduleJson(account.availabilitySchedule),
+        account.availabilityScheduleActive ? 1 : 0,
+        availabilityScheduleNextCheckAt,
+        account.notes ?? null,
+        account.accountExpiresAt ?? null,
+        account.cooldownUntil ?? null,
+        account.lastErrorCode ?? null,
+        account.lastErrorMessage ?? null,
+        account.cooldownRetestObservationStartedAt ?? null,
+        0,
+        null,
+        now,
+        now
+      ])
+      await tx.execute(`
+        INSERT INTO ${accountWriteTable(tx, 'group_accounts')} (
+          system_account_id, group_id, account_id,
+          local_priority, local_super_priority_enabled, local_fallback_enabled,
+          enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+      `, [
+        systemAccountId,
+        groupId,
+        account.id,
+        account.priority,
+        account.superPriorityEnabled ? 1 : 0,
+        account.fallbackEnabled ? 1 : 0,
+        now,
+        now
+      ])
+      await replaceAccountSupportedModelsInClientAsync(tx, account.id, providerCode, supportedModels)
+      await replaceAccountModelMappingsInClientAsync(tx, account.id, providerCode, modelMappings)
+      await replaceAccountNameSearchTermsAsync(tx, account.id, systemAccountId, account.name, now)
+      savedTags = await replaceAccountTagsAsync(tx, account.id, systemAccountId, tagNames, now)
+    })
+  } catch (error) {
+    if (isDuplicateAccountNameError(error)) {
+      throw new Error(`同一用户下账户名称已存在：${account.name}`)
+    }
+    throw error
+  }
+
+  invalidateAccountLookupCache(account.id)
+  invalidateGroupAccountIdsCache(groupId)
+  invalidateGatewayRuntimeAfterBusinessWrite('account_created')
+
+  return { ...account, tags: savedTags }
+}
+
 export function updateAccount(id: string, input: Record<string, unknown>, access?: AccessScope): AccountSummary | undefined {
   assertKnownInputKeys(input, accountUpdateInputKeys, '账户更新参数')
   const current = findAccountSummary(id, access)
@@ -1493,6 +1794,386 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   return { ...next, tags: savedTags }
 }
 
+export async function updateAccountAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateAccount(id, input, access)
+  }
+  assertKnownInputKeys(input, accountUpdateInputKeys, '账户更新参数')
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const current = await findAccountForTestAsync(id, access)
+  if (!current) {
+    return undefined
+  }
+  if (current.accessType === 'authorized' || current.accountAuthorizationId) {
+    return undefined
+  }
+  const systemAccountId = current.ownerSystemAccountId
+  if (!systemAccountId) {
+    throw new Error('账户归属数据异常，请清理后再编辑')
+  }
+  if (!canManageResourceOwner(systemAccountId, access)) {
+    return undefined
+  }
+  const nextClientCompatibility = normalizeOpenAIAccountClientCompatibility(
+    current.providerCode,
+    current.type,
+    hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
+    current.clientCompatibility,
+    current
+  )
+  const credentials = hasOwnInput(input, 'credentials')
+    ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
+      providerCode: current.providerCode,
+      accountType: current.type,
+      clientCompatibility: nextClientCompatibility,
+      providerProtocolProfileId: current.providerProtocolProfileId,
+      protocolCode: current.protocolCode,
+      protocolVersion: current.protocolVersion
+    })
+    : normalizeAccountCredentialsForWrite(current.type, current.credentials, {
+      providerCode: current.providerCode,
+      accountType: current.type,
+      clientCompatibility: nextClientCompatibility,
+      providerProtocolProfileId: current.providerProtocolProfileId,
+      protocolCode: current.protocolCode,
+      protocolVersion: current.protocolVersion
+    })
+  const credentialSource = requiredAccountCredentialSource(current.type, credentials)
+  const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
+    ? accountCredentialFingerprint(credentialSource)
+    : null
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials)
+  const hasAccountExpiresAtInput = hasOwnInput(input, 'accountExpiresAt')
+  const nextAccountExpiresAt = hasAccountExpiresAtInput
+    ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
+    : current.accountExpiresAt ?? null
+  const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
+
+  const hasSupportedModelsInput = hasOwnInput(input, 'supportedModels')
+  const nextSupportedModels = hasSupportedModelsInput
+    ? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
+    : current.supportedModels ?? []
+  const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
+  const nextModelMappings = hasModelMappingsInput
+    ? await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, current.providerCode, systemAccountId, current, {
+        supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+      }) ?? []
+    : current.modelMappings ?? []
+  assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
+  const hasTagsInput = hasOwnInput(input, 'tags')
+  const nextTagNames = hasTagsInput
+    ? normalizeAccountTagNamesInput(input.tags) ?? []
+    : (current.tags ?? []).map((tag) => tag.name)
+  const hasAvailabilityScheduleInput = isAccountAvailabilityScheduleInputPresent(input)
+  const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
+  const nextAvailabilitySchedule = hasAvailabilityScheduleInput
+    ? accountAvailabilityScheduleFromRequest(input)
+    : current.availabilitySchedule
+  const hasPriorityInput = hasOwnInput(input, 'priority')
+  const hasNotesInput = hasOwnInput(input, 'notes')
+
+  const hasStatusInput = hasOwnInput(input, 'status')
+  const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
+  if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
+    throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
+  }
+  if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test') {
+    throw new Error('待测试账户需手动测试通过后才能参与调度')
+  }
+  if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
+    throw new Error('待测试、临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用账户测试、恢复正常或恢复异常')
+  }
+  const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
+  let nextCooldownUntil = current.cooldownUntil
+  let nextLastErrorCode = current.lastErrorCode
+  let nextLastErrorMessage = current.lastErrorMessage
+  let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
+  let clearCooldownRetestState = false
+  if (hasStatusInput) {
+    if (nextStatus === 'active') {
+      nextCooldownUntil = undefined
+      nextLastErrorCode = undefined
+      nextLastErrorMessage = undefined
+      nextCooldownRetestObservationStartedAt = undefined
+      clearCooldownRetestState = true
+    } else if (nextStatus === 'pending_test') {
+      nextCooldownUntil = undefined
+      nextLastErrorCode = undefined
+      nextLastErrorMessage = '账户需测试通过后才能参与调度'
+      nextCooldownRetestObservationStartedAt = undefined
+      clearCooldownRetestState = true
+    } else if (nextStatus === 'disabled' || nextStatus === 'error') {
+      nextCooldownUntil = undefined
+      nextCooldownRetestObservationStartedAt = undefined
+      if (nextStatus === 'disabled') {
+        nextLastErrorCode = undefined
+        nextLastErrorMessage = undefined
+        clearCooldownRetestState = true
+      }
+    } else if (isCoolingAccountStatus(nextStatus) && (nextStatus !== current.status || !nextCooldownUntil)) {
+      const cooldownNowMs = Date.now()
+      nextCooldownUntil = initialCooldownUntilForStatus(nextStatus, cooldownNowMs)
+      nextCooldownRetestObservationStartedAt = cooldownRetestObservationStartedAtForStatus(nextStatus, cooldownNowMs)
+      nextLastErrorCode = undefined
+      nextLastErrorMessage = nextStatus === 'temporary_unavailable' ? '手动设置为临时不可调用' : '手动设置为限流中'
+      clearCooldownRetestState = nextStatus === 'temporary_unavailable'
+    }
+  }
+  if (expiredByPackage) {
+    nextCooldownUntil = undefined
+    nextLastErrorCode = 'account_expired'
+    nextLastErrorMessage = '账户套餐已过期，已自动停用'
+    nextCooldownRetestObservationStartedAt = undefined
+    clearCooldownRetestState = true
+  }
+  const hasSuperPriorityInput = hasOwnInput(input, 'superPriorityEnabled')
+  const requestedSuperPriority = normalizeSuperPriorityInput(
+    input.superPriorityEnabled,
+    current.superPriorityEnabled
+  )
+  if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active' && !current.superPriorityEnabled) {
+    throw new Error('只有正常状态的账户可以设置超级优先')
+  }
+  let nextSuperPriorityEnabled = requestedSuperPriority
+  const hasFallbackInput = hasOwnInput(input, 'fallbackEnabled')
+  const requestedFallback = normalizeFallbackInput(
+    input.fallbackEnabled,
+    current.fallbackEnabled
+  )
+  if (hasFallbackInput && requestedFallback && nextStatus !== 'active' && !current.fallbackEnabled) {
+    throw new Error('只有正常状态的账户可以设置降级备用')
+  }
+  let nextFallbackEnabled = requestedFallback
+  if (hasSuperPriorityInput && requestedSuperPriority && hasFallbackInput && requestedFallback) {
+    throw new Error('超级优先和降级备用不能同时开启')
+  }
+  if (hasSuperPriorityInput && nextSuperPriorityEnabled) {
+    nextFallbackEnabled = false
+  }
+  if (hasFallbackInput && nextFallbackEnabled) {
+    nextSuperPriorityEnabled = false
+  }
+  assertAccountEndpointModesCompatible(current, {
+    modes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    modelMappings: nextModelMappings,
+    accountType: current.type,
+    clientCompatibility: nextClientCompatibility
+  })
+
+  const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
+  const updateNowMs = Date.now()
+  const requestedProxyProfileId = hasOwnInput(input, 'proxyProfileId')
+    ? normalizeNullableIdInput(input.proxyProfileId, '代理配置')
+    : current.proxyProfileId
+  const proxyProfileId = await resolveEnabledProxyProfileIdForAccountWriteAsync(client, requestedProxyProfileId)
+  const next: AccountSummary = accountSummaryWithEffectiveAvailability({
+    ...current,
+    name: normalizeOptionalAccountNameInput(input, current.name),
+    notes: hasNotesInput ? normalizeNullableTextInput(input.notes, '账户备注') : current.notes,
+    credentials,
+    status: nextStatus,
+    concurrencyLimit: normalizedPositiveIntegerInput(input.concurrencyLimit, current.concurrencyLimit, '并发限制'),
+    priority: normalizedOptionalDispatchPriority(input.priority, current.priority),
+    superPriorityEnabled: nextSuperPriorityEnabled,
+    fallbackEnabled: nextFallbackEnabled,
+    clientCompatibility: nextClientCompatibility,
+    supportedModels: nextSupportedModels,
+    modelMappings: nextModelMappings,
+    tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
+    proxyProfileId,
+    schedulable: expiredByPackage || nextStatus !== 'active' || isHardUnavailableAccountStatus(nextStatus)
+      ? false
+      : hasStatusInput
+        ? true
+        : requestedSchedulable,
+    availabilitySchedule: nextAvailabilitySchedule,
+    availabilityScheduleActive: nextAccountAvailabilityScheduleActiveValue({
+      currentActive: current.availabilityScheduleActive === true,
+      hasScheduleInput: hasAvailabilityScheduleInput,
+      hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
+      hasStatusInput,
+      nextStatus,
+      nextSchedule: nextAvailabilitySchedule,
+      scheduleActiveInput: input.availabilityScheduleActive,
+      now: new Date(updateNowMs)
+    }),
+    accountExpiresAt: nextAccountExpiresAt ?? undefined,
+    cooldownUntil: nextCooldownUntil,
+    lastErrorCode: nextLastErrorCode,
+    lastErrorMessage: nextLastErrorMessage,
+    cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
+    cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
+    cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
+    cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
+    lastUsedAt: current.lastUsedAt,
+    usage: current.usage
+  })
+
+  await assertAccountNameAvailableAsync(client, systemAccountId, next.name, id)
+  const updatedAt = nowIso()
+  const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
+  let renamedAuthorizationInstanceIds: string[] = []
+  let savedTags = next.tags ?? []
+  try {
+    await client.transaction(async (tx) => {
+      const result = await tx.execute(`
+        UPDATE ${accountWriteTable(tx, 'accounts')}
+        SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
+            oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
+            proxy_profile_id = ?, concurrency_limit = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_active = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
+        WHERE id = ?
+          AND system_account_id = ?
+          AND deleted_at IS NULL
+      `, [
+        next.name,
+        next.notes ?? null,
+        next.status,
+        encryptJson(credentials),
+        credentialFingerprint,
+        maskSecret(credentialSource),
+        oauthRefreshMetadata.accessTokenExpiresAt,
+        oauthRefreshMetadata.refreshTokenPresent ? 1 : 0,
+        next.proxyProfileId ?? null,
+        next.concurrencyLimit,
+        next.priority,
+        next.superPriorityEnabled ? 1 : 0,
+        next.fallbackEnabled ? 1 : 0,
+        next.clientCompatibility,
+        next.schedulable ? 1 : 0,
+        accountAvailabilityScheduleJson(next.availabilitySchedule),
+        next.availabilityScheduleActive ? 1 : 0,
+        availabilityScheduleNextCheckAt,
+        next.accountExpiresAt ?? null,
+        next.cooldownUntil ?? null,
+        next.lastErrorCode ?? null,
+        next.lastErrorMessage ?? null,
+        next.cooldownRetestFailureCount ?? 0,
+        nextCooldownRetestObservationStartedAt ?? null,
+        next.cooldownRetestLastAt ?? null,
+        next.cooldownRetestLastStatusCode ?? null,
+        updatedAt,
+        id,
+        systemAccountId
+      ])
+      if (Number(result.changes ?? 0) <= 0) {
+        return
+      }
+      if (next.name !== current.name) {
+        await replaceAccountNameSearchTermsAsync(tx, id, systemAccountId, next.name, updatedAt)
+        renamedAuthorizationInstanceIds = await syncAccountAuthorizationInstanceNamesForSourceAccountAsync(tx, id, next.name, updatedAt)
+      }
+      if (hasSupportedModelsInput) {
+        await replaceAccountSupportedModelsInClientAsync(tx, id, next.providerCode, nextSupportedModels)
+      }
+      if (hasModelMappingsInput) {
+        await replaceAccountModelMappingsInClientAsync(tx, id, next.providerCode, nextModelMappings)
+      }
+      if (hasTagsInput) {
+        savedTags = await replaceAccountTagsAsync(tx, id, systemAccountId, nextTagNames, updatedAt)
+      }
+      if (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput) {
+        await tx.execute(`
+          UPDATE ${accountWriteTable(tx, 'group_accounts')}
+          SET local_priority = ?,
+              local_super_priority_enabled = ?,
+              local_fallback_enabled = ?,
+              updated_at = ?
+          WHERE account_id = ?
+            AND system_account_id = ?
+            AND enabled = 1
+        `, [
+          next.priority,
+          next.superPriorityEnabled ? 1 : 0,
+          next.fallbackEnabled ? 1 : 0,
+          updatedAt,
+          id,
+          systemAccountId
+        ])
+      }
+    })
+  } catch (error) {
+    if (isDuplicateAccountNameError(error)) {
+      throw new Error(`同一用户下账户名称已存在：${next.name}`)
+    }
+    throw error
+  }
+
+  invalidateAccountLookupCache(id)
+  for (const instanceId of renamedAuthorizationInstanceIds) {
+    invalidateAccountLookupCache(instanceId)
+  }
+  invalidateGatewayRuntimeAfterBusinessWrite('account_updated')
+
+  return { ...next, tags: savedTags }
+}
+
+async function syncAccountAuthorizationInstanceNamesForSourceAccountAsync(client: DatabaseClient, sourceAccountId: string, sourceName: string, now = nowIso()): Promise<string[]> {
+  const rows = await client.query<{
+    id?: string
+    system_account_id?: string
+    authorization_instance_authorization_id?: string | null
+    name?: string
+  }>(`
+    SELECT id, system_account_id, authorization_instance_authorization_id, name
+    FROM ${accountWriteTable(client, 'accounts')}
+    WHERE authorization_instance_source_account_id = ?
+      AND deleted_at IS NULL
+    ORDER BY created_at ASC, id ASC
+  `, [sourceAccountId])
+  const changedIds: string[] = []
+  for (const row of rows) {
+    if (!row.id || !row.system_account_id || !row.authorization_instance_authorization_id) continue
+    const nextName = await uniqueAuthorizedAccountInstanceNameAsync(
+      client,
+      sourceName,
+      row.system_account_id,
+      row.authorization_instance_authorization_id,
+      row.id
+    )
+    if (row.name === nextName) continue
+    await client.execute(`UPDATE ${accountWriteTable(client, 'accounts')} SET name = ?, updated_at = ? WHERE id = ?`, [nextName, now, row.id])
+    await replaceAccountNameSearchTermsAsync(client, row.id, row.system_account_id, nextName, now)
+    changedIds.push(row.id)
+  }
+  return changedIds
+}
+
+async function uniqueAuthorizedAccountInstanceNameAsync(client: DatabaseClient, sourceName: string, systemAccountId: string, authorizationId: string, exceptAccountId?: string): Promise<string> {
+  const baseName = sourceName.trim() || '授权账户'
+  const shortId = authorizationId.split('_').pop()?.slice(0, 6) || authorizationId.slice(-6)
+  const candidates = [
+    baseName,
+    `${baseName}-${shortId}`
+  ]
+  for (const candidate of candidates) {
+    if (await isAccountNameAvailableAsync(client, systemAccountId, candidate, exceptAccountId)) return candidate
+  }
+  for (let index = 2; index <= 1000; index += 1) {
+    const candidate = `${baseName}-${shortId}-${index}`
+    if (await isAccountNameAvailableAsync(client, systemAccountId, candidate, exceptAccountId)) return candidate
+  }
+  return `${baseName}-${shortId}-${Date.now()}`
+}
+
+async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccountId: string, name: string, exceptAccountId?: string): Promise<boolean> {
+  const params: string[] = [systemAccountId, name]
+  const exceptClause = exceptAccountId ? ' AND id <> ?' : ''
+  if (exceptAccountId) {
+    params.push(exceptAccountId)
+  }
+  const row = await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${accountWriteTable(client, 'accounts')}
+    WHERE system_account_id = ?
+      AND lower(name) = lower(?)
+      AND deleted_at IS NULL${exceptClause}
+    LIMIT 1
+  `, params)
+  return !row?.id
+}
+
 function nextAccountAvailabilityScheduleActiveValue(input: {
   currentActive: boolean
   hasScheduleInput: boolean
@@ -1535,8 +2216,13 @@ export function deleteAccount(id: string, access?: AccessScope): boolean {
   return deleteAccountWithRelatedCleanup(id, access).deleted
 }
 
+export async function deleteAccountAsync(id: string, access?: AccessScope): Promise<boolean> {
+  return (await deleteAccountWithRelatedCleanupAsync(id, access)).deleted
+}
+
 export {
   cleanupExpiredLogicallyDeletedAccounts,
+  deleteAccountWithRelatedCleanupAsync,
   deleteAccountWithRelatedCleanup,
   type AccountDeleteResult,
   type ExpiredDeletedAccountCleanupOptions,
@@ -1545,7 +2231,9 @@ export {
 
 export {
   clearAccountFailureState,
+  clearAccountFailureStateAsync,
   clearAccountFailureStateResult,
+  clearAccountFailureStateResultAsync,
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingFailureState,
   clearAuthorizedAccountBindingFailureStateByContext,

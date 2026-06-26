@@ -76,6 +76,7 @@ async function runHttpSmoke(): Promise<void> {
   const label = process.env.JUHE_AI_DATABASE_DRIVER === 'postgres' ? 'postgres' : 'sqlite'
   const createdSystemAccountIds: string[] = []
   const createdGroupIds: string[] = []
+  const createdAiAccountIds: string[] = []
   const createdApiKeyIds: string[] = []
 
   let server: http.Server | undefined
@@ -190,6 +191,109 @@ async function runHttpSmoke(): Promise<void> {
     }, cookie)
     assert.equal(updatedGroup.name, `烟测分组${groupSuffix}改`, 'performance smoke 应能更新分组名称')
 
+    console.log(`[performance-system-api-smoke:${label}] accounts`)
+    const aiAccountSuffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
+    const smokeModel = 'gpt-5-mini'
+    const createdAiAccount = await postEnvelope<{
+      id: string
+      name: string
+      status: string
+      boundGroupId?: string
+      supportedModels?: string[]
+      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
+    }>(baseUrl, '/__aisys__/api/accounts', {
+      name: `烟测AI账户${aiAccountSuffix}`,
+      providerCode: 'gpt',
+      type: 'api_key',
+      status: 'temporary_unavailable',
+      groupId: createdGroup.id,
+      credentials: {
+        api_key: `sk-smoke-account-${aiAccountSuffix}`,
+        base_url: 'https://example.invalid/v1'
+      },
+      supportedModels: [smokeModel],
+      modelMappings: [{
+        sourceModel: smokeModel,
+        sourceEndpointFamily: 'responses',
+        upstreamModel: smokeModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }],
+      concurrencyLimit: 20
+    }, cookie)
+    createdAiAccountIds.push(createdAiAccount.id)
+    assert.equal(createdAiAccount.status, 'temporary_unavailable', 'performance smoke 应能创建临时不可用 AI 账户')
+    assert.equal(createdAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户应绑定目标分组')
+    assert.deepEqual(createdAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户应保存支持模型')
+    assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeModel, 'performance smoke AI 账户应保存模型映射')
+    const aiAccountDetail = await getEnvelope<{
+      id: string
+      status: string
+      boundGroupId?: string
+      credentials?: Record<string, unknown>
+      supportedModels?: string[]
+      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
+    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, cookie)
+    assert.equal(aiAccountDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户详情')
+    assert.equal(aiAccountDetail.status, 'temporary_unavailable', 'performance smoke AI 账户详情应保留状态')
+    assert.equal(aiAccountDetail.boundGroupId, createdGroup.id, 'performance smoke AI 账户详情应保留分组绑定')
+    assert.equal(aiAccountDetail.credentials?.base_url, 'https://example.invalid/v1', 'performance smoke AI 账户详情应返回公开凭据字段')
+    assert.deepEqual(aiAccountDetail.supportedModels, [smokeModel], 'performance smoke AI 账户详情应返回支持模型')
+    assert.equal(aiAccountDetail.modelMappings?.[0]?.upstreamModel, smokeModel, 'performance smoke AI 账户详情应返回模型映射')
+    const restoredAiAccount = await patchEnvelope<{ id: string; status: string; schedulable: boolean }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      clearFailureState: true
+    }, cookie)
+    assert.equal(restoredAiAccount.status, 'active', 'performance smoke 应能恢复 AI 账户异常状态')
+    assert.equal(restoredAiAccount.schedulable, true, 'performance smoke 恢复异常状态后账户应参与调度')
+    const updatedAiAccountName = `${createdAiAccount.name}改`
+    const updatedAiAccount = await patchEnvelope<{
+      id: string
+      name: string
+      notes?: string
+      priority: number
+      boundGroupId?: string
+      supportedModels?: string[]
+      tags?: Array<{ name: string }>
+      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
+    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      name: updatedAiAccountName,
+      notes: 'performance smoke account updated',
+      priority: 7,
+      tags: ['烟测标签'],
+      groupId: createdGroup.id,
+      supportedModels: [smokeModel],
+      modelMappings: [{
+        sourceModel: smokeModel,
+        sourceEndpointFamily: 'responses',
+        upstreamModel: smokeModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }]
+    }, cookie)
+    assert.equal(updatedAiAccount.name, updatedAiAccountName, 'performance smoke 应能更新 AI 账户名称')
+    assert.equal(updatedAiAccount.notes, 'performance smoke account updated', 'performance smoke 应能更新 AI 账户备注')
+    assert.equal(updatedAiAccount.priority, 7, 'performance smoke 应能更新 AI 账户优先级')
+    assert.equal(updatedAiAccount.boundGroupId, createdGroup.id, 'performance smoke 更新 AI 账户应保留分组绑定')
+    assert.deepEqual(updatedAiAccount.supportedModels, [smokeModel], 'performance smoke 更新 AI 账户应保留支持模型')
+    assert.ok(updatedAiAccount.tags?.some((tag) => tag.name === '烟测标签'), 'performance smoke 应能更新 AI 账户标签')
+    const aiAccounts = await getEnvelope<{ items: Array<{ id: string; boundGroupId?: string; supportedModels?: string[] }> }>(
+      baseUrl,
+      `/__aisys__/api/accounts?keyword=${encodeURIComponent(updatedAiAccount.name)}&groupId=${encodeURIComponent(createdGroup.id)}&page=1&pageSize=20`,
+      cookie
+    )
+    const listedAiAccount = aiAccounts.items.find((item) => item.id === createdAiAccount.id)
+    assert.ok(listedAiAccount, 'performance smoke 应能在 AI 账户列表查回新建账户')
+    assert.equal(listedAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户列表应保留分组绑定')
+    assert.deepEqual(listedAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户列表应返回支持模型')
+    const aiAccountOptions = await getEnvelope<Array<{ id: string; providerCode: string }>>(
+      baseUrl,
+      `/__aisys__/api/accounts/options?keyword=${encodeURIComponent(updatedAiAccount.name)}&groupId=${encodeURIComponent(createdGroup.id)}&limit=20`,
+      cookie
+    )
+    assert.ok(aiAccountOptions.some((item) => item.id === createdAiAccount.id && item.providerCode === 'gpt'), 'performance smoke 应能在 AI 账户 options 查回新建账户')
+    await deleteNoContent(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, cookie)
+    await expectStatus(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, cookie, 404, 'performance smoke 删除 AI 账户后详情应不可见')
+
     console.log(`[performance-system-api-smoke:${label}] api-keys`)
     const apiKeySuffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
     const createdApiKey = await postEnvelope<{ id: string; name: string; key: string; groupBindings: Array<{ groupId: string; weight: number }> }>(baseUrl, '/__aisys__/api/api-keys', {
@@ -234,6 +338,7 @@ async function runHttpSmoke(): Promise<void> {
   } finally {
     await closeServer(server)
     await cleanupCreatedApiKeys(createdApiKeyIds)
+    await cleanupCreatedAiAccounts(createdAiAccountIds)
     await cleanupCreatedGroups(createdGroupIds)
     await cleanupCreatedSystemAccounts(createdSystemAccountIds)
   }
@@ -308,6 +413,15 @@ async function deleteNoContent(baseUrl: string, path: string, cookie: string): P
   assert.equal(response.status, 204, `${path} DELETE 应返回 HTTP 204，实际 HTTP ${response.status}: ${text}`)
 }
 
+async function expectStatus(baseUrl: string, path: string, cookie: string, expectedStatus: number, message: string): Promise<void> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: { cookie },
+    signal: AbortSignal.timeout(10_000)
+  })
+  const text = await response.text()
+  assert.equal(response.status, expectedStatus, `${message}，实际 HTTP ${response.status}: ${text}`)
+}
+
 async function cleanupCreatedApiKeys(apiKeyIds: string[]): Promise<void> {
   if (!apiKeyIds.length) {
     return
@@ -353,6 +467,42 @@ async function cleanupCreatedGroups(groupIds: string[]): Promise<void> {
   for (const id of groupIds.splice(0)) {
     database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
     database.prepare('DELETE FROM groups WHERE id = ?').run(id)
+  }
+}
+
+async function cleanupCreatedAiAccounts(accountIds: string[]): Promise<void> {
+  if (!accountIds.length) {
+    return
+  }
+  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+    const [{ createPostgresDatabaseClient }, { getPostgresPool }] = await Promise.all([
+      import('../../storage/database-client.js'),
+      import('../../storage/postgres-client.js')
+    ])
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    for (const id of accountIds.splice(0)) {
+      await client.execute('DELETE FROM "juhe_business"."group_accounts" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."account_supported_models" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."account_model_mappings" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."account_tag_bindings" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."account_name_search_terms" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."account_name_search_documents" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."account_api_key_runtime_states" WHERE account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."accounts" WHERE id = ?', [id])
+    }
+    return
+  }
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const database = getBusinessDatabase()
+  for (const id of accountIds.splice(0)) {
+    database.prepare('DELETE FROM group_accounts WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM account_supported_models WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM account_model_mappings WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM account_tag_bindings WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM account_name_search_terms WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM account_name_search_documents WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM account_api_key_runtime_states WHERE account_id = ?').run(id)
+    database.prepare('DELETE FROM accounts WHERE id = ?').run(id)
   }
 }
 

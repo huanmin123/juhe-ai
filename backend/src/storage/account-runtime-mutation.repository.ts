@@ -1,11 +1,15 @@
 import type { AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
-import { findAccountSummary } from './account-summary.repository.js'
+import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizeAccountStatus } from './account-status.js'
 import { normalizedDispatchPriority } from './account-write-input.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-invalidation.js'
+import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import type { AccountFailureRow, AccountRow } from './repository-row-types.js'
 import { accountSystemAccountId, canManageResourceOwner } from './resource-authorization-helpers.js'
@@ -71,6 +75,14 @@ export function clearAccountFailureState(
   options: ClearAccountFailureStateOptions = {}
 ): AccountSummary | undefined {
   return clearAccountFailureStateResult(id, access, options).account
+}
+
+export async function clearAccountFailureStateAsync(
+  id: string,
+  access?: AccessScope,
+  options: ClearAccountFailureStateOptions = {}
+): Promise<AccountSummary | undefined> {
+  return (await clearAccountFailureStateResultAsync(id, access, options)).account
 }
 
 export function clearAccountFailureStateResult(
@@ -168,6 +180,117 @@ export function clearAccountFailureStateResult(
   }
 
   return { account: findAccountSummary(id, accountAccess), changed }
+}
+
+export async function clearAccountFailureStateResultAsync(
+  id: string,
+  access?: AccessScope,
+  options: ClearAccountFailureStateOptions = {}
+): Promise<AccountFailureStateClearResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return clearAccountFailureStateResult(id, access, options)
+  }
+  const accountAccess = access ?? internalAccountReadAccess
+  const current = await findAccountSummaryAsync(id, accountAccess)
+  if (!current || current.accessType === 'authorized') {
+    return { account: current, changed: false }
+  }
+  const ownerSystemAccountId = current.ownerSystemAccountId
+  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, accountAccess)) {
+    return { changed: false }
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const expiredByPackage = isAccountExpired(current.accountExpiresAt)
+  if (current.status === 'disabled' && !expiredByPackage) {
+    return { account: current, changed: false }
+  }
+  if (current.status === 'pending_test' && options.allowPendingTestRestore !== true) {
+    return { account: current, changed: false }
+  }
+  if (current.status === 'error' && options.allowErrorRestore === false) {
+    return { account: current, changed: false }
+  }
+
+  if (expiredByPackage) {
+    const result = await client.execute(`
+      UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+      SET status = 'disabled',
+          schedulable = 0,
+          cooldown_until = NULL,
+          last_error_code = 'account_expired',
+          last_error_message = ?,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+        AND deleted_at IS NULL
+    `, ['账户套餐已过期，已自动停用', nowIso(), id, ownerSystemAccountId])
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
+    }
+    return { account: await findAccountSummaryAsync(id, accountAccess), changed }
+  }
+
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET status = 'active',
+        schedulable = 1,
+        cooldown_until = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND deleted_at IS NULL
+      AND status <> 'disabled'
+      AND (? = 1 OR status <> 'error')
+      AND (? = 1 OR status <> 'pending_test')
+      AND (
+        status <> 'active'
+        OR schedulable <> 1
+        OR cooldown_until IS NOT NULL
+        OR last_error_code IS NOT NULL
+        OR last_error_message IS NOT NULL
+        OR cooldown_retest_failure_count > 0
+        OR cooldown_retest_observation_started_at IS NOT NULL
+        OR cooldown_retest_last_at IS NOT NULL
+        OR cooldown_retest_last_status_code IS NOT NULL
+        OR stream_failure_count > 0
+        OR stream_failure_window_started_at IS NOT NULL
+      )
+  `, [
+    nowIso(),
+    id,
+    ownerSystemAccountId,
+    options.allowErrorRestore === false ? 0 : 1,
+    options.allowPendingTestRestore === true ? 1 : 0
+  ])
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_restored')
+  }
+
+  return { account: await findAccountSummaryAsync(id, accountAccess), changed }
+}
+
+function accountRuntimeMutationTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 export function clearAuthorizedAccountBindingFailureState(

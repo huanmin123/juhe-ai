@@ -46,17 +46,21 @@ export async function replaceAccountSupportedModelsAsync(accountId: string, prov
   }
 
   const normalizedModels = normalizeAccountSupportedModelsInput(models) ?? []
-  const createdAt = nowIso()
   const client = await getAccountSupportedModelsDatabaseClient()
   await client.transaction(async (tx) => {
-    await tx.execute(`DELETE FROM ${accountSupportedModelsTable(tx)} WHERE account_id = ?`, [accountId])
-    for (const model of normalizedModels) {
-      await tx.execute(`
-        INSERT INTO ${accountSupportedModelsTable(tx)} (account_id, provider_code, model, created_at)
-        VALUES (?, ?, ?, ?)
-      `, [accountId, providerCode, model, createdAt])
-    }
+    await replaceAccountSupportedModelsInClientAsync(tx, accountId, providerCode, normalizedModels)
   })
+}
+
+export async function replaceAccountSupportedModelsInClientAsync(client: DatabaseClient, accountId: string, providerCode: string, models: string[]): Promise<void> {
+  const createdAt = nowIso()
+  await client.execute(`DELETE FROM ${accountSupportedModelsTable(client)} WHERE account_id = ?`, [accountId])
+  for (const model of models) {
+    await client.execute(`
+      INSERT INTO ${accountSupportedModelsTable(client)} (account_id, provider_code, model, created_at)
+      VALUES (?, ?, ?, ?)
+    `, [accountId, providerCode, model, createdAt])
+  }
 }
 
 export function loadSupportedModelsByAccountIds(accountIds: string[]): Map<string, string[]> {

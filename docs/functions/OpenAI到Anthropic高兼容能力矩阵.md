@@ -9,7 +9,7 @@
 - Responses JSON
 - Responses SSE
 
-基础桥接解决了“请求能不能发通、返回能不能按下游协议渲染”的问题，但还没有覆盖 OpenAI 客户端常见的高级能力：hosted tools、structured outputs、reasoning / thinking、图片文件、Responses 状态和上下文压缩。用户侧目标是尽可能做到客户端无感知，客户端仍按 OpenAI 协议使用，混合路由选中 Anthropic 上游时不需要手工改请求。
+基础桥接解决了“请求能不能发通、返回能不能按下游协议渲染”的问题，但还需要明确 OpenAI 客户端常见高级能力的承接边界：hosted tools、structured outputs、reasoning / thinking、图片文件、Responses 状态和上下文压缩。用户侧长期目标是尽可能做到客户端无感知，客户端仍按 OpenAI 协议使用；但这不等于把 Anthropic 上游不支持的 OpenAI hosted/native 能力强行伪造成等价成功。
 
 本矩阵是后续长期维护依据。实现前必须先按本文件判断能力等级，不能继续把不可映射字段静默丢弃，也不能把 Anthropic 不支持的能力包装成“完全等价成功”。
 
@@ -26,7 +26,25 @@
 
 “完全兼容”的验收口径不是所有 OpenAI 字段都保证同等语义，而是客户端看到的协议形态、错误形态、流式事件、工具生命周期、usage 和状态续链都保持 OpenAI 风格；不可承接能力必须稳定、可诊断、可配置。
 
-### 2.1 能力缺口 guidance-first 规则
+### 2.1 v1 收口口径
+
+v1 不以“Anthropic 等价实现 OpenAI 全部能力”为目标，而以“客户端协议不崩、主链路可用、能力缺口可诊断”为目标。OpenAI Chat / Responses 到 Anthropic Messages 的 v1 可交付标准是：
+
+- Chat / Responses 的 JSON 和 SSE 文本主链路、usage、错误形态、流式结束形态稳定。
+- system / developer / instructions / name、基础生成控制、metadata / user / safety_identifier 能按当前矩阵映射或本地忽略。
+- function tools 的新版和 legacy 请求、历史消息、JSON 回包、SSE 增量回包都能按下游协议恢复。
+- 支持范围内的图片、PDF / text 文件、`file_id` resolver、structured output、reasoning summary、`previous_response_id` 和 compact summary 可稳定工作。
+- 非法历史、权限越界、状态链损坏、schema 不匹配、文件内容无效和安全边界问题必须本地拒绝且不请求上游。
+
+v1 对以下能力不强制兼容，默认 guidance-first 或本地受控拒绝：
+
+- 上游供应商、当前模型或账号 profile 未声明支持的 OpenAI hosted/native tools。
+- 未配置本地 runtime / provider / adapter / executor 的 `code_interpreter`、`computer`、MCP、`image_generation`。
+- OpenAI 专有输出扩展、sources / citations、logprobs、audio、prompt template、`store=true`、background、conversation、`truncation=auto`、`context_management`、encrypted reasoning。
+
+v2 才推进完整本地运行时、第三方工具长连接、人工审批 UI、完整真实账户全矩阵、更高语义等价和更细粒度的 Anthropic 原生能力 profile 切换。
+
+### 2.2 能力缺口 guidance-first 规则
 
 - 上游供应商、当前模型或账号 profile 未声明支持的 hosted/native 能力，一律视为能力缺口，不视为网关服务端异常。
 - 能力缺口默认返回符合下游协议的正常 agent guidance；不请求不支持的上游，不伪造 tool call / tool result / citation / 图像结果，不返回 500。
@@ -54,7 +72,7 @@
 | Responses JSON / SSE 文本 | 已支持 | hosted tool 事件仍未完整覆盖；`include=reasoning.encrypted_content`、`include=message.output_text.logprobs`、`include=web_search_call.action.sources`、`include=computer_call_output.output.image_url`、`include=message.input_image.image_url` 和 `top_logprobs>0` 在 Anthropic bridge 下本地拒绝，不静默忽略；`include=code_interpreter_call.outputs` 在 Responses `code_interpreter` mock runtime 和 local_runtime worker 首段下返回 logs，local_runtime 会附带文件产物 `file_id` 和元数据摘要，其他模式仍拒绝 |
 | Function tools | 已支持 | `tool_choice` 的 `auto` / `none` / `required` / 指定 function / Responses `allowed_tools` function 子集已按 Anthropic tool_choice 映射；reasoning / thinking 与强制工具调用冲突时本地拒绝 |
 | Tool result / function_call_output | 已支持 | 已在本地拒绝缺少 call id、缺少匹配 tool call 的 orphan tool result / function_call_output，以及同一调用 ID 的重复工具结果，防止工具历史不闭合后才到上游失败 |
-| 图片 / 文件输入 | 图片 URL / data URL、Chat / Responses inline PDF / text、Responses PDF `file_url` 已支持 | `file_id` 由 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md) 的 Files resolver 承接；Office / CSV 等非 text/PDF 文件需要本地抽取 |
+| 图片 / 文件输入 | 图片 URL / data URL、Chat / Responses inline PDF / text/*、Responses PDF `file_url` 已支持 | Chat / Responses `file_id` 由 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md) 的 Files resolver 承接；Office 等非 text/PDF 文件需要本地抽取；非法 file_data base64、不支持 MIME、Chat `file_url`、Responses 非 PDF `file_url`、Chat / Responses 未知、不支持或 resolver 内容非法的 `file_id` 均本地拒绝且不请求 Anthropic |
 | JSON object / JSON schema | `json_object` 为提示词 best-effort；`json_schema` 已用合成 Anthropic tool 强制输出，并做本地 JSON schema 子集二次校验 | 失败自动重试尚未实现；当前按下游协议受控失败 |
 | Reasoning / thinking | 已把 OpenAI `reasoning.effort` 映射到 Anthropic `thinking`，并把 thinking 输出渲染为 Responses reasoning item | Chat 形态默认不暴露 thinking；`none` 不启用 Anthropic thinking；`minimal` / `low` / `medium` / `high` 映射固定 budget；`xhigh` 和未知 effort 当前本地拒绝，避免静默降级；`reasoning.summary=none` 抑制 Responses reasoning item，`auto` / `concise` / `detailed` 接受但不承诺精确控制 Anthropic summary 细节；模型不支持 thinking 时仍按真实上游错误处理；Anthropic thinking 与强制 `tool_choice` 不兼容，本地 OpenAI 错误拒绝，不请求上游 |
 | Responses `previous_response_id` | Codex SSE 和普通 Responses JSON / SSE 场景已支持 | 状态由网关本地保存并按 API Key / 分组 / 供应商档案边界恢复；未知 id 本地 404、跨 API Key 续链本地 403，均不请求 Anthropic；跨 profile / 深链路压力继续按状态层专项验证 |
@@ -70,24 +88,25 @@
 | --- | --- | --- | --- |
 | Chat `messages[].role=user/assistant` 文本 | `messages[].content[].type=text` | L1 | 保持已实现逻辑，补边界测试 |
 | Chat `system` / `developer` | 顶层 `system` 合并 | L1 | 保留来源顺序，不写入工具结果 |
+| Chat `messages[].name` | 对应消息文本前缀 | L3 | Anthropic Messages 没有 OpenAI Chat `name` 字段；非空 `name` 不透传为上游字段，而是以 `参与者: <name>` 前缀写入该条 user / assistant 文本内容，保留多参与者上下文，空值按原内容桥接 |
 | Responses `instructions` | 顶层 `system` | L1 | 与 input 中 system/developer 合并 |
 | Responses `input` 字符串 | 单条 user text message | L1 | 保持已实现逻辑 |
 | Responses `input[].type=message` | Messages user / assistant / system | L1 | 对未知 content block 进入能力分类，不静默吞掉 |
-| `temperature`、`top_p`、`stop`、`max_*_tokens` | Anthropic 同名或等价字段 | L1/L4 | `temperature` 在 Anthropic 原生范围内正常映射；OpenAI 允许但 Anthropic 无法等价承接的 `temperature>1` 本地拒绝；其他无等价字段按 L5 审计或 L4 拒绝 |
+| `temperature`、`top_p`、`stop`、`max_*_tokens` | Anthropic 同名或等价字段 | L1/L4 | `temperature<=1` 和 `top_p` 正常映射；OpenAI 允许但 Anthropic 无法等价承接的 `temperature>1` 本地拒绝；`stop` 字符串 / 数组映射为 Anthropic `stop_sequences`，最多保留 4 个非空字符串；`max_tokens` / `max_completion_tokens` / `max_output_tokens` 统一映射为 Anthropic `max_tokens`，按请求字段优先级选择；默认值由网关配置兜底 |
 | `metadata` / `user` / `safety_identifier` / `prompt_cache_key` | Anthropic `metadata.user_id`、网关本地亲和或审计 metadata | L1/L5 | `safety_identifier` 优先映射为 Anthropic `metadata.user_id`，否则使用 `user`；`prompt_cache_key` 只作为本地亲和 / 审计信号，不承诺 Anthropic prompt cache；业务 `metadata` 不扩散到 Anthropic；mock 固定 safety_identifier 优先级、user fallback 和业务 metadata 不透传 |
 | `service_tier` | OpenAI 服务档位，无 Anthropic Messages 等价字段 | L4/L5 | 省略、`null`、`auto` 或 `default` 视为默认服务路径；`flex`、`priority` 或未知值本地 OpenAI 错误拒绝，避免客户端误判已获得 OpenAI 服务档位 |
 | `prompt_cache_retention` | OpenAI prompt cache 保留策略，无 Anthropic 等价字段 | L4 | 字段存在且非 `null` 时本地 OpenAI 错误拒绝；不能把 OpenAI 24h / in_memory 保留策略静默降级为普通 Anthropic 请求 |
 | Responses `prompt` 模板 | OpenAI Prompt Template 引用和变量 | L4 | 当前 bridge 不解析 OpenAI 托管 prompt template；字段存在且非 `null` 时本地 OpenAI 错误拒绝，不把缺少 prompt 内容的请求继续发给 Anthropic |
 | Chat / Responses 顶层 `moderation` | OpenAI 输入 / 输出审核配置，无 Anthropic bridge 等价策略 | L4 | 顶层 `moderation` 存在且非 `null` 时本地 OpenAI 错误拒绝；注意 `image_generation` tool 内部 `moderation` 由图像 provider 路径单独承接 |
 | Chat / Responses `store` | OpenAI 响应存储、distillation / evals 或后续检索语义 | L3/L4/L5 | 省略、`null` 或 `false` 正常无状态桥接；`true` 在 Chat 下代表存储输出用于 OpenAI 后续产品，在 Responses 下代表可后续 API retrieve / 状态复用，当前 Anthropic bridge 没有等价存储、TTL、隐私和授权检索策略，必须本地 OpenAI 错误拒绝 |
-| `presence_penalty` / `frequency_penalty` / `logit_bias` / `seed` | Anthropic Messages 无等价采样控制 | L4 | 默认值或空 `logit_bias` 视为未请求；非默认惩罚、非空 `logit_bias` 或 `seed` 本地 OpenAI 错误拒绝，不请求 Anthropic |
-| Chat / Responses `prediction` | OpenAI Predicted Outputs，无 Anthropic Messages 等价结构和 usage 语义 | L4 | 本地 OpenAI 错误拒绝；不能忽略 prediction 后返回普通生成结果 |
-| Chat / Responses `verbosity` | OpenAI 专用输出详细度控制，无 Anthropic 等价字段 | L4 | top-level `verbosity` 或 Responses `text.verbosity` 存在时本地 OpenAI 错误拒绝 |
-| Chat `n` | Anthropic Messages 单次请求只返回一个候选 | L1/L4 | `n` 省略或 `1` 正常桥接；`n>1` 本地 OpenAI 错误拒绝且不请求 Anthropic，避免客户端误判为完整多候选响应 |
-| Chat `logprobs` / `top_logprobs` | Anthropic Messages 无 OpenAI token logprobs 等价响应字段 | L4 | `logprobs=true` 或 `top_logprobs>0` 时本地 OpenAI 错误拒绝；`logprobs=false` 和 `top_logprobs=0` 视为未请求 |
-| Responses `include=message.output_text.logprobs` / `top_logprobs` | Anthropic Messages 无 OpenAI output_text logprobs 等价响应字段 | L4 | `include=message.output_text.logprobs` 或 `top_logprobs>0` 时本地 OpenAI 错误拒绝且不请求 Anthropic；不能返回缺少 logprobs 的成功响应 |
+| `presence_penalty` / `frequency_penalty` / `logit_bias` / `seed` | Anthropic Messages 无等价采样控制 | L4 | 默认值、`null` 或空 `logit_bias` 视为未请求且不透传；非默认惩罚、非空 `logit_bias` 或有效 `seed` 本地 OpenAI 错误拒绝，不请求 Anthropic |
+| Chat / Responses `prediction` | OpenAI Predicted Outputs，无 Anthropic Messages 等价结构和 usage 语义 | L4 | `null` 视为未请求且不透传；有效 `prediction` 本地 OpenAI 错误拒绝，不能忽略 prediction 后返回普通生成结果 |
+| Chat / Responses `verbosity` | OpenAI 专用输出详细度控制，无 Anthropic 等价字段 | L4 | `null` 视为未请求且不透传；top-level `verbosity` 或 Responses `text.verbosity` 有效存在时本地 OpenAI 错误拒绝 |
+| Chat `n` | Anthropic Messages 单次请求只返回一个候选 | L1/L4 | `n` 省略或 `1` 正常桥接且不透传；`n>1` 本地 OpenAI 错误拒绝且不请求 Anthropic，避免客户端误判为完整多候选响应 |
+| Chat `logprobs` / `top_logprobs` | Anthropic Messages 无 OpenAI token logprobs 等价响应字段 | L4 | `logprobs=false` 和 `top_logprobs=0` 视为未请求且不透传；`logprobs=true` 或 `top_logprobs>0` 时本地 OpenAI 错误拒绝 |
+| Responses `include=message.output_text.logprobs` / `top_logprobs` | Anthropic Messages 无 OpenAI output_text logprobs 等价响应字段 | L4 | `include=[]` 和 `top_logprobs=0` 视为未请求且不透传；`include=message.output_text.logprobs` 或 `top_logprobs>0` 时本地 OpenAI 错误拒绝且不请求 Anthropic；不能返回缺少 logprobs 的成功响应 |
 | Responses 其他输出扩展 `include` | 按本地工具运行时补齐，或本地拒绝 | L2/L3/L4 | `file_search_call.results` 已由本地 File Search 运行时承接；`code_interpreter_call.outputs` 在 `code_interpreter=mock` 时返回固定 logs，在 `code_interpreter=local_runtime` worker 首段返回真实 stdout / stderr logs、文件产物 `file_id` 和元数据摘要；`web_search_call.action.sources`、`computer_call_output.output.image_url`、`message.input_image.image_url` 当前没有等价输出结构或运行时，命中时本地 OpenAI 错误拒绝，不静默返回缺少 include 数据的成功响应 |
-| Chat `modalities` / `audio` 输出 | Anthropic Messages 不能返回 OpenAI Chat audio object | L4 | `modalities` 省略或仅包含 `text` 正常桥接；包含 `audio`、未知输出模态或提供 `audio` 配置时本地 OpenAI 错误拒绝，不请求 Anthropic |
+| Chat `modalities` / `audio` 输出 | Anthropic Messages 不能返回 OpenAI Chat audio object | L4 | `modalities` 省略或仅包含 `text` 正常桥接且不透传；包含 `audio`、未知输出模态或提供非空 `audio` 配置时本地 OpenAI 错误拒绝，不请求 Anthropic |
 | Chat / Responses audio content block | Anthropic Messages 当前无 OpenAI `input_audio` 等价输入块 | L4 | 命中 `input_audio` / audio content 时本地 OpenAI 错误拒绝；不能静默丢弃音频输入后让模型只看文本 |
 | Chat / Responses 未知 content block | 无明确等价字段 | L4 | 未分类 content block 本地 OpenAI 错误拒绝，后续新增支持时先更新本矩阵和 mock；禁止静默跳过 |
 
@@ -95,14 +114,16 @@
 
 | OpenAI 能力 | Anthropic 承接方式 | 等级 | 长期策略 |
 | --- | --- | --- | --- |
-| Chat `tools[].type=function` | Anthropic client tool `input_schema` | L1 | 已支持，补 schema / strict 测试 |
+| Chat `tools[].type=function` | Anthropic client tool `input_schema` | L1 | 已支持；新版 `tools` 优先于旧版 `functions`，补 schema / strict 测试 |
+| Chat legacy `functions[]` / `function_call` | Anthropic client tool / `tool_choice` | L1 | 旧版 OpenAI Chat 字段仍按 function tool 语义承接：未提供新版 `tools` 时，`functions[]` 转 Anthropic tools；未提供新版 `tool_choice` 时，`function_call=auto/none` 或 `{ name }` 转 Anthropic tool_choice；JSON 回包恢复为旧版 `message.function_call` / `finish_reason=function_call`，SSE 回包恢复为 `delta.function_call` 分片 / `finish_reason=function_call`；同时出现新旧字段时以新版字段为准，避免重复工具定义或冲突选择 |
 | Responses `tools[].type=function` | Anthropic client tool `input_schema` | L1 | 已支持；`tool_choice.type=allowed_tools` 的 function 子集通过过滤工具列表承接，`mode=required` 映射为 Anthropic `any` |
-| `parallel_tool_calls=false` | Anthropic `tool_choice.disable_parallel_tool_use=true` | L1 | 仅在存在工具且 Anthropic `tool_choice` 为 `auto` / `any` / 指定 `tool` 时设置；`tool_choice=none` 不附加该字段，因为不会调用工具且 Anthropic 不接受 `none.disable_parallel_tool_use` |
-| Responses `max_tool_calls` | Anthropic Messages 无等价工具调用次数上限 | L4 | 字段存在且非 `null` 时本地 OpenAI 错误拒绝，不请求 Anthropic；不能忽略后让模型调用超过客户端限制的工具 |
-| Chat `tool_calls` | assistant `tool_use` block | L1 | 已支持；`function.arguments` 为 JSON object 时原样转 Anthropic `input`，为 JSON 非对象或非法 JSON 时包成 `openai_arguments` / `openai_arguments_text`，避免静默丢历史；多工具顺序仍需继续补测 |
+| `parallel_tool_calls=false` | Anthropic `tool_choice.disable_parallel_tool_use=true` | L1 | 仅在存在工具且 Anthropic `tool_choice` 为 `auto` / `any` / 指定 `tool` 时设置；`true` / `null` 视为默认并行策略且不透传；`tool_choice=none` 不附加该字段，因为不会调用工具且 Anthropic 不接受 `none.disable_parallel_tool_use` |
+| Responses `max_tool_calls` | Anthropic Messages 无等价工具调用次数上限 | L4 | `null` 视为未请求且不透传；字段存在且非 `null` 时本地 OpenAI 错误拒绝，不请求 Anthropic；不能忽略后让模型调用超过客户端限制的工具 |
+| Chat `tool_calls` | assistant `tool_use` block | L1 | 已支持；`function.arguments` 为 JSON object 时原样转 Anthropic `input`，为 JSON 非对象（数组 / 标量）或非法 JSON 时包成 `openai_arguments` / `openai_arguments_text`，避免静默丢历史；多个 `tool_calls` 按客户端数组顺序生成 `tool_use`，后续 `role=tool` 按消息顺序生成 `tool_result` 并保持 call id 对齐 |
 | Chat `role=tool` | user `tool_result` block | L1 | 已支持；缺少 `tool_call_id`、缺少匹配 `tool_call_id` 或同一 `tool_call_id` 重复返回时，本地 OpenAI 错误拒绝，不请求 Anthropic |
-| Responses `function_call` | assistant `tool_use` block | L1 | 已支持；`arguments` 为 JSON object 时原样转 Anthropic `input`，为 JSON 非对象或非法 JSON 时包成 `openai_arguments` / `openai_arguments_text`，避免静默丢历史 |
-| Responses `function_call_output` | user `tool_result` block | L1 | 已支持；缺少 `call_id`、缺少匹配 `call_id` 或同一 `call_id` 重复返回时，本地 OpenAI 错误拒绝，不请求 Anthropic |
+| Chat legacy `assistant.function_call` / `role=function` | assistant `tool_use` / user `tool_result` block | L1 | 旧版历史消息已按工具历史承接；`assistant.function_call` 在没有新版 `tool_calls` 时生成带网关合成 id 的 `tool_use`，`role=function` 按 `name` 匹配最近未完成的旧版调用并转 `tool_result`；缺少 `name`、孤儿结果或重复结果本地拒绝，不静默丢历史 |
+| Responses `function_call` | assistant `tool_use` block | L1 | 已支持；`arguments` 为 JSON object 时原样转 Anthropic `input`，为 JSON 非对象（数组 / 标量）或非法 JSON 时包成 `openai_arguments` / `openai_arguments_text`，避免静默丢历史；多个 `function_call` 按 Responses `input` 数组顺序生成 `tool_use` |
+| Responses `function_call_output` | user `tool_result` block | L1 | 已支持；缺少 `call_id`、缺少匹配 `call_id` 或同一 `call_id` 重复返回时，本地 OpenAI 错误拒绝，不请求 Anthropic；多个 `function_call_output` 按 Responses `input` 数组顺序生成 `tool_result` 并保持 call id 对齐 |
 | Chat 搜索模型 / `web_search` / `web_search_preview` | Anthropic 原生 server tool / web search 等价能力 | L2/L4 | 当前 bridge 不做本地预取模拟；没有上游原生等价能力时返回正常 agent guidance，不请求 Anthropic、不伪造 citation 或 hosted item |
 | `file_search` | 网关本地 Files / Vector Store 检索后注入 Anthropic system context | L3 | 已按 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md) 实现本地 Files、Vector Store、文本 chunk、keyword retrieval 和 Responses JSON / SSE `file_search_call`；Chat 入口返回 `message.annotations`；vector store file 支持 `in_progress` / `completed` / `failed` 轮询生命周期，未找到、未授权或未就绪时本地 OpenAI 错误 |
 | `code_interpreter` / container | Anthropic code execution tool 或网关本地沙箱；mockai 阶段可返回固定 Responses `code_interpreter_call` | L2/L3/L4 | 必须隔离文件、网络、时间和资源；没有沙箱时返回 agent guidance；Responses `code_interpreter=mock` 已覆盖 JSON / SSE、`include=code_interpreter_call.outputs` 固定 logs、不请求 Anthropic、不执行代码；`code_interpreter=local_runtime` 已完成 Python worker 首段：未配置 Python executor 时本地 503，配置后由 Anthropic 选择 `python` client tool，网关独立子进程执行并回灌 `tool_result`，返回 `code_interpreter_call.outputs` logs、退出码、超时、截断 metadata、文件产物元数据摘要、符合上限产物的本地 Files `file_id` 下载路径和 container files 兼容壳；Chat 入口仍 guidance；容器 / VM 级隔离、container create/upload/delete 和生命周期按 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md) 后续推进 |
@@ -132,11 +153,11 @@
 | Chat `image_url.url` 普通 URL | Anthropic image URL source | L1 | 已支持，补真实联调 |
 | Chat `image_url.url` data URL | Anthropic base64 image source | L1 | 已支持；仅接受 `image/jpeg` / `image/png` / `image/gif` / `image/webp` 且 base64 合法，其他 MIME 或非法 base64 本地 OpenAI 错误拒绝，不请求 Anthropic |
 | Responses `input_image.image_url` | Anthropic image source | L1 | URL 已支持，data URL 仅接受 `image/jpeg` / `image/png` / `image/gif` / `image/webp` 且 base64 合法，其他 MIME 或非法 base64 本地拒绝 |
-| Chat `content[].type=file` + `file_data` | Anthropic document block | L2 | 仅支持 inline PDF / text 数据；`file_id` 转换入口已接 resolver，未配置本地 Files runtime 时 L4 |
-| Responses `input_image.file_id` | 本地 Files resolver 读取后转 image source | L3 | 已支持本地 `/v1/files` 上传后解析为 Anthropic image；未知或无权 file id 返回本地错误，不请求上游 |
-| Responses `input_file.file_data` | Anthropic document block | L2 | 支持 PDF base64 / text/plain；不支持的 MIME 返回本地错误，不静默忽略 |
-| Responses `input_file.file_url` | Anthropic document URL source | L2 | 仅按 PDF URL 子集桥接；其他文件格式需要本地抽取或 Files resolver |
-| Responses `input_file.file_id` | 本地 Files resolver 读取后转 document source | L3 | 已支持本地 `/v1/files` 上传后解析 PDF / text；OpenAI file id 不直接交给 Anthropic；未知或无权 file id 本地失败 |
+| Chat `content[].type=file` + `file_data` / `file_id` | Anthropic document block | L2/L3 | 支持 inline PDF / text/*，以及经本地 Files resolver 校验后的 PDF / text/* `file_id`；Chat `file_url`、非法 base64、不支持 MIME、未知、不支持 MIME 或 resolver 返回非法 base64 的 `file_id` 本地拒绝且不请求 Anthropic；未配置本地 Files runtime 时 `file_id` 进入 L4 |
+| Responses `input_image.file_id` | 本地 Files resolver 读取后转 image source | L3 | 已支持本地 `/v1/files` 上传后解析为 Anthropic image；resolver 输出仅接受 `image/jpeg` / `image/png` / `image/gif` / `image/webp` 且 base64 合法；未知、无权、非图片 MIME 或非法 base64 均本地错误，不请求上游 |
+| Responses `input_file.file_data` | Anthropic document block | L2 | 支持 PDF base64 / text/*；非法 base64 或不支持的 MIME 返回本地错误且不请求 Anthropic |
+| Responses `input_file.file_url` | Anthropic document URL source | L2 | 仅按 PDF URL 子集桥接；非 PDF URL 本地拒绝且不请求 Anthropic，其他文件格式需要本地抽取或 Files resolver |
+| Responses `input_file.file_id` | 本地 Files resolver 读取后转 document source | L3 | 已支持本地 `/v1/files` 上传后解析 PDF / text/*；OpenAI file id 不直接交给 Anthropic；未知、无权、不支持 MIME 或 resolver 返回非法 base64 的 file id 本地失败且不请求上游 |
 | 输出图片 / `image_generation_call` | 本地图像生成 provider 后渲染 OpenAI image item | L3 | 与 Messages 文本响应分离；provider 成功路径输出 base64 `result` 和 `revised_prompt`；provider 失败路径不输出图片，保留 OpenAI 风格 `error.type` / `error.code` / `moderation_details`；审计不保存非流式 `result` 或流式 `partial_image_b64` 正文；流式支持 completed 事件和最终 `response.completed`，当 provider 返回 Images SSE 或 Responses SSE 图像 partial 时透出 `response.image_generation_call.partial_image`；真实账户 Images API 401，但 Responses API 图像工具已验证可返回真实 `image_generation_call.result` |
 | 图片 `detail` | Anthropic 无完全等价字段 | L5 | 只作审计或提示，不影响图像本体 |
 
@@ -144,8 +165,8 @@
 
 | OpenAI 能力 | Anthropic 承接方式 | 等级 | 长期策略 |
 | --- | --- | --- | --- |
-| Responses / Chat `reasoning.effort` / `reasoning_effort` | Anthropic `thinking` / `budget_tokens` 或禁用 thinking | L2/L4 | `none` 表示不启用 Anthropic thinking；`minimal` / `low` / `medium` / `high` 分别映射为 1024 / 2048 / 4096 / 8192 `budget_tokens`；`xhigh` 需要模型和 profile 明确支持更大预算前保持本地 OpenAI 错误拒绝；未知 effort 本地拒绝，避免客户端误以为高级推理已生效 |
-| Responses `reasoning.summary` | Responses reasoning item 渲染策略 | L2/L4 | `auto` / `concise` / `detailed` 接受并尽力把 Anthropic thinking block 渲染为 Responses reasoning summary；当前不承诺精确控制摘要详细度；`none` 抑制 reasoning item，但 usage 的 reasoning tokens 仍按上游字段映射；未知 summary 本地拒绝 |
+| Responses / Chat `reasoning.effort` / `reasoning_effort` | Anthropic `thinking` / `budget_tokens` 或禁用 thinking | L2/L4 | 省略或 `null` 视为未请求且不透传；`none` 表示不启用 Anthropic thinking；`minimal` / `low` / `medium` / `high` 分别映射为 1024 / 2048 / 4096 / 8192 `budget_tokens`；`xhigh` 需要模型和 profile 明确支持更大预算前保持本地 OpenAI 错误拒绝；未知 effort 本地拒绝，避免客户端误以为高级推理已生效 |
+| Responses `reasoning.summary` | Responses reasoning item 渲染策略 | L2/L4 | 省略或 `null` 视为未请求且不透传；`auto` / `concise` / `detailed` 接受并尽力把 Anthropic thinking block 渲染为 Responses reasoning summary；当前不承诺精确控制摘要详细度；`none` 抑制 reasoning item，但 usage 的 reasoning tokens 仍按上游字段映射；未知 summary 本地拒绝 |
 | Anthropic `thinking` 输出 | Responses `reasoning` item 或审计字段 | L2 | 不把隐藏思考混入普通 `output_text`；只输出允许暴露的 summary |
 | Anthropic `signature_delta` | 审计 / 状态校验 | L2 | 不发给 OpenAI 普通客户端，除非有明确 Responses reasoning contract |
 | OpenAI `include=reasoning.encrypted_content` / reasoning item `encrypted_content` | 受控拒绝或网关本地状态恢复 | L4 | Anthropic 不能生成或验证 OpenAI encrypted reasoning；`include=reasoning.encrypted_content` 和历史 `type=reasoning` item 只带 `encrypted_content` 时，当前 bridge 本地返回 OpenAI 形态错误并且不请求 Anthropic，不能静默省略；网关自有 compact envelope 只能走 `compaction` / `compaction_summary` 状态恢复路径 |
@@ -158,19 +179,19 @@
 | OpenAI 能力 | Anthropic 承接方式 | 等级 | 长期策略 |
 | --- | --- | --- | --- |
 | Responses `previous_response_id` | 网关本地状态恢复后重建 Messages history | L3 | 已覆盖 Codex SSE 两轮续链、普通 Responses JSON / SSE 两轮续链、未知 id 404 和跨 API Key 403；恢复后会删除下游 `previous_response_id`，只把重建后的历史 input/output 发送到 Anthropic |
-| Responses `conversation` | 网关本地 Conversation 状态恢复后重建 Messages history | L3/L4 | 当前 Anthropic bridge 不直接消费 OpenAI conversation 对象或 ID；字段存在且非 `null` 时本地 OpenAI 错误拒绝，直到 Conversation 状态层完成授权边界、历史恢复和写回策略 |
+| Responses `conversation` | 网关本地 Conversation 状态恢复后重建 Messages history | L3/L4 | 当前 Anthropic bridge 不直接消费 OpenAI conversation 对象或 ID；`null` 视为未请求且不透传；字段存在且非 `null` 时本地 OpenAI 错误拒绝，直到 Conversation 状态层完成授权边界、历史恢复和写回策略 |
 | Responses `background` | OpenAI 后台响应任务语义 | L4 | 省略、`null` 或 `false` 正常同步桥接；`true` 需要异步任务、轮询和取消语义，当前本地 OpenAI 错误拒绝，不请求 Anthropic |
 | `/responses/compact` | 网关本地 summary compact snapshot | L3 | 不透传 Anthropic Messages；摘要必须绑定授权边界；返回 OpenAI CompactResource 兼容外形，`object=response.compaction`，`output` 中保留 1 个 `type=compaction` item；`encrypted_content` 使用 `juhecmp.v2.<compactId>.<summaryDigest>` 外壳 |
-| `compaction` / `compaction_summary` item | 网关 snapshot 或 inline summary 解析为 system summary | L3 | 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`；`juhecmp.v1` inline summary 直接恢复到 Anthropic system context；`juhecmp.v2` snapshot 必须先由状态层校验边界、TTL 和 digest 后恢复，跨授权边界返回 403，digest 篡改或 snapshot 缺失返回 404，均不请求不支持 compact 的 Anthropic 上游 |
+| `compaction` / `compaction_summary` item | 网关 snapshot 或 inline summary 解析为 system summary | L3 | 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`；`juhecmp.v1` inline summary 必须可解析且包含摘要，才能恢复到 Anthropic system context；缺少 `encrypted_content`、非法 v1 payload 或未知 envelope 本地 OpenAI 错误拒绝，不请求上游，避免静默丢失压缩历史；`juhecmp.v2` snapshot 必须先由状态层校验边界、TTL 和 digest 后恢复，跨授权边界返回 403，digest 篡改或 snapshot 缺失返回 404，均不请求不支持 compact 的 Anthropic 上游 |
 | Responses `store` | 网关本地状态策略 | L3/L4/L5 | 省略、`null` 或 `false` 正常无状态桥接；`true` 表示响应需要后续 API retrieve / 状态复用，当前 Anthropic bridge 没有通用 Responses 存储、TTL、隐私和授权检索层，必须本地 OpenAI 错误拒绝，不返回 `store:false` 假成功 |
-| Responses `truncation` / `context_management` | 本地策略或 Anthropic 原生字段 | L2/L3/L4 | `truncation` 省略、`null` 或 `disabled` 正常桥接；`truncation=auto` 需要状态层按 OpenAI 规则丢弃最早对话项，当前本地拒绝；`context_management` 存在且非 `null` 时本地拒绝，直到网关实现可审计的上下文管理策略 |
+| Responses `truncation` / `context_management` | 本地策略或 Anthropic 原生字段 | L2/L3/L4 | `truncation` 省略、`null` 或 `disabled` 正常桥接且不透传；`truncation=auto` 需要状态层按 OpenAI 规则丢弃最早对话项，当前本地拒绝；`context_management=null` 视为未请求且不透传，存在且非 `null` 时本地拒绝，直到网关实现可审计的上下文管理策略 |
 
 ## 6. 响应和流式矩阵
 
 | Anthropic 输出 | Chat JSON / SSE | Responses JSON / SSE | 策略 |
 | --- | --- | --- | --- |
 | text | `message.content` / `delta.content` | `message.output_text` / `response.output_text.delta` | 已支持，补多 block 顺序 |
-| tool_use | `tool_calls` / `delta.tool_calls` | `function_call` item | 已支持；Chat SSE 工具 index 必须按 OpenAI tool call 序号连续递增，不能直接暴露 Anthropic content block index；Responses SSE 必须把 Anthropic `input_json_delta.partial_json` 转成 `response.function_call_arguments.delta`，并在工具块结束时输出 `response.function_call_arguments.done` 和最终 `response.output_item.done` |
+| tool_use | 新版 Chat 返回 `tool_calls` / `delta.tool_calls`；legacy `functions/function_call` 返回 `message.function_call` / `delta.function_call` | `function_call` item | 已支持；Chat SSE 工具 index 必须按 OpenAI tool call 序号连续递增，不能直接暴露 Anthropic content block index；legacy Chat 使用旧版单工具流式形态，并在请求侧禁用 Anthropic 并行工具调用；Responses SSE 必须把 Anthropic `input_json_delta.partial_json` 转成 `response.function_call_arguments.delta`，并在工具块结束时输出 `response.function_call_arguments.done` 和最终 `response.output_item.done` |
 | thinking | 默认不进 content | `reasoning` item 或审计 summary | 已实现基础映射，必须防止泄露隐藏思考 |
 | web_search result / citation | 不输出本地模拟 citation | 不输出 `web_search_call` | 当前无 Anthropic 原生等价映射；命中 `web_search` 时返回 agent guidance |
 | file_search result / citation | Chat JSON `message.annotations`；Chat SSE 正文保留 `[F1]` / `[F2]` 类引用标记 | Responses `file_search_call` + `file_citation` annotations / include results | 本地预检索模拟覆盖 Responses JSON/SSE 和 Chat JSON；结果来自本地 Vector Store keyword retrieval，不承诺 OpenAI 托管语义完全等价 |
@@ -208,15 +229,15 @@ mock 回归至少覆盖：
 
 | 类别 | 必测场景 |
 | --- | --- |
-| 基础四入口 | Chat JSON、Chat SSE、Responses JSON、Responses SSE |
+| 基础四入口 | Chat JSON、Chat SSE、Responses JSON、Responses SSE、Chat system / developer 合并为 Anthropic `system`、Chat `messages[].name` 文本前缀保留、Responses `instructions` 和 input system / developer 合并为 Anthropic `system`、基础生成控制 `max_*_tokens` / `stop` 映射 |
 | 输出形态边界 | Chat `n>1`、Chat `logprobs=true` / `top_logprobs>0`、Responses `include=message.output_text.logprobs` / `top_logprobs>0`、Responses 非等价输出扩展 include、Chat audio output、非等价采样控制、prediction、verbosity 本地 OpenAI 错误拒绝且不命中上游 |
 | 输入内容边界 | Chat / Responses `input_audio` 和未知 content block 本地 OpenAI 错误拒绝且不命中上游 |
-| Function tools | 多工具 JSON/SSE、指定工具、required、none、`parallel_tool_calls=false` 映射、Responses `max_tool_calls` 本地拒绝、Responses `allowed_tools` function 子集、非对象 / 非法 JSON arguments 保留、tool result、missing call id / orphan / duplicate tool result、thinking + 强制 tool_choice 冲突拒绝、流式 `input_json_delta` 参数分片 |
+| Function tools | 多工具 JSON/SSE、Chat 历史多 `tool_calls` / 多 `tool_result` 顺序和 call id 对齐、Responses 历史多 `function_call` / `function_call_output` 顺序和 call id 对齐、指定工具、required、none、`parallel_tool_calls=false` 映射、Responses `max_tool_calls` 本地拒绝、Responses `allowed_tools` function 子集、JSON object / 数组 / 标量 / 非法 JSON arguments 保留、tool result、missing call id / orphan / duplicate tool result、thinking + 强制 tool_choice 冲突拒绝、流式 `input_json_delta` 参数分片 |
 | Hosted tools | Responses / Chat `web_search` guidance 且不命中上游、Responses `computer` / `code_interpreter` / `mcp` guidance 且不命中上游、Chat `code_interpreter` guidance 且不命中上游、Responses `code_interpreter=mock` JSON / SSE 本地 `code_interpreter_call` 且不执行代码不上游、Responses `code_interpreter=local_runtime` Python worker 成功 / stderr / 截断 / 超时 / env 不泄漏、Responses `computer=mock` JSON / SSE 本地 `computer_call`、`computer_call_output` 收口且不回显截图正文不上游、Responses `computer=local_runtime` 未配置 adapter 503、测试 adapter JSON / SSE `computer_call`、`computer_call_output` 收口、metadata 裁剪和截图正文省略不上游、Responses `mcp=mock` JSON / SSE 本地 `mcp_list_tools` / `mcp_approval_request` / `mcp_call` 且不连接远程 MCP 不上游、Responses `mcp=local_runtime` JSON 免批模型选择工具 + MCP `tools/call` + 输出截断、Responses `mcp=local_runtime` 默认 approval 本地 `mcp_approval_request`、approval pending / approve / reject / expired / replay / 跨 API Key scope、Responses `mcp=local_runtime` SSE 缓冲式多轮终态输出、Responses `mcp=local_runtime` transport retry / redirect blocked、Responses `tool_search` + `namespace` JSON / SSE 本地展开、image_generation 无 provider guidance、image_generation Images provider JSON / completed-only SSE / partial SSE 成功路径、image_generation Responses provider JSON / SSE 成功路径、provider `moderation_blocked` / 非 JSON / 超大响应体 / timeout failed response、edit / mask / 历史复用 guidance、file_search 未知 vector store 本地失败、file_search 本地检索成功路径、vector store file `in_progress` / `failed` 生命周期 |
 | Structured outputs | json_object 合法输出、json_schema strict 成功、schema 失败受控错误、Chat refusal、Responses mismatch code |
-| Thinking | reasoning.effort 映射、`reasoning_effort` Chat 入口映射、`none` 不启用 thinking、`xhigh` / 未知 effort 本地拒绝、`reasoning.summary` 的 `auto` / `concise` / `detailed` / `none` 边界、thinking 输出不混入文本、reasoning usage 映射、`include=reasoning.encrypted_content` 和 reasoning item `encrypted_content` 本地拒绝 |
-| 图片 / 文件 | 图片 URL、图片 data URL、图片 data URL MIME / base64 拒绝边界、Chat/Responses inline PDF / text 文件、Responses PDF URL、`/v1/files` 上传后 Chat/Responses `file_id` 成功路径、未知 `file_id` 受控失败 |
-| 状态 / Compact | `previous_response_id` Codex SSE / 普通 JSON / 普通 SSE 续链、`previous_response_id` 未知 id / 跨 API Key 拒绝、`conversation` 本地拒绝、`background=true` 本地拒绝、`store=true` 本地拒绝、`truncation=auto` 本地拒绝、`context_management` 本地拒绝、`compaction` / `compaction_summary` 恢复、`/responses/compact` 返回 `response.compaction`、不直转 Anthropic、跨边界 snapshot 拒绝、`juhecmp.v2` digest 篡改拒绝且不上游 |
+| Thinking | reasoning.effort 映射、`reasoning_effort` Chat 入口映射、`none` 不启用 thinking、`xhigh` / 未知 effort 本地拒绝、`reasoning.summary` 的 `auto` / `concise` / `detailed` 接受并输出 Responses reasoning item、`none` 抑制 reasoning item、thinking 输出不混入文本、reasoning usage 映射、`include=reasoning.encrypted_content` 和 reasoning item `encrypted_content` 本地拒绝 |
+| 图片 / 文件 | Chat `image_url` URL / data URL、Responses `input_image.image_url` URL / data URL、Chat / Responses 图片 data URL MIME / base64 拒绝边界且不上游、Responses `input_image.file_id` 成功 / 未知 / 非图片 MIME / 非法 base64 边界、Chat/Responses inline PDF / text/* 文件、inline 文件非法 base64 / 不支持 MIME 拒绝且不上游、Chat `file_url` 拒绝、Responses PDF URL 成功与非 PDF URL 拒绝、`/v1/files` 上传后 Chat/Responses `file_id` 成功路径、Chat / Responses 未知 / 不支持 MIME / 非法 base64 的 `file_id` 受控失败且不上游 |
+| 状态 / Compact | `previous_response_id` Codex SSE / 普通 JSON / 普通 SSE 续链、`previous_response_id` 未知 id / 跨 API Key 拒绝、`conversation` 本地拒绝、`background=true` 本地拒绝、`store=true` 本地拒绝、`truncation=auto` 本地拒绝、`context_management` 本地拒绝、`compaction` / `compaction_summary` 恢复、compact item 缺失 / 非法 / 未知 envelope 本地拒绝、`/responses/compact` 返回 `response.compaction`、不直转 Anthropic、跨边界 snapshot 拒绝、`juhecmp.v2` digest 篡改拒绝且不上游 |
 | SSE | text delta、tool input_json_delta、thinking_delta、Chat `stream_options.include_usage` usage chunk、上游 `event:error` |
 | 回归 | Anthropic native `/v1/messages`、OpenAI-compatible `responses -> chat_completions`、混合路由 |
 

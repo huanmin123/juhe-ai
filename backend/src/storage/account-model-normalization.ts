@@ -1,5 +1,5 @@
 import type { AccountModelMapping, AccountSupportedEndpointMode } from '../domain/types.js'
-import { listProviderModelCatalog } from '../modules/model-pricing/model-catalog.service.js'
+import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../modules/model-pricing/model-catalog.service.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
@@ -17,7 +17,7 @@ import {
 } from '../domain/provider-protocol.js'
 import { normalizeAccountModelMappingsInput } from './account-model-mappings.repository.js'
 import { normalizeAccountSupportedModelsInput } from './account-supported-models.repository.js'
-import { isOpenAIProtocolProviderCode, listAnthropicProtocolProviderCodes, listGeminiProtocolProviderCodes, listOpenAIProtocolProviderCodes } from './provider.repository.js'
+import { isOpenAIProtocolProviderCode, isOpenAIProtocolProviderCodeAsync, listAnthropicProtocolProviderCodes, listAnthropicProtocolProviderCodesAsync, listGeminiProtocolProviderCodes, listGeminiProtocolProviderCodesAsync, listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from './provider.repository.js'
 
 export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
   const models = normalizeAccountSupportedModelsInput(value)
@@ -27,6 +27,21 @@ export function normalizeAccountSupportedModelsForProvider(value: unknown, provi
     providerCode,
     systemAccountId
   }).map((item) => item.model))
+  const invalidModels = models.filter((model) => !providerModels.has(model))
+  if (invalidModels.length > 0) {
+    throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
+  }
+  return models
+}
+
+export async function normalizeAccountSupportedModelsForProviderAsync(value: unknown, providerCode: string, systemAccountId: string): Promise<string[] | undefined> {
+  const models = normalizeAccountSupportedModelsInput(value)
+  if (!models?.length) return models
+
+  const providerModels = new Set((await listProviderModelCatalogAsync({
+    providerCode,
+    systemAccountId
+  })).map((item) => item.model))
   const invalidModels = models.filter((model) => !providerModels.has(model))
   if (invalidModels.length > 0) {
     throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
@@ -109,6 +124,84 @@ export function normalizeAccountModelMappingsForProvider(
   return mappings
 }
 
+export async function normalizeAccountModelMappingsForProviderAsync(
+  value: unknown,
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile?: ProviderProtocolProfileDefinition,
+  options: {
+    supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
+  } = {}
+): Promise<AccountModelMapping[] | undefined> {
+  const mappings = normalizeAccountModelMappingsInput(value)
+  if (!mappings?.length) return mappings
+
+  const normalizedProfile = providerProfile ?? {
+    protocolCode: OPENAI_PROTOCOL_CODE,
+    protocolVersion: OPENAI_PROTOCOL_VERSION
+  }
+  const profileId = normalizedProfile.providerProtocolProfileId ?? normalizedProfile.id
+  const geminiOpenAIChatProfile = profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
+  const openAIProfile = isOpenAIProtocolProfile(normalizedProfile)
+  const anthropicProfile = isAnthropicProtocolProfile(normalizedProfile)
+  if (!openAIProfile && !anthropicProfile) {
+    throw new Error('当前供应商协议不支持模型映射')
+  }
+  for (const mapping of mappings) {
+    if (geminiOpenAIChatProfile && mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+      throw new Error('Gemini OpenAI Chat 档案不支持 Anthropic Messages 来源映射；Codex 使用 Gemini 时只配置 Responses 到 Chat Completions')
+    }
+    if (geminiOpenAIChatProfile && mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+      throw new Error('Gemini OpenAI Chat 档案的模型映射上游协议只能是 Chat Completions')
+    }
+    if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+      if (mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+        throw new Error('Anthropic Messages 下游协议当前只支持显式桥接到 Chat Completions 上游')
+      }
+      if (!openAIProfile) {
+        throw new Error('Anthropic Messages 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上')
+      }
+      continue
+    }
+    if (isGeminiGenerateContentMappingSource(mapping.sourceEndpointFamily)) {
+      if (mapping.upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) {
+        throw new Error('Gemini GenerateContent 下游协议当前只支持显式桥接到 Chat Completions 上游')
+      }
+      if (!openAIProfile) {
+        throw new Error('Gemini GenerateContent 到 Chat Completions 桥接只能配置在 OpenAI 协议档案账号上')
+      }
+      continue
+    }
+    if (mapping.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY && !anthropicProfile) {
+      throw new Error('只有 Anthropic Messages 协议档案可以把上游协议配置为 Messages')
+    }
+    if ((mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) && !openAIProfile) {
+      throw new Error('当前供应商协议不支持 OpenAI 模型映射：只有 OpenAI 协议档案可以把上游协议配置为 Chat Completions 或 Responses')
+    }
+    if (mapping.upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
+      throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
+    }
+  }
+
+  const invalidSourceModels = (await Promise.all(mappings.map(async (mapping) => ({
+    mapping,
+    pool: await sourceModelPoolForMappingAsync(mapping, systemAccountId)
+  }))))
+    .filter((item) => !item.pool.has(item.mapping.sourceModel))
+    .map((item) => item.mapping.sourceModel)
+  if (invalidSourceModels.length > 0) {
+    throw new Error(`映射下游模型不在对应协议客户端模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
+  }
+  const upstreamModels = await upstreamModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile)
+  const invalidUpstreamModels = mappings
+    .map((mapping) => mapping.upstreamModel)
+    .filter((model) => !upstreamModels.has(model))
+  if (invalidUpstreamModels.length > 0) {
+    throw new Error(`映射上游模型不在当前账号可用模型池中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
+  return mappings
+}
+
 export function assertAccountModelMappingUpstreamsAllowedBySupportedModels(
   mappings: AccountModelMapping[],
   supportedModels: string[]
@@ -138,10 +231,38 @@ export function openAIProtocolModelPool(systemAccountId: string): Set<string> {
   return models
 }
 
+export async function openAIProtocolModelPoolAsync(systemAccountId: string): Promise<Set<string>> {
+  const models = new Set<string>()
+  for (const providerCode of await listOpenAIProtocolProviderCodesAsync()) {
+    for (const item of await listProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })) {
+      models.add(item.model)
+    }
+  }
+  return models
+}
+
 export function anthropicProtocolModelPool(systemAccountId: string): Set<string> {
   const models = new Set<string>()
   for (const providerCode of listAnthropicProtocolProviderCodes()) {
     for (const item of listProviderModelCatalog({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })) {
+      models.add(item.model)
+    }
+  }
+  return models
+}
+
+export async function anthropicProtocolModelPoolAsync(systemAccountId: string): Promise<Set<string>> {
+  const models = new Set<string>()
+  for (const providerCode of await listAnthropicProtocolProviderCodesAsync()) {
+    for (const item of await listProviderModelCatalogAsync({
       providerCode,
       systemAccountId,
       includeUnpriced: true
@@ -166,6 +287,20 @@ export function geminiProtocolModelPool(systemAccountId: string): Set<string> {
   return models
 }
 
+export async function geminiProtocolModelPoolAsync(systemAccountId: string): Promise<Set<string>> {
+  const models = new Set<string>()
+  for (const providerCode of await listGeminiProtocolProviderCodesAsync()) {
+    for (const item of await listProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })) {
+      models.add(item.model)
+    }
+  }
+  return models
+}
+
 function sourceModelPoolForMapping(mapping: AccountModelMapping, systemAccountId: string): Set<string> {
   if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
     return anthropicProtocolModelPool(systemAccountId)
@@ -174,6 +309,16 @@ function sourceModelPoolForMapping(mapping: AccountModelMapping, systemAccountId
     return geminiProtocolModelPool(systemAccountId)
   }
   return openAIProtocolModelPool(systemAccountId)
+}
+
+async function sourceModelPoolForMappingAsync(mapping: AccountModelMapping, systemAccountId: string): Promise<Set<string>> {
+  if (mapping.sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    return anthropicProtocolModelPoolAsync(systemAccountId)
+  }
+  if (isGeminiGenerateContentMappingSource(mapping.sourceEndpointFamily)) {
+    return geminiProtocolModelPoolAsync(systemAccountId)
+  }
+  return openAIProtocolModelPoolAsync(systemAccountId)
 }
 
 function upstreamModelPoolForAccount(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Set<string> {
@@ -189,6 +334,27 @@ function upstreamModelPoolForAccount(providerCode: string, systemAccountId: stri
     return models
   }
   for (const item of listProviderModelCatalog({
+    providerCode: normalizedProviderCode,
+    systemAccountId
+  })) {
+    models.add(item.model)
+  }
+  return models
+}
+
+async function upstreamModelPoolForAccountAsync(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Promise<Set<string>> {
+  const normalizedProviderCode = normalizeProviderToken(providerCode)
+  if (normalizedProviderCode === OPENAI_COMPATIBLE_PROVIDER_CODE) {
+    return openAIProtocolModelPoolAsync(systemAccountId)
+  }
+  const models = new Set<string>()
+  if (!normalizedProviderCode) {
+    return models
+  }
+  if (!(await isOpenAIProtocolProviderCodeAsync(normalizedProviderCode)) && !isAnthropicProtocolProfile(providerProfile)) {
+    return models
+  }
+  for (const item of await listProviderModelCatalogAsync({
     providerCode: normalizedProviderCode,
     systemAccountId
   })) {

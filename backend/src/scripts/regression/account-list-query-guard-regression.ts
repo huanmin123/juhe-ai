@@ -271,8 +271,8 @@ function assertAccountListRouteBoundary(): void {
   assert(
     accountListRoutesSource.includes("router.get('/',")
       && accountListRoutesSource.includes("router.get('/options'")
-      && accountListRoutesSource.includes('listAccountsPage(')
-      && accountListRoutesSource.includes('listAccountOptions('),
+      && accountListRoutesSource.includes('listAccountsPageAsync(')
+      && accountListRoutesSource.includes('listAccountOptionsAsync('),
     '账户列表只读子路由应承接列表和 options 查询'
   )
   assert(

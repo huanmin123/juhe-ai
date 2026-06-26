@@ -11,6 +11,7 @@ export interface RuntimeConfig {
   databaseDriver: DatabaseDriver
   cacheDriver: CacheDriver
   runtimeStateDriver: RuntimeStateDriver
+  queueDriver: QueueDriver
   host: string
   port: number
   httpSecurity: {
@@ -39,6 +40,13 @@ export interface RuntimeConfig {
   redis: {
     cacheUrl?: string
     stateUrl?: string
+    queueUrl?: string
+  }
+  queue: {
+    redisStreamMaxLen: number
+    redisStreamReadCount: number
+    redisStreamBlockMs: number
+    redisStreamClaimIdleMs: number
   }
   databasePath: string
   datasetDatabasePath: string
@@ -135,6 +143,7 @@ export type ProcessRole = 'server' | 'worker' | 'db-service'
 export type DatabaseDriver = 'sqlite' | 'postgres'
 export type CacheDriver = 'memory' | 'redis'
 export type RuntimeStateDriver = 'memory' | 'redis'
+export type QueueDriver = 'memory' | 'redis_stream'
 export type WorkerRuntimeRole =
   | 'worker'
   | 'ingest-worker'
@@ -186,18 +195,25 @@ const configuredRuntimeStateDriver = runtimeStateDriverConfig(
   'JUHE_AI_RUNTIME_STATE_DRIVER',
   configuredRuntimeMode === 'performance' ? 'redis' : 'memory'
 )
+const configuredQueueDriver = queueDriverConfig(
+  'JUHE_AI_QUEUE_DRIVER',
+  configuredRuntimeMode === 'performance' ? 'redis_stream' : 'memory'
+)
 const configuredPostgresUrl = optionalStringConfig('JUHE_AI_POSTGRES_URL')
 const configuredRedisCacheUrl = optionalStringConfig('JUHE_AI_REDIS_CACHE_URL')
 const configuredRedisStateUrl = optionalStringConfig('JUHE_AI_REDIS_STATE_URL')
+const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL') ?? configuredRedisStateUrl
 
 assertRuntimeModeDrivers({
   runtimeMode: configuredRuntimeMode,
   databaseDriver: configuredDatabaseDriver,
   cacheDriver: configuredCacheDriver,
   runtimeStateDriver: configuredRuntimeStateDriver,
+  queueDriver: configuredQueueDriver,
   postgresUrl: configuredPostgresUrl,
   redisCacheUrl: configuredRedisCacheUrl,
-  redisStateUrl: configuredRedisStateUrl
+  redisStateUrl: configuredRedisStateUrl,
+  redisQueueUrl: configuredRedisQueueUrl
 })
 
 export const runtimeConfig: RuntimeConfig = {
@@ -207,6 +223,7 @@ export const runtimeConfig: RuntimeConfig = {
   databaseDriver: configuredDatabaseDriver,
   cacheDriver: configuredCacheDriver,
   runtimeStateDriver: configuredRuntimeStateDriver,
+  queueDriver: configuredQueueDriver,
   host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
@@ -219,7 +236,14 @@ export const runtimeConfig: RuntimeConfig = {
   },
   redis: {
     cacheUrl: configuredRedisCacheUrl,
-    stateUrl: configuredRedisStateUrl
+    stateUrl: configuredRedisStateUrl,
+    queueUrl: configuredRedisQueueUrl
+  },
+  queue: {
+    redisStreamMaxLen: numberConfig('JUHE_AI_REDIS_STREAM_MAXLEN', 1_000_000, 1000, 10_000_000),
+    redisStreamReadCount: numberConfig('JUHE_AI_REDIS_STREAM_READ_COUNT', 1000, 1, 5000),
+    redisStreamBlockMs: numberConfig('JUHE_AI_REDIS_STREAM_BLOCK_MS', 1000, 100, 60000),
+    redisStreamClaimIdleMs: numberConfig('JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS', 60000, 1000, 3600000)
   },
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
@@ -377,14 +401,22 @@ function runtimeStateDriverConfig(name: string, fallback: RuntimeStateDriver): R
   return fallback
 }
 
+function queueDriverConfig(name: string, fallback: QueueDriver): QueueDriver {
+  const value = stringConfig(name, '').toLowerCase()
+  if (value === 'memory' || value === 'redis_stream') return value
+  return fallback
+}
+
 function assertRuntimeModeDrivers(config: {
   runtimeMode: RuntimeMode
   databaseDriver: DatabaseDriver
   cacheDriver: CacheDriver
   runtimeStateDriver: RuntimeStateDriver
+  queueDriver: QueueDriver
   postgresUrl?: string
   redisCacheUrl?: string
   redisStateUrl?: string
+  redisQueueUrl?: string
 }): void {
   if (config.runtimeMode === 'standalone') {
     if (config.databaseDriver !== 'sqlite') {
@@ -395,6 +427,9 @@ function assertRuntimeModeDrivers(config: {
     }
     if (config.runtimeStateDriver !== 'memory') {
       throw new Error('JUHE_AI_RUNTIME_MODE=standalone 时 JUHE_AI_RUNTIME_STATE_DRIVER 必须为 memory')
+    }
+    if (config.queueDriver !== 'memory') {
+      throw new Error('JUHE_AI_RUNTIME_MODE=standalone 时 JUHE_AI_QUEUE_DRIVER 必须为 memory')
     }
     return
   }
@@ -411,6 +446,9 @@ function assertRuntimeModeDrivers(config: {
   assertUrlConfig('JUHE_AI_POSTGRES_URL', config.postgresUrl, ['postgres:', 'postgresql:'])
   assertUrlConfig('JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl, ['redis:', 'rediss:'])
   assertUrlConfig('JUHE_AI_REDIS_STATE_URL', config.redisStateUrl, ['redis:', 'rediss:'])
+  if (config.queueDriver === 'redis_stream') {
+    assertUrlConfig('JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl, ['redis:', 'rediss:'])
+  }
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {
