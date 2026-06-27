@@ -8,7 +8,6 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
@@ -20,10 +19,7 @@ import { logger } from '../../shared/logger.js'
 const realApiKey = requiredEnv('JUHE_REAL_OPENAI_COMPATIBLE_API_KEY', ['JUHE_REAL_HYBRID_API_KEY', 'HYBRID_REAL_API_KEY'])
 const realBaseUrl = envText('JUHE_REAL_OPENAI_COMPATIBLE_BASE_URL', ['JUHE_REAL_HYBRID_BASE_URL', 'HYBRID_REAL_BASE_URL']) || 'https://vsllm.com'
 const chatModel = envText('JUHE_REAL_OPENAI_COMPATIBLE_CHAT_MODEL') || 'gpt-5.4-mini'
-const responsesSourceModel = envText('JUHE_REAL_OPENAI_COMPATIBLE_RESPONSES_SOURCE_MODEL') || 'gpt-5.5'
-const responsesUpstreamModel = envText('JUHE_REAL_OPENAI_COMPATIBLE_RESPONSES_UPSTREAM_MODEL') || chatModel
 const requestTimeoutMs = positiveIntegerEnv('JUHE_REAL_OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS') ?? 120_000
-const responsesMaxOutputTokens = positiveIntegerEnv('JUHE_REAL_OPENAI_COMPATIBLE_RESPONSES_MAX_OUTPUT_TOKENS') ?? 160
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-openai-compatible-real-gateway-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'openai-compatible-real-gateway-e2e.sqlite3')
@@ -88,12 +84,11 @@ try {
       groupId: group.id,
       status: 'active',
       schedulable: true,
-      supportedModels: [...new Set([chatModel, responsesUpstreamModel])]
+      supportedModels: [chatModel]
     }, access)
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '通用 OpenAI 兼容真实网关 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: codexBridgeRouteRules(group.id),
       status: 'active'
     }, access)
     assert(apiKey.key, '真实联调本地 API Key 未返回明文密钥')
@@ -104,18 +99,14 @@ try {
 
     const chatJson = await assertChatJson(baseUrl, apiKey.key)
     const chatSse = await assertChatSse(baseUrl, apiKey.key)
-    const responsesBridge = await assertResponsesBridge(baseUrl, apiKey.key)
 
     console.log(JSON.stringify({
       ok: true,
       provider: OPENAI_COMPATIBLE_PROVIDER_CODE,
       baseUrl: sanitizeBaseUrl(realBaseUrl),
       chatModel,
-      responsesSourceModel,
-      responsesUpstreamModel,
       chatJson,
-      chatSse,
-      responsesBridge
+      chatSse
     }, null, 2))
   } finally {
     await closeServer(appServer)
@@ -183,79 +174,19 @@ async function assertChatSse(baseUrl: string, localApiKey: string): Promise<Reco
   }
 }
 
-async function assertResponsesBridge(baseUrl: string, localApiKey: string): Promise<Record<string, unknown>> {
-  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${localApiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream',
-      'x-codex-turn-metadata': JSON.stringify({
-        session_id: 'openai-compatible-real-e2e',
-        thread_id: 'openai-compatible-real-e2e',
-        turn_id: `openai-compatible-real-e2e-${Date.now()}`
-      })
-    },
-    body: JSON.stringify({
-      model: responsesSourceModel,
-      instructions: '只输出一个简短确认。',
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: '只输出 bridge-ok' }]
-        }
-      ],
-      stream: true,
-      store: false,
-      max_output_tokens: responsesMaxOutputTokens
-    })
-  })
-  const text = await response.text()
-  assert.equal(response.status, 200, `通用 OpenAI 兼容 Responses bridge 应成功，实际 HTTP ${response.status}: ${sanitizeSecretText(text)}`)
-  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, 'Responses bridge 应返回 SSE')
-  assert.match(text, /event: response\.created/, `Responses bridge 应输出 response.created：${responseSnippet(text)}`)
-  assert.match(text, /event: response\.completed/, `Responses bridge 应输出 response.completed：${responseSnippet(text)}`)
-  assert.equal(text.includes('chat.completion.chunk'), false, 'Responses bridge 不应泄漏 Chat Completions 原始 SSE')
-  const output = extractResponsesSseText(text)
-  assert(output.trim(), `Responses bridge 输出为空：${responseSnippet(text)}`)
-  return {
-    status: response.status,
-    contentSample: output.trim().slice(0, 80),
-    responseEvents: responseEventNames(text).slice(0, 12)
-  }
-}
-
 function registerCustomModels(): void {
-  for (const model of new Set([chatModel, responsesSourceModel, responsesUpstreamModel])) {
-    saveCustomProviderModel({
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      model,
-      scope: 'personal',
-      systemAccountId: access.systemAccountId,
-      status: 'active',
-      supportedApiProtocols: ['chat_completions', 'responses'],
-      inputUsdPer1M: 0.002,
-      outputUsdPer1M: 0.002,
-      cachedInputUsdPer1M: 0.0002,
-      actorSystemAccountId: access.systemAccountId
-    })
-  }
-}
-
-function codexBridgeRouteRules(targetGroupId: string): ApiKeyExplicitHybridRouteRule[] {
-  return [{
-    id: 'responses_to_chat',
-    enabled: true,
-    priority: 1,
-    sourceClientProfile: 'codex',
-    sourceModel: responsesSourceModel,
-    sourceEndpointFamily: 'responses',
-    targetGroupId,
-    upstreamModel: responsesUpstreamModel,
-    upstreamEndpointFamily: 'chat_completions',
-    adapterMode: 'bridge'
-  }]
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: chatModel,
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
+    status: 'active',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 0.002,
+    outputUsdPer1M: 0.002,
+    cachedInputUsdPer1M: 0.0002,
+    actorSystemAccountId: access.systemAccountId
+  })
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {
@@ -291,62 +222,6 @@ function extractChatSseText(text: string): string {
     }
   }
   return parts.join('').trim()
-}
-
-function extractResponsesSseText(text: string): string {
-  let output = ''
-  for (const event of responseSseDataObjects(text)) {
-    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-      output += event.delta
-    }
-    if (!output && event.type === 'response.completed') {
-      output = outputTextFromResponsesOutput(event.response)
-    }
-  }
-  return output
-}
-
-function outputTextFromResponsesOutput(value: unknown): string {
-  if (!value || typeof value !== 'object') return ''
-  const output = Array.isArray((value as { output?: unknown }).output)
-    ? (value as { output: unknown[] }).output
-    : []
-  const parts: string[] = []
-  for (const item of output) {
-    if (!item || typeof item !== 'object') continue
-    const content = Array.isArray((item as { content?: unknown }).content)
-      ? (item as { content: unknown[] }).content
-      : []
-    for (const part of content) {
-      if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
-        parts.push((part as { text: string }).text)
-      }
-    }
-  }
-  return parts.join('')
-}
-
-function responseEventNames(text: string): string[] {
-  const names: string[] = []
-  for (const match of text.matchAll(/^event:\s*(.+)$/gm)) {
-    const name = match[1]?.trim()
-    if (name) names.push(name)
-  }
-  return names
-}
-
-function responseSseDataObjects(text: string): Array<Record<string, unknown>> {
-  const output: Array<Record<string, unknown>> = []
-  for (const match of text.matchAll(/^data:\s*(.+)$/gm)) {
-    const dataText = match[1]?.trim()
-    if (!dataText || dataText === '[DONE]') continue
-    try {
-      const data = JSON.parse(dataText) as unknown
-      if (data && typeof data === 'object' && !Array.isArray(data)) output.push(data as Record<string, unknown>)
-    } catch {
-    }
-  }
-  return output
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {

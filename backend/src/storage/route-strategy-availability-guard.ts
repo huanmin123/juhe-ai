@@ -92,6 +92,7 @@ function loadRouteStrategiesAffectedByGroupAvailabilityLoss(
       INNER JOIN route_strategies
         ON route_strategies.id = route_strategy_groups.route_strategy_id
         AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+        AND route_strategies.status = 'active'
       WHERE route_strategy_groups.group_id = ?
         ${systemAccountClause}
       ORDER BY route_strategy_groups.route_strategy_id ASC
@@ -119,6 +120,7 @@ async function loadRouteStrategiesAffectedByGroupAvailabilityLossAsync(
     INNER JOIN ${routeStrategyAvailabilityTable(client, 'route_strategies')} route_strategies
       ON route_strategies.id = route_strategy_groups.route_strategy_id
       AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+      AND route_strategies.status = 'active'
     WHERE route_strategy_groups.group_id = ?
       ${systemAccountClause}
     ORDER BY route_strategy_groups.route_strategy_id ASC

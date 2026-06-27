@@ -115,7 +115,7 @@ export const anthropicProviderDriver: ProviderDriver = {
       return [buildAnthropicUpstreamUrl(account.baseUrl, geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery(req))]
     }
     const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
-    if (account.type === 'api_key' && bridgePath) {
+    if (account.type === 'api_key' && bridgePath && shouldUseOpenAIToAnthropicBridge(req, account)) {
       return [buildAnthropicUpstreamUrl(account.baseUrl, bridgePath)]
     }
     return buildAnthropicUpstreamUrlsForAccount(account, req)

@@ -49,7 +49,7 @@ interface OpenAIUpstreamHit {
 
 interface SeededCliGateways {
   anthropicApiKey: { id: string; key: string }
-  deepseekCodexApiKey: { id: string; key: string }
+  deepseekChatOnlyApiKey: { id: string; key: string }
   glmOpencodeApiKey: { id: string; key: string }
 }
 
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
     }
 
     await assertClaudeCodeCliThroughLocalGateway(gatewayBaseUrl, seeded.anthropicApiKey.key)
-    await assertCodexCliThroughDeepSeekBridge(gatewayBaseUrl, seeded.deepseekCodexApiKey.key)
+    await assertCodexCliRejectedByDeepSeekChatOnly(gatewayBaseUrl, seeded.deepseekChatOnlyApiKey.key)
     await assertOpencodeCliThroughGlmChat(gatewayBaseUrl, seeded.glmOpencodeApiKey.key)
 
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -215,7 +215,7 @@ function seedCliGateways(input: {
   }, access)
 
   const deepseekGroup = repositories.createGroup({
-    name: '真实 CLI 本地网关 DeepSeek Codex 分组',
+    name: '真实 CLI 本地网关 DeepSeek Chat-only 分组',
     providerCode: DEEPSEEK_PROVIDER_CODE,
     providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     enabled: true
@@ -223,9 +223,8 @@ function seedCliGateways(input: {
   repositories.createAccount({
     providerCode: DEEPSEEK_PROVIDER_CODE,
     providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
-    name: '真实 CLI 本地网关 DeepSeek Codex 桥接账户',
+    name: '真实 CLI 本地网关 DeepSeek Chat-only 账户',
     type: 'api_key',
-    clientCompatibility: 'codex_responses',
     credentials: {
       api_key: 'sk-deepseek-cli-upstream',
       base_url: input.openAIUpstreamBaseUrl,
@@ -235,8 +234,8 @@ function seedCliGateways(input: {
     status: 'active',
     schedulable: true
   }, access)
-  const deepseekCodexApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: '真实 CLI 本地网关 DeepSeek Codex Key',
+  const deepseekChatOnlyApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '真实 CLI 本地网关 DeepSeek Chat-only Key',
     groupBindings: [{ groupId: deepseekGroup.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
@@ -268,13 +267,13 @@ function seedCliGateways(input: {
   }, access)
 
   assert(anthropicApiKey.key, 'Anthropic 本地 API Key 未返回明文')
-  assert(deepseekCodexApiKey.key, 'DeepSeek Codex 本地 API Key 未返回明文')
+  assert(deepseekChatOnlyApiKey.key, 'DeepSeek Chat-only 本地 API Key 未返回明文')
   assert(glmOpencodeApiKey.key, 'GLM opencode 本地 API Key 未返回明文')
   gatewayCache.clearGatewayRuntimeCache()
 
   return {
     anthropicApiKey: { id: anthropicApiKey.id, key: anthropicApiKey.key },
-    deepseekCodexApiKey: { id: deepseekCodexApiKey.id, key: deepseekCodexApiKey.key },
+    deepseekChatOnlyApiKey: { id: deepseekChatOnlyApiKey.id, key: deepseekChatOnlyApiKey.key },
     glmOpencodeApiKey: { id: glmOpencodeApiKey.id, key: glmOpencodeApiKey.key }
   }
 }
@@ -302,7 +301,7 @@ async function assertClaudeCodeCliThroughLocalGateway(gatewayBaseUrl: string, lo
   assert(upstreamMessages.every((hit) => hit.authorization === ''), 'Anthropic 上游不应收到客户端 Bearer')
 }
 
-async function assertCodexCliThroughDeepSeekBridge(gatewayBaseUrl: string, localApiKey: string): Promise<void> {
+async function assertCodexCliRejectedByDeepSeekChatOnly(gatewayBaseUrl: string, localApiKey: string): Promise<void> {
   const marker = 'CODEX_LOCAL_GATEWAY_OK'
   const beforeGatewayHits = gatewayIncomingHits.length
   const beforeUpstreamHits = openAIUpstreamHits.length
@@ -311,8 +310,7 @@ async function assertCodexCliThroughDeepSeekBridge(gatewayBaseUrl: string, local
     localApiKey,
     marker
   })
-  assert.equal(result.exitCode, 0, `Codex CLI 应成功退出：${summarizeCliFailure(result)}`)
-  assert.match(result.stdout, new RegExp(marker), `Codex CLI 输出应包含 mock marker：${sanitizeSecretText(result.stdout).slice(0, 1200)}`)
+  assert.notEqual(result.exitCode, 0, 'Codex CLI 绑定普通 DeepSeek Chat-only 路由时应被网关受控拒绝')
 
   const incoming = gatewayIncomingHits.slice(beforeGatewayHits)
   const incomingResponses = incoming.filter((hit) => hit.path.split('?', 1)[0].endsWith('/responses'))
@@ -322,9 +320,7 @@ async function assertCodexCliThroughDeepSeekBridge(gatewayBaseUrl: string, local
   assert(incomingResponses.some((hit) => hasValidCodexTurnId(hit.codexTurnMetadata)), 'Codex CLI turn metadata 应包含 turn_id')
 
   const upstream = openAIUpstreamHits.slice(beforeUpstreamHits).filter((hit) => hit.authorization === 'Bearer sk-deepseek-cli-upstream')
-  assert(upstream.some((hit) => hit.path === '/v1/chat/completions'), 'DeepSeek Codex bridge 应把 Codex /responses 转为上游 /v1/chat/completions')
-  assert(upstream.every((hit) => !hit.authorization.includes(localApiKey)), 'DeepSeek 上游不应收到本地网关 API Key')
-  assert(upstream.some((hit) => hit.bodyText.includes('"stream":true')), 'Codex bridge 上游请求应保持流式 Chat Completions')
+  assert.equal(upstream.length, 0, '普通 DeepSeek Chat-only 账户不应承接 Codex /responses 并命中上游')
 }
 
 async function assertOpencodeCliThroughGlmChat(gatewayBaseUrl: string, localApiKey: string): Promise<void> {
@@ -936,12 +932,12 @@ function assertUsageRecords(seeded: SeededCliGateways): void {
   const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 100 }).items
   const apiKeyIds = new Set([
     seeded.anthropicApiKey.id,
-    seeded.deepseekCodexApiKey.id,
+    seeded.deepseekChatOnlyApiKey.id,
     seeded.glmOpencodeApiKey.id
   ])
   const recordsByApiKey = records.filter((record) => typeof record.apiKeyId === 'string' && apiKeyIds.has(record.apiKeyId))
   assert(recordsByApiKey.some((record) => record.apiKeyId === seeded.anthropicApiKey.id && record.success === true), 'Claude Code 链路应写入成功使用记录')
-  assert(recordsByApiKey.some((record) => record.apiKeyId === seeded.deepseekCodexApiKey.id && record.success === true), 'Codex/DeepSeek 链路应写入成功使用记录')
+  assert(!recordsByApiKey.some((record) => record.apiKeyId === seeded.deepseekChatOnlyApiKey.id && record.success === true), 'Codex/DeepSeek Chat-only 链路不应写入成功使用记录')
   assert(recordsByApiKey.some((record) => record.apiKeyId === seeded.glmOpencodeApiKey.id && record.success === true), 'opencode/GLM 链路应写入成功使用记录')
 }
 

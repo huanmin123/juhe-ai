@@ -27,13 +27,13 @@ assert.equal(testPathFromRecentShape(undefined, false, 'openai_standard', ['chat
 assert.equal(testPathFromRecentShape(recentShape('/v1/responses', true), false, 'openai_standard', ['chat_json']), '/v1/chat/completions', '近期 Responses 形态不应覆盖 Chat-only 能力限制')
 assert.equal(
   testPathFromRecentShape(undefined, false, 'codex_responses', ['chat_json', 'chat_sse'], GLM_CODING_OPENAI_V1_PROFILE_ID),
-  '/v1/responses',
-  'GLM Coding Codex bridge 账户测试应从 Responses 入口进入桥接'
+  '/v1/chat/completions',
+  'GLM Coding Chat-only 账户测试不应伪装成 Responses 桥接'
 )
 assert.equal(
   testPathFromRecentShape(undefined, false, 'codex_responses', ['chat_json', 'chat_sse'], DEEPSEEK_OPENAI_V1_PROFILE_ID),
-  '/v1/responses',
-  'DeepSeek Codex bridge 账户测试应从 Responses 入口进入桥接'
+  '/v1/chat/completions',
+  'DeepSeek Chat-only 账户测试不应伪装成 Responses 桥接'
 )
 
 const chatRequest = createOpenAITestRequest({
@@ -104,7 +104,7 @@ const chatOnlyRequest = createOpenAITestRequest({
 assert.equal(chatOnlyRequest.path, '/v1/chat/completions', 'Chat JSON-only 账户应构造 chat completions 测试路径')
 assert.equal(chatOnlyRequest.body.stream, false, 'Chat JSON-only 账户测试必须使用非流式 JSON')
 
-const glmCodexBridgeRequest = createOpenAITestRequest({
+const glmChatOnlyCodexProfileRequest = createOpenAITestRequest({
   fallbackModel: 'glm-5.2',
   prompt: 'ok',
   isOAuth: false,
@@ -112,10 +112,10 @@ const glmCodexBridgeRequest = createOpenAITestRequest({
   providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
   supportedEndpointModes: ['chat_json', 'chat_sse']
 })
-assert.equal(glmCodexBridgeRequest.path, '/v1/responses', 'GLM Coding Codex bridge 测试请求必须走 Responses 下游路径')
-assert.equal(glmCodexBridgeRequest.body.stream, true, 'GLM Coding Codex bridge 测试请求必须使用 Responses SSE')
+assert.equal(glmChatOnlyCodexProfileRequest.path, '/v1/chat/completions', 'GLM Coding Chat-only 测试请求必须走真实 Chat 下游路径')
+assert.equal(glmChatOnlyCodexProfileRequest.body.stream, true, 'GLM Coding Chat-only 测试请求优先使用 Chat SSE')
 
-const deepSeekCodexBridgeRequest = createOpenAITestRequest({
+const deepSeekChatOnlyCodexProfileRequest = createOpenAITestRequest({
   fallbackModel: 'deepseek-v4-flash',
   prompt: 'ok',
   isOAuth: false,
@@ -123,8 +123,8 @@ const deepSeekCodexBridgeRequest = createOpenAITestRequest({
   providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
   supportedEndpointModes: ['chat_json', 'chat_sse']
 })
-assert.equal(deepSeekCodexBridgeRequest.path, '/v1/responses', 'DeepSeek Codex bridge 测试请求必须走 Responses 下游路径')
-assert.equal(deepSeekCodexBridgeRequest.body.stream, true, 'DeepSeek Codex bridge 测试请求必须使用 Responses SSE')
+assert.equal(deepSeekChatOnlyCodexProfileRequest.path, '/v1/chat/completions', 'DeepSeek Chat-only 测试请求必须走真实 Chat 下游路径')
+assert.equal(deepSeekChatOnlyCodexProfileRequest.body.stream, true, 'DeepSeek Chat-only 测试请求优先使用 Chat SSE')
 
 const requestSource = readFileSync(resolve('src/modules/accounts/account-test-request.ts'), 'utf8')
 assert.doesNotMatch(requestSource, /handleOpenAIGatewayRequest|findAccountForTest|flushGatewayAccountSideEffects/, '测试请求 payload 模块不能依赖真实网关编排或账号解析')

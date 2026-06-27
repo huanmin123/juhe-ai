@@ -139,6 +139,7 @@ try {
 
   const usedStrategy = repositories.findRouteStrategySummary(failoverStrategy.id, access)
   assert.equal(usedStrategy?.apiKeyCount, 1, '策略路由应统计已绑定的 API Key 数量')
+  assertRouteStrategyGroupLookupUsesGroupLeadingIndex(primaryGroup.id)
   assert.throws(() => {
     repositories.deleteRouteStrategy(failoverStrategy.id, access)
   }, /策略路由已被 1 个 API Key 使用/, '已被 API Key 使用的策略路由不能删除')
@@ -220,4 +221,30 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertRouteStrategyGroupLookupUsesGroupLeadingIndex(groupId: string): void {
+  const rows = databaseModule.getBusinessDatabase()
+    .prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT
+        route_strategy_groups.route_strategy_id AS id,
+        route_strategies.name,
+        route_strategies.system_account_id AS systemAccountId,
+        route_strategy_groups.status AS targetBindingStatus
+      FROM route_strategy_groups
+      INNER JOIN route_strategies
+        ON route_strategies.id = route_strategy_groups.route_strategy_id
+        AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+      WHERE route_strategy_groups.group_id = ?
+      ORDER BY route_strategy_groups.route_strategy_id ASC
+      LIMIT ?
+    `)
+    .all(groupId, 101) as Array<{ detail?: string }>
+  const details = rows.map((row) => String(row.detail ?? '')).join('\n')
+  assert.match(
+    details,
+    /idx_route_strategy_groups_group_strategy/,
+    `按分组反查策略路由必须命中 group_id 前导索引，避免分组删除/停用 guard 扫描绑定表：${details}`
+  )
 }

@@ -13,7 +13,6 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -113,7 +112,6 @@ try {
     const codingApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'GLM Coding 真实上游 E2E Key',
       groupBindings: [{ groupId: codingGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: codexBridgeRouteRules(codingGroup.id, realModels),
       status: 'active'
     }, access)
     assert(codingApiKey.key, '回归 API Key 未返回明文密钥')
@@ -127,11 +125,11 @@ try {
       results.push({
         model,
         chat: await runRealScenario(() => assertRealGlmChatModel(gatewayBaseUrl, generalApiKey.key, model)),
-        codexBridge: await runRealScenario(() => assertRealGlmCodexBridgeModel(gatewayBaseUrl, codingApiKey.key, model))
+        codingChat: await runRealScenario(() => assertRealGlmChatModel(gatewayBaseUrl, codingApiKey.key, model))
       })
     }
     assert(results.some((item) => item.chat.ok), `GLM 真实 Chat 至少需要一个模型通过，实际结果：${JSON.stringify(results, null, 2)}`)
-    assert(results.some((item) => item.codexBridge.ok), `GLM 真实 Codex bridge 至少需要一个模型通过，实际结果：${JSON.stringify(results, null, 2)}`)
+    assert(results.some((item) => item.codingChat.ok), `GLM Coding 真实 Chat 至少需要一个模型通过，实际结果：${JSON.stringify(results, null, 2)}`)
 
     console.log(JSON.stringify({
       message: 'glm real gateway e2e passed',
@@ -196,61 +194,6 @@ async function assertRealGlmChatModel(baseUrl: string, localApiKey: string, mode
   }
 }
 
-async function assertRealGlmCodexBridgeModel(baseUrl: string, localApiKey: string, model: string): Promise<Record<string, unknown>> {
-  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${localApiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream',
-      'x-codex-turn-metadata': JSON.stringify({
-        session_id: `glm-real-${model}`,
-        thread_id: `glm-real-${model}`,
-        turn_id: `glm-real-turn-${model}`
-      })
-    },
-    body: JSON.stringify({
-      model,
-      instructions: '你是连通性测试助手。',
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: '只回复两个字：通过' }]
-        }
-      ],
-      stream: true,
-      store: false,
-      max_output_tokens: 128,
-      tools: [
-        {
-          type: 'function',
-          name: 'noop_tool',
-          description: 'No-op test tool. Do not call it.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            additionalProperties: false
-          }
-        }
-      ],
-      tool_choice: 'auto',
-      parallel_tool_calls: false
-    })
-  }, 60_000)
-  const text = await response.text()
-  assert.equal(response.status, 200, `GLM 真实模型 ${model} Codex bridge 应返回 200，实际 HTTP ${response.status}: ${text.slice(0, 1000)}`)
-  assert.match(text, /event: response\.completed/, `GLM 真实模型 ${model} Codex bridge 应返回 Responses completed 事件：${text.slice(0, 1000)}`)
-  assert(!text.includes('chat.completion.chunk'), 'Codex bridge 不应向下游泄漏 Chat Completions chunk')
-  const content = outputTextFromResponsesSse(text)
-  assert(content.trim(), `GLM 真实模型 ${model} Codex bridge 返回内容为空：${text.slice(0, 1000)}`)
-  return {
-    status: response.status,
-    contentSample: content.trim().slice(0, 80),
-    responseEvents: responseEventNames(text).slice(0, 12)
-  }
-}
-
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new Error(`请求 ${timeoutMs}ms 超时`)), timeoutMs)
@@ -287,21 +230,6 @@ function modelsFromEnv(value: string | undefined): string[] {
   return models
 }
 
-function codexBridgeRouteRules(targetGroupId: string, models: string[]): ApiKeyExplicitHybridRouteRule[] {
-  return models.map((model, index) => ({
-    id: `responses_to_chat_${index + 1}`,
-    enabled: true,
-    priority: index + 1,
-    sourceClientProfile: 'codex',
-    sourceModel: model,
-    sourceEndpointFamily: 'responses',
-    targetGroupId,
-    upstreamModel: model,
-    upstreamEndpointFamily: 'chat_completions',
-    adapterMode: 'bridge'
-  }))
-}
-
 function parseJsonObject(text: string): Record<string, unknown> {
   const parsed = JSON.parse(text) as unknown
   assert(parsed && typeof parsed === 'object' && !Array.isArray(parsed), `响应不是 JSON 对象：${text.slice(0, 1000)}`)
@@ -320,70 +248,9 @@ function firstChoiceText(body: Record<string, unknown>): string {
   return typeof reasoningContent === 'string' ? reasoningContent : ''
 }
 
-function outputTextFromResponsesSse(text: string): string {
-  let output = ''
-  for (const event of responseSseDataObjects(text)) {
-    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-      output += event.delta
-    }
-    if (!output && event.type === 'response.completed') {
-      output = outputTextFromResponsesOutput(event.response)
-    }
-  }
-  return output
-}
-
-function outputTextFromResponsesOutput(value: unknown): string {
-  if (!value || typeof value !== 'object') return ''
-  const output = Array.isArray((value as { output?: unknown }).output)
-    ? (value as { output: unknown[] }).output
-    : []
-  const parts: string[] = []
-  for (const item of output) {
-    if (!item || typeof item !== 'object') continue
-    const content = Array.isArray((item as { content?: unknown }).content)
-      ? (item as { content: unknown[] }).content
-      : []
-    for (const part of content) {
-      if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
-        parts.push((part as { text: string }).text)
-      }
-    }
-  }
-  return parts.join('')
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
-}
-
-function responseEventNames(text: string): string[] {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('event:'))
-    .map((line) => line.slice('event:'.length).trim())
-}
-
-function responseSseDataObjects(text: string): Record<string, unknown>[] {
-  const events: Record<string, unknown>[] = []
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    const data = block
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice('data:'.length).trimStart())
-      .join('\n')
-    if (!data || data === '[DONE]') continue
-    try {
-      const parsed = JSON.parse(data) as unknown
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        events.push(parsed as Record<string, unknown>)
-      }
-    } catch {
-      // Ignore non-JSON diagnostic fragments in real upstream tests.
-    }
-  }
-  return events
 }
 
 function listen(server: http.Server): Promise<void> {

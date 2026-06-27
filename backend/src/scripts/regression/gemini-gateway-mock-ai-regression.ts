@@ -571,9 +571,9 @@ function runtimeMappingsFromExplicitRules(rules: Array<ReturnType<typeof explici
     upstreamModel: rule.upstreamModel,
     upstreamEndpointFamily: rule.upstreamEndpointFamily,
     enabled: true,
-    runtimeSource: 'explicit_hybrid_route' as const,
+    runtimeSource: 'explicit_hybrid_route',
     runtimeRouteRuleId: rule.id
-  }))
+  })) as unknown as import('../../domain/types.js').AccountModelMapping[]
 }
 
 async function assertGeminiModels(baseUrl: string, localApiKey: string): Promise<void> {

@@ -57,29 +57,22 @@ try {
     name: '账户测试 Responses 当前契约分组',
     providerCode: 'gpt'
   }, access)
-  const openAICompatibleGroup = repositories.createGroup({
-    name: 'OpenAI 兼容 Codex 默认能力分组',
-    providerCode: 'openai'
-  }, access)
-  const openAICompatibleCodexAccount = repositories.createAccount({
-    providerCode: 'openai',
-    name: '测试 OpenAI 兼容 Codex 默认能力账户',
-    type: 'api_key',
-    groupId: openAICompatibleGroup.id,
-    clientCompatibility: 'codex_responses',
-    credentials: { api_key: 'sk-openai-compatible-codex-default-modes', base_url: mockBaseUrl }
-  }, access)
-  assert.deepEqual(
-    openAICompatibleCodexAccount.credentials.supported_endpoint_modes,
-    ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-    '通用 OpenAI 兼容账户选择 Codex Responses 时，省略 supported_endpoint_modes 也应默认包含 Responses SSE'
+  assert.throws(
+    () => repositories.createAccount({
+      providerCode: 'openai',
+      name: '测试 OpenAI 兼容账户不接收客户端画像',
+      type: 'api_key',
+      clientCompatibility: 'codex_responses',
+      credentials: { api_key: 'sk-openai-compatible-codex-default-modes', base_url: mockBaseUrl }
+    }, access),
+    /账户创建参数包含未知字段：clientCompatibility/,
+    '账户创建请求不应接收客户端画像字段'
   )
   const oauthAccount = repositories.createAccount({
     providerCode: 'gpt',
     name: '测试 OAuth 固定 Codex 账户',
     type: 'oauth',
     groupId: group.id,
-    clientCompatibility: 'openai_standard',
     credentials: {
       base_url: 'https://chatgpt.com/backend-api/codex',
       access_token: 'oauth-access-token',
@@ -88,9 +81,14 @@ try {
     }
   }, access)
   assert.equal(oauthAccount.clientCompatibility, 'codex_responses', 'OpenAI OAuth 账户创建时应固定 Codex Responses 兼容')
-  const updatedOAuthAccount = repositories.updateAccount(oauthAccount.id, {
-    clientCompatibility: 'openai_standard'
-  }, access)
+  assert.throws(
+    () => repositories.updateAccount(oauthAccount.id, {
+      clientCompatibility: 'openai_standard'
+    }, access),
+    /账户更新参数包含未知字段：clientCompatibility/,
+    '账户更新请求不应接收客户端画像字段'
+  )
+  const updatedOAuthAccount = repositories.findAccountSummary(oauthAccount.id, access)
   assert.equal(updatedOAuthAccount?.clientCompatibility, 'codex_responses', 'OpenAI OAuth 账户更新时不应被切回 OpenAI 标准兼容')
   const oauthTestTask = createAccountTestTask({
     account: updatedOAuthAccount!,
@@ -150,7 +148,7 @@ try {
   assert.equal(defaultModelTested.model, 'gpt-5.5', '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
   assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.5', '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
 
-  console.log('账户测试 Responses 当前契约回归通过：API Key 测试不发送 max_output_tokens')
+  console.log('账户测试 Responses 当前契约回归通过：客户端画像内部推导，API Key 测试不发送 max_output_tokens')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)

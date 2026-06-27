@@ -50,7 +50,6 @@ import {
 import {
   buildCodexResponsesChatBridgeBody,
   codexResponsesChatBridgeRequiredEndpointMode,
-  isCodexResponsesChatBridgeRequest,
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
@@ -127,7 +126,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
         }, signal)
       }
     }
-    if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping)) {
+    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
       return {
@@ -166,7 +165,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
     })
     return transformCodexResponsesChatBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
       defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
-      enabled: shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping),
+      enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       finishReasonFailures: {
         insufficient_system_resource: {
@@ -207,7 +206,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
         clientCompatibility: account.clientCompatibility
       })
     }
-    if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, context?.requestClientCompatibility, modelMapping)) {
+    if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
         mode: codexResponsesChatBridgeRequiredEndpointMode(),
         supportedEndpointModes: account.supportedEndpointModes,
@@ -243,10 +242,6 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
   if (modelMapping && (isOpenAIResponsesToChatCompletionsModelMapping(modelMapping) || isAnthropicMessagesToChatCompletionsModelMapping(modelMapping) || isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping))) {
     return [buildUpstreamUrl(account.baseUrl, openAIModelMappedUpstreamPathAndQuery(req, modelMapping))]
   }
-  if (shouldUseDeepSeekCodexResponsesChatBridge(req, account, 'codex_responses', modelMapping)) {
-    const { query } = splitPathAndQuery(req.originalUrl || req.path || '')
-    return [buildUpstreamUrl(account.baseUrl, `/chat/completions${query}`)]
-  }
   const { path, query } = splitPathAndQuery(req.originalUrl)
   const requestPath = path.startsWith('/') ? path : `/${path}`
   const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
@@ -254,20 +249,4 @@ function buildDeepSeekOpenAIChatUpstreamUrls(account: DispatchAccountSecret, req
     return []
   }
   return [buildUpstreamUrl(account.baseUrl, `${normalizedPath}${query}`)]
-}
-
-function shouldUseDeepSeekCodexResponsesChatBridge(
-  req: Request,
-  account: ProviderDriverAccount,
-  requestClientCompatibility: import('../../../../domain/types.js').ClientCompatibilityCapability | undefined,
-  modelMapping: ReturnType<typeof resolveOpenAIRequestModelMapping>
-): boolean {
-  if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
-    return true
-  }
-  return account.clientCompatibility === 'codex_responses'
-    && isCodexResponsesChatBridgeRequest(req, {
-      enabled: true,
-      requestClientCompatibility
-    })
 }

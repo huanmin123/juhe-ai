@@ -59,7 +59,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
         diagnostics,
         sessionId: testSessionId,
         model: testOptions.model,
-        clientCompatibility: testOptions.clientCompatibility ?? draftAccount?.clientCompatibility,
+        clientCompatibility: draftAccount?.clientCompatibility,
         draftAccount
       })
       if (!dispatchAccountTestTasks([task.id])) {

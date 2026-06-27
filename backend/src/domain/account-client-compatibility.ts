@@ -4,9 +4,6 @@ import {
   type ClientCompatibilityCapability
 } from './types.js'
 import {
-  DEEPSEEK_OPENAI_V1_PROFILE_ID,
-  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
-  GLM_CODING_OPENAI_V1_PROFILE_ID,
   isAnthropicProtocolProfile,
   isGptVendorCode,
   isOpenAIProtocolProfile
@@ -48,7 +45,7 @@ export function normalizeOpenAIAccountClientCompatibility(
     }
     return normalizeAccountClientCompatibility(value, 'codex_responses')
   }
-  return normalizeAccountClientCompatibility(value, fallback)
+  return 'openai_standard'
 }
 
 export function deriveOpenAIAccountClientCompatibility(
@@ -68,12 +65,10 @@ export function deriveOpenAIAccountClientCompatibility(
   if (isGptVendorCode(providerCode) && accountType === 'oauth') {
     return 'codex_responses'
   }
-  const profileId = protocolProfile?.providerProtocolProfileId ?? protocolProfile?.id
-  return profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
-    || profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
-    || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
-    ? 'codex_responses'
-    : 'openai_standard'
+  if (isGptVendorCode(providerCode) && accountType === 'api_key') {
+    return 'codex_responses'
+  }
+  return 'openai_standard'
 }
 
 export function deriveAccountSupportedClientCompatibilities(

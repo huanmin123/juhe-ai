@@ -39,7 +39,7 @@ OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用
 
 共同启用条件：
 
-- 下游请求侧客户端画像识别为 `codex_responses`，并且本地 API Key 的显式混合路由把 `responses -> chat_completions` 指向对应 Chat-only 上游分组；账号自身不再通过 `client_compatibility` 开关承接跨协议桥接。
+- 下游请求侧客户端画像识别为 `codex_responses`，并且命中混合供应商账户的 `responses -> chat_completions` 配置；普通账号自身不再通过 `client_compatibility` 开关或 API Key 字段承接跨协议桥接。
 - 下游请求是 `POST /responses` 或 `POST /v1/responses`。
 - 请求被客户端画像识别为 `codex_responses`。
 - 下游请求是流式请求，即 `stream=true` 且 `Accept: text/event-stream` 语义成立。
@@ -191,7 +191,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 
 - 已用 Codex 源码确认：普通 function call 应通过最终 `response.output_item.done` 的 `type=function_call` item 交给 Codex；`response.function_call_arguments.delta` 当前不被普通 function call 路径消费。
 - 已用 Codex 源码确认：Codex input / output item 覆盖 `function_call_output`、`custom_tool_call_output`、`input_image`、`reasoning`、`web_search_call`、`image_generation_call`、`compaction` 等多个形态；Chat bridge 只覆盖其中能无损或低风险映射到 Chat Completions 的子集。
-- GLM mock AI 已覆盖请求侧识别为 `codex_responses` 且 API Key 显式混合路由命中时 `/v1/responses` 改写到 `/chat/completions`、`stream_options.include_usage`、`thinking.type=disabled`、`tool_stream`、`parallel_tool_calls=false`、function tools 透传、custom tool wrapper -> `custom_tool_call` 还原、auto / 强制 `web_search` guidance 且不命中上游、历史 `reasoning` -> GLM `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、Chat reasoning/text delta 转 Responses reasoning/text delta、Chat tool_calls 转 Responses function_call/custom_tool_call item、`network_error` finish_reason 转可重试失败；同时覆盖普通 `openai_standard` 请求画像未配置显式混合路由时拒绝 bridge 且不命中上游。
+- 当前 mock AI 覆盖普通 Chat-only 账号拒绝 `/v1/responses`，旧显式混合映射不会把 Responses 改写到 Chat；共享 bridge 的请求 / 响应转换细节保留为混合供应商账户后续复用能力，包括 `stream_options.include_usage`、function tools、历史 `reasoning` / `function_call` 归一化、`previous_response_id`、`/responses/compact`、Chat reasoning/text delta 到 Responses 事件和错误事件转换。
 - DeepSeek mock AI 已覆盖 bridge 的文本、`stream_options.include_usage`、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、auto `web_search` guidance 且不命中上游、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL、usage 映射和 `insufficient_system_resource` finish_reason 转可重试失败。
 - 本地真实 CLI 回归已覆盖 Claude Code、Codex CLI、opencode -> 本地网关 -> 上游 mock 的基础链路。2026-06-24 新增 Codex CLI -> 本地网关 `/v1/responses` -> DeepSeek driver -> vsllm `deepseek-v4-flash` 的真实 marker 链路，Codex 携带 `x-codex-turn-metadata`，下游模型保留为 `gpt-5.3-codex`，上游映射到 Chat Completions 后成功返回并被 Codex 消费。
 - 2026-06-24 真实 Codex CLI 工具链路验证：DeepSeek `deepseek-v4-flash` 编程任务中，Codex 成功识别 bridge 输出的 function call，并进入 `command_execution` 工具调用；最终任务失败是因为模型生成的 PowerShell 写文件命令被本地 Codex policy 拒绝，临时项目测试仍停留在 TODO。这证明协议层工具调用可被 Codex 识别，但不证明该上游模型具备稳定完成 Codex 编程任务的质量。

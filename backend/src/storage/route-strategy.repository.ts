@@ -19,13 +19,12 @@ import type {
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, buildSystemAccountScopeClause, buildSystemAccountWhereClause, type AccessScope } from './access-scope.js'
-import { canBindApiKeyGroup, canManageApiKeyOwner } from './api-key-access.js'
+import { canManageApiKeyOwner } from './api-key-access.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { groupOwnerAndProvider } from './resource-authorization-helpers.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { assertKnownInputKeys, hasOwnInput, normalizeNullableTextInput, normalizeOptionalRequiredTextInput, requiredTextInput } from './repository-input-normalization.js'
 
@@ -113,6 +112,7 @@ interface RouteStrategyBindableGroupRow {
   protocol_version: string
   name: string | null
   enabled: number
+  can_bind: number
 }
 
 export function listRouteStrategiesPage(access?: AccessScope, options?: RouteStrategyListOptions): RouteStrategyListResult {
@@ -227,7 +227,7 @@ export function createRouteStrategy(input: Record<string, unknown>, access?: Acc
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
   const now = nowIso()
   const mode = normalizeRouteStrategyMode(input.mode)
-  const bindings = normalizeRouteStrategyGroupBindings(routeStrategyGroupBindingInputsFromRequest(input), systemAccountId)
+  const bindingInputs = routeStrategyGroupBindingInputsFromRequest(input)
   const config = normalizeRouteStrategyConfigForWrite(input, mode)
   const record = {
     id: newId('route_strategy'),
@@ -244,6 +244,7 @@ export function createRouteStrategy(input: Record<string, unknown>, access?: Acc
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const bindings = normalizeRouteStrategyGroupBindings(bindingInputs, systemAccountId)
     database
       .prepare(`
         INSERT INTO route_strategies (id, system_account_id, name, description, mode, status, config_json, created_at, updated_at)
@@ -271,7 +272,7 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
   const now = nowIso()
   const mode = normalizeRouteStrategyMode(input.mode)
-  const bindings = await normalizeRouteStrategyGroupBindingsAsync(routeStrategyGroupBindingInputsFromRequest(input), systemAccountId)
+  const bindingInputs = routeStrategyGroupBindingInputsFromRequest(input)
   const config = normalizeRouteStrategyConfigForWrite(input, mode)
   const record = {
     id: newId('route_strategy'),
@@ -287,6 +288,7 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
   const client = await getRouteStrategyDatabaseClient()
   try {
     await client.transaction(async (tx) => {
+      const bindings = await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, systemAccountId, tx, true)
       await assertRouteStrategyNameAvailableAsync(tx, systemAccountId, record.name)
       await tx.execute(`
         INSERT INTO ${routeStrategyTable(tx, 'route_strategies')} (id, system_account_id, name, description, mode, status, config_json, created_at, updated_at)
@@ -311,9 +313,8 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
   const current = findRouteStrategySummary(id, { systemAccountId, role: 'super_admin', systemAccountFilterId: systemAccountId })
   if (!current) return undefined
   const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
-  const bindings = hasOwnInput(input, 'groupBindings')
-    ? normalizeRouteStrategyGroupBindings(routeStrategyGroupBindingInputsFromRequest(input), systemAccountId)
-    : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
+  const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
+  const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
   const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
   const config = normalizeRouteStrategyConfigForWrite({
     hybridRoutingConfig: mode === 'hybrid_smart'
@@ -332,6 +333,9 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const bindings = bindingInputs
+      ? normalizeRouteStrategyGroupBindings(bindingInputs, systemAccountId)
+      : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
     database
       .prepare(`
         UPDATE route_strategies
@@ -362,9 +366,8 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
   const current = await findRouteStrategySummaryAsync(id, { systemAccountId: ownerSystemAccountId, role: 'user' })
   if (!current) return undefined
   const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
-  const bindings = hasOwnInput(input, 'groupBindings')
-    ? await normalizeRouteStrategyGroupBindingsAsync(routeStrategyGroupBindingInputsFromRequest(input), ownerSystemAccountId)
-    : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
+  const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
+  const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
   const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
   const config = normalizeRouteStrategyConfigForWrite({
     hybridRoutingConfig: mode === 'hybrid_smart'
@@ -382,6 +385,9 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
   const client = await getRouteStrategyDatabaseClient()
   try {
     await client.transaction(async (tx) => {
+      const bindings = bindingInputs
+        ? await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, ownerSystemAccountId, tx, true)
+        : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
       await assertRouteStrategyNameAvailableAsync(tx, ownerSystemAccountId, next.name, id)
       await tx.execute(`
         UPDATE ${routeStrategyTable(tx, 'route_strategies')}
@@ -403,14 +409,23 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
 export function deleteRouteStrategy(id: string, access?: AccessScope): boolean {
   const systemAccountId = routeStrategySystemAccountId(id)
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return false
-  const count = routeStrategyApiKeyCount(id, systemAccountId)
-  if (count > 0) {
-    throw new Error(`策略路由已被 ${count} 个 API Key 使用，请先解绑`)
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let deleted = false
+  try {
+    const count = routeStrategyApiKeyCount(id, systemAccountId)
+    if (count > 0) {
+      throw new Error(`策略路由已被 ${count} 个 API Key 使用，请先解绑`)
+    }
+    const result = database
+      .prepare('DELETE FROM route_strategies WHERE id = ? AND system_account_id = ?')
+      .run(id, systemAccountId)
+    deleted = Number(result.changes ?? 0) > 0
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
   }
-  const result = getBusinessDatabase()
-    .prepare('DELETE FROM route_strategies WHERE id = ? AND system_account_id = ?')
-    .run(id, systemAccountId)
-  const deleted = Number(result.changes ?? 0) > 0
   if (deleted) notifyGatewayRuntimeCacheInvalidation('route_strategy_deleted')
   return deleted
 }
@@ -419,15 +434,19 @@ export async function deleteRouteStrategyAsync(id: string, access?: AccessScope)
   const systemAccountId = await routeStrategySystemAccountIdAsync(id)
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return false
   const client = await getRouteStrategyDatabaseClient()
-  const count = await routeStrategyApiKeyCountAsync(client, id, systemAccountId)
-  if (count > 0) {
-    throw new Error(`策略路由已被 ${count} 个 API Key 使用，请先解绑`)
-  }
-  const result = await client.execute(`
-    DELETE FROM ${routeStrategyTable(client, 'route_strategies')}
-    WHERE id = ? AND system_account_id = ?
-  `, [id, systemAccountId])
-  const deleted = Number(result.changes ?? 0) > 0
+  let deleted = false
+  await client.transaction(async (tx) => {
+    await lockRouteStrategyMutationRowAsync(tx, id, systemAccountId)
+    const count = await routeStrategyApiKeyCountAsync(tx, id, systemAccountId)
+    if (count > 0) {
+      throw new Error(`策略路由已被 ${count} 个 API Key 使用，请先解绑`)
+    }
+    const result = await tx.execute(`
+      DELETE FROM ${routeStrategyTable(tx, 'route_strategies')}
+      WHERE id = ? AND system_account_id = ?
+    `, [id, systemAccountId])
+    deleted = Number(result.changes ?? 0) > 0
+  })
   if (deleted) notifyGatewayRuntimeCacheInvalidation('route_strategy_deleted')
   return deleted
 }
@@ -451,14 +470,15 @@ export function assertRouteStrategySelectableForApiKey(systemAccountId: string, 
   return id
 }
 
-export async function assertRouteStrategySelectableForApiKeyAsync(systemAccountId: string, routeStrategyId: unknown): Promise<string> {
+export async function assertRouteStrategySelectableForApiKeyAsync(systemAccountId: string, routeStrategyId: unknown, client?: DatabaseClient, lockRow = false): Promise<string> {
   const id = normalizeRouteStrategyIdInput(routeStrategyId)
-  const client = await getRouteStrategyDatabaseClient()
-  const row = await client.one<{ id?: string; status?: string }>(`
+  const db = client ?? await getRouteStrategyDatabaseClient()
+  const lockClause = lockRow && db.driver === 'postgres' ? ' FOR UPDATE' : ''
+  const row = await db.one<{ id?: string; status?: string }>(`
     SELECT id, status
-    FROM ${routeStrategyTable(client, 'route_strategies')}
+    FROM ${routeStrategyTable(db, 'route_strategies')}
     WHERE id = ? AND system_account_id = ?
-    LIMIT 1
+    LIMIT 1${lockClause}
   `, [id, systemAccountId])
   if (!row?.id) {
     throw new Error('API Key 绑定的策略路由不存在或不属于当前用户')
@@ -591,7 +611,7 @@ function normalizeRouteStrategyGroupBindings(
   const result: RouteStrategyGroupBindingWrite[] = []
   for (const binding of normalized) {
     const group = groups.get(binding.groupId)
-    const canBindNow = group ? canBindApiKeyGroup(binding.groupId, systemAccountId) : false
+    const canBindNow = group ? Number(group.can_bind) === 1 : false
     if (!group || !canBindNow) {
       throw new Error(ROUTE_STRATEGY_GROUP_BOUNDARY_ERROR)
     }
@@ -605,14 +625,16 @@ function normalizeRouteStrategyGroupBindings(
 
 async function normalizeRouteStrategyGroupBindingsAsync(
   inputs: RouteStrategyGroupBindingInput[],
-  systemAccountId: string
+  systemAccountId: string,
+  client?: DatabaseClient,
+  lockRows = false
 ): Promise<RouteStrategyGroupBindingWrite[]> {
   const normalized = normalizeRouteStrategyGroupBindingBasics(inputs)
-  const groups = await loadRouteStrategyBindableGroupsAsync(normalized.map((binding) => binding.groupId), systemAccountId)
+  const groups = await loadRouteStrategyBindableGroupsAsync(normalized.map((binding) => binding.groupId), systemAccountId, client, lockRows)
   const result: RouteStrategyGroupBindingWrite[] = []
   for (const binding of normalized) {
     const group = groups.get(binding.groupId)
-    const canBindNow = group ? await canBindRouteStrategyGroupAsync(binding.groupId, systemAccountId) : false
+    const canBindNow = group ? Number(group.can_bind) === 1 : false
     if (!group || !canBindNow) {
       throw new Error(ROUTE_STRATEGY_GROUP_BOUNDARY_ERROR)
     }
@@ -713,7 +735,7 @@ function routeStrategyGroupBindingWritesFromSummary(bindings: ApiKeyGroupBinding
 }
 
 function loadRouteStrategyBindableGroups(groupIds: string[], systemAccountId: string): Map<string, RouteStrategyBindableGroupRow> {
-  const ids = [...new Set(groupIds.filter(Boolean))]
+  const ids = [...new Set(groupIds.filter(Boolean))].sort((left, right) => left.localeCompare(right))
   const result = new Map<string, RouteStrategyBindableGroupRow>()
   if (!ids.length) return result
   const database = getBusinessDatabase()
@@ -729,6 +751,11 @@ function loadRouteStrategyBindableGroups(groupIds: string[], systemAccountId: st
           groups.protocol_code,
           groups.protocol_version,
           groups.name,
+          CASE
+            WHEN groups.system_account_id = ? THEN 1
+            WHEN group_authorization.id IS NOT NULL THEN 1
+            ELSE 0
+          END AS can_bind,
           CASE
             WHEN groups.system_account_id = ? THEN groups.enabled
             WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
@@ -747,20 +774,21 @@ function loadRouteStrategyBindableGroups(groupIds: string[], systemAccountId: st
           AND group_authorization_settings.group_id = groups.id
         WHERE groups.id IN (${sqlPlaceholders(chunk.length)})
       `)
-      .all(systemAccountId, systemAccountId, now, systemAccountId, ...chunk) as unknown as RouteStrategyBindableGroupRow[]
+      .all(systemAccountId, systemAccountId, systemAccountId, now, systemAccountId, ...chunk) as unknown as RouteStrategyBindableGroupRow[]
     for (const row of rows) result.set(row.id, row)
   }
   return result
 }
 
-async function loadRouteStrategyBindableGroupsAsync(groupIds: string[], systemAccountId: string): Promise<Map<string, RouteStrategyBindableGroupRow>> {
-  const ids = [...new Set(groupIds.filter(Boolean))]
+async function loadRouteStrategyBindableGroupsAsync(groupIds: string[], systemAccountId: string, client?: DatabaseClient, lockRows = false): Promise<Map<string, RouteStrategyBindableGroupRow>> {
+  const ids = [...new Set(groupIds.filter(Boolean))].sort((left, right) => left.localeCompare(right))
   const result = new Map<string, RouteStrategyBindableGroupRow>()
   if (!ids.length) return result
-  const client = await getRouteStrategyDatabaseClient()
+  const db = client ?? await getRouteStrategyDatabaseClient()
   const now = nowIso()
   for (const chunk of chunkValues(ids, 500)) {
-    const rows = await client.query<RouteStrategyBindableGroupRow>(`
+    const lockClause = lockRows && db.driver === 'postgres' ? ' FOR UPDATE OF groups' : ''
+    const rows = await db.query<RouteStrategyBindableGroupRow>(`
       SELECT
         groups.id,
         groups.system_account_id,
@@ -770,68 +798,31 @@ async function loadRouteStrategyBindableGroupsAsync(groupIds: string[], systemAc
         groups.protocol_version,
         groups.name,
         CASE
+          WHEN groups.system_account_id = ? THEN 1
+          WHEN group_authorization.id IS NOT NULL THEN 1
+          ELSE 0
+        END AS can_bind,
+        CASE
           WHEN groups.system_account_id = ? THEN groups.enabled
           WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
           ELSE 0
         END AS enabled
-      FROM ${routeStrategyTable(client, 'groups')} groups
-      LEFT JOIN ${routeStrategyTable(client, 'resource_authorizations')} group_authorization
+      FROM ${routeStrategyTable(db, 'groups')} groups
+      LEFT JOIN ${routeStrategyTable(db, 'resource_authorizations')} group_authorization
         ON group_authorization.resource_type = 'group'
         AND group_authorization.resource_id = groups.id
         AND group_authorization.grantee_system_account_id = ?
         AND group_authorization.status = 'active'
         AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
-      LEFT JOIN ${routeStrategyTable(client, 'group_authorization_settings')} group_authorization_settings
+      LEFT JOIN ${routeStrategyTable(db, 'group_authorization_settings')} group_authorization_settings
         ON group_authorization_settings.authorization_id = group_authorization.id
         AND group_authorization_settings.system_account_id = ?
         AND group_authorization_settings.group_id = groups.id
-      WHERE groups.id IN (${client.dialect.bindPlaceholders(chunk.length)})
-    `, [systemAccountId, systemAccountId, now, systemAccountId, ...chunk])
+      WHERE groups.id IN (${db.dialect.bindPlaceholders(chunk.length)})${lockClause}
+    `, [systemAccountId, systemAccountId, systemAccountId, now, systemAccountId, ...chunk])
     for (const row of rows) result.set(row.id, row)
   }
   return result
-}
-
-async function canBindRouteStrategyGroupAsync(groupId: string, systemAccountId: string): Promise<boolean> {
-  const group = await routeStrategyGroupOwnerAndProviderAsync(groupId)
-  if (!group) return false
-  if (group.systemAccountId === systemAccountId) return true
-  return activeGroupAuthorizationExistsAsync(groupId, systemAccountId)
-}
-
-async function routeStrategyGroupOwnerAndProviderAsync(groupId: string): Promise<ReturnType<typeof groupOwnerAndProvider>> {
-  const client = await getRouteStrategyDatabaseClient()
-  const row = await client.one<{ system_account_id?: string; provider_code?: string; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name
-    FROM ${routeStrategyTable(client, 'groups')}
-    WHERE id = ?
-  `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
-    ? {
-        systemAccountId: row.system_account_id,
-        providerCode: row.provider_code,
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
-        name: row.name
-      }
-    : undefined
-}
-
-async function activeGroupAuthorizationExistsAsync(groupId: string, granteeSystemAccountId: string): Promise<boolean> {
-  const client = await getRouteStrategyDatabaseClient()
-  const now = nowIso()
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${routeStrategyTable(client, 'resource_authorizations')}
-    WHERE resource_type = 'group'
-      AND resource_id = ?
-      AND grantee_system_account_id = ?
-      AND status = 'active'
-      AND (expires_at IS NULL OR expires_at > ?)
-    LIMIT 1
-  `, [groupId, granteeSystemAccountId, now])
-  return Boolean(row?.id)
 }
 
 function appendRouteStrategyBindingRows(result: Map<string, ApiKeyGroupBindingSummary[]>, rows: RouteStrategyGroupBindingRow[]): void {
@@ -1128,6 +1119,16 @@ async function routeStrategyApiKeyCountAsync(client: DatabaseClient, routeStrate
     WHERE route_strategy_id = ? AND system_account_id = ?
   `, [routeStrategyId, systemAccountId])
   return Number(row?.count ?? 0)
+}
+
+async function lockRouteStrategyMutationRowAsync(client: DatabaseClient, routeStrategyId: string, systemAccountId: string): Promise<void> {
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${routeStrategyTable(client, 'route_strategies')}
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1${lockClause}
+  `, [routeStrategyId, systemAccountId])
 }
 
 function assertRouteStrategyNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {

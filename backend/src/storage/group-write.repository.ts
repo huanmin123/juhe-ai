@@ -97,6 +97,8 @@ const authorizedGroupSettingsInputKeys = new Set([
   'schedulingPolicy'
 ])
 
+const maxDeletedGroupAffectedApiKeyRouteSamples = 500
+
 export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
   assertKnownInputKeys(input, groupCreateInputKeys, '分组创建参数')
   const now = nowIso()
@@ -256,16 +258,19 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   next.providerProtocolProfileId = providerProfile.id
   next.protocolCode = providerProfile.protocolCode
   next.protocolVersion = providerProfile.protocolVersion
-  assertGroupNameAvailable(systemAccountId, providerProfile.id, next.name, id)
   const database = getBusinessDatabase()
-  if (current.enabled && !next.enabled) {
-    assertRouteStrategiesCanLoseGroupAvailability(database, id, current.name, '停用分组')
-  }
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
+    assertGroupNameAvailable(systemAccountId, providerProfile.id, next.name, id)
+    if (current.enabled && !next.enabled) {
+      assertRouteStrategiesCanLoseGroupAvailability(database, id, current.name, '停用分组')
+    }
     database
       .prepare('UPDATE groups SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
       .run(next.name, next.providerCode, next.providerProtocolProfileId, next.protocolCode, next.protocolVersion, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateGroupNameError(error)) {
       throw new Error(`同一协议档案下分组名称已存在：${next.name}`)
     }
@@ -328,12 +333,13 @@ export async function updateGroupAsync(id: string, input: Record<string, unknown
   next.providerProtocolProfileId = providerProfile.id
   next.protocolCode = providerProfile.protocolCode
   next.protocolVersion = providerProfile.protocolVersion
-  await assertGroupNameAvailableAsync(await getGroupWriteDatabaseClient(), owner.systemAccountId, providerProfile.id, next.name, id)
   const client = await getGroupWriteDatabaseClient()
-  if (current.enabled && !next.enabled) {
-    await assertRouteStrategiesCanLoseGroupAvailabilityAsync(client, id, current.name, '停用分组')
-  }
   await client.transaction(async (tx) => {
+    await lockGroupMutationRowAsync(tx, id, owner.systemAccountId)
+    await assertGroupNameAvailableAsync(tx, owner.systemAccountId, providerProfile.id, next.name, id)
+    if (current.enabled && !next.enabled) {
+      await assertRouteStrategiesCanLoseGroupAvailabilityAsync(tx, id, current.name, '停用分组')
+    }
     await tx.execute(`
       UPDATE ${groupWriteTable(tx, 'groups')}
       SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?,
@@ -512,6 +518,8 @@ export interface DeleteGroupResult {
   deleted: boolean
   affectedRouteStrategies: DeletedGroupRouteStrategyChange[]
   affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[]
+  affectedApiKeyRouteCount: number
+  affectedApiKeyRoutesTruncated: boolean
 }
 
 export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult {
@@ -521,14 +529,16 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
   }
   const owner = groupOwnerAndProvider(id)
   if (!owner || !canManageAuthorizedResourceOwner(owner.systemAccountId, access)) {
-    return { deleted: false, affectedRouteStrategies: [], affectedApiKeyRoutes: [] }
+    return emptyDeleteGroupResult()
   }
   const database = getBusinessDatabase()
   let deleted = false
-  const affectedRouteStrategies = preserveRouteStrategiesBeforeGroupDelete(database, id, current?.name)
-  const affectedApiKeyRoutes = loadDeletedGroupApiKeyRouteChanges(database, affectedRouteStrategies)
+  let affectedRouteStrategies: DeletedGroupRouteStrategyChange[] = []
+  let affectedApiKeyRouteChanges = emptyDeletedGroupApiKeyRouteChanges()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    affectedRouteStrategies = preserveRouteStrategiesBeforeGroupDelete(database, id, current?.name)
+    affectedApiKeyRouteChanges = loadDeletedGroupApiKeyRouteChanges(database, affectedRouteStrategies)
     const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
     deleted = Number(result.changes ?? 0) > 0
     commitDatabaseTransaction(database, transactionStarted)
@@ -545,7 +555,9 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
   return {
     deleted,
     affectedRouteStrategies: deleted ? affectedRouteStrategies : [],
-    affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : []
+    affectedApiKeyRoutes: deleted ? affectedApiKeyRouteChanges.items : [],
+    affectedApiKeyRouteCount: deleted ? affectedApiKeyRouteChanges.total : 0,
+    affectedApiKeyRoutesTruncated: deleted ? affectedApiKeyRouteChanges.truncated : false
   }
 }
 
@@ -556,13 +568,16 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
   }
   const owner = await groupOwnerAndProviderAsync(id)
   if (!owner || !canManageAuthorizedResourceOwner(owner.systemAccountId, access)) {
-    return { deleted: false, affectedRouteStrategies: [], affectedApiKeyRoutes: [] }
+    return emptyDeleteGroupResult()
   }
   const client = await getGroupWriteDatabaseClient()
-  const affectedRouteStrategies = await preserveRouteStrategiesBeforeGroupDeleteAsync(client, id, current?.name)
-  const affectedApiKeyRoutes = await loadDeletedGroupApiKeyRouteChangesAsync(client, affectedRouteStrategies)
   let deleted = false
+  let affectedRouteStrategies: DeletedGroupRouteStrategyChange[] = []
+  let affectedApiKeyRouteChanges = emptyDeletedGroupApiKeyRouteChanges()
   await client.transaction(async (tx) => {
+    await lockGroupMutationRowAsync(tx, id, owner.systemAccountId)
+    affectedRouteStrategies = await preserveRouteStrategiesBeforeGroupDeleteAsync(tx, id, current?.name)
+    affectedApiKeyRouteChanges = await loadDeletedGroupApiKeyRouteChangesAsync(tx, affectedRouteStrategies)
     const result = await tx.execute(`
       DELETE FROM ${groupWriteTable(tx, 'groups')}
       WHERE id = ? AND system_account_id = ?
@@ -578,7 +593,9 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
   return {
     deleted,
     affectedRouteStrategies: deleted ? affectedRouteStrategies : [],
-    affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : []
+    affectedApiKeyRoutes: deleted ? affectedApiKeyRouteChanges.items : [],
+    affectedApiKeyRouteCount: deleted ? affectedApiKeyRouteChanges.total : 0,
+    affectedApiKeyRoutesTruncated: deleted ? affectedApiKeyRouteChanges.truncated : false
   }
 }
 
@@ -598,6 +615,7 @@ function preserveRouteStrategiesBeforeGroupDelete(
       INNER JOIN route_strategies
         ON route_strategies.id = route_strategy_groups.route_strategy_id
         AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+        AND route_strategies.status = 'active'
       WHERE route_strategy_groups.group_id = ?
       ORDER BY route_strategy_groups.route_strategy_id ASC
       LIMIT ?
@@ -624,22 +642,36 @@ function preserveRouteStrategiesBeforeGroupDelete(
 function loadDeletedGroupApiKeyRouteChanges(
   database: DatabaseSync,
   routeChanges: DeletedGroupRouteStrategyChange[]
-): DeletedGroupApiKeyRouteChange[] {
+): { items: DeletedGroupApiKeyRouteChange[]; total: number; truncated: boolean } {
   const routeIds = [...new Set(routeChanges.map((change) => change.routeStrategyId).filter(Boolean))]
-  if (!routeIds.length) return []
+  if (!routeIds.length) return emptyDeletedGroupApiKeyRouteChanges()
   const changeByRouteStrategyId = new Map(routeChanges.map((change) => [change.routeStrategyId, change]))
+  const countRow = database
+    .prepare(`
+      SELECT COUNT(*) AS total
+      FROM api_keys
+      WHERE route_strategy_id IN (${sqlPlaceholders(routeIds.length)})
+    `)
+    .get(...routeIds) as { total?: number } | undefined
+  const total = Number(countRow?.total ?? 0)
   const rows = database
     .prepare(`
       SELECT id AS apiKeyId, route_strategy_id AS routeStrategyId
       FROM api_keys
       WHERE route_strategy_id IN (${sqlPlaceholders(routeIds.length)})
       ORDER BY id ASC
+      LIMIT ?
     `)
-    .all(...routeIds) as Array<{ apiKeyId: string; routeStrategyId: string }>
-  return rows.flatMap((row) => {
+    .all(...routeIds, maxDeletedGroupAffectedApiKeyRouteSamples) as Array<{ apiKeyId: string; routeStrategyId: string }>
+  const items = rows.flatMap((row) => {
     const change = changeByRouteStrategyId.get(row.routeStrategyId)
     return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
   })
+  return {
+    items,
+    total,
+    truncated: total > items.length
+  }
 }
 
 async function preserveRouteStrategiesBeforeGroupDeleteAsync(
@@ -657,6 +689,7 @@ async function preserveRouteStrategiesBeforeGroupDeleteAsync(
     INNER JOIN ${groupWriteTable(client, 'route_strategies')} route_strategies
       ON route_strategies.id = route_strategy_groups.route_strategy_id
       AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+      AND route_strategies.status = 'active'
     WHERE route_strategy_groups.group_id = ?
     ORDER BY route_strategy_groups.route_strategy_id ASC
     LIMIT ?
@@ -682,20 +715,32 @@ async function preserveRouteStrategiesBeforeGroupDeleteAsync(
 async function loadDeletedGroupApiKeyRouteChangesAsync(
   client: DatabaseClient,
   routeChanges: DeletedGroupRouteStrategyChange[]
-): Promise<DeletedGroupApiKeyRouteChange[]> {
+): Promise<{ items: DeletedGroupApiKeyRouteChange[]; total: number; truncated: boolean }> {
   const routeIds = [...new Set(routeChanges.map((change) => change.routeStrategyId).filter(Boolean))]
-  if (!routeIds.length) return []
+  if (!routeIds.length) return emptyDeletedGroupApiKeyRouteChanges()
   const changeByRouteStrategyId = new Map(routeChanges.map((change) => [change.routeStrategyId, change]))
+  const countRow = await client.one<{ total?: number | string }>(`
+    SELECT COUNT(*) AS total
+    FROM ${groupWriteTable(client, 'api_keys')}
+    WHERE route_strategy_id IN (${client.dialect.bindPlaceholders(routeIds.length)})
+  `, routeIds)
+  const total = Number(countRow?.total ?? 0)
   const rows = await client.query<{ apiKeyId: string; routeStrategyId: string }>(`
     SELECT id AS "apiKeyId", route_strategy_id AS "routeStrategyId"
     FROM ${groupWriteTable(client, 'api_keys')}
     WHERE route_strategy_id IN (${client.dialect.bindPlaceholders(routeIds.length)})
     ORDER BY id ASC
-  `, routeIds)
-  return rows.flatMap((row) => {
+    LIMIT ?
+  `, [...routeIds, maxDeletedGroupAffectedApiKeyRouteSamples])
+  const items = rows.flatMap((row) => {
     const change = changeByRouteStrategyId.get(row.routeStrategyId)
     return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
   })
+  return {
+    items,
+    total,
+    truncated: total > items.length
+  }
 }
 
 function assertGroupNameAvailable(systemAccountId: string, providerProtocolProfileId: string, name: string, excludeId?: string): void {
@@ -725,6 +770,34 @@ async function assertGroupNameAvailableAsync(client: DatabaseClient, systemAccou
   if (row?.id) {
     throw new Error(`同一协议档案下分组名称已存在：${name}`)
   }
+}
+
+function emptyDeleteGroupResult(): DeleteGroupResult {
+  return {
+    deleted: false,
+    affectedRouteStrategies: [],
+    affectedApiKeyRoutes: [],
+    affectedApiKeyRouteCount: 0,
+    affectedApiKeyRoutesTruncated: false
+  }
+}
+
+function emptyDeletedGroupApiKeyRouteChanges(): { items: DeletedGroupApiKeyRouteChange[]; total: number; truncated: boolean } {
+  return {
+    items: [],
+    total: 0,
+    truncated: false
+  }
+}
+
+async function lockGroupMutationRowAsync(client: DatabaseClient, groupId: string, systemAccountId: string): Promise<void> {
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${groupWriteTable(client, 'groups')}
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1${lockClause}
+  `, [groupId, systemAccountId])
 }
 
 function isDuplicateGroupNameError(error: unknown): boolean {

@@ -436,7 +436,7 @@ export interface AccountModelMapping {
   upstreamModel: string
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
   enabled: boolean
-  runtimeSource?: 'account' | 'explicit_hybrid_route'
+  runtimeSource?: 'account'
   runtimeRouteRuleId?: string
 }
 

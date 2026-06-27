@@ -392,7 +392,6 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       providerCode: GPT_VENDOR_CODE,
       name: 'Chat-only 账号不能配置 Responses 上游',
       type: 'api_key',
-      clientCompatibility: 'openai_standard',
       credentials: {
         api_key: 'sk-account-model-mapping-chat-only-responses-upstream',
         base_url: 'https://api.openai.com/v1',
@@ -411,7 +410,6 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       providerCode: GPT_VENDOR_CODE,
       name: 'Chat-only 账号不能配置 Chat 转 Responses',
       type: 'api_key',
-      clientCompatibility: 'openai_standard',
       credentials: {
         api_key: 'sk-account-model-mapping-chat-only-chat-to-responses',
         base_url: 'https://api.openai.com/v1',
@@ -430,7 +428,6 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       providerCode: GPT_VENDOR_CODE,
       name: '原生 Responses 账号也不能配置 Chat 转 Responses',
       type: 'api_key',
-      clientCompatibility: 'openai_standard',
       credentials: {
         api_key: 'sk-account-model-mapping-native-chat-to-responses',
         base_url: 'https://api.openai.com/v1',
@@ -449,7 +446,6 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       providerCode: GPT_VENDOR_CODE,
       name: 'Chat-only 账号不能配置 Responses 转 Chat',
       type: 'api_key',
-      clientCompatibility: 'openai_standard',
       credentials: {
         api_key: 'sk-account-model-mapping-chat-only-responses-to-chat',
         base_url: 'https://api.openai.com/v1',
@@ -468,7 +464,6 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       providerCode: GPT_VENDOR_CODE,
       name: 'Codex Chat-only 账号不能配置 Responses 转 Chat',
       type: 'api_key',
-      clientCompatibility: 'codex_responses',
       credentials: {
         api_key: 'sk-account-model-mapping-codex-chat-only-responses-to-chat',
         base_url: 'https://api.openai.com/v1',
@@ -507,7 +502,7 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
   }, anthropicMessagesSourceModel, 'messages')
   assert.equal(persistentMessagesToChat, undefined, '运行时解析器不应执行历史残留的账号级 Messages -> Chat Completions 映射')
 
-  const explicitRouteMapping = resolveOpenAIAccountModelMapping({
+  const explicitRouteAccount = {
     modelMappings: [
       {
         ...responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel),
@@ -515,7 +510,8 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
         runtimeRouteRuleId: 'rule_runtime_responses_to_chat'
       }
     ]
-  }, sourceModel, 'responses')
+  } as unknown as { modelMappings: AccountModelMapping[] }
+  const explicitRouteMapping = resolveOpenAIAccountModelMapping(explicitRouteAccount, sourceModel, 'responses')
   assert.equal(explicitRouteMapping, undefined, '运行时解析器不应继续放行旧显式混合路由标记注入的 Responses -> Chat Completions 映射')
 }
 
@@ -759,7 +755,6 @@ function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): v
         name: '账号模型映射 Chat-only 非法 Responses 上游导入预览',
         providerCode: GPT_VENDOR_CODE,
         type: 'api_key',
-        clientCompatibility: 'openai_standard',
         status: 'active',
         groupId,
         credentials: {
@@ -787,7 +782,6 @@ function assertImportPreviewRejectsUnsupportedMessagesMapping(groupId: string): 
         name: '账号模型映射非法 Messages 上游导入预览',
         providerCode: GPT_VENDOR_CODE,
         type: 'api_key',
-        clientCompatibility: 'openai_standard',
         status: 'active',
         groupId,
         credentials: {

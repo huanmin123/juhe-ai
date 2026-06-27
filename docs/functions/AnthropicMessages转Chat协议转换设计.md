@@ -2,9 +2,9 @@
 
 ## 定位
 
-本文记录 Anthropic v1 `/messages` 下游请求桥接到 OpenAI v1 `/chat/completions` 上游的长期设计。它用于 Anthropic-compatible / Claude Code 类客户端显式访问真实 Chat Completions 上游，例如 DeepSeek OpenAI-compatible、GLM OpenAI Chat、GPT API Key 或通用 OpenAI-compatible 账号。
+本文记录 Anthropic v1 `/messages` 下游请求转换为 OpenAI v1 `/chat/completions` 上游请求的协议转换 helper 和历史设计背景。当前普通 OpenAI-compatible / GPT / DeepSeek / GLM 账号不再通过 API Key 显式规则或账号模型别名承接该跨协议调度；真实跨协议调度后续统一落到混合供应商账户。
 
-该能力只通过账号模型映射显式触发，不作为自动猜测路由：
+历史设计曾通过账号模型映射或 API Key 显式规则触发，不作为当前新增实现依据：
 
 ```text
 sourceModel + sourceEndpointFamily=messages
@@ -119,14 +119,16 @@ Chat `[DONE]` 不透传给 Anthropic 客户端；它只作为上游流结束信�
 
 guidance 文本不写死具体客户端名称，只描述能力缺口和可执行下一步，便于任意 agent 消费。
 
+> 当前运行边界：普通 OpenAI-compatible / GPT / DeepSeek / GLM 账号不再通过 API Key 显式规则承接 Anthropic Messages 下游请求。本文中的转换 helper 保留为协议转换能力积木；真实跨协议调度后续应由混合供应商账户集中表达。
+
 ## 模型映射约束
 
 - `sourceEndpointFamily` 允许 `messages`。
-- `messages -> chat_completions` 只允许 OpenAI 协议档案账号。
+- 普通账号模型别名不允许 `messages -> chat_completions`；跨协议转换后续迁移到混合供应商账户。
 - `messages -> responses` 禁止。
 - `messages -> messages` 不作为账号映射保存；Anthropic 原生直连由协议档案承接。
 - `sourceModel` 为 Anthropic 协议客户端可见模型池中的模型。
-- `upstreamModel` 为当前 OpenAI 协议账号可用模型池中的模型；通用 OpenAI-compatible 账号可从 OpenAI 协议聚合模型池选择。
+- `upstreamModel` 后续由混合供应商账户的转换配置选择，不在普通 OpenAI 协议账号映射中保存。
 
 ## 验证要求
 
@@ -137,11 +139,10 @@ guidance 文本不写死具体客户端名称，只描述能力缺口和可执�
 - 工具调用：Anthropic `tools/tool_choice/tool_result` 与 Chat `tools/tool_calls/tool` 互转。
 - 图片输入：Anthropic base64 / URL image 转 Chat `image_url`。
 - error/guidance：`thinking`、`cache_control`、`top_k`、`mcp_servers`、未知 content block、非法 Chat JSON body 返回受控 guidance 或协议错误，不返回 500。
-- 路由与能力：OpenAI-compatible、DeepSeek、GLM、GPT Chat 上游在显式映射下可承接 `/v1/messages`；无映射时仍不误接。
-- 回归：既有 `responses -> chat_completions`、`chat_completions|responses -> messages` 不受影响；`chat_completions -> responses` 已由 PLAN-0070 收敛为禁止方向。
+- 路由与能力：普通 OpenAI-compatible 账号无映射时不误接 `/v1/messages`；API Key 创建入口拒绝旧 `explicitHybridRouteRules`。
+- 回归：跨协议真实调度迁移到混合供应商账户后，应新增专门混合供应商 mock / real E2E，不复用旧 API Key 显式规则。
 
 当前专项回归入口：
 
 - `pnpm --dir backend test:anthropic-openai-chat-bridge-mock`：验证 bridge helper 层的请求 / 响应 / SSE / guidance 转换。
-- `pnpm --dir backend test:anthropic-openai-chat-gateway-mock`：验证 OpenAI-compatible、GPT、DeepSeek、GLM 四类 OpenAI 协议账号通过显式映射承接 `/v1/messages`，并检查上游路径、headers、usage / audit 和 guidance。
-- `pnpm --dir backend test:anthropic-openai-chat-real`：使用真实 OpenAI-compatible 上游抽样验证 Messages JSON、Messages SSE、强制 function tool、unsupported `thinking` guidance、usage 和 audit；图片真实用例需确认上游模型支持后通过 `JUHE_REAL_ANTHROPIC_OPENAI_CHAT_RUN_IMAGE=1` 单独开启。
+- `pnpm --dir backend test:protocol-boundary-anthropic-openai`：验证普通 OpenAI-compatible 账号不会通过旧 API Key 显式规则承接 `/v1/messages`，并验证账户创建入口拒绝显式 `clientCompatibility`。

@@ -6,8 +6,7 @@ import {
 } from '../../domain/anthropic-endpoint-modes.js'
 import {
   defaultOpenAIEndpointModes,
-  openAIEndpointModeForRequestShape,
-  supportsCodexResponsesChatBridge
+  openAIEndpointModeForRequestShape
 } from '../../domain/openai-endpoint-modes.js'
 import type { RecentOpenAIRequestShape } from '../../storage/repositories.js'
 
@@ -107,13 +106,6 @@ export function testEndpointModeFromRecentShape(
       clientCompatibility
     })
   const preferredModes: AccountSupportedEndpointMode[] = []
-  if (
-    clientCompatibility === 'codex_responses'
-    && supportsCodexResponsesChatBridge({ providerProtocolProfileId })
-    && supportedModes.includes('chat_sse')
-  ) {
-    return 'responses_sse'
-  }
   if (isOAuth || clientCompatibility === 'codex_responses') {
     preferredModes.push('responses_sse')
   }

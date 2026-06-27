@@ -12,7 +12,6 @@ import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -82,12 +81,6 @@ try {
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       enabled: true
     }, access)
-    const codexBridgeGroup = repositories.createGroup({
-      name: 'DeepSeek Codex Bridge Real E2E 分组',
-      providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
-      enabled: true
-    }, access)
     const account = repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
@@ -106,23 +99,6 @@ try {
     }, access)
     assert.equal(account.providerCode, DEEPSEEK_PROVIDER_CODE)
     assert.equal(account.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID)
-    const codexBridgeAccount = repositories.createAccount({
-      providerCode: DEEPSEEK_PROVIDER_CODE,
-      providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
-      name: 'DeepSeek Codex Bridge Real E2E 账户',
-      type: 'api_key',
-      credentials: {
-        api_key: realApiKey,
-        base_url: realBaseUrl,
-        supported_endpoint_modes: ['chat_json', 'chat_sse']
-      },
-      groupId: codexBridgeGroup.id,
-      status: 'active',
-      schedulable: true,
-      concurrencyLimit: 4,
-      supportedModels: realModels
-    }, access)
-    assert.equal(codexBridgeAccount.modelMappings?.length ?? 0, 0, 'Codex bridge 账号不应保存跨协议模型映射')
 
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Real E2E Key',
@@ -130,13 +106,6 @@ try {
       status: 'active'
     }, access)
     assert(apiKey.key, '真实联调本地 API Key 未返回明文密钥')
-    const codexBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-      name: 'DeepSeek Codex Bridge Real E2E Key',
-      groupBindings: [{ groupId: codexBridgeGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: codexBridgeRouteRules(codexBridgeGroup.id, realModels),
-      status: 'active'
-    }, access)
-    assert(codexBridgeApiKey.key, '真实联调本地 Codex Bridge API Key 未返回明文密钥')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -155,20 +124,16 @@ try {
       model: string
       chatJson: RealCaseResult
       chatSse: RealCaseResult
-      codexBridge: RealCaseResult
     }> = []
     for (const model of realModels) {
       await wait(requestIntervalMs)
       const chatJson = await recordCase(`${model}:chat-json`, () => assertChatJson(baseUrl, apiKey.key, model))
       await wait(requestIntervalMs)
       const chatSse = await recordCase(`${model}:chat-sse`, () => assertChatSse(baseUrl, apiKey.key, model))
-      await wait(requestIntervalMs)
-      const codexBridge = await recordCase(`${model}:codex-bridge`, () => assertCodexBridge(baseUrl, codexBridgeApiKey.key, model))
-      results.push({ model, chatJson, chatSse, codexBridge })
+      results.push({ model, chatJson, chatSse })
     }
     assert(results.some((item) => item.chatJson.ok), `DeepSeek 真实 Chat JSON 至少需要一个模型通过或被协议守卫受控处理，实际结果：${JSON.stringify(results, null, 2)}`)
     assert(results.some((item) => item.chatSse.ok), `DeepSeek 真实 Chat SSE 至少需要一个模型通过，实际结果：${JSON.stringify(results, null, 2)}`)
-    assert(results.some((item) => item.codexBridge.ok), `DeepSeek 真实 Codex bridge 至少需要一个模型通过，实际结果：${JSON.stringify(results, null, 2)}`)
 
     console.log(JSON.stringify({
       ok: true,
@@ -255,44 +220,6 @@ async function assertChatSse(baseUrl: string, localApiKey: string, model: string
   assert.match(text, /data:\s*\[DONE\]/, `${model} Chat SSE 应收到 [DONE]`)
 }
 
-async function assertCodexBridge(baseUrl: string, localApiKey: string, model: string): Promise<void> {
-  const response = await fetchWithTimeout(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${localApiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream',
-      'x-codex-turn-metadata': JSON.stringify({
-        session_id: 'deepseek-real-e2e-session',
-        thread_id: 'deepseek-real-e2e-thread',
-        turn_id: `deepseek-real-e2e-${model}`
-      })
-    },
-    body: JSON.stringify({
-      model,
-      instructions: '只输出一个简短确认。',
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'Say CODEX.' }]
-        }
-      ],
-      stream: true,
-      store: false,
-      max_output_tokens: 64
-    })
-  })
-  const text = await response.text()
-  assert.equal(response.status, 200, `${model} DeepSeek Codex bridge 应成功，实际 HTTP ${response.status}: ${sanitizeSecretText(text)}`)
-  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/, `${model} DeepSeek Codex bridge 应返回 SSE`)
-  assert.match(text, /event: response\.created/, `${model} DeepSeek Codex bridge 应输出 response.created，实际响应：${responseSnippet(text)}`)
-  assert.match(text, /event: response\.completed/, `${model} DeepSeek Codex bridge 应输出 response.completed，实际响应：${responseSnippet(text)}`)
-  assert.equal(text.includes('chat.completion.chunk'), false, `${model} DeepSeek Codex bridge 不应泄漏 Chat Completions 原始 SSE`)
-  const output = extractResponsesSseText(text)
-  assert(output.length > 0, `${model} DeepSeek Codex bridge 应返回非空 Responses 输出，实际响应：${responseSnippet(text)}`)
-}
-
 function extractChatSseText(text: string): string {
   const parts: string[] = []
   for (const match of text.matchAll(/^data:\s*(.+)$/gm)) {
@@ -305,31 +232,6 @@ function extractChatSseText(text: string): string {
         const reasoningContent = choice.delta?.reasoning_content
         if (typeof reasoningContent === 'string') parts.push(reasoningContent)
         if (typeof content === 'string') parts.push(content)
-      }
-    } catch {
-    }
-  }
-  return parts.join('').trim()
-}
-
-function extractResponsesSseText(text: string): string {
-  const parts: string[] = []
-  for (const match of text.matchAll(/^data:\s*(.+)$/gm)) {
-    const dataText = match[1]?.trim()
-    if (!dataText || dataText === '[DONE]') continue
-    try {
-      const data = JSON.parse(dataText) as {
-        type?: string
-        delta?: string
-        text?: string
-      }
-      if (
-        data.type === 'response.output_text.delta'
-        || data.type === 'response.reasoning_summary_text.delta'
-        || data.type === 'response.reasoning_text.delta'
-      ) {
-        const value = data.delta ?? data.text
-        if (typeof value === 'string') parts.push(value)
       }
     } catch {
     }
@@ -371,21 +273,6 @@ function modelListFromEnv(): string[] {
     throw new Error('JUHE_REAL_DEEPSEEK_MODELS must contain at least one model')
   }
   return models
-}
-
-function codexBridgeRouteRules(targetGroupId: string, models: string[]): ApiKeyExplicitHybridRouteRule[] {
-  return models.map((model, index) => ({
-    id: `responses_to_chat_${index + 1}`,
-    enabled: true,
-    priority: index + 1,
-    sourceClientProfile: 'codex',
-    sourceModel: model,
-    sourceEndpointFamily: 'responses',
-    targetGroupId,
-    upstreamModel: model,
-    upstreamEndpointFamily: 'chat_completions',
-    adapterMode: 'bridge'
-  }))
 }
 
 function positiveIntegerEnv(name: string): number | undefined {

@@ -30,7 +30,6 @@ export interface AccountDraftTestAccountRequest {
   name: string
   type: string
   credentials?: Record<string, unknown>
-  clientCompatibility?: AccountClientCompatibility
   supportedModels?: string[]
   modelMappings?: unknown
   concurrencyLimit?: number
@@ -127,7 +126,7 @@ export function prepareAccountDraftTestSnapshot(input: {
     : normalizeOpenAIAccountClientCompatibility(
         accountInput.providerCode,
         accountInput.type,
-        accountInput.clientCompatibility,
+        undefined,
         'openai_standard',
         providerProfile
       )
@@ -289,7 +288,7 @@ function accountCreateActivationFingerprintSnapshot(input: {
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
     account.providerCode,
     account.type,
-    account.clientCompatibility,
+    undefined,
     'openai_standard',
     {
       providerCode: account.providerCode,
@@ -403,7 +402,6 @@ function accountDraftRequestFromCreate(account: AccountCreateDraftActivationRequ
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
     connectionType: account.connectionType,
-    clientCompatibility: account.clientCompatibility,
     name: account.name,
     type: account.type,
     credentials: account.credentials,

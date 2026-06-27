@@ -1298,7 +1298,7 @@ function assertDeepSeekCodexDispatchCapability(groupId: string, accountId: strin
         runtimeRouteRuleId: 'responses_to_deepseek_chat'
       }
     ]
-  }
+  } as unknown as typeof dispatchAccount
   assert.equal(providerDriverForAccount(bridgeDispatchAccount)?.id, 'deepseek')
   const codexResponsesRequest = {
     method: 'POST',

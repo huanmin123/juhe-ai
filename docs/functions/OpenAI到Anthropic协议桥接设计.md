@@ -1,7 +1,7 @@
 # OpenAI 到 Anthropic Messages 协议桥接设计
 
 > 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，OpenAI / Anthropic 跨协议转换落到混合供应商账户。
-> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“混合供应商账户”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
 
 ## 1. 背景
 
@@ -55,7 +55,7 @@ v1 不强制承接：
 
 - 下游协议保持下游可见形态：Chat 请求必须返回 Chat 形态；Responses 请求必须返回 Responses 形态。
 - 上游账号真实能力保持 Anthropic Messages：`supported_endpoint_modes` 仍保存 `messages_json`、`messages_sse`、`message_token_counting`，不新增伪造的 `chat_json`、`responses_sse`。
-- 桥接必须显式触发：通过 API Key 显式混合路由声明 `chat_completions/responses -> messages`，并且目标分组必须已绑定到当前 Key。
+- 桥接必须显式触发：通过混合供应商账户声明 `chat_completions/responses -> messages`，并且 API Key 绑定的策略路由能够调度到该混合账户。
 - 路由右侧仍以目标分组供应商为边界：Anthropic 官方账号右侧模型来自 Anthropic 模型目录；DeepSeek / GLM Anthropic-compatible 档案右侧模型来自各自供应商目录。
 - 混合智能路由只负责选目标模型和目标分组；目标分组能通过原生协议或本桥接承接当前下游协议时才可进入候选。
 - OpenAI 下游本地错误、上游 Anthropic 错误和流内错误都要按下游协议渲染，不能把 Anthropic error shape 直接返回给 OpenAI 客户端。
@@ -68,10 +68,10 @@ v1 不强制承接：
 
 1. 下游请求是 `POST /v1/chat/completions`、`POST /chat/completions`、`POST /v1/responses` 或 `POST /responses`。
 2. 当前 API Key 已授权的候选账号中存在 Anthropic v1 Messages 档案账号。
-3. 请求目标模型能通过 API Key 显式混合路由明确定位到目标分组：
-   - 规则声明 `sourceEndpointFamily = chat_completions|responses` 且 `upstreamEndpointFamily = messages`。
-   - `targetGroupId` 必须属于当前 API Key 的有效绑定分组。
-   - 目标分组内账号必须能按 `upstreamModel` 和 `messages_json/messages_sse` 承接请求。
+3. 请求目标模型能通过混合供应商账户明确定位到真实 Anthropic Messages 上游：
+   - 混合账户声明 `sourceEndpointFamily = chat_completions|responses` 且 `upstreamEndpointFamily = messages`。
+   - API Key 绑定的策略路由必须能调度到包含该混合账户的分组。
+   - 该混合账户必须能按 `upstreamModel` 和 `messages_json/messages_sse` 承接请求。
 4. 账户 endpoint mode 满足传输要求：
    - 下游非流式 JSON 要求上游 `messages_json`。
    - 下游 SSE 要求上游 `messages_sse`。
@@ -79,8 +79,8 @@ v1 不强制承接：
 
 不允许的触发方式：
 
-- 不允许仅凭客户端画像或 API Key 默认画像自动把任意 Anthropic 账号加入 OpenAI 请求候选；必须配置 API Key 显式混合路由规则。
-- 不允许 API Key 未绑定 Anthropic 目标分组时通过桥接越权访问该账号。
+- 不允许仅凭客户端画像或 API Key 默认画像自动把任意 Anthropic 账号加入 OpenAI 请求候选；必须配置混合供应商账户。
+- 不允许 API Key 绑定的策略路由无法调度到目标混合供应商账户时，通过桥接越权访问该账号。
 - 不允许模型无法唯一定位时猜测 Anthropic 账号。
 - 不允许把 Anthropic native `/v1/messages` 请求反向包装成 OpenAI Chat / Responses。
 
@@ -258,7 +258,7 @@ Responses SSE 不能复用 Chat SSE chunk handler。OpenAI Responses 是 typed e
 
 ## 9. 路由与显式混合规则
 
-跨协议目标通过 API Key 显式混合路由声明：
+跨协议目标通过 混合供应商账户声明：
 
 ```json
 {
@@ -319,7 +319,7 @@ Chat 入口示例：
 - 下游请求模型。
 - 实际上游模型。
 - 桥接类型：`openai_to_anthropic_messages`。
-- 是否命中 API Key 显式混合路由。
+- 是否命中 混合供应商账户。
 - 命中的路由规则 ID。
 - Responses 状态 id / compact id 的摘要引用，不能记录完整敏感 payload。
 - Anthropic `usage_semantic = anthropic`，包括 cache read、cache write、1h cache write 和 thinking tokens。

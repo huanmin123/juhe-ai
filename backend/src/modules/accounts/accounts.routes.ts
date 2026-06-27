@@ -78,7 +78,7 @@ accountsRouter.post('/test-draft', async (req, res) => {
       diagnostics: 'full',
       sessionId: testSessionId,
       model: testOptions.model,
-      clientCompatibility: testOptions.clientCompatibility,
+      clientCompatibility: preparedDraft.draftAccount.clientCompatibility,
       draftAccount: preparedDraft.draftAccount
     })
     if (!dispatchAccountTestTasks([task.id])) {

@@ -38,8 +38,8 @@ assert.deepEqual(
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({ providerCode: 'openai', accountType: 'api_key', clientCompatibility: 'codex_responses' }),
-  ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-  'Codex Responses 兼容能力默认必须包含 Responses API Streaming'
+  ['chat_json', 'chat_sse'],
+  '通用 OpenAI-compatible API Key 即使传入内部 Codex 画像也只能按真实 Chat 能力落库'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({
@@ -49,7 +49,7 @@ assert.deepEqual(
     clientCompatibility: 'codex_responses'
   }),
   ['chat_json', 'chat_sse'],
-  'GLM Coding Codex bridge 账号默认仍保存真实 OpenAI Chat Completions JSON/Streaming 能力'
+  'GLM Coding OpenAI 档案默认只保存真实 OpenAI Chat Completions JSON/Streaming 能力'
 )
 assert.deepEqual(
   defaultOpenAIEndpointModes({
@@ -59,7 +59,7 @@ assert.deepEqual(
     clientCompatibility: 'codex_responses'
   }),
   ['chat_json', 'chat_sse'],
-  'DeepSeek Codex bridge 账号默认仍保存真实 Chat Completion JSON/Streaming 能力'
+  'DeepSeek OpenAI 档案默认只保存真实 Chat Completion JSON/Streaming 能力'
 )
 assert.deepEqual(
   defaultAnthropicEndpointModes({
@@ -236,7 +236,7 @@ const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])
 const responsesOnly = account('responses-only', ['responses_json', 'responses_sse'])
 const jsonOnly = account('json-only', ['chat_json', 'responses_json'])
 const codexCapableApiKey = gptApiKeyAccount('gpt-api-key-codex', ['responses_json', 'responses_sse'])
-const deepSeekCodexBridgeAccount = deepSeekApiKeyAccount('deepseek-codex-bridge', ['chat_json', 'chat_sse'], 'codex_responses')
+const deepSeekChatOnlyAccount = deepSeekApiKeyAccount('deepseek-chat-only', ['chat_json', 'chat_sse'], 'codex_responses')
 
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/chat/completions', true), [chatOnly, responsesOnly, jsonOnly]).accounts.map((item) => item.id),
@@ -278,18 +278,18 @@ assert.deepEqual(
   'Codex Responses 请求只能命中具备 Codex 兼容能力的账号'
 )
 assert.deepEqual(
-  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, deepSeekCodexBridgeAccount], {
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, deepSeekChatOnlyAccount], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  ['deepseek-codex-bridge'],
-  'Codex Responses 请求应能命中 DeepSeek Chat SSE 桥接账号'
+  [],
+  'Codex Responses 请求不能命中普通 DeepSeek Chat-only 账号'
 )
 assert.deepEqual(
-  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [deepSeekCodexBridgeAccount], {
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [deepSeekChatOnlyAccount], {
     requestClientCompatibility: 'openai_standard'
   }).accounts.map((item) => item.id),
   [],
-  '普通 OpenAI Responses 请求不应命中 DeepSeek Chat SSE 桥接账号'
+  '普通 OpenAI Responses 请求不应命中 DeepSeek Chat-only 账号'
 )
 
 const accountCredentialsNormalizationSource = readFileSync(resolve('src/storage/account-credentials-normalization.ts'), 'utf8')

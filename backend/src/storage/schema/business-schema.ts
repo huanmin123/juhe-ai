@@ -885,6 +885,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique_lower ON route_strategies(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_strategy_priority ON route_strategy_groups(route_strategy_id, status, priority ASC, created_at ASC, id ASC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategy_groups_unique ON route_strategy_groups(route_strategy_id, group_id);
+    CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_group_strategy ON route_strategy_groups(group_id, route_strategy_id);
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_owner_group ON route_strategy_groups(system_account_id, group_id, route_strategy_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_schedule_status_events_api_key
       ON api_key_schedule_status_events(api_key_id, executed_at DESC);

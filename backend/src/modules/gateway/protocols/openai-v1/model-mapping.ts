@@ -65,6 +65,7 @@ export function resolveOpenAIAccountModelMapping(
     && item.sourceEndpointFamily === sourceEndpointFamily
   ))
   if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined
+  if ((mapping as { runtimeSource?: unknown }).runtimeSource === 'explicit_hybrid_route') return undefined
   if (!isOpenAIModelMappingRuntimeConversionSupported(mapping)) return undefined
   return {
     sourceModel: mapping.sourceModel,

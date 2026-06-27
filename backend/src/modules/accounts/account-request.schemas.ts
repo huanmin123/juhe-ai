@@ -61,7 +61,6 @@ export const accountDraftTestAccountSchema = z.object({
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -78,7 +77,6 @@ export const accountDraftTestAccountSchema = z.object({
 export const accountTestSchema = z.object({
   model: z.string().trim().optional(),
   prompt: z.string().trim().optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional(),
   testSessionId: z.string().trim().min(1).optional(),
   account: accountDraftTestAccountSchema.optional()
 }).strict().optional()
@@ -87,8 +85,7 @@ export const accountDraftTestSchema = z.object({
   account: accountDraftTestAccountSchema,
   model: z.string().trim().optional(),
   prompt: z.string().trim().optional(),
-  testSessionId: z.string().trim().min(1).optional(),
-  clientCompatibility: z.enum(['openai_standard', 'codex_responses']).optional()
+  testSessionId: z.string().trim().min(1).optional()
 }).strict()
 
 export const accountGroupSchema = z.object({

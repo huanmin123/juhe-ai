@@ -8,6 +8,9 @@ const usageRangeWindowsSource = source('src/storage/usage-range-windows.reposito
 const apiKeyScheduleSyncSource = source('src/storage/api-key-schedule-status-sync.repository.ts')
 const accountScheduleSyncSource = source('src/storage/account-availability-schedule-status-sync.repository.ts')
 const businessSchemaSource = source('src/storage/schema/business-schema.ts')
+const routeStrategyAvailabilityGuardSource = source('src/storage/route-strategy-availability-guard.ts')
+const groupWriteRepositorySource = source('src/storage/group-write.repository.ts')
+const routeStrategyRepositorySource = source('src/storage/route-strategy.repository.ts')
 const publicApiLogCaptureSource = source('src/modules/public-api-logs/public-api-log-capture.middleware.ts')
 const runtimeLogsSource = source('src/storage/runtime-logs.repository.ts')
 const rebuildUsageStatsSource = source('src/scripts/maintenance/rebuild-usage-stats.ts')
@@ -43,6 +46,67 @@ assert.match(
   businessSchemaSource,
   /availability_schedule_next_check_at TEXT[\s\S]+idx_api_keys_availability_schedule_next_check[\s\S]+ON api_keys\(availability_schedule_next_check_at ASC, id ASC\)[\s\S]+WHERE availability_schedule_json IS NOT NULL/,
   'API Key 时间计划同步必须有 next_check_at 字段和部分索引'
+)
+assert.match(
+  businessSchemaSource,
+  /idx_route_strategy_groups_group_strategy[\s\S]+ON route_strategy_groups\(group_id, route_strategy_id\)/,
+  '策略路由分组反查必须有 group_id 前导索引，避免停用/删除分组和 FK cascade 扫描 route_strategy_groups'
+)
+assert.match(
+  routeStrategyAvailabilityGuardSource,
+  /maxRouteStrategyAvailabilityLossCandidates \+ 1/,
+  '策略路由分组可用性 guard 必须限制单次受影响策略数量，避免管理写请求前置检查无界展开'
+)
+assert.match(
+  routeStrategyAvailabilityGuardSource,
+  /chunkValues\(uniqueIds,\s*500\)[\s\S]+GROUP BY route_strategy_groups\.route_strategy_id/,
+  '策略路由分组可用性 guard 必须按 routeStrategyId 分块聚合，不能对每条策略做 N+1 可用分组计数'
+)
+assert.match(
+  sourceBetween(groupWriteRepositorySource, 'export function deleteGroup', 'export async function deleteGroupAsync'),
+  /beginDatabaseTransaction\(database\)[\s\S]+preserveRouteStrategiesBeforeGroupDelete\(database, id, current\?\.name\)/,
+  '同步删除分组必须在写事务内完成策略路由可用性 guard，避免 guard 与删除之间出现并发绑定窗口'
+)
+assert.match(
+  sourceBetween(groupWriteRepositorySource, 'export async function deleteGroupAsync', 'function preserveRouteStrategiesBeforeGroupDelete'),
+  /await client\.transaction\(async \(tx\) => \{[\s\S]+await lockGroupMutationRowAsync\(tx, id, owner\.systemAccountId\)[\s\S]+await preserveRouteStrategiesBeforeGroupDeleteAsync\(tx, id, current\?\.name\)/,
+  '异步删除分组必须在事务内锁定分组行后完成策略路由可用性 guard，避免 PostgreSQL TOCTOU'
+)
+assert.match(
+  groupWriteRepositorySource,
+  /maxDeletedGroupAffectedApiKeyRouteSamples = 500[\s\S]+affectedApiKeyRouteCount[\s\S]+affectedApiKeyRoutesTruncated/s,
+  '删除分组返回的 API Key 影响明细必须有采样上限和总数标记，避免大账户一次性展开全部 API Key'
+)
+const routeStrategyBindingNormalizeSource = sourceBetween(routeStrategyRepositorySource, 'function normalizeRouteStrategyGroupBindings', 'function normalizeRouteStrategyGroupBindingBasics')
+assert.match(
+  routeStrategyBindingNormalizeSource,
+  /const groups = loadRouteStrategyBindableGroups\([\s\S]+Number\(group\.can_bind\) === 1/,
+  '同步策略路由绑定校验必须复用批量加载的 can_bind 结果，不能逐分组回查授权关系'
+)
+assert.match(
+  routeStrategyBindingNormalizeSource,
+  /const groups = await loadRouteStrategyBindableGroupsAsync\([\s\S]+Number\(group\.can_bind\) === 1/,
+  '异步策略路由绑定校验必须复用批量加载的 can_bind 结果，避免 PostgreSQL 20 个分组产生 N+1 round trip'
+)
+assert.doesNotMatch(
+  routeStrategyRepositorySource,
+  /canBindRouteStrategyGroupAsync|canBindApiKeyGroup\(binding\.groupId/,
+  '策略路由绑定校验不能保留逐分组 canBind 查询'
+)
+assert.match(
+  routeStrategyRepositorySource,
+  /sort\(\(left, right\) => left\.localeCompare\(right\)\)[\s\S]+FOR UPDATE OF groups/,
+  '异步策略路由绑定校验必须按固定分组 id 顺序锁行，降低并发绑定/停用时的死锁风险'
+)
+assert.match(
+  routeStrategyRepositorySource,
+  /normalizeRouteStrategyGroupBindingsAsync\(bindingInputs, systemAccountId, tx, true\)/,
+  '异步策略路由创建必须在事务内重新校验并锁定分组绑定'
+)
+assert.match(
+  routeStrategyRepositorySource,
+  /lockRouteStrategyMutationRowAsync\(tx, id, systemAccountId\)[\s\S]+routeStrategyApiKeyCountAsync\(tx, id, systemAccountId\)/,
+  '异步删除策略路由必须在事务内锁定策略行后统计 API Key 引用'
 )
 
 assert.match(publicApiLogCaptureSource, /function boundedSnapshotValue/, '公开接口日志快照必须使用预算式克隆')

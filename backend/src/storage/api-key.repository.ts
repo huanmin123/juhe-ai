@@ -223,8 +223,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const keySuffix = key.slice(-8)
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
   const name = normalizedApiKeyName(input.name)
-  assertApiKeyNameAvailable(systemAccountId, name)
-  const routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
+  let routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
@@ -259,6 +258,8 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    assertApiKeyNameAvailable(systemAccountId, name)
+    routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, routeStrategyId)
     const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
     database
@@ -320,7 +321,7 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
   const name = normalizedApiKeyName(input.name)
   const client = await getApiKeyDatabaseClient()
   await assertApiKeyNameAvailableAsync(client, systemAccountId, name)
-  const routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
+  let routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
@@ -354,6 +355,7 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
   }
   try {
     await client.transaction(async (tx) => {
+      routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, routeStrategyId, tx, true)
       const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
       const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
       await tx.execute(`
@@ -437,12 +439,13 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
     availabilitySchedule: nextAvailabilitySchedule
   }
-  assertApiKeyNameAvailable(systemAccountId, next.name, id)
   const database = getBusinessDatabase()
   const now = nowIso()
   const nowDate = new Date(now)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    assertApiKeyNameAvailable(systemAccountId, next.name, id)
+    nextRouteStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, nextRouteStrategyId)
     const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(next.availabilitySchedule, nowDate)
     database
@@ -531,6 +534,7 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
   }
   try {
     await client.transaction(async (tx) => {
+      nextRouteStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, nextRouteStrategyId, tx, true)
       await assertApiKeyNameAvailableAsync(tx, systemAccountId, next.name, id)
       const now = nowIso()
       const nowDate = new Date(now)
