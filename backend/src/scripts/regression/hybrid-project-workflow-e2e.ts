@@ -352,7 +352,6 @@ function createRealGroupAccount(groupName: string, accountName: string, supporte
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: accountName,
     type: 'api_key',
-    clientCompatibility: 'openai_standard',
     credentials: {
       api_key: realApiKey,
       base_url: realBaseUrl,

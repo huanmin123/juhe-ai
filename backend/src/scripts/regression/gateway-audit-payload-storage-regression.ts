@@ -415,7 +415,6 @@ function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: 
         api_key: upstreamKey,
         base_url: upstreamBaseUrl
       },
-      clientCompatibility: 'openai_standard',
       groupId: group.id,
       status: 'active',
       schedulable: true

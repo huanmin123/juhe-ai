@@ -200,7 +200,6 @@ export function createAccounts(
     status: 'active',
     groupId: groups.main.id,
     credentials: apiKeyCredentials('standard-client'),
-    clientCompatibility: 'openai_standard',
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
     modelMappings: [
       {

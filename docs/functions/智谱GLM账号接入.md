@@ -35,7 +35,7 @@ type ProviderCode = 'glm'
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 客户端画像 | 真实 endpoint mode | 跨协议转换 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `profile_glm_general_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/paas/v4/` | 通用 GLM API Key | 网关内部识别 | `chat_json`、`chat_sse` | 不启用 |
-| `profile_glm_coding_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/coding/paas/v4` | GLM Coding Plan Key | 网关内部识别 | `chat_json`、`chat_sse` | 普通账户不启用；后续由混合供应商账户承接 Responses -> Chat |
+| `profile_glm_coding_openai_v1` | `glm` | `openai/v1` | `https://open.bigmodel.cn/api/coding/paas/v4` | GLM Coding Plan Key | 网关内部识别 | `chat_json`、`chat_sse` | 普通账户不启用；由混合供应商账户承接 Responses -> Chat |
 | `profile_glm_coding_anthropic_v1` | `glm` | `anthropic/v1` | `https://open.bigmodel.cn/api/anthropic` | GLM Coding Anthropic Key | Anthropic API / Claude Code | `messages_json`、`messages_sse` | 不启用 |
 
 OpenAI Chat 两套档案的账户真实能力都只声明 `chat_completions` 端点族。Anthropic v1 档案只声明 Messages / Models，不默认写入 `message_token_counting`。不要默认写入 `responses_json` 或 `responses_sse`，除非官方后续明确提供 OpenAI Responses 兼容接口并完成真实验证。普通 GLM 账户不再启用 Codex bridge；需要把 Codex Responses 转到 GLM Coding Chat 时，必须通过后续混合供应商账户表达真实 GLM 上游和协议转换能力。
@@ -286,7 +286,7 @@ GLM 账户测试必须复用真实网关链路：
 - [x] 普通 GLM 账号模型别名不承接跨协议桥接；GLM Coding 的 Codex bridge 迁移为混合供应商账户能力。
 - [x] GLM 上游 URL 构造专门覆盖 `/api/paas/v4` 和 `/api/coding/paas/v4`，不会自动追加 `/v1`。
 - [x] GLM Anthropic v1 档案复用共享 Anthropic adapter，但保持独立供应商 / 分组 / 统计语义。
-- [x] 抽出通用 `Codex Responses -> Chat Completions` bridge；普通 GLM Coding 档案不再直接启用，后续由混合供应商账户复用。
+- [x] 抽出通用 `Codex Responses -> Chat Completions` bridge；普通 GLM Coding 档案不再直接启用，由混合供应商账户复用。
 - [x] Mock 回归覆盖普通 GLM Coding OpenAI 标准账号拒绝 Codex / Responses，避免把 Chat-only 账号误认为原生 Responses 上游。
 - [x] 账号测试、手动诊断、健康检测和冷却复测默认走 Chat Completions。
 - [x] GLM 模型目录和价格目录单独建文件，成本估算按 `providerCode=glm` 查找。

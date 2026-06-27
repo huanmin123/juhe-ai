@@ -363,7 +363,6 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
       providerCode: 'gpt',
       name: `压测网关账户-${suffix}-${index + 1}`,
       type: 'api_key',
-      clientCompatibility: 'codex_responses',
       credentials: {
         api_key: `sk-perf-gateway-${suffix}-${index + 1}`,
         base_url: upstreamBaseUrl

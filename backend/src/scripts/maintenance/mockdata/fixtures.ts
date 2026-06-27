@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountSummary, ApiKeySummary, GroupSummary } from '../../../domain/types.js'
+import type { AccountSummary, ApiKeySummary, GroupSummary } from '../../../domain/types.js'
 import type { AccessScope } from '../../../storage/access-scope.js'
 import * as repositories from '../../../storage/repositories.js'
 
@@ -11,7 +11,6 @@ export interface MockGatewayFixtureOptions {
   systemAccountId?: string
   accountCount?: number
   accountConcurrencyLimit?: number
-  clientCompatibility?: AccountClientCompatibility
   createApiKey?: boolean
 }
 
@@ -44,7 +43,6 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
       providerCode: 'gpt',
       name: `${nameScope}账户-${index + 1}-${runId}`,
       type: 'api_key',
-      clientCompatibility: options.clientCompatibility,
       credentials: {
         api_key: `sk-mockdata-${asciiToken(options.label)}-${index + 1}-${runId}`,
         base_url: options.upstreamBaseUrl

@@ -118,8 +118,7 @@ try {
       api_key: 'sk-precheck-recover',
       base_url: context.mockBaseUrl
     },
-    groupId: context.groupId,
-    clientCompatibility: 'codex_responses'
+    groupId: context.groupId
   }, { systemAccountId: admin.id, role: 'admin' })
   databaseModule.closeStorageDatabases()
   const precheckRecoverTask = await submitAccountTest(context, precheckRecoverAccount)
@@ -200,8 +199,7 @@ async function createMockAccount(context: TestContext, name: string, apiKey: str
       api_key: apiKey,
       base_url: context.mockBaseUrl
     },
-    groupId: context.groupId,
-    clientCompatibility: 'codex_responses'
+    groupId: context.groupId
   })
 }
 

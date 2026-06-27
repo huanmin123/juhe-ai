@@ -298,8 +298,7 @@ async function seedData(upstreamBaseUrl: string): Promise<SeededGateway> {
     label: '真实Worker压测',
     upstreamBaseUrl,
     accountCount: config.accountCount,
-    accountConcurrencyLimit: config.accountConcurrencyLimit,
-    clientCompatibility: 'openai_standard'
+    accountConcurrencyLimit: config.accountConcurrencyLimit
   })
   assert(fixture.apiKey, '真实 worker 压测需要生成 API Key')
   const cooldownAccountIds = fixture.accounts.slice(0, Math.min(config.cooldownAccountCount, fixture.accounts.length - 1)).map((account) => account.id)

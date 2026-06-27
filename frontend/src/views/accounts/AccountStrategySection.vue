@@ -23,11 +23,19 @@
         show-search
       />
     </a-form-item>
-    <a-form-item label="账号模型别名" tooltip="只在当前供应商和当前协议内做模型名改写；跨供应商或跨协议映射请使用混合供应商账户配置。">
+    <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
           <div class="model-mapping-side">
+            <a-input
+              v-if="isHybridAccount"
+              v-model:value="mapping.sourceModel"
+              allow-clear
+              :disabled="authorizedEditing"
+              placeholder="来源模型"
+            />
             <a-select
+              v-else
               v-model:value="mapping.sourceModel"
               allow-clear
               :disabled="authorizedEditing"
@@ -46,7 +54,15 @@
           </div>
           <SwapRightOutlined class="model-mapping-arrow" />
           <div class="model-mapping-side">
+            <a-input
+              v-if="isHybridAccount"
+              v-model:value="mapping.upstreamModel"
+              allow-clear
+              :disabled="authorizedEditing"
+              placeholder="目标模型"
+            />
             <a-select
+              v-else
               v-model:value="mapping.upstreamModel"
               allow-clear
               :disabled="authorizedEditing"
@@ -121,7 +137,8 @@ import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import {
   GEMINI_GENERATE_CONTENT_FAMILY,
-  GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  isHybridProviderCode
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
@@ -132,8 +149,7 @@ import {
 import {
   defaultAccountModelMappingUpstreamEndpointFamily,
   isAccountModelMappingProtocolAllowed,
-  isAccountModelMappingSourceEndpointFamilyAllowed,
-  isGeminiGenerateContentMappingSource
+  isAccountModelMappingSourceEndpointFamilyAllowed
 } from './accountModelMappingProtocolMatrix'
 
 const props = defineProps<{
@@ -152,6 +168,12 @@ const props = defineProps<{
 }>()
 
 const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
+const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerCode))
+const modelMappingTooltip = computed(() => (
+  isHybridAccount.value
+    ? '混合供应商账户在这里配置下游模型和协议入口到真实上游模型的映射；账号仍保存自己的真实上游凭据和 Base URL。'
+    : '只在当前供应商和当前协议内做模型名改写；跨供应商或跨协议映射请使用混合供应商账户配置。'
+))
 const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
@@ -231,17 +253,6 @@ function addModelMapping(): void {
 
 function removeModelMapping(index: number): void {
   props.form.modelMappings.splice(index, 1)
-}
-
-function activeProfileId(): string | undefined {
-  const profile = activeProfile.value
-  if (profile && 'providerProtocolProfileId' in profile && typeof profile.providerProtocolProfileId === 'string') {
-    return profile.providerProtocolProfileId
-  }
-  if (profile && 'id' in profile && typeof profile.id === 'string') {
-    return profile.id
-  }
-  return props.form.providerProtocolProfileId
 }
 
 function modelMappingProtocolContext() {
@@ -385,6 +396,7 @@ function modelMappingProtocolContext() {
 
 .form-section :deep(.ant-select),
 .form-section :deep(.ant-picker),
+.form-section :deep(.ant-input),
 .form-section :deep(.ant-input-number) {
   width: 100%;
   min-width: 0;

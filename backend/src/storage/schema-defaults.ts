@@ -13,6 +13,10 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
+  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  HYBRID_PROVIDER_CODE,
   GEMINI_COUNT_TOKENS_FAMILY,
   GEMINI_EMBED_CONTENT_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
@@ -143,6 +147,39 @@ export const DEFAULT_GLM_CODING_ANTHROPIC_GROUP = {
   description: ''
 } as const
 
+export const DEFAULT_HYBRID_OPENAI_CHAT_GROUP = {
+  id: 'grp_default_hybrid_openai_chat_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认混合供应商 OpenAI Chat 分组',
+  providerCode: HYBRID_PROVIDER_CODE,
+  providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  description: '混合供应商账户真实上游为 OpenAI Chat Completions，允许账户内配置跨协议入口映射'
+} as const
+
+export const DEFAULT_HYBRID_ANTHROPIC_MESSAGES_GROUP = {
+  id: 'grp_default_hybrid_anthropic_messages_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认混合供应商 Anthropic Messages 分组',
+  providerCode: HYBRID_PROVIDER_CODE,
+  providerProtocolProfileId: HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  description: '混合供应商账户真实上游为 Anthropic Messages，允许账户内配置跨协议入口映射'
+} as const
+
+export const DEFAULT_HYBRID_GEMINI_NATIVE_GROUP = {
+  id: 'grp_default_hybrid_gemini_native_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认混合供应商 Gemini Native 分组',
+  providerCode: HYBRID_PROVIDER_CODE,
+  providerProtocolProfileId: HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  protocolCode: GEMINI_PROTOCOL_CODE,
+  protocolVersion: GEMINI_PROTOCOL_VERSION,
+  description: '混合供应商账户真实上游为 Gemini native，允许账户内配置跨协议入口映射'
+} as const
+
 export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_OPENAI_COMPATIBLE_GROUP,
   DEFAULT_GPT_GROUP,
@@ -153,7 +190,10 @@ export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_GEMINI_OPENAI_CHAT_GROUP,
   DEFAULT_GLM_GENERAL_GROUP,
   DEFAULT_GLM_CODING_GROUP,
-  DEFAULT_GLM_CODING_ANTHROPIC_GROUP
+  DEFAULT_GLM_CODING_ANTHROPIC_GROUP,
+  DEFAULT_HYBRID_OPENAI_CHAT_GROUP,
+  DEFAULT_HYBRID_ANTHROPIC_MESSAGES_GROUP,
+  DEFAULT_HYBRID_GEMINI_NATIVE_GROUP
 ] as const
 
 export const DEFAULT_GLOBAL_SETTINGS = [
@@ -212,6 +252,15 @@ export const GLM_PROVIDER_SEED = {
   name: '智谱 GLM',
   parentCode: null,
   description: '智谱 GLM 官方供应商，支持通用 GLM API Key、GLM Coding Plan OpenAI Chat 档案，以及 GLM Coding Anthropic v1 Messages 档案',
+  enabled: 1
+} as const
+
+export const HYBRID_PROVIDER_SEED = {
+  id: HYBRID_PROVIDER_CODE,
+  code: HYBRID_PROVIDER_CODE,
+  name: '混合供应商',
+  parentCode: null,
+  description: '混合供应商账户用于创建真实上游账户，并在账户内配置允许的下游协议入口和上游模型映射；不指向其他账户、分组或 API Key',
   enabled: 1
 } as const
 
@@ -495,6 +544,51 @@ export const GLM_CODING_ANTHROPIC_V1_PROFILE_SEED = {
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY]
+} as const
+
+export const HYBRID_OPENAI_CHAT_V1_PROFILE_SEED = {
+  id: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  providerCode: HYBRID_PROVIDER_CODE,
+  name: '混合供应商 / OpenAI Chat',
+  description: '混合供应商真实上游为 OpenAI Chat Completions；跨协议入口通过账户模型映射显式声明',
+  enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.openai.com/v1',
+  defaultTestModel: 'gpt-5.5',
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'bridge'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
+} as const
+
+export const HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_SEED = {
+  id: HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  providerCode: HYBRID_PROVIDER_CODE,
+  name: '混合供应商 / Anthropic Messages',
+  description: '混合供应商真实上游为 Anthropic Messages；跨协议入口通过账户模型映射显式声明',
+  enabled: 1,
+  protocolCode: ANTHROPIC_PROTOCOL_CODE,
+  protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+  baseUrl: 'https://api.anthropic.com/v1',
+  defaultTestModel: 'claude-fable-5',
+  accountTypes: ['api_key'],
+  capabilities: ['messages', 'bridge'],
+  endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY]
+} as const
+
+export const HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_SEED = {
+  id: HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  providerCode: HYBRID_PROVIDER_CODE,
+  name: '混合供应商 / Gemini native',
+  description: '混合供应商真实上游为 Gemini native generateContent；跨协议入口通过账户模型映射显式声明',
+  enabled: 1,
+  protocolCode: GEMINI_PROTOCOL_CODE,
+  protocolVersion: GEMINI_PROTOCOL_VERSION,
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  defaultTestModel: 'gemini-3.5-flash',
+  accountTypes: ['api_key'],
+  capabilities: ['generate_content', 'stream_generate_content', 'bridge'],
+  endpointFamilies: [GEMINI_GENERATE_CONTENT_FAMILY, GEMINI_STREAM_GENERATE_CONTENT_FAMILY]
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [

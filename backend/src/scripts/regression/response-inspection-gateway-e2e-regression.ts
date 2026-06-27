@@ -9,7 +9,13 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
+import {
+  GPT_OPENAI_V1_PROFILE_ID,
+  GPT_VENDOR_CODE,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE,
+  OPENAI_PROTOCOL_CODE
+} from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -79,19 +85,21 @@ try {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    responseInspectionPolicies.createResponseInspectionPolicy({
-      name: '回归广告污染文本',
-      enabled: true,
-      priority: 1,
-      scopeType: 'provider',
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      match: {
-        outputTextIncludes: ['公益服务器压力很大', 'dc.hhhl.cc', 'UniverseFederation']
-      },
-      action: 'retry_next_account',
-      notes: 'response inspection gateway e2e regression'
-    })
+    for (const providerCode of [OPENAI_COMPATIBLE_PROVIDER_CODE, GPT_VENDOR_CODE]) {
+      responseInspectionPolicies.createResponseInspectionPolicy({
+        name: `回归广告污染文本 ${providerCode}`,
+        enabled: true,
+        priority: 1,
+        scopeType: 'provider',
+        protocolCode: OPENAI_PROTOCOL_CODE,
+        providerCode,
+        match: {
+          outputTextIncludes: ['公益服务器压力很大', 'dc.hhhl.cc', 'UniverseFederation']
+        },
+        action: 'retry_next_account',
+        notes: 'response inspection gateway e2e regression'
+      })
+    }
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -122,14 +130,16 @@ try {
 
 async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: ScenarioName): Promise<void> {
   upstreamHits.length = 0
-  const clientCompatibility = isCodexScenario(scenario) ? 'codex_responses' : 'openai_standard'
+  const accountProvider = providerForScenario(scenario)
   const group = repositories.createGroup({
     name: `响应检查 E2E ${scenario}`,
-    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     enabled: true
   }, access)
   repositories.createAccount({
-    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     name: `响应检查污染账号 ${scenario}`,
     type: 'api_key',
     credentials: {
@@ -137,14 +147,14 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
-    clientCompatibility,
     groupId: group.id,
     status: 'active',
     schedulable: true,
     priority: 0
   }, access)
   repositories.createAccount({
-    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     name: `响应检查干净账号 ${scenario}`,
     type: 'api_key',
     credentials: {
@@ -152,7 +162,6 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
-    clientCompatibility,
     groupId: group.id,
     status: 'active',
     schedulable: true,
@@ -230,13 +239,16 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
 async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const scenario: ScenarioName = 'codex_broken_gzip_sse'
   upstreamHits.length = 0
+  const accountProvider = providerForScenario(scenario)
   const group = repositories.createGroup({
     name: '响应检查 E2E codex broken gzip exhausted',
-    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     enabled: true
   }, access)
   repositories.createAccount({
-    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerCode: accountProvider.providerCode,
+    providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     name: '响应检查破损 gzip 单账号',
     type: 'api_key',
     credentials: {
@@ -244,7 +256,6 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
       base_url: upstreamBaseUrl,
       supported_endpoint_modes: ['responses_sse']
     },
-    clientCompatibility: 'codex_responses',
     groupId: group.id,
     status: 'active',
     schedulable: true,
@@ -394,6 +405,12 @@ function isCodexScenario(scenario: ScenarioName): boolean {
   return scenario === 'codex_compaction_sse'
     || scenario === 'codex_incomplete_sse'
     || scenario === 'codex_broken_gzip_sse'
+}
+
+function providerForScenario(scenario: ScenarioName): { providerCode: string; providerProtocolProfileId: string } {
+  return isCodexScenario(scenario)
+    ? { providerCode: GPT_VENDOR_CODE, providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID }
+    : { providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE, providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID }
 }
 
 function pollutedText(): string {

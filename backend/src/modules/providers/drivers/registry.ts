@@ -16,6 +16,7 @@ import type {
 import { geminiProviderDriver } from './gemini/driver.js'
 import { glmProviderDriver } from './glm/driver.js'
 import { gptProviderDriver } from './gpt/driver.js'
+import { hybridProviderDriver } from './hybrid/driver.js'
 import { openAICompatibleProviderDriver } from './openai-compatible/driver.js'
 
 const providerDrivers: readonly ProviderDriver[] = [
@@ -24,7 +25,8 @@ const providerDrivers: readonly ProviderDriver[] = [
   deepSeekProviderDriver,
   anthropicProviderDriver,
   geminiProviderDriver,
-  glmProviderDriver
+  glmProviderDriver,
+  hybridProviderDriver
 ] as const
 
 export function listProviderDrivers(): readonly ProviderDriver[] {
@@ -55,6 +57,8 @@ export function usageSemanticForProviderCode(providerCode: string | undefined): 
 
 export function usageSemanticForProfile(profile: ProviderProtocolProfileDefinition | undefined): string {
   const profileDriver = providerDriverForProfile(profile)
+  const profileSemantic = profileDriver?.usageSemanticForProfile?.(profile)
+  if (profileSemantic) return profileSemantic
   if (profileDriver) return profileDriver.usageSemantic
   return usageSemanticForProviderCode(profile?.providerCode)
 }

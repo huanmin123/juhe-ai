@@ -6,10 +6,14 @@ import {
   GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   isDeepSeekProviderCode,
   isGeminiProviderCode,
   isGlmProviderCode,
-  isGptVendorCode
+  isGptVendorCode,
+  isHybridProviderCode
 } from '@/shared/providerProtocol'
 import type { AccountClientCompatibility, AccountSummary, AccountType } from '@/types/domain'
 
@@ -66,6 +70,10 @@ export function accountTypeDescription(providerCode: string, type: AccountType, 
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key') return '适合 DeepSeek API Key；OpenAI-compatible 与 Claude Code 需要选择对应接入档案。'
   if (isGeminiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return '适合 Gemini OpenAI Chat 兼容入口；跨协议 Codex / Gemini native 调度请使用混合供应商账户配置。'
   if (isGeminiProviderCode(providerCode) && type === 'api_key') return '适合 Gemini 原生 API Key；默认启用 generateContent、streamGenerateContent 和 countTokens，不承接 Responses 或 Anthropic 协议转换。'
+  if (isHybridProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === HYBRID_OPENAI_CHAT_V1_PROFILE_ID) return '混合供应商真实上游为 OpenAI Chat Completions；可在账号模型映射里配置 Responses、Messages 或 Gemini native 到 Chat 的转换。'
+  if (isHybridProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID) return '混合供应商真实上游为 Anthropic Messages；可在账号模型映射里配置 OpenAI 或 Gemini native 到 Messages 的转换。'
+  if (isHybridProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID) return '混合供应商真实上游为 Gemini native generateContent；可在账号模型映射里配置 OpenAI 或 Anthropic 到 Gemini native 的转换。'
+  if (isHybridProviderCode(providerCode) && type === 'api_key') return '混合供应商账户保存自己的真实上游凭据和 Base URL，跨协议入口只通过账号模型映射配置。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 

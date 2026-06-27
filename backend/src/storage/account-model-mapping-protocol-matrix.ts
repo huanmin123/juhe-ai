@@ -36,6 +36,24 @@ export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[]
   { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
 ] as const
 
+export const hybridAccountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
+  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
+] as const
+
 export function assertSupportedAccountModelMappingEndpointFamilyConversion(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
@@ -96,6 +114,40 @@ export function assertAccountModelMappingProtocolAllowed(
   }
 }
 
+export function assertHybridAccountModelMappingProtocolAllowed(
+  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'>,
+  options: {
+    providerProfile: ProviderProtocolProfileDefinition
+    supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
+  }
+): void {
+  const profileId = options.providerProfile.providerProtocolProfileId ?? options.providerProfile.id
+  const openAIProfile = isOpenAIProtocolProfile(options.providerProfile)
+  const anthropicProfile = isAnthropicProtocolProfile(options.providerProfile)
+  const geminiProfile = isGeminiProtocolProfile(options.providerProfile)
+  const rule = hybridAccountModelMappingProtocolRules.find((item) => (
+    item.source === mapping.sourceEndpointFamily && item.upstream === mapping.upstreamEndpointFamily
+  ))
+  if (!rule) {
+    throw new Error(unsupportedHybridProtocolConversionMessage(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily))
+  }
+  if (rule.upstreamProfile === 'openai' && !openAIProfile) {
+    throw new Error('混合供应商当前账户真实上游不是 OpenAI Chat，不能配置目标为 Chat Completions 的映射')
+  }
+  if (rule.upstreamProfile === 'anthropic' && !anthropicProfile) {
+    throw new Error('混合供应商当前账户真实上游不是 Anthropic Messages，不能配置目标为 Messages 的映射')
+  }
+  if (rule.upstreamProfile === 'gemini' && !geminiProfile) {
+    throw new Error('混合供应商当前账户真实上游不是 Gemini native，不能配置目标为 Gemini GenerateContent 的映射')
+  }
+  if (rule.requiresNativeResponses && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
+    throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
+  }
+  if (profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) {
+    throw new Error('混合供应商不能使用 Gemini OpenAI Chat 普通档案，请选择混合供应商真实上游档案')
+  }
+}
+
 export function assertAccountModelMappingEndpointFamilyValues(mappings: AccountModelMapping[]): void {
   for (const mapping of mappings) {
     if (
@@ -115,7 +167,6 @@ export function assertAccountModelMappingEndpointFamilyValues(mappings: AccountM
     ) {
       throw new Error(`映射上游协议不支持：${mapping.upstreamEndpointFamily}`)
     }
-    assertSupportedAccountModelMappingEndpointFamilyConversion(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)
   }
 }
 
@@ -146,4 +197,11 @@ function unsupportedProtocolConversionMessage(
     return '账号模型别名不支持 Gemini GenerateContent 跨协议映射，请改用混合供应商账户'
   }
   return `账号模型别名只支持同协议映射；跨协议 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 请改用混合供应商账户`
+}
+
+function unsupportedHybridProtocolConversionMessage(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+): string {
+  return `混合供应商账户暂不支持 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 的协议转换`
 }

@@ -140,7 +140,6 @@ function createMockAccount(
     type: 'api_key',
     groupId,
     status: 'active',
-    clientCompatibility: 'codex_responses',
     credentials: {
       api_key: `sk-${label}`,
       base_url: upstreamBaseUrl

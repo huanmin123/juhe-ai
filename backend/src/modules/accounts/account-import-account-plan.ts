@@ -3,7 +3,8 @@ import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-
 import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
 import {
@@ -293,6 +294,13 @@ function assertImportEndpointModesCompatible(
       providerProtocolProfileId: account.providerProtocolProfileId,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
+    })
+    return
+  }
+  if (isGeminiProtocolProfile(account)) {
+    assertGeminiEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType
     })
   }
 }

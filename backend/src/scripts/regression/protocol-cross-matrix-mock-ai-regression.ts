@@ -13,6 +13,8 @@ import {
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_PROVIDER_CODE,
   GPT_VENDOR_CODE,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  HYBRID_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
@@ -101,6 +103,8 @@ try {
     const chatRuntime = createOpenAIChatRuntime(upstreamOrigin)
     const messagesRuntime = createAnthropicMessagesRuntime(upstreamOrigin)
     const geminiRuntime = createGeminiNativeRuntime(upstreamOrigin)
+    const hybridOpenAIChatRuntime = createHybridOpenAIChatRuntime(upstreamOrigin)
+    const hybridOpenAIChatFailoverRuntime = createHybridOpenAIChatFailoverRuntime(upstreamOrigin)
     assertExplicitHybridRulesRejected(chatRuntime.groupId)
 
     appServer = http.createServer(app)
@@ -113,6 +117,8 @@ try {
     await assertGeminiNativeToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
     await assertOpenAIChatToAnthropicMessagesRejected(baseUrl, messagesRuntime.apiKey)
     await assertOpenAIChatToGeminiNativeRejected(baseUrl, geminiRuntime.apiKey)
+    await assertAnthropicMessagesToHybridOpenAIChatPasses(baseUrl, hybridOpenAIChatRuntime.apiKey)
+    await assertHybridOpenAIChatFailoverPreservesBridge(baseUrl, hybridOpenAIChatFailoverRuntime.apiKey)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -216,6 +222,35 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
     status: 'active',
     schedulable: true
   }, access), /账号模型别名只支持同协议映射|请改用混合供应商账户/)
+
+  const hybridGroup = repositories.createGroup({
+    name: '协议交叉矩阵混合供应商 Responses 上游拒绝分组',
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    enabled: true
+  }, access)
+  assert.throws(() => repositories.createAccount({
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    name: '协议交叉矩阵混合供应商错误 Responses 上游账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cross-hybrid-invalid-responses',
+      base_url: `${upstreamOrigin}/openai-compatible`,
+      supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json']
+    },
+    groupId: hybridGroup.id,
+    supportedModels: [openAIChatUpstreamModel],
+    modelMappings: [{
+      sourceModel: openAIResponsesSourceModel,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: openAIChatUpstreamModel,
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }],
+    status: 'active',
+    schedulable: true
+  }, access), /混合供应商账户暂不支持 Responses 到 Responses/)
 }
 
 function createOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
@@ -298,6 +333,76 @@ function createGeminiNativeRuntime(upstreamOrigin: string): CrossRuntime {
     schedulable: true
   }, access)
   return createRuntime(group.id, '协议交叉矩阵 Gemini native Key')
+}
+
+function createHybridOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
+  const group = repositories.createGroup({
+    name: '协议交叉矩阵混合供应商 OpenAI Chat 分组',
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    enabled: true
+  }, access)
+  repositories.createAccount({
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    name: '协议交叉矩阵混合供应商 OpenAI Chat 账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cross-hybrid-openai-chat-upstream',
+      base_url: `${upstreamOrigin}/openai-compatible`,
+      supported_endpoint_modes: ['chat_json', 'chat_sse']
+    },
+    groupId: group.id,
+    supportedModels: [openAIChatUpstreamModel],
+    modelMappings: [{
+      sourceModel: anthropicMessagesSourceModel,
+      sourceEndpointFamily: 'messages',
+      upstreamModel: openAIChatUpstreamModel,
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }],
+    status: 'active',
+    schedulable: true
+  }, access)
+  return createRuntime(group.id, '协议交叉矩阵混合供应商 OpenAI Chat Key')
+}
+
+function createHybridOpenAIChatFailoverRuntime(upstreamOrigin: string): CrossRuntime {
+  const group = repositories.createGroup({
+    name: '协议交叉矩阵混合供应商 OpenAI Chat 切号分组',
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    enabled: true
+  }, access)
+  for (const account of [
+    { name: '协议交叉矩阵混合供应商故障账号', apiKey: 'sk-cross-hybrid-openai-chat-fail', priority: 0 },
+    { name: '协议交叉矩阵混合供应商备用账号', apiKey: 'sk-cross-hybrid-openai-chat-good', priority: 1 }
+  ]) {
+    repositories.createAccount({
+      providerCode: HYBRID_PROVIDER_CODE,
+      providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      name: account.name,
+      type: 'api_key',
+      credentials: {
+        api_key: account.apiKey,
+        base_url: `${upstreamOrigin}/openai-compatible`,
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      groupId: group.id,
+      supportedModels: [openAIChatUpstreamModel],
+      modelMappings: [{
+        sourceModel: anthropicMessagesSourceModel,
+        sourceEndpointFamily: 'messages',
+        upstreamModel: openAIChatUpstreamModel,
+        upstreamEndpointFamily: 'chat_completions',
+        enabled: true
+      }],
+      priority: account.priority,
+      status: 'active',
+      schedulable: true
+    }, access)
+  }
+  return createRuntime(group.id, '协议交叉矩阵混合供应商 OpenAI Chat 切号 Key')
 }
 
 function createRuntime(groupId: string, name: string): CrossRuntime {
@@ -389,6 +494,55 @@ async function assertOpenAIChatToGeminiNativeRejected(baseUrl: string, localApiK
   })
 }
 
+async function assertAnthropicMessagesToHybridOpenAIChatPasses(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await gatewayFetch(baseUrl, '/v1/messages', localApiKey, {
+    model: anthropicMessagesSourceModel,
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'ping' }]
+  }, { 'anthropic-version': '2023-06-01' })
+  const text = await response.text()
+  assert.equal(response.status, 200, `混合供应商 Messages -> OpenAI Chat 请求应成功，实际 HTTP ${response.status}: ${text}`)
+  const parsed = safeJson(text)
+  assert.equal(parsed.type, 'message', '混合供应商桥接响应应渲染为 Anthropic message')
+  assert.equal(Array.isArray(parsed.content), true, '混合供应商桥接响应应包含 Anthropic content 数组')
+  const firstContent = (parsed.content as Array<Record<string, unknown>>)[0]
+  assert.equal(firstContent?.type, 'text', '混合供应商桥接响应正文应为 Anthropic text block')
+  const hit = onlyNewHit(start)
+  assert.equal(hit.path, '/openai-compatible/v1/chat/completions')
+  assert.equal(hit.authorization, 'Bearer sk-cross-hybrid-openai-chat-upstream')
+  assert.equal(hit.xApiKey, '', 'OpenAI Chat 上游不应透传 Anthropic x-api-key')
+  assert.equal(hit.body.model, openAIChatUpstreamModel, '混合供应商模型映射应改写为真实上游模型')
+  assert(Array.isArray(hit.body.messages), '混合供应商应把 Anthropic Messages 请求转换为 OpenAI Chat messages')
+}
+
+async function assertHybridOpenAIChatFailoverPreservesBridge(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await gatewayFetch(baseUrl, '/v1/messages', localApiKey, {
+    model: anthropicMessagesSourceModel,
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'failover ping' }]
+  }, { 'anthropic-version': '2023-06-01' })
+  const text = await response.text()
+  assert.equal(response.status, 200, `混合供应商首个账号失败后应切号成功，实际 HTTP ${response.status}: ${text}`)
+  const hits = upstreamHits.slice(start)
+  assert(hits.length >= 2, `混合供应商切号请求应至少命中故障账号和备用账号，实际 ${hits.length} 次`)
+  assert(hits.some((hit) => hit.authorization === 'Bearer sk-cross-hybrid-openai-chat-fail'), '混合供应商切号请求应先经历故障账号失败')
+  const successfulHit = lastHitWithAuthorization(hits, 'Bearer sk-cross-hybrid-openai-chat-good')
+  assert(successfulHit, '混合供应商切号请求应最终命中备用账号')
+  assert.equal(successfulHit.path, '/openai-compatible/v1/chat/completions')
+  assert.equal(successfulHit.body.model, openAIChatUpstreamModel, '切号后仍应保留混合供应商上游模型映射')
+  assert(Array.isArray(successfulHit.body.messages), '切号后仍应保留 Anthropic Messages -> OpenAI Chat 请求体转换')
+}
+
+function lastHitWithAuthorization(hits: UpstreamHit[], authorization: string): UpstreamHit | undefined {
+  for (let index = hits.length - 1; index >= 0; index -= 1) {
+    const hit = hits[index]
+    if (hit?.authorization === authorization) return hit
+  }
+  return undefined
+}
+
 async function assertCrossProtocolRejected(
   label: string,
   baseUrl: string,
@@ -447,6 +601,11 @@ function createCrossProtocolMockUpstream(): http.Server {
         bodyText,
         body: safeJson(bodyText)
       })
+      if (String(req.headers.authorization ?? '') === 'Bearer sk-cross-hybrid-openai-chat-fail') {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'forced hybrid account failure' } }))
+        return
+      }
       if (req.url?.split('?', 1)[0] === '/openai-compatible/v1/chat/completions') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({

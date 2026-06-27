@@ -12,6 +12,7 @@ import {
   OPENAI_RESPONSES_FAMILY,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
+  isHybridProviderCode,
   isOpenAIProtocolProfile,
   normalizeProviderToken,
   type ProviderProtocolProfileDefinition
@@ -19,6 +20,7 @@ import {
 import { normalizeAccountModelMappingsInput } from './account-model-mappings.repository.js'
 import {
   assertAccountModelMappingEndpointFamilyValues,
+  assertHybridAccountModelMappingProtocolAllowed,
   assertAccountModelMappingProtocolAllowed
 } from './account-model-mapping-protocol-matrix.js'
 import { normalizeAccountSupportedModelsInput } from './account-supported-models.repository.js'
@@ -27,6 +29,7 @@ import { isOpenAIProtocolProviderCode, isOpenAIProtocolProviderCodeAsync, listAn
 export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
   const models = normalizeAccountSupportedModelsInput(value)
   if (!models?.length) return models
+  if (isHybridProviderCode(providerCode)) return models
 
   const providerModels = new Set(listProviderModelCatalog({
     providerCode,
@@ -42,6 +45,7 @@ export function normalizeAccountSupportedModelsForProvider(value: unknown, provi
 export async function normalizeAccountSupportedModelsForProviderAsync(value: unknown, providerCode: string, systemAccountId: string): Promise<string[] | undefined> {
   const models = normalizeAccountSupportedModelsInput(value)
   if (!models?.length) return models
+  if (isHybridProviderCode(providerCode)) return models
 
   const providerModels = new Set((await listProviderModelCatalogAsync({
     providerCode,
@@ -67,8 +71,18 @@ export function normalizeAccountModelMappingsForProvider(
   if (!mappings?.length) return mappings
 
   const normalizedProfile = providerProfile ?? {
+    providerCode,
     protocolCode: OPENAI_PROTOCOL_CODE,
     protocolVersion: OPENAI_PROTOCOL_VERSION
+  }
+  if (isHybridProviderCode(providerCode)) {
+    for (const mapping of mappings) {
+      assertHybridAccountModelMappingProtocolAllowed(mapping, {
+        providerProfile: normalizedProfile,
+        supportedEndpointModes: options.supportedEndpointModes
+      })
+    }
+    return mappings
   }
   for (const mapping of mappings) {
     assertAccountModelMappingProtocolAllowed(mapping, {
@@ -106,8 +120,18 @@ export async function normalizeAccountModelMappingsForProviderAsync(
   if (!mappings?.length) return mappings
 
   const normalizedProfile = providerProfile ?? {
+    providerCode,
     protocolCode: OPENAI_PROTOCOL_CODE,
     protocolVersion: OPENAI_PROTOCOL_VERSION
+  }
+  if (isHybridProviderCode(providerCode)) {
+    for (const mapping of mappings) {
+      assertHybridAccountModelMappingProtocolAllowed(mapping, {
+        providerProfile: normalizedProfile,
+        supportedEndpointModes: options.supportedEndpointModes
+      })
+    }
+    return mappings
   }
   for (const mapping of mappings) {
     assertAccountModelMappingProtocolAllowed(mapping, {

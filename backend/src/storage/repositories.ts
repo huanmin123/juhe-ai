@@ -2,7 +2,8 @@ import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMa
 import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
-import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
+import { assertGeminiEndpointModesCompatible } from '../domain/gemini-endpoint-modes.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGeminiProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
@@ -267,6 +268,13 @@ function assertAccountEndpointModesCompatible(
       providerProtocolProfileId: protocolProfile.providerProtocolProfileId ?? protocolProfile.id,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
+    })
+    return
+  }
+  if (isGeminiProtocolProfile(protocolProfile)) {
+    assertGeminiEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType
     })
   }
 }

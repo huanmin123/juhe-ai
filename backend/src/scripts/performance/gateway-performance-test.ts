@@ -276,8 +276,7 @@ function seedGatewayData(config: PerfConfig, upstreamBaseUrl: string): SeededGat
     label: '性能压测',
     upstreamBaseUrl,
     accountCount: config.accountCount,
-    accountConcurrencyLimit: config.accountConcurrencyLimit,
-    clientCompatibility: 'openai_standard'
+    accountConcurrencyLimit: config.accountConcurrencyLimit
   })
   if (!fixture.apiKey) throw new Error('Mockdata 压测夹具未生成本地网关 Key')
   return {

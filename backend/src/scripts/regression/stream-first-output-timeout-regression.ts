@@ -482,8 +482,7 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
     },
     groupId: group.id,
     status: 'active',
-    schedulable: true,
-    clientCompatibility: 'codex_responses'
+    schedulable: true
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归 Key-${label}`,
@@ -515,8 +514,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0,
-    clientCompatibility: 'codex_responses'
+    priority: 0
   }, access)
   const backupAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -529,8 +527,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10,
-    clientCompatibility: 'codex_responses'
+    priority: 10
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归双账号 Key-${label}`,
@@ -559,8 +556,7 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: index * 10,
-    clientCompatibility: 'codex_responses'
+    priority: index * 10
   }, access))
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归多账号 Key-${label}`,

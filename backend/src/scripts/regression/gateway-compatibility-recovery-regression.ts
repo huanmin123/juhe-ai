@@ -261,8 +261,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGa
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 0,
-    clientCompatibility: 'openai_standard'
+    priority: 0
   }, access)
   const fallbackAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -275,8 +274,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGa
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    priority: 10,
-    clientCompatibility: 'openai_standard'
+    priority: 10
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `兼容恢复 e2e Key-${label}`,

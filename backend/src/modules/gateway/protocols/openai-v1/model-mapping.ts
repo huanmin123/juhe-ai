@@ -12,7 +12,8 @@ import {
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
-  OPENAI_RESPONSES_FAMILY
+  OPENAI_RESPONSES_FAMILY,
+  isHybridProviderCode
 } from '../../../../domain/provider-protocol.js'
 import {
   openAIEndpointFamilyFromPath
@@ -36,6 +37,7 @@ import { splitPathAndQuery } from './route-helpers.js'
 
 export interface OpenAIModelMappingRuntimeAccount {
   modelMappings?: AccountModelMapping[]
+  providerCode?: string
   providerProtocolProfileId?: string
 }
 
@@ -66,7 +68,7 @@ export function resolveOpenAIAccountModelMapping(
   ))
   if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined
   if ((mapping as { runtimeSource?: unknown }).runtimeSource === 'explicit_hybrid_route') return undefined
-  if (!isOpenAIModelMappingRuntimeConversionSupported(mapping)) return undefined
+  if (!isOpenAIModelMappingRuntimeConversionSupported(mapping, account)) return undefined
   return {
     sourceModel: mapping.sourceModel,
     sourceEndpointFamily: mapping.sourceEndpointFamily,
@@ -164,11 +166,28 @@ export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: Res
 }
 
 function isOpenAIModelMappingRuntimeConversionSupported(
-  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'>
+  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'>,
+  account?: OpenAIModelMappingRuntimeAccount
 ): boolean {
   const { sourceEndpointFamily: source, upstreamEndpointFamily: upstream } = mapping
-  return source === upstream
+  if (
+    source === upstream
     || (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
+  ) {
+    return true
+  }
+  if (!isHybridProviderCode(account?.providerCode)) return false
+  return (
+    (source === OPENAI_RESPONSES_FAMILY && upstream === OPENAI_CHAT_COMPLETIONS_FAMILY)
+    || (source === ANTHROPIC_MESSAGES_FAMILY && upstream === OPENAI_CHAT_COMPLETIONS_FAMILY)
+    || ((source === GEMINI_GENERATE_CONTENT_FAMILY || source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) && upstream === OPENAI_CHAT_COMPLETIONS_FAMILY)
+    || (source === OPENAI_CHAT_COMPLETIONS_FAMILY && upstream === ANTHROPIC_MESSAGES_FAMILY)
+    || (source === OPENAI_RESPONSES_FAMILY && upstream === ANTHROPIC_MESSAGES_FAMILY)
+    || ((source === GEMINI_GENERATE_CONTENT_FAMILY || source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) && upstream === ANTHROPIC_MESSAGES_FAMILY)
+    || (source === OPENAI_CHAT_COMPLETIONS_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
+    || (source === OPENAI_RESPONSES_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
+    || (source === ANTHROPIC_MESSAGES_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
+  )
 }
 
 export function geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery(req: Request): string {

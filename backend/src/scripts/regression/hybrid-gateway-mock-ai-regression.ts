@@ -13,8 +13,6 @@ import {
   DEEPSEEK_PROVIDER_CODE,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
-  GPT_OPENAI_V1_PROFILE_ID,
-  GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
@@ -168,8 +166,8 @@ try {
     const gpt = createHybridGroupAccount({
       groupName: 'Hybrid Mock GPT 中高价分组',
       accountName: 'Hybrid Mock GPT 中高价账户',
-      providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       upstreamApiKey: 'sk-hybrid-gpt',
       baseUrl: upstreamBaseUrl,
       supportedModel: gptModel
@@ -455,7 +453,7 @@ function registerHybridCustomModels(): void {
   saveHybridCustomModel(GLM_PROVIDER_CODE, scoringModel, 0.001, 0.001)
   saveHybridCustomModel(GLM_PROVIDER_CODE, unavailableQualityModel, 0.001, 0.001)
   saveHybridCustomModel(GLM_PROVIDER_CODE, glmModel, 0.01, 0.01)
-  saveHybridCustomModel(GPT_VENDOR_CODE, gptModel, 0.02, 0.02)
+  saveHybridCustomModel(OPENAI_COMPATIBLE_PROVIDER_CODE, gptModel, 0.02, 0.02)
   saveHybridCustomModel(OPENAI_COMPATIBLE_PROVIDER_CODE, opusModel, 0.05, 0.05)
 }
 
@@ -490,7 +488,6 @@ function createHybridGroupAccount(input: {
   providerProtocolProfileId: string
   supportedModel: string
   upstreamApiKey: string
-  clientCompatibility?: 'openai_standard' | 'codex_responses'
 }): { accountId: string; groupId: string } {
   const group = repositories.createGroup({
     name: input.groupName,
@@ -503,7 +500,6 @@ function createHybridGroupAccount(input: {
     providerProtocolProfileId: input.providerProtocolProfileId,
     name: input.accountName,
     type: 'api_key',
-    clientCompatibility: input.clientCompatibility ?? 'openai_standard',
     credentials: {
       api_key: input.upstreamApiKey,
       base_url: input.baseUrl,
@@ -527,14 +523,12 @@ function createHybridAdditionalAccount(input: {
   providerProtocolProfileId: string
   supportedModel: string
   upstreamApiKey: string
-  clientCompatibility?: 'openai_standard' | 'codex_responses'
 }): string {
   const account = repositories.createAccount({
     providerCode: input.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
     name: input.accountName,
     type: 'api_key',
-    clientCompatibility: input.clientCompatibility ?? 'openai_standard',
     credentials: {
       api_key: input.upstreamApiKey,
       base_url: input.baseUrl,

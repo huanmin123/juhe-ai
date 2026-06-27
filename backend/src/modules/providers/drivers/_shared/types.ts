@@ -66,6 +66,7 @@ export interface ProviderDriver {
   protocolCode: string
   protocolVersion: string
   usageSemantic: string
+  usageSemanticForProfile?(profile: ProviderProtocolProfileDefinition | undefined): string | undefined
   profileIds: readonly string[]
   supportsProfile(profile: ProviderProtocolProfileDefinition | undefined): boolean
   resolveUsageModel(account: ProviderDriverAccount, requestedModel?: string, sourceEndpointFamily?: GatewayRequestEndpointFamily): ProviderUsageModelResolution

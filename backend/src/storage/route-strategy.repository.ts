@@ -25,7 +25,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
+import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
 import { assertKnownInputKeys, hasOwnInput, normalizeNullableTextInput, normalizeOptionalRequiredTextInput, requiredTextInput } from './repository-input-normalization.js'
 
 const businessSchemaName = 'juhe_business'
@@ -155,7 +155,7 @@ export async function listRouteStrategiesPageAsync(access?: AccessScope, options
     LIMIT ? OFFSET ?
   `, [...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
   const pageRows = takePageRows(rows, normalized.pageSize)
-  const items = await routeStrategySummariesFromRowsAsync(pageRows.rows, access)
+  const items = await routeStrategySummariesFromRowsAsync(pageRows.rows, access, client)
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -193,7 +193,7 @@ export async function listRouteStrategyOptionsAsync(access?: AccessScope, option
     ORDER BY route_strategies.updated_at DESC, route_strategies.name ASC, route_strategies.id ASC
     LIMIT ?
   `, [...filters.params, normalized.limit])
-  return routeStrategyOptionsFromRows(rows, access)
+  return routeStrategyOptionsFromRowsAsync(rows, access, client)
 }
 
 export function findRouteStrategySummary(id: string, access?: AccessScope): RouteStrategySummary | undefined {
@@ -219,7 +219,7 @@ export async function findRouteStrategySummaryAsync(id: string, access?: AccessS
       ON system_accounts.id = route_strategies.system_account_id
     WHERE route_strategies.id = ?${scope.clause}
   `, [id, ...scope.params])
-  return row ? (await routeStrategySummariesFromRowsAsync([row], access))[0] : undefined
+  return row ? (await routeStrategySummariesFromRowsAsync([row], access, client))[0] : undefined
 }
 
 export function createRouteStrategy(input: Record<string, unknown>, access?: AccessScope): RouteStrategySummary {
@@ -524,9 +524,10 @@ function routeStrategySummariesFromRows(rows: RouteStrategyRow[], access?: Acces
   return rows.map((row) => routeStrategySummaryFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
 }
 
-async function routeStrategySummariesFromRowsAsync(rows: RouteStrategyRow[], access?: AccessScope): Promise<RouteStrategySummary[]> {
+async function routeStrategySummariesFromRowsAsync(rows: RouteStrategyRow[], access?: AccessScope, client?: DatabaseClient): Promise<RouteStrategySummary[]> {
   const includeOwner = includeSystemAccountFields(access)
-  const accountNames = includeOwner ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
+  const lookupClient = includeOwner ? (client ?? await getRouteStrategyDatabaseClient()) : undefined
+  const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
   const bindingsByStrategyId = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id))
   return rows.map((row) => routeStrategySummaryFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
 }
@@ -559,6 +560,20 @@ function routeStrategySummaryFromRow(
 function routeStrategyOptionsFromRows(rows: RouteStrategyRow[], access?: AccessScope): RouteStrategyOptionSummary[] {
   const includeOwner = includeSystemAccountFields(access)
   const accountNames = includeOwner ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
+  return rows.map((row) => ({
+    id: row.id,
+    systemAccountId: includeOwner ? row.system_account_id : undefined,
+    systemAccountName: includeOwner ? accountNames.get(row.system_account_id) : undefined,
+    name: row.name,
+    mode: normalizeRouteStrategyMode(row.mode),
+    status: normalizeRouteStrategyStatus(row.status, 'active')
+  }))
+}
+
+async function routeStrategyOptionsFromRowsAsync(rows: RouteStrategyRow[], access?: AccessScope, client?: DatabaseClient): Promise<RouteStrategyOptionSummary[]> {
+  const includeOwner = includeSystemAccountFields(access)
+  const lookupClient = includeOwner ? (client ?? await getRouteStrategyDatabaseClient()) : undefined
+  const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
   return rows.map((row) => ({
     id: row.id,
     systemAccountId: includeOwner ? row.system_account_id : undefined,

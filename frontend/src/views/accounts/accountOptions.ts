@@ -23,6 +23,10 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
+  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  HYBRID_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
@@ -182,6 +186,68 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
   ]
 }
 
+export const HYBRID_PROVIDER: ProviderDefinition = {
+  id: HYBRID_PROVIDER_CODE,
+  code: HYBRID_PROVIDER_CODE,
+  name: '混合供应商',
+  enabled: true,
+  defaultProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.openai.com/v1',
+  defaultTestModel: 'gpt-5.5',
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
+  protocolProfiles: [
+    {
+      id: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      providerCode: HYBRID_PROVIDER_CODE,
+      name: '混合供应商 / OpenAI Chat',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://api.openai.com/v1',
+      defaultTestModel: 'gpt-5.5',
+      accountTypes: ['api_key'],
+      capabilities: ['chat', 'bridge'],
+      endpointFamilies: [
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
+      ]
+    },
+    {
+      id: HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+      providerCode: HYBRID_PROVIDER_CODE,
+      name: '混合供应商 / Anthropic Messages',
+      enabled: true,
+      protocolCode: ANTHROPIC_PROTOCOL_CODE,
+      protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
+      baseUrl: 'https://api.anthropic.com/v1',
+      defaultTestModel: 'claude-fable-5',
+      accountTypes: ['api_key'],
+      capabilities: ['messages', 'bridge'],
+      endpointFamilies: [
+        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' }
+      ]
+    },
+    {
+      id: HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      providerCode: HYBRID_PROVIDER_CODE,
+      name: '混合供应商 / Gemini native',
+      enabled: true,
+      protocolCode: GEMINI_PROTOCOL_CODE,
+      protocolVersion: GEMINI_PROTOCOL_VERSION,
+      baseUrl: 'https://generativelanguage.googleapis.com',
+      defaultTestModel: 'gemini-3.5-flash',
+      accountTypes: ['api_key'],
+      capabilities: ['generate_content', 'stream_generate_content', 'bridge'],
+      endpointFamilies: [
+        { code: GEMINI_GENERATE_CONTENT_FAMILY, name: 'Generate Content' },
+        { code: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, name: 'Stream Generate Content' }
+      ]
+    }
+  ]
+}
+
 export const DEEPSEEK_PROVIDER: ProviderDefinition = {
   id: DEEPSEEK_PROVIDER_CODE,
   code: DEEPSEEK_PROVIDER_CODE,
@@ -291,7 +357,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
   ]
 }
 
-export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER]
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, HYBRID_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20

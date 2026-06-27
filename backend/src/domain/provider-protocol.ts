@@ -10,6 +10,7 @@ export const ANTHROPIC_PROVIDER_CODE = 'anthropic'
 export const GEMINI_PROTOCOL_CODE = 'gemini'
 export const GEMINI_PROTOCOL_VERSION = 'v1beta'
 export const GEMINI_PROVIDER_CODE = 'gemini'
+export const HYBRID_PROVIDER_CODE = 'hybrid'
 export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID = 'profile_openai_openai_v1'
 export const GPT_OPENAI_V1_PROFILE_ID = 'profile_gpt_openai_v1'
 export const DEEPSEEK_OPENAI_V1_PROFILE_ID = 'profile_deepseek_openai_v1'
@@ -20,6 +21,9 @@ export const GLM_CODING_ANTHROPIC_V1_PROFILE_ID = 'profile_glm_coding_anthropic_
 export const ANTHROPIC_ANTHROPIC_V1_PROFILE_ID = 'profile_anthropic_anthropic_v1'
 export const GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_gemini_native_v1beta'
 export const GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID = 'profile_gemini_openai_chat_v1beta'
+export const HYBRID_OPENAI_CHAT_V1_PROFILE_ID = 'profile_hybrid_openai_chat_v1'
+export const HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID = 'profile_hybrid_anthropic_messages_v1'
+export const HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_hybrid_gemini_native_v1beta'
 export const OPENAI_CHAT_COMPLETIONS_FAMILY = 'chat_completions'
 export const OPENAI_RESPONSES_FAMILY = 'responses'
 export const ANTHROPIC_MESSAGES_FAMILY = 'messages'
@@ -93,6 +97,10 @@ export function isOpenAICompatibleProviderCode(value: unknown): boolean {
 
 export function isGeminiProviderCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GEMINI_PROVIDER_CODE
+}
+
+export function isHybridProviderCode(value: unknown): boolean {
+  return normalizeProviderToken(value) === HYBRID_PROVIDER_CODE
 }
 
 export function normalizeProviderToken(value: unknown): string | undefined {

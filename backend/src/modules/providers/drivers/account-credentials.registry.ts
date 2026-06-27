@@ -8,6 +8,7 @@ import type {
 import { geminiAccountCredentialDriver } from './gemini/account-credentials.js'
 import { glmAccountCredentialDriver } from './glm/account-credentials.js'
 import { gptAccountCredentialDriver } from './gpt/account-credentials.js'
+import { hybridAccountCredentialDriver } from './hybrid/account-credentials.js'
 import { openAICompatibleAccountCredentialDriver } from './openai-compatible/account-credentials.js'
 
 const providerAccountCredentialDrivers: readonly ProviderAccountCredentialDriver[] = [
@@ -16,7 +17,8 @@ const providerAccountCredentialDrivers: readonly ProviderAccountCredentialDriver
   deepSeekAccountCredentialDriver,
   anthropicAccountCredentialDriver,
   geminiAccountCredentialDriver,
-  glmAccountCredentialDriver
+  glmAccountCredentialDriver,
+  hybridAccountCredentialDriver
 ] as const
 
 export function listProviderAccountCredentialDrivers(): readonly ProviderAccountCredentialDriver[] {

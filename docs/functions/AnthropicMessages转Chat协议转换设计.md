@@ -124,11 +124,11 @@ guidance 文本不写死具体客户端名称，只描述能力缺口和可执�
 ## 模型映射约束
 
 - `sourceEndpointFamily` 允许 `messages`。
-- 普通账号模型别名不允许 `messages -> chat_completions`；跨协议转换后续迁移到混合供应商账户。
+- 普通账号模型别名不允许 `messages -> chat_completions`；跨协议转换由混合供应商账户承接。
 - `messages -> responses` 禁止。
 - `messages -> messages` 不作为账号映射保存；Anthropic 原生直连由协议档案承接。
 - `sourceModel` 为 Anthropic 协议客户端可见模型池中的模型。
-- `upstreamModel` 后续由混合供应商账户的转换配置选择，不在普通 OpenAI 协议账号映射中保存。
+- `upstreamModel` 由混合供应商账户的转换配置选择，不在普通 OpenAI 协议账号映射中保存。
 
 ## 验证要求
 

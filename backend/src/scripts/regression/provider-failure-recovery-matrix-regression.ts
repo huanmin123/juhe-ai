@@ -15,8 +15,6 @@ import {
   DEEPSEEK_PROVIDER_CODE,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
-  GPT_OPENAI_V1_PROFILE_ID,
-  GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
@@ -93,8 +91,8 @@ const upstreamHits: UpstreamHit[] = []
 const cases: MatrixCase[] = [
   {
     label: 'gpt',
-    providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     protocolKind: 'openai',
     upstreamPrefix: 'gpt',
     model: 'gpt-5.5',
@@ -202,7 +200,6 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     providerProtocolProfileId: item.providerProtocolProfileId,
     name: `${item.label} 异常交替主账号`,
     type: 'api_key',
-    ...(item.protocolKind === 'openai' ? { clientCompatibility: 'openai_standard' as const } : {}),
     credentials: credentialsForCase(item, upstreamOrigin, 'primary'),
     groupId: group.id,
     status: 'active',
@@ -214,7 +211,6 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     providerProtocolProfileId: item.providerProtocolProfileId,
     name: `${item.label} 异常交替备用账号`,
     type: 'api_key',
-    ...(item.protocolKind === 'openai' ? { clientCompatibility: 'openai_standard' as const } : {}),
     credentials: credentialsForCase(item, upstreamOrigin, 'rescue'),
     groupId: group.id,
     status: 'active',

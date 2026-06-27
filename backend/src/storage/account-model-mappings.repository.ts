@@ -11,8 +11,7 @@ import {
   OPENAI_RESPONSES_FAMILY
 } from '../domain/provider-protocol.js'
 import {
-  accountModelMappingEndpointFamilyLabel,
-  assertSupportedAccountModelMappingEndpointFamilyConversion
+  accountModelMappingEndpointFamilyLabel
 } from './account-model-mapping-protocol-matrix.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
@@ -49,7 +48,6 @@ export function normalizeAccountModelMappingsInput(value: unknown): AccountModel
     const sourceEndpointFamily = sourceEndpointFamilyValue(record.sourceEndpointFamily)
     const upstreamModel = stringModelValue(record.upstreamModel, '上游模型')
     const upstreamEndpointFamily = upstreamEndpointFamilyValue(record.upstreamEndpointFamily)
-    assertSupportedAccountModelMappingEndpointFamilyConversion(sourceEndpointFamily, upstreamEndpointFamily)
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
     }

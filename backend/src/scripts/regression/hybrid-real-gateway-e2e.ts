@@ -279,7 +279,6 @@ function createRealHybridGroupAccount(input: {
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: input.accountName,
     type: 'api_key',
-    clientCompatibility: 'openai_standard',
     credentials: {
       api_key: realApiKey,
       base_url: realBaseUrl,
@@ -318,7 +317,14 @@ function buildRealCases(count: number): RealCase[] {
     ...Array.from({ length: 8 }, () => complex),
     ...Array.from({ length: 2 }, () => frontier)
   ]
-  return Array.from({ length: count }, (_, index) => weighted[index % weighted.length]!)
+  const coverage = [simple, normal, complex, frontier]
+  if (count <= coverage.length) {
+    return coverage.slice(0, count)
+  }
+  return [
+    ...coverage,
+    ...Array.from({ length: count - coverage.length }, (_, index) => weighted[index % weighted.length]!)
+  ]
 }
 
 async function runRealCases(input: {
@@ -343,6 +349,14 @@ async function runRealCases(input: {
         localApiKey: input.localApiKey,
         testCase: input.cases[index]!
       })
+      console.log([
+        `case=${index + 1}/${input.cases.length}`,
+        `bucket=${results[index]!.bucket}`,
+        `status=${results[index]!.status}`,
+        `ok=${results[index]!.ok}`,
+        `durationMs=${results[index]!.durationMs}`,
+        results[index]!.responseModel ? `responseModel=${results[index]!.responseModel}` : undefined
+      ].filter(Boolean).join(' '))
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
       gatewayCache.clearGatewayRuntimeCache()
     }

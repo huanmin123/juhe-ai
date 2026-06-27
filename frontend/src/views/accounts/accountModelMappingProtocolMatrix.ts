@@ -5,10 +5,14 @@ import {
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
+  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
@@ -18,6 +22,7 @@ export type AccountModelMappingSourceEndpointFamily = AccountFormModel['modelMap
 export type AccountModelMappingUpstreamEndpointFamily = AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']
 export type AccountModelMappingProviderProfile = ProviderDefinition | ProviderDefinition['protocolProfiles'][number] | {
   id?: string
+  providerCode?: string
   providerProtocolProfileId?: string
   protocolCode?: string
   protocolVersion?: string
@@ -45,6 +50,24 @@ export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[]
   { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
 ] as const
 
+export const hybridAccountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
+  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
+  { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: OPENAI_RESPONSES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
+] as const
+
 export function accountModelMappingProtocolValidationMessage(input: {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
@@ -58,6 +81,24 @@ export function accountModelMappingProtocolValidationMessage(input: {
   const profileId = accountModelMappingProviderProfileId(providerProfile)
   const geminiOpenAIChatProfile = profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
   const geminiNativeProfile = profileId === GEMINI_NATIVE_V1BETA_PROFILE_ID
+  const hybridProfile = isHybridProviderProfile(providerProfile)
+
+  if (hybridProfile) {
+    const targetUpstreamFamily = hybridTargetUpstreamEndpointFamily(providerProfile)
+    if (!targetUpstreamFamily) {
+      return '当前混合供应商协议档案暂不支持账号模型映射'
+    }
+    if (upstreamEndpointFamily !== targetUpstreamFamily) {
+      return `混合供应商当前档案真实上游只能使用 ${accountModelMappingEndpointFamilyText(targetUpstreamFamily)}`
+    }
+    const rule = hybridAccountModelMappingProtocolRules.find((item) => (
+      item.source === sourceEndpointFamily && item.upstream === upstreamEndpointFamily
+    ))
+    if (!rule) {
+      return unsupportedHybridProtocolConversionMessage(sourceEndpointFamily, upstreamEndpointFamily)
+    }
+    return undefined
+  }
 
   if (!openAIProfile && !anthropicProfile && !geminiProfile) {
     return '当前供应商协议不支持模型映射'
@@ -106,7 +147,7 @@ export function isAccountModelMappingSourceEndpointFamilyAllowed(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   context: AccountModelMappingProtocolContext
 ): boolean {
-  return accountModelMappingProtocolRules.some((rule) => (
+  return accountModelMappingRulesForContext(context).some((rule) => (
     rule.source === sourceEndpointFamily
     && isAccountModelMappingProtocolAllowed({
       sourceEndpointFamily,
@@ -120,6 +161,14 @@ export function defaultAccountModelMappingUpstreamEndpointFamily(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   context: AccountModelMappingProtocolContext
 ): AccountModelMappingUpstreamEndpointFamily {
+  const hybridTarget = hybridTargetUpstreamEndpointFamily(context.providerProfile)
+  if (hybridTarget && isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily,
+    upstreamEndpointFamily: hybridTarget,
+    context
+  })) {
+    return hybridTarget
+  }
   const preferred = preferredUpstreamFamilies(sourceEndpointFamily)
   return preferred.find((upstreamEndpointFamily) => isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily,
@@ -155,6 +204,28 @@ function accountModelMappingProviderProfileId(providerProfile?: AccountModelMapp
   return undefined
 }
 
+function isHybridProviderProfile(providerProfile?: AccountModelMappingProviderProfile): boolean {
+  return isHybridProviderCode(providerProfile && 'providerCode' in providerProfile ? providerProfile.providerCode : undefined)
+}
+
+function hybridTargetUpstreamEndpointFamily(providerProfile?: AccountModelMappingProviderProfile): AccountModelMappingUpstreamEndpointFamily | undefined {
+  if (!isHybridProviderProfile(providerProfile)) return undefined
+  const profileId = accountModelMappingProviderProfileId(providerProfile)
+  if (profileId === HYBRID_OPENAI_CHAT_V1_PROFILE_ID) return OPENAI_CHAT_COMPLETIONS_FAMILY
+  if (profileId === HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID) return ANTHROPIC_MESSAGES_FAMILY
+  if (profileId === HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID) return GEMINI_GENERATE_CONTENT_FAMILY
+  if (isOpenAIProtocolProfile(providerProfile)) return OPENAI_CHAT_COMPLETIONS_FAMILY
+  if (isAnthropicProtocolProfile(providerProfile)) return ANTHROPIC_MESSAGES_FAMILY
+  if (isGeminiProtocolProfile(providerProfile)) return GEMINI_GENERATE_CONTENT_FAMILY
+  return undefined
+}
+
+function accountModelMappingRulesForContext(context: AccountModelMappingProtocolContext): readonly ProtocolConversionRule[] {
+  return isHybridProviderProfile(context.providerProfile)
+    ? hybridAccountModelMappingProtocolRules
+    : accountModelMappingProtocolRules
+}
+
 function unsupportedProtocolConversionMessage(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
@@ -166,6 +237,16 @@ function unsupportedProtocolConversionMessage(
     return '账号模型别名不支持 Gemini GenerateContent 跨协议映射，请改用混合供应商账户'
   }
   return `账号模型别名只支持同协议映射；跨协议 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 请改用混合供应商账户`
+}
+
+function unsupportedHybridProtocolConversionMessage(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+): string {
+  if (upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    return '混合供应商账户不合成 Responses 上游状态机；Responses 只能由真实支持 Responses 的普通账户原生承接'
+  }
+  return `混合供应商账户暂不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 的跨协议转换`
 }
 
 function preferredUpstreamFamilies(

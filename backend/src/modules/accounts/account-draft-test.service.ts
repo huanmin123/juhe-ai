@@ -2,7 +2,8 @@ import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-
 import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
+import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
@@ -368,6 +369,13 @@ function assertDraftEndpointModesCompatible(
       providerProtocolProfileId: providerProfile.providerProtocolProfileId ?? providerProfile.id,
       accountType: input.accountType,
       clientCompatibility: input.clientCompatibility
+    })
+    return
+  }
+  if (isGeminiProtocolProfile(providerProfile)) {
+    assertGeminiEndpointModesCompatible({
+      modes: input.modes,
+      accountType: input.accountType
     })
   }
 }

@@ -29,6 +29,11 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
+    schemaName: 'juhe_business',
+    source: 'route-strategies-supplemental',
+    sql: 'ALTER TABLE IF EXISTS route_strategies ADD COLUMN IF NOT EXISTS description text'
+  },
+  {
     schemaName: 'juhe_usage',
     source: 'usage-records-supplemental',
     sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS usage_semantic text'
