@@ -106,8 +106,7 @@ try {
       localApiKeyName: 'GLM Mock Coding Key',
       supportedModels: ['glm-5.2'],
       providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
-      upstreamApiKey: 'sk-glm-coding-upstream',
-      explicitHybridRouteRules: glmCodexBridgeRules('glm-5.2')
+      upstreamApiKey: 'sk-glm-coding-upstream'
     })
     const codingOpenAIStandard = createGlmScenario({
       accountName: 'GLM Mock Coding OpenAI 标准账户',
@@ -142,62 +141,7 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream',
       expectedContent: 'glm mock sse ok'
     })
-    await assertGlmCodexResponsesBridge({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2',
-      expectedPath: '/api/coding/paas/v4/chat/completions',
-      expectedAuthorization: 'Bearer sk-glm-coding-upstream',
-      expectedContent: 'glm mock sse ok'
-    })
-    await assertGlmCodexResponsesBridgeCustomTool({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2',
-      expectedPath: '/api/coding/paas/v4/chat/completions',
-      expectedAuthorization: 'Bearer sk-glm-coding-upstream'
-    })
-    await assertGlmCodexResponsesBridgeRejectsForcedNativeTool({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2'
-    })
-    await assertGlmCodexResponsesBridgeRestoresPreviousResponseId({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2'
-    })
-    await assertGlmCodexResponsesBridgeRejectsUnknownPreviousResponseId({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2'
-    })
-    await assertGlmCodexResponsesBridgeGatewaySummaryCompact({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2'
-    })
-    await assertGlmCodexResponsesBridgeFailsOnTruncatedStream({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2',
-      expectedPath: '/api/coding/paas/v4/chat/completions',
-      expectedAuthorization: 'Bearer sk-glm-coding-upstream'
-    })
-    await assertGlmCodexResponsesBridgeFailsOnErrorEvent({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2',
-      expectedPath: '/api/coding/paas/v4/chat/completions',
-      expectedAuthorization: 'Bearer sk-glm-coding-upstream'
-    })
-    await assertGlmCodexResponsesBridgeFailsOnNetworkFinishReason({
-      baseUrl,
-      localApiKey: coding.localApiKey,
-      model: 'glm-5.2',
-      expectedPath: '/api/coding/paas/v4/chat/completions',
-      expectedAuthorization: 'Bearer sk-glm-coding-upstream'
-    })
+    await assertGlmCodingOpenAIStandardRejectsCodexBridge(baseUrl, coding.localApiKey)
     await assertGlmCodingOpenAIStandardRejectsCodexBridge(baseUrl, codingOpenAIStandard.localApiKey)
     await assertGlmJsonErrorSuppressesAndRecovers(baseUrl, failover.localApiKey, failover.rescueAccountId)
     await assertGlmRejectsResponses(baseUrl, general.localApiKey)
@@ -311,10 +255,12 @@ function createGlmScenario(input: {
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: input.localApiKeyName,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-    explicitHybridRouteRules: input.explicitHybridRouteRules?.map((rule) => ({
-      ...rule,
-      targetGroupId: group.id
-    })),
+    ...(input.explicitHybridRouteRules ? {
+      explicitHybridRouteRules: input.explicitHybridRouteRules.map((rule) => ({
+        ...rule,
+        targetGroupId: group.id
+      }))
+    } : {}),
     status: 'active'
   }, access)
   assert(apiKey.key, '回归 API Key 未返回明文密钥')

@@ -187,22 +187,12 @@ try {
         status: 'active',
         schedulable: true
       }, access),
-      /账号模型别名只支持同协议映射|请改用 API Key 显式混合路由/,
+      /账号模型别名只支持同协议映射|请改用混合供应商账户/,
       'Gemini OpenAI Chat 账号别名不应承接 Anthropic Messages 来源映射'
     )
     const openAIChatApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini OpenAI Chat Mock AI 回归 Key',
       groupBindings: [{ groupId: openAIChatGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: [
-        explicitHybridRule({
-          id: 'gemini_openai_chat_codex_responses',
-          sourceEndpointFamily: 'responses',
-          sourceModel: 'gpt-5.5',
-          targetGroupId: openAIChatGroup.id,
-          upstreamEndpointFamily: 'chat_completions',
-          upstreamModel: 'gemini-3.5-flash'
-        })
-      ],
       status: 'active'
     }, access)
     assert(openAIChatApiKey.key, 'Gemini OpenAI Chat 回归 API Key 未返回明文密钥')
@@ -275,7 +265,7 @@ try {
         status: 'active',
         schedulable: true
       }, access),
-      /账号模型别名只支持同协议映射|请改用 API Key 显式混合路由/,
+      /账号模型别名只支持同协议映射|请改用混合供应商账户/,
       '账号模型别名不应允许 Gemini GenerateContent 跨协议桥接'
     )
     const glmBridgeRules = [
@@ -299,7 +289,6 @@ try {
     const glmBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini Native 转 GLM Chat 回归 Key',
       groupBindings: [{ groupId: glmBridgeGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: glmBridgeRules,
       status: 'active'
     }, access)
     assert(glmBridgeApiKey.key, 'Gemini Native 转 GLM Chat 回归 API Key 未返回明文密钥')
@@ -360,18 +349,17 @@ try {
     const anthropicBridgeGatewayRequest = fakeGatewayPostRequest('/v1beta/models/gemini-3.5-flash:generateContent?trace=gemini-native-to-anthropic-messages-json')
     assert.deepEqual(
       providerDriverRegistry.buildGatewayUpstreamUrlsForAccount(anthropicBridgeRuntimeAccount, anthropicBridgeGatewayRequest),
-      [`${upstreamOrigin}/v1/messages?trace=gemini-native-to-anthropic-messages-json`],
-      'Anthropic driver 必须能把 Gemini GenerateContent 显式映射请求定位到 /messages 上游'
+      [],
+      'Anthropic 普通账号不应再通过旧显式混合映射承接 Gemini GenerateContent 请求'
     )
     assert.equal(
       providerDriverRegistry.accountSupportsGatewayRequest(anthropicBridgeGatewayRequest, anthropicBridgeRuntimeAccount),
-      true,
-      'Anthropic driver capability check 必须允许 Gemini GenerateContent -> Messages 显式映射请求'
+      false,
+      'Anthropic 普通账号 capability check 不应允许 Gemini GenerateContent -> Messages 旧显式映射请求'
     )
     const anthropicBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini Native 转 Anthropic Messages 回归 Key',
       groupBindings: [{ groupId: anthropicBridgeGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: anthropicBridgeRules,
       status: 'active'
     }, access)
     assert(anthropicBridgeApiKey.key, 'Gemini Native 转 Anthropic Messages 回归 API Key 未返回明文密钥')
@@ -433,18 +421,17 @@ try {
     geminiNativeTargetRuntimeRequest.body = { model: 'gpt-5.5', messages: [{ role: 'user', content: 'ping' }] }
     assert.deepEqual(
       providerDriverRegistry.buildGatewayUpstreamUrlsForAccount(geminiNativeTargetRuntimeAccount, geminiNativeTargetRuntimeRequest),
-      [`${upstreamOrigin}/v1beta/models/gemini-3.5-flash:generateContent`],
-      'Gemini driver 必须能把 OpenAI Chat -> Gemini native 显式映射定位到 generateContent 上游'
+      [],
+      'Gemini 普通账号不应再通过旧显式混合映射承接 OpenAI Chat 请求'
     )
     assert.equal(
       providerDriverRegistry.accountSupportsGatewayRequest(geminiNativeTargetRuntimeRequest, geminiNativeTargetRuntimeAccount),
-      true,
-      'Gemini driver capability check 必须允许 OpenAI Chat -> Gemini native 显式映射请求'
+      false,
+      'Gemini 普通账号 capability check 不应允许 OpenAI Chat -> Gemini native 旧显式映射请求'
     )
     const geminiNativeTargetBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'OpenAI Anthropic 转 Gemini Native 回归 Key',
       groupBindings: [{ groupId: geminiNativeTargetBridgeGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: geminiNativeTargetBridgeRules,
       status: 'active'
     }, access)
     assert(geminiNativeTargetBridgeApiKey.key, 'OpenAI Anthropic 转 Gemini Native 回归 API Key 未返回明文密钥')
@@ -473,19 +460,6 @@ try {
     await assertGeminiOpenAIChatPathRejected(baseUrl, apiKey.key)
     await assertGeminiOpenAIChatDirect(baseUrl, openAIChatApiKey.key)
     await assertGeminiOpenAIChatRootBaseUrl(baseUrl, openAIChatRootApiKey.key)
-    await assertGeminiCodexResponsesMapping(baseUrl, openAIChatApiKey.key)
-    await assertGeminiGenerateContentToGlmChatJson(baseUrl, glmBridgeApiKey.key)
-    await assertGeminiStreamGenerateContentToGlmChatSse(baseUrl, glmBridgeApiKey.key)
-    await assertGeminiGenerateContentToAnthropicMessagesJson(baseUrl, anthropicBridgeApiKey.key)
-    await assertGeminiStreamGenerateContentToAnthropicMessagesSse(baseUrl, anthropicBridgeApiKey.key)
-    await assertGeminiGenerateContentToAnthropicMessagesGuidance(baseUrl, anthropicBridgeApiKey.key)
-    await assertOpenAIChatToGeminiNativeJson(baseUrl, geminiNativeTargetBridgeApiKey.key)
-    await assertOpenAIChatToGeminiNativeSse(baseUrl, geminiNativeTargetBridgeApiKey.key)
-    await assertOpenAIResponsesToGeminiNativeJson(baseUrl, geminiNativeTargetBridgeApiKey.key)
-    await assertOpenAIResponsesToGeminiNativeSse(baseUrl, geminiNativeTargetBridgeApiKey.key)
-    await assertAnthropicMessagesToGeminiNativeJson(baseUrl, geminiNativeTargetBridgeApiKey.key)
-    await assertAnthropicMessagesToGeminiNativeSse(baseUrl, geminiNativeTargetBridgeApiKey.key)
-    await assertOpenAIResponsesToGeminiNativeGuidance(baseUrl, geminiNativeTargetBridgeApiKey.key)
     assertGeminiPolicyDefaults()
 
     console.log('gemini gateway mock ai regression passed')

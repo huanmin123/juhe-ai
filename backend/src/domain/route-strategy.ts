@@ -48,7 +48,7 @@ export function parseRouteStrategyRuntimeConfigJson(value: string | null | undef
       return {}
     }
     const record = parsed as Record<string, unknown>
-    const rawHybridConfig = record.hybridRoutingConfig ?? (record.scoringModel ? record : undefined)
+    const rawHybridConfig = record.hybridRoutingConfig
     return {
       hybridRoutingConfig: rawHybridConfig ? normalizeHybridRoutingConfig(rawHybridConfig) : undefined
     }

@@ -115,12 +115,11 @@ try {
     name: '缓存失效新空分组',
     providerCode: 'gpt'
   }, ownerAccess)
-  repositories.updateApiKey(apiKey.id, {
-    status: 'active',
+  repositories.updateRouteStrategy(apiKey.routeStrategyId, {
     groupBindings: [{ groupId: emptyGroup.id, priority: 1, status: 'active' }]
   }, ownerAccess)
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [], '直接新建空分组并切换 API Key 后运行配置应立即使用新分组')
-  repositories.updateApiKey(apiKey.id, {
+  repositories.updateRouteStrategy(apiKey.routeStrategyId, {
     groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }]
   }, ownerAccess)
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [account.id], '直接切回原分组后运行配置应立即恢复原账号')
@@ -170,15 +169,13 @@ try {
     name: '缓存失效被授权分组',
     providerCode: 'gpt'
   }, granteeAccess)
-  const retainedRevokedGroupBindingApiKey = repositories.updateApiKey(granteeAuthorizedGroupApiKey.id, {
-    name: '缓存失效授权分组 API Key 保留失效绑定',
+  const replacedRevokedGroupBindingRouteStrategy = repositories.updateRouteStrategy(granteeAuthorizedGroupApiKey.routeStrategyId, {
     groupBindings: [
-      { groupId: ownerGroup.id, priority: 1, status: 'disabled' },
-      { groupId: granteeGroup.id, priority: 2, status: 'active' }
+      { groupId: granteeGroup.id, priority: 1, status: 'active' }
     ],
   }, granteeAccess)
-  assert(retainedRevokedGroupBindingApiKey, '授权回收后应允许 API Key 保留原有授权分组绑定配置')
-  assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '保留已回收授权分组绑定后运行配置仍不应返回候选账号')
+  assert(replacedRevokedGroupBindingRouteStrategy, '授权回收后应允许策略路由切换到当前用户自己的分组')
+  assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '切换到空分组后运行配置仍不应返回候选账号')
 
   const granteeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效被授权 API Key',

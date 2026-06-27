@@ -144,8 +144,56 @@ try {
   }, /策略路由已被 1 个 API Key 使用/, '已被 API Key 使用的策略路由不能删除')
 
   assert.throws(() => {
+    repositories.updateGroup(primaryGroup.id, { enabled: false }, access)
+  }, /无法停用分组.*唯一可用启用分组|请先到策略路由中切换或新增启用分组/, '停用分组前必须检查策略路由唯一可用启用分组')
+
+  assert.throws(() => {
     repositories.deleteGroup(primaryGroup.id, access)
   }, /仍是以下策略路由的唯一启用分组|请先到策略路由中切换或新增启用分组/, '删除分组前必须检查策略路由绑定')
+
+  const owner = repositories.createSystemAccount({
+    username: `route_strategy_authorized_owner_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+    displayName: '策略路由授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const grantee = repositories.createSystemAccount({
+    username: `route_strategy_authorized_grantee_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+    displayName: '策略路由被授权方',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const authorizedSourceGroup = repositories.createGroup({
+    name: '策略路由授权来源分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: authorizedSourceGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '策略路由授权分组停用保护回归'
+  }, ownerAccess)
+  const authorizedStrategy = repositories.createRouteStrategy({
+    name: '授权分组停用保护回归策略',
+    mode: 'normal',
+    groupBindings: [{ groupId: authorizedSourceGroup.id, priority: 1, status: 'active' }]
+  }, granteeAccess)
+  assert.equal(
+    repositories.findRouteStrategySummary(authorizedStrategy.id, granteeAccess)?.groupBindings[0]?.groupId,
+    authorizedSourceGroup.id,
+    '策略路由应允许绑定有效授权给当前用户的分组'
+  )
+  assert.throws(() => {
+    repositories.updateGroup(authorizedSourceGroup.id, { enabled: false }, granteeAccess)
+  }, /无法停用授权分组.*唯一可用启用分组|请先到策略路由中切换或新增启用分组/, '停用授权分组设置前必须检查策略路由唯一可用启用分组')
 
   const extraGroups = Array.from({ length: maxRouteStrategyGroupBindings }, (_, index) => repositories.createGroup({
     name: `策略路由绑定上限回归分组 ${index + 1}`,

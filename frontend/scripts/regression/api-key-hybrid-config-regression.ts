@@ -34,7 +34,9 @@ assert(routeStrategiesApiSource.includes('export interface RouteStrategyMutation
 assert(routeStrategiesApiSource.includes('hybridRoutingConfig?: ApiKeyHybridRoutingConfig | null'), '策略路由请求层必须承载混合智能路由配置')
 assert(routeStrategiesApiSource.includes('groupBindings?: Array<'), '策略路由请求层必须承载分组绑定')
 
-assert(accessTypesSource.includes("export type RouteStrategyMode = 'normal' | 'hybrid_smart' | 'weighted' | 'failover' | 'round_robin'"), '前端领域类型必须声明五种策略路由模式')
+for (const mode of ['normal', 'round_robin', 'weighted', 'failover', 'hybrid_smart']) {
+  assert(accessTypesSource.includes(`'${mode}'`), `前端领域类型必须声明策略路由模式：${mode}`)
+}
 assert(accessTypesSource.includes('scoringFallbackMaxLevel: number'), '前端领域类型必须保留混合智能评分不可用兜底上限字段')
 
 console.log('策略路由混合智能前端配置回归通过：API Key 只绑定策略路由，混合智能配置已迁移到策略路由页面和接口')

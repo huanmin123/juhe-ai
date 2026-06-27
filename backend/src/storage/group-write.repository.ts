@@ -5,7 +5,7 @@ import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPoli
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { maxGroupDeleteAffectedRouteStrategies } from './route-strategy-group-binding-limits.js'
+import { maxRouteStrategyAvailabilityLossCandidates } from './route-strategy-group-binding-limits.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { emptyGroupAccountStats } from './group-account-stats.mapper.js'
@@ -14,7 +14,7 @@ import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary, findGroupSummaryAsync } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
-import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { sqlPlaceholders } from './query-utils.js'
 import {
   activeResourceAuthorization,
   activeResourceAuthorizationById,
@@ -35,6 +35,13 @@ import {
   normalizeOptionalRequiredTextInput,
   requiredTextInput
 } from './repository-input-normalization.js'
+import {
+  assertAffectedRouteStrategiesCanLoseGroupAvailability,
+  assertAffectedRouteStrategiesCanLoseGroupAvailabilityAsync,
+  assertRouteStrategiesCanLoseGroupAvailability,
+  assertRouteStrategiesCanLoseGroupAvailabilityAsync,
+  type RouteStrategyGroupAvailabilityLossCandidate
+} from './route-strategy-availability-guard.js'
 
 export class DefaultGroupReadonlyError extends Error {
   constructor() {
@@ -251,6 +258,9 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   next.protocolVersion = providerProfile.protocolVersion
   assertGroupNameAvailable(systemAccountId, providerProfile.id, next.name, id)
   const database = getBusinessDatabase()
+  if (current.enabled && !next.enabled) {
+    assertRouteStrategiesCanLoseGroupAvailability(database, id, current.name, '停用分组')
+  }
   try {
     database
       .prepare('UPDATE groups SET name = ?, provider_code = ?, provider_protocol_profile_id = ?, protocol_code = ?, protocol_version = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
@@ -320,6 +330,9 @@ export async function updateGroupAsync(id: string, input: Record<string, unknown
   next.protocolVersion = providerProfile.protocolVersion
   await assertGroupNameAvailableAsync(await getGroupWriteDatabaseClient(), owner.systemAccountId, providerProfile.id, next.name, id)
   const client = await getGroupWriteDatabaseClient()
+  if (current.enabled && !next.enabled) {
+    await assertRouteStrategiesCanLoseGroupAvailabilityAsync(client, id, current.name, '停用分组')
+  }
   await client.transaction(async (tx) => {
     await tx.execute(`
       UPDATE ${groupWriteTable(tx, 'groups')}
@@ -383,6 +396,9 @@ function updateAuthorizedGroupSettings(
   const nextSchedulingPolicyJson = groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType)
   const nextEnabled = normalizeOptionalBooleanInput(input, 'enabled', existing?.enabled === 0 ? false : true, '授权分组启用状态')
   const now = nowIso()
+  if (current.enabled && !nextEnabled) {
+    assertRouteStrategiesCanLoseGroupAvailability(database, id, current.name, '停用授权分组', granteeSystemAccountId)
+  }
   database
     .prepare(`
       INSERT INTO group_authorization_settings (
@@ -450,6 +466,9 @@ async function updateAuthorizedGroupSettingsAsync(
   const nextSchedulingPolicyJson = groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType)
   const nextEnabled = normalizeOptionalBooleanInput(input, 'enabled', Number(existing?.enabled ?? 1) === 0 ? false : true, '授权分组启用状态')
   const now = nowIso()
+  if (current.enabled && !nextEnabled) {
+    await assertRouteStrategiesCanLoseGroupAvailabilityAsync(client, id, current.name, '停用授权分组', granteeSystemAccountId)
+  }
   await client.execute(`
     INSERT INTO ${groupWriteTable(client, 'group_authorization_settings')} (
       authorization_id, system_account_id, group_id, enabled, group_type,
@@ -563,13 +582,6 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
   }
 }
 
-type RouteStrategyAffectedByGroupDeleteRow = {
-  id: string
-  name: string
-  systemAccountId: string
-  targetBindingStatus?: string | null
-}
-
 function preserveRouteStrategiesBeforeGroupDelete(
   database: DatabaseSync,
   groupId: string,
@@ -590,26 +602,13 @@ function preserveRouteStrategiesBeforeGroupDelete(
       ORDER BY route_strategy_groups.route_strategy_id ASC
       LIMIT ?
     `)
-    .all(groupId, maxGroupDeleteAffectedRouteStrategies + 1) as unknown as RouteStrategyAffectedByGroupDeleteRow[]
+    .all(groupId, maxRouteStrategyAvailabilityLossCandidates + 1) as unknown as RouteStrategyGroupAvailabilityLossCandidate[]
   if (!affectedRouteStrategies.length) return []
-  if (affectedRouteStrategies.length > maxGroupDeleteAffectedRouteStrategies) {
-    throw new Error(`该分组关联的策略路由超过 ${maxGroupDeleteAffectedRouteStrategies} 个，请先分批解除绑定后再删除分组`)
+  if (affectedRouteStrategies.length > maxRouteStrategyAvailabilityLossCandidates) {
+    throw new Error(`该分组关联的策略路由超过 ${maxRouteStrategyAvailabilityLossCandidates} 个，请先分批解除绑定后再删除分组`)
   }
 
-  const activeBindingCountByRouteStrategyId = loadActiveRouteStrategyGroupCountExcludingGroup(
-    database,
-    groupId,
-    affectedRouteStrategies.map((routeStrategy) => routeStrategy.id)
-  )
-  const blockers = affectedRouteStrategies.filter((routeStrategy) => {
-    if (routeStrategy.targetBindingStatus !== 'active') return false
-    return (activeBindingCountByRouteStrategyId.get(routeStrategy.id) ?? 0) === 0
-  })
-  if (blockers.length) {
-    const names = blockers.slice(0, 3).map((routeStrategy) => routeStrategy.name).join('、')
-    const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`无法删除分组：该分组仍是以下策略路由的唯一启用分组：${names}${suffix}。请先到策略路由中切换或新增启用分组，或删除这些策略路由后再删除分组。`)
-  }
+  assertAffectedRouteStrategiesCanLoseGroupAvailability(database, groupId, affectedRouteStrategies, '删除分组', groupName)
 
   return affectedRouteStrategies.map((routeStrategy) => {
     return {
@@ -648,7 +647,7 @@ async function preserveRouteStrategiesBeforeGroupDeleteAsync(
   groupId: string,
   groupName?: string
 ): Promise<DeletedGroupRouteStrategyChange[]> {
-  const affectedRouteStrategies = await client.query<RouteStrategyAffectedByGroupDeleteRow>(`
+  const affectedRouteStrategies = await client.query<RouteStrategyGroupAvailabilityLossCandidate>(`
     SELECT
       route_strategy_groups.route_strategy_id AS id,
       route_strategies.name,
@@ -661,26 +660,13 @@ async function preserveRouteStrategiesBeforeGroupDeleteAsync(
     WHERE route_strategy_groups.group_id = ?
     ORDER BY route_strategy_groups.route_strategy_id ASC
     LIMIT ?
-  `, [groupId, maxGroupDeleteAffectedRouteStrategies + 1])
+  `, [groupId, maxRouteStrategyAvailabilityLossCandidates + 1])
   if (!affectedRouteStrategies.length) return []
-  if (affectedRouteStrategies.length > maxGroupDeleteAffectedRouteStrategies) {
-    throw new Error(`该分组关联的策略路由超过 ${maxGroupDeleteAffectedRouteStrategies} 个，请先分批解除绑定后再删除分组`)
+  if (affectedRouteStrategies.length > maxRouteStrategyAvailabilityLossCandidates) {
+    throw new Error(`该分组关联的策略路由超过 ${maxRouteStrategyAvailabilityLossCandidates} 个，请先分批解除绑定后再删除分组`)
   }
 
-  const activeBindingCountByRouteStrategyId = await loadActiveRouteStrategyGroupCountExcludingGroupAsync(
-    client,
-    groupId,
-    affectedRouteStrategies.map((routeStrategy) => routeStrategy.id)
-  )
-  const blockers = affectedRouteStrategies.filter((routeStrategy) => {
-    if (routeStrategy.targetBindingStatus !== 'active') return false
-    return (activeBindingCountByRouteStrategyId.get(routeStrategy.id) ?? 0) === 0
-  })
-  if (blockers.length) {
-    const names = blockers.slice(0, 3).map((routeStrategy) => routeStrategy.name).join('、')
-    const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`无法删除分组：该分组仍是以下策略路由的唯一启用分组：${names}${suffix}。请先到策略路由中切换或新增启用分组，或删除这些策略路由后再删除分组。`)
-  }
+  await assertAffectedRouteStrategiesCanLoseGroupAvailabilityAsync(client, groupId, affectedRouteStrategies, '删除分组', groupName)
 
   return affectedRouteStrategies.map((routeStrategy) => {
     return {
@@ -710,94 +696,6 @@ async function loadDeletedGroupApiKeyRouteChangesAsync(
     const change = changeByRouteStrategyId.get(row.routeStrategyId)
     return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
   })
-}
-
-function loadActiveRouteStrategyGroupCountExcludingGroup(
-  database: DatabaseSync,
-  groupId: string,
-  routeStrategyIds: string[]
-): Map<string, number> {
-  const result = new Map<string, number>()
-  const uniqueIds = [...new Set(routeStrategyIds.filter(Boolean))]
-  const now = nowIso()
-  for (const chunk of chunkValues(uniqueIds, 500)) {
-    const rows = database
-      .prepare(`
-        SELECT
-          route_strategy_groups.route_strategy_id AS routeStrategyId,
-          COUNT(*) AS activeBindingCount
-        FROM route_strategy_groups
-        INNER JOIN groups
-          ON groups.id = route_strategy_groups.group_id
-          AND groups.enabled = 1
-        LEFT JOIN resource_authorizations group_authorization
-          ON group_authorization.resource_type = 'group'
-          AND group_authorization.resource_id = groups.id
-          AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
-          AND group_authorization.status = 'active'
-          AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
-        LEFT JOIN group_authorization_settings
-          ON group_authorization_settings.authorization_id = group_authorization.id
-          AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
-          AND group_authorization_settings.group_id = groups.id
-        WHERE route_strategy_groups.status = 'active'
-          AND (
-            groups.system_account_id = route_strategy_groups.system_account_id
-            OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
-          )
-          AND route_strategy_groups.group_id <> ?
-          AND route_strategy_groups.route_strategy_id IN (${sqlPlaceholders(chunk.length)})
-        GROUP BY route_strategy_groups.route_strategy_id
-    `)
-      .all(now, groupId, ...chunk) as unknown as Array<{ routeStrategyId: string; activeBindingCount: number }>
-    for (const row of rows) {
-      result.set(row.routeStrategyId, Number(row.activeBindingCount) || 0)
-    }
-  }
-  return result
-}
-
-async function loadActiveRouteStrategyGroupCountExcludingGroupAsync(
-  client: DatabaseClient,
-  groupId: string,
-  routeStrategyIds: string[]
-): Promise<Map<string, number>> {
-  const result = new Map<string, number>()
-  const uniqueIds = [...new Set(routeStrategyIds.filter(Boolean))]
-  const now = nowIso()
-  for (const chunk of chunkValues(uniqueIds, 500)) {
-    const rows = await client.query<{ routeStrategyId: string; activeBindingCount: number | string }>(`
-      SELECT
-        route_strategy_groups.route_strategy_id AS "routeStrategyId",
-        COUNT(*) AS "activeBindingCount"
-      FROM ${groupWriteTable(client, 'route_strategy_groups')} route_strategy_groups
-      INNER JOIN ${groupWriteTable(client, 'groups')} groups
-        ON groups.id = route_strategy_groups.group_id
-        AND groups.enabled = 1
-      LEFT JOIN ${groupWriteTable(client, 'resource_authorizations')} group_authorization
-        ON group_authorization.resource_type = 'group'
-        AND group_authorization.resource_id = groups.id
-        AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
-        AND group_authorization.status = 'active'
-        AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
-      LEFT JOIN ${groupWriteTable(client, 'group_authorization_settings')} group_authorization_settings
-        ON group_authorization_settings.authorization_id = group_authorization.id
-        AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
-        AND group_authorization_settings.group_id = groups.id
-      WHERE route_strategy_groups.status = 'active'
-        AND (
-          groups.system_account_id = route_strategy_groups.system_account_id
-          OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
-        )
-        AND route_strategy_groups.group_id <> ?
-        AND route_strategy_groups.route_strategy_id IN (${client.dialect.bindPlaceholders(chunk.length)})
-      GROUP BY route_strategy_groups.route_strategy_id
-    `, [now, groupId, ...chunk])
-    for (const row of rows) {
-      result.set(row.routeStrategyId, Number(row.activeBindingCount) || 0)
-    }
-  }
-  return result
 }
 
 function assertGroupNameAvailable(systemAccountId: string, providerProtocolProfileId: string, name: string, excludeId?: string): void {

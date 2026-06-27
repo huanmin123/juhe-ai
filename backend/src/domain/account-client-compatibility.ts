@@ -3,7 +3,14 @@ import {
   type AccountClientCompatibility,
   type ClientCompatibilityCapability
 } from './types.js'
-import { isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from './provider-protocol.js'
+import {
+  DEEPSEEK_OPENAI_V1_PROFILE_ID,
+  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  isAnthropicProtocolProfile,
+  isGptVendorCode,
+  isOpenAIProtocolProfile
+} from './provider-protocol.js'
 
 export interface AccountClientCompatibilityProfile {
   providerCode?: string
@@ -44,6 +51,31 @@ export function normalizeOpenAIAccountClientCompatibility(
   return normalizeAccountClientCompatibility(value, fallback)
 }
 
+export function deriveOpenAIAccountClientCompatibility(
+  providerCode: unknown,
+  accountType: unknown,
+  protocolProfile?: {
+    providerCode?: string
+    protocolCode?: string
+    protocolVersion?: string
+    providerProtocolProfileId?: string
+    id?: string
+  }
+): AccountClientCompatibility {
+  if (!isOpenAIProtocolProfile(protocolProfile)) {
+    return 'openai_standard'
+  }
+  if (isGptVendorCode(providerCode) && accountType === 'oauth') {
+    return 'codex_responses'
+  }
+  const profileId = protocolProfile?.providerProtocolProfileId ?? protocolProfile?.id
+  return profileId === GLM_CODING_OPENAI_V1_PROFILE_ID
+    || profileId === DEEPSEEK_OPENAI_V1_PROFILE_ID
+    || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
+    ? 'codex_responses'
+    : 'openai_standard'
+}
+
 export function deriveAccountSupportedClientCompatibilities(
   profile: AccountClientCompatibilityProfile
 ): ClientCompatibilityCapability[] {
@@ -59,13 +91,7 @@ export function deriveAccountSupportedClientCompatibilities(
   if (accountType === 'oauth') {
     return ['codex_responses']
   }
-  const compatibility = normalizeOpenAIAccountClientCompatibility(
-    profile.providerCode,
-    accountType,
-    profile.clientCompatibility,
-    'openai_standard',
-    profile
-  )
+  const compatibility = deriveOpenAIAccountClientCompatibility(profile.providerCode, accountType, profile)
   return compatibility === 'codex_responses'
     ? ['openai_standard', 'codex_responses']
     : ['openai_standard']

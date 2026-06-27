@@ -149,7 +149,7 @@ export const anthropicProviderDriver: ProviderDriver = {
         }, signal)
       }
     }
-    if (shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
+    if (shouldUseOpenAIToAnthropicBridge(req, account)) {
       prepareOpenAIToAnthropicBridgeHeaders(headers, req)
       return {
         headers,
@@ -177,7 +177,7 @@ export const anthropicProviderDriver: ProviderDriver = {
       enabled: isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping),
       model: modelMapping?.upstreamModel ?? requestModel(req) ?? 'anthropic'
     })
-    if (!shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
+    if (!shouldUseOpenAIToAnthropicBridge(req, account)) {
       return geminiGenerateContentResponse
     }
     return transformOpenAIToAnthropicBridgeUpstreamResponse(req, geminiGenerateContentResponse, {
@@ -206,7 +206,7 @@ export const anthropicProviderDriver: ProviderDriver = {
       })
     }
     if (isOpenAIToAnthropicBridgeCandidateRequest(req)) {
-      if (!shouldUseOpenAIToAnthropicBridge(req, account, context?.requestClientCompatibility)) {
+      if (!shouldUseOpenAIToAnthropicBridge(req, account)) {
         return false
       }
       const mode = anthropicEndpointModeForGatewayRequest(req, account)
@@ -249,15 +249,10 @@ function guidanceProviderNameForAccount(account: DispatchAccountSecret): string 
 
 function shouldUseOpenAIToAnthropicBridge(
   req: Request,
-  account: ProviderDriverAccount,
-  requestClientCompatibility: import('../../../../domain/types.js').ClientCompatibilityCapability | undefined
+  account: ProviderDriverAccount
 ): boolean {
   return isOpenAIToAnthropicBridgeCandidateRequest(req)
-    && (
-      isOpenAIToAnthropicMessagesModelMapping(req, account)
-      || requestClientCompatibility === 'codex_responses'
-      || account.clientCompatibility === 'codex_responses'
-    )
+    && isOpenAIToAnthropicMessagesModelMapping(req, account)
 }
 
 function applyAnthropicUpstreamAuthHeaders(headers: Headers, account: DispatchAccountSecret): void {

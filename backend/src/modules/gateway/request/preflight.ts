@@ -1038,9 +1038,6 @@ function shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(input: 
   if (!accounts.length) return false
   return accounts.every((account) => {
     if (!isAnthropicProtocolProfile(account)) return false
-    if (input.requestClientCompatibility === 'codex_responses' || account.clientCompatibility === 'codex_responses') {
-      return true
-    }
     const mapping = resolveOpenAIAccountModelMapping(account, requestModel(input.req), sourceEndpointFamily)
     return mapping?.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
   })

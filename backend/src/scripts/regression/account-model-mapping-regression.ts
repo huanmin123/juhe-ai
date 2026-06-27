@@ -516,14 +516,7 @@ function assertRuntimeIgnoresPersistentCrossProtocolMappings(): void {
       }
     ]
   }, sourceModel, 'responses')
-  assert.deepEqual(explicitRouteMapping, {
-    sourceModel,
-    sourceEndpointFamily: 'responses',
-    upstreamModel: chatCompletionsUpstreamModel,
-    upstreamEndpointFamily: 'chat_completions',
-    runtimeSource: 'explicit_hybrid_route',
-    runtimeRouteRuleId: 'rule_runtime_responses_to_chat'
-  }, '运行时解析器只应允许 API Key 显式混合路由注入的 Responses -> Chat Completions 映射')
+  assert.equal(explicitRouteMapping, undefined, '运行时解析器不应继续放行旧显式混合路由标记注入的 Responses -> Chat Completions 映射')
 }
 
 function assertCrossProtocolAccountMappingsRejected(groupId: string): void {

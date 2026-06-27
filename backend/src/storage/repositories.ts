@@ -1,5 +1,5 @@
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
-import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
@@ -1167,7 +1167,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   if (!providerProfile.accountTypes.includes(accountType as AccountType)) {
     throw new Error(`供应商协议档案 ${providerProfile.name} 不支持账户类型 ${accountType}`)
   }
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
+  const clientCompatibility = deriveOpenAIAccountClientCompatibility(providerCode, accountType, providerProfile)
   const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials, {
     providerCode,
     accountType,
@@ -1379,7 +1379,7 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
   if (!providerProfile.accountTypes.includes(accountType as AccountType)) {
     throw new Error(`供应商协议档案 ${providerProfile.name} 不支持账户类型 ${accountType}`)
   }
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(providerCode, accountType, input.clientCompatibility, 'openai_standard', providerProfile)
+  const clientCompatibility = deriveOpenAIAccountClientCompatibility(providerCode, accountType, providerProfile)
   const credentials = normalizeAccountCredentialsForWrite(accountType, input.credentials, {
     providerCode,
     accountType,
@@ -1586,13 +1586,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
-  const nextClientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    current.providerCode,
-    current.type,
-    hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
-    current.clientCompatibility,
-    current
-  )
+  const nextClientCompatibility = deriveOpenAIAccountClientCompatibility(current.providerCode, current.type, current)
   const credentials = hasOwnInput(input, 'credentials')
     ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
       providerCode: current.providerCode,
@@ -1910,13 +1904,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
-  const nextClientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    current.providerCode,
-    current.type,
-    hasOwnInput(input, 'clientCompatibility') ? input.clientCompatibility : current.clientCompatibility,
-    current.clientCompatibility,
-    current
-  )
+  const nextClientCompatibility = deriveOpenAIAccountClientCompatibility(current.providerCode, current.type, current)
   const credentials = hasOwnInput(input, 'credentials')
     ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
       providerCode: current.providerCode,

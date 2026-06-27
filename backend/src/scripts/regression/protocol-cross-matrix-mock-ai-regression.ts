@@ -114,36 +114,23 @@ try {
     const chatRuntime = createOpenAIChatTargetRuntime(upstreamOrigin)
     const messagesRuntime = createAnthropicMessagesTargetRuntime(upstreamOrigin)
     const geminiRuntime = createGeminiNativeTargetRuntime(upstreamOrigin)
-    const guidanceFallbackRuntime = createAgentGuidanceFallbackRuntime(upstreamOrigin)
-    assertForbiddenResponsesTargets(upstreamOrigin)
+    assertExplicitHybridRulesRejected(chatRuntime.groupId)
 
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    await assertResponsesToChatComplex(baseUrl, chatRuntime.apiKey)
-    await assertMessagesToChatComplex(baseUrl, chatRuntime.apiKey)
-    await assertGeminiToChatSseComplex(baseUrl, chatRuntime.apiKey)
-    await assertChatToAnthropicMessagesComplex(baseUrl, messagesRuntime.apiKey)
-    await assertChatToAnthropicStructuredToolGuidance(baseUrl, messagesRuntime.apiKey)
-    await assertChatToAnthropicOutputCapabilityGuidance(baseUrl, messagesRuntime.apiKey)
-    await assertAccountScopedGuidanceFallsBackToNextGroup(baseUrl, guidanceFallbackRuntime.apiKey)
-    await assertResponsesToAnthropicMessagesComplex(baseUrl, messagesRuntime.apiKey)
-    await assertResponsesToAnthropicStructuredToolGuidance(baseUrl, messagesRuntime.apiKey)
-    await assertResponsesToAnthropicCapabilityGuidance(baseUrl, messagesRuntime.apiKey)
-    await assertResponsesToAnthropicInvalidRequestStillRejected(baseUrl, messagesRuntime.apiKey)
-    await assertGeminiToAnthropicMessagesComplex(baseUrl, messagesRuntime.apiKey)
-    await assertGeminiToAnthropicStructuredOutputGuidance(baseUrl, messagesRuntime.apiKey)
-    await assertChatToGeminiNativeSseComplex(baseUrl, geminiRuntime.apiKey)
-    await assertResponsesToGeminiNativeComplex(baseUrl, geminiRuntime.apiKey)
-    await assertAnthropicMessagesToGeminiNativeComplex(baseUrl, geminiRuntime.apiKey)
-    await assertResponsesStateToGeminiNativeGuidance(baseUrl, geminiRuntime.apiKey)
+    await assertOpenAIChatNativePasses(baseUrl, chatRuntime.apiKey)
+    await assertResponsesToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
+    await assertAnthropicMessagesToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
+    await assertGeminiNativeToOpenAIChatRejected(baseUrl, chatRuntime.apiKey)
+    await assertOpenAIChatToAnthropicMessagesRejected(baseUrl, messagesRuntime.apiKey)
+    await assertOpenAIChatToGeminiNativeRejected(baseUrl, geminiRuntime.apiKey)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
-    assertUsageRecords()
 
-    console.log('protocol cross matrix mock ai regression passed')
+    console.log('protocol cross matrix mock ai boundary regression passed')
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -270,15 +257,13 @@ function createOpenAIChatTargetRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [openAIChatUpstreamModel],
+    modelMappings: [
+      mapping(openAIChatSourceModel, 'chat_completions', openAIChatUpstreamModel, 'chat_completions')
+    ],
     status: 'active',
     schedulable: true
   }, access)
-  return runtime(group.id, account.id, '协议交叉矩阵 OpenAI Chat Key', [
-    explicitRule('responses_to_chat', group.id, openAIResponsesSourceModel, 'responses', openAIChatUpstreamModel, 'chat_completions'),
-    explicitRule('messages_to_chat', group.id, anthropicMessagesSourceModel, 'messages', openAIChatUpstreamModel, 'chat_completions'),
-    explicitRule('gemini_generate_to_chat', group.id, geminiGenerateContentSourceModel, 'generate_content', openAIChatUpstreamModel, 'chat_completions'),
-    explicitRule('gemini_stream_to_chat', group.id, geminiGenerateContentSourceModel, 'stream_generate_content', openAIChatUpstreamModel, 'chat_completions')
-  ])
+  return runtime(group.id, account.id, '协议交叉矩阵 OpenAI Chat Key')
 }
 
 function createAnthropicMessagesTargetRuntime(upstreamOrigin: string): CrossRuntime {
@@ -303,12 +288,7 @@ function createAnthropicMessagesTargetRuntime(upstreamOrigin: string): CrossRunt
     status: 'active',
     schedulable: true
   }, access)
-  return runtime(group.id, account.id, '协议交叉矩阵 Anthropic Messages Key', [
-    explicitRule('chat_to_messages', group.id, openAIChatSourceModel, 'chat_completions', anthropicMessagesUpstreamModel, 'messages'),
-    explicitRule('responses_to_messages', group.id, openAIResponsesSourceModel, 'responses', anthropicMessagesUpstreamModel, 'messages'),
-    explicitRule('gemini_generate_to_messages', group.id, geminiGenerateContentSourceModel, 'generate_content', anthropicMessagesUpstreamModel, 'messages'),
-    explicitRule('gemini_stream_to_messages', group.id, geminiGenerateContentSourceModel, 'stream_generate_content', anthropicMessagesUpstreamModel, 'messages')
-  ])
+  return runtime(group.id, account.id, '协议交叉矩阵 Anthropic Messages Key')
 }
 
 function createGeminiNativeTargetRuntime(upstreamOrigin: string): CrossRuntime {
@@ -333,11 +313,7 @@ function createGeminiNativeTargetRuntime(upstreamOrigin: string): CrossRuntime {
     status: 'active',
     schedulable: true
   }, access)
-  return runtime(group.id, account.id, '协议交叉矩阵 Gemini native Key', [
-    explicitRule('chat_to_gemini_generate', group.id, openAIChatSourceModel, 'chat_completions', geminiGenerateContentUpstreamModel, 'generate_content'),
-    explicitRule('responses_to_gemini_generate', group.id, openAIResponsesSourceModel, 'responses', geminiGenerateContentUpstreamModel, 'generate_content'),
-    explicitRule('messages_to_gemini_generate', group.id, anthropicMessagesSourceModel, 'messages', geminiGenerateContentUpstreamModel, 'generate_content')
-  ])
+  return runtime(group.id, account.id, '协议交叉矩阵 Gemini native Key')
 }
 
 function createAgentGuidanceFallbackRuntime(upstreamOrigin: string): CrossRuntime {
@@ -441,7 +417,7 @@ function runtime(groupId: string, accountId: string, name: string, explicitHybri
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name,
     groupBindings: [{ groupId, priority: 1, status: 'active' }],
-    explicitHybridRouteRules,
+    ...(explicitHybridRouteRules ? { explicitHybridRouteRules } : {}),
     status: 'active'
   }, access)
   assert(apiKey.key, `${name} 未返回明文密钥`)
@@ -470,6 +446,19 @@ function explicitRule(
   }
 }
 
+function assertExplicitHybridRulesRejected(groupId: string): void {
+  assert.throws(() => {
+    createApiKeyRecordWithRouteStrategy(repositories, {
+      name: '协议交叉矩阵旧显式混合规则 Key',
+      groupBindings: [{ groupId, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: [
+        explicitRule('legacy_explicit_hybrid_boundary', groupId, openAIResponsesSourceModel, 'responses', openAIChatUpstreamModel, 'chat_completions')
+      ],
+      status: 'active'
+    }, access)
+  }, /explicitHybridRouteRules/, 'API Key 不应继续接收显式混合跨协议规则')
+}
+
 function mapping(
   sourceModel: string,
   sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content',
@@ -482,6 +471,89 @@ function mapping(
     upstreamModel,
     upstreamEndpointFamily,
     enabled: true
+  }
+}
+
+async function assertOpenAIChatNativePasses(baseUrl: string, localApiKey: string): Promise<void> {
+  const start = upstreamHits.length
+  const response = await gatewayFetch(baseUrl, '/v1/chat/completions', localApiKey, simpleChatCompletionsRequest(openAIChatSourceModel))
+  const text = await response.text()
+  assert.equal(response.status, 200, `OpenAI-compatible 同协议 Chat 请求应成功，实际 HTTP ${response.status}: ${text}`)
+  const hit = onlyNewHit(start)
+  assert(hit.path.endsWith('/v1/chat/completions'), 'OpenAI-compatible 同协议 Chat 请求应命中 Chat Completions 上游')
+  assert.equal(hit.authorization, 'Bearer sk-cross-openai-chat-upstream')
+  assert.equal(hit.body.model, openAIChatUpstreamModel, '同协议模型映射应把 source model 改写为 upstream model')
+}
+
+async function assertResponsesToOpenAIChatRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertCrossProtocolRejected(
+    'Responses -> OpenAI Chat',
+    baseUrl,
+    '/v1/responses',
+    localApiKey,
+    responsesRequest(false, { structuredOutput: false })
+  )
+}
+
+async function assertAnthropicMessagesToOpenAIChatRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertCrossProtocolRejected(
+    'Anthropic Messages -> OpenAI Chat',
+    baseUrl,
+    '/v1/messages',
+    localApiKey,
+    anthropicMessagesRequest(false)
+  )
+}
+
+async function assertGeminiNativeToOpenAIChatRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertCrossProtocolRejected(
+    'Gemini native -> OpenAI Chat',
+    baseUrl,
+    `/v1beta/models/${geminiGenerateContentSourceModel}:generateContent`,
+    localApiKey,
+    geminiGenerateContentRequest({ structuredOutput: false })
+  )
+}
+
+async function assertOpenAIChatToAnthropicMessagesRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertCrossProtocolRejected(
+    'OpenAI Chat -> Anthropic Messages',
+    baseUrl,
+    '/v1/chat/completions',
+    localApiKey,
+    simpleChatCompletionsRequest(openAIChatSourceModel)
+  )
+}
+
+async function assertOpenAIChatToGeminiNativeRejected(baseUrl: string, localApiKey: string): Promise<void> {
+  await assertCrossProtocolRejected(
+    'OpenAI Chat -> Gemini native',
+    baseUrl,
+    '/v1/chat/completions',
+    localApiKey,
+    simpleChatCompletionsRequest(openAIChatSourceModel)
+  )
+}
+
+async function assertCrossProtocolRejected(
+  label: string,
+  baseUrl: string,
+  path: string,
+  localApiKey: string,
+  body: Record<string, unknown>
+): Promise<void> {
+  const start = upstreamHits.length
+  const response = await gatewayFetch(baseUrl, path, localApiKey, body)
+  const text = await response.text()
+  assert.notEqual(response.status, 200, `${label} 普通供应商跨协议请求不应成功: ${text}`)
+  assert.equal(upstreamHits.length, start, `${label} 普通供应商跨协议请求不应命中上游`)
+}
+
+function simpleChatCompletionsRequest(model: string): Record<string, unknown> {
+  return {
+    model,
+    messages: [{ role: 'user', content: 'ping' }],
+    stream: false
   }
 }
 

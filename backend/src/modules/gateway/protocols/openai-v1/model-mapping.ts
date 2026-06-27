@@ -163,39 +163,11 @@ export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: Res
 }
 
 function isOpenAIModelMappingRuntimeConversionSupported(
-  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily' | 'runtimeSource'>
+  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'>
 ): boolean {
   const { sourceEndpointFamily: source, upstreamEndpointFamily: upstream } = mapping
-  if (mapping.runtimeSource !== 'explicit_hybrid_route') {
-    return source === upstream
-      || (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
-  }
-  if (source === upstream) {
-    return true
-  }
-  if (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY) {
-    return true
-  }
-  if (source === OPENAI_CHAT_COMPLETIONS_FAMILY) {
-    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
-      || upstream === ANTHROPIC_MESSAGES_FAMILY
-      || upstream === GEMINI_GENERATE_CONTENT_FAMILY
-  }
-  if (source === OPENAI_RESPONSES_FAMILY) {
-    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
-      || upstream === OPENAI_RESPONSES_FAMILY
-      || upstream === ANTHROPIC_MESSAGES_FAMILY
-      || upstream === GEMINI_GENERATE_CONTENT_FAMILY
-  }
-  if (source === ANTHROPIC_MESSAGES_FAMILY) {
-    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
-      || upstream === GEMINI_GENERATE_CONTENT_FAMILY
-  }
-  if (source === GEMINI_GENERATE_CONTENT_FAMILY || source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
-    return upstream === OPENAI_CHAT_COMPLETIONS_FAMILY
-      || upstream === ANTHROPIC_MESSAGES_FAMILY
-  }
-  return false
+  return source === upstream
+    || (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
 }
 
 export function geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery(req: Request): string {

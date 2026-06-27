@@ -288,20 +288,6 @@ try {
     const codexBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Codex bridge Mock AI 回归 Key',
       groupBindings: [{ groupId: codexBridgeGroup.id, priority: 1, status: 'active' }],
-      explicitHybridRouteRules: [
-        {
-          id: 'responses_to_deepseek_chat',
-          enabled: true,
-          priority: 1,
-          sourceClientProfile: 'auto',
-          sourceEndpointFamily: 'responses',
-          sourceModel: 'deepseek-v4-flash',
-          targetGroupId: codexBridgeGroup.id,
-          upstreamEndpointFamily: 'chat_completions',
-          upstreamModel: 'deepseek-ai-v4-flash',
-          adapterMode: 'bridge'
-        }
-      ],
       status: 'active'
     }, access)
     assert(codexBridgeApiKey.key, 'Codex bridge 回归 API Key 未返回明文密钥')
@@ -318,17 +304,7 @@ try {
     await assertDeepSeekChatSse(baseUrl, apiKey.key)
     await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
     await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
-    await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRejectsUnsupportedHostedTool(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeStringUsage(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFailsOnInsufficientResourceFinishReason(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekRejectsResponses(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
     assertDeepSeekSemanticParsing()
 
@@ -1333,18 +1309,18 @@ function assertDeepSeekCodexDispatchCapability(groupId: string, accountId: strin
   } as unknown as express.Request
   assert.deepEqual(
     buildGatewayUpstreamUrlsForAccount(bridgeDispatchAccount, codexResponsesRequest),
-    [`${bridgeDispatchAccount.baseUrl}/v1/chat/completions?trace=driver-check`],
-    'DeepSeek Codex bridge 应把 /responses 上游 URL 改写到 /chat/completions 并保留查询参数'
+    [],
+    'DeepSeek 普通账号不应再通过旧显式混合标记把 /responses 改写到 /chat/completions'
   )
   assert.equal(
     accountSupportsGatewayRequest(codexResponsesRequest, bridgeDispatchAccount, { requestClientCompatibility: 'codex_responses' }),
-    true,
-    'DeepSeek Codex bridge 账号应支持 Codex Responses SSE 请求'
+    false,
+    'DeepSeek 普通账号不应因 Codex 客户端画像承接 Responses -> Chat bridge'
   )
   assert.equal(
     accountSupportsGatewayRequest(codexResponsesRequest, bridgeDispatchAccount, { requestClientCompatibility: 'openai_standard' }),
-    true,
-    'DeepSeek 显式协议映射不应再依赖 Codex 客户端兼容才支持 Responses -> Chat bridge'
+    false,
+    'DeepSeek 普通账号不应因旧显式协议映射承接 Responses -> Chat bridge'
   )
 }
 

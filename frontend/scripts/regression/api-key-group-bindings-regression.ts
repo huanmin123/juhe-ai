@@ -42,8 +42,10 @@ assert(accessTypesSource.includes('RouteStrategyOptionSummary'), '前端领域�
 assert(!accessTypesSource.includes('ApiKeyGroupRouteStrategy'), '前端领域类型不得继续保留 API Key 分组路由策略')
 
 assert(
-  accountEndpointModesSource.includes('对话 JSON') && accountEndpointModesSource.includes('Messages 流式') && accountEndpointModesSource.includes('Token 计数'),
-  '接口能力展示应使用中文主文案'
+  accountEndpointModesSource.includes('Chat Completions (JSON)')
+    && accountEndpointModesSource.includes('Messages API (Streaming)')
+    && accountEndpointModesSource.includes('Count tokens'),
+  '接口能力展示应覆盖 OpenAI、Anthropic 和 token 计数能力'
 )
 
 console.log('策略路由前端分组绑定回归通过：API Key 不再维护分组绑定，分组、优先级、权重和状态已迁移到策略路由页面与接口')
