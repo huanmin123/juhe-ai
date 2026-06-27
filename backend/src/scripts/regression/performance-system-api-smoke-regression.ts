@@ -91,6 +91,7 @@ async function runHttpSmoke(): Promise<void> {
   const createdGroupIds: string[] = []
   const createdAiAccountIds: string[] = []
   const createdApiKeyIds: string[] = []
+  const createdRouteStrategyIds: string[] = []
   const createdCustomModelIds: string[] = []
   const createdAuthorizationUsageSeeds: AuthorizationUsageSeed[] = []
   const createdAuthorizationGrantIds: string[] = []
@@ -471,40 +472,51 @@ async function runHttpSmoke(): Promise<void> {
 
     console.log(`[performance-system-api-smoke:${label}] api-keys`)
     const apiKeySuffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
-    const createdApiKey = await postEnvelope<{ id: string; name: string; key: string; groupBindings: Array<{ groupId: string; weight: number }> }>(baseUrl, '/__aisys__/api/api-keys', {
+    const createdRouteStrategy = await postEnvelope<{ id: string; name: string; groupBindings: Array<{ groupId: string; weight: number }> }>(baseUrl, '/__aisys__/api/route-strategies', {
+      name: `烟测普通路由${apiKeySuffix}`,
+      description: 'performance smoke normal route strategy',
+      mode: 'normal',
+      groupBindings: [{ groupId: createdGroup.id, priority: 1, weight: 10, status: 'active' }],
+      status: 'active'
+    }, cookie)
+    createdRouteStrategyIds.push(createdRouteStrategy.id)
+    assert.equal(createdRouteStrategy.groupBindings[0]?.groupId, createdGroup.id, 'performance smoke 策略路由应绑定目标分组')
+    const createdApiKey = await postEnvelope<{ id: string; name: string; key: string; routeStrategyId: string }>(baseUrl, '/__aisys__/api/api-keys', {
       name: `烟测APIKey${apiKeySuffix}`,
       description: 'performance smoke api key',
-      groupBindings: [{ groupId: createdGroup.id, priority: 1, weight: 10, status: 'active' }],
+      routeStrategyId: createdRouteStrategy.id,
       status: 'active'
     }, cookie)
     createdApiKeyIds.push(createdApiKey.id)
     assert.ok(createdApiKey.key.startsWith('sk-'), 'performance smoke 应能创建 API Key 并返回一次性明文')
-    assert.equal(createdApiKey.groupBindings[0]?.groupId, createdGroup.id, 'performance smoke API Key 应绑定目标分组')
+    assert.equal(createdApiKey.routeStrategyId, createdRouteStrategy.id, 'performance smoke API Key 应绑定目标策略路由')
     const apiKeys = await getEnvelope<{ items: Array<{ id: string; name: string }> }>(baseUrl, `/__aisys__/api/api-keys?keyword=${encodeURIComponent(`烟测APIKey${apiKeySuffix}`)}&page=1&pageSize=20`, cookie)
     assert.ok(apiKeys.items.some((item) => item.id === createdApiKey.id), 'performance smoke 应能读取 API Key 列表')
     const secret = await getEnvelope<{ key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/secret`, cookie)
     assert.equal(secret.key, createdApiKey.key, 'performance smoke 应能读取 API Key 完整密钥')
-    const updatedApiKey = await patchEnvelope<{ id: string; status: string; groupBindings: Array<{ weight: number }> }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}`, {
-      status: 'disabled',
+    const updatedRouteStrategy = await patchEnvelope<{ id: string; groupBindings: Array<{ weight: number }> }>(baseUrl, `/__aisys__/api/route-strategies/${createdRouteStrategy.id}`, {
       groupBindings: [{ groupId: createdGroup.id, priority: 1, weight: 20, status: 'active' }]
     }, cookie)
+    assert.equal(updatedRouteStrategy.groupBindings[0]?.weight, 20, 'performance smoke 应能更新策略路由分组权重')
+    const updatedApiKey = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}`, {
+      status: 'disabled'
+    }, cookie)
     assert.equal(updatedApiKey.status, 'disabled', 'performance smoke 应能更新 API Key')
-    assert.equal(updatedApiKey.groupBindings[0]?.weight, 20, 'performance smoke 应能更新 API Key 分组权重')
     const refreshedApiKey = await postOkEnvelope<{ id: string; key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/refresh-key`, {}, cookie)
     assert.ok(refreshedApiKey.key.startsWith('sk-'), 'performance smoke 应能刷新 API Key 密钥')
     assert.notEqual(refreshedApiKey.key, createdApiKey.key, 'performance smoke 刷新 API Key 应返回新密钥')
     await deleteNoContent(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}`, cookie)
     createdApiKeyIds.splice(createdApiKeyIds.indexOf(createdApiKey.id), 1)
+    await deleteNoContent(baseUrl, `/__aisys__/api/route-strategies/${createdRouteStrategy.id}`, cookie)
+    createdRouteStrategyIds.splice(createdRouteStrategyIds.indexOf(createdRouteStrategy.id), 1)
 
-    const hybridApiKey = await postEnvelope<{
+    const hybridRouteStrategy = await postEnvelope<{
       id: string
-      routeMode: string
       hybridRoutingConfig?: { scoringModel?: string; scoringTimeoutMs?: number; levelRoutes?: Array<{ targetModel: string }> }
-    }>(baseUrl, '/__aisys__/api/api-keys', {
-      name: `烟测混合APIKey${apiKeySuffix}`,
-      description: 'performance smoke hybrid api key',
-      routeMode: 'hybrid',
-      groupRouteStrategy: 'priority_failover',
+    }>(baseUrl, '/__aisys__/api/route-strategies', {
+      name: `烟测混合路由${apiKeySuffix}`,
+      description: 'performance smoke hybrid route strategy',
+      mode: 'hybrid_smart',
       groupBindings: [{ groupId: createdGroup.id, priority: 1, weight: 10, status: 'active' }],
       hybridRoutingConfig: {
         scoringModel: smokeModel,
@@ -534,19 +546,33 @@ async function runHttpSmoke(): Promise<void> {
       },
       status: 'active'
     }, cookie)
+    createdRouteStrategyIds.push(hybridRouteStrategy.id)
+    const hybridApiKey = await postEnvelope<{
+      id: string
+      routeStrategyId: string
+      routeStrategyMode?: string
+    }>(baseUrl, '/__aisys__/api/api-keys', {
+      name: `烟测混合APIKey${apiKeySuffix}`,
+      description: 'performance smoke hybrid api key',
+      routeStrategyId: hybridRouteStrategy.id,
+      status: 'active'
+    }, cookie)
     createdApiKeyIds.push(hybridApiKey.id)
-    assert.equal(hybridApiKey.routeMode, 'hybrid', 'performance smoke 应能创建混合路由 API Key')
-    assert.equal(hybridApiKey.hybridRoutingConfig?.scoringModel, smokeModel, 'performance smoke 混合路由应通过模型目录校验并保存评分模型')
-    assert.equal(hybridApiKey.hybridRoutingConfig?.levelRoutes?.[0]?.targetModel, smokeModel, 'performance smoke 混合路由应保存等级目标模型')
-    const updatedHybridApiKey = await patchEnvelope<{ id: string; hybridRoutingConfig?: { scoringTimeoutMs?: number } }>(baseUrl, `/__aisys__/api/api-keys/${hybridApiKey.id}`, {
+    assert.equal(hybridApiKey.routeStrategyId, hybridRouteStrategy.id, 'performance smoke 混合 API Key 应绑定混合策略路由')
+    assert.equal(hybridApiKey.routeStrategyMode, 'hybrid_smart', 'performance smoke API Key 摘要应返回混合策略模式')
+    assert.equal(hybridRouteStrategy.hybridRoutingConfig?.scoringModel, smokeModel, 'performance smoke 混合路由应通过模型目录校验并保存评分模型')
+    assert.equal(hybridRouteStrategy.hybridRoutingConfig?.levelRoutes?.[0]?.targetModel, smokeModel, 'performance smoke 混合路由应保存等级目标模型')
+    const updatedHybridRouteStrategy = await patchEnvelope<{ id: string; hybridRoutingConfig?: { scoringTimeoutMs?: number } }>(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}`, {
       hybridRoutingConfig: {
-        ...hybridApiKey.hybridRoutingConfig,
+        ...hybridRouteStrategy.hybridRoutingConfig,
         scoringTimeoutMs: 12_000
       }
     }, cookie)
-    assert.equal(updatedHybridApiKey.hybridRoutingConfig?.scoringTimeoutMs, 12_000, 'performance smoke 应能更新混合路由配置')
+    assert.equal(updatedHybridRouteStrategy.hybridRoutingConfig?.scoringTimeoutMs, 12_000, 'performance smoke 应能更新混合路由配置')
     await deleteNoContent(baseUrl, `/__aisys__/api/api-keys/${hybridApiKey.id}`, cookie)
     createdApiKeyIds.splice(createdApiKeyIds.indexOf(hybridApiKey.id), 1)
+    await deleteNoContent(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}`, cookie)
+    createdRouteStrategyIds.splice(createdRouteStrategyIds.indexOf(hybridRouteStrategy.id), 1)
 
     const disabledGroup = await patchEnvelope<{ id: string; enabled: boolean }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
       enabled: false
@@ -567,6 +593,7 @@ async function runHttpSmoke(): Promise<void> {
     await cleanupCreatedAuthorizationUsageSeeds(createdAuthorizationUsageSeeds)
     await cleanupCreatedAuthorizationGrants(createdAuthorizationGrantIds)
     await cleanupCreatedApiKeys(createdApiKeyIds)
+    await cleanupCreatedRouteStrategies(createdRouteStrategyIds)
     await cleanupCreatedAiAccounts(createdAiAccountIds)
     await cleanupCreatedGroups(createdGroupIds)
     await cleanupCreatedCustomModels(createdCustomModelIds)
@@ -951,16 +978,50 @@ async function cleanupCreatedApiKeys(apiKeyIds: string[]): Promise<void> {
     ])
     const client = createPostgresDatabaseClient(await getPostgresPool())
     for (const id of apiKeyIds.splice(0)) {
-      await client.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE api_key_id = ?', [id])
+      const routeRows = await client.query<{ route_strategy_id?: string }>('SELECT route_strategy_id FROM "juhe_business"."api_keys" WHERE id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."api_keys" WHERE id = ?', [id])
+      for (const routeRow of routeRows) {
+        if (!routeRow.route_strategy_id) continue
+        await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE route_strategy_id = ?', [routeRow.route_strategy_id])
+        await client.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [routeRow.route_strategy_id])
+      }
     }
     return
   }
   const { getBusinessDatabase } = await import('../../storage/database.js')
   const database = getBusinessDatabase()
   for (const id of apiKeyIds.splice(0)) {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE api_key_id = ?').run(id)
+    const routeRows = database.prepare('SELECT route_strategy_id FROM api_keys WHERE id = ?').all(id) as Array<{ route_strategy_id?: string }>
     database.prepare('DELETE FROM api_keys WHERE id = ?').run(id)
+    for (const routeRow of routeRows) {
+      if (!routeRow.route_strategy_id) continue
+      database.prepare('DELETE FROM route_strategy_groups WHERE route_strategy_id = ?').run(routeRow.route_strategy_id)
+      database.prepare('DELETE FROM route_strategies WHERE id = ?').run(routeRow.route_strategy_id)
+    }
+  }
+}
+
+async function cleanupCreatedRouteStrategies(routeStrategyIds: string[]): Promise<void> {
+  if (!routeStrategyIds.length) {
+    return
+  }
+  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+    const [{ createPostgresDatabaseClient }, { getPostgresPool }] = await Promise.all([
+      import('../../storage/database-client.js'),
+      import('../../storage/postgres-client.js')
+    ])
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    for (const id of routeStrategyIds.splice(0)) {
+      await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE route_strategy_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [id])
+    }
+    return
+  }
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const database = getBusinessDatabase()
+  for (const id of routeStrategyIds.splice(0)) {
+    database.prepare('DELETE FROM route_strategy_groups WHERE route_strategy_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategies WHERE id = ?').run(id)
   }
 }
 
@@ -975,7 +1036,7 @@ async function cleanupCreatedGroups(groupIds: string[]): Promise<void> {
     ])
     const client = createPostgresDatabaseClient(await getPostgresPool())
     for (const id of groupIds.splice(0)) {
-      await client.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE group_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE group_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."groups" WHERE id = ?', [id])
     }
     return
@@ -983,7 +1044,7 @@ async function cleanupCreatedGroups(groupIds: string[]): Promise<void> {
   const { getBusinessDatabase } = await import('../../storage/database.js')
   const database = getBusinessDatabase()
   for (const id of groupIds.splice(0)) {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategy_groups WHERE group_id = ?').run(id)
     database.prepare('DELETE FROM groups WHERE id = ?').run(id)
   }
 }

@@ -86,24 +86,11 @@ function apiKeySummariesForMockdata(
       ownerSystemAccountName: key.systemAccountName ?? keyOwner?.displayName,
       bindingScope: 'visible_group',
       bindingRule: apiKeyAuthorizedGroupBindingRule,
-      groupBindings: key.groupBindings.map((binding) => {
-        const group = groupById.get(binding.groupId)
-        const owner = groupOwnerById.get(binding.groupId)
-        const accessType = keyOwner && owner?.id === keyOwner.id ? 'owner' : 'authorized'
-        return {
-          groupId: binding.groupId,
-          groupName: binding.groupName ?? group?.name,
-          groupOwnerSystemAccountId: owner?.id ?? group?.systemAccountId,
-          groupOwnerSystemAccountName: owner?.displayName ?? group?.systemAccountName,
-          accessType,
-          bindableToApiKey: true,
-          priority: binding.priority,
-          weight: binding.weight,
-          status: binding.status
-        }
-      }),
+      routeStrategyId: key.routeStrategyId,
+      routeStrategyName: key.routeStrategyName,
+      routeStrategyMode: key.routeStrategyMode,
+      routeStrategyStatus: key.routeStrategyStatus,
       status: key.status,
-      groupRouteStrategy: key.groupRouteStrategy,
       expiresAt: key.expiresAt,
       availabilityScheduleActive: key.availabilityScheduleActive,
       key: key.key

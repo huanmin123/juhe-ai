@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -40,7 +41,7 @@ try {
     },
     groupId: group.id
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '使用记录 catalog 窗口回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]
   }, access)

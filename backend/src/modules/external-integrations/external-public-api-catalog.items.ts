@@ -416,8 +416,10 @@ export const externalPublicApiDocItems = [
         name: '公益站访问密钥',
         keyPrefix: 'juis_xxx',
         status: 'active',
-        groupRouteStrategy: 'priority_failover',
-        groupBindings: [{ id: 'bind_xxx', groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active', groupEnabled: true }]
+        routeStrategyId: 'rts_xxx',
+        routeStrategyName: '公益站默认路由',
+        routeStrategyMode: 'normal',
+        routeStrategyStatus: 'active'
       }]
     }
   }
@@ -587,8 +589,7 @@ export const externalPublicApiDocItems = [
       { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
       { name: 'name', type: 'string', required: true, description: 'API Key 名称。', example: '公益站访问密钥' },
       { name: 'description', type: 'string|null', required: false, description: 'API Key 说明；传 null 表示清空说明。', example: '公益站后端访问' },
-      { name: 'groupBindings', type: 'array', required: true, description: 'API Key 分组绑定数组，1 到 20 项；每项包含 groupId，可选 priority、weight 和 status。', example: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }] },
-      { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin，默认 priority_failover。', example: 'priority_failover' },
+      { name: 'routeStrategyId', type: 'string', required: true, description: 'API Key 绑定的策略路由 ID；分组绑定和路由模式在策略路由中维护。', example: 'rts_xxx' },
       { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled，默认 active；同时提交时间计划时仍按该状态落库，后续计划只切换派生计划状态。', example: 'active' },
       { name: 'expiresAt', type: 'string', required: false, description: 'API Key 到期时间，ISO 8601 字符串；未填写表示不过期。', example: '2026-12-31T23:59:59.000Z' },
       { name: 'quotaLimits', type: 'object|null', required: false, description: '请求成本额度限制；支持 hourly、daily、weekly、monthly、total，传 null 表示清空。', example: { daily: { enabled: true, limit: 10 } } },
@@ -599,8 +600,7 @@ export const externalPublicApiDocItems = [
       targetUsername: 'huanmin',
       name: '公益站访问密钥',
       description: '公益站后端访问',
-      groupBindings: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }],
-      groupRouteStrategy: 'priority_failover',
+      routeStrategyId: 'rts_xxx',
       status: 'active',
       expiresAt: '2026-12-31T23:59:59.000Z',
       quotaLimits: { daily: { enabled: true, limit: 10 } },
@@ -623,8 +623,10 @@ export const externalPublicApiDocItems = [
         keyPrefix: 'juis_xxx',
         key: 'juis_xxx_plain_once',
         status: 'active',
-        groupRouteStrategy: 'priority_failover',
-        groupBindings: [{ id: 'bind_xxx', groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active', groupEnabled: true }],
+        routeStrategyId: 'rts_xxx',
+        routeStrategyName: '公益站默认路由',
+        routeStrategyMode: 'normal',
+        routeStrategyStatus: 'active',
         expiresAt: '2026-12-31T23:59:59.000Z',
         availabilitySchedule: { enabled: true, mode: 'allow_windows' },
         availabilityScheduleActive: true
@@ -649,8 +651,7 @@ export const externalPublicApiDocItems = [
       { name: 'name', type: 'string', required: false, description: '新的 API Key 名称。' },
       { name: 'description', type: 'string|null', required: false, description: '新的 API Key 说明；传 null 表示清空。' },
       { name: 'status', type: 'string', required: false, description: '状态：active 或 disabled；提交后立即改真实状态，提交 active 时会同步置为计划派生可用，后续计划只在下一次开始或结束边界切换派生计划状态。', example: 'disabled' },
-      { name: 'groupBindings', type: 'array', required: false, description: '新的 API Key 分组绑定数组；提供时按当前数组替换绑定关系，1 到 20 项。', example: [{ groupId: 'grp_xxx', priority: 1, weight: 1, status: 'active' }] },
-      { name: 'groupRouteStrategy', type: 'string', required: false, description: '分组路由策略：priority_failover、round_robin 或 weighted_round_robin。', example: 'round_robin' },
+      { name: 'routeStrategyId', type: 'string', required: false, description: '新的策略路由 ID；提供后 API Key 改绑定该策略路由。', example: 'rts_xxx' },
       { name: 'expiresAt', type: 'string|null', required: false, description: '新的到期时间；传 null 表示清空到期时间。', example: null },
       { name: 'quotaLimits', type: 'object|null', required: false, description: '新的请求成本额度限制；传 null 表示清空。', example: null },
       { name: 'availabilitySchedule', type: 'object|null', required: false, description: '时间计划；null 表示清空计划，未填写表示保留；保存计划时按当前时间初始化派生计划状态，之后只在窗口开始分钟启用一次、窗口结束分钟停用一次。' },
@@ -672,8 +673,10 @@ export const externalPublicApiDocItems = [
         name: '公益站访问密钥',
         keyPrefix: 'juis_xxx',
         status: 'disabled',
-        groupRouteStrategy: 'round_robin',
-        groupBindings: [{ id: 'bind_xxx', groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active', groupEnabled: true }]
+        routeStrategyId: 'rts_xxx',
+        routeStrategyName: '公益站默认路由',
+        routeStrategyMode: 'normal',
+        routeStrategyStatus: 'active'
       }
     }
   }
@@ -708,8 +711,10 @@ export const externalPublicApiDocItems = [
         name: '公益站访问密钥',
         keyPrefix: 'juis_xxx',
         status: 'active',
-        groupRouteStrategy: 'priority_failover',
-        groupBindings: [{ id: 'bind_xxx', groupId: 'grp_xxx', groupName: '福利', priority: 1, weight: 1, status: 'active', groupEnabled: true }]
+        routeStrategyId: 'rts_xxx',
+        routeStrategyName: '公益站默认路由',
+        routeStrategyMode: 'normal',
+        routeStrategyStatus: 'active'
       }
     }
   }

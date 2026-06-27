@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -99,7 +100,7 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量 mock AI Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
@@ -158,7 +159,7 @@ try {
       schedulable: true,
       concurrencyLimit: 1
     }, access)
-    const capacityApiKey = repositories.createApiKeyRecord({
+    const capacityApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量本地容量失败 mock AI Key',
       groupBindings: [{ groupId: capacityGroup.id, priority: 1, status: 'active' }],
       status: 'active'
@@ -220,7 +221,7 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    const abortApiKey = repositories.createApiKeyRecord({
+    const abortApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量客户端断开 mock AI Key',
       groupBindings: [{ groupId: abortGroup.id, priority: 1, status: 'active' }],
       status: 'active'
@@ -268,7 +269,7 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    const failureApiKey = repositories.createApiKeyRecord({
+    const failureApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量确认失败 mock AI Key',
       groupBindings: [{ groupId: failureGroup.id, priority: 1, status: 'active' }],
       status: 'active'

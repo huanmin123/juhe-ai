@@ -18,7 +18,16 @@ import {
   withResourceAuthorizationPermissions
 } from './resource-authorization-list-helpers.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
-import { loadAccountLookupMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
+import {
+  loadAccountLookupMap,
+  loadAccountLookupMapAsync,
+  loadGroupNameMap,
+  loadGroupNameMapAsync,
+  loadSystemAccountPrincipalMapByIds,
+  loadSystemAccountPrincipalMapByIdsAsync,
+  loadSystemTeamNameMap,
+  loadSystemTeamNameMapAsync
+} from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
@@ -62,12 +71,6 @@ interface ResourceAuthorizationReadTables {
   systemTeams: string
   accounts: string
   groups: string
-}
-
-interface SystemAccountPrincipalLookupRow {
-  id: string
-  username: string
-  display_name: string
 }
 
 export function listResourceAuthorizationSummaries(filters: Record<string, unknown>, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
@@ -1160,75 +1163,6 @@ async function loadGroupAuthorizationUsageSummariesAsync(
     return loadAuthorizationUsageRangeSummariesForScopesAsync(scopes, scopeType, statDateOrRange)
   }
   return loadAuthorizationUsageSummariesForScopesAsync(scopes, scopeType, statDateOrRange)
-}
-
-async function loadAccountLookupMapAsync(client: DatabaseClient, accountIds: Array<string | undefined>): Promise<Map<string, { id: string; name: string; systemAccountId: string; accountExpiresAt?: string }>> {
-  const ids = uniqueTextIds(accountIds)
-  if (!ids.length) return new Map()
-  const rows: Array<{ id: string; name: string; system_account_id: string; account_expires_at: string | null }> = []
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...await client.query<{ id: string; name: string; system_account_id: string; account_expires_at: string | null }>(`
-      SELECT id, name, system_account_id, account_expires_at
-      FROM ${resourceAuthorizationReadTable(client, 'accounts')}
-      WHERE id IN (${sqlPlaceholders(chunk.length)})
-    `, chunk))
-  }
-  return new Map(rows.map((row) => [row.id, {
-    id: row.id,
-    name: row.name,
-    systemAccountId: row.system_account_id,
-    accountExpiresAt: row.account_expires_at ?? undefined
-  }]))
-}
-
-async function loadGroupNameMapAsync(client: DatabaseClient, groupIds: Array<string | undefined>): Promise<Map<string, string>> {
-  const ids = uniqueTextIds(groupIds)
-  if (!ids.length) return new Map()
-  const rows: Array<{ id: string; name: string }> = []
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...await client.query<{ id: string; name: string }>(`
-      SELECT id, name
-      FROM ${resourceAuthorizationReadTable(client, 'groups')}
-      WHERE id IN (${sqlPlaceholders(chunk.length)})
-    `, chunk))
-  }
-  return new Map(rows.map((row) => [row.id, row.name]))
-}
-
-async function loadSystemAccountPrincipalMapByIdsAsync(client: DatabaseClient, systemAccountIds: Array<string | undefined>): Promise<Map<string, { id: string; username: string; displayName: string }>> {
-  const ids = uniqueTextIds(systemAccountIds)
-  if (!ids.length) return new Map()
-  const rows: SystemAccountPrincipalLookupRow[] = []
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...await client.query<SystemAccountPrincipalLookupRow>(`
-      SELECT id, username, display_name
-      FROM ${resourceAuthorizationReadTable(client, 'system_accounts')}
-      WHERE id IN (${sqlPlaceholders(chunk.length)})
-    `, chunk))
-  }
-  return new Map(rows.map((row) => [row.id, {
-    id: row.id,
-    username: row.username,
-    displayName: row.display_name
-  }]))
-}
-
-async function loadSystemTeamNameMapAsync(client: DatabaseClient, teamIds: Array<string | undefined>): Promise<Map<string, string>> {
-  const ids = uniqueTextIds(teamIds)
-  if (!ids.length) return new Map()
-  const rows: Array<{ id: string; name: string }> = []
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...await client.query<{ id: string; name: string }>(`
-      SELECT id, name
-      FROM ${resourceAuthorizationReadTable(client, 'system_teams')}
-      WHERE id IN (${sqlPlaceholders(chunk.length)})
-    `, chunk))
-  }
-  return new Map(rows.map((row) => [row.id, row.name]))
-}
-
-function uniqueTextIds(values: Array<string | null | undefined>): string[] {
-  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
 }
 
 async function getResourceAuthorizationReadDatabaseClient(): Promise<DatabaseClient> {

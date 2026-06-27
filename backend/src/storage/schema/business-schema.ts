@@ -575,34 +575,22 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS api_keys (
+    CREATE TABLE IF NOT EXISTS route_strategies (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
-      key_hash TEXT NOT NULL UNIQUE,
-      key_prefix TEXT NOT NULL,
-      key_suffix TEXT NOT NULL,
-      key_secret_encrypted TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'normal',
       status TEXT NOT NULL DEFAULT 'active',
-      client_profile TEXT NOT NULL DEFAULT 'auto',
-      route_mode TEXT NOT NULL DEFAULT 'normal',
-      group_route_strategy TEXT NOT NULL DEFAULT 'priority_failover',
-      hybrid_routing_config_json TEXT,
-      explicit_hybrid_route_rules_json TEXT,
-      expires_at TEXT,
-      quota_limits_json TEXT,
-      availability_schedule_json TEXT,
-      availability_schedule_active INTEGER NOT NULL DEFAULT 1,
-      availability_schedule_next_check_at TEXT,
-      last_used_at TEXT,
+      config_json TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS api_key_group_bindings (
+    CREATE TABLE IF NOT EXISTS route_strategy_groups (
       id TEXT PRIMARY KEY,
-      api_key_id TEXT NOT NULL,
+      route_strategy_id TEXT NOT NULL,
       system_account_id TEXT NOT NULL,
       group_id TEXT NOT NULL,
       priority INTEGER NOT NULL DEFAULT 1,
@@ -610,8 +598,31 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE,
+      FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      route_strategy_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      key_suffix TEXT NOT NULL,
+      key_secret_encrypted TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      expires_at TEXT,
+      quota_limits_json TEXT,
+      availability_schedule_json TEXT,
+      availability_schedule_active INTEGER NOT NULL DEFAULT 1,
+      availability_schedule_next_check_at TEXT,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id)
     );
 
     CREATE TABLE IF NOT EXISTS api_key_schedule_status_events (
@@ -856,7 +867,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON group_authorization_settings(system_account_id, group_id);
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_route_mode ON api_keys(system_account_id, route_mode);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_route_strategy ON api_keys(route_strategy_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
       ON api_keys(status, updated_at DESC, id)
@@ -870,13 +881,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_api_key_priority ON api_key_group_bindings(api_key_id, status, priority);
-    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_gateway_route
-      ON api_key_group_bindings(api_key_id, system_account_id, priority ASC, created_at ASC, id ASC)
-      WHERE status = 'active';
-    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_group ON api_key_group_bindings(group_id);
-    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_key ON api_key_group_bindings(system_account_id, api_key_id);
-    CREATE INDEX IF NOT EXISTS idx_api_key_group_bindings_owner_group_key ON api_key_group_bindings(system_account_id, group_id, api_key_id);
+    CREATE INDEX IF NOT EXISTS idx_route_strategies_owner_mode ON route_strategies(system_account_id, mode, status, updated_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique_lower ON route_strategies(system_account_id, lower(name));
+    CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_strategy_priority ON route_strategy_groups(route_strategy_id, status, priority ASC, created_at ASC, id ASC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategy_groups_unique ON route_strategy_groups(route_strategy_id, group_id);
+    CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_owner_group ON route_strategy_groups(system_account_id, group_id, route_strategy_id);
     CREATE INDEX IF NOT EXISTS idx_api_key_schedule_status_events_api_key
       ON api_key_schedule_status_events(api_key_id, executed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_owner_created
@@ -925,25 +934,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
   ensureOpenAICompatibleFilesSchema(database)
-  ensureApiKeyRoutingSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
-  ensureApiKeyGroupBindingUniqueIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
-}
-
-function ensureApiKeyRoutingSchema(database: DatabaseSync): void {
-  const columns = new Set(
-    (database.prepare("PRAGMA table_info('api_keys')").all() as Array<{ name?: string }>)
-      .map((column) => column.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0)
-  )
-  if (!columns.has('client_profile')) {
-    database.exec("ALTER TABLE api_keys ADD COLUMN client_profile TEXT NOT NULL DEFAULT 'auto'")
-  }
-  if (!columns.has('explicit_hybrid_route_rules_json')) {
-    database.exec('ALTER TABLE api_keys ADD COLUMN explicit_hybrid_route_rules_json TEXT')
-  }
 }
 
 function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {
@@ -974,13 +967,6 @@ function ensureOpenAICompatibleFilesSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_container_created
       ON openai_compatible_files(system_account_id, api_key_id, container_id, created_at DESC, id DESC)
       WHERE deleted_at IS NULL AND container_id IS NOT NULL;
-  `)
-}
-
-function ensureApiKeyGroupBindingUniqueIndexes(database: DatabaseSync): void {
-  database.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_key_group_unique ON api_key_group_bindings(api_key_id, group_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_group_bindings_active_priority_unique ON api_key_group_bindings(api_key_id, priority) WHERE status = 'active';
   `)
 }
 

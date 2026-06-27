@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -26,12 +27,12 @@ const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({ name: '统计批量 statement 分组', providerCode: 'gpt' }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '统计批量 statement Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
   const mixedGroup = repositories.createGroup({ name: '统计账号类型合并分组', providerCode: 'gpt' }, access)
-  const mixedApiKey = repositories.createApiKeyRecord({
+  const mixedApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '统计账号类型合并 Key',
     groupBindings: [{ groupId: mixedGroup.id, priority: 1, status: 'active' }],
   }, access)

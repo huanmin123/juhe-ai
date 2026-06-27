@@ -13,8 +13,9 @@ import {
 } from './availability-schedules.js'
 import { quotaLimits } from './quota-limits.js'
 
+import { createApiKeyRecordWithRouteStrategy } from '../../../shared/route-strategy-fixture.js'
 export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: MockSystemAccounts): MockApiKeys {
-  const adminMain = repositories.createApiKeyRecord({
+  const adminMain = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}主力网关 Key`,
     description: 'Mockdata 主力本地网关 Key，绑定主力分组',
     groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
@@ -22,7 +23,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(35, 260, 1000),
     availabilitySchedule: activeApiKeyAvailabilitySchedule()
   }, adminAccess)
-  const adminHighConcurrency = repositories.createApiKeyRecord({
+  const adminHighConcurrency = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}高并发 AI Key`,
     description: 'Mockdata 高并发本地网关 Key，绑定高并发 AI 分组，用于分组管理和调度验收',
     groupBindings: [{ groupId: groups.highConcurrency.id, priority: 1, status: 'active' }],
@@ -33,7 +34,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
       monthly: { enabled: true, limit: 5200 }
     }
   }, adminAccess)
-  const adminHighFrequency = repositories.createApiKeyRecord({
+  const adminHighFrequency = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}高频限额 Key`,
     description: 'Mockdata 高频限额 Key，用于额度窗口展示',
     groupBindings: [{ groupId: groups.main.id, priority: 1, status: 'active' }],
@@ -44,7 +45,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
       monthly: { enabled: true, limit: 1600 }
     }
   }, adminAccess)
-  const adminRoundRobin = repositories.createApiKeyRecord({
+  const adminRoundRobin = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}轮询多分组 Key`,
     description: 'Mockdata 轮询 Key，混合启用和停用分组绑定，用于 API Key 多分组路由策略展示',
     groupRouteStrategy: 'round_robin',
@@ -61,7 +62,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
       monthly: { enabled: true, limit: 9000 }
     }
   }, adminAccess)
-  const adminWeighted = repositories.createApiKeyRecord({
+  const adminWeighted = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}加权多分组 Key`,
     description: 'Mockdata 加权轮询 Key，用于权重、优先级和跨分组路由状态展示',
     groupRouteStrategy: 'weighted_round_robin',
@@ -79,7 +80,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
       total: { enabled: true, limit: 40000 }
     }
   }, adminAccess)
-  const adminScheduled = repositories.createApiKeyRecord({
+  const adminScheduled = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}时间计划 Key`,
     description: 'Mockdata 当前不在允许时段内的 API Key，用于时间计划运行态和网关拒绝状态展示',
     groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
@@ -87,7 +88,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     availabilitySchedule: inactiveApiKeyAvailabilitySchedule(),
     quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
-  const adminBackup = repositories.createApiKeyRecord({
+  const adminBackup = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}备用网关 Key`,
     description: 'Mockdata 备用 Key，绑定备用分组',
     groupBindings: [{ groupId: groups.backup.id, priority: 1, status: 'active' }],
@@ -95,28 +96,28 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(20, 120, 480),
     availabilitySchedule: inactiveApiKeyAvailabilitySchedule()
   }, adminAccess)
-  const adminOAuth = repositories.createApiKeyRecord({
+  const adminOAuth = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}OAuth 网关 Key`,
     description: 'Mockdata OAuth Key，绑定 OAuth 分组',
     groupBindings: [{ groupId: groups.oauth.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(18, 140, 520)
   }, adminAccess)
-  const adminAuthorizedGroups = repositories.createApiKeyRecord({
+  const adminAuthorizedGroups = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}超级管理员授权分组 Key`,
     description: 'Mockdata 超级管理员使用别人授权给自己的分组，验证 AI 分组管理和授权分组路由',
     groupBindings: [{ groupId: groups.adminGrantedDev.id, priority: 1, status: 'active' }],
     status: 'active',
     quotaLimits: quotaLimits(10, 80, 300)
   }, adminAccess)
-  const adminDisabled = repositories.createApiKeyRecord({
+  const adminDisabled = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}停用网关 Key`,
     description: 'Mockdata 停用 Key，用于状态展示',
     groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
     status: 'disabled',
     quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
-  const adminExpired = repositories.createApiKeyRecord({
+  const adminExpired = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}已过期网关 Key`,
     description: 'Mockdata 已过期 Key，用于过期状态展示',
     groupBindings: [{ groupId: groups.experiment.id, priority: 1, status: 'active' }],
@@ -125,7 +126,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(5, 30, 100)
   }, adminAccess)
 
-  const managerMain = repositories.createApiKeyRecord({
+  const managerMain = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}管理员网关 Key`,
     description: 'Mockdata 普通管理员本地网关 Key，绑定管理员自有分组',
     groupBindings: [{ groupId: groups.managerMain.id, priority: 1, status: 'active' }],
@@ -133,7 +134,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(16, 120, 420)
   }, { systemAccountId: users.manager.id, role: users.manager.role })
 
-  const managerHighConcurrency = repositories.createApiKeyRecord({
+  const managerHighConcurrency = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}管理员高并发 Key`,
     description: 'Mockdata 普通管理员高并发 Key，绑定管理员高并发分组',
     groupBindings: [{ groupId: groups.managerHighConcurrency.id, priority: 1, status: 'active' }],
@@ -145,7 +146,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     }
   }, { systemAccountId: users.manager.id, role: users.manager.role })
 
-  const devGroupAuthorized = repositories.createApiKeyRecord({
+  const devGroupAuthorized = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}研发授权调用 Key`,
     description: 'Mockdata 研发用户使用授权分组和授权账户的 Key',
     groupBindings: [
@@ -156,7 +157,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(8, 50, 180)
   }, { systemAccountId: users.dev.id, role: 'user' })
 
-  const testerTeamAuthorized = repositories.createApiKeyRecord({
+  const testerTeamAuthorized = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}团队授权调用 Key`,
     description: 'Mockdata 测试用户使用团队授权分组和团队授权账户的 Key',
     groupBindings: [
@@ -168,7 +169,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(6, 40, 150)
   }, { systemAccountId: users.tester.id, role: 'user' })
 
-  const opsAccountAuthorized = repositories.createApiKeyRecord({
+  const opsAccountAuthorized = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}账户授权调用 Key`,
     description: 'Mockdata 运维用户使用授权分组和授权账户的 Key',
     groupBindings: [
@@ -180,7 +181,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(6, 36, 120)
   }, { systemAccountId: users.ops.id, role: 'user' })
 
-  const financeAuthorized = repositories.createApiKeyRecord({
+  const financeAuthorized = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}财务授权调用 Key`,
     description: 'Mockdata 财务用户使用授权分组和授权账户的 Key',
     groupBindings: [
@@ -191,7 +192,7 @@ export function createApiKeys(adminAccess: AccessScope, groups: MockGroups, user
     quotaLimits: quotaLimits(5, 30, 100)
   }, { systemAccountId: users.finance.id, role: 'user' })
 
-  const viewerAuthorized = repositories.createApiKeyRecord({
+  const viewerAuthorized = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${namePrefix}观察授权调用 Key`,
     description: 'Mockdata 观察用户使用授权分组和授权账户的 Key',
     groupBindings: [

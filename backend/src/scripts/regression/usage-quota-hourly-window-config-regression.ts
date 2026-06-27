@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -34,7 +35,7 @@ try {
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({ name: '额度小时窗口配置分组', providerCode: 'gpt' }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '额度小时窗口配置 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     quotaLimits: { hourly: { enabled: true, hours: 37, limit: 1 } }

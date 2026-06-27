@@ -1,11 +1,9 @@
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionConfig,
-  ApiKeyHybridRoutingConfig,
-  ApiKeyRouteMode
+  ApiKeyHybridRoutingConfig
 } from './types.js'
 
-export const DEFAULT_API_KEY_ROUTE_MODE: ApiKeyRouteMode = 'normal'
 export const DEFAULT_HYBRID_SCORING_CONTEXT_MODE: ApiKeyHybridRoutingConfig['scoringContextMode'] = 'full_request'
 export const DEFAULT_HYBRID_QUALITY_PREFERENCE: ApiKeyHybridRoutingConfig['qualityPreference'] = 'balanced'
 export const DEFAULT_HYBRID_SCORING_TIMEOUT_MS = 15000
@@ -22,12 +20,6 @@ export const DEFAULT_HYBRID_QUALITY_INSPECTION_MAX_RETRIES = 2
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_FAILURE_ACTION: ApiKeyHybridQualityInspectionConfig['failureAction'] = 'repair_then_upgrade'
 export const DEFAULT_HYBRID_QUALITY_INSPECTION_UNAVAILABLE_ACTION: ApiKeyHybridQualityInspectionConfig['unavailableAction'] = 'pass_through'
 const HYBRID_LEVEL_ROUTE_MAX_COUNT = 5
-
-export function normalizeApiKeyRouteMode(value: unknown): ApiKeyRouteMode {
-  if (value === undefined || value === null || value === '') return DEFAULT_API_KEY_ROUTE_MODE
-  if (value === 'normal' || value === 'hybrid') return value
-  throw new Error('API Key 路由模式无效')
-}
 
 export function parseHybridRoutingConfigJson(value: string | null | undefined): ApiKeyHybridRoutingConfig | undefined {
   if (!value) return undefined

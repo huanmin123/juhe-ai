@@ -14,6 +14,8 @@ import {
 } from './model-checks.service.js'
 
 export const modelChecksRouter = Router()
+export const modelCheckHttpRunDeadlineMs = 25_000
+export const modelCheckStreamHeartbeatMs = 10_000
 
 const modelCheckRunSchema = z.object({
   targetType: z.literal('account', {
@@ -52,6 +54,8 @@ modelChecksRouter.post('/run', async (req, res, next) => {
     return
   }
   const abortController = new AbortController()
+  const deadlineSignal = AbortSignal.timeout(modelCheckHttpRunDeadlineMs)
+  const signal = AbortSignal.any([abortController.signal, deadlineSignal])
   req.once('aborted', () => abortController.abort())
   res.once('close', () => {
     if (!res.writableEnded) {
@@ -59,7 +63,7 @@ modelChecksRouter.post('/run', async (req, res, next) => {
     }
   })
   try {
-    const result = await runModelCheck(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId), abortController.signal)
+    const result = await runModelCheck(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId), signal)
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
@@ -110,6 +114,12 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
     connection: 'keep-alive',
     'x-accel-buffering': 'no'
   })
+  res.write(': connected\n\n')
+  const heartbeat = setInterval(() => {
+    if (abortController.signal.aborted || res.writableEnded) return
+    res.write(': heartbeat\n\n')
+  }, modelCheckStreamHeartbeatMs)
+  heartbeat.unref()
 
   const writeEvent = (event: string, data: unknown): void => {
     if (abortController.signal.aborted || res.writableEnded) return
@@ -140,6 +150,7 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
     writeEvent('error', { message: error instanceof Error ? error.message : '模型检测失败' })
     res.end()
   } finally {
+    clearInterval(heartbeat)
     releaseDiagnosticSlot()
   }
 })

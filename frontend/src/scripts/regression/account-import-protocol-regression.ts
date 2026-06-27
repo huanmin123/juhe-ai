@@ -106,12 +106,12 @@ assertMatch(accountImportProtocolMarkdown, /\| `providerProtocolProfileId` \| �
 assertMatch(accountImportProtocolMarkdown, /\| `tags` \| 否 \| string\[\] \|/, '协议 Markdown 应把 tags 暴露为导入字段')
 assertMatch(accountImportProtocolMarkdown, /`active`、`pending_test` 或 `disabled`/, '协议 Markdown 应说明导入状态支持 pending_test')
 assertMatch(accountImportProtocolMarkdown, /`status: "active"` 会转为 `pending_test`/, '协议 Markdown 应说明 active 导入创建会转为待测试')
-assertMatch(accountImportProtocolMarkdown, /下游客户端画像由 API Key 默认客户端画像或运行时自动识别决定/, '协议 Markdown 应说明客户端画像迁移到 API Key 层')
+assertMatch(accountImportProtocolMarkdown, /下游客户端画像由网关运行时自动识别/, '协议 Markdown 应说明客户端画像由网关内部识别')
 assertMatch(accountImportProtocolMarkdown, /`connectionType: "coding_anthropic_api_key"`/, '协议 Markdown 应说明 GLM Coding Anthropic 接入类型')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId: "profile_deepseek_anthropic_v1"`/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
 assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '协议 Markdown 应说明 modelMappings 只做账号模型别名')
 assertMatch(accountImportProtocolMarkdown, /其他跨协议方向不要写入账户导入数据/, '协议 Markdown 应说明跨协议方向不写入账户导入数据')
-assertMatch(accountImportProtocolMarkdown, /需要把 OpenAI Responses 转到 Chat Completions[\s\S]+请导入账号后在 API Key 显式混合路由配置规则/, '协议 Markdown 应说明跨协议桥接改到 API Key 显式混合路由')
+assertMatch(accountImportProtocolMarkdown, /需要把 OpenAI Responses 转到 Chat Completions[\s\S]+请使用混合供应商账户配置/, '协议 Markdown 应说明跨协议桥接归属混合供应商账户')
 assertMatch(accountImportProtocolMarkdown, /两者都必须来自当前账户供应商模型目录/, '协议 Markdown 应说明 source/upstream 均受当前供应商目录约束')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 与 GLM Coding Anthropic 使用 Anthropic v1 Messages 原生协议，`credentials\.supported_endpoint_modes` 填 `messages_json`、`messages_sse`，不要填 `message_token_counting`/, '协议 Markdown 应说明第三方 Anthropic 档案不支持 count_tokens')
 assertMatch(accountImportProtocolMarkdown, /supported_endpoint_modes/, '协议 Markdown 应说明接口能力限制字段')
@@ -120,7 +120,7 @@ assertMatch(accountImportProtocolMarkdown, /`proxyRef` 和 `proxyProfileId` 不�
 assertMatch(formalProtocolMarkdown, /# AI 账户导入协议/, '正式协议文档应可读取')
 assertMatch(formalProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '正式协议文档应说明 modelMappings 只做账号模型别名')
 assertMatch(formalProtocolMarkdown, /其他跨协议方向不要写入账户导入数据/, '正式协议文档应说明跨协议方向不写入账户导入数据')
-assertMatch(formalProtocolMarkdown, /API Key 显式混合路由配置规则/, '正式协议文档应说明跨协议桥接改到 API Key 显式混合路由')
+assertMatch(formalProtocolMarkdown, /混合供应商账户配置真实上游和协议转换/, '正式协议文档应说明跨协议桥接归属混合供应商账户')
 
 console.log('账户导入协议回归通过：模板 JSON、AI 提示词和协议 Markdown 保持一致')
 

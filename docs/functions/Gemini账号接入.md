@@ -1,5 +1,8 @@
 # Gemini 账号接入
 
+> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，Gemini 跨协议转换落到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+
 ## 范围
 
 本文记录 Google Gemini 供应商的接入设计、协议档案、账户创建类型、网关透传边界、`gemini-cli` 兼容方式、模型目录、usage 统计和后续验证要求。后端和前端 mock 阶段实现已落地；后续真实联调以本文和 [Gemini 协议兼容设计](Gemini协议兼容设计.md) 为长期功能事实。
@@ -8,8 +11,8 @@
 
 - Gemini native 客户端：走 `gemini/v1beta` 原生协议档案。
 - OpenAI Chat 客户端：走 Gemini 供应商下的 `profile_gemini_openai_chat_v1beta`，上游为 Gemini 官方 OpenAI compatibility endpoint。
-- Codex / OpenAI Responses 客户端：如果要使用 Gemini OpenAI Chat，必须在 API Key 显式混合路由中配置 `responses -> chat_completions` 规则；不允许走 Gemini native 自动转换，也不允许 Anthropic Messages 自动转到 Gemini。
-- Gemini CLI / Gemini SDK 如果要调用 GLM、DeepSeek、OpenAI-compatible 或 Gemini OpenAI Chat 的 Chat 模型，必须在 API Key 显式混合路由中配置 `generate_content` 或 `stream_generate_content` 到 `chat_completions` 的规则；如果要调用 Claude / Anthropic Messages 模型，必须配置 `generate_content` 或 `stream_generate_content` 到 `messages` 的规则；不做基于模型名或客户端画像的自动转换。
+- Codex / OpenAI Responses 客户端：如果要使用 Gemini OpenAI Chat 或 Gemini native 转换，必须命中混合供应商账户；不允许走 Gemini native 自动转换，也不允许 Anthropic Messages 自动转到 Gemini。
+- Gemini CLI / Gemini SDK 如果要调用 GLM、DeepSeek、OpenAI-compatible 或 Gemini OpenAI Chat 的 Chat 模型，或者调用 Claude / Anthropic Messages 模型，必须命中混合供应商账户；不做基于模型名或客户端画像的自动转换。
 
 本次参考：
 

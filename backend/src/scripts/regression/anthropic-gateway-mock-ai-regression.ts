@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -113,7 +114,7 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Anthropic Mock AI 回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
@@ -327,7 +328,7 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic SSE 重试耗尽错误形态 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -407,7 +408,7 @@ async function assertAnthropicBetaHeaderForwardsClientValue(baseUrl: string, ups
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic Beta 客户端透传回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -505,7 +506,7 @@ async function assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUr
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic Count Tokens 不支持降级 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -559,7 +560,7 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic model_not_found 不污染账号 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -614,7 +615,7 @@ async function assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl: stri
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic empty content 协议守卫 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -733,7 +734,7 @@ async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseU
     schedulable: true,
     priority: 100
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic 多 Key 隔离回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -805,7 +806,7 @@ async function assertAnthropicResponseInspectionSwitchesAccount(baseUrl: string,
     },
     action: 'retry_next_account'
   })
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic 响应检查换号 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -881,7 +882,7 @@ async function assertAnthropicJsonErrorSwitchesAccount(baseUrl: string, upstream
     schedulable: true,
     priority: 100
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic JSON error 换号 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -957,7 +958,7 @@ async function assertAnthropicSseErrorSwitchesAccount(baseUrl: string, upstreamB
     schedulable: true,
     priority: 100
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic SSE error 换号 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -1017,7 +1018,7 @@ async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, 
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'OpenAI 不承接 Anthropic Messages Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

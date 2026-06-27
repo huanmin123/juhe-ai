@@ -13,7 +13,7 @@ import {
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
-import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
+import { flushRuntimeLogIndexQueueAsync } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { requestBackgroundWorkerDbService, requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples } from './background-ipc.js'
 import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.js'
@@ -370,8 +370,10 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runRuntimeLogIndexMaintenance(): Promise<void> {
   try {
-    flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
-    ensureRuntimeLogFacetSnapshots()
+    await flushRuntimeLogIndexQueueAsync({ drain: true, retryOnFailure: false })
+    if (runtimeConfig.databaseDriver !== 'postgres') {
+      ensureRuntimeLogFacetSnapshots()
+    }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), '运行日志索引维护失败')
     throw error

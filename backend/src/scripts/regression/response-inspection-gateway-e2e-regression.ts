@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -157,7 +158,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     schedulable: true,
     priority: 10
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `响应检查 E2E Key ${scenario}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -249,7 +250,7 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
     schedulable: true,
     priority: 0
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '响应检查 E2E Key codex broken gzip exhausted',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

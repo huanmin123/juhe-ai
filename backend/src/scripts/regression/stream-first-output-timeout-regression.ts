@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -484,7 +485,7 @@ function createScenarioCredential(upstreamBaseUrl: string, label: string): {
     schedulable: true,
     clientCompatibility: 'codex_responses'
   }, access)
-  const apiKey = apiKeyRepository.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归 Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -531,7 +532,7 @@ function createTwoAccountScenarioCredential(upstreamBaseUrl: string, label: stri
     priority: 10,
     clientCompatibility: 'codex_responses'
   }, access)
-  const apiKey = apiKeyRepository.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归双账号 Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -561,7 +562,7 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
     priority: index * 10,
     clientCompatibility: 'codex_responses'
   }, access))
-  const apiKey = apiKeyRepository.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归多账号 Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

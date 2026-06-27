@@ -176,6 +176,113 @@ function assertRuntimeWriteQueueSourceGuards(): void {
   const runtimeLogQueueSource = readFileSync(resolve('src/modules/runtime-logs/runtime-log-index-queue.service.ts'), 'utf8')
   assert(runtimeLogQueueSource.includes("runtimeConfig.processRole === 'db-service'"), 'DB service 运行日志索引不能回退到本地 dataset 队列')
   assert(runtimeLogQueueSource.includes('sendRuntimeLogLineFromDbServiceToServer'), 'DB service 运行日志索引必须投递父进程后再由 ingest-worker 写入')
+
+  const accountProbeJobsSource = readFileSync(resolve('src/modules/background/account-probe-jobs.ts'), 'utf8')
+  assert(accountProbeJobsSource.includes('requestBackgroundWorkerDbService'), 'ops-worker 账号探测候选扫描必须通过 DB service')
+  for (const forbidden of ['listAccountsDueForHealthCheck', 'listAccountsDueForCooldownRetest']) {
+    assert.equal(
+      accountProbeJobsSource.includes(forbidden),
+      false,
+      `ops-worker 账号探测候选扫描不能直接调用会写业务库的 repository：${forbidden}`
+    )
+  }
+  for (const required of ['list_accounts_due_for_health_check', 'list_accounts_due_for_cooldown_retest']) {
+    assert(accountProbeJobsSource.includes(required), `ops-worker 账号探测候选扫描必须登记 DB service 操作：${required}`)
+  }
+
+  const accountHealthQueueSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
+  assert.equal(
+    accountHealthQueueSource.includes('findAccountForHealthCheck'),
+    false,
+    'ops-worker 健康检测队列项不能直接调用 findAccountForHealthCheck；该函数会先停用过期账号并写业务库'
+  )
+  assert(
+    accountHealthQueueSource.includes('find_account_for_health_check'),
+    'ops-worker 健康检测队列项单账号复查必须通过 DB service'
+  )
+  assert(
+    accountHealthQueueSource.includes('findAccountForTest: loadAccountForTestViaDbService'),
+    'ops-worker 健康检测调用测试 service 时必须传入 DB service 账号读取器'
+  )
+
+  const cooldownRetestQueueSource = readFileSync(resolve('src/modules/background/cooldown-account-retest.service.ts'), 'utf8')
+  assert.equal(
+    cooldownRetestQueueSource.includes('findAccountForCooldownRetest'),
+    false,
+    'ops-worker 冷却复测队列项不能直接调用 findAccountForCooldownRetest；该函数会先停用过期账号并写业务库'
+  )
+  assert(
+    cooldownRetestQueueSource.includes('find_account_for_cooldown_retest'),
+    'ops-worker 冷却复测队列项单账号复查必须通过 DB service'
+  )
+  assert(
+    cooldownRetestQueueSource.includes('findAccountForTest: loadAccountForTestViaDbService'),
+    'ops-worker 冷却复测调用测试 service 时必须传入 DB service 账号读取器'
+  )
+
+  const accountTestTaskQueueSource = readFileSync(resolve('src/modules/accounts/account-test-task-queue.service.ts'), 'utf8')
+  assert.equal(
+    accountTestTaskQueueSource.includes('findAccountForTest('),
+    false,
+    'ops-worker 手动账号测试队列不能直接调用 findAccountForTest；该函数会先停用过期账号并写业务库'
+  )
+  assert(
+    accountTestTaskQueueSource.includes('find_account_for_test'),
+    'ops-worker 手动账号测试队列账号读取必须通过 DB service'
+  )
+  assert(
+    accountTestTaskQueueSource.includes('findAccountForTest: loadAccountForTestViaDbService'),
+    'ops-worker 手动账号测试调用测试 service 时必须传入 DB service 账号读取器'
+  )
+
+  const accountApiKeyRetestQueueSource = readFileSync(resolve('src/modules/background/account-api-key-cooldown-retest.service.ts'), 'utf8')
+  assert.equal(
+    accountApiKeyRetestQueueSource.includes('findAccountForTest('),
+    false,
+    'ops-worker 账户内 API Key 复测队列不能直接调用 findAccountForTest；该函数会先停用过期账号并写业务库'
+  )
+  assert(
+    accountApiKeyRetestQueueSource.includes('find_account_for_test'),
+    'ops-worker 账户内 API Key 复测账号读取必须通过 DB service'
+  )
+
+  const accountQualityPrecheckQueueSource = readFileSync(resolve('src/modules/background/account-quality-failure-precheck.service.ts'), 'utf8')
+  assert.equal(
+    accountQualityPrecheckQueueSource.includes('findAccountForTest('),
+    false,
+    'stats-worker 账号质量失败预确认队列不能直接调用 findAccountForTest；该函数会先停用过期账号并写业务库'
+  )
+  assert(
+    accountQualityPrecheckQueueSource.includes('find_account_for_test'),
+    'stats-worker 账号质量失败预确认账号读取必须通过 DB service'
+  )
+  assert(
+    accountQualityPrecheckQueueSource.includes('findAccountForTest: loadAccountForTestViaDbService'),
+    'stats-worker 账号质量失败预确认调用测试 service 时必须传入 DB service 账号读取器'
+  )
+
+  const gatewayAccountSideEffectsSource = readFileSync(resolve('src/modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
+  assert(
+    gatewayAccountSideEffectsSource.includes("type: 'find_account_for_test'"),
+    'server 网关事前确认调用测试 service 时必须通过 DB service 读取最终账号状态'
+  )
+
+  const openAIOAuthAccessTokenRefreshSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth-access-token-refresh.service.ts'), 'utf8')
+  assert.match(
+    openAIOAuthAccessTokenRefreshSource,
+    /runtimeConfig\.processRole === 'server' \|\| runtimeConfig\.processRole === 'worker'\s*\?\s*'db-service'\s*:\s*'sync'/,
+    'OpenAI OAuth 后台刷新在 worker 默认必须走 DB service，不能因无 IPC 降级到本地写业务库'
+  )
+  assert.match(
+    openAIOAuthAccessTokenRefreshSource,
+    /if \(runtimeConfig\.processRole === 'worker'\)[\s\S]{0,240}requestBackgroundWorkerDbService/,
+    'OpenAI OAuth worker 写回必须通过 background worker DB service 通道'
+  )
+  assert.doesNotMatch(
+    openAIOAuthAccessTokenRefreshSource,
+    /isSingleProcessWorkerRole\(\)[\s\S]{0,200}runLocalOpenAIOAuthDbServiceOperation/,
+    'OpenAI OAuth 后台刷新不能给单进程 worker 保留隐式本地写库 fallback'
+  )
 }
 
 function assertCodexContextStateSchemaBoundary(): void {

@@ -77,7 +77,8 @@ async function main(): Promise<void> {
     const result = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
       leadSeconds: 300,
       batchSize: 20,
-      retryBackoffSeconds: 60
+      retryBackoffSeconds: 60,
+      persistMode: 'sync'
     })
 
     assert(result.scanned === 4, `应只扫描即将到期的 OAuth 刷新候选，实际 ${result.scanned}`)
@@ -128,7 +129,8 @@ async function main(): Promise<void> {
       const failedResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
         leadSeconds: 300,
         batchSize: 20,
-        retryBackoffSeconds: 0
+        retryBackoffSeconds: 0,
+        persistMode: 'sync'
       })
       assert(failedResult.failed === 2, `第 ${attempt} 次应记录 2 个刷新失败，实际 ${failedResult.failed}`)
       assert(failedResult.cooldowned === 0, `刷新失败不应改成临时不可调用，实际 ${failedResult.cooldowned}`)
@@ -162,7 +164,8 @@ async function main(): Promise<void> {
     const refreshedAfterException = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
       leadSeconds: 300,
       batchSize: 20,
-      retryBackoffSeconds: 0
+      retryBackoffSeconds: 0,
+      persistMode: 'sync'
     })
     assert(refreshedAfterException.scanned === 1, `OAuth 刷新失败异常账户不应再被扫描，实际扫描 ${refreshedAfterException.scanned}`)
     assert(refreshedAfterException.due === 1, `OAuth 刷新失败异常账户不应再进入待刷新列表，实际待刷新 ${refreshedAfterException.due}`)

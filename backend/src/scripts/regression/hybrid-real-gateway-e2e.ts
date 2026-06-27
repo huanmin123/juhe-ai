@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -146,7 +147,7 @@ try {
       supportedModel: opusModel
     })
 
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Real 智能路由 Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',

@@ -1,16 +1,7 @@
-import type { ApiKeyGroupBindingSummary, ApiKeySummary } from '../domain/types.js'
-import { normalizeApiKeyGroupRouteStrategy } from '../domain/api-key-routing.js'
-import {
-  normalizeApiKeyRouteMode,
-  parseHybridRoutingConfigJson
-} from '../domain/api-key-hybrid-routing.js'
-import {
-  normalizeApiKeyClientProfile,
-  parseExplicitHybridRouteRulesJson
-} from '../domain/api-key-explicit-hybrid-routing.js'
+import type { ApiKeySummary } from '../domain/types.js'
+import { normalizeRouteStrategyMode } from '../domain/route-strategy.js'
 import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { parseApiKeyAvailabilityScheduleJson } from './api-key-availability-schedule.js'
-import { loadApiKeyGroupBindingSummariesByApiKeyIds, loadApiKeyGroupBindingSummariesByApiKeyIdsAsync } from './api-key-group-bindings.repository.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -25,18 +16,17 @@ import { chunkValues } from './query-utils.js'
 export interface ApiKeyRow {
   id: string
   system_account_id: string
+  system_account_name?: string | null
+  route_strategy_id: string
+  route_strategy_name?: string | null
+  route_strategy_mode?: ApiKeySummary['routeStrategyMode'] | null
+  route_strategy_status?: ApiKeySummary['routeStrategyStatus'] | null
   name: string
   description: string | null
   key_prefix: string
   key_suffix: string
   key_secret_encrypted?: string | null
   status: 'active' | 'disabled'
-  client_profile?: ApiKeySummary['clientProfile'] | null
-  route_mode?: ApiKeySummary['routeMode'] | null
-  group_route_strategy?: ApiKeySummary['groupRouteStrategy'] | null
-  hybrid_routing_config_json?: string | null
-  explicit_hybrid_route_rules_json?: string | null
-  group_owner_system_account_name?: string | null
   expires_at: string | null
   quota_limits_json: string | null
   availability_schedule_json?: string | null
@@ -46,51 +36,27 @@ export interface ApiKeyRow {
 export function apiKeySummariesFromRows(
   rows: ApiKeyRow[],
   access?: AccessScope,
-  options: { includeSecret?: boolean; bindingsByApiKeyId?: Map<string, ApiKeyGroupBindingSummary[]> } = {}
+  options: { includeSecret?: boolean } = {}
 ): ApiKeySummary[] {
   const includeSecret = options.includeSecret === true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
+  const accountNames = shouldIncludeSystemAccountFields
+    ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
+    : new Map<string, string>()
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
   const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
-  const bindingsByApiKeyId = options.bindingsByApiKeyId ?? loadApiKeyGroupBindingSummariesByApiKeyIds(rows.map((row) => row.id))
-  return rows.map((row) => {
-    const groupBindings = bindingsByApiKeyId.get(row.id) ?? []
-    const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
-    return {
-      id: row.id,
-      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
-      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
-      name: row.name,
-      description: row.description ?? undefined,
-      keyPrefix: row.key_prefix,
-      keySuffix: row.key_suffix,
-      key: includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
-      status: row.status,
-      clientProfile: normalizeApiKeyClientProfile(row.client_profile),
-      routeMode: normalizeApiKeyRouteMode(row.route_mode),
-      groupRouteStrategy: normalizeApiKeyGroupRouteStrategy(row.group_route_strategy),
-      hybridRoutingConfig: row.route_mode === 'hybrid'
-        ? parseHybridRoutingConfigJson(row.hybrid_routing_config_json)
-        : undefined,
-      explicitHybridRouteRules: parseExplicitHybridRouteRulesJson(row.explicit_hybrid_route_rules_json),
-      groupBindings,
-      groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
-      expiresAt: row.expires_at ?? undefined,
-      quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
-      availabilitySchedule,
-      availabilityScheduleActive: availabilitySchedule?.enabled
-        ? row.availability_schedule_active !== 0
-        : undefined,
-      usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
-    }
-  })
+  return rows.map((row) => apiKeySummaryFromRow(row, {
+    includeSecret,
+    shouldIncludeSystemAccountFields,
+    accountNames,
+    usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
+  }))
 }
 
 export async function apiKeySummariesFromRowsAsync(
   rows: ApiKeyRow[],
   access?: AccessScope,
-  options: { includeSecret?: boolean; bindingsByApiKeyId?: Map<string, ApiKeyGroupBindingSummary[]> } = {}
+  options: { includeSecret?: boolean } = {}
 ): Promise<ApiKeySummary[]> {
   const includeSecret = options.includeSecret === true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
@@ -98,38 +64,53 @@ export async function apiKeySummariesFromRowsAsync(
   const accountNames = shouldIncludeSystemAccountFields
     ? await loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
     : new Map<string, string>()
-  const bindingsByApiKeyId = options.bindingsByApiKeyId ?? await loadApiKeyGroupBindingSummariesByApiKeyIdsAsync(rows.map((row) => row.id))
-  return rows.map((row) => {
-    const groupBindings = bindingsByApiKeyId.get(row.id) ?? []
-    const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
-    return {
-      id: row.id,
-      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
-      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
-      name: row.name,
-      description: row.description ?? undefined,
-      keyPrefix: row.key_prefix,
-      keySuffix: row.key_suffix,
-      key: includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
-      status: row.status,
-      clientProfile: normalizeApiKeyClientProfile(row.client_profile),
-      routeMode: normalizeApiKeyRouteMode(row.route_mode),
-      groupRouteStrategy: normalizeApiKeyGroupRouteStrategy(row.group_route_strategy),
-      hybridRoutingConfig: row.route_mode === 'hybrid'
-        ? parseHybridRoutingConfigJson(row.hybrid_routing_config_json)
-        : undefined,
-      explicitHybridRouteRules: parseExplicitHybridRouteRulesJson(row.explicit_hybrid_route_rules_json),
-      groupBindings,
-      groupOwnerSystemAccountName: row.group_owner_system_account_name ?? undefined,
-      expiresAt: row.expires_at ?? undefined,
-      quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
-      availabilitySchedule,
-      availabilityScheduleActive: availabilitySchedule?.enabled
-        ? Number(row.availability_schedule_active ?? 1) !== 0
-        : undefined,
-      usage: emptyAccountUsageSummary()
-    }
-  })
+  return rows.map((row) => apiKeySummaryFromRow(row, {
+    includeSecret,
+    shouldIncludeSystemAccountFields,
+    accountNames,
+    usage: emptyAccountUsageSummary()
+  }))
+}
+
+function apiKeySummaryFromRow(
+  row: ApiKeyRow,
+  options: {
+    includeSecret: boolean
+    shouldIncludeSystemAccountFields: boolean
+    accountNames: Map<string, string>
+    usage: ApiKeySummary['usage']
+  }
+): ApiKeySummary {
+  const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
+  const routeStrategyMode = row.route_strategy_mode ? normalizeRouteStrategyMode(row.route_strategy_mode) : undefined
+  return {
+    id: row.id,
+    systemAccountId: options.shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
+    systemAccountName: options.shouldIncludeSystemAccountFields
+      ? (row.system_account_name ?? options.accountNames.get(row.system_account_id))
+      : undefined,
+    name: row.name,
+    description: row.description ?? undefined,
+    keyPrefix: row.key_prefix,
+    keySuffix: row.key_suffix,
+    key: options.includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
+    status: row.status,
+    routeStrategyId: row.route_strategy_id,
+    routeStrategyName: row.route_strategy_name ?? undefined,
+    routeStrategyMode,
+    routeStrategyStatus: normalizeRouteStrategyStatus(row.route_strategy_status),
+    expiresAt: row.expires_at ?? undefined,
+    quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
+    availabilitySchedule,
+    availabilityScheduleActive: availabilitySchedule?.enabled
+      ? Number(row.availability_schedule_active ?? 1) !== 0
+      : undefined,
+    usage: options.usage
+  }
+}
+
+function normalizeRouteStrategyStatus(value: unknown): ApiKeySummary['routeStrategyStatus'] {
+  return value === 'active' || value === 'disabled' ? value : undefined
 }
 
 function decryptApiKeySecret(value: string | null | undefined): string {

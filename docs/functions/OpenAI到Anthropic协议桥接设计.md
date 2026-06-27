@@ -1,12 +1,15 @@
 # OpenAI 到 Anthropic Messages 协议桥接设计
 
+> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，OpenAI / Anthropic 跨协议转换落到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+
 ## 1. 背景
 
 当前系统已经具备三类相关能力：
 
 - Anthropic API Key 原生中转：下游按 Anthropic Messages 协议请求 `/v1/messages`，上游按 Anthropic Messages 透传。
 - OpenAI 协议内部桥接：Codex `/v1/responses` 可以在显式条件下转为上游 OpenAI-compatible `/v1/chat/completions`。
-- API Key 显式混合路由：在当前 Key 已绑定的目标分组内，用 `sourceModel + sourceEndpointFamily -> targetGroupId + upstreamModel + upstreamEndpointFamily` 声明跨协议桥接。
+- 混合供应商账户：真实上游账户自己声明允许的下游协议、上游协议和模型映射，承接跨协议桥接。
 
 现有缺口是：当下游是 Codex、OpenAI SDK、OpenAI-compatible 客户端或混合智能路由入口，而混合路由最终选中了 Anthropic Messages 账号时，OpenAI Chat / Responses 与 Anthropic Messages 协议不兼容。仅做 `responses -> chat_completions` 不能解决这个问题，因为 Anthropic 原生上游只承接 `/v1/messages`。
 

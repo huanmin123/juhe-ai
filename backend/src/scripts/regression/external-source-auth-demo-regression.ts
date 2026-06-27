@@ -74,6 +74,8 @@ async function runChild(): Promise<void> {
     createSession,
     createAccount,
     createGroup,
+    createRouteStrategy,
+    deleteRouteStrategy,
     findSystemAccountByUsername,
     getOperationLogDetail,
     listOperationLogs,
@@ -927,18 +929,34 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'public_api_key_missing_user',
       name: '目标用户不存在的公开 API Key',
-      groupBindings: [{ groupId: publicGroupId }],
+      routeStrategyId: 'rts_public_missing_user',
       status: 'active'
     })
     assert.equal(missingTargetPublicApiKeyAdd.status, 400, '公开 API Key 新增要求目标用户已存在')
     assert.match(missingTargetPublicApiKeyAdd.body.message, /目标用户不存在/)
+
+    const publicControlTargetForRoute = findSystemAccountByUsername('public_control_user')
+    assert(publicControlTargetForRoute, '公开控制面新增分组后应存在目标用户')
+    const publicControlAccess = { systemAccountId: publicControlTargetForRoute.id, role: 'admin' as const }
+    const publicRouteStrategy = createRouteStrategy({
+      name: '公开接口控制普通路由',
+      mode: 'normal',
+      groupBindings: [{ groupId: publicGroupId, priority: 1, weight: 1, status: 'active' }],
+      status: 'active'
+    }, publicControlAccess)
+    const publicRoundRobinRouteStrategy = createRouteStrategy({
+      name: '公开接口控制轮询路由',
+      mode: 'round_robin',
+      groupBindings: [{ groupId: publicGroupId, priority: 1, weight: 1, status: 'active' }],
+      status: 'active'
+    }, publicControlAccess)
 
     const publicApiKeyAdd = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
       targetUsername: 'public_control_user',
       name: '公开接口控制 Key',
-      groupBindings: [{ groupId: publicGroupId }],
+      routeStrategyId: publicRouteStrategy.id,
       status: 'active',
       availabilitySchedule: {
         enabled: true,
@@ -952,6 +970,7 @@ async function runChild(): Promise<void> {
     assert.equal(publicApiKeyAdd.status, 201)
     assert.equal(publicApiKeyAdd.body.data.action, 'created')
     assert.equal(typeof publicApiKeyAdd.body.data.apiKey.key, 'string', 'API Key 新增响应应只在创建时返回明文密钥')
+    assert.equal(publicApiKeyAdd.body.data.apiKey.routeStrategyId, publicRouteStrategy.id, '公开 API Key 新增应绑定策略路由')
     assert.equal(publicApiKeyAdd.body.data.apiKey.availabilitySchedule?.enabled, true, '公开 API Key 新增应写入并回显时间计划')
     const publicApiKeyId = publicApiKeyAdd.body.data.apiKey.id as string
 
@@ -1036,7 +1055,7 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       targetUsername: 'public_control_user',
       name: '停用用户不应新增的 API Key',
-      groupBindings: [{ groupId: publicGroupId }],
+      routeStrategyId: publicRouteStrategy.id,
       status: 'active'
     })
     assert.equal(disabledPublicApiKeyAdd.status, 400, '目标用户停用后公开 API Key 新增应被拒绝')
@@ -1076,16 +1095,15 @@ async function runChild(): Promise<void> {
     }, 'POST', {
       apiKeyId: publicApiKeyId,
       status: 'disabled',
-      groupBindings: [{ groupId: publicGroupId, priority: 1, weight: 1, status: 'active' }],
-      groupRouteStrategy: 'round_robin',
+      routeStrategyId: publicRoundRobinRouteStrategy.id,
       availabilitySchedule: null
     })
     assert.equal(publicApiKeyUpdate.status, 200)
     assert.equal(publicApiKeyUpdate.body.data.action, 'updated')
     assert.equal(Object.prototype.hasOwnProperty.call(publicApiKeyUpdate.body.data.apiKey, 'key'), false, 'API Key 修改响应不应返回明文密钥')
     assert.equal(publicApiKeyUpdate.body.data.apiKey.status, 'disabled')
-    assert.equal(publicApiKeyUpdate.body.data.apiKey.groupRouteStrategy, 'round_robin', '公开 API Key 修改应支持 groupRouteStrategy')
-    assert.equal(publicApiKeyUpdate.body.data.apiKey.groupBindings[0]?.groupId, publicGroupId, '公开 API Key 修改应支持 groupBindings 覆盖')
+    assert.equal(publicApiKeyUpdate.body.data.apiKey.routeStrategyId, publicRoundRobinRouteStrategy.id, '公开 API Key 修改应支持改绑策略路由')
+    assert.equal(publicApiKeyUpdate.body.data.apiKey.routeStrategyMode, 'round_robin', '公开 API Key 修改应回显策略路由模式')
     assert.equal(publicApiKeyUpdate.body.data.apiKey.availabilitySchedule, undefined, '公开 API Key 修改应支持 availabilitySchedule: null 清空计划')
 
     const publicApiKeyDelete = await requestJson(baseUrl, '/__aipublic__/api-key/del', {
@@ -1095,6 +1113,8 @@ async function runChild(): Promise<void> {
     })
     assert.equal(publicApiKeyDelete.status, 200)
     assert.equal(publicApiKeyDelete.body.data.action, 'deleted')
+    assert.equal(deleteRouteStrategy(publicRoundRobinRouteStrategy.id, publicControlAccess), true, '公开接口回归应清理轮询策略路由')
+    assert.equal(deleteRouteStrategy(publicRouteStrategy.id, publicControlAccess), true, '公开接口回归应清理普通策略路由')
 
     const publicGroupDelete = await requestJson(baseUrl, '/__aipublic__/group/del', {
       Authorization: `Bearer ${accountWriteToken}`

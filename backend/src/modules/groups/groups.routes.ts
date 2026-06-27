@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupOptionsAsync, listGroupsPageAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupApiKeyRouteChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupOptionsAsync, listGroupsPageAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -339,7 +339,7 @@ groupsRouter.delete('/:id', async (req, res, next) => {
       if (!deleteResult.deleted) {
         throw new Error('分组不存在')
       }
-      const affectedApiKeyRoutes = deleteResult.affectedApiKeyRoutes
+      const affectedRouteStrategies = deleteResult.affectedRouteStrategies
       return {
         result: true,
         log: {
@@ -354,20 +354,20 @@ groupsRouter.delete('/:id', async (req, res, next) => {
           summary: `删除分组：${before?.name ?? req.params.id}`,
           changes: [
             safeChange('deleted', '删除状态', false, true),
-            ...(affectedApiKeyRoutes.length
-              ? [safeChange('affectedApiKeyRoutes', '影响的 API Key 路由', undefined, summarizeDeletedGroupApiKeyRouteChanges(affectedApiKeyRoutes))]
+            ...(affectedRouteStrategies.length
+              ? [safeChange('affectedRouteStrategies', '影响的策略路由', undefined, summarizeDeletedGroupRouteStrategyChanges(affectedRouteStrategies))]
               : [])
           ],
-          targets: affectedApiKeyRoutes.slice(0, 20).map((route) => ({
-            targetType: 'api_key',
-            targetId: route.apiKeyId,
-            targetName: route.apiKeyName,
+          targets: affectedRouteStrategies.slice(0, 20).map((route) => ({
+            targetType: 'route_strategy',
+            targetId: route.routeStrategyId,
+            targetName: route.routeStrategyName,
             targetOwnerSystemAccountId: ownerSystemAccountId,
             relation: 'affected' as const
           })),
-          metadata: affectedApiKeyRoutes.length ? {
-            affectedApiKeyRouteCount: affectedApiKeyRoutes.length,
-            affectedApiKeyRoutes: affectedApiKeyRoutes.slice(0, 20)
+          metadata: affectedRouteStrategies.length ? {
+            affectedRouteStrategyCount: affectedRouteStrategies.length,
+            affectedRouteStrategies: affectedRouteStrategies.slice(0, 20)
           } : undefined,
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
@@ -383,15 +383,15 @@ groupsRouter.delete('/:id', async (req, res, next) => {
   }
 })
 
-function summarizeDeletedGroupApiKeyRouteChanges(changes: DeletedGroupApiKeyRouteChange[]): string {
+function summarizeDeletedGroupRouteStrategyChanges(changes: DeletedGroupRouteStrategyChange[]): string {
   const sample = changes.slice(0, 3).map((change) => {
     const removedGroupName = change.removedGroupName || change.removedGroupId
     const removedText = change.removedBindingStatus === 'disabled'
-      ? `移除停用号池 ${removedGroupName}`
-      : `移除号池 ${removedGroupName}`
-    return `${change.apiKeyName}：${removedText}`
+      ? `移除停用分组 ${removedGroupName}`
+      : `移除分组 ${removedGroupName}`
+    return `${change.routeStrategyName}：${removedText}`
   }).join('；')
-  return changes.length > 3 ? `${sample}；另有 ${changes.length - 3} 个 API Key 受影响` : sample
+  return changes.length > 3 ? `${sample}；另有 ${changes.length - 3} 个策略路由受影响` : sample
 }
 
 function effectiveRequestSystemAccountId(access: ReturnType<typeof getRequestAccessScope>): string | undefined {

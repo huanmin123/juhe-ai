@@ -37,15 +37,21 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
   )
   assertPresent(
     'API Key 路由策略覆盖不完整',
-    textValuesForIds(database, 'api_keys', 'id', 'group_route_strategy', apiKeyIds),
-    ['priority_failover', 'round_robin', 'weighted_round_robin']
+    textValuesForIds(database, `
+      SELECT DISTINCT route_strategies.mode AS value
+      FROM api_keys
+      INNER JOIN route_strategies ON route_strategies.id = api_keys.route_strategy_id
+      WHERE api_keys.id IN ({placeholders})
+    `, apiKeyIds),
+    ['normal', 'round_robin', 'weighted']
   )
   assertPresent(
     'API Key 绑定状态覆盖不完整',
     textValuesForIds(database, `
-      SELECT DISTINCT api_key_group_bindings.status AS value
-      FROM api_key_group_bindings
-      WHERE api_key_group_bindings.api_key_id IN ({placeholders})
+      SELECT DISTINCT route_strategy_groups.status AS value
+      FROM api_keys
+      INNER JOIN route_strategy_groups ON route_strategy_groups.route_strategy_id = api_keys.route_strategy_id
+      WHERE api_keys.id IN ({placeholders})
     `, apiKeyIds),
     ['active', 'disabled']
   )

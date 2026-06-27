@@ -1,163 +1,53 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 
-import type { GroupOptionSummary } from '../../src/types/domain'
-import {
-  apiKeyGroupOptionsForBinding,
-  hiddenApiKeyGroupBindingIds,
-  isApiKeyBindableGroup,
-  nextAvailableApiKeyGroupForNewBinding,
-  selectedApiKeyGroupBindingProviderProfileId,
-  validateApiKeyGroupBindings
-} from '../../src/views/api-keys/apiKeyGroupBindingRules'
-import {
-  createGroupBindingFormRow,
-  normalizedGroupBindingPayload,
-  type ApiKeyGroupBindingFormRow
-} from '../../src/views/api-keys/apiKeyFormModel'
-import {
-  accountEndpointModeText
-} from '../../src/views/accounts/accountEndpointModes'
+const repoRoot = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 
-const groups = [
-  groupFixture({
-    id: 'grp_gpt_primary',
-    name: 'GPT 主号池',
-    providerCode: 'gpt',
-    providerProtocolProfileId: 'profile_gpt_openai_v1'
-  }),
-  groupFixture({
-    id: 'grp_gpt_backup',
-    name: 'GPT 备用号池',
-    providerCode: 'gpt',
-    providerProtocolProfileId: 'profile_gpt_openai_v1'
-  }),
-  groupFixture({
-    id: 'grp_deepseek',
-    name: 'DeepSeek 号池',
-    providerCode: 'deepseek',
-    providerProtocolProfileId: 'profile_deepseek_openai_v1'
-  }),
-  groupFixture({
-    id: 'grp_disabled',
-    name: '停用号池',
-    providerCode: 'gpt',
-    providerProtocolProfileId: 'profile_gpt_openai_v1',
-    enabled: false
-  }),
-  groupFixture({
-    id: 'grp_authorized_expired',
-    name: '过期授权号池',
-    providerCode: 'gpt',
-    providerProtocolProfileId: 'profile_gpt_openai_v1',
-    accessType: 'authorized',
-    authorizationStatus: 'active',
-    authorizationExpiresAt: '2024-01-01T00:00:00.000Z'
-  })
-]
+const apiKeyModalSource = readSource('frontend/src/views/api-keys/ApiKeyEditModal.vue')
+const apiKeyFormSource = readSource('frontend/src/views/api-keys/apiKeyFormModel.ts')
+const apiKeysApiSource = readSource('frontend/src/api/domains/apiKeys.ts')
+const routeStrategiesViewSource = readSource('frontend/src/views/route-strategies/RouteStrategiesView.vue')
+const routeStrategiesApiSource = readSource('frontend/src/api/domains/routeStrategies.ts')
+const useScopedDomainApiSource = readSource('frontend/src/composables/useScopedDomainApi.ts')
+const routerSource = readSource('frontend/src/router/index.ts')
+const accessTypesSource = readSource('frontend/src/types/domain/access.ts')
+const accountEndpointModesSource = readSource('frontend/src/views/accounts/accountEndpointModes.ts')
 
-const primaryBinding = bindingFor(groups[0])
-const emptySecondBinding = createGroupBindingFormRow()
-const currentBindings = [primaryBinding, emptySecondBinding]
+assert(apiKeyModalSource.includes('routeStrategyOptions'), 'API Key 表单必须通过策略路由选项选择调度入口')
+assert(apiKeyModalSource.includes('routeStrategyId'), 'API Key 表单必须保存 routeStrategyId')
+assert(!apiKeyModalSource.includes('groupBindings'), 'API Key 表单不得继续维护分组绑定')
+assert(!apiKeyFormSource.includes('groupBindings'), 'API Key 表单模型不得继续声明分组绑定')
+assert(apiKeysApiSource.includes('routeStrategyId?: string'), 'API Key API payload 必须只引用策略路由 ID')
+assert(!apiKeysApiSource.includes('groupBindings'), 'API Key API payload 不得继续提交分组绑定')
 
-assert.equal(isApiKeyBindableGroup(groups[0]), true, '启用自有分组应允许绑定 API Key')
-assert.equal(isApiKeyBindableGroup(groups[3]), false, '停用分组不应允许作为可选 API Key 号池')
-assert.equal(isApiKeyBindableGroup(groups[4]), false, '已过期授权分组不应允许绑定 API Key')
+assert(routeStrategiesViewSource.includes('分组绑定'), '策略路由页面必须承载分组绑定配置')
+assert(routeStrategiesViewSource.includes('form.groupBindings'), '策略路由表单必须维护分组绑定行')
+assert(routeStrategiesViewSource.includes('groupBindings = form.groupBindings.map'), '策略路由保存必须归一化分组绑定 payload')
+assert(routeStrategiesViewSource.includes('请选择分组'), '策略路由表单必须校验分组不能为空')
+assert(routeStrategiesViewSource.includes('a-input-number v-model:value="binding.priority"'), '策略路由分组绑定必须维护优先级')
+assert(routeStrategiesViewSource.includes('a-input-number v-model:value="binding.weight"'), '策略路由分组绑定必须维护权重')
+assert(routeStrategiesViewSource.includes('status: \'active\' | \'disabled\''), '策略路由分组绑定必须支持启停状态')
 
-assert.equal(
-  selectedApiKeyGroupBindingProviderProfileId({ bindings: currentBindings, groups }),
-  'profile_gpt_openai_v1',
-  '已选择号池应保留供应商协议档案信息'
-)
-assert.deepEqual(
-  apiKeyGroupOptionsForBinding({ bindings: currentBindings, groups, index: 1 }).map((group) => group.id),
-  ['grp_gpt_primary', 'grp_gpt_backup', 'grp_deepseek'],
-  '新增绑定选项应允许跨供应商协议档案，且排除停用和过期授权分组'
-)
-assert.equal(
-  nextAvailableApiKeyGroupForNewBinding({ bindings: currentBindings, groups })?.id,
-  'grp_gpt_backup',
-  '新增绑定应选择同协议档案内尚未选择的可用分组'
-)
-assert.deepEqual(
-  hiddenApiKeyGroupBindingIds({ bindings: currentBindings, groups, index: 1 }).sort(),
-  ['grp_disabled', 'grp_gpt_primary'].sort(),
-  '下拉隐藏项应包含其他行已选分组和停用分组'
-)
+assert(routeStrategiesApiSource.includes('groupBindings?: Array<'), '策略路由 API payload 必须承载分组绑定数组')
+assert(routeStrategiesApiSource.includes('priority?: number'), '策略路由 API payload 必须承载分组优先级')
+assert(routeStrategiesApiSource.includes('weight?: number'), '策略路由 API payload 必须承载分组权重')
+assert(routeStrategiesApiSource.includes('status?: RouteStrategyGroupBindingStatus'), '策略路由 API payload 必须承载分组绑定状态')
+assert(useScopedDomainApiSource.includes('useScopedRouteStrategiesApi'), '前端必须提供作用域化策略路由 API')
+assert(routerSource.includes('route-strategies'), '前端路由必须注册策略路由页面')
 
-assert.equal(
-  validateMessage([bindingFor(groups[0]), bindingFor(groups[2])]),
-  undefined,
-  '普通 API Key 应允许绑定不同供应商协议档案的号池'
-)
-assert.equal(
-  validateMessage([bindingFor(groups[0]), bindingFor(groups[0])]),
-  '绑定分组不能重复',
-  '重复分组绑定应在前端提交前拦截'
-)
-assert.equal(
-  validateMessage([bindingFor(groups[3])]),
-  '已停用分组不能作为启用号池：停用号池',
-  '停用分组不能作为 active 号池提交'
-)
-assert.equal(
-  validateMessage([bindingFor(groups[0], 'disabled')]),
-  '至少需要一个启用分组',
-  'API Key 至少需要一个 active 号池'
-)
-assert.equal(
-  validateMessage([bindingFor(groups[0]), bindingFor(groups[1])]),
-  undefined,
-  '同协议档案多分组绑定应允许提交'
-)
-assert.equal(
-  accountEndpointModeText(['chat_json', 'messages_sse', 'message_token_counting']),
-  '对话 JSON、Messages 流式、Token 计数',
+assert(accessTypesSource.includes('RouteStrategyGroupBindingSummary'), '前端领域类型必须声明策略路由分组绑定摘要')
+assert(accessTypesSource.includes('RouteStrategyOptionSummary'), '前端领域类型必须声明策略路由选项摘要')
+assert(!accessTypesSource.includes('ApiKeyGroupRouteStrategy'), '前端领域类型不得继续保留 API Key 分组路由策略')
+
+assert(
+  accountEndpointModesSource.includes('对话 JSON') && accountEndpointModesSource.includes('Messages 流式') && accountEndpointModesSource.includes('Token 计数'),
   '接口能力展示应使用中文主文案'
 )
 
-console.log('API Key 前端分组绑定回归通过：跨档案可选可提交、重复/停用/无启用校验和中文接口能力文案均符合预期')
+console.log('策略路由前端分组绑定回归通过：API Key 不再维护分组绑定，分组、优先级、权重和状态已迁移到策略路由页面与接口')
 
-function validateMessage(bindings: ApiKeyGroupBindingFormRow[]): string | undefined {
-  return validateApiKeyGroupBindings({
-    groupBindings: normalizedGroupBindingPayload(bindings),
-    formBindings: bindings,
-    groups
-  })
-}
-
-function bindingFor(group: GroupOptionSummary, status: 'active' | 'disabled' = 'active'): ApiKeyGroupBindingFormRow {
-  return createGroupBindingFormRow({ id: group.id, name: group.name }, status, 1, {
-    providerCode: group.providerCode,
-    providerProtocolProfileId: group.providerProtocolProfileId,
-    groupEnabled: group.enabled
-  })
-}
-
-function groupFixture(overrides: Partial<GroupOptionSummary>): GroupOptionSummary {
-  return {
-    id: 'grp_fixture',
-    systemAccountId: 'sys_admin',
-    systemAccountName: '系统账户',
-    ownerSystemAccountId: 'sys_admin',
-    ownerSystemAccountName: '系统账户',
-    name: '回归分组',
-    providerCode: 'gpt',
-    providerProtocolProfileId: 'profile_gpt_openai_v1',
-    protocolCode: 'openai',
-    protocolVersion: 'v1',
-    enabled: true,
-    isDefault: false,
-    groupType: 'regular',
-    schedulingPolicy: 'round_robin',
-    accessType: 'owner',
-    permissions: {
-      canUse: true,
-      canEdit: true,
-      canDelete: true,
-      canAuthorize: true,
-      canViewCredentials: true,
-      canBindToApiKey: true
-    },
-    ...overrides
-  }
+function readSource(path: string): string {
+  return readFileSync(resolve(repoRoot, path), 'utf8')
 }

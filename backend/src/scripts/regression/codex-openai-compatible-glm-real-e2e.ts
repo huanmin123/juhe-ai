@@ -6,6 +6,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -463,7 +464,7 @@ function createSingleCodexApiKey(): { id: string; key?: string } {
     schedulable: true,
     supportedModels: [upstreamModel]
   }, access)
-  return repositories.createApiKeyRecord({
+  return createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex GPT 转 ${realProvider.label} 真实网关 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     explicitHybridRouteRules: [codexBridgeRouteRule(group.id, downstreamModel, upstreamModel)],

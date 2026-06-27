@@ -1023,8 +1023,7 @@ export interface AuthorizationUserUsageOverview {
 }
 
 export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
-export type ApiKeyGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'weighted_round_robin'
-export type ApiKeyRouteMode = 'normal' | 'hybrid'
+export type RouteStrategyMode = 'normal' | 'hybrid_smart' | 'weighted' | 'failover' | 'round_robin'
 export type ApiKeyClientProfile = 'auto' | 'generic_openai' | 'codex' | 'generic_anthropic' | 'claude_code' | 'generic_gemini' | 'gemini_cli'
 export type ApiKeyExplicitHybridRouteAdapterMode = 'direct' | 'bridge'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
@@ -1096,6 +1095,43 @@ export interface ApiKeyGroupBindingSummary {
   weight: number
   status: ApiKeyGroupBindingStatus
   groupEnabled: boolean
+}
+
+export type RouteStrategyStatus = 'active' | 'disabled'
+
+export interface RouteStrategyGroupBindingSummary extends ApiKeyGroupBindingSummary {
+}
+
+export interface RouteStrategySummary {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  description?: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
+  groupBindings: RouteStrategyGroupBindingSummary[]
+  apiKeyCount?: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RouteStrategyOptionSummary {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+}
+
+export interface RouteStrategyListResult {
+  items: RouteStrategySummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export interface ApiKeyAvailabilityScheduleWindow {
@@ -1171,13 +1207,10 @@ export interface ApiKeySummary {
   keySuffix: string
   key: string
   status: 'active' | 'disabled'
-  clientProfile: ApiKeyClientProfile
-  routeMode: ApiKeyRouteMode
-  groupRouteStrategy: ApiKeyGroupRouteStrategy
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
-  explicitHybridRouteRules?: ApiKeyExplicitHybridRouteRule[]
-  groupBindings: ApiKeyGroupBindingSummary[]
-  groupOwnerSystemAccountName?: string
+  routeStrategyId: string
+  routeStrategyName?: string
+  routeStrategyMode?: RouteStrategyMode
+  routeStrategyStatus?: RouteStrategyStatus
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule

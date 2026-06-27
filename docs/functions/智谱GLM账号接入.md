@@ -1,8 +1,11 @@
 # 智谱 GLM 账号接入
 
+> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 默认客户端画像和显式桥接配置只作为历史背景；当前目标是客户端画像由网关内部识别，API Key 只绑定策略路由，GLM 跨协议转换落到混合供应商账户。
+> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“API Key 默认客户端画像”或“API Key 显式混合路由”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+
 ## 范围
 
-本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；GLM Coding Plan Key 只保存真实 Chat Completions 上游能力，Codex Responses 到 Chat Completions 桥接由 API Key 默认客户端画像和显式混合路由规则启用，而 Anthropic v1 档案面向 Anthropic / Claude Code 客户端画像。运行事实以本文和当前实现为准。
+本文记录智谱 GLM 供应商的接入结论、账户创建类型、协议档案、网关透传边界、Codex bridge、模型目录和后续实现注意事项。当前代码已落地 `glm` 供应商、通用 GLM API Key、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 三个协议档案；GLM Coding Plan Key 只保存真实 Chat Completions 上游能力，Codex Responses 到 Chat Completions 的跨协议转换目标应迁入混合供应商账户，而 Anthropic v1 档案面向 Anthropic / Claude Code 请求。运行事实以本文和当前实现为准。
 
 官方资料显示，智谱当前面向本项目最相关的接入形态有三类：
 
@@ -13,7 +16,7 @@
 结论：
 
 - 智谱支持 OpenAI 兼容协议；当前可核验的上游直连接口包含 OpenAI Chat Completions 和 Anthropic v1 Messages，但 OpenAI Responses 仍不作为 GLM 原生上游能力声明。
-- Codex 客户端必须使用 Responses 协议时，当前可通过 API Key 显式混合路由把 `responses -> chat_completions` 指向 GLM Coding Plan 分组；通用 GLM API 不默认启用该桥接。
+- Codex 客户端必须使用 Responses 协议时，不能再通过 API Key 或策略路由显式桥接；目标应是一个真实上游为 GLM Coding Chat 的混合供应商账户。
 - 通用 GLM API、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 都用 API Key 鉴权，不是 OAuth；创建账户时应像 GPT 一样先区分接入类型，但底层 `accounts.type` 仍保存为 `api_key`。
 - 通用 GLM API、GLM Coding Plan OpenAI Chat 和 GLM Coding Plan Anthropic v1 必须使用不同 `provider_protocol_profile_id`，不能只靠同一个 `glm` 供应商和不同 `base_url` 混用，否则分组、额度、模型目录、账号测试和排障都会混在一起。
 

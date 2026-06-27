@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -17,6 +17,8 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+assertAuthorizationUsageLookupSharedCacheBoundary()
 
 const [databaseModule, repositories, authorizationUsageRepository] = await Promise.all([
   import('../../storage/database.js'),
@@ -220,7 +222,7 @@ try {
   const accountTeamGrantUsageDetail = repositories.getResourceAuthorizationUsage(accountTeamGrant.id, ownerAccess, { range })
   assert.equal(accountTeamGrantUsageDetail?.usage.requestCount, 30, '账号团队授权详情应读取授权团队报表窗口')
 
-  console.log('授权消耗分页回归通过：团队/用户明细按窗口分页返回，前端无需全量渲染')
+  console.log('授权消耗分页回归通过：团队/用户明细按窗口分页返回，前端无需全量渲染；授权 usage 资源 lookup 复用 Redis shared cache')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -228,6 +230,22 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertAuthorizationUsageLookupSharedCacheBoundary(): void {
+  const source = readFileSync(new URL('../../storage/resource-authorization-usage.repository.ts', import.meta.url), 'utf8')
+  assert(
+    source.includes('loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync'),
+    '授权 usage 仓储应从 repository-lookups 导入同步 / 异步系统账户 lookup'
+  )
+  assert(
+    !/async function loadSystemAccountPrincipalMapByIdsAsync\b/.test(source),
+    '授权 usage 仓储不应保留私有 async 系统账户 lookup，应复用 repository-lookups Redis shared cache'
+  )
+  assert(
+    !source.includes("resourceAuthorizationUsageBusinessTable(client, 'system_accounts')"),
+    '授权 usage async 名称装配不应直接查询 system_accounts，应走 shared cache helper'
+  )
 }
 
 function seedTeamWindow(input: {

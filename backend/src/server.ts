@@ -22,7 +22,7 @@ import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForL
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate } from './shared/http-security.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
-import { sendRuntimeLogLineToWorker } from './modules/background/background-ipc.js'
+import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 
@@ -85,9 +85,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
-if (runtimeConfig.databaseDriver === 'sqlite') {
-  setRuntimeLogLineSink((line, options) => sendRuntimeLogLineToWorker(line, options))
-}
+setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLine(line, options))
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
   logger.warn({

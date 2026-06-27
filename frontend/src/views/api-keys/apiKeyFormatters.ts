@@ -1,79 +1,30 @@
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
-import { displayGroupName } from '@/shared/groupLabelCache'
-import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeyGroupBindingSummary, ApiKeyGroupRouteStrategy, ApiKeySummary } from '@/types/domain'
+import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeySummary, RouteStrategyMode } from '@/types/domain'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { timeScheduleSummary, timeScheduleTagColor } from '@/views/shared/timeSchedule'
 
 export const apiKeyScheduleLabel = 'API Key 时间计划'
 
-export function apiKeyGroupBindings(apiKey: ApiKeySummary): ApiKeyGroupBindingSummary[] {
-  return apiKey.groupBindings
+export function apiKeyRouteStrategyName(apiKey: ApiKeySummary): string {
+  return apiKey.routeStrategyName || apiKey.routeStrategyId || '-'
 }
 
-export function apiKeyGroupBindingTagColor(binding: ApiKeyGroupBindingSummary): string {
-  if (binding.status === 'disabled') return 'default'
-  if (!binding.groupEnabled) return 'orange'
-  return binding.priority === 1 ? 'purple' : 'blue'
+export function apiKeyRouteStrategyModeText(mode?: RouteStrategyMode): string {
+  if (mode === 'hybrid_smart') return '混合智能路由'
+  if (mode === 'weighted') return '权重调度路由'
+  if (mode === 'round_robin') return '轮询路由'
+  if (mode === 'failover') return '故障回退路由'
+  if (mode === 'normal') return '普通路由'
+  return '未识别'
 }
 
-export function apiKeyGroupBindingTagText(apiKey: ApiKeySummary, binding: ApiKeyGroupBindingSummary, index = 0): string {
-  const name = displayGroupName(binding.groupName, binding.groupId)
-  const suffix = binding.status === 'disabled'
-    ? '停用'
-    : binding.groupEnabled ? undefined : '分组不可用'
-  const routeLabel = groupBindingLabelByStrategy(apiKey.groupRouteStrategy, binding, index)
-  const text = suffix ? `${routeLabel}：${name}（${suffix}）` : `${routeLabel}：${name}`
-  if (apiKey.groupRouteStrategy !== 'weighted_round_robin' || binding.status !== 'active') {
-    return text
-  }
-  return typeof binding.weight === 'number' && Number.isInteger(binding.weight) && binding.weight > 0
-    ? `${text} 权重 ${binding.weight}`
-    : `${text}（权重数据异常）`
-}
-
-export function apiKeyGroupRouteText(apiKey: ApiKeySummary): string {
-  return apiKeyGroupBindings(apiKey)
-    .map((binding, index) => apiKeyGroupBindingTagText(apiKey, binding, index))
-    .join(' / ')
-}
-
-export function apiKeyRouteModeTagColor(apiKey: ApiKeySummary): string {
-  return apiKey.routeMode === 'hybrid' ? 'cyan' : 'default'
-}
-
-export function apiKeyRouteModeText(apiKey: ApiKeySummary): string {
-  return apiKey.routeMode === 'hybrid' ? '混合智能路由' : '普通路由'
-}
-
-export function apiKeyHybridRouteSummary(apiKey: ApiKeySummary): string {
-  if (apiKey.routeMode !== 'hybrid' || !apiKey.hybridRoutingConfig) return '-'
-  const routes = apiKey.hybridRoutingConfig.levelRoutes
-    .filter((route) => route.enabled)
-    .map((route) => `${route.minLevel}-${route.maxLevel}：${route.targetModel}`)
-    .join(' / ') || '-'
-  const quality = apiKey.hybridRoutingConfig.qualityInspection
-  const qualityText = quality?.enabled
-    ? `质量评分：${quality.scoringModel}，不可用${quality.unavailableAction === 'return_error' ? '返回错误' : '放行原 200'}`
-    : '质量评分：关闭'
-  return [
-    `评分模型：${apiKey.hybridRoutingConfig.scoringModel}`,
-    `评分不可用兜底：1-${apiKey.hybridRoutingConfig.scoringFallbackMaxLevel}`,
-    qualityText,
-    `等级区间：${routes}`
-  ].join('\n')
-}
-
-function groupBindingLabelByStrategy(strategy: ApiKeyGroupRouteStrategy | undefined, binding: ApiKeyGroupBindingSummary, index: number): string {
-  if (strategy === 'round_robin') return `轮询 ${index + 1}`
-  if (strategy === 'weighted_round_robin') return `权重 ${index + 1}`
-  return groupBindingPriorityTextByPriority(binding.priority)
-}
-
-function groupBindingPriorityTextByPriority(priority: number | undefined): string {
-  const normalizedPriority = typeof priority === 'number' && Number.isFinite(priority)
-    ? Math.max(1, Math.trunc(priority))
-    : 1
-  return normalizedPriority === 1 ? '主号池' : `备 ${normalizedPriority - 1}`
+export function apiKeyRouteStrategyTagColor(apiKey: ApiKeySummary): string {
+  if (apiKey.routeStrategyStatus === 'disabled') return 'default'
+  if (apiKey.routeStrategyMode === 'hybrid_smart') return 'cyan'
+  if (apiKey.routeStrategyMode === 'weighted') return 'purple'
+  if (apiKey.routeStrategyMode === 'round_robin') return 'blue'
+  if (apiKey.routeStrategyMode === 'failover') return 'orange'
+  return 'green'
 }
 
 export function apiKeyStatusTagLabel(apiKey: ApiKeySummary): string {

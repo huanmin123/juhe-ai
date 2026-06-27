@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -115,7 +116,7 @@ try {
       schedulable: true,
       supportedModels: [cliModel]
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini CLI 真实网关回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'

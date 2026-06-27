@@ -3,10 +3,10 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
-  findAccountForTest,
   findRecentOpenAIRequestShapeForAccount,
   type AccountQualityFailurePrecheckCandidate
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
@@ -58,7 +58,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
   context: { attemptIndex: number; retryNumber: number }
 ) {
   const accountAccess = { systemAccountId: item.systemAccountId, role: 'user' as const }
-  const account = findAccountForTest(item.accountId, accountAccess)
+  const account = await loadAccountForTestViaDbService(item.accountId, accountAccess)
   if (!isAccountQualityFailurePrecheckEligible(account)) {
     rememberQualityFailurePrechecked(item.accountId)
     logger.debug({
@@ -80,6 +80,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
+    findAccountForTest: loadAccountForTestViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
@@ -136,6 +137,14 @@ async function runAccountQualityFailurePrecheckQueueItem(
     updated: updated?.updated ?? false
   }, '账户近期频繁失败且后台确认未通过，已尝试标记为临时不可调用')
   return true
+}
+
+async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope) {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_test',
+    accountId,
+    access
+  }, 10_000)
 }
 
 function isAccountQualityFailurePrecheckEligible(account: AccountSummary | undefined): account is AccountSummary & { boundGroupId: string } {

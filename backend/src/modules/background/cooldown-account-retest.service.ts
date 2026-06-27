@@ -3,9 +3,9 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
-  findAccountForCooldownRetest,
   findRecentOpenAIRequestShapeForAccount
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
@@ -59,7 +59,7 @@ async function runCooldownAccountRetestQueueItem(
   item: CooldownAccountRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
-  const account = cooldownRetestAccountForQueueItem(item)
+  const account = await cooldownRetestAccountForQueueItem(item)
   if (!account || !isAccountDueForCooldownRetest(account)) {
     logger.debug({
       event: 'background_cooldown_account_retest_discarded',
@@ -81,6 +81,7 @@ async function runCooldownAccountRetestQueueItem(
     requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
+    findAccountForTest: loadAccountForTestViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
@@ -167,8 +168,19 @@ async function runCooldownAccountRetestQueueItem(
   return true
 }
 
-function cooldownRetestAccountForQueueItem(item: CooldownAccountRetestQueueItem): AccountSummary | undefined {
-  return findAccountForCooldownRetest(item.accountId)
+async function cooldownRetestAccountForQueueItem(item: CooldownAccountRetestQueueItem): Promise<AccountSummary | undefined> {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_cooldown_retest',
+    accountId: item.accountId
+  }, 10_000)
+}
+
+async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_test',
+    accountId,
+    access
+  }, 10_000)
 }
 
 function isAccountDueForCooldownRetest(account: AccountSummary): boolean {

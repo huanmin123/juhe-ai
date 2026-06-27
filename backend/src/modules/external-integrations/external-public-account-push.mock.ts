@@ -189,15 +189,16 @@ export function mockPublicGroupList(input: PublicGroupListInput): PublicGroupLis
 }
 
 export function mockPublicApiKeyAdd(input: PublicApiKeyAddInput): PublicApiKeyResponse {
-  const groupBindings = mockPublicApiKeyGroupBindings(input.groupBindings)
   return publicMockApiKeyResponse('mock', input.targetUsername, {
     id: 'mock_api_key_public',
     name: normalizedText(input.name) || '公开接口 API Key',
     keyPrefix: 'juis_mock',
     key: 'juis_mock_public_api_key',
     status: input.status === 'disabled' ? 'disabled' : 'active',
-    groupRouteStrategy: normalizedText(input.groupRouteStrategy) || 'priority_failover',
-    groupBindings,
+    routeStrategyId: normalizedText(input.routeStrategyId) || 'mock_route_strategy_public',
+    routeStrategyName: '公开接口策略路由',
+    routeStrategyMode: 'normal',
+    routeStrategyStatus: 'active',
     expiresAt: normalizedText(input.expiresAt)
   })
 }
@@ -223,22 +224,25 @@ export function mockPublicApiKeyList(input: PublicApiKeyListInput): PublicApiKey
         name: normalizedText(input.keyword) || '公开接口 API Key',
         keyPrefix: 'juis_mock',
         status: input.status === 'disabled' ? 'disabled' : 'active',
-        groupRouteStrategy: 'priority_failover',
-        groupBindings: mockPublicApiKeyGroupBindings(input.groupId ? [{ groupId: input.groupId }] : undefined)
+        routeStrategyId: 'mock_route_strategy_public',
+        routeStrategyName: normalizedText(input.groupId) ? '公开接口分组策略路由' : '公开接口策略路由',
+        routeStrategyMode: 'normal',
+        routeStrategyStatus: 'active'
       }
     ]
   }
 }
 
 export function mockPublicApiKeyUpdate(input: PublicApiKeyUpdateInput): PublicApiKeyResponse {
-  const groupBindings = mockPublicApiKeyGroupBindings(input.groupBindings)
   return publicMockApiKeyResponse('mock', input.targetUsername, {
     id: normalizedText(input.apiKeyId) || 'mock_api_key_public',
     name: normalizedText(input.name) || '公开接口 API Key',
     keyPrefix: 'juis_mock',
     status: input.status === 'disabled' ? 'disabled' : 'active',
-    groupRouteStrategy: normalizedText(input.groupRouteStrategy) || 'priority_failover',
-    groupBindings,
+    routeStrategyId: normalizedText(input.routeStrategyId) || 'mock_route_strategy_public',
+    routeStrategyName: '公开接口策略路由',
+    routeStrategyMode: 'normal',
+    routeStrategyStatus: 'active',
     expiresAt: normalizedText(input.expiresAt)
   })
 }
@@ -249,22 +253,11 @@ export function mockPublicApiKeyDelete(input: PublicApiKeyDeleteInput): PublicAp
     name: '公开接口 API Key',
     keyPrefix: 'juis_mock',
     status: 'disabled',
-    groupRouteStrategy: 'priority_failover',
-    groupBindings: mockPublicApiKeyGroupBindings()
+    routeStrategyId: 'mock_route_strategy_public',
+    routeStrategyName: '公开接口策略路由',
+    routeStrategyMode: 'normal',
+    routeStrategyStatus: 'active'
   })
-}
-
-function mockPublicApiKeyGroupBindings(input: PublicApiKeyAddInput['groupBindings'] = []): PublicApiKeySummary['groupBindings'] {
-  const bindings = input.length ? input : [{ groupId: 'mock_group_public', priority: 1, status: 'active' as const }]
-  return bindings.map((binding, index) => ({
-    id: `mock_api_key_group_binding_${index + 1}`,
-    groupId: binding.groupId,
-    groupName: binding.groupId === 'mock_group_public' ? '公开接口分组' : binding.groupId,
-    priority: binding.priority ?? index + 1,
-    weight: binding.weight ?? 1,
-    status: binding.status ?? 'active',
-    groupEnabled: true
-  }))
 }
 
 function publicMockGroupResponse(action: PublicGroupResponse['action'], usernameInput: string | undefined, group: PublicGroupSummary): PublicGroupResponse {

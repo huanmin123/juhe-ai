@@ -5,7 +5,7 @@ import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPoli
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { maxGroupDeleteAffectedApiKeyRoutes } from './api-key-group-binding-limits.js'
+import { maxGroupDeleteAffectedRouteStrategies } from './route-strategy-group-binding-limits.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { emptyGroupAccountStats } from './group-account-stats.mapper.js'
@@ -477,16 +477,21 @@ async function updateAuthorizedGroupSettingsAsync(
   return await findGroupSummaryAsync(id, access)
 }
 
-export interface DeletedGroupApiKeyRouteChange {
-  apiKeyId: string
-  apiKeyName: string
+export interface DeletedGroupRouteStrategyChange {
+  routeStrategyId: string
+  routeStrategyName: string
   removedGroupId: string
   removedGroupName?: string
   removedBindingStatus?: string
 }
 
+export interface DeletedGroupApiKeyRouteChange extends DeletedGroupRouteStrategyChange {
+  apiKeyId: string
+}
+
 export interface DeleteGroupResult {
   deleted: boolean
+  affectedRouteStrategies: DeletedGroupRouteStrategyChange[]
   affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[]
 }
 
@@ -497,14 +502,14 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
   }
   const owner = groupOwnerAndProvider(id)
   if (!owner || !canManageAuthorizedResourceOwner(owner.systemAccountId, access)) {
-    return { deleted: false, affectedApiKeyRoutes: [] }
+    return { deleted: false, affectedRouteStrategies: [], affectedApiKeyRoutes: [] }
   }
   const database = getBusinessDatabase()
   let deleted = false
-  const affectedApiKeyRoutes = preserveApiKeyRoutesBeforeGroupDelete(database, id, owner.systemAccountId, current?.name)
+  const affectedRouteStrategies = preserveRouteStrategiesBeforeGroupDelete(database, id, current?.name)
+  const affectedApiKeyRoutes = loadDeletedGroupApiKeyRouteChanges(database, affectedRouteStrategies)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
     const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
     deleted = Number(result.changes ?? 0) > 0
     commitDatabaseTransaction(database, transactionStarted)
@@ -518,7 +523,11 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
     invalidateGroupAccountIdsCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
   }
-  return { deleted, affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : [] }
+  return {
+    deleted,
+    affectedRouteStrategies: deleted ? affectedRouteStrategies : [],
+    affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : []
+  }
 }
 
 export async function deleteGroupAsync(id: string, access?: AccessScope): Promise<DeleteGroupResult> {
@@ -528,16 +537,13 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
   }
   const owner = await groupOwnerAndProviderAsync(id)
   if (!owner || !canManageAuthorizedResourceOwner(owner.systemAccountId, access)) {
-    return { deleted: false, affectedApiKeyRoutes: [] }
+    return { deleted: false, affectedRouteStrategies: [], affectedApiKeyRoutes: [] }
   }
   const client = await getGroupWriteDatabaseClient()
-  const affectedApiKeyRoutes = await preserveApiKeyRoutesBeforeGroupDeleteAsync(client, id, owner.systemAccountId, current?.name)
+  const affectedRouteStrategies = await preserveRouteStrategiesBeforeGroupDeleteAsync(client, id, current?.name)
+  const affectedApiKeyRoutes = await loadDeletedGroupApiKeyRouteChangesAsync(client, affectedRouteStrategies)
   let deleted = false
   await client.transaction(async (tx) => {
-    await tx.execute(`
-      DELETE FROM ${groupWriteTable(tx, 'api_key_group_bindings')}
-      WHERE group_id = ?
-    `, [id])
     const result = await tx.execute(`
       DELETE FROM ${groupWriteTable(tx, 'groups')}
       WHERE id = ? AND system_account_id = ?
@@ -550,205 +556,245 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
     invalidateGroupAccountIdsCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
   }
-  return { deleted, affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : [] }
+  return {
+    deleted,
+    affectedRouteStrategies: deleted ? affectedRouteStrategies : [],
+    affectedApiKeyRoutes: deleted ? affectedApiKeyRoutes : []
+  }
 }
 
-type ApiKeyAffectedByGroupDeleteRow = {
+type RouteStrategyAffectedByGroupDeleteRow = {
   id: string
   name: string
   systemAccountId: string
   targetBindingStatus?: string | null
 }
 
-function preserveApiKeyRoutesBeforeGroupDelete(
+function preserveRouteStrategiesBeforeGroupDelete(
   database: DatabaseSync,
   groupId: string,
-  systemAccountId: string,
   groupName?: string
-): DeletedGroupApiKeyRouteChange[] {
-  const affectedApiKeys = database
+): DeletedGroupRouteStrategyChange[] {
+  const affectedRouteStrategies = database
     .prepare(`
       SELECT
-        api_key_group_bindings.api_key_id AS id,
-        api_keys.name,
-        api_keys.system_account_id AS systemAccountId,
-        api_key_group_bindings.status AS targetBindingStatus
-      FROM api_key_group_bindings
-      INNER JOIN api_keys
-        ON api_keys.id = api_key_group_bindings.api_key_id
-        AND api_keys.system_account_id = api_key_group_bindings.system_account_id
-      WHERE api_key_group_bindings.group_id = ?
-      ORDER BY api_key_group_bindings.api_key_id ASC
+        route_strategy_groups.route_strategy_id AS id,
+        route_strategies.name,
+        route_strategies.system_account_id AS systemAccountId,
+        route_strategy_groups.status AS targetBindingStatus
+      FROM route_strategy_groups
+      INNER JOIN route_strategies
+        ON route_strategies.id = route_strategy_groups.route_strategy_id
+        AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+      WHERE route_strategy_groups.group_id = ?
+      ORDER BY route_strategy_groups.route_strategy_id ASC
       LIMIT ?
     `)
-    .all(groupId, maxGroupDeleteAffectedApiKeyRoutes + 1) as unknown as ApiKeyAffectedByGroupDeleteRow[]
-  if (!affectedApiKeys.length) return []
-  if (affectedApiKeys.length > maxGroupDeleteAffectedApiKeyRoutes) {
-    throw new Error(`该分组关联的 API Key 超过 ${maxGroupDeleteAffectedApiKeyRoutes} 个，请先分批解除绑定后再删除分组`)
+    .all(groupId, maxGroupDeleteAffectedRouteStrategies + 1) as unknown as RouteStrategyAffectedByGroupDeleteRow[]
+  if (!affectedRouteStrategies.length) return []
+  if (affectedRouteStrategies.length > maxGroupDeleteAffectedRouteStrategies) {
+    throw new Error(`该分组关联的策略路由超过 ${maxGroupDeleteAffectedRouteStrategies} 个，请先分批解除绑定后再删除分组`)
   }
 
-  const activeBindingCountByApiKeyId = loadActiveApiKeyGroupCountExcludingGroup(
+  const activeBindingCountByRouteStrategyId = loadActiveRouteStrategyGroupCountExcludingGroup(
     database,
     groupId,
-    affectedApiKeys.map((apiKey) => apiKey.id)
+    affectedRouteStrategies.map((routeStrategy) => routeStrategy.id)
   )
-  const blockers = affectedApiKeys.filter((apiKey) => {
-    if (apiKey.systemAccountId !== systemAccountId) return false
-    if (apiKey.targetBindingStatus !== 'active') return false
-    return (activeBindingCountByApiKeyId.get(apiKey.id) ?? 0) === 0
+  const blockers = affectedRouteStrategies.filter((routeStrategy) => {
+    if (routeStrategy.targetBindingStatus !== 'active') return false
+    return (activeBindingCountByRouteStrategyId.get(routeStrategy.id) ?? 0) === 0
   })
   if (blockers.length) {
-    const names = blockers.slice(0, 3).map((apiKey) => apiKey.name).join('、')
+    const names = blockers.slice(0, 3).map((routeStrategy) => routeStrategy.name).join('、')
     const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`无法删除分组：该分组仍是以下 API Key 的唯一启用号池：${names}${suffix}。请先到 API Key 管理中为这些 Key 新增并启用其他分组，或删除这些 API Key 后再删除分组。`)
+    throw new Error(`无法删除分组：该分组仍是以下策略路由的唯一启用分组：${names}${suffix}。请先到策略路由中切换或新增启用分组，或删除这些策略路由后再删除分组。`)
   }
 
-  return affectedApiKeys.map((apiKey) => {
+  return affectedRouteStrategies.map((routeStrategy) => {
     return {
-      apiKeyId: apiKey.id,
-      apiKeyName: apiKey.name,
+      routeStrategyId: routeStrategy.id,
+      routeStrategyName: routeStrategy.name,
       removedGroupId: groupId,
       removedGroupName: groupName,
-      removedBindingStatus: apiKey.targetBindingStatus ?? undefined
+      removedBindingStatus: routeStrategy.targetBindingStatus ?? undefined
     }
   })
 }
 
-async function preserveApiKeyRoutesBeforeGroupDeleteAsync(
+function loadDeletedGroupApiKeyRouteChanges(
+  database: DatabaseSync,
+  routeChanges: DeletedGroupRouteStrategyChange[]
+): DeletedGroupApiKeyRouteChange[] {
+  const routeIds = [...new Set(routeChanges.map((change) => change.routeStrategyId).filter(Boolean))]
+  if (!routeIds.length) return []
+  const changeByRouteStrategyId = new Map(routeChanges.map((change) => [change.routeStrategyId, change]))
+  const rows = database
+    .prepare(`
+      SELECT id AS apiKeyId, route_strategy_id AS routeStrategyId
+      FROM api_keys
+      WHERE route_strategy_id IN (${sqlPlaceholders(routeIds.length)})
+      ORDER BY id ASC
+    `)
+    .all(...routeIds) as Array<{ apiKeyId: string; routeStrategyId: string }>
+  return rows.flatMap((row) => {
+    const change = changeByRouteStrategyId.get(row.routeStrategyId)
+    return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
+  })
+}
+
+async function preserveRouteStrategiesBeforeGroupDeleteAsync(
   client: DatabaseClient,
   groupId: string,
-  systemAccountId: string,
   groupName?: string
-): Promise<DeletedGroupApiKeyRouteChange[]> {
-  const affectedApiKeys = await client.query<ApiKeyAffectedByGroupDeleteRow>(`
+): Promise<DeletedGroupRouteStrategyChange[]> {
+  const affectedRouteStrategies = await client.query<RouteStrategyAffectedByGroupDeleteRow>(`
     SELECT
-      api_key_group_bindings.api_key_id AS id,
-      api_keys.name,
-      api_keys.system_account_id AS "systemAccountId",
-      api_key_group_bindings.status AS "targetBindingStatus"
-    FROM ${groupWriteTable(client, 'api_key_group_bindings')} api_key_group_bindings
-    INNER JOIN ${groupWriteTable(client, 'api_keys')} api_keys
-      ON api_keys.id = api_key_group_bindings.api_key_id
-      AND api_keys.system_account_id = api_key_group_bindings.system_account_id
-    WHERE api_key_group_bindings.group_id = ?
-    ORDER BY api_key_group_bindings.api_key_id ASC
+      route_strategy_groups.route_strategy_id AS id,
+      route_strategies.name,
+      route_strategies.system_account_id AS "systemAccountId",
+      route_strategy_groups.status AS "targetBindingStatus"
+    FROM ${groupWriteTable(client, 'route_strategy_groups')} route_strategy_groups
+    INNER JOIN ${groupWriteTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = route_strategy_groups.route_strategy_id
+      AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+    WHERE route_strategy_groups.group_id = ?
+    ORDER BY route_strategy_groups.route_strategy_id ASC
     LIMIT ?
-  `, [groupId, maxGroupDeleteAffectedApiKeyRoutes + 1])
-  if (!affectedApiKeys.length) return []
-  if (affectedApiKeys.length > maxGroupDeleteAffectedApiKeyRoutes) {
-    throw new Error(`该分组关联的 API Key 超过 ${maxGroupDeleteAffectedApiKeyRoutes} 个，请先分批解除绑定后再删除分组`)
+  `, [groupId, maxGroupDeleteAffectedRouteStrategies + 1])
+  if (!affectedRouteStrategies.length) return []
+  if (affectedRouteStrategies.length > maxGroupDeleteAffectedRouteStrategies) {
+    throw new Error(`该分组关联的策略路由超过 ${maxGroupDeleteAffectedRouteStrategies} 个，请先分批解除绑定后再删除分组`)
   }
 
-  const activeBindingCountByApiKeyId = await loadActiveApiKeyGroupCountExcludingGroupAsync(
+  const activeBindingCountByRouteStrategyId = await loadActiveRouteStrategyGroupCountExcludingGroupAsync(
     client,
     groupId,
-    affectedApiKeys.map((apiKey) => apiKey.id)
+    affectedRouteStrategies.map((routeStrategy) => routeStrategy.id)
   )
-  const blockers = affectedApiKeys.filter((apiKey) => {
-    if (apiKey.systemAccountId !== systemAccountId) return false
-    if (apiKey.targetBindingStatus !== 'active') return false
-    return (activeBindingCountByApiKeyId.get(apiKey.id) ?? 0) === 0
+  const blockers = affectedRouteStrategies.filter((routeStrategy) => {
+    if (routeStrategy.targetBindingStatus !== 'active') return false
+    return (activeBindingCountByRouteStrategyId.get(routeStrategy.id) ?? 0) === 0
   })
   if (blockers.length) {
-    const names = blockers.slice(0, 3).map((apiKey) => apiKey.name).join('、')
+    const names = blockers.slice(0, 3).map((routeStrategy) => routeStrategy.name).join('、')
     const suffix = blockers.length > 3 ? ` 等 ${blockers.length} 个` : ''
-    throw new Error(`无法删除分组：该分组仍是以下 API Key 的唯一启用号池：${names}${suffix}。请先到 API Key 管理中为这些 Key 新增并启用其他分组，或删除这些 API Key 后再删除分组。`)
+    throw new Error(`无法删除分组：该分组仍是以下策略路由的唯一启用分组：${names}${suffix}。请先到策略路由中切换或新增启用分组，或删除这些策略路由后再删除分组。`)
   }
 
-  return affectedApiKeys.map((apiKey) => {
+  return affectedRouteStrategies.map((routeStrategy) => {
     return {
-      apiKeyId: apiKey.id,
-      apiKeyName: apiKey.name,
+      routeStrategyId: routeStrategy.id,
+      routeStrategyName: routeStrategy.name,
       removedGroupId: groupId,
       removedGroupName: groupName,
-      removedBindingStatus: apiKey.targetBindingStatus ?? undefined
+      removedBindingStatus: routeStrategy.targetBindingStatus ?? undefined
     }
   })
 }
 
-function loadActiveApiKeyGroupCountExcludingGroup(
+async function loadDeletedGroupApiKeyRouteChangesAsync(
+  client: DatabaseClient,
+  routeChanges: DeletedGroupRouteStrategyChange[]
+): Promise<DeletedGroupApiKeyRouteChange[]> {
+  const routeIds = [...new Set(routeChanges.map((change) => change.routeStrategyId).filter(Boolean))]
+  if (!routeIds.length) return []
+  const changeByRouteStrategyId = new Map(routeChanges.map((change) => [change.routeStrategyId, change]))
+  const rows = await client.query<{ apiKeyId: string; routeStrategyId: string }>(`
+    SELECT id AS "apiKeyId", route_strategy_id AS "routeStrategyId"
+    FROM ${groupWriteTable(client, 'api_keys')}
+    WHERE route_strategy_id IN (${client.dialect.bindPlaceholders(routeIds.length)})
+    ORDER BY id ASC
+  `, routeIds)
+  return rows.flatMap((row) => {
+    const change = changeByRouteStrategyId.get(row.routeStrategyId)
+    return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
+  })
+}
+
+function loadActiveRouteStrategyGroupCountExcludingGroup(
   database: DatabaseSync,
   groupId: string,
-  apiKeyIds: string[]
+  routeStrategyIds: string[]
 ): Map<string, number> {
   const result = new Map<string, number>()
-  const uniqueIds = [...new Set(apiKeyIds.filter(Boolean))]
+  const uniqueIds = [...new Set(routeStrategyIds.filter(Boolean))]
   const now = nowIso()
   for (const chunk of chunkValues(uniqueIds, 500)) {
     const rows = database
       .prepare(`
         SELECT
-          api_key_group_bindings.api_key_id AS apiKeyId,
+          route_strategy_groups.route_strategy_id AS routeStrategyId,
           COUNT(*) AS activeBindingCount
-        FROM api_key_group_bindings
+        FROM route_strategy_groups
         INNER JOIN groups
-          ON groups.id = api_key_group_bindings.group_id
+          ON groups.id = route_strategy_groups.group_id
           AND groups.enabled = 1
         LEFT JOIN resource_authorizations group_authorization
           ON group_authorization.resource_type = 'group'
           AND group_authorization.resource_id = groups.id
-          AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+          AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
           AND group_authorization.status = 'active'
           AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
         LEFT JOIN group_authorization_settings
           ON group_authorization_settings.authorization_id = group_authorization.id
-          AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+          AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
           AND group_authorization_settings.group_id = groups.id
-        WHERE api_key_group_bindings.status = 'active'
+        WHERE route_strategy_groups.status = 'active'
           AND (
-            groups.system_account_id = api_key_group_bindings.system_account_id
+            groups.system_account_id = route_strategy_groups.system_account_id
             OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
           )
-          AND api_key_group_bindings.group_id <> ?
-          AND api_key_group_bindings.api_key_id IN (${sqlPlaceholders(chunk.length)})
-        GROUP BY api_key_group_bindings.api_key_id
+          AND route_strategy_groups.group_id <> ?
+          AND route_strategy_groups.route_strategy_id IN (${sqlPlaceholders(chunk.length)})
+        GROUP BY route_strategy_groups.route_strategy_id
     `)
-      .all(now, groupId, ...chunk) as unknown as Array<{ apiKeyId: string; activeBindingCount: number }>
+      .all(now, groupId, ...chunk) as unknown as Array<{ routeStrategyId: string; activeBindingCount: number }>
     for (const row of rows) {
-      result.set(row.apiKeyId, Number(row.activeBindingCount) || 0)
+      result.set(row.routeStrategyId, Number(row.activeBindingCount) || 0)
     }
   }
   return result
 }
 
-async function loadActiveApiKeyGroupCountExcludingGroupAsync(
+async function loadActiveRouteStrategyGroupCountExcludingGroupAsync(
   client: DatabaseClient,
   groupId: string,
-  apiKeyIds: string[]
+  routeStrategyIds: string[]
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>()
-  const uniqueIds = [...new Set(apiKeyIds.filter(Boolean))]
+  const uniqueIds = [...new Set(routeStrategyIds.filter(Boolean))]
   const now = nowIso()
   for (const chunk of chunkValues(uniqueIds, 500)) {
-    const rows = await client.query<{ apiKeyId: string; activeBindingCount: number | string }>(`
+    const rows = await client.query<{ routeStrategyId: string; activeBindingCount: number | string }>(`
       SELECT
-        api_key_group_bindings.api_key_id AS "apiKeyId",
+        route_strategy_groups.route_strategy_id AS "routeStrategyId",
         COUNT(*) AS "activeBindingCount"
-      FROM ${groupWriteTable(client, 'api_key_group_bindings')} api_key_group_bindings
+      FROM ${groupWriteTable(client, 'route_strategy_groups')} route_strategy_groups
       INNER JOIN ${groupWriteTable(client, 'groups')} groups
-        ON groups.id = api_key_group_bindings.group_id
+        ON groups.id = route_strategy_groups.group_id
         AND groups.enabled = 1
       LEFT JOIN ${groupWriteTable(client, 'resource_authorizations')} group_authorization
         ON group_authorization.resource_type = 'group'
         AND group_authorization.resource_id = groups.id
-        AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
         AND group_authorization.status = 'active'
         AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
       LEFT JOIN ${groupWriteTable(client, 'group_authorization_settings')} group_authorization_settings
         ON group_authorization_settings.authorization_id = group_authorization.id
-        AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
         AND group_authorization_settings.group_id = groups.id
-      WHERE api_key_group_bindings.status = 'active'
+      WHERE route_strategy_groups.status = 'active'
         AND (
-          groups.system_account_id = api_key_group_bindings.system_account_id
+          groups.system_account_id = route_strategy_groups.system_account_id
           OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
         )
-        AND api_key_group_bindings.group_id <> ?
-        AND api_key_group_bindings.api_key_id IN (${client.dialect.bindPlaceholders(chunk.length)})
-      GROUP BY api_key_group_bindings.api_key_id
+        AND route_strategy_groups.group_id <> ?
+        AND route_strategy_groups.route_strategy_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+      GROUP BY route_strategy_groups.route_strategy_id
     `, [now, groupId, ...chunk])
     for (const row of rows) {
-      result.set(row.apiKeyId, Number(row.activeBindingCount) || 0)
+      result.set(row.routeStrategyId, Number(row.activeBindingCount) || 0)
     }
   }
   return result

@@ -4,7 +4,7 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
-import { isDynamicApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
+import { isDynamicRouteStrategyMode } from '../../../domain/route-strategy.js'
 import { hashSecret } from '../../../storage/crypto.js'
 import {
   listOpenAIAccountsForGroupResult,
@@ -34,6 +34,7 @@ const openAIAccountsTtlMs = 60_000
 const openAIAccountsRetainTtlMs = 10 * 60_000
 const providerModelCatalogTtlMs = 60_000
 const responseInspectionPolicyRetainTtlMs = 10 * 60_000
+export const gatewayRuntimeDbServiceTimeoutMs = 10_000
 
 interface GatewayRuntimeCacheEntry {
   runtime: DbServiceGatewayRuntime
@@ -91,6 +92,12 @@ const gatewaySettingsCache = createAppCache<string, GatewaySettings>({
 })
 
 const groupUsageAccessCache = createAppCache<string, GroupUsageAccessCacheEntry>({
+  name: 'gateway:group-usage-access',
+  max: 1000,
+  ttlMs: groupUsageAccessRetainTtlMs
+})
+
+const groupUsageAccessSharedCache = createSharedJsonCache<GroupUsageAccessCacheEntry>({
   name: 'gateway:group-usage-access',
   max: 1000,
   ttlMs: groupUsageAccessRetainTtlMs
@@ -190,14 +197,22 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
     }
     return groupUsageAccessFromCacheEntry(cached)
   }
+  const sharedCached = await getGroupUsageAccessSharedCacheEntry(cacheKey)
+  if (sharedCached !== undefined) {
+    groupUsageAccessCache.set(cacheKey, cloneGroupUsageAccessCacheEntry(sharedCached), {
+      ttlMs: groupUsageAccessRetainTtlMs
+    })
+    if (!isGatewayRuntimeCacheEntryFresh(sharedCached)) {
+      refreshGroupUsageAccessMetadataInBackground(groupId, systemAccountId, cacheKey)
+    }
+    return groupUsageAccessFromCacheEntry(sharedCached)
+  }
   const value = await requestDbService({
     type: 'resolve_group_usage_access',
     groupId,
     systemAccountId
   })
-  groupUsageAccessCache.set(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false), {
-    ttlMs: groupUsageAccessRetainTtlMs
-  })
+  await setGroupUsageAccessCacheEntryAsync(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false))
   return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
@@ -416,21 +431,21 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached !== undefined) {
     if (isGatewayRuntimeCacheEntryFresh(cached)) {
-      if (isDynamicApiKeyGroupRouteStrategy(cached.runtime.apiKey?.group_route_strategy)) {
+      if (isDynamicRouteStrategyMode(cached.runtime.apiKey?.route_strategy_mode)) {
         return await routeCachedDynamicGatewayRuntimeForDispatch(cached.runtime)
       }
       return cloneGatewayRuntimeForDispatch(cached.runtime)
     }
     refreshGatewayRuntimeInBackground(apiKey, cacheKey)
     const runtime = sanitizedGatewayRuntimeForDispatch(cached.runtime)
-    if (runtime.apiKey && isDynamicApiKeyGroupRouteStrategy(runtime.apiKey.group_route_strategy)) {
+    if (runtime.apiKey && isDynamicRouteStrategyMode(runtime.apiKey.route_strategy_mode)) {
       return await routeCachedDynamicGatewayRuntimeForDispatch(runtime)
     }
     return runtime.apiKey ? cloneGatewayRuntimeForDispatch(runtime) : cloneStaticGatewayRuntime(runtime)
   }
 
   const runtime = await loadGatewayRuntimeOnce(apiKey, cacheKey)
-  if (runtime.apiKey && isDynamicApiKeyGroupRouteStrategy(runtime.apiKey.group_route_strategy)) {
+  if (runtime.apiKey && isDynamicRouteStrategyMode(runtime.apiKey.route_strategy_mode)) {
     return await routeCachedDynamicGatewayRuntimeForDispatch(runtime)
   }
   return runtime.apiKey ? cloneGatewayRuntimeForDispatch(runtime) : cloneStaticGatewayRuntime(runtime)
@@ -466,6 +481,7 @@ export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean
   providerModelCatalogCache.clear()
   providerModelRouteIndexCache.clear()
   responseInspectionPolicyCache.clear()
+  clearGroupUsageAccessSharedCache()
   clearProviderModelCatalogSharedCache()
   clearResponseInspectionPolicySharedCache()
   if (options.clearSettings ?? true) {
@@ -583,6 +599,8 @@ async function loadGatewayRuntimeAndPopulateCaches(
     type: 'read_gateway_runtime',
     key: apiKey,
     skipDynamicRouteSelection: true
+  }, {
+    timeoutMs: gatewayRuntimeDbServiceTimeoutMs
   })
   if (gatewayRuntimeCacheGeneration === generation) {
     populateGatewayRuntimeCaches(cacheKey, runtime)
@@ -608,9 +626,12 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
   }, { ttlMs: gatewayRuntimeRetainTtlMs })
   gatewaySettingsCache.set('current', runtime.settings)
   if (runtime.groupAccess) {
-    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id), groupUsageAccessCacheEntry(cloneGroupUsageAccessMetadata(runtime.groupAccess), nowMs), {
+    const cacheKey = gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id)
+    const entry = groupUsageAccessCacheEntry(cloneGroupUsageAccessMetadata(runtime.groupAccess), nowMs)
+    groupUsageAccessCache.set(cacheKey, entry, {
       ttlMs: groupUsageAccessRetainTtlMs
     })
+    void setGroupUsageAccessSharedCacheEntry(cacheKey, entry)
   }
   if (runtime.groupAccess) {
     const accounts = runtime.accounts.map(cloneStaticOpenAIAccountSecret)
@@ -802,6 +823,13 @@ function groupUsageAccessCacheEntry(value: GroupUsageAccessMetadata | false, now
   }
 }
 
+function cloneGroupUsageAccessCacheEntry(entry: GroupUsageAccessCacheEntry): GroupUsageAccessCacheEntry {
+  return {
+    value: entry.value ? cloneGroupUsageAccessMetadata(entry.value) : false,
+    revalidateAtMs: entry.revalidateAtMs
+  }
+}
+
 function openAIAccountsCacheEntry(accounts: OpenAIAccountSecret[], now = Date.now()): OpenAIAccountsCacheEntry {
   return {
     accounts: accounts.map(cloneStaticOpenAIAccountSecret),
@@ -922,9 +950,9 @@ function refreshGroupUsageAccessMetadataInBackground(groupId: string, systemAcco
     ? requestDbService({ type: 'resolve_group_usage_access', groupId, systemAccountId })
     : Promise.resolve(resolveGroupUsageAccessMetadata(groupId, systemAccountId)))
     .then((value) => {
-      groupUsageAccessCache.set(cacheKey, groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false), {
-        ttlMs: groupUsageAccessRetainTtlMs
-      })
+      const entry = groupUsageAccessCacheEntry(value ? cloneGroupUsageAccessMetadata(value) : false)
+      groupUsageAccessCache.set(cacheKey, entry, { ttlMs: groupUsageAccessRetainTtlMs })
+      void setGroupUsageAccessSharedCacheEntry(cacheKey, entry)
     })
     .catch((error) => {
       logger.warn(errorLogFields(error, {
@@ -968,6 +996,47 @@ function refreshOpenAIAccountsForGroupInBackground(
       pendingOpenAIAccountsRefreshes.delete(cacheKey)
     })
   pendingOpenAIAccountsRefreshes.set(cacheKey, refresh)
+}
+
+async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<GroupUsageAccessCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const cached = await groupUsageAccessSharedCache.get(cacheKey)
+    return cached ? cloneGroupUsageAccessCacheEntry(cached) : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_group_usage_access_shared_cache_read_failed'
+    }), '读取网关分组访问 Redis 共享缓存失败，继续读取 DB service')
+    return undefined
+  }
+}
+
+async function setGroupUsageAccessCacheEntryAsync(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
+  const cachedEntry = cloneGroupUsageAccessCacheEntry(entry)
+  groupUsageAccessCache.set(cacheKey, cachedEntry, { ttlMs: groupUsageAccessRetainTtlMs })
+  await setGroupUsageAccessSharedCacheEntry(cacheKey, cachedEntry)
+}
+
+async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await groupUsageAccessSharedCache.set(cacheKey, cloneGroupUsageAccessCacheEntry(entry), {
+      ttlMs: groupUsageAccessRetainTtlMs
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_group_usage_access_shared_cache_write_failed'
+    }), '写入网关分组访问 Redis 共享缓存失败')
+  }
+}
+
+function clearGroupUsageAccessSharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void groupUsageAccessSharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_group_usage_access_shared_cache_clear_failed'
+    }), '清理网关分组访问 Redis 共享缓存失败')
+  })
 }
 
 function refreshActiveResponseInspectionPoliciesInBackground(

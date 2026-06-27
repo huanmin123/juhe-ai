@@ -172,6 +172,7 @@ interface SmokeResourceState {
   temporaryGroupIds: string[]
   activeGatewayGroupId?: string
   temporaryApiKeyId?: string
+  temporaryRouteStrategyId?: string
   temporaryAccountId?: string
   temporaryMockUpstream?: http.Server
 }
@@ -442,9 +443,16 @@ async function createTemporaryGatewayKeyForAccount(
   const groupId = account.boundGroupId ?? resourceState.activeGatewayGroupId
   assert(groupId, `账户 ${account.name} 缺少可用分组，无法创建临时网关 API Key`)
   resourceState.activeGatewayGroupId = groupId
+  const routeStrategy = await postEnvelope<{ id: string }>(apiPath(`/route-strategies${ownerScope}`), {
+    name: `${temporaryResourcePrefix}-Route-${smokeRunId()}`,
+    groupBindings: [{ groupId, priority: 1, status: 'active' }],
+    status: 'active',
+    description: '真实网关链路临时烟测策略路由'
+  })
+  resourceState.temporaryRouteStrategyId = routeStrategy.id
   const apiKey = await postEnvelope<ApiKeySummary>(apiPath(`/api-keys${ownerScope}`), {
     name: `${temporaryResourcePrefix}-Key-${smokeRunId()}`,
-    groupBindings: [{ groupId, priority: 1, status: 'active' }],
+    routeStrategyId: routeStrategy.id,
     status: 'active',
     description: '真实网关链路临时烟测 Key'
   })
@@ -490,6 +498,9 @@ async function cleanupSmokeResources(resourceState: SmokeResourceState): Promise
 
     if (resourceState.temporaryApiKeyId) {
       await ignoreCleanupError(() => requestNoContent(apiPath(`/api-keys/${resourceState.temporaryApiKeyId}${ownerScope}`), { method: 'DELETE' }))
+    }
+    if (resourceState.temporaryRouteStrategyId) {
+      await ignoreCleanupError(() => requestNoContent(apiPath(`/route-strategies/${resourceState.temporaryRouteStrategyId}${ownerScope}`), { method: 'DELETE' }))
     }
     if (resourceState.temporaryAccountId) {
       await ignoreCleanupError(() => requestNoContent(apiPath(`/accounts/${resourceState.temporaryAccountId}${ownerScope}`), { method: 'DELETE' }))

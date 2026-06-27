@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -103,13 +104,13 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    const generalApiKey = repositories.createApiKeyRecord({
+    const generalApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'GLM 真实上游 E2E Key',
       groupBindings: [{ groupId: generalGroup.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(generalApiKey.key, '回归 API Key 未返回明文密钥')
-    const codingApiKey = repositories.createApiKeyRecord({
+    const codingApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'GLM Coding 真实上游 E2E Key',
       groupBindings: [{ groupId: codingGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: codexBridgeRouteRules(codingGroup.id, realModels),

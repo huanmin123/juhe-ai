@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -385,7 +386,7 @@ function createAgentGuidanceFallbackRuntime(upstreamOrigin: string): CrossRuntim
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '协议交叉矩阵 guidance 后备 Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -437,7 +438,7 @@ function assertForbiddenResponsesTargets(upstreamOrigin: string): void {
 }
 
 function runtime(groupId: string, accountId: string, name: string, explicitHybridRouteRules?: ApiKeyExplicitHybridRouteRule[]): CrossRuntime {
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name,
     groupBindings: [{ groupId, priority: 1, status: 'active' }],
     explicitHybridRouteRules,

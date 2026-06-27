@@ -86,8 +86,8 @@ export async function resolveHybridGatewayRoute(input: {
   signal?: AbortSignal
 }): Promise<HybridGatewayRouteResult> {
   const config = input.apiKeyRecord.hybrid_routing_config
-  if (input.apiKeyRecord.route_mode !== 'hybrid' || !config) {
-    return { outcome: 'skipped', reason: 'not_hybrid_api_key' }
+  if (input.apiKeyRecord.route_strategy_mode !== 'hybrid_smart' || !config) {
+    return { outcome: 'skipped', reason: 'not_hybrid_route_strategy' }
   }
   if (!isHybridRoutableRequest(input.req)) {
     return { outcome: 'skipped', reason: 'not_json_post_request' }
@@ -282,7 +282,7 @@ export async function resolveNextHybridGatewayRoute(input: {
   signal?: AbortSignal
 }): Promise<HybridGatewayTargetRoute | undefined> {
   const config = input.apiKeyRecord.hybrid_routing_config
-  if (input.apiKeyRecord.route_mode !== 'hybrid' || !config) {
+  if (input.apiKeyRecord.route_strategy_mode !== 'hybrid_smart' || !config) {
     return undefined
   }
   for (const candidateRoute of higherHybridLevelRoutes(config, input.currentRoute)) {

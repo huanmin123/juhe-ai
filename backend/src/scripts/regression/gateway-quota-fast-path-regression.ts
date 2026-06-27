@@ -52,11 +52,14 @@ function apiKeyWithoutQuota(): GatewayApiKeyRow {
   return {
     id: 'key_fast_path',
     system_account_id: 'sys_fast_path',
+    route_strategy_id: 'route_fast_path',
+    route_strategy_mode: 'normal',
+    route_strategy_config_json: null,
     selected_group_id: 'grp_fast_path',
     status: 'active',
+    availability_schedule_active: 1,
     expires_at: null,
     quota_limits_json: null,
-    group_route_strategy: 'priority_failover',
     system_account_image_generation_enabled: 0
   } as GatewayApiKeyRow
 }

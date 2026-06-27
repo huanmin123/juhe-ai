@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -277,7 +278,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGa
     priority: 10,
     clientCompatibility: 'openai_standard'
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `兼容恢复 e2e Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

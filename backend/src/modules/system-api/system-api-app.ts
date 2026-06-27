@@ -20,6 +20,7 @@ import { proxiesRouter } from '../proxies/proxies.routes.js'
 import { capturePublicApiLog } from '../public-api-logs/public-api-log-capture.middleware.js'
 import { publicApiLogsRouter } from '../public-api-logs/public-api-logs.routes.js'
 import { runtimeLogsRouter } from '../runtime-logs/runtime-logs.routes.js'
+import { routeStrategiesRouter } from '../route-strategies/route-strategies.routes.js'
 import { settingsRouter } from '../settings/settings.routes.js'
 import { statsRouter } from '../stats/stats.routes.js'
 import { responseInspectionPoliciesRouter } from '../response-inspection-policies/response-inspection-policies.routes.js'
@@ -82,6 +83,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/announcements`, announcementsRouter)
   app.use(`${systemApiPrefix}/my-accounts`, forceSelfAccessScope, accountsRouter)
   app.use(`${systemApiPrefix}/my-groups`, forceSelfAccessScope, groupsRouter)
+  app.use(`${systemApiPrefix}/my-route-strategies`, forceSelfAccessScope, routeStrategiesRouter)
   app.use(`${systemApiPrefix}/my-api-keys`, forceSelfAccessScope, apiKeysRouter)
   app.use(`${systemApiPrefix}/my-authorization-options`, forceSelfAccessScope, authorizationOptionsRouter)
   app.use(`${systemApiPrefix}/my-authorizations`, forceSelfAccessScope, authorizationsRouter)
@@ -94,6 +96,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/response-inspection-policies`, requireAdmin, responseInspectionPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)
+  app.use(`${systemApiPrefix}/route-strategies`, requireAdmin, routeStrategiesRouter)
   app.use(`${systemApiPrefix}/api-keys`, requireAdmin, apiKeysRouter)
   app.use(`${systemApiPrefix}/authorization-options`, requireAdmin, authorizationOptionsRouter)
   app.use(`${systemApiPrefix}/authorizations`, requireAdmin, authorizationsRouter)

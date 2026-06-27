@@ -10,7 +10,7 @@ import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
-import { testProxyById } from './proxy-test.service.js'
+import { manualProxyTestDeadlineMs, testProxyById } from './proxy-test.service.js'
 
 export const proxiesRouter = Router()
 
@@ -176,7 +176,7 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
     return
   }
   try {
-    const report = await testProxyById(req.params.id, { persist: false })
+    const report = await testProxyById(req.params.id, { persist: false, deadlineMs: manualProxyTestDeadlineMs })
     if (!report) {
       res.status(404).json({ message: '代理不存在' })
       return

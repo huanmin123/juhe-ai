@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -127,7 +128,7 @@ try {
       supportedModels: [upstreamModel],
       modelMappings: bridgeMappings()
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini CLI Native 转 Chat 真实游戏 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'

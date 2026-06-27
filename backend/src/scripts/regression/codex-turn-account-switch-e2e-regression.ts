@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 import type { Request } from 'express'
 
@@ -562,7 +563,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   if ((options.freshPriority ?? 10) === 0) {
     forceGroupAccountOrder(group.id, failedAccount.id, freshAccount.id)
   }
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -631,7 +632,7 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     schedulable: true,
     priority: 10
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-三账号-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -688,7 +689,7 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
     schedulable: true,
     priority: 10
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-全部探针失败-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

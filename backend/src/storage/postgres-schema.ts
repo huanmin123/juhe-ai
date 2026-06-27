@@ -416,7 +416,9 @@ function orderSchemaStatements(statements: PostgresSchemaStatement[]): PostgresS
       ordered.push(selected.statement)
     }
 
-    ordered.push(...nonTableStatements)
+    const addColumnStatements = nonTableStatements.filter((statement) => extractAlterTableAddedColumn(statement.sql))
+    const remainingNonTableStatements = nonTableStatements.filter((statement) => !extractAlterTableAddedColumn(statement.sql))
+    ordered.push(...addColumnStatements, ...remainingNonTableStatements)
   }
 
   return ordered

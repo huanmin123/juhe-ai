@@ -6,6 +6,7 @@ import http from 'node:http'
 import { dirname, join, normalize, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -234,7 +235,7 @@ try {
     const glm = createRealGroupAccount('Hybrid Project GLM 5.2 分组', 'Hybrid Project GLM 5.2 账户', glmModel)
     const gpt54 = createRealGroupAccount('Hybrid Project GPT 5.4 分组', 'Hybrid Project GPT 5.4 账户', gpt54Model)
     const gpt = createRealGroupAccount('Hybrid Project GPT 5.5 分组', 'Hybrid Project GPT 5.5 账户', gptModel)
-    const hybridApiKey = repositories.createApiKeyRecord({
+    const hybridApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Project Workflow Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',

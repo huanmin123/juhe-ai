@@ -13,6 +13,7 @@ import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
 import { providersApi } from './domains/providers'
 import { proxiesApi } from './domains/proxies'
 import { responseInspectionPoliciesApi } from './domains/responseInspectionPolicies'
+import { myRouteStrategiesApi, routeStrategiesApi } from './domains/routeStrategies'
 import { settingsApi } from './domains/settings'
 import { myStatsApi, statsApi, tableMonitorApi } from './domains/stats'
 import { systemAccountsApi } from './domains/systemAccounts'
@@ -41,6 +42,8 @@ export const api = {
   myAuthorizations: myAuthorizationsApi,
   apiKeys: apiKeysApi,
   myApiKeys: myApiKeysApi,
+  routeStrategies: routeStrategiesApi,
+  myRouteStrategies: myRouteStrategiesApi,
   openaiOAuth: openaiOAuthApi,
   myOpenaiOAuth: myOpenaiOAuthApi,
   proxies: proxiesApi,

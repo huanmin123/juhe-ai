@@ -2,9 +2,9 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
-  findAccountForTest,
   findOpenAIAccountForGroup
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
@@ -55,7 +55,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   item: AccountApiKeyCooldownRetestQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
-  const account = findAccountForTest(item.accountId)
+  const account = await loadAccountForTestViaDbService(item.accountId)
   if (!account || account.type !== 'api_key' || account.status !== 'active' || !account.schedulable || !account.boundGroupId) {
     logger.debug({
       event: 'background_account_api_key_cooldown_retest_discarded',
@@ -91,6 +91,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     trafficSource: 'cooldown_retest',
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
+    findAccountForTest: loadAccountForTestViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
@@ -140,4 +141,12 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     message: result.message
   }, '账户内 API Key 复测未通过，已按 Key 运行态退避等待下次复测')
   return true
+}
+
+async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope) {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_test',
+    accountId,
+    access
+  }, 10_000)
 }

@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -73,7 +74,7 @@ try {
     proxyProfileId: proxy.id
   }, ownerAccess)
   const ownerGroupId = ownerGroup.id
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效 API Key',
     groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }],
   }, ownerAccess)
@@ -155,7 +156,7 @@ try {
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerGroup.id, grantee.id) as { id?: string } | undefined
   assert(groupAuthorizationRuntimeRow?.id, '回归需要最终用户分组授权主记录 ID')
-  const granteeAuthorizedGroupApiKey = repositories.createApiKeyRecord({
+  const granteeAuthorizedGroupApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效授权分组 API Key',
     groupBindings: [{ groupId: ownerGroup.id, priority: 1, status: 'active' }],
   }, granteeAccess)
@@ -179,7 +180,7 @@ try {
   assert(retainedRevokedGroupBindingApiKey, '授权回收后应允许 API Key 保留原有授权分组绑定配置')
   assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '保留已回收授权分组绑定后运行配置仍不应返回候选账号')
 
-  const granteeApiKey = repositories.createApiKeyRecord({
+  const granteeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效被授权 API Key',
     groupBindings: [{ groupId: granteeGroup.id, priority: 1, status: 'active' }],
   }, granteeAccess)
@@ -271,7 +272,7 @@ try {
     credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' }
   }, statusOwnerAccess)
   const statusGroupId = statusGroup.id
-  const statusApiKey = repositories.createApiKeyRecord({
+  const statusApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效状态 API Key',
     groupBindings: [{ groupId: statusGroupId, priority: 1, status: 'active' }],
   }, statusOwnerAccess)

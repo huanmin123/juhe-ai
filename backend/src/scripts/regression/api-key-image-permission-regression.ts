@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -266,7 +267,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
   assert.equal(account.boundGroupId, group.id, '新建账户应绑定指定分组')
   const boundGroupId = account.boundGroupId
 
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '图像权限回归 API Key',
     groupBindings: [{ groupId: boundGroupId, priority: 1, status: 'active' }],
     status: 'active'
@@ -308,7 +309,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     groupId: normalRouteGptGroup.id,
     supportedModels: ['gpt-5.4']
   }, access)
-  const normalRouteApiKey = repositories.createApiKeyRecord({
+  const normalRouteApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '图像权限 normal 路由 API Key',
     routeMode: 'normal',
     groupBindings: [

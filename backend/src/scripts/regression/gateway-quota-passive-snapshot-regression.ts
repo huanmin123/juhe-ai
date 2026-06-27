@@ -93,10 +93,13 @@ try {
   const apiKeyDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_passive_quota',
     system_account_id: 'sys_passive_quota',
+    route_strategy_id: 'route_passive_quota',
+    route_strategy_mode: 'normal',
+    route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
+    availability_schedule_active: 1,
     expires_at: null,
-    group_route_strategy: 'priority_failover',
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({
       hourly: { enabled: true, hours: 3, limit: 10 },
@@ -189,10 +192,13 @@ try {
   const apiKeyDecisionAfterAuthorizationInvalidation = await checkGatewayApiKeyQuotaAsync({
     id: 'key_auth_invalidation_cost_snapshot',
     system_account_id: 'sys_passive_quota',
+    route_strategy_id: 'route_auth_invalidation_cost_snapshot',
+    route_strategy_mode: 'normal',
+    route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
+    availability_schedule_active: 1,
     expires_at: null,
-    group_route_strategy: 'priority_failover',
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 10 } })
   } as GatewayApiKeyRow)
@@ -205,10 +211,13 @@ try {
   const invalidatedWithoutCostSnapshotDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_auth_invalidation_without_cost_snapshot',
     system_account_id: 'sys_passive_quota',
+    route_strategy_id: 'route_auth_invalidation_without_cost_snapshot',
+    route_strategy_mode: 'normal',
+    route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
+    availability_schedule_active: 1,
     expires_at: null,
-    group_route_strategy: 'priority_failover',
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
   } as GatewayApiKeyRow)
@@ -222,10 +231,13 @@ try {
   const noSnapshotDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_passive_no_snapshot',
     system_account_id: 'sys_passive_quota',
+    route_strategy_id: 'route_passive_no_snapshot',
+    route_strategy_mode: 'normal',
+    route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
+    availability_schedule_active: 1,
     expires_at: null,
-    group_route_strategy: 'priority_failover',
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
   } as GatewayApiKeyRow)
@@ -242,10 +254,13 @@ try {
   const incompleteSnapshotApiKeyDecision = await checkGatewayApiKeyQuotaAsync({
     id: 'key_passive_missing_from_incomplete_snapshot',
     system_account_id: 'sys_passive_quota',
+    route_strategy_id: 'route_passive_missing_from_incomplete_snapshot',
+    route_strategy_mode: 'normal',
+    route_strategy_config_json: null,
     selected_group_id: 'group_passive_quota',
     status: 'active',
+    availability_schedule_active: 1,
     expires_at: null,
-    group_route_strategy: 'priority_failover',
     system_account_image_generation_enabled: 0,
     quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
   } as GatewayApiKeyRow)
@@ -366,10 +381,13 @@ function assertLocalQuotaReadersRejectServerRole(): void {
     () => checkGatewayApiKeyQuota({
       id: 'key_sync_reject',
       system_account_id: 'sys_sync_reject',
+      route_strategy_id: 'route_sync_reject',
+      route_strategy_mode: 'normal',
+      route_strategy_config_json: null,
       selected_group_id: 'group_sync_reject',
       status: 'active',
+      availability_schedule_active: 1,
       expires_at: null,
-      group_route_strategy: 'priority_failover',
       system_account_image_generation_enabled: 0,
       quota_limits_json: JSON.stringify({ daily: { enabled: true, limit: 1 } })
     } as GatewayApiKeyRow),

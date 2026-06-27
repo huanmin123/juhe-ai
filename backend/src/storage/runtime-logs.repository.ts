@@ -91,6 +91,20 @@ export interface RuntimeLogFileCursorInput {
 type RuntimeLogRow = Record<string, unknown>
 type RuntimeLogFilterValue = string | number
 type RuntimeLogFacetInput = { time: string; level: string; event?: string }
+interface NormalizedRuntimeLogIndexInput {
+  id: string
+  logFile?: string
+  logOffset: number | null
+  lineNumber: number | null
+  time: string
+  level: string
+  traceId?: string
+  event?: string
+  message?: string
+  errorMessage?: string
+  rawJson: string
+  createdAt: string
+}
 
 const runtimeLogDefaultPageSize = 100
 const runtimeLogMaxPageSize = 100
@@ -111,32 +125,29 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
+  const normalizedInputs = inputs.map(normalizeRuntimeLogIndexInput)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const facetRows: RuntimeLogFacetInput[] = []
-    for (const input of inputs) {
-      const id = input.id ?? newId('rtlog')
-      const createdAt = input.createdAt ?? nowIso()
-      const level = normalizeLevel(input.level)
-      const rawJson = truncateRuntimeLogRawJson(input.rawJson)
+    for (const input of normalizedInputs) {
       const result = insertLog.run(
-        id,
+        input.id,
         input.logFile ?? null,
-        integerOrNull(input.logOffset),
-        integerOrNull(input.lineNumber),
+        input.logOffset,
+        input.lineNumber,
         input.time,
-        level,
+        input.level,
         input.traceId ?? null,
         input.event ?? null,
         input.message ?? null,
         input.errorMessage ?? null,
-        rawJson,
-        createdAt
+        input.rawJson,
+        input.createdAt
       )
       if (Number(result.changes ?? 0) === 0) {
         continue
       }
-      facetRows.push({ time: input.time, level, event: input.event })
+      facetRows.push({ time: input.time, level: input.level, event: input.event })
     }
     incrementRuntimeLogFacetSnapshots(database, facetRows)
     commitDatabaseTransaction(database, transactionStarted)
@@ -175,6 +186,50 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
     page,
     pageSize
   }
+}
+
+export async function createRuntimeLogsBatchAsync(inputs: RuntimeLogIndexInput[]): Promise<void> {
+  if (inputs.length === 0) return
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    createRuntimeLogsBatch(inputs)
+    return
+  }
+
+  const normalizedInputs = inputs.map(normalizeRuntimeLogIndexInput)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.transaction(async (tx) => {
+    const facetRows: RuntimeLogFacetInput[] = []
+    for (const input of normalizedInputs) {
+      const result = await insertRuntimeLogPostgres(tx, input)
+      if (result.changes === 0) {
+        continue
+      }
+      facetRows.push({ time: input.time, level: input.level, event: input.event })
+    }
+    await incrementRuntimeLogFacetSnapshotsPostgres(tx, facetRows)
+  })
+}
+
+async function insertRuntimeLogPostgres(client: DatabaseClient, input: NormalizedRuntimeLogIndexInput): Promise<{ changes: number }> {
+  return await client.execute(`
+    INSERT INTO juhe_dataset.runtime_logs (
+      id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `, [
+    input.id,
+    input.logFile ?? null,
+    input.logOffset,
+    input.lineNumber,
+    input.time,
+    input.level,
+    input.traceId ?? null,
+    input.event ?? null,
+    input.message ?? null,
+    input.errorMessage ?? null,
+    input.rawJson,
+    input.createdAt
+  ])
 }
 
 export async function listRuntimeLogsAsync(options: RuntimeLogListOptions = {}): Promise<RuntimeLogListResult> {
@@ -534,6 +589,23 @@ function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
   }
 }
 
+function normalizeRuntimeLogIndexInput(input: RuntimeLogIndexInput): NormalizedRuntimeLogIndexInput {
+  return {
+    id: input.id ?? newId('rtlog'),
+    logFile: input.logFile,
+    logOffset: integerOrNull(input.logOffset),
+    lineNumber: integerOrNull(input.lineNumber),
+    time: input.time,
+    level: normalizeLevel(input.level),
+    traceId: input.traceId,
+    event: input.event,
+    message: input.message,
+    errorMessage: input.errorMessage,
+    rawJson: truncateRuntimeLogRawJson(input.rawJson),
+    createdAt: input.createdAt ?? nowIso()
+  }
+}
+
 function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatasetDatabase>, rows: RuntimeLogFacetInput[]): void {
   const cutoff = retentionCutoffIso()
   const retainedRows = rows.filter((row) => row.time >= cutoff)
@@ -605,6 +677,86 @@ function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatase
   `)
   for (const [event, summary] of events) {
     upsertEvent.run(runtimeLogFacetBucketKey, event, summary.count, summary.latestTime, timestamp)
+  }
+}
+
+async function incrementRuntimeLogFacetSnapshotsPostgres(client: DatabaseClient, rows: RuntimeLogFacetInput[]): Promise<void> {
+  const cutoff = retentionCutoffIso()
+  const retainedRows = rows.filter((row) => row.time >= cutoff)
+  if (retainedRows.length === 0) return
+
+  const timestamp = nowIso()
+  const sortedTimes = retainedRows.map((row) => row.time).sort()
+  const earliestTime = sortedTimes[0]
+  const latestTime = sortedTimes[sortedTimes.length - 1]
+  await client.execute(`
+    INSERT INTO juhe_dataset.runtime_log_facet_summary (
+      bucket_key, total_count, earliest_time, latest_time, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(bucket_key) DO UPDATE SET
+      total_count = runtime_log_facet_summary.total_count + excluded.total_count,
+      earliest_time = CASE
+        WHEN runtime_log_facet_summary.earliest_time IS NULL THEN excluded.earliest_time
+        WHEN excluded.earliest_time < runtime_log_facet_summary.earliest_time THEN excluded.earliest_time
+        ELSE runtime_log_facet_summary.earliest_time
+      END,
+      latest_time = CASE
+        WHEN runtime_log_facet_summary.latest_time IS NULL THEN excluded.latest_time
+        WHEN excluded.latest_time > runtime_log_facet_summary.latest_time THEN excluded.latest_time
+        ELSE runtime_log_facet_summary.latest_time
+      END,
+      updated_at = excluded.updated_at
+  `, [runtimeLogFacetBucketKey, retainedRows.length, earliestTime, latestTime, timestamp])
+
+  const levels = new Map<string, number>()
+  const events = new Map<string, { count: number; latestTime: string }>()
+  for (const row of retainedRows) {
+    levels.set(row.level, (levels.get(row.level) ?? 0) + 1)
+    const event = row.event?.trim()
+    if (event) {
+      const current = events.get(event)
+      events.set(event, {
+        count: (current?.count ?? 0) + 1,
+        latestTime: current && current.latestTime > row.time ? current.latestTime : row.time
+      })
+    }
+  }
+
+  if (levels.size > 0) {
+    const params: unknown[] = []
+    const values = Array.from(levels.entries()).map(([level, count]) => {
+      params.push(runtimeLogFacetBucketKey, level, count, timestamp)
+      return '(?, ?, ?, ?)'
+    })
+    await client.execute(`
+      INSERT INTO juhe_dataset.runtime_log_level_facets (
+        bucket_key, level, count, updated_at
+      ) VALUES ${values.join(', ')}
+      ON CONFLICT(bucket_key, level) DO UPDATE SET
+        count = runtime_log_level_facets.count + excluded.count,
+        updated_at = excluded.updated_at
+    `, params)
+  }
+
+  if (events.size > 0) {
+    const params: unknown[] = []
+    const values = Array.from(events.entries()).map(([event, summary]) => {
+      params.push(runtimeLogFacetBucketKey, event, summary.count, summary.latestTime, timestamp)
+      return '(?, ?, ?, ?, ?)'
+    })
+    await client.execute(`
+      INSERT INTO juhe_dataset.runtime_log_event_facets (
+        bucket_key, event, count, latest_time, updated_at
+      ) VALUES ${values.join(', ')}
+      ON CONFLICT(bucket_key, event) DO UPDATE SET
+        count = runtime_log_event_facets.count + excluded.count,
+        latest_time = CASE
+          WHEN runtime_log_event_facets.latest_time IS NULL THEN excluded.latest_time
+          WHEN excluded.latest_time > runtime_log_event_facets.latest_time THEN excluded.latest_time
+          ELSE runtime_log_event_facets.latest_time
+        END,
+        updated_at = excluded.updated_at
+    `, params)
   }
 }
 

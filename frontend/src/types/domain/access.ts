@@ -18,11 +18,7 @@ export interface RequestQuotaLimits {
   total?: RequestQuotaLimit
 }
 
-export type ApiKeyGroupBindingStatus = 'active' | 'disabled'
-export type ApiKeyGroupRouteStrategy = 'priority_failover' | 'round_robin' | 'weighted_round_robin'
-export type ApiKeyRouteMode = 'normal' | 'hybrid'
-export type ApiKeyClientProfile = 'auto' | 'generic_openai' | 'codex' | 'generic_anthropic' | 'claude_code' | 'generic_gemini' | 'gemini_cli'
-export type ApiKeyExplicitHybridRouteAdapterMode = 'direct' | 'bridge'
+export type RouteStrategyGroupBindingStatus = 'active' | 'disabled'
 export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
 export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
 export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
@@ -65,22 +61,7 @@ export interface ApiKeyHybridRoutingConfig {
   qualityInspection?: ApiKeyHybridQualityInspectionConfig
 }
 
-export interface ApiKeyExplicitHybridRouteRule {
-  id: string
-  enabled: boolean
-  priority: number
-  sourceClientProfile: ApiKeyClientProfile
-  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
-  sourceModel?: string
-  targetGroupId: string
-  targetAccountId?: string
-  targetProviderProtocolProfileId?: string
-  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'
-  upstreamModel: string
-  adapterMode: ApiKeyExplicitHybridRouteAdapterMode
-}
-
-export interface ApiKeyGroupBindingSummary {
+export interface RouteStrategyGroupBindingSummary {
   id: string
   groupId: string
   groupName?: string
@@ -90,8 +71,43 @@ export interface ApiKeyGroupBindingSummary {
   protocolVersion?: string
   priority: number
   weight: number
-  status: ApiKeyGroupBindingStatus
+  status: RouteStrategyGroupBindingStatus
   groupEnabled: boolean
+}
+
+export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover' | 'hybrid_smart'
+export type RouteStrategyStatus = 'active' | 'disabled'
+
+export interface RouteStrategySummary {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  description?: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
+  groupBindings: RouteStrategyGroupBindingSummary[]
+  apiKeyCount?: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RouteStrategyOptionSummary {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+}
+
+export interface RouteStrategyListResult {
+  items: RouteStrategySummary[]
+  total: number
+  hasMore?: boolean
+  page: number
+  pageSize: number
 }
 
 export interface ApiKeyAvailabilityScheduleWindow {
@@ -134,13 +150,10 @@ export interface ApiKeySummary {
   keySuffix: string
   key: string
   status: 'active' | 'disabled'
-  clientProfile: ApiKeyClientProfile
-  routeMode: ApiKeyRouteMode
-  groupRouteStrategy: ApiKeyGroupRouteStrategy
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
-  explicitHybridRouteRules?: ApiKeyExplicitHybridRouteRule[]
-  groupBindings: ApiKeyGroupBindingSummary[]
-  groupOwnerSystemAccountName?: string
+  routeStrategyId: string
+  routeStrategyName?: string
+  routeStrategyMode?: RouteStrategyMode
+  routeStrategyStatus?: RouteStrategyStatus
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule

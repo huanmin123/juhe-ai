@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -359,11 +360,11 @@ function seedGatewayRuntime(): {
     concurrencyLimit: 20,
     schedulable: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  const scheduledApiKey = withMockedNowSync(Date.parse('2026-05-31T23:59:30.000Z'), () => repositories.createApiKeyRecord({
+  const scheduledApiKey = withMockedNowSync(Date.parse('2026-05-31T23:59:30.000Z'), () => createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存计划 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     availabilitySchedule: {
@@ -375,7 +376,7 @@ function seedGatewayRuntime(): {
       ]
     }
   }, { systemAccountId: 'sys_admin', role: 'admin' }))
-  const disabledScheduledApiKey = withMockedNowSync(Date.parse('2026-06-01T00:01:30.000Z'), () => repositories.createApiKeyRecord({
+  const disabledScheduledApiKey = withMockedNowSync(Date.parse('2026-06-01T00:01:30.000Z'), () => createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存手动停用计划 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'disabled',
@@ -388,7 +389,7 @@ function seedGatewayRuntime(): {
       ]
     }
   }, { systemAccountId: 'sys_admin', role: 'admin' }))
-  const expiringApiKey = repositories.createApiKeyRecord({
+  const expiringApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存临期 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     expiresAt: '2026-06-01T00:01:00.000Z'
@@ -452,7 +453,7 @@ function seedGatewayRuntime(): {
       ]
     }
   }, { systemAccountId: 'sys_admin', role: 'admin' }))
-  const accountScheduledApiKey = repositories.createApiKeyRecord({
+  const accountScheduledApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存账户计划 API Key',
     groupBindings: [{ groupId: accountScheduledGroup.id, priority: 1, status: 'active' }],
   }, { systemAccountId: 'sys_admin', role: 'admin' })
@@ -476,7 +477,7 @@ function seedGatewayRuntime(): {
     schedulable: true,
     accountExpiresAt: accountExpiringExpiresAt
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  const accountExpiringApiKey = repositories.createApiKeyRecord({
+  const accountExpiringApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存账户到期 API Key',
     groupBindings: [{ groupId: accountExpiringGroup.id, priority: 1, status: 'active' }],
   }, { systemAccountId: 'sys_admin', role: 'admin' })
@@ -513,7 +514,7 @@ function seedGatewayRuntime(): {
       }
     }, { systemAccountId: 'sys_admin', role: 'admin' }))
   }
-  const multiGroupAccountScheduledApiKey = repositories.createApiKeyRecord({
+  const multiGroupAccountScheduledApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '运行配置缓存多分组账户计划 API Key',
     groupRouteStrategy: 'priority_failover',
     groupBindings: [
@@ -577,6 +578,8 @@ function assertReadGatewayRuntimeDefersPolicyLists(): void {
 
 function assertGatewayRuntimeCacheUsesStaleWhileRevalidate(): void {
   const source = readFileSync(new URL('../../modules/gateway/runtime/runtime-cache.service.ts', import.meta.url), 'utf8')
+  assert.match(source, /export const gatewayRuntimeDbServiceTimeoutMs = 10_000/, '网关运行态冷缓存 DB service 读取应使用独立超时，避免默认 5s 过早 503')
+  assert.match(source, /type:\s*'read_gateway_runtime'[\s\S]*timeoutMs:\s*gatewayRuntimeDbServiceTimeoutMs/, 'read_gateway_runtime 请求必须传入独立 DB service timeout')
   assert.match(source, /gatewayRuntimeRetainTtlMs\s*=\s*10\s*\*\s*60_000/, '网关运行态缓存应使用长保留窗口，避免软过期后请求链路硬 miss 等 DB')
   assert.match(source, /refreshGatewayRuntimeInBackground\(apiKey,\s*cacheKey\)/, '网关运行态软过期应触发后台刷新')
   assert.match(source, /sanitizedGatewayRuntimeForDispatch\(cached\.runtime\)/, '软过期运行态返回前必须按当前时间过滤过期 API Key、授权和账号')

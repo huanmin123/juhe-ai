@@ -210,7 +210,7 @@ repository 迁移原则：
 分组管理关键路径已落地到 `backend/src/storage/group-read.repository.ts`、`backend/src/storage/group-summary.repository.ts` 和 `backend/src/storage/group-write.repository.ts`：
 
 - 新增分组列表、分页、选项、账户组选项、摘要读取、创建、更新和删除的 async 双 driver 版本。
-- PostgreSQL 查询通过 `juhe_business` schema 读取 `groups`、`group_accounts`、`accounts`、`resource_authorizations`、`group_authorization_settings`、`api_keys` 和 `api_key_group_bindings`。
+- PostgreSQL 查询通过 `juhe_business` schema 读取 `groups`、`group_accounts`、`accounts`、`resource_authorizations`、`group_authorization_settings`、`api_keys`、`route_strategies` 和 `route_strategy_groups`。
 - 创建和更新保留供应商协议档案校验、同协议档案分组名称唯一性、默认分组只读、高并发分组调度策略、授权分组本地设置和网关缓存失效语义。
 - 删除保留 API Key 唯一启用号池保护；PG 模式下删除后暂不写 SQLite stats dirty 标记，等待统计 repository PG 适配后改写 `juhe_stats`。
 - PG 模式下分组列表和账户组选项会读取真实分组与绑定账户 ID；`accountStats` 的用量、状态聚合和授权来源详情仍等待账号、授权、usage 和 stats repository 迁移，当前不在请求链路临时扫描明细表。
@@ -221,7 +221,7 @@ repository 迁移原则：
 API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.ts`、`backend/src/storage/api-key-mappers.ts` 和 `backend/src/storage/api-key-group-bindings.repository.ts`：
 
 - 新增 API Key 列表、分页、摘要、secret 查询、创建、更新、刷新密钥和删除的 async 双 driver 版本。
-- PostgreSQL 查询通过 `juhe_business` schema 读取 `api_keys`、`api_key_group_bindings`、`groups`、`system_accounts`、`resource_authorizations`、`group_authorization_settings` 和 `request_quota_hourly_window_configs`。
+- PostgreSQL 查询通过 `juhe_business` schema 读取 `api_keys`、`route_strategies`、`route_strategy_groups`、`groups`、`system_accounts`、`resource_authorizations`、`group_authorization_settings` 和 `request_quota_hourly_window_configs`。
 - 创建和更新保留分组绑定边界、同账户名称唯一性、启用分组保护、分组优先级唯一性、额度限制、时间计划、密钥加密和网关缓存 / 额度缓存失效语义。
 - 网关 API Key 校验入口已新增 async 双 driver 版本；PG 模式下 `read_gateway_runtime` 能读取有效 API Key、绑定分组、网关设置、分组访问元数据、响应检查策略和最小可调度账号候选。候选账号读取已通过 `juhe_business` / `juhe_stats` schema 覆盖分组绑定、账号状态、授权实例、支持模型、模型映射、API Key 运行态、代理和质量分窗口；完整 `/v1` PG-ready 仍需继续迁移账号管理写路径、usage / stats、授权额度和审计记录链路。
 - `account_supported_models` 和 `account_model_mappings` 已新增 async replace helper；PG 模式下通过事务先删后写，供账号创建 / 更新迁移复用。`test:api-key-management-driver` 已覆盖创建账号时直接写入最小候选账号模型配置，并从 `read_gateway_runtime` 断言读回。

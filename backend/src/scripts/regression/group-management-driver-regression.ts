@@ -140,7 +140,7 @@ async function cleanupCreatedGroups(): Promise<void> {
     ])
     const client = createPostgresDatabaseClient(await getPostgresPool())
     for (const id of createdGroupIds.splice(0)) {
-      await client.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE group_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE group_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."groups" WHERE id = ?', [id])
     }
     await closePostgresPool()
@@ -149,7 +149,7 @@ async function cleanupCreatedGroups(): Promise<void> {
   const { getBusinessDatabase } = await import('../../storage/database.js')
   const database = getBusinessDatabase()
   for (const id of createdGroupIds.splice(0)) {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategy_groups WHERE group_id = ?').run(id)
     database.prepare('DELETE FROM groups WHERE id = ?').run(id)
   }
 }

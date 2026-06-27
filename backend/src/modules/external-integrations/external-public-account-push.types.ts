@@ -181,8 +181,7 @@ export interface PublicApiKeyAddInput {
   targetUsername: string
   name: string
   description?: string | null
-  groupBindings?: Array<{ groupId: string; priority?: number; weight?: number; status?: 'active' | 'disabled' }>
-  groupRouteStrategy?: string
+  routeStrategyId: string
   status?: 'active' | 'disabled'
   expiresAt?: string
   quotaLimits?: Record<string, unknown> | null
@@ -195,8 +194,7 @@ export interface PublicApiKeyUpdateInput {
   apiKeyId: string
   name?: string
   description?: string | null
-  groupBindings?: Array<{ groupId: string; priority?: number; weight?: number; status?: 'active' | 'disabled' }>
-  groupRouteStrategy?: string
+  routeStrategyId?: string
   status?: 'active' | 'disabled'
   expiresAt?: string | null
   quotaLimits?: Record<string, unknown> | null
@@ -257,8 +255,10 @@ export interface PublicApiKeySummary {
   keyPrefix: string
   key?: string
   status: 'active' | 'disabled'
-  groupRouteStrategy: string
-  groupBindings: ApiKeySummary['groupBindings']
+  routeStrategyId: string
+  routeStrategyName?: string
+  routeStrategyMode?: ApiKeySummary['routeStrategyMode']
+  routeStrategyStatus?: ApiKeySummary['routeStrategyStatus']
   expiresAt?: string
   availabilitySchedule?: ApiKeySummary['availabilitySchedule']
   availabilityScheduleActive?: ApiKeySummary['availabilityScheduleActive']

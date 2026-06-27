@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -360,7 +361,7 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
     schedulable: true,
     supportedModels: ['deepseek-v4-flash']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '路由缓存跨供应商 API Key',
     groupBindings: [
       { groupId: gptGroup.id, priority: 1, status: 'active' },
@@ -421,7 +422,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
     status: 'active',
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '路由缓存轮询 API Key',
     groupRouteStrategy: 'round_robin',
     groupBindings: [
@@ -512,7 +513,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(ownerAccount.id, grantee.id) as unknown as { id?: string } | undefined
   assert(authorizationRow?.id, '路由缓存回归需要授权记录 ID')
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '路由缓存 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },

@@ -63,8 +63,8 @@ export async function resolveNormalGatewayModelRoute(
   input: ResolveNormalGatewayModelRouteInput
 ): Promise<NormalGatewayModelRouteResult> {
   const { apiKeyRecord, req, requestClientCompatibility } = input
-  if (apiKeyRecord.route_mode !== 'normal') {
-    return { outcome: 'skipped', reason: 'route_mode_not_normal' }
+  if (apiKeyRecord.route_strategy_mode === 'hybrid_smart') {
+    return { outcome: 'skipped', reason: 'route_strategy_is_hybrid_smart' }
   }
 
   const requestedModel = requestModel(req)?.trim()

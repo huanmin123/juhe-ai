@@ -21,6 +21,7 @@ logger.level = 'silent'
 
 const [
   { apiKeysRouter },
+  { routeStrategiesRouter },
   { authRouter },
   { captchaAnswerForTest },
   { requireAdmin, requireAuth },
@@ -29,6 +30,7 @@ const [
   operationLogQueue
 ] = await Promise.all([
   import('../../modules/api-keys/api-keys.routes.js'),
+  import('../../modules/route-strategies/route-strategies.routes.js'),
   import('../../modules/auth/auth.routes.js'),
   import('../../modules/auth/captcha.service.js'),
   import('../../modules/auth/auth.middleware.js'),
@@ -44,10 +46,18 @@ app.use(express.json({ limit: '2mb' }))
 app.use('/__aisys__/api/auth', authRouter)
 app.use('/__aisys__/api', requireAuth)
 app.use('/__aisys__/api/api-keys', requireAdmin, apiKeysRouter)
+app.use('/__aisys__/api/route-strategies', requireAdmin, routeStrategiesRouter)
 
 interface ApiEnvelope<T> {
   data: T
   message?: string
+}
+
+interface RouteStrategySummary {
+  id: string
+  name: string
+  mode: string
+  status: string
 }
 
 interface ApiKeySummary {
@@ -55,14 +65,10 @@ interface ApiKeySummary {
   key: string
   keyPrefix: string
   keySuffix: string
-  clientProfile?: string
-  explicitHybridRouteRules?: Array<{
-    id: string
-    enabled: boolean
-    sourceEndpointFamily: string
-    upstreamEndpointFamily: string
-    adapterMode: string
-  }>
+  status: string
+  routeStrategyId: string
+  routeStrategyName?: string
+  routeStrategyMode?: string
   expiresAt?: string
   availabilitySchedule?: {
     enabled?: boolean
@@ -82,37 +88,45 @@ async function main(): Promise<void> {
     const address = serverAddress(appServer)
     const baseUrl = `http://127.0.0.1:${address.port}`
     const adminCookie = await login(baseUrl)
+    const routeStrategy = await createNormalRouteStrategy(baseUrl, adminCookie, 'API Key 回归普通路由策略')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '未绑定分组回归 Key'
-    }, 'API Key 至少需要绑定一个分组')
+      name: '未绑定策略路由回归 Key'
+    }, 'API Key 必须绑定策略路由')
 
-    await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '空绑定分组回归 Key',
-      groupBindings: []
-    }, 'API Key 至少需要绑定一个分组')
-
-    await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '空分组 ID 回归 Key',
-      groupBindings: [{ groupId: '' }]
-    }, 'API Key 分组无效')
-
-    await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '非法分组路由策略回归 Key',
-      groupRouteStrategy: 'random_strategy',
+    await assertBadRequestMessageIncludes(baseUrl, adminCookie, {
+      name: '旧分组绑定字段回归 Key',
+      routeStrategyId: routeStrategy.id,
       groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }]
-    }, '分组路由策略无效')
+    }, 'groupBindings')
+
+    await assertBadRequestMessageIncludes(baseUrl, adminCookie, {
+      name: '旧客户端画像字段回归 Key',
+      routeStrategyId: routeStrategy.id,
+      clientProfile: 'codex'
+    }, 'clientProfile')
+
+    await assertBadRequestMessageIncludes(baseUrl, adminCookie, {
+      name: '旧显式混合规则字段回归 Key',
+      routeStrategyId: routeStrategy.id,
+      explicitHybridRouteRules: []
+    }, 'explicitHybridRouteRules')
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '非法分组权重回归 Key',
-      groupRouteStrategy: 'weighted_round_robin',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin', weight: 101 }]
-    }, '分组权重必须在 1-100 之间')
+      name: '不存在策略路由回归 Key',
+      routeStrategyId: 'route_strategy_not_found'
+    }, 'API Key 绑定的策略路由不存在或不属于当前用户')
 
     const validApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '更新校验回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }]
+      routeStrategyId: routeStrategy.id
     })
+    assert(validApiKey.routeStrategyId === routeStrategy.id, 'API Key 应只保存 routeStrategyId')
+    assert(validApiKey.routeStrategyMode === 'normal', 'API Key 摘要应返回策略路由模式摘要')
+    assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'groupBindings'), 'API Key 摘要不应返回 groupBindings')
+    assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'clientProfile'), 'API Key 摘要不应返回 clientProfile')
+    assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'explicitHybridRouteRules'), 'API Key 摘要不应返回 explicitHybridRouteRules')
+
     const secretResult = await getEnvelope<ApiKeySecretResult>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}/secret`, adminCookie)
     assert(secretResult.key === validApiKey.key, '复制完整密钥接口应返回创建时的完整 API Key')
     assert(secretResult.key.startsWith(validApiKey.keyPrefix), '复制完整密钥接口返回值应匹配安全展示前缀')
@@ -123,103 +137,25 @@ async function main(): Promise<void> {
     assert(refreshedApiKey.key.endsWith(refreshedApiKey.keySuffix), '刷新密钥响应应匹配新的安全展示后缀')
     const refreshedSecretResult = await getEnvelope<ApiKeySecretResult>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}/secret`, adminCookie)
     assert(refreshedSecretResult.key === refreshedApiKey.key, '复制完整密钥接口应返回刷新后的完整 API Key')
-    await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
-      groupRouteStrategy: 'random_strategy'
-    }, '分组路由策略无效')
-    await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
-      groupRouteStrategy: 'weighted_round_robin',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin', weight: 0 }]
-    }, '分组权重必须在 1-100 之间')
-    const disabledApiKey = await patchEnvelope<ApiKeySummary & { status: string }>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}`, adminCookie, {
+
+    const disabledApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}`, adminCookie, {
       status: 'disabled'
     })
-    assert(disabledApiKey.status === 'disabled', '仅更新 API Key 状态时不应要求重新提交分组绑定')
+    assert(disabledApiKey.status === 'disabled', '仅更新 API Key 状态时不应要求重新提交策略路由')
 
-    const explicitHybridApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
-      name: '显式混合路由回归 Key',
-      clientProfile: 'codex',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
-      explicitHybridRouteRules: [
-        {
-          id: 'explicit_bridge_responses_to_messages',
-          enabled: true,
-          priority: 1,
-          sourceClientProfile: 'codex',
-          sourceEndpointFamily: 'responses',
-          sourceModel: 'gpt-5.5',
-          targetGroupId: 'grp_default_gpt_sys_admin',
-          upstreamEndpointFamily: 'messages',
-          upstreamModel: 'claude-opus-4-8',
-          adapterMode: 'bridge'
-        },
-        {
-          id: 'explicit_disabled_chat_alias',
-          enabled: false,
-          priority: 2,
-          sourceClientProfile: 'auto',
-          sourceEndpointFamily: 'chat_completions',
-          sourceModel: 'alias-chat-model',
-          targetGroupId: 'grp_default_gpt_sys_admin',
-          upstreamEndpointFamily: 'chat_completions',
-          upstreamModel: 'real-chat-model',
-          adapterMode: 'direct'
-        }
-      ]
-    })
-    assert(explicitHybridApiKey.clientProfile === 'codex', 'API Key 应保存默认客户端画像')
-    assert(explicitHybridApiKey.explicitHybridRouteRules?.length === 2, '显式混合路由应保留启用和禁用规则')
-    assert(explicitHybridApiKey.explicitHybridRouteRules?.[0]?.upstreamEndpointFamily === 'messages', '显式混合路由应允许跨协议 bridge')
-    assert(explicitHybridApiKey.explicitHybridRouteRules?.[1]?.enabled === false, '显式混合路由禁用规则保存后不应丢失')
-    const clearedExplicitHybridApiKey = await patchEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys/${explicitHybridApiKey.id}`, adminCookie, {
-      explicitHybridRouteRules: []
-    })
-    assert(!clearedExplicitHybridApiKey.explicitHybridRouteRules?.length, '更新 API Key 应支持清空显式混合路由规则')
-
-    await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '显式混合路由直连跨协议非法 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
-      explicitHybridRouteRules: [
-        {
-          id: 'explicit_direct_responses_to_messages',
-          enabled: true,
-          priority: 1,
-          sourceClientProfile: 'codex',
-          sourceEndpointFamily: 'responses',
-          targetGroupId: 'grp_default_gpt_sys_admin',
-          upstreamEndpointFamily: 'messages',
-          upstreamModel: 'claude-opus-4-8',
-          adapterMode: 'direct'
-        }
-      ]
-    }, '显式混合路由直连模式只能用于同协议模型别名')
-
-    await assertBadRequestMessage(baseUrl, adminCookie, {
-      name: '显式混合路由未绑定目标分组非法 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
-      explicitHybridRouteRules: [
-        {
-          id: 'explicit_unbound_target_group',
-          enabled: true,
-          priority: 1,
-          sourceClientProfile: 'auto',
-          sourceEndpointFamily: 'chat_completions',
-          targetGroupId: 'grp_not_bound',
-          upstreamEndpointFamily: 'chat_completions',
-          upstreamModel: 'gpt-5.5',
-          adapterMode: 'direct'
-        }
-      ]
-    }, '显式混合路由目标分组必须是当前 API Key 已绑定且启用的分组：grp_not_bound')
+    await assertPatchBadRequestMessage(baseUrl, adminCookie, validApiKey.id, {
+      routeStrategyId: 'route_strategy_not_found'
+    }, 'API Key 绑定的策略路由不存在或不属于当前用户')
 
     const expiringApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '清空过期时间回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       expiresAt: '2099-06-01T00:01:00.000Z'
     })
     assert(Boolean(expiringApiKey.expiresAt), '创建 API Key 时应保存过期时间')
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法过期时间回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       expiresAt: 'not-a-date'
     }, 'API Key 过期时间必须是有效时间字符串')
     await assertPatchBadRequestMessage(baseUrl, adminCookie, expiringApiKey.id, {
@@ -232,7 +168,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法时间计划回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -245,7 +181,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法时间计划星期回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -258,7 +194,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '缺失时间计划模式回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         timezone: 'Asia/Shanghai',
@@ -270,7 +206,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '非法时间计划模式回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         mode: 'legacy_windows',
@@ -283,7 +219,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '空时区时间计划回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -296,7 +232,7 @@ async function main(): Promise<void> {
 
     await assertBadRequestMessage(baseUrl, adminCookie, {
       name: '空允许例外时间计划回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -310,7 +246,7 @@ async function main(): Promise<void> {
 
     const scheduleApiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '时间计划清空回归 Key',
-      groupBindings: [{ groupId: 'grp_default_gpt_sys_admin' }],
+      routeStrategyId: routeStrategy.id,
       availabilitySchedule: {
         enabled: true,
         mode: 'allow_windows',
@@ -326,7 +262,7 @@ async function main(): Promise<void> {
     })
     assert(!clearedScheduleApiKey.availabilitySchedule, '更新 API Key 应支持 availabilitySchedule: null 清空时间计划')
 
-    console.log('API Key 路由校验回归通过：完整密钥复制、刷新密钥、创建/更新接口缺少分组、空分组绑定、空分组 ID、非法分组策略、非法权重、非法过期时间、非法时间计划模式、非法时段、非法星期、空时区、非法例外、时间计划清空和清空过期时间均符合预期')
+    console.log('API Key 路由校验回归通过：API Key 只绑定策略路由，旧 groupBindings/clientProfile/explicitHybridRouteRules 被拒绝，完整密钥复制、刷新密钥、过期时间和时间计划校验均符合预期')
   } finally {
     operationLogQueue.flushAllOperationLogQueue()
     await closeServer(appServer)
@@ -339,6 +275,17 @@ async function main(): Promise<void> {
   }
 }
 
+async function createNormalRouteStrategy(baseUrl: string, cookie: string, name: string): Promise<RouteStrategySummary> {
+  return postEnvelope<RouteStrategySummary>(baseUrl, '/__aisys__/api/route-strategies', cookie, {
+    name,
+    mode: 'normal',
+    status: 'active',
+    groupBindings: [
+      { groupId: 'grp_default_gpt_sys_admin', priority: 1, weight: 1, status: 'active' }
+    ]
+  })
+}
+
 async function assertBadRequestMessage(baseUrl: string, cookie: string, body: unknown, expectedMessage: string): Promise<void> {
   const response = await fetch(`${baseUrl}/__aisys__/api/api-keys`, {
     method: 'POST',
@@ -349,6 +296,18 @@ async function assertBadRequestMessage(baseUrl: string, cookie: string, body: un
   assert(response.status === 400, `创建 API Key 应返回 400，实际 HTTP ${response.status}: ${text}`)
   const parsed = JSON.parse(text) as { message?: string }
   assert(parsed.message === expectedMessage, `创建 API Key 错误文案异常：${parsed.message}`)
+}
+
+async function assertBadRequestMessageIncludes(baseUrl: string, cookie: string, body: unknown, expectedMessagePart: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/__aisys__/api/api-keys`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const text = await response.text()
+  assert(response.status === 400, `创建 API Key 应返回 400，实际 HTTP ${response.status}: ${text}`)
+  const parsed = JSON.parse(text) as { message?: string }
+  assert(parsed.message?.includes(expectedMessagePart), `创建 API Key 错误文案应包含 ${expectedMessagePart}，实际：${parsed.message}`)
 }
 
 async function assertPatchBadRequestMessage(baseUrl: string, cookie: string, id: string, body: unknown, expectedMessage: string): Promise<void> {
@@ -454,5 +413,3 @@ main().catch((error) => {
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })
-
-

@@ -492,8 +492,9 @@ function cleanupDeletedApiKeyDatasetRecordData(
 }
 
 function cleanupDeletedApiKeyFinalStats(statsDatabase: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): string | undefined {
-  const transactionStarted = beginDatabaseTransaction(statsDatabase)
+  let transactionStarted = false
   try {
+    transactionStarted = beginDatabaseTransaction(statsDatabase)
     deleteApiKeyScopeStatsRows(statsDatabase, input)
     deleteApiKeyUsageCleanupDeductions(statsDatabase, input)
     commitDatabaseTransaction(statsDatabase, transactionStarted)

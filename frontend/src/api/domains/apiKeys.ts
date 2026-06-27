@@ -1,13 +1,7 @@
 import type {
   ApiKeyAvailabilitySchedule,
-  ApiKeyClientProfile,
-  ApiKeyExplicitHybridRouteRule,
-  ApiKeyGroupBindingStatus,
-  ApiKeyGroupRouteStrategy,
-  ApiKeyHybridRoutingConfig,
   ApiKeyListResult,
   ApiKeyQuotaLimits,
-  ApiKeyRouteMode,
   ApiKeySecretResult,
   ApiKeySummary,
   CreatedApiKey
@@ -19,17 +13,7 @@ import { stripSystemAccountParam } from '../params'
 export interface ApiKeyMutationPayload {
   name?: string
   description?: string | null
-  groupBindings?: Array<{
-    groupId: string
-    priority?: number
-    weight?: number
-    status?: ApiKeyGroupBindingStatus
-  }>
-  routeMode?: ApiKeyRouteMode
-  clientProfile?: ApiKeyClientProfile
-  groupRouteStrategy?: ApiKeyGroupRouteStrategy
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
-  explicitHybridRouteRules?: ApiKeyExplicitHybridRouteRule[]
+  routeStrategyId?: string
   status?: 'active' | 'disabled'
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits

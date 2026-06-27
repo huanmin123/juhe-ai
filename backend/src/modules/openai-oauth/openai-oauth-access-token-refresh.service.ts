@@ -31,6 +31,7 @@ export interface OpenAIOAuthAccessTokenRefreshOptions {
   leadSeconds?: number
   batchSize?: number
   retryBackoffSeconds?: number
+  persistMode?: 'sync' | 'db-service'
 }
 
 export interface OpenAIOAuthAccessTokenRefreshResult {
@@ -206,6 +207,7 @@ async function persistOpenAIOAuthCredentialsViaDbService(accountId: string, cred
 export async function refreshDueOpenAIOAuthAccessTokens(
   options: OpenAIOAuthAccessTokenRefreshOptions = {}
 ): Promise<OpenAIOAuthAccessTokenRefreshResult> {
+  const persistMode = effectivePersistMode({ persistMode: options.persistMode })
   const settings = getSettings()
   const leadSeconds = options.leadSeconds === undefined
     ? settingsInteger(settings, 'oauthAccessTokenRefreshLeadSeconds', 60, 86400)
@@ -252,9 +254,9 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   }
   for (const account of candidates) {
     try {
-      await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false })
+      await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false, persistMode })
       refreshFailureStateByAccountId.delete(account.id)
-      await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account)
+      await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account, persistMode)
       result.refreshed += 1
     } catch (error) {
       result.failed += 1
@@ -275,7 +277,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
           accountId: account.id,
           errorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
           reason: openAIOAuthTokenRefreshStoppedMessage(failureState.count, message)
-        })
+        }, persistMode)
         if (updated.updated) {
           clearGatewayRuntimeCache()
           refreshFailureStateByAccountId.delete(account.id)
@@ -373,14 +375,14 @@ async function findLatestRefreshableOpenAIOAuthAccount(
   return latest
 }
 
-async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary): Promise<void> {
+async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary, persistMode: 'sync' | 'db-service'): Promise<void> {
   if (account.status !== 'error' || account.lastErrorCode !== OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE) {
     return
   }
   const restored = await requestOpenAIOAuthDbService({
     type: 'clear_account_failure_state',
     accountId: account.id
-  })
+  }, persistMode)
   if (restored.changed && restored.accountStatus === 'active') {
     clearGatewayRuntimeCache()
     logger.info({
@@ -499,29 +501,24 @@ function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode:
 }
 
 function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
-  return options.persistMode ?? (runtimeConfig.processRole === 'server' || isForkedBackgroundWorkerProcess() ? 'db-service' : 'sync')
+  return options.persistMode ?? (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'worker' ? 'db-service' : 'sync')
 }
 
-async function requestOpenAIOAuthDbService<T extends DbServiceOperation>(operation: T): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T>> {
-  if (isForkedBackgroundWorkerProcess()) {
+async function requestOpenAIOAuthDbService<T extends DbServiceOperation>(
+  operation: T,
+  persistMode: 'sync' | 'db-service' = effectivePersistMode({})
+): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T>> {
+  if (persistMode === 'sync') {
+    return runLocalOpenAIOAuthDbServiceOperation(operation)
+  }
+  if (runtimeConfig.processRole === 'worker') {
     const result = await requestBackgroundWorkerDbService(operation)
     if (result === undefined) {
       throw new Error(`后台 worker DB service 请求失败：${operation.type}`)
     }
     return result
   }
-  if (isSingleProcessWorkerRole()) {
-    return runLocalOpenAIOAuthDbServiceOperation(operation)
-  }
   return await requestDbService(operation)
-}
-
-function isForkedBackgroundWorkerProcess(): boolean {
-  return runtimeConfig.processRole === 'worker' && typeof process.send === 'function'
-}
-
-function isSingleProcessWorkerRole(): boolean {
-  return runtimeConfig.processRole === 'worker' && typeof process.send !== 'function'
 }
 
 function runLocalOpenAIOAuthDbServiceOperation<T extends DbServiceOperation>(operation: T): DbServiceOperationResult<T> {

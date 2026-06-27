@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 const backendSrcRoot = fileURLToPath(new URL('../..', import.meta.url))
 
 const gatewayApiKeyRepositorySource = readSource('storage/gateway-api-key.repository.ts')
@@ -38,6 +39,12 @@ assertFunctionIncludes(authorizationQuotaServiceSource, 'checkGatewayAuthorizati
 assertFunctionIncludes(authorizationQuotaServiceSource, 'setAuthorizationQuotaCacheEntryAsync', 'setAuthorizationQuotaSharedCacheEntry(cacheKey, entry)', '授权额度异步写入应同步写 Redis 共享缓存')
 assertFunctionIncludes(authorizationQuotaServiceSource, 'clearAuthorizationQuotaCache', 'clearAuthorizationQuotaSharedCache()', '授权额度全量失效应清理 Redis 共享缓存命名空间')
 
+assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<GroupUsageAccessCacheEntry>'), '网关分组访问缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'getGroupUsageAccessSharedCacheEntry(cacheKey)', '网关分组访问异步读取应先读取 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'resolveCachedGroupUsageAccessMetadataAsync', 'setGroupUsageAccessCacheEntryAsync(cacheKey', '网关分组访问 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'refreshGroupUsageAccessMetadataInBackground', 'setGroupUsageAccessSharedCacheEntry(cacheKey, entry)', '网关分组访问后台刷新应同步写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearGroupUsageAccessSharedCache()', '网关运行态全量失效应清理分组访问 Redis 共享缓存')
+
 assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ProviderModelCatalogItem[]>'), '网关模型目录缓存应声明 Redis JSON 共享缓存')
 assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ResponseInspectionPolicyCacheEntry>'), '网关响应检查策略缓存应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'getProviderModelCatalogSharedCacheEntry(cacheKey)', '网关模型目录异步读取应先读取 Redis 共享缓存')
@@ -58,7 +65,7 @@ assert(appCacheSource.includes('store = createStore(options)'), '通用缓存 cl
 
 await assertGatewayCacheInvalidationBehavior()
 
-console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，网关 / 管理端模型目录和响应检查策略包含 Redis shared cache 路径，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
+console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，分组访问、网关 / 管理端模型目录和响应检查策略包含 Redis shared cache 路径，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(backendSrcRoot, relativePath), 'utf8')
@@ -142,11 +149,11 @@ async function assertGatewayCacheInvalidationBehavior(): Promise<void> {
       providerCode: 'gpt',
       enabled: true
     }, access)
-    const first = repositories.createApiKeyRecord({
+    const first = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '缓存定点失效 Key A',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]
     }, access)
-    const second = repositories.createApiKeyRecord({
+    const second = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '缓存定点失效 Key B',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]
     }, access)
@@ -173,12 +180,12 @@ async function assertGatewayCacheInvalidationBehavior(): Promise<void> {
     }
     assert.equal(validationSelects, 1, 'API Key A 定点失效后只应重新查询目标 Key，API Key B 应继续命中缓存')
 
-    const quotaFirst = repositories.createApiKeyRecord({
+    const quotaFirst = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '额度缓存定点失效 Key A',
       quotaLimits: { total: { enabled: true, limit: 1 } },
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]
     }, access)
-    const quotaSecond = repositories.createApiKeyRecord({
+    const quotaSecond = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '额度缓存定点失效 Key B',
       quotaLimits: { total: { enabled: true, limit: 1 } },
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]

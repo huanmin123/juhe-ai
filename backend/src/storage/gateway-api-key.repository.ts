@@ -1,20 +1,15 @@
 import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { syncGatewayCacheInvalidationsFromRuntimeState } from '../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
+import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
 import {
-  normalizeApiKeyGroupBindingWeight,
-  normalizeApiKeyGroupRouteStrategy
+  normalizeApiKeyGroupBindingWeight
 } from '../domain/api-key-routing.js'
 import {
-  normalizeApiKeyRouteMode,
-  parseHybridRoutingConfigJson
-} from '../domain/api-key-hybrid-routing.js'
-import {
-  normalizeApiKeyClientProfile,
-  parseExplicitHybridRouteRulesJson
-} from '../domain/api-key-explicit-hybrid-routing.js'
-import type { ApiKeyClientProfile, ApiKeyExplicitHybridRouteRule, ApiKeyGroupRouteStrategy, ApiKeyHybridRoutingConfig, ApiKeyRouteMode } from '../domain/types.js'
+  normalizeRouteStrategyMode,
+  parseRouteStrategyRuntimeConfigJson
+} from '../domain/route-strategy.js'
+import type { ApiKeyHybridRoutingConfig, RouteStrategyMode } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { hashSecret } from './crypto.js'
 import type { DatabaseClient } from './database-client.js'
@@ -25,18 +20,15 @@ import { getPostgresPool } from './postgres-client.js'
 export interface GatewayApiKeyRow {
   id: string
   system_account_id: string
+  route_strategy_id: string
+  route_strategy_mode: RouteStrategyMode
+  route_strategy_config_json: string | null
   selected_group_id: string
   status: 'active' | 'disabled'
   availability_schedule_active: number
   expires_at: string | null
   quota_limits_json: string | null
-  client_profile: ApiKeyClientProfile
-  route_mode: ApiKeyRouteMode
-  group_route_strategy: ApiKeyGroupRouteStrategy
-  hybrid_routing_config_json: string | null
   hybrid_routing_config?: ApiKeyHybridRoutingConfig
-  explicit_hybrid_route_rules_json: string | null
-  explicit_hybrid_route_rules?: ApiKeyExplicitHybridRouteRule[]
   system_account_image_generation_enabled: number
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
@@ -102,19 +94,21 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     SELECT
       api_keys.id,
       api_keys.system_account_id,
+      route_strategies.id AS route_strategy_id,
+      route_strategies.mode AS route_strategy_mode,
+      route_strategies.config_json AS route_strategy_config_json,
       '' AS selected_group_id,
       api_keys.status,
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      api_keys.client_profile,
-      api_keys.route_mode,
-      api_keys.group_route_strategy,
-      api_keys.hybrid_routing_config_json,
-      api_keys.explicit_hybrid_route_rules_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+      AND route_strategies.status = 'active'
     WHERE api_keys.key_hash = ?
       AND system_accounts.status = 'active'
   `).get(keyHash) as unknown as GatewayApiKeyRow | undefined
@@ -131,7 +125,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     return undefined
   }
   normalizeGatewayApiKeyRouteFields(row)
-  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
+  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.route_strategy_id, row.system_account_id)
   if (!row.group_bindings.length) {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
@@ -185,19 +179,21 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     SELECT
       api_keys.id,
       api_keys.system_account_id,
+      route_strategies.id AS route_strategy_id,
+      route_strategies.mode AS route_strategy_mode,
+      route_strategies.config_json AS route_strategy_config_json,
       '' AS selected_group_id,
       api_keys.status,
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      api_keys.client_profile,
-      api_keys.route_mode,
-      api_keys.group_route_strategy,
-      api_keys.hybrid_routing_config_json,
-      api_keys.explicit_hybrid_route_rules_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
     INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN ${gatewayApiKeyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+      AND route_strategies.status = 'active'
     WHERE api_keys.key_hash = ?
       AND system_accounts.status = 'active'
   `, [keyHash])
@@ -214,7 +210,7 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     return undefined
   }
   normalizeGatewayApiKeyRouteFields(row)
-  row.group_bindings = await loadActiveGatewayApiKeyGroupBindingsAsync(row.id, row.system_account_id, client)
+  row.group_bindings = await loadActiveGatewayApiKeyGroupBindingsAsync(row.id, row.route_strategy_id, row.system_account_id, client)
   if (!row.group_bindings.length) {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
@@ -234,19 +230,21 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
     SELECT
       api_keys.id,
       api_keys.system_account_id,
+      route_strategies.id AS route_strategy_id,
+      route_strategies.mode AS route_strategy_mode,
+      route_strategies.config_json AS route_strategy_config_json,
       '' AS selected_group_id,
       api_keys.status,
       api_keys.availability_schedule_active,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      api_keys.client_profile,
-      api_keys.route_mode,
-      api_keys.group_route_strategy,
-      api_keys.hybrid_routing_config_json,
-      api_keys.explicit_hybrid_route_rules_json,
       system_accounts.image_generation_enabled AS system_account_image_generation_enabled
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+      AND route_strategies.status = 'active'
     WHERE api_keys.id = ?
       AND system_accounts.status = 'active'
     LIMIT 1
@@ -261,7 +259,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
     return undefined
   }
   normalizeGatewayApiKeyRouteFields(row)
-  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.system_account_id)
+  row.group_bindings = loadActiveGatewayApiKeyGroupBindings(row.id, row.route_strategy_id, row.system_account_id)
   if (!row.group_bindings.length) {
     return undefined
   }
@@ -270,13 +268,11 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
 }
 
 function normalizeGatewayApiKeyRouteFields(row: GatewayApiKeyRow): void {
-  row.client_profile = normalizeApiKeyClientProfile(row.client_profile)
-  row.route_mode = normalizeApiKeyRouteMode(row.route_mode)
-  row.group_route_strategy = normalizeApiKeyGroupRouteStrategy(row.group_route_strategy)
-  row.hybrid_routing_config = row.route_mode === 'hybrid'
-    ? parseHybridRoutingConfigJson(row.hybrid_routing_config_json)
+  row.route_strategy_mode = normalizeRouteStrategyMode(row.route_strategy_mode)
+  const routeStrategyConfig = parseRouteStrategyRuntimeConfigJson(row.route_strategy_config_json)
+  row.hybrid_routing_config = row.route_strategy_mode === 'hybrid_smart'
+    ? routeStrategyConfig.hybridRoutingConfig
     : undefined
-  row.explicit_hybrid_route_rules = parseExplicitHybridRouteRulesJson(row.explicit_hybrid_route_rules_json)
 }
 
 export function clearGatewayApiKeyValidationCache(): void {
@@ -355,46 +351,50 @@ function removeGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void 
   }
 }
 
-export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
+export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, routeStrategyId: string, systemAccountId: string): GatewayApiKeyGroupBindingRow[] {
   const now = nowIso()
   return getBusinessDatabase().prepare(`
     SELECT
-      api_key_group_bindings.id,
-      api_key_group_bindings.api_key_id,
-      api_key_group_bindings.system_account_id,
-      api_key_group_bindings.group_id,
-      api_key_group_bindings.priority,
-      api_key_group_bindings.weight,
-      api_key_group_bindings.status,
+      route_strategy_groups.id,
+      ? AS api_key_id,
+      route_strategy_groups.system_account_id,
+      route_strategy_groups.group_id,
+      route_strategy_groups.priority,
+      route_strategy_groups.weight,
+      route_strategy_groups.status,
       groups.provider_code,
       groups.provider_protocol_profile_id,
       groups.protocol_code,
       groups.protocol_version,
       groups.enabled AS group_enabled
-    FROM api_key_group_bindings
+    FROM route_strategies
+    INNER JOIN route_strategy_groups
+      ON route_strategy_groups.route_strategy_id = route_strategies.id
+      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
     INNER JOIN groups
-      ON groups.id = api_key_group_bindings.group_id
+      ON groups.id = route_strategy_groups.group_id
       LEFT JOIN resource_authorizations group_authorization
         ON group_authorization.resource_type = 'group'
         AND group_authorization.resource_id = groups.id
-        AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
         AND group_authorization.status = 'active'
         AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
       LEFT JOIN group_authorization_settings
         ON group_authorization_settings.authorization_id = group_authorization.id
-        AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
         AND group_authorization_settings.group_id = groups.id
-    WHERE api_key_group_bindings.api_key_id = ?
-      AND api_key_group_bindings.system_account_id = ?
-      AND api_key_group_bindings.status = 'active'
+    WHERE route_strategies.id = ?
+      AND route_strategies.system_account_id = ?
+      AND route_strategies.status = 'active'
+      AND route_strategy_groups.status = 'active'
       AND groups.enabled = 1
       AND (
-        groups.system_account_id = api_key_group_bindings.system_account_id
+        groups.system_account_id = route_strategy_groups.system_account_id
         OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
       )
-    ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
+    ORDER BY route_strategy_groups.priority ASC, route_strategy_groups.created_at ASC, route_strategy_groups.id ASC
     LIMIT ?
-  `).all(now, apiKeyId, systemAccountId, maxApiKeyGroupBindings)
+  `).all(apiKeyId, now, routeStrategyId, systemAccountId, maxRouteStrategyGroupBindings)
     .map((row) => ({
       ...(row as unknown as GatewayApiKeyGroupBindingRow),
       weight: normalizeApiKeyGroupBindingWeight((row as unknown as GatewayApiKeyGroupBindingRow).weight)
@@ -403,52 +403,57 @@ export function loadActiveGatewayApiKeyGroupBindings(apiKeyId: string, systemAcc
 
 export async function loadActiveGatewayApiKeyGroupBindingsAsync(
   apiKeyId: string,
+  routeStrategyId: string,
   systemAccountId: string,
   client?: DatabaseClient
 ): Promise<GatewayApiKeyGroupBindingRow[]> {
   const activeClient = client ?? await getGatewayApiKeyDatabaseClient()
   if (activeClient.driver === 'sqlite') {
-    return loadActiveGatewayApiKeyGroupBindings(apiKeyId, systemAccountId)
+    return loadActiveGatewayApiKeyGroupBindings(apiKeyId, routeStrategyId, systemAccountId)
   }
   const now = nowIso()
   const rows = await activeClient.query<GatewayApiKeyGroupBindingRow>(`
     SELECT
-      api_key_group_bindings.id,
-      api_key_group_bindings.api_key_id,
-      api_key_group_bindings.system_account_id,
-      api_key_group_bindings.group_id,
-      api_key_group_bindings.priority,
-      api_key_group_bindings.weight,
-      api_key_group_bindings.status,
+      route_strategy_groups.id,
+      ? AS api_key_id,
+      route_strategy_groups.system_account_id,
+      route_strategy_groups.group_id,
+      route_strategy_groups.priority,
+      route_strategy_groups.weight,
+      route_strategy_groups.status,
       groups.provider_code,
       groups.provider_protocol_profile_id,
       groups.protocol_code,
       groups.protocol_version,
       groups.enabled AS group_enabled
-    FROM ${gatewayApiKeyTable(activeClient, 'api_key_group_bindings')} api_key_group_bindings
+    FROM ${gatewayApiKeyTable(activeClient, 'route_strategies')} route_strategies
+    INNER JOIN ${gatewayApiKeyTable(activeClient, 'route_strategy_groups')} route_strategy_groups
+      ON route_strategy_groups.route_strategy_id = route_strategies.id
+      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
     INNER JOIN ${gatewayApiKeyTable(activeClient, 'groups')} groups
-      ON groups.id = api_key_group_bindings.group_id
+      ON groups.id = route_strategy_groups.group_id
       LEFT JOIN ${gatewayApiKeyTable(activeClient, 'resource_authorizations')} group_authorization
         ON group_authorization.resource_type = 'group'
         AND group_authorization.resource_id = groups.id
-        AND group_authorization.grantee_system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
         AND group_authorization.status = 'active'
         AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
       LEFT JOIN ${gatewayApiKeyTable(activeClient, 'group_authorization_settings')} group_authorization_settings
         ON group_authorization_settings.authorization_id = group_authorization.id
-        AND group_authorization_settings.system_account_id = api_key_group_bindings.system_account_id
+        AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
         AND group_authorization_settings.group_id = groups.id
-    WHERE api_key_group_bindings.api_key_id = ?
-      AND api_key_group_bindings.system_account_id = ?
-      AND api_key_group_bindings.status = 'active'
+    WHERE route_strategies.id = ?
+      AND route_strategies.system_account_id = ?
+      AND route_strategies.status = 'active'
+      AND route_strategy_groups.status = 'active'
       AND groups.enabled = 1
       AND (
-        groups.system_account_id = api_key_group_bindings.system_account_id
+        groups.system_account_id = route_strategy_groups.system_account_id
         OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 1) = 1)
       )
-    ORDER BY api_key_group_bindings.priority ASC, api_key_group_bindings.created_at ASC, api_key_group_bindings.id ASC
+    ORDER BY route_strategy_groups.priority ASC, route_strategy_groups.created_at ASC, route_strategy_groups.id ASC
     LIMIT ?
-  `, [now, apiKeyId, systemAccountId, maxApiKeyGroupBindings])
+  `, [apiKeyId, now, routeStrategyId, systemAccountId, maxRouteStrategyGroupBindings])
   return rows.map((row) => ({
     ...row,
     weight: normalizeApiKeyGroupBindingWeight(row.weight)
@@ -477,7 +482,6 @@ function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
         levelRoutes: row.hybrid_routing_config.levelRoutes.map((route) => ({ ...route }))
       }
       : undefined,
-    explicit_hybrid_route_rules: row.explicit_hybrid_route_rules?.map((rule) => ({ ...rule })),
     group_bindings: row.group_bindings?.map((binding) => ({ ...binding }))
   }
 }

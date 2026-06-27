@@ -2,6 +2,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import cors from 'cors'
 import express from 'express'
 
@@ -811,20 +812,20 @@ function seedData(): SeedState {
   }, userAAccess)
   const userAOwnedGroup = repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
   assert(userAOwnedGroup, '用户 A 应存在可绑定的自有分组')
-  const authorizedGroupApiKey = repositories.createApiKeyRecord({
+  const authorizedGroupApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '用户 A 授权分组 Key',
     groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
   }, userAAccess)
-  assert(authorizedGroupApiKey.groupBindings[0]?.groupId === userBGroup.id, 'API Key 应允许绑定有效授权给当前用户的分组')
+  assert(repositories.findRouteStrategySummary(authorizedGroupApiKey.routeStrategyId, userAAccess)?.groupBindings[0]?.groupId === userBGroup.id, '策略路由应允许绑定有效授权给当前用户的分组')
   const runtimeGroupAuthorization = databaseModule.getBusinessDatabase()
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
     .get(userBGroup.id, userA.id) as unknown as { id?: string } | undefined
   assert(runtimeGroupAuthorization?.id, '共享团队分组授权应生成用户 A 的运行时授权')
-  const userAApiKey = repositories.createApiKeyRecord({
+  const userAApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '用户 A Key',
     groupBindings: [{ groupId: userAOwnedGroup, priority: 1, status: 'active' }],
   }, userAAccess)
-  const userBApiKey = repositories.createApiKeyRecord({
+  const userBApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '用户 B Key',
     groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
   }, userBAccess)

@@ -318,7 +318,7 @@ export {
   updateGroupAsync
 } from './group-write.repository.js'
 export type {
-  DeletedGroupApiKeyRouteChange,
+  DeletedGroupRouteStrategyChange,
   DeleteGroupResult
 } from './group-write.repository.js'
 export {
@@ -398,6 +398,24 @@ export {
   updateApiKey,
   updateApiKeyAsync
 } from './api-key.repository.js'
+export {
+  assertRouteStrategySelectableForApiKey,
+  assertRouteStrategySelectableForApiKeyAsync,
+  createRouteStrategy,
+  createRouteStrategyAsync,
+  deleteRouteStrategy,
+  deleteRouteStrategyAsync,
+  findRouteStrategySummary,
+  findRouteStrategySummaryAsync,
+  listRouteStrategiesPage,
+  listRouteStrategiesPageAsync,
+  listRouteStrategyOptions,
+  listRouteStrategyOptionsAsync,
+  updateRouteStrategy,
+  updateRouteStrategyAsync,
+  type RouteStrategyListOptions,
+  type RouteStrategyOptionListOptions
+} from './route-strategy.repository.js'
 export {
   listAuthorizationGranteeAccounts,
   listAuthorizationGranteeAccountsAsync,
@@ -640,6 +658,7 @@ export {
   cleanupRuntimeLogFileCursorsBefore,
   cleanupRuntimeLogIndex,
   createRuntimeLogsBatch,
+  createRuntimeLogsBatchAsync,
   getRuntimeLogFacets,
   getRuntimeLogFacetsAsync,
   getRuntimeLogDetailAsync,

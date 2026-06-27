@@ -23,10 +23,14 @@ import {
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
+  findAccountForCooldownRetest,
+  findAccountForHealthCheck,
   getAccountPrecheckMutationState,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listOpenAIAccountsForGroupResultAsync,
+  listAccountsDueForCooldownRetest,
+  listAccountsDueForHealthCheck,
   listRecoverableUnavailableOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   listPublicGlobalSettingsAsync,
@@ -91,7 +95,7 @@ import {
   readCachedGatewaySettings,
 } from '../gateway/runtime/runtime-cache.service.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import { isDynamicApiKeyGroupRouteStrategy } from '../../domain/api-key-routing.js'
+import { isDynamicRouteStrategyMode } from '../../domain/route-strategy.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/quota/authorization-quota.service.js'
@@ -646,6 +650,15 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
       return { updated: Boolean(updated), accountStatus: updated?.status }
     }
+    case 'find_account_for_test': {
+      return findAccountForTest(operation.accountId, operation.access)
+    }
+    case 'list_accounts_due_for_health_check': {
+      return listAccountsDueForHealthCheck(operation.input)
+    }
+    case 'find_account_for_health_check': {
+      return findAccountForHealthCheck(operation.accountId)
+    }
     case 'record_account_health_check_success': {
       const changed = recordAccountHealthCheckSuccess(operation.accountId, operation.input)
       if (changed) {
@@ -659,6 +672,12 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         clearGatewayRuntimeCacheLocal()
       }
       return result
+    }
+    case 'list_accounts_due_for_cooldown_retest': {
+      return listAccountsDueForCooldownRetest(operation.limit)
+    }
+    case 'find_account_for_cooldown_retest': {
+      return findAccountForCooldownRetest(operation.accountId)
     }
     case 'record_cooldown_account_retest_failure': {
       const result = recordCooldownAccountRetestFailure(operation.accountId, operation.input)
@@ -964,7 +983,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     }
   }
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
-  if (operation.skipDynamicRouteSelection === true && isDynamicApiKeyGroupRouteStrategy(apiKey.group_route_strategy)) {
+  if (operation.skipDynamicRouteSelection === true && isDynamicRouteStrategyMode(apiKey.route_strategy_mode)) {
     return {
       apiKey: {
         ...apiKey,
@@ -1033,7 +1052,7 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
     }
   }
   const systemAccountId = operation.systemAccountId ?? apiKey.system_account_id
-  if (operation.skipDynamicRouteSelection === true && isDynamicApiKeyGroupRouteStrategy(apiKey.group_route_strategy)) {
+  if (operation.skipDynamicRouteSelection === true && isDynamicRouteStrategyMode(apiKey.route_strategy_mode)) {
     return {
       apiKey: {
         ...apiKey,

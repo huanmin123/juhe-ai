@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -133,15 +134,14 @@ try {
       schedulable: true
     }, access)
     assert.equal(account.modelMappings?.length ?? 0, 0, '桥接账号不应保存跨协议模型映射')
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'OpenAI 到 Anthropic 桥接 mock Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: openAIToAnthropicRules(group.id),
       status: 'active'
     }, access)
     assert(apiKey.key, '回归 API Key 未返回明文密钥')
-    assert.equal(apiKey.explicitHybridRouteRules?.length, 2, '桥接 API Key 应保存 Chat/Responses 显式混合路由规则')
-    const otherApiKey = repositories.createApiKeyRecord({
+    const otherApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'OpenAI 到 Anthropic 桥接 mock 隔离 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: openAIToAnthropicRules(group.id),

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -32,6 +32,8 @@ const range: AccountUsageStatsRange = {
 }
 
 try {
+  assertRepositoryLookupSharedCacheBoundary()
+
   const owner = repositories.createSystemAccount({
     username: 'authorization_team_batch_owner',
     displayName: '团队授权批量查询所有者',
@@ -132,7 +134,7 @@ try {
     statsDatabase.prepare = originalPrepare
   }
 
-  console.log('授权列表团队用量批量查询回归通过：团队授权页按批读取报表窗口，避免按行 N+1 查询')
+  console.log('授权列表团队用量批量查询回归通过：团队授权页按批读取报表窗口，避免按行 N+1 查询；授权读路径资源 lookup 复用 Redis shared cache')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -140,6 +142,21 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertRepositoryLookupSharedCacheBoundary(): void {
+  const repositoryLookupSource = readFileSync(resolve('src/storage/repository-lookups.ts'), 'utf8')
+  const resourceAuthorizationReadSource = readFileSync(resolve('src/storage/resource-authorization-read.repository.ts'), 'utf8')
+  assert(repositoryLookupSource.includes('createSharedJsonCache<SystemAccountPrincipalLookup>'), '系统账户 lookup 应声明 Redis shared cache')
+  assert(repositoryLookupSource.includes('createSharedJsonCache<BusinessResourceLookup>'), '账号 / 分组 / API Key lookup 应声明 Redis shared cache')
+  assert(repositoryLookupSource.includes('createSharedJsonCache<SystemTeamLookup>'), '系统团队 lookup 应声明 Redis shared cache')
+  assert(repositoryLookupSource.includes('createSharedJsonCache<SystemAccountTeamNamesLookup>'), '系统账号团队名 lookup 应声明 Redis shared cache')
+  assert(repositoryLookupSource.includes('loadCachedRowsByIdsAsync'), '资源 lookup 应提供 async shared cache helper')
+  assert(repositoryLookupSource.includes('repository_lookup_shared_cache_read_failed'), '资源 lookup shared cache 读失败应有可观测日志')
+  assert(resourceAuthorizationReadSource.includes('loadAccountLookupMapAsync,'), '授权读路径应导入统一账号 lookup async helper')
+  assert(resourceAuthorizationReadSource.includes('loadSystemAccountPrincipalMapByIdsAsync,'), '授权读路径应导入统一系统账户 lookup async helper')
+  assert(!resourceAuthorizationReadSource.includes('async function loadAccountLookupMapAsync('), '授权读路径不应保留本地重复账号 lookup async helper')
+  assert(!resourceAuthorizationReadSource.includes('async function loadSystemAccountPrincipalMapByIdsAsync('), '授权读路径不应保留本地重复系统账户 lookup async helper')
 }
 
 function seedTeamWindow(input: {

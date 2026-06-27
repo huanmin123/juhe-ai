@@ -1,5 +1,7 @@
 # Codex Responses 转 Chat 协议转换设计
 
+> 2026-06-27 路由分层更新：本文描述的是可复用协议转换能力和历史桥接测试背景，不表示 API Key 或策略路由可以保存显式跨协议规则。当前目标是 API Key 只绑定策略路由，策略路由只负责分组和模型调度；Codex Responses 到 Chat-only 上游这类跨协议承接后续落到混合供应商账户。
+
 ## 范围
 
 本文记录项目内“Codex 客户端 Responses 请求 -> 上游 OpenAI-compatible Chat Completions”的通用转换层。该能力不是 GLM 专属：GLM Coding Plan 是第一批启用者，后续 DeepSeek、Kimi 或其他只支持 Chat Completions 的 OpenAI-compatible 上游如需承接 Codex 客户端，也应复用同一转换层，再在供应商 driver 内按自身协议细节做少量配置。

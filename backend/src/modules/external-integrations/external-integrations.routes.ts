@@ -219,18 +219,11 @@ const groupListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional()
 }).strict()
-const apiKeyGroupBindingSchema = z.object({
-  groupId: z.string().trim().min(1).max(120),
-  priority: z.number().int().positive().optional(),
-  weight: z.number().int().min(1).max(100).optional(),
-  status: z.enum(['active', 'disabled']).optional()
-}).strict()
 const apiKeyAddSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(200).nullable().optional(),
-  groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20),
-  groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
+  routeStrategyId: z.string().trim().min(1).max(120),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),
@@ -240,8 +233,7 @@ const apiKeyAddSchema = z.object({
 const apiKeyUpdateMutableFields = [
   'name',
   'description',
-  'groupBindings',
-  'groupRouteStrategy',
+  'routeStrategyId',
   'status',
   'expiresAt',
   'quotaLimits',
@@ -253,8 +245,7 @@ const apiKeyUpdateSchema = z.object({
   apiKeyId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(120).optional(),
   description: z.string().trim().max(200).nullable().optional(),
-  groupBindings: z.array(apiKeyGroupBindingSchema).min(1).max(20).optional(),
-  groupRouteStrategy: z.enum(['priority_failover', 'round_robin', 'weighted_round_robin']).optional(),
+  routeStrategyId: z.string().trim().min(1).max(120).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().trim().nullable().optional(),
   quotaLimits: requestQuotaLimitsSchema.nullable().optional(),

@@ -86,10 +86,16 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   createdGroupIds.push(group.id)
 
   const name = `APIKey管理回归${suffix}`
+  const routeStrategy = await repositories.createRouteStrategyAsync({
+    name: `${name}策略路由`,
+    mode: 'normal',
+    status: 'active',
+    groupBindings: [{ groupId: group.id, priority: 1, weight: 10, status: 'active' }]
+  }, adminAccess)
   const created = await repositories.createApiKeyRecordAsync({
     name,
     description: 'API Key 管理PG回归',
-    groupBindings: [{ groupId: group.id, priority: 1, weight: 10, status: 'active' }],
+    routeStrategyId: routeStrategy.id,
     status: 'active',
     quotaLimits: {
       hourly: { enabled: true, hours: 3, limit: 1.25 }
@@ -100,7 +106,7 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   createdAccountIds.push(accountId)
   assert.equal(created.name, name, '异步创建 API Key 应返回名称')
   assert.ok(created.key.startsWith('sk-'), '异步创建 API Key 应返回一次性明文密钥')
-  assert.equal(created.groupBindings[0]?.groupId, group.id, '异步创建 API Key 应保存分组绑定')
+  assert.equal(created.routeStrategyId, routeStrategy.id, '异步创建 API Key 应保存策略路由绑定')
   const gatewayApiKey = await repositories.validateGatewayApiKeyAsync(created.key)
   assert.equal(gatewayApiKey?.id, created.id, '网关 API Key 校验应能读取异步创建的 Key')
   assert.equal(gatewayApiKey?.selected_group_id, group.id, '网关 API Key 校验应选中绑定分组')
@@ -129,21 +135,23 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const secret = await repositories.findApiKeySecretAsync(created.id, adminAccess)
   assert.equal(secret?.key, created.key, '异步 API Key secret 查询应返回当前完整密钥')
 
+  await repositories.updateRouteStrategyAsync(routeStrategy.id, {
+    groupBindings: [{ groupId: group.id, priority: 1, weight: 20, status: 'active' }]
+  }, adminAccess)
   const updated = await repositories.updateApiKeyAsync(created.id, {
     name: `${name}改`,
     description: 'API Key 管理PG回归已更新',
-    status: 'disabled',
-    groupBindings: [{ groupId: group.id, priority: 1, weight: 20, status: 'active' }]
+    status: 'disabled'
   }, adminAccess)
   assert.equal(updated?.name, `${name}改`, '异步更新 API Key 应返回新名称')
   assert.equal(updated?.status, 'disabled', '异步更新 API Key 应更新状态')
-  assert.equal(updated?.groupBindings[0]?.weight, 20, '异步更新 API Key 应更新绑定权重')
+  assert.equal((await repositories.findRouteStrategySummaryAsync(routeStrategy.id, adminAccess))?.groupBindings[0]?.weight, 20, '异步更新策略路由应更新绑定权重')
   assert.equal(await repositories.validateGatewayApiKeyAsync(created.key), undefined, '异步停用 API Key 后网关校验应失效')
 
   await assert.rejects(
     () => repositories.createApiKeyRecordAsync({
       name: `${name}改`,
-      groupBindings: [{ groupId: group.id }]
+      routeStrategyId: routeStrategy.id
     }, adminAccess),
     /API Key 名称已存在/,
     '异步创建 API Key 不能重复同账户名称'
@@ -174,11 +182,16 @@ async function cleanupCreatedRows(): Promise<void> {
       await client.execute('DELETE FROM "juhe_business"."accounts" WHERE id = ?', [id])
     }
     for (const id of createdApiKeyIds.splice(0)) {
-      await client.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE api_key_id = ?', [id])
+      const routeRows = await client.query<{ route_strategy_id?: string }>('SELECT route_strategy_id FROM "juhe_business"."api_keys" WHERE id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."api_keys" WHERE id = ?', [id])
+      for (const routeRow of routeRows) {
+        if (!routeRow.route_strategy_id) continue
+        await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE route_strategy_id = ?', [routeRow.route_strategy_id])
+        await client.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [routeRow.route_strategy_id])
+      }
     }
     for (const id of createdGroupIds.splice(0)) {
-      await client.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE group_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE group_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."groups" WHERE id = ?', [id])
     }
     await closePostgresPool()
@@ -194,11 +207,16 @@ async function cleanupCreatedRows(): Promise<void> {
     database.prepare('DELETE FROM accounts WHERE id = ?').run(id)
   }
   for (const id of createdApiKeyIds.splice(0)) {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE api_key_id = ?').run(id)
+    const routeRows = database.prepare('SELECT route_strategy_id FROM api_keys WHERE id = ?').all(id) as Array<{ route_strategy_id?: string }>
     database.prepare('DELETE FROM api_keys WHERE id = ?').run(id)
+    for (const routeRow of routeRows) {
+      if (!routeRow.route_strategy_id) continue
+      database.prepare('DELETE FROM route_strategy_groups WHERE route_strategy_id = ?').run(routeRow.route_strategy_id)
+      database.prepare('DELETE FROM route_strategies WHERE id = ?').run(routeRow.route_strategy_id)
+    }
   }
   for (const id of createdGroupIds.splice(0)) {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE group_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategy_groups WHERE group_id = ?').run(id)
     database.prepare('DELETE FROM groups WHERE id = ?').run(id)
   }
 }

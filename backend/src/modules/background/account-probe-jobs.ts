@@ -1,11 +1,8 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
-import {
-  listAccountsDueForHealthCheck,
-  listAccountsDueForCooldownRetest
-} from '../../storage/repositories.js'
 import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestStatsWriter } from './background-stats-writer.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import {
   enqueueAccountApiKeyCooldownRetest,
   getAccountApiKeyCooldownRetestQueueSnapshot,
@@ -30,6 +27,7 @@ import {
 const accountQualityFailurePrecheckBatchSize = 10
 const maxOpsExternalIoConcurrency = 10
 const maxOpsFullDiagnosticConcurrency = 3
+const backgroundProbeDbServiceTimeoutMs = 10_000
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
 
@@ -94,7 +92,10 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
-  const candidates = listAccountsDueForCooldownRetest(batchSize)
+  const candidates = await requestBackgroundWorkerDbService({
+    type: 'list_accounts_due_for_cooldown_retest',
+    limit: batchSize
+  }, backgroundProbeDbServiceTimeoutMs) ?? []
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0
@@ -129,12 +130,15 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
   const jitterMinutes = deps.settingsNumber('accountHealthCheckJitterMinutes', 0, 1440)
   const failureThreshold = deps.settingsNumber('accountHealthCheckFailureThreshold', 1, 10)
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
-  const candidates = listAccountsDueForHealthCheck({
-    limit: batchSize,
-    intervalHours,
-    jitterMinutes,
-    failureThreshold
-  })
+  const candidates = await requestBackgroundWorkerDbService({
+    type: 'list_accounts_due_for_health_check',
+    input: {
+      limit: batchSize,
+      intervalHours,
+      jitterMinutes,
+      failureThreshold
+    }
+  }, backgroundProbeDbServiceTimeoutMs) ?? []
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0

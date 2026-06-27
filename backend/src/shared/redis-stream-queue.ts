@@ -66,36 +66,33 @@ export class RedisStreamQueue<T> {
   async readNew(): Promise<Array<RedisStreamMessage<T>>> {
     await this.ensureGroup()
     const client = await this.consumerClient()
-    const result = await client.sendCommand([
-      'XREADGROUP',
-      'GROUP',
-      this.groupName,
-      this.consumerName,
-      'COUNT',
-      String(this.readCount),
-      'BLOCK',
-      String(this.blockMs),
-      'STREAMS',
-      this.streamKey,
-      '>'
-    ])
-    return this.parseStreamReadResult(result)
+    try {
+      const result = await this.readNewUnsafe(client)
+      return this.parseStreamReadResult(result)
+    } catch (error) {
+      if (!isRedisNoGroupError(error)) {
+        throw error
+      }
+      await this.recreateGroupAfterNoGroup()
+      const result = await this.readNewUnsafe(client)
+      return this.parseStreamReadResult(result)
+    }
   }
 
   async claimPending(): Promise<Array<RedisStreamMessage<T>>> {
     await this.ensureGroup()
     const client = await this.consumerClient()
-    const result = await client.sendCommand([
-      'XAUTOCLAIM',
-      this.streamKey,
-      this.groupName,
-      this.consumerName,
-      String(this.claimIdleMs),
-      '0-0',
-      'COUNT',
-      String(this.readCount)
-    ])
-    return this.parseAutoClaimResult(result)
+    try {
+      const result = await this.claimPendingUnsafe(client)
+      return this.parseAutoClaimResult(result)
+    } catch (error) {
+      if (!isRedisNoGroupError(error)) {
+        throw error
+      }
+      await this.recreateGroupAfterNoGroup()
+      const result = await this.claimPendingUnsafe(client)
+      return this.parseAutoClaimResult(result)
+    }
   }
 
   async ack(ids: string[]): Promise<number> {
@@ -139,6 +136,40 @@ export class RedisStreamQueue<T> {
         throw error
       }
     }
+  }
+
+  private async recreateGroupAfterNoGroup(): Promise<void> {
+    this.groupReadyPromise = undefined
+    await this.ensureGroup()
+  }
+
+  private async readNewUnsafe(client: RedisCommandClient): Promise<unknown> {
+    return await client.sendCommand([
+      'XREADGROUP',
+      'GROUP',
+      this.groupName,
+      this.consumerName,
+      'COUNT',
+      String(this.readCount),
+      'BLOCK',
+      String(this.blockMs),
+      'STREAMS',
+      this.streamKey,
+      '>'
+    ])
+  }
+
+  private async claimPendingUnsafe(client: RedisCommandClient): Promise<unknown> {
+    return await client.sendCommand([
+      'XAUTOCLAIM',
+      this.streamKey,
+      this.groupName,
+      this.consumerName,
+      String(this.claimIdleMs),
+      '0-0',
+      'COUNT',
+      String(this.readCount)
+    ])
   }
 
   private consumerClient(): Promise<RedisCommandClient> {
@@ -211,6 +242,10 @@ function sanitizeRedisStreamPart(value: string): string {
 
 function isRedisBusyGroupError(error: unknown): boolean {
   return String(error instanceof Error ? error.message : error).includes('BUSYGROUP')
+}
+
+function isRedisNoGroupError(error: unknown): boolean {
+  return String(error instanceof Error ? error.message : error).includes('NOGROUP')
 }
 
 function fieldValue(fields: unknown, name: string): string | undefined {

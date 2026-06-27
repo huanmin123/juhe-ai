@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -260,31 +261,31 @@ try {
     assert.deepEqual(codexBridgeAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
     assertDeepSeekCodexDispatchCapability(codexBridgeGroup.id, codexBridgeAccount.id)
 
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Mock AI 回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(apiKey.key, '回归 API Key 未返回明文密钥')
-    const bodyInterruptedApiKey = repositories.createApiKeyRecord({
+    const bodyInterruptedApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Mock AI JSON 正文中断重试 Key',
       groupBindings: [{ groupId: bodyInterruptedGroup.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(bodyInterruptedApiKey.key, 'JSON 正文中断重试回归 API Key 未返回明文密钥')
-    const retryApiKey = repositories.createApiKeyRecord({
+    const retryApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Mock AI 协议失败重试 Key',
       groupBindings: [{ groupId: retryGroup.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(retryApiKey.key, '协议失败重试回归 API Key 未返回明文密钥')
-    const allBadApiKey = repositories.createApiKeyRecord({
+    const allBadApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Mock AI 协议失败耗尽 Key',
       groupBindings: [{ groupId: allBadGroup.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(allBadApiKey.key, '协议失败耗尽回归 API Key 未返回明文密钥')
-    const codexBridgeApiKey = repositories.createApiKeyRecord({
+    const codexBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Codex bridge Mock AI 回归 Key',
       groupBindings: [{ groupId: codexBridgeGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: [

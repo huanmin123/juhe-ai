@@ -186,8 +186,10 @@ export function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options
     keyPrefix: apiKey.keyPrefix,
     key: options.includeSecret ? apiKey.key : undefined,
     status: apiKey.status,
-    groupRouteStrategy: apiKey.groupRouteStrategy,
-    groupBindings: apiKey.groupBindings,
+    routeStrategyId: apiKey.routeStrategyId,
+    routeStrategyName: apiKey.routeStrategyName,
+    routeStrategyMode: apiKey.routeStrategyMode,
+    routeStrategyStatus: apiKey.routeStrategyStatus,
     expiresAt: apiKey.expiresAt,
     availabilitySchedule: apiKey.availabilitySchedule,
     availabilityScheduleActive: apiKey.availabilityScheduleActive

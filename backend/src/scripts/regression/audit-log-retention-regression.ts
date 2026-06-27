@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import type { Request } from 'express'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import type { AuditLogInput } from '../../storage/repositories.js'
@@ -364,7 +365,7 @@ try {
     name: '审计删除保留 API Key 分组',
     providerCode: 'gpt'
   }, apiKeyAccess)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '审计删除保留 API Key',
     groupBindings: [{ groupId: apiKeyGroup.id, priority: 1, status: 'active' }],
   }, apiKeyAccess)

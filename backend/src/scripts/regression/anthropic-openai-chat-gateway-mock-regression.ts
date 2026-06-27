@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -220,7 +221,7 @@ function createCaseRuntime(item: MessagesBridgeCase, upstreamOrigin: string): Me
     schedulable: true,
     supportedModels: [item.upstreamModel]
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${item.label} Messages -> Chat 桥接 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     explicitHybridRouteRules: [

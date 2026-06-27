@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2280 : 2100"
+    :scroll-x="isManagementView ? 2020 : 1840"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -18,7 +18,7 @@
     @mobile-refresh="emit('mobile-refresh')"
   >
     <template #emptyText>
-      <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
+      <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定策略路由；接入说明可点击右上角帮助查看。" />
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'status'">
@@ -61,24 +61,11 @@
           </a-tooltip>
         </div>
       </template>
-      <template v-else-if="column.key === 'group'">
-        <div class="group-route-tags">
-          <a-tag
-            v-for="(binding, index) in apiKeyGroupBindings(record)"
-            :key="binding.id"
-            :color="apiKeyGroupBindingTagColor(binding)"
-          >
-            {{ apiKeyGroupBindingTagText(record, binding, index) }}
-          </a-tag>
+      <template v-else-if="column.key === 'routeStrategy'">
+        <div class="route-strategy-cell">
+          <span>{{ apiKeyRouteStrategyName(record) }}</span>
+          <a-tag :color="apiKeyRouteStrategyTagColor(record)">{{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</a-tag>
         </div>
-      </template>
-      <template v-else-if="column.key === 'routeMode'">
-        <a-tooltip>
-          <template #title>
-            <div class="route-tooltip">{{ apiKeyHybridRouteSummary(record) }}</div>
-          </template>
-          <a-tag :color="apiKeyRouteModeTagColor(record)">{{ apiKeyRouteModeText(record) }}</a-tag>
-        </a-tooltip>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
         <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
@@ -109,14 +96,7 @@
               </span>
             </a-tooltip>
             <StatusTag v-else :color="apiKeyStatusTagColor(record)" :label="apiKeyStatusTagLabel(record)" />
-            <a-tag
-              v-for="(binding, index) in apiKeyGroupBindings(record).slice(0, 2)"
-              :key="binding.id"
-              :color="apiKeyGroupBindingTagColor(binding)"
-            >
-              {{ apiKeyGroupBindingTagText(record, binding, index) }}
-            </a-tag>
-            <a-tag v-if="apiKeyGroupBindings(record).length > 2">+{{ apiKeyGroupBindings(record).length - 2 }}</a-tag>
+            <a-tag :color="apiKeyRouteStrategyTagColor(record)">{{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</a-tag>
           </div>
         </div>
         <div class="mobile-list-meta-grid">
@@ -145,12 +125,8 @@
             <strong>{{ quotaLimitSummaryText(record.quotaLimits) }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>绑定分组</span>
-            <strong>{{ apiKeyGroupRouteText(record) }}</strong>
-          </div>
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>路由模式</span>
-            <strong>{{ apiKeyRouteModeText(record) }}：{{ apiKeyHybridRouteSummary(record) }}</strong>
+            <span>策略路由</span>
+            <strong>{{ apiKeyRouteStrategyName(record) }} / {{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
@@ -178,13 +154,9 @@ import { formatDateTime } from '@/shared/formatters'
 import type { ApiKeySummary } from '@/types/domain'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import {
-  apiKeyGroupBindingTagColor,
-  apiKeyGroupBindingTagText,
-  apiKeyGroupBindings,
-  apiKeyGroupRouteText,
-  apiKeyHybridRouteSummary,
-  apiKeyRouteModeTagColor,
-  apiKeyRouteModeText,
+  apiKeyRouteStrategyModeText,
+  apiKeyRouteStrategyName,
+  apiKeyRouteStrategyTagColor,
   apiKeyScheduleSummary,
   apiKeyScheduleTagColor,
   apiKeyStatusTagColor,
@@ -228,16 +200,15 @@ const emit = defineEmits<{
   white-space: nowrap;
 }
 
-.group-route-tags {
+.route-strategy-cell {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   max-width: 320px;
 }
 
-.group-route-tags :deep(.ant-tag) {
+.route-strategy-cell span {
   max-width: 280px;
-  margin-inline-end: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -222,7 +223,7 @@ function createSingleAccountScenario(label: string, upstreamApiKey: string, upst
     schedulable: true,
     supportedModels: ['gpt-5.5']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${label}网关 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -275,7 +276,7 @@ function createFallbackScenario(upstreamBaseUrl: string): { primaryAccountId: st
     schedulable: true,
     supportedModels: ['gpt-5.5']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '恢复等待后备分组优先网关 Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -311,7 +312,7 @@ function createDisabledScenario(upstreamBaseUrl: string): { apiKey: string } {
     schedulable: false,
     supportedModels: ['gpt-5.5']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '恢复等待硬不可用网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

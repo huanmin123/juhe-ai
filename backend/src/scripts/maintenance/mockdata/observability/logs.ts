@@ -357,7 +357,7 @@ function publicApiLogRequestData(
     return {
       targetUsername: created.users.admin.username,
       apiKeyId: created.apiKeys.adminMain.id,
-      groupBindings: [{ groupId: created.groups.main.id, priority: 1, status: 'active' }]
+      routeStrategyId: created.apiKeys.adminMain.routeStrategyId
     }
   }
   return {

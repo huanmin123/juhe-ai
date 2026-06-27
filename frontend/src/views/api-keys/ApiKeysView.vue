@@ -27,7 +27,7 @@
           :groups="groups"
           :loading="groupOptionsLoading"
           show-provider-label
-          placeholder="绑定分组"
+          placeholder="策略分组"
           @change="handleGroupFilterChange"
           @dropdown-visible-change="handleGroupOptionsDropdown"
           @search="handleGroupOptionsSearch"
@@ -53,7 +53,7 @@
           <a-select v-model:value="statusFilter" :options="listStatusOptions" />
         </label>
         <label class="mobile-filter-field">
-          <span>绑定分组</span>
+          <span>策略分组</span>
           <GroupSelect
             v-model:value="groupFilter"
             v-model:selected-group="groupFilterSelection"
@@ -63,7 +63,7 @@
             :groups="groups"
             :loading="groupOptionsLoading"
             show-provider-label
-            placeholder="绑定分组"
+            placeholder="策略分组"
             @change="handleGroupFilterChange"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
@@ -116,7 +116,7 @@
     <ApiKeyEditModal
       ref="apiKeyEditModalRef"
       :api-keys-api="apiKeysApi"
-      :groups-api="groupsApi"
+      :route-strategies-api="routeStrategiesApi"
       :is-management-view="isManagementView"
       :scope-params="apiKeyScopeParams"
       :target-system-account-label="targetSystemAccountLabel"
@@ -153,18 +153,15 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { useScopedApiKeysApi, useScopedGroupsApi } from '@/composables/useScopedDomainApi'
+import { useScopedApiKeysApi, useScopedGroupsApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
-import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ApiKeySummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import {
-  apiKeyGroupBindings,
-} from './apiKeyFormatters'
 import { defaultApiKeysPageState, type ApiKeysPageState } from './apiKeyPageState'
 import {
   apiKeyColumnStorageKey,
@@ -197,12 +194,11 @@ const apiKeyOptionsScopeKey = ref('')
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
+const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
-const emptyApiKeyGroupBindings = () => []
-const emptyApiKeyGroupBindingIds = computed<string[]>(() => [])
 const {
   clearGroupOptionsSearchTimer,
   groups,
@@ -215,12 +211,8 @@ const {
 } = useApiKeyGroupOptions({
   groupsApi,
   isManagementView,
-  isFormContext: () => false,
   listScopeParams: apiKeyScopeParams,
-  formScopeParams: apiKeyScopeParams,
   groupFilterSelection,
-  formGroupBindings: emptyApiKeyGroupBindings,
-  formGroupBindingIds: emptyApiKeyGroupBindingIds,
   onGroupFilterCleared: () => {
     resetPagination()
     void loadData({ forceOptions: true })
@@ -547,12 +539,7 @@ function buildMinimalHttpRequestExample(input: {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-watch(apiKeys, (items) => {
-  for (const item of items) {
-    for (const binding of apiKeyGroupBindings(item)) {
-      rememberGroupLabel(binding.groupId, binding.groupName)
-    }
-  }
+watch(apiKeys, () => {
   rememberGroupSelection(groupFilterSelection.value)
   rememberPrincipalSelection(systemAccountFilterSelection.value)
   syncSelectedGroupSelections()

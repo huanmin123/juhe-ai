@@ -8,6 +8,7 @@ import {
   createAuditLogsBatchAsync,
   createOperationLogsBatchAsync,
   createPublicApiLogsBatchAsync,
+  createRuntimeLogsBatchAsync,
   createUsageRecordsBatchAsync,
   getAuditLogDetailAsync,
   getAuditLogPayload,
@@ -22,7 +23,8 @@ import {
   listOperationLogsAsync,
   listOperationLogsForViewerAsync,
   listPublicApiLogsAsync,
-  listRuntimeLogsAsync
+  listRuntimeLogsAsync,
+  runtimeLogIndexRetentionDays
 } from '../../storage/repositories.js'
 import { closeStorageDatabases, nowIso } from '../../storage/database.js'
 import type { DatabaseClient } from '../../storage/database-client.js'
@@ -61,6 +63,7 @@ const reportPath = process.env.JUHE_PERFORMANCE_GATEWAY_READINESS_REPORT
 const runId = `perf_gateway_readiness_${Date.now()}_${Math.random().toString(16).slice(2)}`
 const tracePrefix = `trace-${runId}`
 const readinessApiKeyId = `${runId}_api_key`
+const readinessRouteStrategyId = `${runId}_route_strategy`
 const readinessGroupId = `${runId}_group`
 const readinessAccountId = `${runId}_account`
 const readinessModel = `${runId}_model`
@@ -427,24 +430,19 @@ async function runReadiness(): Promise<ReadinessReport> {
 
     checks.push(await runCheck('runtime_logs_read', async () => {
       const createdAtIso = nowIso()
-      await client.execute(`
-        INSERT INTO juhe_dataset.runtime_logs (
-          id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        `${runId}_rtlog`,
-        'performance-readiness.log',
-        0,
-        1,
-        createdAtIso,
-        'info',
-        `${tracePrefix}-runtime`,
-        'performance_readiness_runtime',
-        'runtime readiness keywordneedle',
-        null,
-        JSON.stringify({ runId, event: 'performance_readiness_runtime' }),
-        createdAtIso
-      ])
+      await createRuntimeLogsBatchAsync([{
+        id: `${runId}_rtlog`,
+        logFile: 'performance-readiness.log',
+        logOffset: 0,
+        lineNumber: 1,
+        time: createdAtIso,
+        level: 'info',
+        traceId: `${tracePrefix}-runtime`,
+        event: 'performance_readiness_runtime',
+        message: 'runtime readiness keywordneedle',
+        rawJson: JSON.stringify({ runId, event: 'performance_readiness_runtime' }),
+        createdAt: createdAtIso
+      }])
       const runtimeList = await listRuntimeLogsAsync({ traceId: `${tracePrefix}-runtime`, pageSize: 10 })
       if (!runtimeList.items.some((item) => item.id === `${runId}_rtlog`)) {
         throw new Error('runtime_logs_read PG trace 列表未读到 readiness 运行日志')
@@ -594,14 +592,27 @@ async function seedReadinessQuotaData(client: DatabaseClient): Promise<void> {
     total: { enabled: true, limit: 5 }
   })
   await client.execute(`
-    INSERT INTO juhe_business.api_keys (
-      id, system_account_id, name, description, key_hash, key_prefix, key_suffix, key_secret_encrypted,
-      status, client_profile, route_mode, group_route_strategy, quota_limits_json, created_at, updated_at
+    INSERT INTO juhe_business.route_strategies (
+      id, system_account_id, name, description, mode, status, config_json, created_at, updated_at
     )
-    VALUES (?, 'sys_admin', ?, 'performance readiness quota snapshot probe', ?, 'sk-readiness', 'probe', ?,
-      'active', 'auto', 'normal', 'priority_failover', ?, ?, ?)
+    VALUES (?, 'sys_admin', ?, 'performance readiness quota snapshot route strategy probe',
+      'normal', 'active', NULL, ?, ?)
+  `, [
+    readinessRouteStrategyId,
+    `performance readiness route ${runId}`,
+    now,
+    now
+  ])
+  await client.execute(`
+    INSERT INTO juhe_business.api_keys (
+      id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix,
+      key_suffix, key_secret_encrypted, status, quota_limits_json, created_at, updated_at
+    )
+    VALUES (?, 'sys_admin', ?, ?, 'performance readiness quota snapshot probe', ?,
+      'sk-readiness', 'probe', ?, 'active', ?, ?, ?)
   `, [
     readinessApiKeyId,
+    readinessRouteStrategyId,
     `performance readiness ${runId}`,
     `hash_${runId}`,
     `encrypted_${runId}`,
@@ -906,7 +917,11 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
   await client.execute('DELETE FROM juhe_dataset.operation_log_targets WHERE operation_log_id = ?', [`${runId}_oplog`])
   await client.execute('DELETE FROM juhe_dataset.operation_logs WHERE trace_id >= ? AND trace_id < ?', [lower, upper])
   await client.execute('DELETE FROM juhe_dataset.public_api_logs WHERE trace_id >= ? AND trace_id < ?', [lower, upper])
-  await client.execute('DELETE FROM juhe_dataset.runtime_logs WHERE trace_id >= ? AND trace_id < ?', [lower, upper])
+  const deletedRuntimeLogRows = await client.query<{ time: string; level: string; event: string | null }>(
+    'DELETE FROM juhe_dataset.runtime_logs WHERE trace_id >= ? AND trace_id < ? RETURNING time, level, event',
+    [lower, upper]
+  )
+  await decrementRuntimeLogFacetsForCleanup(client, deletedRuntimeLogRows)
   await client.execute('DELETE FROM juhe_business.accounts WHERE id = ?', [readinessTeamInstanceAccountId])
   await client.execute('DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?)', [[readinessTeamAccountGrantId, readinessTeamGroupGrantId]])
   await client.execute('DELETE FROM juhe_business.resource_authorizations WHERE id = ANY(?)', [[
@@ -918,6 +933,7 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
   await client.execute('DELETE FROM juhe_business.accounts WHERE id = ?', [readinessTeamSourceAccountId])
   await client.execute('DELETE FROM juhe_business.system_teams WHERE id = ?', [readinessTeamId])
   await client.execute('DELETE FROM juhe_business.api_keys WHERE id = ?', [readinessApiKeyId])
+  await client.execute('DELETE FROM juhe_business.route_strategies WHERE id = ?', [readinessRouteStrategyId])
   await client.execute('DELETE FROM juhe_usage.usage_record_shard_entries WHERE trace_id >= ? AND trace_id < ?', [lower, upper])
   await client.execute('DELETE FROM juhe_usage.usage_records WHERE trace_id >= ? AND trace_id < ?', [lower, upper])
   await client.execute('DELETE FROM juhe_stats.account_quality_minute_stats WHERE account_id = ?', [readinessAccountId])
@@ -937,6 +953,58 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
     await client.execute(`DELETE FROM juhe_stats.${tableName} WHERE scope_id = ANY(?)`, [statsScopeIds])
   }
   await client.execute('DELETE FROM juhe_stats.usage_quota_hourly_windows WHERE scope_id = ANY(?)', [statsScopeIds])
+}
+
+async function decrementRuntimeLogFacetsForCleanup(
+  client: DatabaseClient,
+  rows: Array<{ time: string; level: string; event: string | null }>
+): Promise<void> {
+  const cutoffIso = new Date(Date.now() - runtimeLogIndexRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+  const retainedRows = rows.filter((row) => row.time >= cutoffIso)
+  if (retainedRows.length === 0) return
+
+  const bucketKey = 'current'
+  const updatedAt = nowIso()
+  await client.execute(`
+    UPDATE juhe_dataset.runtime_log_facet_summary
+    SET total_count = GREATEST(0, total_count - ?),
+        earliest_time = (SELECT MIN(time) FROM juhe_dataset.runtime_logs WHERE time >= ?),
+        latest_time = (SELECT MAX(time) FROM juhe_dataset.runtime_logs WHERE time >= ?),
+        updated_at = ?
+    WHERE bucket_key = ?
+  `, [retainedRows.length, cutoffIso, cutoffIso, updatedAt, bucketKey])
+  await client.execute('DELETE FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = ? AND total_count <= 0', [bucketKey])
+
+  const levels = new Map<string, number>()
+  const events = new Map<string, number>()
+  for (const row of retainedRows) {
+    levels.set(row.level, (levels.get(row.level) ?? 0) + 1)
+    const event = row.event?.trim()
+    if (event) {
+      events.set(event, (events.get(event) ?? 0) + 1)
+    }
+  }
+
+  for (const [level, count] of levels) {
+    await client.execute(`
+      UPDATE juhe_dataset.runtime_log_level_facets
+      SET count = GREATEST(0, count - ?),
+          updated_at = ?
+      WHERE bucket_key = ? AND level = ?
+    `, [count, updatedAt, bucketKey, level])
+  }
+  await client.execute('DELETE FROM juhe_dataset.runtime_log_level_facets WHERE bucket_key = ? AND count <= 0', [bucketKey])
+
+  for (const [event, count] of events) {
+    await client.execute(`
+      UPDATE juhe_dataset.runtime_log_event_facets
+      SET count = GREATEST(0, count - ?),
+          latest_time = (SELECT MAX(time) FROM juhe_dataset.runtime_logs WHERE event = ? AND time >= ?),
+          updated_at = ?
+      WHERE bucket_key = ? AND event = ?
+    `, [count, event, cutoffIso, updatedAt, bucketKey, event])
+  }
+  await client.execute('DELETE FROM juhe_dataset.runtime_log_event_facets WHERE bucket_key = ? AND count <= 0', [bucketKey])
 }
 
 function deleteAuditBlobFiles(storageKeys: string[]): void {

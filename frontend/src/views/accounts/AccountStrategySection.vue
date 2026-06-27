@@ -23,7 +23,7 @@
         show-search
       />
     </a-form-item>
-    <a-form-item label="账号模型别名" tooltip="只在当前供应商和当前协议内做模型名改写；跨供应商或跨协议映射请在 API Key 显式混合路由中配置。">
+    <a-form-item label="账号模型别名" tooltip="只在当前供应商和当前协议内做模型名改写；跨供应商或跨协议映射请使用混合供应商账户配置。">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
           <div class="model-mapping-side">

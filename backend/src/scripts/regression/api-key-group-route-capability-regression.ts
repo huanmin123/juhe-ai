@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -194,7 +195,7 @@ async function assertResponseInspectionFallbackToNextGroup(gatewayBaseUrl: strin
     match: { outputTextIncludes: ['route-stream-pollution'] },
     action: 'retry_next_account'
   })
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '响应检查切后备 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -277,7 +278,7 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
     status: 'active',
     schedulable: true,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '上游账号耗尽切后备 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -416,7 +417,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
     schedulable: true,
   }, access)
   const weights = item.weights ?? [1, 1, 1]
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `策略仿真 ${item.displayName} API Key`,
     groupRouteStrategy: item.strategy,
     groupBindings: [
@@ -534,7 +535,7 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
     status: 'active',
     schedulable: true,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '回绕重分配 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -618,7 +619,7 @@ async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl:
     status: 'active',
     schedulable: true,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '请求能力路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -748,7 +749,7 @@ async function assertCapabilityThenBusyMultiHopFallback(gatewayBaseUrl: string, 
     status: 'active',
     schedulable: true,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '多跳分组路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -842,7 +843,7 @@ async function assertModelFallback(gatewayBaseUrl: string, upstreamBaseUrl: stri
     schedulable: true,
     supportedModels: ['gpt-5.5']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '模型路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -909,7 +910,7 @@ async function assertModelSpecificAccountPreferred(gatewayBaseUrl: string, upstr
     priority: 100,
     supportedModels: ['gpt-5.5']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '模型显式账号优先 API Key',
     groupBindings: [
       { groupId: group.id, priority: 1, status: 'active' }
@@ -986,7 +987,7 @@ async function assertHighConcurrencyModelSpecificAccountPreferred(gatewayBaseUrl
     priority: 100,
     supportedModels: ['gpt-5.5']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '高并发模型显式账号优先 API Key',
     groupBindings: [
       { groupId: group.id, priority: 1, status: 'active' }
@@ -1065,7 +1066,7 @@ async function assertPersonalQualityTieBreakWithMockAI(gatewayBaseUrl: string, u
   }, access)
   seedQualityScore(owner.id, slowerAccount.id, 500)
   seedQualityScore(owner.id, fasterAccount.id, 100)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通分组质量分同级选择 API Key',
     groupBindings: [
       { groupId: group.id, priority: 1, status: 'active' }
@@ -1129,7 +1130,7 @@ async function assertHighConcurrencyQualityTieBreakWithMockAI(gatewayBaseUrl: st
   }, access)
   seedQualityScore(owner.id, slowerAccount.id, 500)
   seedQualityScore(owner.id, fasterAccount.id, 100)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '高并发质量分同级选择 API Key',
     groupBindings: [
       { groupId: group.id, priority: 1, status: 'active' }
@@ -1196,26 +1197,12 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
     schedulable: true,
     supportedModels: ['deepseek-ai-v4-flash']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通 Key 跨供应商模型路由 API Key',
     routeMode: 'normal',
     groupBindings: [
       { groupId: gptGroup.id, priority: 1, status: 'active' },
       { groupId: deepSeekGroup.id, priority: 2, status: 'active' }
-    ],
-    explicitHybridRouteRules: [
-      {
-        id: 'route_normal_cross_provider_gpt_to_deepseek',
-        enabled: true,
-        priority: 1,
-        sourceClientProfile: 'auto',
-        sourceEndpointFamily: 'chat_completions',
-        sourceModel: 'gpt-5.5',
-        targetGroupId: deepSeekGroup.id,
-        upstreamEndpointFamily: 'chat_completions',
-        upstreamModel: 'deepseek-ai-v4-flash',
-        adapterMode: 'bridge'
-      }
     ]
   }, access)
   gatewayCache.clearGatewayRuntimeCache()
@@ -1225,12 +1212,12 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
 
   const beforeCount = upstreamRequests.length
   const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-normal-cross-provider-model')
-  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
-  assert.equal(response.status, 200, `普通 Key 跨供应商模型路由应切 DeepSeek 并成功，实际 ${response.status}: ${response.text}`)
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'deepseek-ai-v4-flash', traceId)
+  assert.equal(response.status, 200, `普通 Key 跨供应商模型路由应按 DeepSeek 模型切到 DeepSeek 分组并成功，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.equal(newRequests.length, 1, '普通 Key 跨供应商模型路由切换后只应请求一次目标供应商上游')
   assert.equal(newRequests[0]?.accountKey, deepSeekUpstreamKey, 'DeepSeek 模型请求应命中 DeepSeek 号池账号')
-  assert.equal(newRequests[0]?.model, 'deepseek-ai-v4-flash', 'DeepSeek 跨供应商路由应应用 API Key 显式混合路由后再打上游')
+  assert.equal(newRequests[0]?.model, 'deepseek-ai-v4-flash', 'DeepSeek 跨供应商路由应保留 DeepSeek 请求模型再打上游')
   assert(!newRequests.some((request) => request.accountKey === gptUpstreamKey), 'DeepSeek 模型请求不应派发到 GPT 号池账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
@@ -1243,12 +1230,11 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
   const auditLog = auditLogs.items[0]
   assert.equal(auditLog?.groupId, deepSeekGroup.id, '普通 Key 跨供应商模型路由审计主记录必须归属 DeepSeek 分组')
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
-  assert(metadataPayloads.some((metadata) => metadata.label === 'explicit_hybrid_route'
-    && metadata.metadata?.requestedModel === 'gpt-5.5'
+  assert(metadataPayloads.some((metadata) => metadata.label === 'normal_model_route'
+    && metadata.metadata?.requestedModel === 'deepseek-ai-v4-flash'
     && metadata.metadata?.fromGroupId === gptGroup.id
     && metadata.metadata?.toGroupId === deepSeekGroup.id
-    && metadata.metadata?.upstreamModel === 'deepseek-ai-v4-flash'
-    && metadata.metadata?.upstreamEndpointFamily === 'chat_completions'), '审计 metadata 应记录 API Key 显式混合路由从 GPT 分组切到 DeepSeek 分组')
+    && metadata.metadata?.matchedProviderCode === 'deepseek'), '审计 metadata 应记录普通模型路由从 GPT 分组切到 DeepSeek 分组')
 }
 
 async function assertNormalApiKeyUnknownModelReturnsLocalError(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -1298,7 +1284,7 @@ async function assertNormalApiKeyUnknownModelReturnsLocalError(gatewayBaseUrl: s
     schedulable: true,
     supportedModels: ['deepseek-v4-flash']
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通 Key 未知模型 API Key',
     routeMode: 'normal',
     groupBindings: [
@@ -1383,7 +1369,7 @@ async function assertHighConcurrencyBusyFallback(gatewayBaseUrl: string, upstrea
     schedulable: true,
     concurrencyLimit: 1,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '高并发繁忙路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -1461,7 +1447,7 @@ async function assertPersonalConcurrencyBusyFallback(gatewayBaseUrl: string, ups
     schedulable: true,
     concurrencyLimit: 1,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '个人繁忙路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -1548,7 +1534,7 @@ async function assertLocalSuppressionFallback(gatewayBaseUrl: string, upstreamBa
     status: 'active',
     schedulable: true,
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '本地屏蔽路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
@@ -1652,7 +1638,7 @@ async function assertAuthorizationQuotaFallback(gatewayBaseUrl: string, upstream
     status: 'active',
     schedulable: true,
   }, granteeAccess)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '授权额度路由 API Key',
     groupBindings: [
       { groupId: primaryGroup.id, priority: 1, status: 'active' },

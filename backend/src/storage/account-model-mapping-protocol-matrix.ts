@@ -140,10 +140,10 @@ function unsupportedProtocolConversionMessage(
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): string {
   if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
-    return '账号模型别名不支持 Anthropic Messages 跨协议映射，请改用 API Key 显式混合路由'
+    return '账号模型别名不支持 Anthropic Messages 跨协议映射，请改用混合供应商账户'
   }
   if (isGeminiGenerateContentMappingSource(sourceEndpointFamily)) {
-    return '账号模型别名不支持 Gemini GenerateContent 跨协议映射，请改用 API Key 显式混合路由'
+    return '账号模型别名不支持 Gemini GenerateContent 跨协议映射，请改用混合供应商账户'
   }
-  return `账号模型别名只支持同协议映射；跨协议 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 请改用 API Key 显式混合路由`
+  return `账号模型别名只支持同协议映射；跨协议 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 请改用混合供应商账户`
 }

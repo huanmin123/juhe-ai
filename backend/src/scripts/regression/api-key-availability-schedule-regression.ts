@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 
 import {
@@ -313,7 +314,7 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
       providerCode: 'gpt',
       enabled: true
     }, access)
-    const rangedCrossDayKey = await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => repositories.createApiKeyRecord({
+    const rangedCrossDayKey = await withMockedNow(Date.parse('2026-06-01T21:59:00.000Z'), () => createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'API Key 跨天日期范围回归 Key',
       status: 'active',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -358,7 +359,7 @@ async function assertApiKeyScheduleStatusSyncAndGatewayGuard(): Promise<void> {
     const endBoundaryAt = Date.parse('2026-05-31T15:55:00.000Z')
     const afterEndAt = Date.parse('2026-05-31T15:56:00.000Z')
     const nextEndBoundaryAt = Date.parse('2026-06-01T15:55:00.000Z')
-    const apiKey = await withMockedNow(beforeStartAt, () => repositories.createApiKeyRecord({
+    const apiKey = await withMockedNow(beforeStartAt, () => createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'API Key 时间计划边界回归 Key',
       status: 'active',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],

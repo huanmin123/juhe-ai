@@ -447,8 +447,9 @@ function cleanupDeletedAccountDatasetRecordData(
 }
 
 function cleanupDeletedAccountFinalStats(statsDatabase: DatabaseSync, input: DeletedAccountRecordCleanupTarget): string | undefined {
-  const transactionStarted = beginDatabaseTransaction(statsDatabase)
+  let transactionStarted = false
   try {
+    transactionStarted = beginDatabaseTransaction(statsDatabase)
     deleteAccountScopeStatsRows(statsDatabase, input, input.authorizationIds ?? [], input.teamScopeIds ?? [])
     deleteAccountUsageCleanupDeductions(statsDatabase, input)
     commitDatabaseTransaction(statsDatabase, transactionStarted)

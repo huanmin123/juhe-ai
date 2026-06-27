@@ -597,6 +597,28 @@ export type DbServiceOperation =
     }
   }
   | {
+    type: 'find_account_for_test'
+    accountId: string
+    access?: {
+      systemAccountId: string
+      role: 'super_admin' | 'admin' | 'user'
+      systemAccountFilterId?: string
+    }
+  }
+  | {
+    type: 'list_accounts_due_for_health_check'
+    input: {
+      limit: number
+      intervalHours: number
+      jitterMinutes: number
+      failureThreshold: number
+    }
+  }
+  | {
+    type: 'find_account_for_health_check'
+    accountId: string
+  }
+  | {
     type: 'record_account_health_check_success'
     accountId: string
     input: {
@@ -617,6 +639,14 @@ export type DbServiceOperation =
       errorCode?: string
       errorMessage?: string
     }
+  }
+  | {
+    type: 'list_accounts_due_for_cooldown_retest'
+    limit: number
+  }
+  | {
+    type: 'find_account_for_cooldown_retest'
+    accountId: string
   }
   | {
     type: 'record_cooldown_account_retest_failure'
@@ -828,8 +858,13 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
   T extends { type: 'clear_account_failure_state' } ? { changed: boolean; accountStatus?: string } :
   T extends { type: 'mark_account_test_temporary_unavailable' } ? { updated: boolean; accountStatus?: string } :
+  T extends { type: 'find_account_for_test' } ? AccountSummary | undefined :
+  T extends { type: 'list_accounts_due_for_health_check' } ? AccountSummary[] :
+  T extends { type: 'find_account_for_health_check' } ? AccountSummary | undefined :
   T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
+  T extends { type: 'list_accounts_due_for_cooldown_retest' } ? AccountSummary[] :
+  T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
   T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :

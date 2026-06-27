@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -207,7 +208,7 @@ function seedCliGateways(input: {
     status: 'active',
     schedulable: true
   }, access)
-  const anthropicApiKey = repositories.createApiKeyRecord({
+  const anthropicApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '真实 CLI 本地网关 Anthropic Key',
     groupBindings: [{ groupId: anthropicGroup.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -234,7 +235,7 @@ function seedCliGateways(input: {
     status: 'active',
     schedulable: true
   }, access)
-  const deepseekCodexApiKey = repositories.createApiKeyRecord({
+  const deepseekCodexApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '真实 CLI 本地网关 DeepSeek Codex Key',
     groupBindings: [{ groupId: deepseekGroup.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -260,7 +261,7 @@ function seedCliGateways(input: {
     status: 'active',
     schedulable: true
   }, access)
-  const glmOpencodeApiKey = repositories.createApiKeyRecord({
+  const glmOpencodeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '真实 CLI 本地网关 GLM opencode Key',
     groupBindings: [{ groupId: glmGroup.id, priority: 1, status: 'active' }],
     status: 'active'

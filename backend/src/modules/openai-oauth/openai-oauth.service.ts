@@ -15,6 +15,7 @@ export const OPENAI_OAUTH_DEFAULT_REDIRECT_URI = 'http://localhost:1455/auth/cal
 export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access'
 export const OPENAI_OAUTH_REFRESH_SCOPES = 'openid profile email'
 export const openAIOAuthTokenResponseMaxBytes = 256 * 1024
+export const openAIOAuthTokenRequestTimeoutMs = 25_000
 
 interface OAuthSession {
   state: string
@@ -224,7 +225,7 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?:
         'user-agent': 'codex-cli/0.91.0'
       },
       agent,
-      timeout: 120000
+      timeout: openAIOAuthTokenRequestTimeoutMs
     }, (response) => {
       const body = new BoundedBufferCollector(openAIOAuthTokenResponseMaxBytes)
       response.on('data', (chunk: Buffer) => {

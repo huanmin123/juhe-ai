@@ -2,6 +2,7 @@ import type { AccountClientCompatibility, AccountSummary, ApiKeySummary, GroupSu
 import type { AccessScope } from '../../../storage/access-scope.js'
 import * as repositories from '../../../storage/repositories.js'
 
+import { createApiKeyRecordWithRouteStrategy } from '../../shared/route-strategy-fixture.js'
 type ApiKeyWithSecret = ApiKeySummary & { key: string }
 
 export interface MockGatewayFixtureOptions {
@@ -59,7 +60,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
 
   const apiKey = options.createApiKey === false
     ? undefined
-    : repositories.createApiKeyRecord({
+    : createApiKeyRecordWithRouteStrategy(repositories, {
       name: `${nameScope}Key-${runId}`,
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active',

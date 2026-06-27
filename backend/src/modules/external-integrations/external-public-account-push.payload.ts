@@ -65,12 +65,11 @@ export function publicApiKeyPayload(input: PublicApiKeyAddInput | PublicApiKeyUp
   if ('quotaLimits' in input && input.quotaLimits !== undefined) payload.quotaLimits = input.quotaLimits
   if ('availabilitySchedule' in input && input.availabilitySchedule !== undefined) payload.availabilitySchedule = input.availabilitySchedule
   if ('availabilityScheduleActive' in input && input.availabilityScheduleActive !== undefined) payload.availabilityScheduleActive = input.availabilityScheduleActive
-  if ('groupRouteStrategy' in input && input.groupRouteStrategy !== undefined) payload.groupRouteStrategy = input.groupRouteStrategy
-  if (input.groupBindings?.length) {
-    payload.groupBindings = input.groupBindings
+  if ('routeStrategyId' in input && input.routeStrategyId !== undefined) {
+    payload.routeStrategyId = input.routeStrategyId
   }
-  if (!partial && !payload.groupBindings) {
-    throw new Error('API Key 至少需要绑定一个分组')
+  if (!partial && !payload.routeStrategyId) {
+    throw new Error('API Key 必须绑定策略路由')
   }
   if (partial && Object.keys(payload).length === 0) {
     throw new Error('API Key 修改至少提供一个要修改的字段')

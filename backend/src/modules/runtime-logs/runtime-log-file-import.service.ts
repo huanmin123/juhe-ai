@@ -9,7 +9,7 @@ import {
   upsertRuntimeLogFileCursor,
   type RuntimeLogFileCursor
 } from '../../storage/runtime-logs.repository.js'
-import { flushRuntimeLogIndexQueue, enqueueRuntimeLogLineLocal } from './runtime-log-index-queue.service.js'
+import { flushRuntimeLogIndexQueueAsync, enqueueRuntimeLogLineLocal } from './runtime-log-index-queue.service.js'
 
 let importStarted = false
 let pollTimer: NodeJS.Timeout | undefined
@@ -141,7 +141,7 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       return
     }
 
-    const finalFlushSucceeded = flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+    const finalFlushSucceeded = await flushRuntimeLogIndexQueueAsync({ drain: true, retryOnFailure: false })
     if (!finalFlushSucceeded) {
       saveRuntimeLogFileCursor({
         ...cursor,
@@ -271,7 +271,7 @@ async function readRuntimeLogFileLines(logPath: string, input: {
       cursor = newlineIndex + 1
 
       if (importedLineCount % runtimeLogImportFlushEveryLines === 0) {
-        if (!flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })) {
+        if (!(await flushRuntimeLogIndexQueueAsync({ drain: true, retryOnFailure: false }))) {
           return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: true }
         }
         flushedOffset = nextOffset

@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -97,7 +98,7 @@ try {
       schedulable: true,
       supportedModels: [...new Set([chatModel, responsesUpstreamModel])]
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini OpenAI Chat 真实网关 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: codexBridgeRouteRules(group.id),

@@ -34,14 +34,18 @@ import {
   flushRecordMaintenanceQueueForShutdown,
   getRecordMaintenanceQueueRuntime,
   installRecordMaintenanceQueueShutdownHooks,
-  isRecordMaintenanceJob
+  isRecordMaintenanceJob,
+  startRecordMaintenanceRedisStreamConsumer,
+  stopRecordMaintenanceRedisStreamConsumer
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueRuntimeLogLineLocal,
-  flushRuntimeLogIndexQueueForShutdown,
+  flushRuntimeLogIndexQueueForShutdownAsync,
   getRuntimeLogIndexRuntime,
-  installRuntimeLogIndexQueueShutdownHooks
+  installRuntimeLogIndexQueueShutdownHooks,
+  startRuntimeLogRedisStreamConsumer,
+  stopRuntimeLogRedisStreamConsumer
 } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import {
   enqueueUsageRecordsLocal,
@@ -100,12 +104,12 @@ if (isIngestWorker()) {
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
-  if (runtimeConfig.databaseDriver === 'sqlite') {
-    setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
-  }
+  setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
   startUsageRecordRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
+  startRecordMaintenanceRedisStreamConsumer()
+  startRuntimeLogRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
   if (runtimeConfig.databaseDriver === 'sqlite') {
     startRuntimeLogFileImport()
@@ -395,12 +399,14 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     await stopUsageRecordRedisStreamConsumer()
     await stopOperationLogRedisStreamConsumer()
     await stopPublicApiLogRedisStreamConsumer()
+    await stopRecordMaintenanceRedisStreamConsumer()
+    await stopRuntimeLogRedisStreamConsumer()
     await stopAuditLogRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
-    flushRuntimeLogIndexQueueForShutdown()
+    await flushRuntimeLogIndexQueueForShutdownAsync()
     await flushRecordMaintenanceQueueForShutdown()
     await flushAuditLogQueueForShutdown()
     return

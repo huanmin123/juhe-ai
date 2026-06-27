@@ -41,4 +41,17 @@ for (const relativePath of [
   assert.match(source, /Retry-After/, `${relativePath} 过载响应必须带 Retry-After`)
 }
 
-console.log('诊断任务并发边界回归通过：模型检测和代理检测超过上限时快速拒绝；账户测试由后台 worker 独立异步消费')
+const proxyRoutesSource = readFileSync(resolve('src/modules/proxies/proxies.routes.ts'), 'utf8')
+const proxyTestSource = readFileSync(resolve('src/modules/proxies/proxy-test.service.ts'), 'utf8')
+const modelChecksRoutesSource = readFileSync(resolve('src/modules/model-checks/model-checks.routes.ts'), 'utf8')
+assert.match(proxyTestSource, /export const manualProxyTestDeadlineMs = 25_000/, '手动代理测试总耗时必须短于 DB service HTTP proxy 30s 超时')
+assert.match(proxyRoutesSource, /deadlineMs:\s*manualProxyTestDeadlineMs/, '手动代理测试路由必须传入总耗时 deadline，避免 DB service HTTP proxy 504')
+assert.match(proxyTestSource, /remainingProxyProbeTimeoutMs/, '代理单次探测必须按总 deadline 动态缩短 timeout')
+assert.doesNotMatch(proxyTestSource, /updateProxyTestState\(proxyId,\s*input\)/, '代理检测写回不能在非 owner 进程 fallback 到本地业务库写入')
+assert.match(modelChecksRoutesSource, /export const modelCheckHttpRunDeadlineMs = 25_000/, '非流式模型检测必须短于 DB service HTTP proxy 30s 超时')
+assert.match(modelChecksRoutesSource, /AbortSignal\.timeout\(modelCheckHttpRunDeadlineMs\)/, '非流式模型检测必须绑定总耗时取消信号')
+assert.match(modelChecksRoutesSource, /export const modelCheckStreamHeartbeatMs = 10_000/, '流式模型检测必须定期输出心跳，避免 DB service HTTP proxy 空闲超时')
+assert.match(modelChecksRoutesSource, /res\.write\(': connected\\n\\n'\)/, '流式模型检测必须立即输出首个 SSE 事件建立响应')
+assert.match(modelChecksRoutesSource, /res\.write\(': heartbeat\\n\\n'\)/, '流式模型检测必须输出 SSE 心跳')
+
+console.log('诊断任务并发边界回归通过：模型检测和代理检测超过上限时快速拒绝，手动代理检测受总耗时保护；账户测试由后台 worker 独立异步消费')

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
   GPT_VENDOR_CODE,
@@ -345,7 +346,7 @@ function createGatewayApiKeyScenario(input: {
     schedulable: true
   }, access)
   assert.deepEqual(account.credentials.api_keys, input.apiKeys, `${input.name} 应把多个 API Key 保存在同一个账户`)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${input.name} 网关 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -465,7 +466,7 @@ function createAuthorizedApiKeyScenario(upstreamBaseUrl: string): {
     priority: 10
   }, granteeAccess)
   forcedFailureAuthorizations.add('Bearer sk-gateway-authorized-bad')
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '授权 Key 隔离网关 Key',
     groupBindings: [{ groupId: granteeGroup.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -513,7 +514,7 @@ function createGatewayApiKeyFailoverScenario(upstreamBaseUrl: string): string {
     schedulable: true,
     priority: 10
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '多 Key 摘除切号网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -559,7 +560,7 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
   forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-a')
   forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-b')
   forcedFailureAuthorizations.add('Bearer sk-gateway-allbad-c')
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '全部 Key 摘除切号网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -601,7 +602,7 @@ function createGatewaySuperPriorityScenario(upstreamBaseUrl: string): string {
     priority: 50,
     superPriorityEnabled: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '超级优先真实网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -643,7 +644,7 @@ function createGatewayFallbackScenario(upstreamBaseUrl: string): string {
     priority: 0,
     fallbackEnabled: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '备用降级真实网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -686,7 +687,7 @@ function createGatewayFallbackFailureScenario(upstreamBaseUrl: string): string {
     fallbackEnabled: true
   }, access)
   forcedFailureAuthorizations.add('Bearer sk-gateway-fallback-bad-primary')
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '备用失败接管真实网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -742,7 +743,7 @@ function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiK
     priority: 50,
     fallbackEnabled: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '迁移覆盖真实网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

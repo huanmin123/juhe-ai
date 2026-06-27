@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -31,7 +32,7 @@ try {
   }, access)
   let targetId = ''
   for (let index = 0; index < 250; index += 1) {
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: `单条读取回归-${String(index).padStart(3, '0')}`,
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'

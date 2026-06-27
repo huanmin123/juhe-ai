@@ -1,4 +1,4 @@
-import { normalizeApiKeyGroupBindingWeight, normalizeApiKeyGroupRouteStrategy } from '../../../domain/api-key-routing.js'
+import { normalizeApiKeyGroupBindingWeight } from '../../../domain/api-key-routing.js'
 import type { GatewayApiKeyGroupBindingRow, GatewayApiKeyRow } from '../../../storage/gateway-api-key.repository.js'
 
 interface RoundRobinState {
@@ -18,14 +18,17 @@ export function orderGatewayApiKeyGroupBindingsForDispatch(apiKey: GatewayApiKey
   if (bindings.length <= 1) {
     return bindings
   }
-  const strategy = normalizeApiKeyGroupRouteStrategy(apiKey.group_route_strategy)
-  if (strategy === 'round_robin') {
-    return rotateBindings(bindings, nextRoundRobinIndex(apiKey.id, bindings.length))
+  if (apiKey.route_strategy_mode === 'round_robin') {
+    return rotateBindings(bindings, nextRoundRobinIndex(apiKeyRouteStateKey(apiKey), bindings.length))
   }
-  if (strategy === 'weighted_round_robin') {
-    return orderWeightedBindings(apiKey.id, bindings)
+  if (apiKey.route_strategy_mode === 'weighted') {
+    return orderWeightedBindings(apiKeyRouteStateKey(apiKey), bindings)
   }
   return bindings
+}
+
+function apiKeyRouteStateKey(apiKey: GatewayApiKeyRow): string {
+  return apiKey.route_strategy_id || apiKey.id
 }
 
 function normalizeGatewayApiKeyGroupBindings(bindings: GatewayApiKeyGroupBindingRow[] | undefined): GatewayApiKeyGroupBindingRow[] {

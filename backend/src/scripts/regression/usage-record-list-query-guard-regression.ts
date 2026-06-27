@@ -5,6 +5,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -86,11 +87,11 @@ try {
     },
     groupId: otherGroup.id
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '使用记录查询防护 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const otherApiKey = repositories.createApiKeyRecord({
+  const otherApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '使用记录查询防护其他 Key',
     groupBindings: [{ groupId: otherGroup.id, priority: 1, status: 'active' }],
   }, access)

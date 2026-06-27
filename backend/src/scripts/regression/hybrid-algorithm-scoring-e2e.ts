@@ -5,6 +5,7 @@ import http from 'node:http'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -169,7 +170,7 @@ try {
         groupsByModel.set(model, createRealGroupAccount(`Hybrid Algorithm ${model} 分组`, `Hybrid Algorithm ${model} 账户`, model))
       }
     }
-    const hybridApiKey = repositories.createApiKeyRecord({
+    const hybridApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Algorithm Scoring Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',

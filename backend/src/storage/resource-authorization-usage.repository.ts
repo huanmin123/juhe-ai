@@ -16,7 +16,7 @@ import { normalizeListPage, pagedTotalUpperBound, takePageRows } from './query-u
 import { findResourceAuthorizationSummary, findResourceAuthorizationSummaryAsync } from './resource-authorization-read.repository.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
 import { expireDueResourceAuthorizations } from './resource-authorization-write-state.repository.js'
-import { loadSystemAccountPrincipalMapByIds } from './repository-lookups.js'
+import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import {
   emptyAccountUsageSummary,
@@ -482,25 +482,6 @@ function emptyResourceAuthorizationUsageDetailPage(pageOptions: { page: number; 
     usageBySystemAccountPageSize: pageOptions.pageSize,
     usageBySystemAccountHasMore: false
   }
-}
-
-async function loadSystemAccountPrincipalMapByIdsAsync(client: DatabaseClient, systemAccountIds: Array<string | undefined>): Promise<Map<string, { id: string; username: string; displayName: string }>> {
-  const ids = [...new Set(systemAccountIds.map((id) => id?.trim()).filter((id): id is string => Boolean(id)))]
-  if (!ids.length) return new Map()
-  const rows: Array<{ id: string; username: string; display_name: string }> = []
-  for (let index = 0; index < ids.length; index += 900) {
-    const chunk = ids.slice(index, index + 900)
-    rows.push(...await client.query<{ id: string; username: string; display_name: string }>(`
-      SELECT id, username, display_name
-      FROM ${resourceAuthorizationUsageBusinessTable(client, 'system_accounts')}
-      WHERE id IN (${chunk.map(() => '?').join(', ')})
-    `, chunk))
-  }
-  return new Map(rows.map((row) => [row.id, {
-    id: row.id,
-    username: row.username,
-    displayName: row.display_name
-  }]))
 }
 
 async function getResourceAuthorizationUsageBusinessClient(): Promise<DatabaseClient> {

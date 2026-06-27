@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -168,7 +169,7 @@ try {
     const gpt = createRealGroupAccount('Hybrid Quality GPT 分组', 'Hybrid Quality GPT 账户', gptModel)
     const opus = createRealGroupAccount('Hybrid Quality Opus 分组', 'Hybrid Quality Opus 账户', opusModel)
 
-    const hybridApiKey = repositories.createApiKeyRecord({
+    const hybridApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Quality 智能路由 Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',

@@ -3,10 +3,10 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
-  findAccountForHealthCheck,
   findRecentOpenAIRequestShapeForAccount,
   type AccountHealthCheckSettings
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import { preferredSystemAccountTestModel, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
@@ -59,7 +59,7 @@ async function runAccountHealthCheckQueueItem(
   item: AccountHealthCheckQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
-  const account = findAccountForHealthCheck(item.accountId)
+  const account = await accountForHealthCheckQueueItem(item)
   if (!isAccountHealthCheckEligible(account)) {
     logger.debug({
       event: 'background_account_health_check_discarded',
@@ -82,6 +82,7 @@ async function runAccountHealthCheckQueueItem(
     requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
+    findAccountForTest: loadAccountForTestViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
@@ -159,6 +160,21 @@ async function runAccountHealthCheckQueueItem(
     logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')
   }
   return true
+}
+
+async function accountForHealthCheckQueueItem(item: AccountHealthCheckQueueItem): Promise<AccountSummary | undefined> {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_health_check',
+    accountId: item.accountId
+  }, 10_000)
+}
+
+async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_test',
+    accountId,
+    access
+  }, 10_000)
 }
 
 function isAccountHealthCheckEligible(account: AccountSummary | undefined): account is AccountSummary & { boundGroupId: string } {

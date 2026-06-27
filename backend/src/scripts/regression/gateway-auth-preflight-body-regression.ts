@@ -5,6 +5,7 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -242,7 +243,7 @@ function seedGatewayRuntime(): { id: string; key: string } {
   }, access)
   assert(account.boundGroupId, '认证预解析账户应绑定默认分组')
   const boundGroupId = account.boundGroupId
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '认证预解析 API Key',
     groupBindings: [{ groupId: boundGroupId, priority: 1, status: 'active' }],
   }, access)

@@ -1,0 +1,52 @@
+{
+  "mode": {
+    "runtimeMode": "performance",
+    "databaseDriver": "postgres",
+    "cacheDriver": "redis",
+    "runtimeStateDriver": "redis",
+    "queueDriver": "redis_stream"
+  },
+  "runId": "perf_gateway_readiness_1782532407639_ff27cafc0a29a",
+  "startedAt": "2026-06-27T03:53:27.639Z",
+  "finishedAt": "2026-06-27T03:53:29.158Z",
+  "durationMs": 1519.0169,
+  "checks": [
+    {
+      "name": "usage_records_write",
+      "ok": true,
+      "latencyMs": 55.74260000000004
+    },
+    {
+      "name": "audit_logs_write",
+      "ok": true,
+      "latencyMs": 122.13460000000009
+    },
+    {
+      "name": "operation_logs_write",
+      "ok": true,
+      "latencyMs": 198.89109999999982
+    },
+    {
+      "name": "public_api_logs_write",
+      "ok": true,
+      "latencyMs": 23.739900000000034
+    },
+    {
+      "name": "runtime_logs_read",
+      "ok": true,
+      "latencyMs": 43.30749999999989
+    },
+    {
+      "name": "usage_stats_aggregate",
+      "ok": true,
+      "latencyMs": 230.29300000000012
+    },
+    {
+      "name": "gateway_quota_snapshot_pg",
+      "ok": true,
+      "latencyMs": 111.14789999999994
+    }
+  ],
+  "pass": true,
+  "missingAdapterChecks": []
+}

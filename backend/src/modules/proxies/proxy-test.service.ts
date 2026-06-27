@@ -3,14 +3,13 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 
 import type { ProviderDefinition } from '../../domain/types.js'
-import { runtimeConfig } from '../../config/runtime.js'
 import { listProviders } from '../../storage/provider.repository.js'
 import {
   getProxyTestConfig,
   listEnabledProxyTestConfigs,
-  updateProxyTestState,
   type ProxyProfileTestConfig
 } from '../../storage/proxy.repository.js'
+import type { updateProxyTestState } from '../../storage/proxy.repository.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
@@ -59,6 +58,7 @@ interface ProxyOutboundInfo {
 type OutboundProbeParser = 'ip-api' | 'ipwhois' | 'ipsb' | 'ipinfo' | 'ipify' | 'httpbin'
 
 const probeTimeoutMs = 15000
+export const manualProxyTestDeadlineMs = 25_000
 const maxProxyProbeResponseBytes = 512 * 1024
 export const proxyLatencyRefreshIntervalSeconds = 60
 export const proxyLatencyRefreshBatchSize = 20
@@ -71,10 +71,14 @@ const outboundProbeTargets = [
   { url: 'http://httpbin.org/ip', parser: 'httpbin' }
 ] as const
 
-export async function testProxyById(id: string, options: { persist?: boolean } = {}): Promise<ProxyTestReport | undefined> {
+export async function testProxyById(id: string, options: { persist?: boolean; deadlineMs?: number } = {}): Promise<ProxyTestReport | undefined> {
   const proxy = getProxyTestConfig(id)
   if (!proxy) return undefined
-  return testProxy(proxy, { persist: options.persist ?? true, includeOutboundInfo: true })
+  return testProxy(proxy, {
+    persist: options.persist ?? true,
+    includeOutboundInfo: true,
+    deadlineAtMs: proxyTestDeadlineAt(options.deadlineMs)
+  })
 }
 
 export async function refreshProxyLatencyBatch(limit: number): Promise<void> {
@@ -92,13 +96,13 @@ export async function refreshProxyLatencyBatch(limit: number): Promise<void> {
   }
 }
 
-async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: boolean; includeOutboundInfo: boolean }): Promise<ProxyTestReport> {
+async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: boolean; includeOutboundInfo: boolean; deadlineAtMs?: number }): Promise<ProxyTestReport> {
   const testedAt = new Date().toISOString()
   const enabledProviders = listProviders().filter((provider) => provider.enabled)
-  const outboundInfoPromise = options.includeOutboundInfo ? probeOutboundInfo(proxy) : Promise.resolve(undefined)
+  const outboundInfoPromise = options.includeOutboundInfo ? probeOutboundInfo(proxy, options.deadlineAtMs) : Promise.resolve(undefined)
   const providerItems: ProxyTestItem[] = []
   for (const provider of enabledProviders) {
-    providerItems.push(await testProvider(proxy, provider))
+    providerItems.push(await testProvider(proxy, provider, options.deadlineAtMs))
   }
   const outboundInfo = await outboundInfoPromise
   const baseItem = baseConnectivityItem(providerItems, enabledProviders.length)
@@ -141,17 +145,24 @@ async function persistProxyTestState(
     input
   })
   if (result === undefined) {
-    if (runtimeConfig.processRole === 'worker') {
-      throw new Error('DB service 未返回代理检测状态写入结果')
-    }
-    updateProxyTestState(proxyId, input)
+    throw new Error('DB service 未返回代理检测状态写入结果')
   }
 }
 
-async function testProvider(proxy: ProxyProfileTestConfig, provider: ProviderDefinition): Promise<ProxyTestItem> {
+async function testProvider(proxy: ProxyProfileTestConfig, provider: ProviderDefinition, deadlineAtMs?: number): Promise<ProxyTestItem> {
   const targetUrl = provider.baseUrl
+  if (proxyTestDeadlineReached(deadlineAtMs)) {
+    return {
+      name: provider.name,
+      status: 'failed',
+      message: '代理检测总耗时已达到上限',
+      targetUrl
+    }
+  }
   try {
-    const response = await requestWithProxy(targetUrl, proxy.proxyUrl)
+    const response = await requestWithProxy(targetUrl, proxy.proxyUrl, {
+      timeoutMs: remainingProxyProbeTimeoutMs(deadlineAtMs)
+    })
     const status = providerStatus(response.statusCode)
     return {
       name: provider.name,
@@ -171,10 +182,15 @@ async function testProvider(proxy: ProxyProfileTestConfig, provider: ProviderDef
   }
 }
 
-async function probeOutboundInfo(proxy: ProxyProfileTestConfig): Promise<ProxyOutboundInfo | undefined> {
+async function probeOutboundInfo(proxy: ProxyProfileTestConfig, deadlineAtMs?: number): Promise<ProxyOutboundInfo | undefined> {
   for (const target of outboundProbeTargets) {
+    if (proxyTestDeadlineReached(deadlineAtMs)) {
+      return undefined
+    }
     try {
-      const response = await requestWithProxy(target.url, proxy.proxyUrl)
+      const response = await requestWithProxy(target.url, proxy.proxyUrl, {
+        timeoutMs: remainingProxyProbeTimeoutMs(deadlineAtMs)
+      })
       if (response.statusCode !== 200) {
         continue
       }
@@ -254,11 +270,12 @@ function parseOutboundProbeResponse(parser: OutboundProbeParser, bodyText: strin
   return {}
 }
 
-function requestWithProxy(targetUrl: string, proxyUrl: string): Promise<HttpProbeResult> {
+function requestWithProxy(targetUrl: string, proxyUrl: string, options: { timeoutMs?: number } = {}): Promise<HttpProbeResult> {
   return new Promise((resolve, reject) => {
     const url = new URL(targetUrl)
     const requestFn = url.protocol === 'http:' ? httpRequest : httpsRequest
     const startedAt = Date.now()
+    const timeoutMs = boundedProxyProbeTimeoutMs(options.timeoutMs)
     let settled = false
     const finish = (input: { statusCode: number; headers: IncomingHttpHeaders; body: BoundedBufferCollector }) => {
       if (settled) return
@@ -278,7 +295,7 @@ function requestWithProxy(targetUrl: string, proxyUrl: string): Promise<HttpProb
         'user-agent': 'juhe-ai-proxy-test/0.1'
       },
       agent: createProxyAgent(proxyUrl),
-      timeout: probeTimeoutMs
+      timeout: timeoutMs
     }, (response) => {
       const body = new BoundedBufferCollector(maxProxyProbeResponseBytes)
       response.on('data', (chunk: Buffer) => {
@@ -297,6 +314,36 @@ function requestWithProxy(targetUrl: string, proxyUrl: string): Promise<HttpProb
     request.on('timeout', () => request.destroy(new Error('代理检测请求超时')))
     request.end()
   })
+}
+
+function proxyTestDeadlineAt(deadlineMs: number | undefined): number | undefined {
+  if (deadlineMs === undefined) {
+    return undefined
+  }
+  const normalized = Math.trunc(deadlineMs)
+  return Number.isFinite(normalized) && normalized > 0 ? Date.now() + normalized : undefined
+}
+
+function proxyTestDeadlineReached(deadlineAtMs: number | undefined): boolean {
+  return deadlineAtMs !== undefined && Date.now() >= deadlineAtMs
+}
+
+function remainingProxyProbeTimeoutMs(deadlineAtMs: number | undefined): number {
+  if (deadlineAtMs === undefined) {
+    return probeTimeoutMs
+  }
+  return Math.max(1, deadlineAtMs - Date.now())
+}
+
+function boundedProxyProbeTimeoutMs(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) {
+    return probeTimeoutMs
+  }
+  const normalized = Math.trunc(timeoutMs)
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    return 1
+  }
+  return Math.max(1, Math.min(probeTimeoutMs, normalized))
 }
 
 function baseConnectivityItem(providerItems: ProxyTestItem[], providerCount: number): ProxyTestItem {

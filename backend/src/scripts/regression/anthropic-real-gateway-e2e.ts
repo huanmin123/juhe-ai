@@ -5,6 +5,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -139,7 +140,7 @@ try {
     schedulable: true,
     concurrencyLimit: 8
   }, access)
-  const localApiKey = repositories.createApiKeyRecord({
+  const localApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'Anthropic 真实模型联调本地 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
@@ -177,7 +178,8 @@ try {
   })
   await runCase('runtime-account-selection-snapshot', async () => {
     const apiKey = repositories.findApiKeySecret(localApiKey.id, access)
-    assert(apiKey?.groupBindings?.some((binding) => binding.groupId === group.id && binding.status === 'active'), '真实联调 API Key 未绑定当前分组')
+    const routeStrategy = apiKey ? repositories.findRouteStrategySummary(apiKey.routeStrategyId, access) : undefined
+    assert(routeStrategy?.groupBindings.some((binding) => binding.groupId === group.id && binding.status === 'active'), '真实联调策略路由未绑定当前分组')
     const selection = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId)
     assert(selection.accounts.length > 0, `真实联调分组没有可调度账号：${JSON.stringify(selection.diagnostics)}`)
     const account = selection.accounts[0]

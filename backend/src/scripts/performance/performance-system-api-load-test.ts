@@ -43,6 +43,7 @@ interface LoadFixture {
   accounts: Array<{ id: string; name: string }>
   apiKeyId: string
   apiKeyName: string
+  routeStrategyId: string
 }
 
 interface PartialLoadFixture {
@@ -51,6 +52,7 @@ interface PartialLoadFixture {
   accountIds?: string[]
   accounts?: Array<{ id: string; name: string }>
   apiKeyId?: string
+  routeStrategyId?: string
 }
 
 interface RequestMetric {
@@ -278,10 +280,18 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
     }
     const primaryAccount = accounts[0]
     assert.ok(primaryAccount, '压测至少需要创建一个 AI 账户')
+    const routeStrategy = await postEnvelope<{ id: string; name: string }>(baseUrl, '/__aisys__/api/route-strategies', {
+      name: `压测路由策略${suffix}`,
+      description: 'performance api load route strategy',
+      mode: 'normal',
+      groupBindings: [{ groupId: group.id, priority: 1, weight: 10, status: 'active' }],
+      status: 'active'
+    }, cookie, input.requestTimeoutMs)
+    partial.routeStrategyId = routeStrategy.id
     const apiKey = await postEnvelope<{ id: string; name: string }>(baseUrl, '/__aisys__/api/api-keys', {
       name: `压测APIKey${suffix}`,
       description: 'performance api load key',
-      groupBindings: [{ groupId: group.id, priority: 1, weight: 10, status: 'active' }],
+      routeStrategyId: routeStrategy.id,
       status: 'active'
     }, cookie, input.requestTimeoutMs)
     partial.apiKeyId = apiKey.id
@@ -292,7 +302,8 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
       accountName: primaryAccount.name,
       accounts,
       apiKeyId: apiKey.id,
-      apiKeyName: apiKey.name
+      apiKeyName: apiKey.name,
+      routeStrategyId: routeStrategy.id
     }
   } catch (error) {
     await cleanupFixture(partial).catch(() => undefined)
@@ -440,8 +451,16 @@ async function cleanupFixture(fixture: PartialLoadFixture): Promise<void> {
   ]))
   await client.transaction(async (tx) => {
     if (fixture.apiKeyId) {
-      await tx.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE api_key_id = ?', [fixture.apiKeyId])
+      const routeRows = await tx.query<{ route_strategy_id?: string }>('SELECT route_strategy_id FROM "juhe_business"."api_keys" WHERE id = ?', [fixture.apiKeyId])
       await tx.execute('DELETE FROM "juhe_business"."api_keys" WHERE id = ?', [fixture.apiKeyId])
+      for (const routeRow of routeRows) {
+        if (!routeRow.route_strategy_id) continue
+        await tx.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE route_strategy_id = ?', [routeRow.route_strategy_id])
+        await tx.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [routeRow.route_strategy_id])
+      }
+    } else if (fixture.routeStrategyId) {
+      await tx.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE route_strategy_id = ?', [fixture.routeStrategyId])
+      await tx.execute('DELETE FROM "juhe_business"."route_strategies" WHERE id = ?', [fixture.routeStrategyId])
     }
     if (accountIds.length || fixture.groupId) {
       for (const accountId of accountIds) {
@@ -461,7 +480,7 @@ async function cleanupFixture(fixture: PartialLoadFixture): Promise<void> {
       await tx.execute('DELETE FROM "juhe_business"."accounts" WHERE id = ?', [accountId])
     }
     if (fixture.groupId) {
-      await tx.execute('DELETE FROM "juhe_business"."api_key_group_bindings" WHERE group_id = ?', [fixture.groupId])
+      await tx.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE group_id = ?', [fixture.groupId])
       await tx.execute('DELETE FROM "juhe_business"."groups" WHERE id = ?', [fixture.groupId])
     }
   })

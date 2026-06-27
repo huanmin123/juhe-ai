@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -123,13 +124,13 @@ try {
     }, access)
     assert.equal(codexBridgeAccount.modelMappings?.length ?? 0, 0, 'Codex bridge 账号不应保存跨协议模型映射')
 
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Real E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(apiKey.key, '真实联调本地 API Key 未返回明文密钥')
-    const codexBridgeApiKey = repositories.createApiKeyRecord({
+    const codexBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Codex Bridge Real E2E Key',
       groupBindings: [{ groupId: codexBridgeGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: codexBridgeRouteRules(codexBridgeGroup.id, realModels),

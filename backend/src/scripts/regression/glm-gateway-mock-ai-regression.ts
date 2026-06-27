@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -307,7 +308,7 @@ function createGlmScenario(input: {
     priority: 0,
     schedulable: true
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: input.localApiKeyName,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     explicitHybridRouteRules: input.explicitHybridRouteRules?.map((rule) => ({
@@ -372,7 +373,7 @@ function createGlmFailoverScenario(baseUrl: string): { localApiKey: string; resc
     priority: 100,
     schedulable: false
   }, access)
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'GLM Mock 错误切号 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'

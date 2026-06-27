@@ -5,7 +5,6 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
-  findAccountForTest,
   findRecentOpenAIRequestShapeForAccount,
   getAccountPrecheckMutationState,
   resolveProxyUrlForProfile,
@@ -235,7 +234,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
 
       const stateTargetAccountId = normalizedString(draft.stateTargetAccountId)
       if (stateTargetAccountId) {
-        const account = findAccountForTest(stateTargetAccountId, access)
+        const account = await loadAccountForTestViaDbService(stateTargetAccountId, access)
         if (!account) {
           await failAccountTestTaskViaDbService(task.id, '账户不存在')
           return true
@@ -284,7 +283,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
-    const account = findAccountForTest(task.accountId, access)
+    const account = await loadAccountForTestViaDbService(task.accountId, access)
     if (!account) {
       await failAccountTestTaskViaDbService(task.id, '账户不存在')
       return true
@@ -361,6 +360,14 @@ async function runAccountTestTaskMaintenance(action: 'start' | 'sweep'): Promise
     }, '账号测试 queued 等待超过后台上限，已自动失败收口')
   }
   return result.taskIds
+}
+
+async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  return await requestBackgroundWorkerDbService({
+    type: 'find_account_for_test',
+    accountId,
+    access
+  }, 10_000)
 }
 
 async function markAccountTestTaskRunningViaDbService(taskId: string) {
@@ -539,7 +546,8 @@ async function runOpenAIAccountTestWithSideEffects(
       signal: input.signal,
       diagnostics: input.diagnostics,
       requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
-      onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress
+      onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
+      findAccountForTest: loadAccountForTestViaDbService
     })
 
   if (input.signal.aborted) {
@@ -638,7 +646,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
   item: ManualAccountTestFailurePrecheckQueueItem,
   context: { attemptIndex: number; retryNumber: number }
 ) {
-  const account = findAccountForTest(item.accountId, item.access)
+  const account = await loadAccountForTestViaDbService(item.accountId, item.access)
   if (!account) {
     logger.info({
       event: 'manual_account_test_failure_precheck_skipped',
@@ -668,10 +676,11 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     diagnostics: 'full',
     groupId: account.boundGroupId,
     systemAccountId: accountTestPrecheckSystemAccountId(account),
-    requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
-    trafficSource: 'cooldown_retest',
-    disableAccountStateMutation: true,
-    gatewaySettingsOverride: {
+      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
+      trafficSource: 'cooldown_retest',
+      disableAccountStateMutation: true,
+      findAccountForTest: loadAccountForTestViaDbService,
+      gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
@@ -707,7 +716,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     return true
   }
 
-  const latestAccount = findAccountForTest(item.accountId, item.access)
+  const latestAccount = await loadAccountForTestViaDbService(item.accountId, item.access)
   if (!latestAccount) {
     logger.info({
       event: 'manual_account_test_failure_precheck_mark_skipped',

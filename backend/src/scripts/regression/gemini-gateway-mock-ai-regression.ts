@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 import type { Request } from 'express'
 
@@ -135,7 +136,7 @@ try {
     assert.equal(account.providerCode, GEMINI_PROVIDER_CODE)
     assert.equal(account.providerProtocolProfileId, GEMINI_NATIVE_V1BETA_PROFILE_ID)
     assert.deepEqual(account.credentials.supported_endpoint_modes, ['generate_content_json', 'generate_content_sse', 'count_tokens'])
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini Mock AI 回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
@@ -189,7 +190,7 @@ try {
       /账号模型别名只支持同协议映射|请改用 API Key 显式混合路由/,
       'Gemini OpenAI Chat 账号别名不应承接 Anthropic Messages 来源映射'
     )
-    const openAIChatApiKey = repositories.createApiKeyRecord({
+    const openAIChatApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini OpenAI Chat Mock AI 回归 Key',
       groupBindings: [{ groupId: openAIChatGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: [
@@ -225,7 +226,7 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    const openAIChatRootApiKey = repositories.createApiKeyRecord({
+    const openAIChatRootApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini OpenAI Chat NewAPI 根地址回归 Key',
       groupBindings: [{ groupId: openAIChatRootGroup.id, priority: 1, status: 'active' }],
       status: 'active'
@@ -295,7 +296,7 @@ try {
         upstreamModel: 'glm-5.2'
       })
     ]
-    const glmBridgeApiKey = repositories.createApiKeyRecord({
+    const glmBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini Native 转 GLM Chat 回归 Key',
       groupBindings: [{ groupId: glmBridgeGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: glmBridgeRules,
@@ -367,7 +368,7 @@ try {
       true,
       'Anthropic driver capability check 必须允许 Gemini GenerateContent -> Messages 显式映射请求'
     )
-    const anthropicBridgeApiKey = repositories.createApiKeyRecord({
+    const anthropicBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini Native 转 Anthropic Messages 回归 Key',
       groupBindings: [{ groupId: anthropicBridgeGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: anthropicBridgeRules,
@@ -440,7 +441,7 @@ try {
       true,
       'Gemini driver capability check 必须允许 OpenAI Chat -> Gemini native 显式映射请求'
     )
-    const geminiNativeTargetBridgeApiKey = repositories.createApiKeyRecord({
+    const geminiNativeTargetBridgeApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'OpenAI Anthropic 转 Gemini Native 回归 Key',
       groupBindings: [{ groupId: geminiNativeTargetBridgeGroup.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: geminiNativeTargetBridgeRules,

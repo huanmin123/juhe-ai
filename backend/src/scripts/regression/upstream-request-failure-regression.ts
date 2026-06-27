@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -898,7 +899,7 @@ function totalUpstreamHitCount(): number {
 }
 
 function createRegressionApiKey(groupId: string, key: string): { id: string; key: string } {
-  const apiKey = repositories.createApiKeyRecord({
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `上游失败回归 Key ${key}`,
     groupBindings: [{ groupId, priority: 1, status: 'active' }],
     status: 'active'

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
+import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import {
   cleanupNonBusinessDataBeforeWithResult,
@@ -79,6 +80,10 @@ const recordMaintenanceBatchSize = 10
 const recordMaintenanceShutdownFlushMaxBatches = 1
 const recordMaintenanceQueueMaxItems = 5_000
 const recordMaintenanceQueueMaxBytes = 32 * 1024 * 1024
+const recordMaintenanceRedisStreamKey = 'juhe-ai:queue:record-maintenance'
+const recordMaintenanceRedisStreamGroup = 'juhe-ai:record-maintenance-writers'
+const recordMaintenanceRedisConsumerErrorRetryMs = 1000
+const recordMaintenanceRedisStopWaitMs = 2000
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
 
 export interface RecordMaintenanceEnqueueResult {
@@ -103,6 +108,10 @@ let droppedDispatchCount = 0
 let droppedOverflowCount = 0
 let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
+let recordMaintenanceRedisStreamQueueInstance: RedisStreamQueue<RecordMaintenanceJob> | undefined
+let recordMaintenanceRedisConsumerStarted = false
+let recordMaintenanceRedisConsumerStopping = false
+let recordMaintenanceRedisConsumerPromise: Promise<void> | undefined
 
 interface RecordMaintenanceFlushOptions {
   drain?: boolean
@@ -116,6 +125,10 @@ export function enqueueRecordMaintenanceJob(input: RecordMaintenanceJob): Record
 
 export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJob): RecordMaintenanceEnqueueResult {
   const job = normalizeRecordMaintenanceJob(input)
+  if (shouldEnqueueRecordMaintenanceJobToRedisStream(job)) {
+    void enqueueRecordMaintenanceJobToRedisStream(job)
+    return { job, queued: true }
+  }
   if (runtimeConfig.processRole === 'server') {
     const queued = sendRecordMaintenanceJobsToWorker([job])
     if (!queued) {
@@ -184,6 +197,36 @@ export function enqueueRecordMaintenanceJobsLocal(inputs: RecordMaintenanceJob[]
   assertLocalRecordMaintenanceJobsAllowed('enqueueRecordMaintenanceJobsLocal', inputs)
   for (const input of inputs) {
     enqueueRecordMaintenanceJobLocal(normalizeRecordMaintenanceJob(input))
+  }
+}
+
+export function startRecordMaintenanceRedisStreamConsumer(): void {
+  if (!shouldUseRedisStreamRecordMaintenanceQueue() || !isRecordMaintenanceIngestWorker() || recordMaintenanceRedisConsumerStarted) {
+    return
+  }
+  recordMaintenanceRedisConsumerStarted = true
+  recordMaintenanceRedisConsumerStopping = false
+  recordMaintenanceRedisConsumerPromise = runRecordMaintenanceRedisStreamConsumer().catch((error) => {
+    logger.error(errorLogFields(error, {
+      event: 'record_maintenance_redis_stream_consumer_stopped'
+    }), 'Redis Stream 数据维护消费循环异常退出')
+  }).finally(() => {
+    recordMaintenanceRedisConsumerStarted = false
+    recordMaintenanceRedisConsumerPromise = undefined
+  })
+}
+
+export async function stopRecordMaintenanceRedisStreamConsumer(): Promise<void> {
+  recordMaintenanceRedisConsumerStopping = true
+  const queue = recordMaintenanceRedisStreamQueueInstance
+  if (queue) {
+    await queue.closeConsumer().catch(() => undefined)
+  }
+  if (recordMaintenanceRedisConsumerPromise) {
+    await Promise.race([
+      recordMaintenanceRedisConsumerPromise.catch(() => undefined),
+      delay(recordMaintenanceRedisStopWaitMs)
+    ])
   }
 }
 
@@ -319,6 +362,150 @@ function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): boolean {
   pendingJobBytes += queued.bytes
   scheduleRecordMaintenanceFlush(pendingJobs.length >= recordMaintenanceBatchSize ? 0 : recordMaintenanceFlushIntervalMs)
   return true
+}
+
+async function enqueueRecordMaintenanceJobToRedisStream(job: RecordMaintenanceJob): Promise<void> {
+  try {
+    await recordMaintenanceRedisStreamQueue().enqueue(job)
+  } catch (error) {
+    recordRecordMaintenanceDispatchFailure(error, job)
+    fallbackRecordMaintenanceJobAfterRedisStreamFailure(job)
+  }
+}
+
+function fallbackRecordMaintenanceJobAfterRedisStreamFailure(job: RecordMaintenanceJob): void {
+  if (runtimeConfig.processRole === 'server') {
+    if (!sendRecordMaintenanceJobsToWorker([job])) {
+      recordRecordMaintenanceDispatchFailure(new Error('后台 worker IPC 不可用'), job)
+    }
+    return
+  }
+  if (runtimeConfig.processRole === 'db-service') {
+    if (!sendRecordMaintenanceJobToParent(job)) {
+      recordRecordMaintenanceDispatchFailure(new Error('DB service 无父进程 IPC'), job)
+    }
+    return
+  }
+  if (runtimeConfig.processRole === 'worker'
+    && runtimeConfig.workerRole !== 'ingest-worker'
+    && !canProcessRecordMaintenanceJobLocally(job)) {
+    if (!sendRecordMaintenanceJobToParent(job)) {
+      recordRecordMaintenanceDispatchFailure(new Error('非 ingest worker 无父进程 IPC'), job)
+    }
+    return
+  }
+  if (canProcessRecordMaintenanceJobLocally(job)) {
+    enqueueRecordMaintenanceJobLocal(job)
+  }
+}
+
+function sendRecordMaintenanceJobToParent(job: RecordMaintenanceJob): boolean {
+  if (!process.send || process.connected === false) {
+    return false
+  }
+  try {
+    process.send({
+      type: 'background_worker_record_maintenance',
+      items: [job]
+    }, (error) => {
+      if (error) {
+        recordRecordMaintenanceDispatchFailure(error, job)
+      }
+    })
+    return true
+  } catch (error) {
+    recordRecordMaintenanceDispatchFailure(error, job)
+    return false
+  }
+}
+
+async function runRecordMaintenanceRedisStreamConsumer(): Promise<void> {
+  const queue = recordMaintenanceRedisStreamQueue()
+  while (!recordMaintenanceRedisConsumerStopping) {
+    try {
+      const claimed = await queue.claimPending()
+      const messages = claimed.length > 0 ? claimed : await queue.readNew()
+      if (messages.length === 0) {
+        continue
+      }
+      await flushRecordMaintenanceRedisStreamMessages(queue, messages)
+    } catch (error) {
+      if (recordMaintenanceRedisConsumerStopping) {
+        break
+      }
+      flushFailureCount += 1
+      logger.error(errorLogFields(error, {
+        event: 'record_maintenance_redis_stream_consume_failed',
+        flushFailureCount
+      }), 'Redis Stream 数据维护消费失败，稍后重试')
+      await delay(recordMaintenanceRedisConsumerErrorRetryMs)
+    }
+  }
+}
+
+async function flushRecordMaintenanceRedisStreamMessages(
+  queue: RedisStreamQueue<RecordMaintenanceJob>,
+  messages: Array<RedisStreamMessage<RecordMaintenanceJob>>
+): Promise<void> {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    const job = normalizeRecordMaintenanceStreamJob(message.payload)
+    const snapshotMessages = collectAccountUsageSnapshotStreamMessages(messages, index)
+    try {
+      if (snapshotMessages.length > 0) {
+        await processAccountUsageSnapshotUpsertJobs(snapshotMessages.map((item) => normalizeRecordMaintenanceStreamJob(item.payload) as AccountUsageSnapshotUpsertJob))
+        completedCount += snapshotMessages.length
+        await queue.ack(snapshotMessages.map((item) => item.id))
+        index += snapshotMessages.length - 1
+      } else {
+        await processRecordMaintenanceJob(job)
+        completedCount += 1
+        await queue.ack([message.id])
+      }
+    } catch (error) {
+      flushFailureCount += 1
+      logger.error(errorLogFields(error, {
+        event: 'record_maintenance_redis_stream_flush_failed',
+        jobType: job.type,
+        jobId: job.id,
+        messageId: message.id,
+        flushFailureCount
+      }), 'Redis Stream 数据维护任务执行失败，消息保持 pending 等待重投')
+      break
+    }
+  }
+}
+
+function collectAccountUsageSnapshotStreamMessages(
+  messages: Array<RedisStreamMessage<RecordMaintenanceJob>>,
+  startIndex: number
+): Array<RedisStreamMessage<RecordMaintenanceJob>> {
+  const output: Array<RedisStreamMessage<RecordMaintenanceJob>> = []
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index]
+    const job = normalizeRecordMaintenanceStreamJob(message.payload)
+    if (job.type !== 'account_usage_snapshot_upsert') break
+    output.push(message)
+  }
+  return output
+}
+
+function normalizeRecordMaintenanceStreamJob(payload: RecordMaintenanceJob): RecordMaintenanceJob {
+  if (!isRecordMaintenanceJob(payload)) {
+    throw new Error('Redis Stream 数据维护消息格式无效')
+  }
+  return normalizeRecordMaintenanceJob(payload)
+}
+
+function recordMaintenanceRedisStreamQueue(): RedisStreamQueue<RecordMaintenanceJob> {
+  if (!recordMaintenanceRedisStreamQueueInstance) {
+    recordMaintenanceRedisStreamQueueInstance = new RedisStreamQueue<RecordMaintenanceJob>({
+      streamKey: recordMaintenanceRedisStreamKey,
+      groupName: recordMaintenanceRedisStreamGroup,
+      readCount: recordMaintenanceBatchSize
+    })
+  }
+  return recordMaintenanceRedisStreamQueueInstance
 }
 
 async function processRecordMaintenanceJob(job: RecordMaintenanceJob): Promise<void> {
@@ -722,6 +909,25 @@ function recordRecordMaintenanceDispatchFailure(error: unknown, job: RecordMaint
   }), 'DB service 数据维护任务投递失败，已跳过投递')
 }
 
+function isRecordMaintenanceIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function shouldUseRedisStreamRecordMaintenanceQueue(): boolean {
+  return runtimeConfig.queueDriver === 'redis_stream'
+}
+
+function shouldEnqueueRecordMaintenanceJobToRedisStream(job: RecordMaintenanceJob): boolean {
+  return shouldUseRedisStreamRecordMaintenanceQueue() && !canProcessRecordMaintenanceJobLocally(job)
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
+}
+
 export function clearRecordMaintenanceQueueForTest(): void {
   if (flushTimer) {
     clearTimeout(flushTimer)
@@ -737,6 +943,11 @@ export function clearRecordMaintenanceQueueForTest(): void {
   droppedOverflowCount = 0
   droppedOversizeCount = 0
   shutdownHooksInstalled = false
+  recordMaintenanceRedisConsumerStopping = true
+  recordMaintenanceRedisConsumerStarted = false
+  recordMaintenanceRedisConsumerPromise = undefined
+  void recordMaintenanceRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
+  recordMaintenanceRedisStreamQueueInstance = undefined
 }
 
 function isStringArray(value: unknown): value is string[] {

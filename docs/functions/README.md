@@ -6,7 +6,7 @@
 
 - [核心功能设计](核心功能设计.md)
 - [接口契约与权限矩阵](接口契约与权限矩阵.md)
-- [API Key 多分组路由设计](APIKey多分组路由设计.md)
+- [策略路由设计](策略路由设计.md)
 - [多模型混合智能分级路由设计](多模型混合智能分级路由设计.md)
 - [系统团队与统一授权设计](系统团队与统一授权设计.md)
 - [公告中心设计](公告中心设计.md)
@@ -28,7 +28,7 @@
 - [Mockdata 造数设计](Mockdata造数设计.md)
 - [厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)
 - [自定义模型与模型映射设计](自定义模型与模型映射设计.md)
-- [客户端画像与混合路由设计](客户端画像与混合路由设计.md)
+- [客户端画像与混合供应商边界设计](客户端画像与混合路由设计.md)
 - [账户模型限制设计](账户模型限制设计.md)
 - [模型检测设计](模型检测设计.md)
 - [模型价格与用量统计口径](模型价格与用量统计口径.md)
@@ -73,6 +73,7 @@
 
 - [公开接口独立进程设计](公开接口独立进程设计.md)：已评估但暂不实施，当前仍由主进程代理到 DB service。
 - [客户端兼容与模型映射重设计草案](客户端兼容与模型映射重设计草案.md)：历史草案，当前事实以客户端画像、协议桥接和模型映射专题为准。
+- [API Key 多分组路由设计](APIKey多分组路由设计.md)：旧版 API Key 直接绑定多个分组的历史设计，当前路由事实以 [策略路由设计](策略路由设计.md) 为准。
 - [上游 API Key 账户安全识别落地方案](上游APIKey账户安全识别落地方案.md)：已暂缓，不作为待实现功能入口。
 - [流式拦截策略配置设计](流式拦截策略配置设计.md)：旧版能力记录，当前网关响应检查以 [响应语义检查管线设计](响应语义检查管线设计.md) 为准。
 
@@ -89,8 +90,8 @@
 - 新增或调整上游异常重试、账户错误处理策略、本地账号屏蔽、屏蔽等待、切号救回、流式失败账号副作用、IP 级来源保护或多机制排障总链路时，优先更新 [网关错误处理完整链路](网关错误处理完整链路.md)、[网关异常重试与兜底策略](网关异常重试与兜底策略.md) 和 [OpenAI 账号接入](OpenAI账号接入.md)。
 - 新增或调整同一 API Key 账户内多个上游 Key 的轮询 / 权重、Key 级故障隔离、Key 冷却探测、Key 池派生可用性或 Key 状态展示时，优先更新 [OpenAI 账号接入](OpenAI账号接入.md) 和 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)；如果影响切号、屏蔽、后台恢复或错误兜底，再同步 [网关错误处理完整链路](网关错误处理完整链路.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。
 - 新增或调整 Anthropic 官方直连、Anthropic API Key 账户类型、Anthropic OAuth / Claude Code token 真实验证结论、Claude Code 客户端画像、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
-- 新增或调整 OpenAI Chat / Responses 下游请求到 Anthropic Messages 上游的协议桥接、四类入口 JSON / SSE 响应渲染、API Key 显式混合路由 `chat_completions|responses -> messages`、OpenAI 下游错误渲染、Responses 状态或混合路由选中 Anthropic 模型的承接能力时，优先更新 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)；如果涉及 hosted tools、thinking、图片文件、structured output、MCP、computer、code execution、image_generation 或 compact 高兼容能力，再同步 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)，并按影响同步 [Anthropic 账号接入](Anthropic账号接入.md)、[多模型混合智能分级路由设计](多模型混合智能分级路由设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。如果涉及 OpenAI `file_id`、`/v1/files`、Vector Stores 或 Responses `file_search` 本地承接，还必须同步 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)；如果涉及 `code_interpreter`、`computer`、`mcp`、`shell`、`skills` 或 `tool_search` 真实执行器，还必须同步 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)。
-- 新增或调整 Anthropic Messages 下游请求到 OpenAI Chat Completions 上游的协议桥接、Anthropic JSON / SSE 响应还原、API Key 显式混合路由 `messages -> chat_completions`、Anthropic guidance 渲染或 Claude Code / Anthropic-compatible 客户端访问 Chat-only 上游时，优先更新 [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[AI 账户导入协议](AI账户导入协议.md) 和 [请求处理分层设计](请求处理分层设计.md)。
+- 新增或调整 OpenAI Chat / Responses 下游请求到 Anthropic Messages 上游的协议桥接、四类入口 JSON / SSE 响应渲染、混合供应商账户 `chat_completions|responses -> messages`、OpenAI 下游错误渲染、Responses 状态或混合智能路由命中 Anthropic 上游模型的承接能力时，优先更新 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)；如果涉及 hosted tools、thinking、图片文件、structured output、MCP、computer、code execution、image_generation 或 compact 高兼容能力，再同步 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)，并按影响同步 [Anthropic 账号接入](Anthropic账号接入.md)、[多模型混合智能分级路由设计](多模型混合智能分级路由设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。如果涉及 OpenAI `file_id`、`/v1/files`、Vector Stores 或 Responses `file_search` 本地承接，还必须同步 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)；如果涉及 `code_interpreter`、`computer`、`mcp`、`shell`、`skills` 或 `tool_search` 真实执行器，还必须同步 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)。
+- 新增或调整 Anthropic Messages 下游请求到 OpenAI Chat Completions 上游的协议桥接、Anthropic JSON / SSE 响应还原、混合供应商账户 `messages -> chat_completions`、Anthropic guidance 渲染或 Claude Code / Anthropic-compatible 客户端访问 Chat-only 上游时，优先更新 [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[AI 账户导入协议](AI账户导入协议.md) 和 [请求处理分层设计](请求处理分层设计.md)。
 - 新增或调整跨协议桥接框架、统一中间表示、协议能力矩阵、guidance-first 策略、新协议正反向接入模板或 OpenAI / Anthropic / Gemini native 之间新增互转方向时，优先更新 [协议桥接框架设计](协议桥接框架设计.md)，再同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、对应供应商协议兼容文档、[请求处理分层设计](请求处理分层设计.md) 和相关计划。
 - 新增或调整 Codex `/v1/responses` 到 OpenAI-compatible Chat Completions 的协议转换、Chat SSE 到 Responses SSE 事件映射、工具调用映射、reasoning 字段处理或供应商桥接启用条件时，优先更新 [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)，再按影响同步具体供应商接入文档。
 - 新增或调整智谱 GLM 通用 API、GLM Coding Plan、GLM OpenAI 兼容档案、GLM Anthropic / Claude Code 兼容档案、GLM Codex bridge、GLM 模型目录、GLM 价格口径或 GLM 账户测试时，优先更新 [智谱 GLM 账号接入](智谱GLM账号接入.md)、[Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
@@ -103,8 +104,8 @@
 - 新增或调整公益站对接边界、IP 聚合公开接口、公益站侧排行榜契约建议或公开展示快照归属时，优先更新 [公益榜公开聚合接口设计](公益榜公开聚合接口设计.md)，再同步 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[安全与日志策略](安全与日志策略.md) 和 [统计指标与分层聚合设计](统计指标与分层聚合设计.md)。
 - 新增或调整多节点部署、控制面选主、用户 home node、API Key 跨节点路由、节点内部通信、集群 worker 归属或分布式故障语义时，优先更新 [分布式部署与用户分片设计](分布式部署与用户分片设计.md)，再同步 [架构总览](../architecture/架构总览.md)、[SQLite 存储说明](SQLite存储说明.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[安全与日志策略](安全与日志策略.md) 和部署 / 验证文档。
 - 新增或调整 PostgreSQL / Redis 高性能模式、数据库 driver、SQL dialect、缓存 driver、运行态 state store、PG 写队列并发、SQLite 到 PostgreSQL 离线迁移或 Docker 数据库部署时，优先更新 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)，再同步 [架构总览](../architecture/架构总览.md)、[SQLite 存储说明](SQLite存储说明.md)、[SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)、部署文档和验证文档。
-- 新增或调整 API Key 绑定多个分组号池、优先级路由、跨号池故障切换、跨供应商分组绑定或相关缓存失效时，优先更新 [API Key 多分组路由设计](APIKey多分组路由设计.md)；如果跨供应商绑定依赖请求 `model` 路由，还必须同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
-- 新增或调整 API Key 级混合智能路由、低价评分模型、`1-10` 等级到目标模型映射、混合路由缓存亲和、评分成本或混合路由节省统计时，优先更新 [多模型混合智能分级路由设计](多模型混合智能分级路由设计.md)，再按影响同步 [API Key 多分组路由设计](APIKey多分组路由设计.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
+- 新增或调整 API Key 选择路由策略、策略路由菜单、普通路由、混合智能路由、权重调度路由、故障回退路由、轮询路由、路由策略分组绑定或相关缓存失效时，优先更新 [策略路由设计](策略路由设计.md)；如果跨供应商绑定依赖请求 `model` 路由，还必须同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
+- 新增或调整混合智能路由的低价评分模型、`1-10` 等级到目标模型映射、混合路由缓存亲和、评分成本或混合路由节省统计时，优先更新 [多模型混合智能分级路由设计](多模型混合智能分级路由设计.md) 和 [策略路由设计](策略路由设计.md)，再按影响同步 [模型价格与用量统计口径](模型价格与用量统计口径.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
 - 新增或调整系统团队、授权对象、授权资源、授权统计或团队成员共享语义时，优先更新 [系统团队与统一授权设计](系统团队与统一授权设计.md)。
 - 新增或调整公告展示、公告管理、公告提醒状态或公告权限边界时，优先更新 [公告中心设计](公告中心设计.md)。
 - 新增或调整敏感字段、请求快照、日志、凭据展示、数据保留或备份迁移规则时，优先更新 [安全与日志策略](安全与日志策略.md)。
@@ -121,8 +122,8 @@
 - 新增或调整多 worker 争抢同一 SQLite 文件写锁、写 owner、writer queue、typed write command、priority、blocked reason 或单写者运行态指标时，优先更新 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)，再按影响同步 [SQLite 存储说明](SQLite存储说明.md)、[后台任务使用说明](../architecture/backend/后台任务使用说明.md) 和 [后台 Worker 多角色拆分设计](../architecture/backend/后台Worker多角色拆分设计.md)。
 - 新增或调整表大小、行数、数据库文件空间、增长趋势、采样任务或表监控页面时，优先更新 [表数据监控设计](表数据监控设计.md)。
 - 新增或清理厂商模型目录、模型价格、模型废弃规则或 `/v1/models` 展示口径时，优先更新 [厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)。
-- 新增或调整管理员全局模型、用户个人模型、模型名全系统唯一性、模型路由索引、自定义价格、模型作用域、目录展示口径、账号模型映射、下游模型到上游模型改写或映射审计字段时，优先更新 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)，再按影响同步 [API Key 多分组路由设计](APIKey多分组路由设计.md)、[账户模型限制设计](账户模型限制设计.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
-- 新增或调整下游客户端画像、账号表单客户端兼容入口、账号内模型别名、通用 OpenAI-compatible 边界、跨供应商模型路由、混合路由规则或跨协议桥接归属时，优先更新 [客户端画像与混合路由设计](客户端画像与混合路由设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[协议桥接框架设计](协议桥接框架设计.md)、[API Key 多分组路由设计](APIKey多分组路由设计.md)、[请求处理分层设计](请求处理分层设计.md) 和相关供应商接入文档。
+- 新增或调整管理员全局模型、用户个人模型、模型名全系统唯一性、模型路由索引、自定义价格、模型作用域、目录展示口径、账号模型映射、下游模型到上游模型改写或映射审计字段时，优先更新 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)，再按影响同步 [策略路由设计](策略路由设计.md)、[账户模型限制设计](账户模型限制设计.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [接口契约与权限矩阵](接口契约与权限矩阵.md)。
+- 新增或调整下游客户端画像、账号表单客户端兼容入口、账号内模型别名、通用 OpenAI-compatible 边界、混合供应商账户、跨供应商模型映射或跨协议桥接归属时，优先更新 [客户端画像与混合供应商边界设计](客户端画像与混合路由设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[协议桥接框架设计](协议桥接框架设计.md)、[策略路由设计](策略路由设计.md)、[请求处理分层设计](请求处理分层设计.md) 和相关供应商接入文档。API Key 只承载入口和路由策略选择；默认客户端画像与显式跨协议路由不应再作为 API Key 用户配置。
 - 新增或调整账号支持模型、模型限制调度、账号池模型过滤或相关缓存失效时，优先更新 [账户模型限制设计](账户模型限制设计.md)。
 - 新增或调整 Responses `context_management`、`truncation`、`/responses/compact` 或相关审计字段时，优先更新 [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[请求处理分层设计](请求处理分层设计.md)、[流式中断与客户端重试调研](流式中断与客户端重试调研.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。
 - 新增或调整模型检测、模型可信度评分、探针题库、检测记录或检测菜单时，优先更新 [模型检测设计](模型检测设计.md)。

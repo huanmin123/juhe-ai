@@ -12,6 +12,7 @@ import {
   type RecentOpenAIRequestShape,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/audit/payload-sanitizer.js'
@@ -63,6 +64,7 @@ type AccountTestInput = {
   clientCompatibility?: AccountClientCompatibility
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
+  findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
 }
 
 export async function testOpenAIAccountWithDiagnosticRetries(
@@ -235,7 +237,7 @@ export async function testOpenAIAccount(
       : findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
     const finalSummary = input.candidateAccount
       ? account
-      : findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
+      : await loadAccountForTest(input, account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
     const diagnosticAttemptText = diagnosticLastAttempt?.responseBodyText?.trim() ?? ''
@@ -316,6 +318,15 @@ export async function testOpenAIAccount(
       accountFailureEligible
     }), limitedDiagnostics)
   }
+}
+
+async function loadAccountForTest(
+  input: AccountTestInput,
+  accountId: string,
+  access?: AccessScope
+): Promise<AccountSummary | undefined> {
+  const reader = input.findAccountForTest ?? findAccountForTest
+  return await reader(accountId, access)
 }
 
 export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel'>): string {

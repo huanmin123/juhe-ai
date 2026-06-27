@@ -4,6 +4,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -30,37 +31,37 @@ try {
     providerCode: 'gpt',
     enabled: true
   }, access)
-  const matchedByName = repositories.createApiKeyRecord({
+  const matchedByName = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '检索目标 Key',
     description: '普通说明',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const matchedByNamePrefix = repositories.createApiKeyRecord({
+  const matchedByNamePrefix = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '检索目标 Key 扩展',
     description: '普通说明扩展',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const middleNameOnly = repositories.createApiKeyRecord({
+  const middleNameOnly = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通检索目标 Key',
     description: '普通说明中间命中',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const matchedByDescription = repositories.createApiKeyRecord({
+  const matchedByDescription = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '说明字段 Key',
     description: '说明前缀命中',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const middleDescriptionOnly = repositories.createApiKeyRecord({
+  const middleDescriptionOnly = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通说明 Key',
     description: '普通说明前缀命中',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const wildcardLiteral = repositories.createApiKeyRecord({
+  const wildcardLiteral = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'percent%literal Key',
     description: '通配符字面量',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
   }, access)
-  const wildcardNeighbor = repositories.createApiKeyRecord({
+  const wildcardNeighbor = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'percentXliteral Key',
     description: '通配符邻近值',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],

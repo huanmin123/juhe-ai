@@ -10,6 +10,7 @@ import {
   type DbServiceQueueRuntimeMetrics
 } from './modules/db-service/db-service-handlers.js'
 import type { DbServiceOperation, DbServiceParentMessage } from './modules/db-service/db-service-types.js'
+import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
@@ -80,7 +81,9 @@ async function startDbService(): Promise<void> {
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
   startLogMaintenance()
-  setRuntimeLogLineSink(() => {})
+  setRuntimeLogLineSink(runtimeConfig.queueDriver === 'redis_stream'
+    ? (line, options) => enqueueRuntimeLogLine(line, options)
+    : () => {})
   setDbServiceQueueRuntimeProvider(buildDbServiceQueueRuntimeMetrics)
 
   const httpEndpoint = await startDbServiceHttpServer()

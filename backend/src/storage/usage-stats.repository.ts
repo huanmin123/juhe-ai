@@ -194,6 +194,7 @@ export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBef
   const batchLimit = Math.max(1, Math.trunc(limit))
   const safeCreatedBefore = safeCreatedBeforeOverride?.trim() || usageStatsSafeCreatedBefore()
   const updatedAt = nowIso()
+  const timezone = await usageStatsTimezoneAsync()
   try {
     return await client.transaction(async (tx) => {
       const state = await postgresStatsJobState(tx)
@@ -216,7 +217,7 @@ export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBef
         return 0
       }
 
-      await aggregatePostgresUsageStatsRows(tx, rows, updatedAt)
+      await aggregatePostgresUsageStatsRows(tx, rows, updatedAt, timezone)
       const last = rows[rows.length - 1]
       await updatePostgresStatsJobState(tx, {
         cursorCreatedAt: last.created_at,
@@ -284,9 +285,8 @@ interface PostgresAggregatedAccountQualityEntry {
   lastErrorMessage?: string
 }
 
-async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: UsageStatsRecordRow[], updatedAt: string): Promise<void> {
+async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: UsageStatsRecordRow[], updatedAt: string, timezone: string): Promise<void> {
   if (rows.length === 0) return
-  const timezone = await usageStatsTimezoneAsync()
   const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
   const totalEntries = new Map<string, PostgresAggregatedUsageStatsEntry>()
   const timeEntries = new Map<string, PostgresAggregatedUsageStatsTimeEntry>()
@@ -1129,9 +1129,9 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(): Promise<void> 
     return
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  const timezone = await usageStatsTimezoneAsync()
   await client.transaction(async (tx) => {
     const updatedAt = nowIso()
-    const timezone = await usageStatsTimezoneAsync()
     await tx.execute('DELETE FROM juhe_stats.usage_quota_hourly_windows')
     for (const hours of await listPostgresRequestQuotaHourlyWindowHours(tx)) {
       await tx.execute(`

@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -183,7 +184,7 @@ try {
       supportedModel: opusModel
     })
 
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Mock 智能路由 Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',
@@ -210,13 +211,14 @@ try {
       status: 'active'
     }, access)
     assert(apiKey.key, '混合路由回归 API Key 未返回明文密钥')
-    assert.equal(apiKey.routeMode, 'hybrid')
-    assert.equal(apiKey.hybridRoutingConfig?.scoringGroupId, undefined)
-    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.enabled, true)
-    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.scoringGroupId, undefined)
-    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.scoringModel, scoringModel)
-    assert.equal(apiKey.hybridRoutingConfig?.qualityInspection?.triggerMode, 'risk_based')
-    const qualityApiKey = repositories.createApiKeyRecord({
+    const routeStrategy = repositories.findRouteStrategySummary(apiKey.routeStrategyId, access)
+    assert.equal(routeStrategy?.mode, 'hybrid_smart')
+    assert.equal(routeStrategy?.hybridRoutingConfig?.scoringGroupId, undefined)
+    assert.equal(routeStrategy?.hybridRoutingConfig?.qualityInspection?.enabled, true)
+    assert.equal(routeStrategy?.hybridRoutingConfig?.qualityInspection?.scoringGroupId, undefined)
+    assert.equal(routeStrategy?.hybridRoutingConfig?.qualityInspection?.scoringModel, scoringModel)
+    assert.equal(routeStrategy?.hybridRoutingConfig?.qualityInspection?.triggerMode, 'risk_based')
+    const qualityApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Mock 质量评分 Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',
@@ -252,7 +254,7 @@ try {
       status: 'active'
     }, access)
     assert(qualityApiKey.key, '混合质量评分回归 API Key 未返回明文密钥')
-    const qualityUnavailableApiKey = repositories.createApiKeyRecord({
+    const qualityUnavailableApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Hybrid Mock 质量评分不可用 Key',
       routeMode: 'hybrid',
       groupRouteStrategy: 'priority_failover',

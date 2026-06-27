@@ -894,6 +894,11 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     trafficSource: 'cooldown_retest',
     signal,
     disableAccountStateMutation: true,
+    findAccountForTest: (accountId, access) => requestDbService({
+      type: 'find_account_for_test',
+      accountId,
+      access
+    }, { timeoutMs: 10_000 }),
     gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(state.settings, timeoutMs)
   })
 }

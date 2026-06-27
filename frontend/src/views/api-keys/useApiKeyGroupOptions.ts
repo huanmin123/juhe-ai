@@ -10,7 +10,6 @@ import {
   writeLocalSelectOptionWindow
 } from '@/shared/selectLocalPreferenceCache'
 import type { GroupOptionSummary } from '@/types/domain'
-import type { ApiKeyGroupBindingFormRow } from './apiKeyFormModel'
 import { ref, type ComputedRef, type Ref } from 'vue'
 
 export type ApiKeyScopeParams = { systemAccountId: string } | undefined
@@ -39,13 +38,8 @@ interface ApiKeyGroupOptionsApi {
 interface UseApiKeyGroupOptionsInput {
   groupsApi: ApiKeyGroupOptionsApi
   isManagementView: Ref<boolean>
-  isFormContext: () => boolean
   listScopeParams: ComputedRef<ApiKeyScopeParams>
-  formScopeParams: ComputedRef<ApiKeyScopeParams>
   groupFilterSelection: Ref<GroupSelection | undefined>
-  formGroupBindings: () => ApiKeyGroupBindingFormRow[]
-  formGroupBindingIds: ComputedRef<string[]>
-  allowMixedProviderProtocolProfiles?: () => boolean
   onGroupFilterCleared: () => void
 }
 
@@ -157,27 +151,6 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     }, 250)
   }
 
-  function handleFormGroupOptionsDropdown(open: boolean): void {
-    if (open) {
-      void loadGroupOptions(groupOptionsKeyword, false, {
-        systemAccountId: input.formScopeParams.value?.systemAccountId,
-        selectedIds: input.formGroupBindingIds.value
-      })
-    }
-  }
-
-  function handleFormGroupOptionsSearch(value: string): void {
-    groupOptionsKeyword = value
-    clearGroupOptionsSearchTimer()
-    groupOptionsSearchTimer = window.setTimeout(() => {
-      groupOptionsSearchTimer = undefined
-      void loadGroupOptions(groupOptionsKeyword, false, {
-        systemAccountId: input.formScopeParams.value?.systemAccountId,
-        selectedIds: input.formGroupBindingIds.value
-      })
-    }, 250)
-  }
-
   function resetGroupOptionsSearch(): void {
     groupOptionsKeyword = ''
     clearGroupOptionsSearchTimer()
@@ -195,17 +168,6 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     if (groupFilterId) {
       input.groupFilterSelection.value = selectedGroupFromOptions(groupFilterId, nextGroups, input.groupFilterSelection.value)
     }
-    for (const binding of input.formGroupBindings()) {
-      if (binding.groupId) {
-        const groupOption = nextGroups.find((group) => group.id === binding.groupId)
-        if (groupOption) {
-          binding.providerCode = groupOption.providerCode
-          binding.providerProtocolProfileId = groupOption.providerProtocolProfileId
-          binding.groupEnabled = groupOption.enabled
-        }
-        binding.group = selectedGroupFromOptions(binding.groupId, nextGroups, binding.group)
-      }
-    }
   }
 
   function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
@@ -214,26 +176,17 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     const group = groups.value.find((item) => item.id === normalizedId)
     if (group) return { id: group.id, name: group.name }
     if (input.groupFilterSelection.value?.id === normalizedId) return input.groupFilterSelection.value
-    const selectedBinding = input.formGroupBindings().find((binding) => binding.group?.id === normalizedId)
-    if (selectedBinding?.group) return selectedBinding.group
     return undefined
   }
 
   function normalizedGroupOptionsScope(scopeOverride?: ApiKeyGroupOptionsScope): Required<ApiKeyGroupOptionsScope> {
-    const formContext = input.isFormContext()
     const systemAccountId = scopeOverride?.systemAccountId
-      ?? (formContext ? input.formScopeParams.value?.systemAccountId : input.listScopeParams.value?.systemAccountId)
+      ?? input.listScopeParams.value?.systemAccountId
       ?? ''
     const selectedIds = scopeOverride?.selectedIds
-      ?? (formContext
-        ? [input.groupFilterSelection.value?.id, ...input.formGroupBindingIds.value]
-        : [input.groupFilterSelection.value?.id])
+      ?? [input.groupFilterSelection.value?.id]
     const providerProtocolProfileId = scopeOverride?.providerProtocolProfileId
-      ?? apiKeyGroupOptionsProviderProtocolProfileId({
-        formContext,
-        allowMixedProviderProtocolProfiles: input.allowMixedProviderProtocolProfiles?.() ?? true,
-        formBindings: input.formGroupBindings()
-      })
+      ?? ''
     return {
       systemAccountId: systemAccountId.trim(),
       providerProtocolProfileId: providerProtocolProfileId.trim(),
@@ -277,26 +230,13 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
       clearedFilter = true
     }
 
-    const clearedBindingIds: string[] = []
-    for (const binding of input.formGroupBindings()) {
-      const bindingId = binding.groupId.trim()
-      if (!missingIds.includes(bindingId)) continue
-      if (binding.group?.id === bindingId) continue
-      binding.groupId = ''
-      binding.group = undefined
-      binding.providerCode = undefined
-      binding.providerProtocolProfileId = undefined
-      binding.groupEnabled = undefined
-      clearedBindingIds.push(bindingId)
-    }
-
-    const removableIds = [...new Set([...clearedBindingIds, ...(clearedFilterId ? [clearedFilterId] : [])])]
+    const removableIds = clearedFilterId ? [clearedFilterId] : []
     if (removableIds.length) {
       removeLocalSelectOptionWindowValues(optionWindowKey, removableIds)
       removeLocalSelectPreferenceValues('groups', removableIds)
     }
-    if (clearedFilter || clearedBindingIds.length) {
-      message.warning('已移除不存在或无权访问的分组，请重新选择')
+    if (clearedFilter) {
+      message.warning('已移除不存在或无权访问的分组筛选，请重新选择')
     }
     if (clearedFilter) {
       input.onGroupFilterCleared()
@@ -318,8 +258,6 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     clearGroupOptionsSearchTimer,
     groups,
     groupOptionsLoading,
-    handleFormGroupOptionsDropdown,
-    handleFormGroupOptionsSearch,
     handleGroupOptionsDropdown,
     handleGroupOptionsSearch,
     loadGroupOptions,
@@ -327,19 +265,6 @@ export function useApiKeyGroupOptions(input: UseApiKeyGroupOptionsInput) {
     selectedGroupSelection,
     syncSelectedGroupSelections
   }
-}
-
-export function apiKeyGroupOptionsProviderProtocolProfileId(input: {
-  formContext: boolean
-  allowMixedProviderProtocolProfiles: boolean
-  formBindings: ApiKeyGroupBindingFormRow[]
-}): string {
-  if (!input.formContext || input.allowMixedProviderProtocolProfiles) return ''
-  for (const binding of input.formBindings) {
-    const value = binding.providerProtocolProfileId?.trim()
-    if (value) return value
-  }
-  return ''
 }
 
 function selectedGroupFromOptions(

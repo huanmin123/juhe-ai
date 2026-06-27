@@ -1,24 +1,8 @@
-import type { DatabaseSync } from 'node:sqlite'
-
-import type { ApiKeyGroupBindingSummary, ApiKeySummary, RequestQuotaLimits } from '../domain/types.js'
-import {
-  normalizeApiKeyGroupBindingWeight,
-  normalizeApiKeyGroupRouteStrategy
-} from '../domain/api-key-routing.js'
-import {
-  hybridRoutingConfigJson,
-  normalizeApiKeyRouteMode,
-  normalizeHybridRoutingConfig
-} from '../domain/api-key-hybrid-routing.js'
-import {
-  explicitHybridRouteRulesJson,
-  normalizeApiKeyClientProfile,
-  normalizeExplicitHybridRouteRules
-} from '../domain/api-key-explicit-hybrid-routing.js'
+import type { ApiKeySummary, RequestQuotaLimits } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
-import { apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canBindApiKeyGroup, canManageApiKeyOwner } from './api-key-access.js'
+import { apiKeySystemAccountId, canManageApiKeyOwner } from './api-key-access.js'
 import {
   apiKeyAvailabilityScheduleFromRequest,
   apiKeyAvailabilityScheduleJson,
@@ -26,43 +10,33 @@ import {
   isApiKeyAvailabilityScheduleInputPresent,
   nextApiKeyAvailabilityScheduleCheckAt
 } from './api-key-availability-schedule.js'
-import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
-import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, apiKeySummariesFromRowsAsync, type ApiKeyRow } from './api-key-mappers.js'
+import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { rememberRequestQuotaHourlyWindowsFromJson } from './request-quota-hourly-windows.repository.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
-import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
-import { optionalServerDateTimeIso, optionalString } from './value-utils.js'
+import {
+  assertRouteStrategySelectableForApiKey,
+  assertRouteStrategySelectableForApiKeyAsync
+} from './route-strategy.repository.js'
+import { optionalServerDateTimeIso } from './value-utils.js'
 
-const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组或有效授权给自己的分组'
 const businessSchemaName = 'juhe_business'
 const apiKeyMutationInputKeys = new Set([
   'name',
   'description',
-  'groupBindings',
-  'routeMode',
-  'groupRouteStrategy',
-  'hybridRoutingConfig',
-  'clientProfile',
-  'explicitHybridRouteRules',
+  'routeStrategyId',
   'status',
   'expiresAt',
   'quotaLimits',
   'availabilitySchedule',
   'availabilityScheduleActive'
-])
-const apiKeyGroupBindingInputKeys = new Set([
-  'groupId',
-  'priority',
-  'weight',
-  'status'
 ])
 
 export interface ApiKeyListOptions {
@@ -70,6 +44,7 @@ export interface ApiKeyListOptions {
   pageSize?: number
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
+  routeStrategyId?: string
   groupId?: string
 }
 
@@ -84,35 +59,6 @@ export interface ApiKeyListResult {
 type ApiKeyDeleteRow = {
   id: string
   system_account_id: string
-}
-
-type ApiKeyGroupBindingStatus = 'active' | 'disabled'
-
-interface ApiKeyGroupBindingInput {
-  groupId: string
-  priority: number
-  weight: number
-  status: ApiKeyGroupBindingStatus
-}
-
-interface ApiKeyGroupBindingWrite extends ApiKeyGroupBindingInput {
-  groupName?: string
-  providerCode: string
-  providerProtocolProfileId: string
-  protocolCode: string
-  protocolVersion: string
-  groupEnabled: boolean
-}
-
-interface ApiKeyBindableGroupRow {
-  id: string
-  system_account_id: string
-  provider_code: string
-  provider_protocol_profile_id: string
-  protocol_code: string
-  protocol_version: string
-  name: string | null
-  enabled: number
 }
 
 export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
@@ -134,7 +80,7 @@ export async function listApiKeysPageAsync(access?: AccessScope, options?: ApiKe
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = getBusinessDatabase()
-    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id WHERE api_keys.id = ?${scope.clause}`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys ${apiKeyListJoins()} WHERE api_keys.id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
   return row ? apiKeySummariesFromRows([row], access, { includeSecret: false })[0] : undefined
 }
@@ -145,8 +91,7 @@ export async function findApiKeySummaryAsync(id: string, access?: AccessScope): 
   const row = await client.one<ApiKeyRow>(`
     SELECT ${apiKeyListColumns()}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    LEFT JOIN ${apiKeyTable(client, 'system_accounts')} system_accounts
-      ON system_accounts.id = api_keys.system_account_id
+    ${apiKeyListJoinsForClient(client)}
     WHERE api_keys.id = ?${scope.clause}
   `, [id, ...scope.params])
   return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: false }))[0] : undefined
@@ -155,7 +100,7 @@ export async function findApiKeySummaryAsync(id: string, access?: AccessScope): 
 export function findApiKeySecret(id: string, access?: AccessScope): ApiKeySummary | undefined {
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = getBusinessDatabase()
-    .prepare(`SELECT ${apiKeyListColumns({ includeSecret: true })} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id WHERE api_keys.id = ?${scope.clause}`)
+    .prepare(`SELECT ${apiKeyListColumns({ includeSecret: true })} FROM api_keys ${apiKeyListJoins()} WHERE api_keys.id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
   return row ? apiKeySummariesFromRows([row], access, { includeSecret: true })[0] : undefined
 }
@@ -166,8 +111,7 @@ export async function findApiKeySecretAsync(id: string, access?: AccessScope): P
   const row = await client.one<ApiKeyRow>(`
     SELECT ${apiKeyListColumns({ includeSecret: true })}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    LEFT JOIN ${apiKeyTable(client, 'system_accounts')} system_accounts
-      ON system_accounts.id = api_keys.system_account_id
+    ${apiKeyListJoinsForClient(client)}
     WHERE api_keys.id = ?${scope.clause}
   `, [id, ...scope.params])
   return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: true }))[0] : undefined
@@ -180,7 +124,14 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
   const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = getBusinessDatabase()
-    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id ${filters.clause} ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC ${limitClause}`)
+    .prepare(`
+      SELECT ${apiKeyListColumns()}
+      FROM api_keys
+      ${apiKeyListJoins()}
+      ${filters.clause}
+      ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
+      ${limitClause}
+    `)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
@@ -203,8 +154,7 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
   const rows = await client.query<ApiKeyRow>(`
     SELECT ${apiKeyListColumns()}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    LEFT JOIN ${apiKeyTable(client, 'system_accounts')} system_accounts
-      ON system_accounts.id = api_keys.system_account_id
+    ${apiKeyListJoinsForClient(client)}
     ${filters.clause}
     ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
     ${limitClause}
@@ -224,26 +174,44 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
   const columns = [
     'api_keys.id',
     'api_keys.system_account_id',
+    'system_accounts.display_name AS system_account_name',
+    'api_keys.route_strategy_id',
+    'route_strategies.name AS route_strategy_name',
+    'route_strategies.mode AS route_strategy_mode',
+    'route_strategies.status AS route_strategy_status',
     'api_keys.name',
     'api_keys.description',
     'api_keys.key_prefix',
     'api_keys.key_suffix',
     'api_keys.status',
-    'api_keys.client_profile',
-    'api_keys.route_mode',
-    'api_keys.group_route_strategy',
-    'api_keys.hybrid_routing_config_json',
-    'api_keys.explicit_hybrid_route_rules_json',
-    'system_accounts.display_name AS group_owner_system_account_name',
     'api_keys.expires_at',
     'api_keys.quota_limits_json',
     'api_keys.availability_schedule_json',
     'api_keys.availability_schedule_active'
   ]
   if (options.includeSecret) {
-    columns.splice(5, 0, 'api_keys.key_secret_encrypted')
+    columns.splice(10, 0, 'api_keys.key_secret_encrypted')
   }
   return columns.join(', ')
+}
+
+function apiKeyListJoins(): string {
+  return `
+    LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+  `
+}
+
+function apiKeyListJoinsForClient(client: DatabaseClient): string {
+  return `
+    LEFT JOIN ${apiKeyTable(client, 'system_accounts')} system_accounts
+      ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN ${apiKeyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+  `
 }
 
 export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {
@@ -253,112 +221,74 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
-  const scopedOwnerId = manageableSystemAccountId(access)
-  let systemAccountId = scopedOwnerId ?? currentSystemAccountId(access)
-  const rawBindings = apiKeyGroupBindingInputsFromRequest(input)
-  if (!rawBindings) {
-    throw new Error('API Key 至少需要绑定一个分组')
-  }
-  const routeMode = normalizeApiKeyRouteMode(input.routeMode)
-  const clientProfile = normalizeApiKeyClientProfile(input.clientProfile)
-  const firstExplicitGroupId = rawBindings?.[0]?.groupId
-  const firstGroup = firstExplicitGroupId ? apiKeyGroupOwnerAndProvider(firstExplicitGroupId) : undefined
-  if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
-    systemAccountId = firstGroup.systemAccountId
-  }
-  const bindings = normalizeApiKeyGroupBindings(rawBindings, systemAccountId)
-  const hybridRoutingConfig = normalizeApiKeyHybridRoutingConfigForWrite(input.hybridRoutingConfig, routeMode, bindings)
-  const explicitHybridRouteRules = normalizeApiKeyExplicitHybridRouteRulesForWrite(input.explicitHybridRouteRules, bindings)
+  const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
+  const name = normalizedApiKeyName(input.name)
+  assertApiKeyNameAvailable(systemAccountId, name)
+  const routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
   const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
     ? normalizeApiKeyAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
     : apiKeyAvailabilityScheduleActiveValue(availabilitySchedule, nowDate)
-  const groupRouteStrategy = normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
-  const groupBindings = apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), bindings)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
-    name: normalizedApiKeyName(input.name),
+    name,
     description: normalizeOptionalApiKeyDescription(input.description),
     keyPrefix,
     keySuffix,
     status: normalizeApiKeyStatus(input.status, 'active'),
-    clientProfile,
-    routeMode,
-    groupRouteStrategy,
-    hybridRoutingConfig,
-    explicitHybridRouteRules,
-    groupBindings,
+    routeStrategyId,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
     availabilitySchedule,
     availabilityScheduleActive: availabilitySchedule?.enabled ? availabilityScheduleActive !== 0 : undefined,
-    usage: emptyAccountUsageSummary(),
+    usage: {
+      requestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheReadCost: 0,
+      totalTokens: 0,
+      totalCost: 0
+    },
     key
   }
-  assertApiKeyNameAvailable(systemAccountId, record.name)
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
-    const insertColumns = [
-      'id',
-      'system_account_id',
-      'name',
-      'description',
-      'key_hash',
-      'key_prefix',
-      'key_suffix',
-      'key_secret_encrypted',
-      'status',
-      'client_profile',
-      'route_mode',
-      'group_route_strategy',
-      'hybrid_routing_config_json',
-      'explicit_hybrid_route_rules_json',
-      'expires_at',
-      'quota_limits_json',
-      'availability_schedule_json',
-      'availability_schedule_active',
-      'availability_schedule_next_check_at',
-      'created_at',
-      'updated_at'
-    ]
-    const insertValues = [
-      record.id,
-      systemAccountId,
-      record.name,
-      record.description ?? null,
-      hashSecret(key),
-      record.keyPrefix,
-      record.keySuffix,
-      encryptJson({ key }),
-      record.status,
-      record.clientProfile,
-      record.routeMode,
-      record.groupRouteStrategy,
-      hybridRoutingConfigJson(record.hybridRoutingConfig),
-      explicitHybridRouteRulesJson(record.explicitHybridRouteRules),
-      record.expiresAt ?? null,
-      quotaLimitsJson,
-      apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
-      availabilityScheduleActive,
-      availabilityScheduleNextCheckAt,
-      now,
-      now
-    ]
     database
       .prepare(`
-        INSERT INTO api_keys (${insertColumns.join(', ')})
-        VALUES (${insertColumns.map(() => '?').join(', ')})
+        INSERT INTO api_keys (
+          id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+          key_secret_encrypted, status, expires_at, quota_limits_json, availability_schedule_json,
+          availability_schedule_active, availability_schedule_next_check_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(...insertValues)
+      .run(
+        record.id,
+        systemAccountId,
+        routeStrategyId,
+        record.name,
+        record.description ?? null,
+        hashSecret(key),
+        record.keyPrefix,
+        record.keySuffix,
+        encryptJson({ key }),
+        record.status,
+        record.expiresAt ?? null,
+        quotaLimitsJson,
+        apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
+        availabilityScheduleActive,
+        availabilityScheduleNextCheckAt,
+        now,
+        now
+      )
     rememberRequestQuotaHourlyWindowsFromJson(quotaLimitsJson, database, now)
-    replaceApiKeyGroupBindings(database, record.id, systemAccountId, bindings, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -386,84 +316,56 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
-  const scopedOwnerId = manageableSystemAccountId(access)
-  let systemAccountId = scopedOwnerId ?? currentSystemAccountId(access)
-  const rawBindings = apiKeyGroupBindingInputsFromRequest(input)
-  if (!rawBindings) {
-    throw new Error('API Key 至少需要绑定一个分组')
-  }
-  const routeMode = normalizeApiKeyRouteMode(input.routeMode)
-  const clientProfile = normalizeApiKeyClientProfile(input.clientProfile)
-  const firstExplicitGroupId = rawBindings?.[0]?.groupId
-  const firstGroup = firstExplicitGroupId ? await apiKeyGroupOwnerAndProviderAsync(firstExplicitGroupId) : undefined
-  if (firstGroup && !scopedOwnerId && canManageApiKeyOwner(firstGroup.systemAccountId, access)) {
-    systemAccountId = firstGroup.systemAccountId
-  }
-  const bindings = await normalizeApiKeyGroupBindingsAsync(rawBindings, systemAccountId)
-  const hybridRoutingConfig = normalizeApiKeyHybridRoutingConfigForWrite(input.hybridRoutingConfig, routeMode, bindings)
-  const explicitHybridRouteRules = normalizeApiKeyExplicitHybridRouteRulesForWrite(input.explicitHybridRouteRules, bindings)
+  const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
+  const name = normalizedApiKeyName(input.name)
+  const client = await getApiKeyDatabaseClient()
+  await assertApiKeyNameAvailableAsync(client, systemAccountId, name)
+  const routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
   const availabilityScheduleActive = hasAvailabilityScheduleActiveInput
     ? normalizeApiKeyAvailabilityScheduleActiveOverride(input.availabilityScheduleActive, availabilitySchedule)
     : apiKeyAvailabilityScheduleActiveValue(availabilitySchedule, nowDate)
-  const groupRouteStrategy = normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
-  const groupBindings = apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), bindings)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: undefined,
-    name: normalizedApiKeyName(input.name),
+    name,
     description: normalizeOptionalApiKeyDescription(input.description),
     keyPrefix,
     keySuffix,
     status: normalizeApiKeyStatus(input.status, 'active'),
-    clientProfile,
-    routeMode,
-    groupRouteStrategy,
-    hybridRoutingConfig,
-    explicitHybridRouteRules,
-    groupBindings,
+    routeStrategyId,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
     availabilitySchedule,
     availabilityScheduleActive: availabilitySchedule?.enabled ? availabilityScheduleActive !== 0 : undefined,
-    usage: emptyAccountUsageSummary(),
+    usage: {
+      requestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheReadCost: 0,
+      totalTokens: 0,
+      totalCost: 0
+    },
     key
   }
-  const client = await getApiKeyDatabaseClient()
   try {
     await client.transaction(async (tx) => {
-      await assertApiKeyNameAvailableAsync(tx, systemAccountId, record.name)
       const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
       const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
-      const insertColumns = [
-        'id',
-        'system_account_id',
-        'name',
-        'description',
-        'key_hash',
-        'key_prefix',
-        'key_suffix',
-        'key_secret_encrypted',
-        'status',
-        'client_profile',
-        'route_mode',
-        'group_route_strategy',
-        'hybrid_routing_config_json',
-        'explicit_hybrid_route_rules_json',
-        'expires_at',
-        'quota_limits_json',
-        'availability_schedule_json',
-        'availability_schedule_active',
-        'availability_schedule_next_check_at',
-        'created_at',
-        'updated_at'
-      ]
-      const insertValues = [
+      await tx.execute(`
+        INSERT INTO ${apiKeyTable(tx, 'api_keys')} (
+          id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+          key_secret_encrypted, status, expires_at, quota_limits_json, availability_schedule_json,
+          availability_schedule_active, availability_schedule_next_check_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
         record.id,
         systemAccountId,
+        routeStrategyId,
         record.name,
         record.description ?? null,
         hashSecret(key),
@@ -471,11 +373,6 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
         record.keySuffix,
         encryptJson({ key }),
         record.status,
-        record.clientProfile,
-        record.routeMode,
-        record.groupRouteStrategy,
-        hybridRoutingConfigJson(record.hybridRoutingConfig),
-        explicitHybridRouteRulesJson(record.explicitHybridRouteRules),
         record.expiresAt ?? null,
         quotaLimitsJson,
         apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
@@ -483,13 +380,8 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
         availabilityScheduleNextCheckAt,
         now,
         now
-      ]
-      await tx.execute(`
-        INSERT INTO ${apiKeyTable(tx, 'api_keys')} (${insertColumns.join(', ')})
-        VALUES (${insertColumns.map(() => '?').join(', ')})
-      `, insertValues)
+      ])
       await rememberRequestQuotaHourlyWindowsFromLimitsAsync(tx, record.quotaLimits, now)
-      await replaceApiKeyGroupBindingsAsync(tx, record.id, systemAccountId, bindings, now)
     })
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
@@ -509,70 +401,25 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
 export function updateApiKey(id: string, input: Record<string, unknown>, access?: AccessScope): ApiKeySummary | undefined {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 更新参数')
   const systemAccountId = apiKeySystemAccountId(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
-    return undefined
-  }
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
   const currentRow = getBusinessDatabase()
-    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id WHERE api_keys.id = ? AND api_keys.system_account_id = ?`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys ${apiKeyListJoins()} WHERE api_keys.id = ? AND api_keys.system_account_id = ?`)
     .get(id, systemAccountId) as unknown as ApiKeyRow | undefined
   const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false })[0] : undefined
-  if (!current) {
-    return undefined
-  }
+  if (!current || !currentRow) return undefined
 
-  const hasRouteModeInput = Object.prototype.hasOwnProperty.call(input, 'routeMode')
-  const nextRouteMode = hasRouteModeInput
-    ? normalizeApiKeyRouteMode(input.routeMode)
-    : current.routeMode
-  const hasBindingInput = hasApiKeyGroupBindingInput(input)
-  const nextBindings = hasBindingInput
-    ? normalizeApiKeyGroupBindings(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId, {
-      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId)
-    })
-    : undefined
-  const effectiveBindings = nextBindings ?? current.groupBindings.map((binding) => ({
-    groupId: binding.groupId,
-    status: binding.status,
-    groupEnabled: binding.groupEnabled
-  }))
-  const hasHybridRoutingConfigInput = Object.prototype.hasOwnProperty.call(input, 'hybridRoutingConfig')
-  const nextHybridRoutingConfig = (hasHybridRoutingConfigInput || hasRouteModeInput || hasBindingInput)
-    ? normalizeApiKeyHybridRoutingConfigForWrite(
-      hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig,
-      nextRouteMode,
-      effectiveBindings
-    )
-    : current.hybridRoutingConfig
-  const hasExplicitHybridRouteRulesInput = Object.prototype.hasOwnProperty.call(input, 'explicitHybridRouteRules')
-  const nextExplicitHybridRouteRules = (hasExplicitHybridRouteRulesInput || hasBindingInput)
-    ? normalizeApiKeyExplicitHybridRouteRulesForWrite(
-      hasExplicitHybridRouteRulesInput ? input.explicitHybridRouteRules : current.explicitHybridRouteRules,
-      effectiveBindings
-    )
-    : current.explicitHybridRouteRules
-  const hasClientProfileInput = Object.prototype.hasOwnProperty.call(input, 'clientProfile')
-  const nextClientProfile = hasClientProfileInput
-    ? normalizeApiKeyClientProfile(input.clientProfile, current.clientProfile)
-    : current.clientProfile
+  const hasRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'routeStrategyId')
+  let nextRouteStrategyId = hasRouteStrategyInput
+    ? assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
+    : current.routeStrategyId
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
-  const nextExpiresAt = hasExpiresAtInput
-    ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
-    : current.expiresAt
+  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   const hasAvailabilityScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
-  const nextAvailabilitySchedule = hasAvailabilityScheduleInput
-    ? apiKeyAvailabilityScheduleFromRequest(input)
-    : current.availabilitySchedule
-  const hasGroupRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'groupRouteStrategy')
-  const nextGroupRouteStrategy = hasGroupRouteStrategyInput
-    ? normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
-    : current.groupRouteStrategy
-  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
-  const nextManualStatus = hasStatusInput
-    ? normalizeApiKeyStatus(input.status, current.status)
-    : current.status
+  const nextManualStatus = hasStatusInput ? normalizeApiKeyStatus(input.status, current.status) : current.status
+  const nextAvailabilitySchedule = hasAvailabilityScheduleInput ? apiKeyAvailabilityScheduleFromRequest(input) : current.availabilitySchedule
   const nextAvailabilityScheduleActive = nextApiKeyAvailabilityScheduleActiveValue({
-    currentActive: currentRow?.availability_schedule_active,
+    currentActive: currentRow.availability_schedule_active,
     hasScheduleInput: hasAvailabilityScheduleInput,
     hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
     hasStatusInput,
@@ -585,13 +432,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextManualStatus,
-    clientProfile: nextClientProfile,
-    routeMode: nextRouteMode,
-    groupRouteStrategy: nextGroupRouteStrategy,
-    hybridRoutingConfig: nextHybridRoutingConfig,
-    explicitHybridRouteRules: nextExplicitHybridRouteRules,
-    groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
-    expiresAt: nextExpiresAt,
+    routeStrategyId: nextRouteStrategyId,
+    expiresAt: hasExpiresAtInput ? normalizeOptionalApiKeyExpiresAt(input.expiresAt) : current.expiresAt,
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
     availabilitySchedule: nextAvailabilitySchedule
   }
@@ -603,46 +445,29 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   try {
     const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(next.availabilitySchedule, nowDate)
-    const updates = [
-      'name = ?',
-      'description = ?',
-      'status = ?',
-      'client_profile = ?',
-      'route_mode = ?',
-      'group_route_strategy = ?',
-      'hybrid_routing_config_json = ?',
-      'explicit_hybrid_route_rules_json = ?',
-      'expires_at = ?',
-      'quota_limits_json = ?',
-      'availability_schedule_json = ?',
-      'availability_schedule_active = ?',
-      'availability_schedule_next_check_at = ?',
-      'updated_at = ?'
-    ]
-    const updateValues = [
-      next.name,
-      next.description ?? null,
-      next.status,
-      next.clientProfile,
-      next.routeMode,
-      next.groupRouteStrategy,
-      hybridRoutingConfigJson(next.hybridRoutingConfig),
-      explicitHybridRouteRulesJson(next.explicitHybridRouteRules),
-      next.expiresAt ?? null,
-      quotaLimitsJson,
-      apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
-      nextAvailabilityScheduleActive,
-      availabilityScheduleNextCheckAt,
-      now
-    ]
-    updateValues.push(id, systemAccountId)
     database
-      .prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ? AND system_account_id = ?`)
-      .run(...updateValues)
+      .prepare(`
+        UPDATE api_keys
+        SET name = ?, description = ?, route_strategy_id = ?, status = ?, expires_at = ?,
+            quota_limits_json = ?, availability_schedule_json = ?, availability_schedule_active = ?,
+            availability_schedule_next_check_at = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `)
+      .run(
+        next.name,
+        next.description ?? null,
+        nextRouteStrategyId,
+        next.status,
+        next.expiresAt ?? null,
+        quotaLimitsJson,
+        apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
+        nextAvailabilityScheduleActive,
+        availabilityScheduleNextCheckAt,
+        now,
+        id,
+        systemAccountId
+      )
     rememberRequestQuotaHourlyWindowsFromJson(quotaLimitsJson, database, now)
-    if (nextBindings) {
-      replaceApiKeyGroupBindings(database, id, systemAccountId, nextBindings, now)
-    }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -664,75 +489,29 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
 export async function updateApiKeyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<ApiKeySummary | undefined> {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 更新参数')
   const systemAccountId = await apiKeySystemAccountIdAsync(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
-    return undefined
-  }
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
   const client = await getApiKeyDatabaseClient()
   const currentRow = await client.one<ApiKeyRow>(`
     SELECT ${apiKeyListColumns()}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    LEFT JOIN ${apiKeyTable(client, 'system_accounts')} system_accounts
-      ON system_accounts.id = api_keys.system_account_id
+    ${apiKeyListJoinsForClient(client)}
     WHERE api_keys.id = ? AND api_keys.system_account_id = ?
   `, [id, systemAccountId])
   const current = currentRow ? (await apiKeySummariesFromRowsAsync([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false }))[0] : undefined
-  if (!current) {
-    return undefined
-  }
+  if (!current || !currentRow) return undefined
 
-  const hasRouteModeInput = Object.prototype.hasOwnProperty.call(input, 'routeMode')
-  const nextRouteMode = hasRouteModeInput
-    ? normalizeApiKeyRouteMode(input.routeMode)
-    : current.routeMode
-  const hasBindingInput = hasApiKeyGroupBindingInput(input)
-  const nextBindings = hasBindingInput
-    ? await normalizeApiKeyGroupBindingsAsync(apiKeyGroupBindingInputsFromRequest(input) ?? [], systemAccountId, {
-      retainableGroupIds: current.groupBindings.map((binding) => binding.groupId)
-    })
-    : undefined
-  const effectiveBindings = nextBindings ?? current.groupBindings.map((binding) => ({
-    groupId: binding.groupId,
-    status: binding.status,
-    groupEnabled: binding.groupEnabled
-  }))
-  const hasHybridRoutingConfigInput = Object.prototype.hasOwnProperty.call(input, 'hybridRoutingConfig')
-  const nextHybridRoutingConfig = (hasHybridRoutingConfigInput || hasRouteModeInput || hasBindingInput)
-    ? normalizeApiKeyHybridRoutingConfigForWrite(
-      hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig,
-      nextRouteMode,
-      effectiveBindings
-    )
-    : current.hybridRoutingConfig
-  const hasExplicitHybridRouteRulesInput = Object.prototype.hasOwnProperty.call(input, 'explicitHybridRouteRules')
-  const nextExplicitHybridRouteRules = (hasExplicitHybridRouteRulesInput || hasBindingInput)
-    ? normalizeApiKeyExplicitHybridRouteRulesForWrite(
-      hasExplicitHybridRouteRulesInput ? input.explicitHybridRouteRules : current.explicitHybridRouteRules,
-      effectiveBindings
-    )
-    : current.explicitHybridRouteRules
-  const hasClientProfileInput = Object.prototype.hasOwnProperty.call(input, 'clientProfile')
-  const nextClientProfile = hasClientProfileInput
-    ? normalizeApiKeyClientProfile(input.clientProfile, current.clientProfile)
-    : current.clientProfile
+  const hasRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'routeStrategyId')
+  let nextRouteStrategyId = hasRouteStrategyInput
+    ? await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
+    : current.routeStrategyId
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
-  const nextExpiresAt = hasExpiresAtInput
-    ? normalizeOptionalApiKeyExpiresAt(input.expiresAt)
-    : current.expiresAt
+  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   const hasAvailabilityScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
   const hasAvailabilityScheduleActiveInput = Object.prototype.hasOwnProperty.call(input, 'availabilityScheduleActive')
-  const nextAvailabilitySchedule = hasAvailabilityScheduleInput
-    ? apiKeyAvailabilityScheduleFromRequest(input)
-    : current.availabilitySchedule
-  const hasGroupRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'groupRouteStrategy')
-  const nextGroupRouteStrategy = hasGroupRouteStrategyInput
-    ? normalizeApiKeyGroupRouteStrategy(input.groupRouteStrategy)
-    : current.groupRouteStrategy
-  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
-  const nextManualStatus = hasStatusInput
-    ? normalizeApiKeyStatus(input.status, current.status)
-    : current.status
+  const nextManualStatus = hasStatusInput ? normalizeApiKeyStatus(input.status, current.status) : current.status
+  const nextAvailabilitySchedule = hasAvailabilityScheduleInput ? apiKeyAvailabilityScheduleFromRequest(input) : current.availabilitySchedule
   const nextAvailabilityScheduleActive = nextApiKeyAvailabilityScheduleActiveValue({
-    currentActive: currentRow?.availability_schedule_active,
+    currentActive: currentRow.availability_schedule_active,
     hasScheduleInput: hasAvailabilityScheduleInput,
     hasScheduleActiveInput: hasAvailabilityScheduleActiveInput,
     hasStatusInput,
@@ -745,13 +524,8 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
     name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextManualStatus,
-    clientProfile: nextClientProfile,
-    routeMode: nextRouteMode,
-    groupRouteStrategy: nextGroupRouteStrategy,
-    hybridRoutingConfig: nextHybridRoutingConfig,
-    explicitHybridRouteRules: nextExplicitHybridRouteRules,
-    groupBindings: nextBindings ? apiKeyGroupBindingSummariesForRecord(recordlessBindingPrefix(), nextBindings) : current.groupBindings,
-    expiresAt: nextExpiresAt,
+    routeStrategyId: nextRouteStrategyId,
+    expiresAt: hasExpiresAtInput ? normalizeOptionalApiKeyExpiresAt(input.expiresAt) : current.expiresAt,
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
     availabilitySchedule: nextAvailabilitySchedule
   }
@@ -762,31 +536,17 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
       const nowDate = new Date(now)
       const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
       const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(next.availabilitySchedule, nowDate)
-      const updates = [
-        'name = ?',
-        'description = ?',
-        'status = ?',
-        'client_profile = ?',
-        'route_mode = ?',
-        'group_route_strategy = ?',
-        'hybrid_routing_config_json = ?',
-        'explicit_hybrid_route_rules_json = ?',
-        'expires_at = ?',
-        'quota_limits_json = ?',
-        'availability_schedule_json = ?',
-        'availability_schedule_active = ?',
-        'availability_schedule_next_check_at = ?',
-        'updated_at = ?'
-      ]
-      const updateValues = [
+      await tx.execute(`
+        UPDATE ${apiKeyTable(tx, 'api_keys')}
+        SET name = ?, description = ?, route_strategy_id = ?, status = ?, expires_at = ?,
+            quota_limits_json = ?, availability_schedule_json = ?, availability_schedule_active = ?,
+            availability_schedule_next_check_at = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `, [
         next.name,
         next.description ?? null,
+        nextRouteStrategyId,
         next.status,
-        next.clientProfile,
-        next.routeMode,
-        next.groupRouteStrategy,
-        hybridRoutingConfigJson(next.hybridRoutingConfig),
-        explicitHybridRouteRulesJson(next.explicitHybridRouteRules),
         next.expiresAt ?? null,
         quotaLimitsJson,
         apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
@@ -795,16 +555,8 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
         now,
         id,
         systemAccountId
-      ]
-      await tx.execute(`
-        UPDATE ${apiKeyTable(tx, 'api_keys')}
-        SET ${updates.join(', ')}
-        WHERE id = ? AND system_account_id = ?
-      `, updateValues)
+      ])
       await rememberRequestQuotaHourlyWindowsFromLimitsAsync(tx, next.quotaLimits, now)
-      if (nextBindings) {
-        await replaceApiKeyGroupBindingsAsync(tx, id, systemAccountId, nextBindings, now)
-      }
     })
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
@@ -862,9 +614,7 @@ function apiKeyAvailabilityScheduleActiveValue(
 
 export function refreshApiKeySecret(id: string, access?: AccessScope): (ApiKeySummary & { key: string }) | undefined {
   const systemAccountId = apiKeySystemAccountId(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
-    return undefined
-  }
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
@@ -872,17 +622,11 @@ export function refreshApiKeySecret(id: string, access?: AccessScope): (ApiKeySu
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE api_keys
-      SET key_hash = ?,
-          key_prefix = ?,
-          key_suffix = ?,
-          key_secret_encrypted = ?,
-          updated_at = ?
+      SET key_hash = ?, key_prefix = ?, key_suffix = ?, key_secret_encrypted = ?, updated_at = ?
       WHERE id = ? AND system_account_id = ?
     `)
     .run(hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId)
-  if (result.changes <= 0) {
-    return undefined
-  }
+  if (result.changes <= 0) return undefined
   invalidateGatewayApiKeyCacheById(id)
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
@@ -893,9 +637,7 @@ export function refreshApiKeySecret(id: string, access?: AccessScope): (ApiKeySu
 
 export async function refreshApiKeySecretAsync(id: string, access?: AccessScope): Promise<(ApiKeySummary & { key: string }) | undefined> {
   const systemAccountId = await apiKeySystemAccountIdAsync(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
-    return undefined
-  }
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
@@ -903,16 +645,10 @@ export async function refreshApiKeySecretAsync(id: string, access?: AccessScope)
   const client = await getApiKeyDatabaseClient()
   const result = await client.execute(`
     UPDATE ${apiKeyTable(client, 'api_keys')}
-    SET key_hash = ?,
-        key_prefix = ?,
-        key_suffix = ?,
-        key_secret_encrypted = ?,
-        updated_at = ?
+    SET key_hash = ?, key_prefix = ?, key_suffix = ?, key_secret_encrypted = ?, updated_at = ?
     WHERE id = ? AND system_account_id = ?
   `, [hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId])
-  if (result.changes <= 0) {
-    return undefined
-  }
+  if (result.changes <= 0) return undefined
   invalidateGatewayApiKeyCacheById(id)
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
@@ -942,37 +678,23 @@ export async function deleteApiKeyAsync(id: string, access?: AccessScope): Promi
 export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope): ApiKeyDeleteResult {
   const scope = buildSystemAccountScopeClause(access)
   const database = getBusinessDatabase()
-  const row = database.prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`).get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
-  if (!row) {
-    return { deleted: false }
-  }
+  const row = database
+    .prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`)
+    .get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
+  if (!row) return { deleted: false }
 
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    database.prepare('DELETE FROM api_key_group_bindings WHERE api_key_id = ?').run(row.id)
-    const result = database.prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?').run(row.id, row.system_account_id)
-    commitDatabaseTransaction(database, transactionStarted)
-    if (result.changes > 0) {
-      invalidateGatewayApiKeyCacheById(row.id)
-      invalidateApiKeyLookupCache(row.id)
-      notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
-      notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
-    }
-    return {
-      deleted: result.changes > 0,
-      cleanupTarget: result.changes > 0
-        ? {
-          apiKeyId: row.id,
-          systemAccountId: row.system_account_id
-        }
-        : undefined
-    }
-  } catch (error) {
-    try {
-      rollbackDatabaseTransaction(database, transactionStarted)
-    } catch {
-    }
-    throw error
+  const result = database
+    .prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?')
+    .run(row.id, row.system_account_id)
+  if (result.changes > 0) {
+    invalidateGatewayApiKeyCacheById(row.id)
+    invalidateApiKeyLookupCache(row.id)
+    notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
+    notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
+  }
+  return {
+    deleted: result.changes > 0,
+    cleanupTarget: result.changes > 0 ? { apiKeyId: row.id, systemAccountId: row.system_account_id } : undefined
   }
 }
 
@@ -984,22 +706,13 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
     FROM ${apiKeyTable(client, 'api_keys')}
     WHERE id = ?${scope.clause}
   `, [id, ...scope.params])
-  if (!row) {
-    return { deleted: false }
-  }
+  if (!row) return { deleted: false }
 
-  let deleted = false
-  await client.transaction(async (tx) => {
-    await tx.execute(`
-      DELETE FROM ${apiKeyTable(tx, 'api_key_group_bindings')}
-      WHERE api_key_id = ?
-    `, [row.id])
-    const result = await tx.execute(`
-      DELETE FROM ${apiKeyTable(tx, 'api_keys')}
-      WHERE id = ? AND system_account_id = ?
-    `, [row.id, row.system_account_id])
-    deleted = result.changes > 0
-  })
+  const result = await client.execute(`
+    DELETE FROM ${apiKeyTable(client, 'api_keys')}
+    WHERE id = ? AND system_account_id = ?
+  `, [row.id, row.system_account_id])
+  const deleted = result.changes > 0
   if (deleted) {
     invalidateGatewayApiKeyCacheById(row.id)
     invalidateApiKeyLookupCache(row.id)
@@ -1008,222 +721,8 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
   }
   return {
     deleted,
-    cleanupTarget: deleted
-      ? {
-        apiKeyId: row.id,
-        systemAccountId: row.system_account_id
-      }
-      : undefined
+    cleanupTarget: deleted ? { apiKeyId: row.id, systemAccountId: row.system_account_id } : undefined
   }
-}
-
-function hasApiKeyGroupBindingInput(input: Record<string, unknown>): boolean {
-  return Object.prototype.hasOwnProperty.call(input, 'groupBindings')
-}
-
-function apiKeyGroupBindingInputsFromRequest(input: Record<string, unknown>): ApiKeyGroupBindingInput[] | undefined {
-  const rawBindings = Object.prototype.hasOwnProperty.call(input, 'groupBindings') ? input.groupBindings : undefined
-  if (rawBindings !== undefined) {
-    if (!Array.isArray(rawBindings) || rawBindings.length === 0) {
-      throw new Error('API Key 至少需要绑定一个分组')
-    }
-    return rawBindings.map(apiKeyGroupBindingInputFromUnknown)
-  }
-  return undefined
-}
-
-function apiKeyGroupBindingInputFromUnknown(value: unknown, index: number): ApiKeyGroupBindingInput {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('API Key 分组绑定参数无效')
-  }
-  const item = value as Record<string, unknown> & { groupId?: unknown; priority?: unknown; weight?: unknown; status?: unknown }
-  assertKnownInputKeys(item, apiKeyGroupBindingInputKeys, 'API Key 分组绑定参数')
-  const groupId = optionalString(item.groupId)?.trim()
-  if (!groupId) {
-    throw new Error('API Key 分组无效')
-  }
-  const rawPriority = item.priority
-  const priority = rawPriority === undefined
-    ? index + 1
-    : normalizeApiKeyGroupBindingPriority(rawPriority)
-  const status = normalizeApiKeyGroupBindingStatus(item.status)
-  return { groupId, priority, weight: normalizeApiKeyGroupBindingWeight(item.weight), status }
-}
-
-function normalizeApiKeyGroupBindings(
-  inputs: ApiKeyGroupBindingInput[],
-  systemAccountId: string,
-  options: { retainableGroupIds?: string[] } = {}
-): ApiKeyGroupBindingWrite[] {
-  if (!inputs.length) {
-    throw new Error('API Key 至少需要绑定一个分组')
-  }
-  if (inputs.length > maxApiKeyGroupBindings) {
-    throw new Error(`API Key 最多绑定 ${maxApiKeyGroupBindings} 个分组`)
-  }
-  const seenGroupIds = new Set<string>()
-  const activePriorities = new Set<number>()
-  const normalized = inputs.map((input) => {
-    const groupId = input.groupId.trim()
-    if (!groupId) {
-      throw new Error('API Key 分组无效')
-    }
-    if (seenGroupIds.has(groupId)) {
-      throw new Error('API Key 绑定分组不能重复')
-    }
-    seenGroupIds.add(groupId)
-    if (input.status === 'active') {
-      if (activePriorities.has(input.priority)) {
-        throw new Error('API Key 启用分组优先级不能重复')
-      }
-      activePriorities.add(input.priority)
-    }
-    return {
-      groupId,
-      priority: input.priority,
-      weight: input.weight,
-      status: input.status
-    }
-  })
-  if (!normalized.some((binding) => binding.status === 'active')) {
-    throw new Error('API Key 至少需要一个启用分组')
-  }
-
-  const groups = loadApiKeyBindableGroups([...seenGroupIds], systemAccountId)
-  const retainableGroupIds = new Set((options.retainableGroupIds ?? []).filter(Boolean))
-  return normalized
-    .map((binding) => {
-      const group = groups.get(binding.groupId)
-      const canBindNow = group ? canBindApiKeyGroup(binding.groupId, systemAccountId) : false
-      if (!group || (!canBindNow && !retainableGroupIds.has(binding.groupId))) {
-        throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
-      }
-      if (binding.status === 'active' && group.enabled === 0) {
-        throw new Error(`API Key 不能启用已停用分组：${group.name ?? binding.groupId}`)
-      }
-      return {
-        ...binding,
-        weight: normalizeApiKeyGroupBindingWeight(binding.weight),
-        groupName: group.name ?? undefined,
-        providerCode: group.provider_code,
-        providerProtocolProfileId: group.provider_protocol_profile_id,
-        protocolCode: group.protocol_code,
-        protocolVersion: group.protocol_version,
-        groupEnabled: group.enabled !== 0
-      }
-    })
-    .sort((left, right) => left.priority - right.priority || left.groupId.localeCompare(right.groupId))
-}
-
-function loadApiKeyBindableGroups(groupIds: string[], systemAccountId: string): Map<string, ApiKeyBindableGroupRow> {
-  const ids = [...new Set(groupIds.filter(Boolean))]
-  const result = new Map<string, ApiKeyBindableGroupRow>()
-  if (!ids.length) return result
-  const database = getBusinessDatabase()
-  const now = nowIso()
-  for (const chunk of chunkValues(ids, 500)) {
-    const rows = database
-      .prepare(`
-        SELECT
-          groups.id,
-          groups.system_account_id,
-          groups.provider_code,
-          groups.provider_protocol_profile_id,
-          groups.protocol_code,
-          groups.protocol_version,
-          groups.name,
-          CASE
-            WHEN groups.system_account_id = ? THEN groups.enabled
-            WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
-            ELSE 0
-          END AS enabled
-        FROM groups
-        LEFT JOIN resource_authorizations group_authorization
-          ON group_authorization.resource_type = 'group'
-          AND group_authorization.resource_id = groups.id
-          AND group_authorization.grantee_system_account_id = ?
-          AND group_authorization.status = 'active'
-          AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
-        LEFT JOIN group_authorization_settings
-          ON group_authorization_settings.authorization_id = group_authorization.id
-          AND group_authorization_settings.system_account_id = ?
-          AND group_authorization_settings.group_id = groups.id
-        WHERE groups.id IN (${sqlPlaceholders(chunk.length)})
-      `)
-      .all(systemAccountId, systemAccountId, now, systemAccountId, ...chunk) as unknown as ApiKeyBindableGroupRow[]
-    for (const row of rows) {
-      result.set(row.id, row)
-    }
-  }
-  return result
-}
-
-function normalizeApiKeyHybridRoutingConfigForWrite(
-  value: unknown,
-  routeMode: ApiKeySummary['routeMode'],
-  _bindings: Array<Pick<ApiKeyGroupBindingWrite, 'groupId' | 'status' | 'groupEnabled'>>
-): ApiKeySummary['hybridRoutingConfig'] {
-  if (routeMode !== 'hybrid') {
-    return undefined
-  }
-  return normalizeHybridRoutingConfig(value)
-}
-
-function normalizeApiKeyExplicitHybridRouteRulesForWrite(
-  value: unknown,
-  bindings: Array<Pick<ApiKeyGroupBindingWrite, 'groupId' | 'status' | 'groupEnabled'>>
-): ApiKeySummary['explicitHybridRouteRules'] {
-  const rules = normalizeExplicitHybridRouteRules(value)
-  if (!rules?.length) return undefined
-  const activeBindingGroupIds = new Set(
-    bindings
-      .filter((binding) => binding.status === 'active' && binding.groupEnabled)
-      .map((binding) => binding.groupId)
-  )
-  const invalidTargetGroupIds = rules
-    .map((rule) => rule.targetGroupId)
-    .filter((groupId) => !activeBindingGroupIds.has(groupId))
-  if (invalidTargetGroupIds.length) {
-    throw new Error(`显式混合路由目标分组必须是当前 API Key 已绑定且启用的分组：${[...new Set(invalidTargetGroupIds)].slice(0, 5).join('、')}`)
-  }
-  return rules
-}
-
-function replaceApiKeyGroupBindings(
-  database: DatabaseSync,
-  apiKeyId: string,
-  systemAccountId: string,
-  bindings: ApiKeyGroupBindingWrite[],
-  now: string
-): void {
-  database.prepare('DELETE FROM api_key_group_bindings WHERE api_key_id = ?').run(apiKeyId)
-  const statement = database.prepare(`
-    INSERT INTO api_key_group_bindings (id, api_key_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  for (const binding of bindings) {
-    statement.run(newId('akgb'), apiKeyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now)
-  }
-}
-
-function apiKeyGroupBindingSummariesForRecord(idPrefix: string, bindings: ApiKeyGroupBindingWrite[]): ApiKeyGroupBindingSummary[] {
-  return bindings.map((binding, index) => ({
-    id: `${idPrefix}${index + 1}`,
-    groupId: binding.groupId,
-    groupName: binding.groupName,
-    providerCode: binding.providerCode,
-    providerProtocolProfileId: binding.providerProtocolProfileId,
-    protocolCode: binding.protocolCode,
-    protocolVersion: binding.protocolVersion,
-    priority: binding.priority,
-    weight: binding.weight,
-    status: binding.status,
-    groupEnabled: binding.groupEnabled
-  }))
-}
-
-function recordlessBindingPrefix(): string {
-  return 'pending:'
 }
 
 function normalizedApiKeyName(value: unknown): string {
@@ -1247,7 +746,7 @@ function normalizeOptionalApiKeyDescription(value: unknown): string | undefined 
 }
 
 function normalizeOptionalApiKeyExpiresAt(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined
+  if (value === undefined || value === null || value === '') return undefined
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('API Key 过期时间必须是有效时间字符串')
   }
@@ -1264,19 +763,6 @@ function normalizeApiKeyStatus(value: unknown, fallback: 'active' | 'disabled'):
   throw new Error('API Key 状态无效')
 }
 
-function normalizeApiKeyGroupBindingPriority(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new Error('API Key 分组优先级必须是大于 0 的整数')
-  }
-  return value
-}
-
-function normalizeApiKeyGroupBindingStatus(value: unknown): 'active' | 'disabled' {
-  if (value === undefined) return 'active'
-  if (value === 'active' || value === 'disabled') return value
-  throw new Error('API Key 分组绑定状态无效')
-}
-
 function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
   const unknownKeys = Object.keys(input).filter((key) => !allowedKeys.has(key))
   if (unknownKeys.length) {
@@ -1287,9 +773,7 @@ function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: Reado
 function assertApiKeyNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
   const params: string[] = [systemAccountId, name]
   const excludeClause = excludeId ? ' AND id <> ?' : ''
-  if (excludeId) {
-    params.push(excludeId)
-  }
+  if (excludeId) params.push(excludeId)
   const row = getBusinessDatabase()
     .prepare(`SELECT id FROM api_keys WHERE system_account_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
@@ -1303,188 +787,15 @@ function buildApiKeyFiltersForClient(
   scope: { clause: string; params: string[] },
   options: ReturnType<typeof normalizeApiKeyListOptions>
 ): { clause: string; params: Array<string | number> } {
-  if (client.driver === 'sqlite') {
-    return buildApiKeyFilters(scope, options)
-  }
-  const clauses: string[] = []
-  const params: Array<string | number> = []
-  if (scope.clause) {
-    clauses.push(scope.clause.replace(/^ WHERE /, ''))
-    params.push(...scope.params)
-  }
-  if (options.keyword) {
-    const keywordPrefix = `${escapeLikePrefix(options.keyword)}%`
-    clauses.push("(lower(api_keys.name) = lower(?) OR lower(api_keys.name) LIKE lower(?) ESCAPE '\\')")
-    params.push(options.keyword, keywordPrefix)
-  }
-  if (options.status) {
-    if (options.status === 'active') {
-      clauses.push("api_keys.status = 'active' AND api_keys.availability_schedule_active = 1")
-    } else {
-      clauses.push("(api_keys.status = 'disabled' OR api_keys.availability_schedule_active <> 1)")
-    }
-  }
-  if (options.groupId) {
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM ${apiKeyTable(client, 'api_key_group_bindings')} api_key_group_bindings
-      WHERE api_key_group_bindings.api_key_id = api_keys.id
-        AND api_key_group_bindings.group_id = ?
-    )`)
-    params.push(options.groupId)
-  }
+  if (client.driver === 'sqlite') return buildApiKeyFilters(scope, options)
+  const filters = buildApiKeyFilters(scope, options)
   return {
-    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
-    params
+    clause: filters.clause
+      .replace('COLLATE NOCASE = ?', '= ?')
+      .replace('api_keys.name LIKE ?', 'api_keys.name ILIKE ?')
+      .replace('FROM route_strategy_groups', `FROM ${apiKeyTable(client, 'route_strategy_groups')}`),
+    params: filters.params
   }
-}
-
-async function normalizeApiKeyGroupBindingsAsync(
-  inputs: ApiKeyGroupBindingInput[],
-  systemAccountId: string,
-  options: { retainableGroupIds?: string[] } = {}
-): Promise<ApiKeyGroupBindingWrite[]> {
-  if (!inputs.length) {
-    throw new Error('API Key 至少需要绑定一个分组')
-  }
-  if (inputs.length > maxApiKeyGroupBindings) {
-    throw new Error(`API Key 最多绑定 ${maxApiKeyGroupBindings} 个分组`)
-  }
-  const seenGroupIds = new Set<string>()
-  const activePriorities = new Set<number>()
-  const normalized = inputs.map((input) => {
-    const groupId = input.groupId.trim()
-    if (!groupId) {
-      throw new Error('API Key 分组无效')
-    }
-    if (seenGroupIds.has(groupId)) {
-      throw new Error('API Key 绑定分组不能重复')
-    }
-    seenGroupIds.add(groupId)
-    if (input.status === 'active') {
-      if (activePriorities.has(input.priority)) {
-        throw new Error('API Key 启用分组优先级不能重复')
-      }
-      activePriorities.add(input.priority)
-    }
-    return {
-      groupId,
-      priority: input.priority,
-      weight: input.weight,
-      status: input.status
-    }
-  })
-  if (!normalized.some((binding) => binding.status === 'active')) {
-    throw new Error('API Key 至少需要一个启用分组')
-  }
-
-  const groups = await loadApiKeyBindableGroupsAsync([...seenGroupIds], systemAccountId)
-  const retainableGroupIds = new Set((options.retainableGroupIds ?? []).filter(Boolean))
-  const result: ApiKeyGroupBindingWrite[] = []
-  for (const binding of normalized) {
-    const group = groups.get(binding.groupId)
-    const canBindNow = group ? await canBindApiKeyGroupAsync(binding.groupId, systemAccountId) : false
-    if (!group || (!canBindNow && !retainableGroupIds.has(binding.groupId))) {
-      throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
-    }
-    if (binding.status === 'active' && Number(group.enabled) === 0) {
-      throw new Error(`API Key 不能启用已停用分组：${group.name ?? binding.groupId}`)
-    }
-    result.push({
-      ...binding,
-      weight: normalizeApiKeyGroupBindingWeight(binding.weight),
-      groupName: group.name ?? undefined,
-      providerCode: group.provider_code,
-      providerProtocolProfileId: group.provider_protocol_profile_id,
-      protocolCode: group.protocol_code,
-      protocolVersion: group.protocol_version,
-      groupEnabled: Number(group.enabled) !== 0
-    })
-  }
-  return result.sort((left, right) => left.priority - right.priority || left.groupId.localeCompare(right.groupId))
-}
-
-async function loadApiKeyBindableGroupsAsync(groupIds: string[], systemAccountId: string): Promise<Map<string, ApiKeyBindableGroupRow>> {
-  const ids = [...new Set(groupIds.filter(Boolean))]
-  const result = new Map<string, ApiKeyBindableGroupRow>()
-  if (!ids.length) return result
-  const client = await getApiKeyDatabaseClient()
-  const now = nowIso()
-  for (const chunk of chunkValues(ids, 500)) {
-    const rows = await client.query<ApiKeyBindableGroupRow>(`
-      SELECT
-        groups.id,
-        groups.system_account_id,
-        groups.provider_code,
-        groups.provider_protocol_profile_id,
-        groups.protocol_code,
-        groups.protocol_version,
-        groups.name,
-        CASE
-          WHEN groups.system_account_id = ? THEN groups.enabled
-          WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1 THEN COALESCE(group_authorization_settings.enabled, 1) ELSE 0 END
-          ELSE 0
-        END AS enabled
-      FROM ${apiKeyTable(client, 'groups')} groups
-      LEFT JOIN ${apiKeyTable(client, 'resource_authorizations')} group_authorization
-        ON group_authorization.resource_type = 'group'
-        AND group_authorization.resource_id = groups.id
-        AND group_authorization.grantee_system_account_id = ?
-        AND group_authorization.status = 'active'
-        AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
-      LEFT JOIN ${apiKeyTable(client, 'group_authorization_settings')} group_authorization_settings
-        ON group_authorization_settings.authorization_id = group_authorization.id
-        AND group_authorization_settings.system_account_id = ?
-        AND group_authorization_settings.group_id = groups.id
-      WHERE groups.id IN (${client.dialect.bindPlaceholders(chunk.length)})
-    `, [systemAccountId, systemAccountId, now, systemAccountId, ...chunk])
-    for (const row of rows) {
-      result.set(row.id, row)
-    }
-  }
-  return result
-}
-
-async function canBindApiKeyGroupAsync(groupId: string, systemAccountId: string): Promise<boolean> {
-  const group = await apiKeyGroupOwnerAndProviderAsync(groupId)
-  if (!group) return false
-  if (group.systemAccountId === systemAccountId) return true
-  return activeGroupAuthorizationExistsAsync(groupId, systemAccountId)
-}
-
-async function apiKeyGroupOwnerAndProviderAsync(groupId: string): Promise<ReturnType<typeof apiKeyGroupOwnerAndProvider>> {
-  const client = await getApiKeyDatabaseClient()
-  const row = await client.one<{ system_account_id?: string; provider_code?: string; provider_protocol_profile_id?: string; protocol_code?: string; protocol_version?: string; name?: string }>(`
-    SELECT system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name
-    FROM ${apiKeyTable(client, 'groups')}
-    WHERE id = ?
-  `, [groupId])
-  return row?.system_account_id && row.provider_code && row.provider_protocol_profile_id && row.protocol_code && row.protocol_version
-    ? {
-        systemAccountId: row.system_account_id,
-        providerCode: row.provider_code as ApiKeyBindableGroupRow['provider_code'],
-        providerProtocolProfileId: row.provider_protocol_profile_id,
-        protocolCode: row.protocol_code,
-        protocolVersion: row.protocol_version,
-        name: row.name
-      }
-    : undefined
-}
-
-async function activeGroupAuthorizationExistsAsync(groupId: string, granteeSystemAccountId: string): Promise<boolean> {
-  const client = await getApiKeyDatabaseClient()
-  const now = nowIso()
-  const row = await client.one<{ id?: string }>(`
-    SELECT id
-    FROM ${apiKeyTable(client, 'resource_authorizations')}
-    WHERE resource_type = 'group'
-      AND resource_id = ?
-      AND grantee_system_account_id = ?
-      AND status = 'active'
-      AND (expires_at IS NULL OR expires_at > ?)
-    LIMIT 1
-  `, [groupId, granteeSystemAccountId, now])
-  return Boolean(row?.id)
 }
 
 async function apiKeySystemAccountIdAsync(apiKeyId: string): Promise<string | undefined> {
@@ -1497,31 +808,9 @@ async function apiKeySystemAccountIdAsync(apiKeyId: string): Promise<string | un
   return row?.system_account_id
 }
 
-async function replaceApiKeyGroupBindingsAsync(
-  client: DatabaseClient,
-  apiKeyId: string,
-  systemAccountId: string,
-  bindings: ApiKeyGroupBindingWrite[],
-  now: string
-): Promise<void> {
-  await client.execute(`
-    DELETE FROM ${apiKeyTable(client, 'api_key_group_bindings')}
-    WHERE api_key_id = ?
-  `, [apiKeyId])
-  for (const binding of bindings) {
-    await client.execute(`
-      INSERT INTO ${apiKeyTable(client, 'api_key_group_bindings')} (
-        id, api_key_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [newId('akgb'), apiKeyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now])
-  }
-}
-
 async function rememberRequestQuotaHourlyWindowsFromLimitsAsync(client: DatabaseClient, limits: RequestQuotaLimits, timestamp: string): Promise<void> {
   const hours = limits.hourly?.enabled ? limits.hourly.hours : undefined
-  if (!Number.isInteger(hours) || typeof hours !== 'number') {
-    return
-  }
+  if (!Number.isInteger(hours) || typeof hours !== 'number') return
   await client.execute(`
     INSERT INTO ${apiKeyTable(client, 'request_quota_hourly_window_configs')} (window_hours, created_at, updated_at)
     VALUES (?, ?, ?)
@@ -1552,10 +841,6 @@ function apiKeyTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
-}
-
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function isDuplicateApiKeyNameError(error: unknown): boolean {

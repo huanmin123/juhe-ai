@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
+import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { nowIso } from '../../storage/database.js'
 import {
   createRuntimeLogsBatch,
+  createRuntimeLogsBatchAsync,
   runtimeLogIndexRetentionDays,
   type RuntimeLogIndexInput,
   type RuntimeLogLevel
@@ -23,6 +25,10 @@ const runtimeLogQueueMaxItems = 5_000
 const runtimeLogQueueMaxBytes = 32 * 1024 * 1024
 const runtimeLogQueueSampleDropItemHighWater = Math.floor(runtimeLogQueueMaxItems * 0.8)
 const runtimeLogQueueSampleDropByteHighWater = Math.floor(runtimeLogQueueMaxBytes * 0.8)
+const runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'
+const runtimeLogRedisStreamGroup = 'juhe-ai:runtime-log-index-writers'
+const runtimeLogRedisConsumerErrorRetryMs = 1000
+const runtimeLogRedisStopWaitMs = 2000
 
 interface QueuedRuntimeLog {
   input: RuntimeLogIndexInput
@@ -41,6 +47,11 @@ let droppedRuntimeLogSampledCount = 0
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
+let activeRuntimeLogFlushPromise: Promise<boolean> | undefined
+let runtimeLogRedisStreamQueueInstance: RedisStreamQueue<RuntimeLogIndexInput> | undefined
+let runtimeLogRedisConsumerStarted = false
+let runtimeLogRedisConsumerStopping = false
+let runtimeLogRedisConsumerPromise: Promise<void> | undefined
 
 interface RuntimeLogFlushOptions {
   drain?: boolean
@@ -68,6 +79,12 @@ export interface RuntimeLogIndexRuntime {
 }
 
 export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
+  if (shouldEnqueueRuntimeLogToRedisStream()) {
+    const input = runtimeLogInputFromLine(rawLine, options)
+    if (!input) return
+    void enqueueRuntimeLogToRedisStream(input, rawLine, options)
+    return
+  }
   if (runtimeConfig.processRole === 'db-service') {
     sendRuntimeLogLineFromDbServiceToServer(rawLine, options)
     return
@@ -81,10 +98,13 @@ export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIn
 }
 
 export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
-  assertLocalRuntimeLogIndexAllowed('enqueueRuntimeLogLineLocal')
   const input = runtimeLogInputFromLine(rawLine, options)
   if (!input) return
+  enqueueRuntimeLogInputLocal(input)
+}
 
+function enqueueRuntimeLogInputLocal(input: RuntimeLogIndexInput): void {
+  assertLocalRuntimeLogIndexAllowed('enqueueRuntimeLogLineLocal')
   const queued = {
     input,
     bytes: estimateRuntimeLogBytes(input)
@@ -107,7 +127,39 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogL
   scheduleRuntimeLogFlush(pendingRuntimeLogs.length >= runtimeLogBatchSize ? 0 : runtimeLogFlushIntervalMs)
 }
 
+export function startRuntimeLogRedisStreamConsumer(): void {
+  if (!shouldUseRedisStreamRuntimeLogQueue() || !isRuntimeLogIngestWorker() || runtimeLogRedisConsumerStarted) {
+    return
+  }
+  runtimeLogRedisConsumerStarted = true
+  runtimeLogRedisConsumerStopping = false
+  runtimeLogRedisConsumerPromise = runRuntimeLogRedisStreamConsumer().catch((error) => {
+    writeRuntimeLogIndexError(`Redis Stream 运行日志索引消费循环异常退出：${error instanceof Error ? error.message : String(error)}`)
+  }).finally(() => {
+    runtimeLogRedisConsumerStarted = false
+    runtimeLogRedisConsumerPromise = undefined
+  })
+}
+
+export async function stopRuntimeLogRedisStreamConsumer(): Promise<void> {
+  runtimeLogRedisConsumerStopping = true
+  const queue = runtimeLogRedisStreamQueueInstance
+  if (queue) {
+    await queue.closeConsumer().catch(() => undefined)
+  }
+  if (runtimeLogRedisConsumerPromise) {
+    await Promise.race([
+      runtimeLogRedisConsumerPromise.catch(() => undefined),
+      delay(runtimeLogRedisStopWaitMs)
+    ])
+  }
+}
+
 export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}): boolean {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    void flushRuntimeLogIndexQueueAsync(options)
+    return true
+  }
   if (!isRuntimeLogIngestWorker()) {
     return true
   }
@@ -158,12 +210,93 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   return !failed
 }
 
+export async function flushRuntimeLogIndexQueueAsync(options: RuntimeLogFlushOptions = {}): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return flushRuntimeLogIndexQueue(options)
+  }
+  if (!isRuntimeLogIngestWorker()) {
+    return true
+  }
+  if (flushing) {
+    const result = await (activeRuntimeLogFlushPromise ?? Promise.resolve(true))
+    if (options.drain && pendingRuntimeLogs.length > 0) {
+      return await flushRuntimeLogIndexQueueAsync(options)
+    }
+    return result
+  }
+  if (pendingRuntimeLogs.length === 0) {
+    return true
+  }
+
+  const promise = flushRuntimeLogIndexQueuePostgres(options)
+  activeRuntimeLogFlushPromise = promise
+  try {
+    return await promise
+  } finally {
+    if (activeRuntimeLogFlushPromise === promise) {
+      activeRuntimeLogFlushPromise = undefined
+    }
+  }
+}
+
+async function flushRuntimeLogIndexQueuePostgres(options: RuntimeLogFlushOptions = {}): Promise<boolean> {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+    flushTimerDelayMs = undefined
+  }
+
+  flushing = true
+  let shouldRetry = false
+  let failed = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
+  try {
+    do {
+      const batch = peekRuntimeLogFlushBatch()
+      if (batch.length === 0) {
+        break
+      }
+      flushedBatches += 1
+      const batchBytes = sumQueuedRuntimeLogBytes(batch)
+
+      try {
+        await createRuntimeLogsBatchAsync(batch.map((item) => item.input))
+        removeRuntimeLogFlushBatch(batch, batchBytes)
+        flushLastSuccessAt = nowIso()
+        flushLastError = undefined
+      } catch (error) {
+        failed = true
+        flushLastError = error instanceof Error ? error.message : String(error)
+        writeRuntimeLogIndexError(`运行日志索引写入失败：${flushLastError}`)
+        shouldRetry = options.retryOnFailure !== false
+        break
+      }
+    } while (options.drain && pendingRuntimeLogs.length > 0 && flushedBatches < maxBatches)
+  } finally {
+    flushing = false
+  }
+
+  if (pendingRuntimeLogs.length > 0 && (!failed || shouldRetry)) {
+    scheduleRuntimeLogFlush(shouldRetry ? retryDelayMs(runtimeLogRetryPolicy) : 0)
+  }
+  return !failed
+}
+
 export function flushAllRuntimeLogIndexQueue(): boolean {
   return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false, maxBatches: Number.POSITIVE_INFINITY })
 }
 
+export function flushAllRuntimeLogIndexQueueAsync(): Promise<boolean> {
+  return flushRuntimeLogIndexQueueAsync({ drain: true, retryOnFailure: false, maxBatches: Number.POSITIVE_INFINITY })
+}
+
 export function flushRuntimeLogIndexQueueForShutdown(): boolean {
   return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false, maxBatches: runtimeLogShutdownFlushMaxBatches })
+}
+
+export function flushRuntimeLogIndexQueueForShutdownAsync(): Promise<boolean> {
+  return flushRuntimeLogIndexQueueAsync({ drain: true, retryOnFailure: false, maxBatches: runtimeLogShutdownFlushMaxBatches })
 }
 
 export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
@@ -205,6 +338,12 @@ export function clearRuntimeLogIndexQueueForTest(): void {
   flushLastSuccessAt = undefined
   flushLastError = undefined
   shutdownHooksInstalled = false
+  activeRuntimeLogFlushPromise = undefined
+  runtimeLogRedisConsumerStopping = true
+  runtimeLogRedisConsumerStarted = false
+  runtimeLogRedisConsumerPromise = undefined
+  void runtimeLogRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
+  runtimeLogRedisStreamQueueInstance = undefined
 }
 
 function runtimeLogInputFromLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): RuntimeLogIndexInput | undefined {
@@ -332,7 +471,7 @@ function scheduleRuntimeLogFlush(delayMs: number): void {
   flushTimer = setTimeout(() => {
     flushTimer = undefined
     flushTimerDelayMs = undefined
-    flushRuntimeLogIndexQueue()
+    void flushRuntimeLogIndexQueueAsync()
   }, delayMs)
   flushTimerDelayMs = delayMs
   flushTimer.unref()
@@ -340,6 +479,76 @@ function scheduleRuntimeLogFlush(delayMs: number): void {
 
 function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
+}
+
+async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput, rawLine: string, options: RuntimeLogLineIndexOptions): Promise<void> {
+  try {
+    await runtimeLogRedisStreamQueue().enqueue(input)
+  } catch (error) {
+    flushLastError = error instanceof Error ? error.message : String(error)
+    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，回退到原有队列路径：${flushLastError}`)
+    fallbackRuntimeLogAfterRedisStreamFailure(rawLine, options)
+  }
+}
+
+function fallbackRuntimeLogAfterRedisStreamFailure(rawLine: string, options: RuntimeLogLineIndexOptions): void {
+  if (runtimeConfig.processRole === 'db-service') {
+    sendRuntimeLogLineFromDbServiceToServer(rawLine, options)
+    return
+  }
+  if (shouldDispatchRuntimeLogToIngestWorker()) {
+    sendRuntimeLogLineToWorker(rawLine, options)
+    return
+  }
+  if (isRuntimeLogIngestWorker()) {
+    enqueueRuntimeLogLineLocal(rawLine, options)
+  }
+}
+
+async function runRuntimeLogRedisStreamConsumer(): Promise<void> {
+  const queue = runtimeLogRedisStreamQueue()
+  while (!runtimeLogRedisConsumerStopping) {
+    try {
+      const claimed = await queue.claimPending()
+      const messages = claimed.length > 0 ? claimed : await queue.readNew()
+      if (messages.length === 0) {
+        continue
+      }
+      await flushRuntimeLogRedisStreamMessages(messages)
+    } catch (error) {
+      if (runtimeLogRedisConsumerStopping) {
+        break
+      }
+      flushLastError = error instanceof Error ? error.message : String(error)
+      writeRuntimeLogIndexError(`Redis Stream 运行日志索引消费失败，稍后重试：${flushLastError}`)
+      await delay(runtimeLogRedisConsumerErrorRetryMs)
+    }
+  }
+}
+
+async function flushRuntimeLogRedisStreamMessages(messages: Array<RedisStreamMessage<RuntimeLogIndexInput>>): Promise<void> {
+  if (messages.length === 0) return
+  const queue = runtimeLogRedisStreamQueue()
+  try {
+    await createRuntimeLogsBatchAsync(messages.map((message) => message.payload))
+    flushLastSuccessAt = nowIso()
+    flushLastError = undefined
+    await queue.ack(messages.map((message) => message.id))
+  } catch (error) {
+    flushLastError = error instanceof Error ? error.message : String(error)
+    writeRuntimeLogIndexError(`Redis Stream 运行日志索引落库失败，消息保持 pending 等待重投：${flushLastError}`)
+  }
+}
+
+function runtimeLogRedisStreamQueue(): RedisStreamQueue<RuntimeLogIndexInput> {
+  if (!runtimeLogRedisStreamQueueInstance) {
+    runtimeLogRedisStreamQueueInstance = new RedisStreamQueue<RuntimeLogIndexInput>({
+      streamKey: runtimeLogRedisStreamKey,
+      groupName: runtimeLogRedisStreamGroup,
+      readCount: runtimeLogBatchSize
+    })
+  }
+  return runtimeLogRedisStreamQueueInstance
 }
 
 function sendRuntimeLogLineFromDbServiceToServer(rawLine: string, options: RuntimeLogLineIndexOptions): void {
@@ -378,6 +587,14 @@ function isRuntimeLogIngestWorker(): boolean {
 function shouldDispatchRuntimeLogToIngestWorker(): boolean {
   return runtimeConfig.processRole === 'server'
     || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
+}
+
+function shouldUseRedisStreamRuntimeLogQueue(): boolean {
+  return runtimeConfig.queueDriver === 'redis_stream'
+}
+
+function shouldEnqueueRuntimeLogToRedisStream(): boolean {
+  return shouldUseRedisStreamRuntimeLogQueue() && !isRuntimeLogIngestWorker()
 }
 
 function estimateRuntimeLogBytes(input: RuntimeLogIndexInput): number {
@@ -438,4 +655,11 @@ function recordRuntimeLogDrop(item: QueuedRuntimeLog, reason: 'overflow' | 'over
     return
   }
   writeRuntimeLogIndexError(`运行日志索引队列达到保护上限，已丢弃新日志：reason=${reason} bytes=${item.bytes} pending=${pendingRuntimeLogs.length}`)
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
 }

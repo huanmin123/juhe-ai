@@ -48,8 +48,10 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'resource_authorization_grants', 'id', mockGrantIds)
 
     const mockApiKeyIds = selectIds(database, 'SELECT id FROM api_keys WHERE name LIKE ?', likeName)
-    deleteWhereIn(database, 'api_key_group_bindings', 'api_key_id', mockApiKeyIds)
+    const mockRouteStrategyIds = selectIdsForChunks(database, mockApiKeyIds, 'SELECT route_strategy_id FROM api_keys WHERE id IN ({placeholders})')
     deleteWhereIn(database, 'api_keys', 'id', mockApiKeyIds)
+    deleteWhereIn(database, 'route_strategy_groups', 'route_strategy_id', mockRouteStrategyIds)
+    deleteWhereIn(database, 'route_strategies', 'id', mockRouteStrategyIds)
 
     const mockGroupIds = selectIds(database, 'SELECT id FROM groups WHERE name LIKE ?', likeName)
     const mockAccountIds = selectIds(database, 'SELECT id FROM accounts WHERE name LIKE ?', likeName)
@@ -60,10 +62,12 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
 
     const userGroupIds = selectIdsForChunks(database, mockUserIds, 'SELECT id FROM groups WHERE system_account_id IN ({placeholders})')
     const userApiKeyIds = selectIdsForChunks(database, mockUserIds, 'SELECT id FROM api_keys WHERE system_account_id IN ({placeholders})')
+    const userRouteStrategyIds = selectIdsForChunks(database, userApiKeyIds, 'SELECT route_strategy_id FROM api_keys WHERE id IN ({placeholders})')
     deleteWhereIn(database, 'group_accounts', 'group_id', userGroupIds)
-    deleteWhereIn(database, 'api_key_group_bindings', 'group_id', userGroupIds)
-    deleteWhereIn(database, 'api_key_group_bindings', 'api_key_id', userApiKeyIds)
+    deleteWhereIn(database, 'route_strategy_groups', 'group_id', userGroupIds)
     deleteWhereIn(database, 'api_keys', 'id', userApiKeyIds)
+    deleteWhereIn(database, 'route_strategy_groups', 'route_strategy_id', userRouteStrategyIds)
+    deleteWhereIn(database, 'route_strategies', 'id', userRouteStrategyIds)
     deleteWhereIn(database, 'groups', 'id', userGroupIds)
 
     deleteWhereIn(database, 'resource_authorizations', 'id', mockRuntimeAuthorizationIds)

@@ -18,6 +18,10 @@ type GroupListParams = Parameters<typeof api.groups.listPage>[0]
 type GroupMutationScopeParams = Parameters<typeof api.groups.create>[1]
 type GroupMutationPayload = Parameters<typeof api.groups.create>[0]
 type GroupOptionParams = Parameters<typeof api.groups.options>[0]
+type RouteStrategyListParams = Parameters<typeof api.routeStrategies.list>[0]
+type RouteStrategyMutationPayload = Parameters<typeof api.routeStrategies.create>[0]
+type RouteStrategyMutationScopeParams = Parameters<typeof api.routeStrategies.create>[1]
+type RouteStrategyOptionsParams = Parameters<typeof api.routeStrategies.options>[0]
 type SystemTeamListParams = Parameters<typeof api.systemTeams.list>[0]
 
 export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
@@ -90,6 +94,29 @@ export function useScopedOperationLogsApi(isManagementView: Ref<boolean>) {
     detail: (id: string) => isManagementView.value
       ? api.operationLogs.detail(id)
       : api.myOperationLogs.detail(id)
+  }
+}
+
+export function useScopedRouteStrategiesApi(isManagementView: Ref<boolean>) {
+  return {
+    list: (params?: RouteStrategyListParams) => isManagementView.value
+      ? api.routeStrategies.list(params)
+      : api.myRouteStrategies.list(params),
+    options: (params?: RouteStrategyOptionsParams) => isManagementView.value
+      ? api.routeStrategies.options(params)
+      : api.myRouteStrategies.options(params),
+    detail: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
+      ? api.routeStrategies.detail(id, params)
+      : api.myRouteStrategies.detail(id),
+    create: (payload: RouteStrategyMutationPayload, params?: RouteStrategyMutationScopeParams) => isManagementView.value
+      ? api.routeStrategies.create(payload, params)
+      : api.myRouteStrategies.create(payload),
+    update: (id: string, payload: RouteStrategyMutationPayload, params?: RouteStrategyMutationScopeParams) => isManagementView.value
+      ? api.routeStrategies.update(id, payload, params)
+      : api.myRouteStrategies.update(id, payload),
+    delete: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
+      ? api.routeStrategies.delete(id, params)
+      : api.myRouteStrategies.delete(id)
   }
 }
 

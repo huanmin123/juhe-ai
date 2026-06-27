@@ -47,7 +47,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/groups/GroupsView.vue'),
     meta: {
       title: '我的分组',
-      description: '维护自己的账户分组，API Key 再绑定分组统一调度。',
+      description: '维护自己的账户分组，策略路由再绑定分组统一调度。',
       viewScope: 'self'
     }
   },
@@ -56,7 +56,17 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/api-keys/ApiKeysView.vue'),
     meta: {
       title: '我的 API Key',
-      description: '管理自己的 API Key，绑定自己的分组。',
+      description: '管理自己的 API Key，绑定自己的策略路由。',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
+    path: '/my-route-strategies',
+    component: () => import('@/views/route-strategies/RouteStrategiesView.vue'),
+    meta: {
+      title: '我的策略路由',
+      description: '维护自己的策略路由，统一配置分组绑定和路由模式。',
       viewScope: 'self',
       heavy: true
     }
@@ -283,7 +293,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/api-keys/ApiKeysView.vue'),
     meta: {
       title: 'API Key 管理',
-      description: '按系统账户管理 API Key 和分组绑定。',
+      description: '按系统账户管理 API Key，并为 API Key 选择策略路由。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
@@ -429,6 +439,19 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '管理 OpenAI v1 Chat / Responses 的 JSON 与 SSE 响应语义检查策略。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
+    path: '/route-strategies',
+    component: () => import('@/views/route-strategies/RouteStrategiesView.vue'),
+    meta: {
+      title: '策略路由',
+      description: '按系统账户管理策略路由，配置普通、混合、权重、故障回退和轮询路由。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true

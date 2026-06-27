@@ -4,6 +4,7 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -113,7 +114,7 @@ try {
       schedulable: true,
       supportedModels: [upstreamModel]
     }, access)
-    const apiKey = repositories.createApiKeyRecord({
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Anthropic Messages 到 OpenAI Chat 真实 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       explicitHybridRouteRules: messagesToChatRouteRules(group.id),
