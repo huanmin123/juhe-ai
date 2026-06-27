@@ -1,6 +1,7 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
+import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, createOperationLogsBatchAsync, type OperationLogInput } from '../../storage/repositories.js'
@@ -12,6 +13,9 @@ const operationLogBatchSize = 200
 const operationLogShutdownFlushMaxBatches = 100
 const operationLogQueueMaxItems = 5_000
 const operationLogQueueMaxBytes = 32 * 1024 * 1024
+const operationLogRedisStreamKey = 'juhe-ai:queue:operation-logs'
+const operationLogRedisStreamGroup = 'juhe-ai:operation-log-writers'
+const operationLogRedisConsumerErrorRetryMs = 1000
 
 interface QueuedOperationLog {
   input: OperationLogInput
@@ -28,6 +32,10 @@ let droppedDispatchCount = 0
 let droppedOverflowCount = 0
 let droppedOversizeCount = 0
 let shutdownHooksInstalled = false
+let operationLogRedisStreamQueueInstance: RedisStreamQueue<OperationLogInput> | undefined
+let operationLogRedisConsumerStarted = false
+let operationLogRedisConsumerStopping = false
+let operationLogRedisConsumerPromise: Promise<void> | undefined
 
 interface OperationLogFlushOptions {
   drain?: boolean
@@ -37,6 +45,10 @@ interface OperationLogFlushOptions {
 
 export function enqueueOperationLog(input: OperationLogInput): void {
   const queuedInput = normalizeOperationLogInput(input)
+  if (shouldEnqueueOperationLogToRedisStream()) {
+    void enqueueOperationLogToRedisStream(queuedInput)
+    return
+  }
   if (shouldDispatchOperationLogToIngestWorker()) {
     if (!sendOperationLogsToWorker([queuedInput])) {
       recordOperationLogDispatchFailure(new Error('ingest-worker IPC 不可用'), queuedInput)
@@ -71,6 +83,33 @@ export function enqueueOperationLogsLocal(inputs: OperationLogInput[]): void {
   assertLocalOperationLogWriteAllowed('enqueueOperationLogsLocal')
   for (const input of inputs) {
     enqueueOperationLogLocal(normalizeOperationLogInput(input))
+  }
+}
+
+export function startOperationLogRedisStreamConsumer(): void {
+  if (!shouldUseRedisStreamOperationLogQueue() || !isOperationLogIngestWorker() || operationLogRedisConsumerStarted) {
+    return
+  }
+  operationLogRedisConsumerStarted = true
+  operationLogRedisConsumerStopping = false
+  operationLogRedisConsumerPromise = runOperationLogRedisStreamConsumer().catch((error) => {
+    logger.error(errorLogFields(error, {
+      event: 'operation_log_redis_stream_consumer_stopped'
+    }), 'Redis Stream 操作日志消费循环异常退出')
+  }).finally(() => {
+    operationLogRedisConsumerStarted = false
+    operationLogRedisConsumerPromise = undefined
+  })
+}
+
+export async function stopOperationLogRedisStreamConsumer(): Promise<void> {
+  operationLogRedisConsumerStopping = true
+  const queue = operationLogRedisStreamQueueInstance
+  if (queue) {
+    await queue.closeConsumer().catch(() => undefined)
+  }
+  if (operationLogRedisConsumerPromise) {
+    await operationLogRedisConsumerPromise.catch(() => undefined)
   }
 }
 
@@ -270,6 +309,102 @@ function recordOperationLogDispatchFailure(error: unknown, input?: OperationLogI
   }), '操作日志投递后台 worker 失败，已跳过投递')
 }
 
+async function enqueueOperationLogToRedisStream(input: OperationLogInput): Promise<void> {
+  try {
+    await operationLogRedisStreamQueue().enqueue(input)
+  } catch (error) {
+    recordOperationLogDispatchFailure(error, input)
+    fallbackOperationLogAfterRedisStreamFailure(input)
+  }
+}
+
+function fallbackOperationLogAfterRedisStreamFailure(input: OperationLogInput): void {
+  if (shouldDispatchOperationLogToIngestWorker()) {
+    if (!sendOperationLogsToWorker([input])) {
+      recordOperationLogDispatchFailure(new Error('ingest-worker IPC 不可用'), input)
+    }
+    return
+  }
+
+  if (runtimeConfig.processRole === 'db-service') {
+    if (process.send && process.connected !== false) {
+      try {
+        process.send({
+          type: 'background_worker_operation_logs',
+          items: [input]
+        }, (error) => {
+          if (error) {
+            recordOperationLogDispatchFailure(error, input)
+          }
+        })
+      } catch (error) {
+        recordOperationLogDispatchFailure(error, input)
+      }
+      return
+    }
+    recordOperationLogDispatchFailure(new Error('DB service 无父进程 IPC'), input)
+    return
+  }
+
+  if (isOperationLogIngestWorker()) {
+    enqueueOperationLogLocal(input)
+  }
+}
+
+async function runOperationLogRedisStreamConsumer(): Promise<void> {
+  const queue = operationLogRedisStreamQueue()
+  while (!operationLogRedisConsumerStopping) {
+    try {
+      const claimed = await queue.claimPending()
+      const messages = claimed.length > 0 ? claimed : await queue.readNew()
+      if (messages.length === 0) {
+        continue
+      }
+      await flushOperationLogRedisStreamMessages(messages)
+    } catch (error) {
+      if (operationLogRedisConsumerStopping) {
+        break
+      }
+      flushFailureCount += 1
+      logger.error(errorLogFields(error, {
+        event: 'operation_log_redis_stream_consume_failed',
+        flushFailureCount
+      }), 'Redis Stream 操作日志消费失败，稍后重试')
+      await delay(operationLogRedisConsumerErrorRetryMs)
+    }
+  }
+}
+
+async function flushOperationLogRedisStreamMessages(messages: Array<RedisStreamMessage<OperationLogInput>>): Promise<void> {
+  if (messages.length === 0) return
+  const queue = operationLogRedisStreamQueue()
+  const inputs = messages.map((message) => normalizeOperationLogInput(message.payload))
+  try {
+    await createOperationLogsBatchAsync(inputs)
+    flushFailureCount = 0
+    await queue.ack(messages.map((message) => message.id))
+  } catch (error) {
+    flushFailureCount += 1
+    logger.error(errorLogFields(error, {
+      event: 'operation_log_redis_stream_flush_failed',
+      batchSize: messages.length,
+      firstMessageId: messages[0]?.id,
+      flushFailureCount
+    }), 'Redis Stream 操作日志落库失败，消息保持 pending 等待重投')
+  }
+}
+
+function operationLogRedisStreamQueue(): RedisStreamQueue<OperationLogInput> {
+  if (!operationLogRedisStreamQueueInstance) {
+    operationLogRedisStreamQueueInstance = new RedisStreamQueue<OperationLogInput>({
+      streamKey: operationLogRedisStreamKey,
+      groupName: operationLogRedisStreamGroup,
+      readCount: operationLogBatchSize
+    })
+  }
+  return operationLogRedisStreamQueueInstance
+}
+
 export function clearOperationLogQueueForTest(): void {
   if (flushTimer) {
     clearTimeout(flushTimer)
@@ -284,6 +419,11 @@ export function clearOperationLogQueueForTest(): void {
   droppedOverflowCount = 0
   droppedOversizeCount = 0
   shutdownHooksInstalled = false
+  operationLogRedisConsumerStopping = true
+  operationLogRedisConsumerStarted = false
+  operationLogRedisConsumerPromise = undefined
+  void operationLogRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
+  operationLogRedisStreamQueueInstance = undefined
 }
 
 function normalizeOperationLogInput(input: OperationLogInput): OperationLogInput {
@@ -358,7 +498,22 @@ function isOperationLogIngestWorker(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
 }
 
+function shouldUseRedisStreamOperationLogQueue(): boolean {
+  return runtimeConfig.queueDriver === 'redis_stream'
+}
+
+function shouldEnqueueOperationLogToRedisStream(): boolean {
+  return shouldUseRedisStreamOperationLogQueue() && !isOperationLogIngestWorker()
+}
+
 function shouldDispatchOperationLogToIngestWorker(): boolean {
   return runtimeConfig.processRole === 'server'
     || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
 }

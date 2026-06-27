@@ -35,8 +35,8 @@
 
 - 已完成设计文档、计划文档、后端 Gemini native 协议 / 供应商驱动、Gemini OpenAI Chat 兼容档案、默认种子、模型目录、usage / error / SSE 解析和 mockai 回归。
 - 已完成前端 Gemini fallback provider、协议识别、endpoint mode 默认值与校验。
-- 已完成 Gemini OpenAI Chat mockai 覆盖：OpenAI Chat 直连、Codex Responses 显式映射到 Chat、Anthropic Messages 映射禁用。
-- 已完成 Gemini native 到 Chat mockai 覆盖：`generateContent` / `streamGenerateContent` 通过显式模型映射命中 GLM Chat 上游，并还原 Gemini JSON / SSE。
+- 已完成 Gemini OpenAI Chat mockai 覆盖：OpenAI Chat 直连、Codex Responses 通过 API Key 显式混合路由指向 Chat、Anthropic Messages 映射禁用。
+- 已完成 Gemini native 到 Chat mockai 覆盖：`generateContent` / `streamGenerateContent` 通过 API Key 显式混合路由命中 GLM Chat 上游，并还原 Gemini JSON / SSE。
 - 已按 Google 官方 Gemini API Models / Pricing 页面核对内置 Gemini 模型目录；内置目录只收录 Google 官方模型 ID，不收录 `vsllm.com` 等中转商自定义的 `*-antigravity*` 型号。
 - 已安装本机 `gemini` CLI `0.47.0`。
 - 已使用真实 `vsllm.com` 账号执行 Gemini OpenAI Chat E2E，覆盖 `/v1/models`、Chat JSON、Chat SSE 和 Codex Responses `responses -> chat_completions` bridge。
@@ -92,7 +92,7 @@ type GeminiAccountType = 'api_key'
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认测试模型 |
 | --- | --- | --- | --- | --- |
 | Gemini API Key | `api_key` | `profile_gemini_native_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes` | `gemini-3.5-flash` |
-| Gemini OpenAI Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选 `modelMappings` | `gemini-3.5-flash` |
+| Gemini OpenAI Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
 
 保存规则：
 
@@ -213,7 +213,7 @@ Remove-Item Env:\JUHE_REAL_GEMINI_OPENAI_CHAT_API_KEY, Env:\JUHE_REAL_GEMINI_OPE
 - 流式输出能被 `gemini-cli --output-format stream-json` 正常解析。
 - `gemini_cli` 专属响应策略只影响 CLI 客户端画像，普通 Gemini 请求不触发换账号。
 - 工具调用、function call、图片 / 文件输入不被 OpenAI adapter 改写。
-- Gemini native 到 Chat bridge 只在显式模型映射命中时改写请求体；未映射的 Gemini native 请求仍走 Gemini 原生上游，不按模型名猜测 Chat 上游。
+- Gemini native 到 Chat bridge 只在 API Key 显式混合路由命中时改写请求体；未配置显式混合路由的 Gemini native 请求仍走 Gemini 原生上游，不按模型名猜测 Chat 上游。
 - 使用记录和审计保存 Gemini native protocol / endpoint / downstream model / upstream model / usage。
 
 ## 模型目录
@@ -344,7 +344,7 @@ Gemini 账户测试必须复用真实网关链路。
 - 新增 Gemini native response semantic：文本、thought、functionCall、functionResponse、inlineData、fileData、finishReason、safetyRatings、promptFeedback、usageMetadata。
 - 新增 Gemini 模型目录和价格目录。
 - 新增 `usage_semantic = gemini`。
-- Gemini OpenAI Chat 档案使用 OpenAI usage semantic 和通用 Responses-to-Chat bridge；Gemini native 到 Chat bridge 仅在显式模型映射命中时生效，并在下游还原 Gemini JSON / SSE。
+- Gemini OpenAI Chat 档案使用 OpenAI usage semantic 和通用 Responses-to-Chat bridge；Gemini native 到 Chat bridge 仅在 API Key 显式混合路由命中时生效，并在下游还原 Gemini JSON / SSE。
 - mockai 覆盖 JSON、SSE、countTokens、模型列表、Gemini error object、流内坏 chunk、usage。
 - 新增真实 Gemini OpenAI Chat E2E 脚本和真实 `gemini-cli` E2E 脚本，并已用真实 `vsllm.com` 账号执行通过。
 - 更新导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明。

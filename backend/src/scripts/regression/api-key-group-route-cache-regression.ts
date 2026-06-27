@@ -189,55 +189,6 @@ try {
   await listen(gatewayServer)
   const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
-  const debugRuntime = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_runtime', key: seededRoute.apiKey })
-  console.log('debug runtime', JSON.stringify(debugRuntime.apiKey, null, 2))
-  console.log('debug accounts', JSON.stringify(databaseModule.getBusinessDatabase().prepare(`
-    SELECT groups.name AS group_name, group_accounts.group_id, group_accounts.system_account_id AS binding_system_account_id,
-      group_accounts.account_id, group_accounts.account_authorization_id, accounts.name, accounts.status,
-      accounts.type, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.client_compatibility,
-      accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id,
-      source_accounts.name AS source_name, source_accounts.status AS source_status,
-      source_accounts.client_compatibility AS source_client_compatibility,
-      source_accounts.credentials_encrypted AS source_credentials_encrypted
-    FROM group_accounts
-    INNER JOIN groups ON groups.id = group_accounts.group_id
-    INNER JOIN accounts ON accounts.id = group_accounts.account_id
-    LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
-    WHERE groups.name LIKE '路由缓存%'
-    ORDER BY groups.name
-  `).all(), null, 2))
-  const fallbackGroupIdForDebug = debugRuntime.apiKey?.group_bindings?.[1]?.group_id
-  if (fallbackGroupIdForDebug) {
-    const fallbackAccountsForDebug = await gatewayCache.listCachedOpenAIAccountsForGroupAsync(
-      fallbackGroupIdForDebug,
-      seededRoute.systemAccountId,
-      { requestedModel: 'gpt-5.5', requestedEndpointFamily: 'chat_completions' }
-    )
-    const { filterGatewayAccountsByRequestCapability } = await import('../../modules/gateway/dispatch/account-capability-filter.js')
-    const fakeReq = {
-      method: 'POST',
-      path: '/chat/completions',
-      originalUrl: '/chat/completions',
-      headers: {},
-      body: { model: 'gpt-5.5', messages: [{ role: 'user', content: 'route cache' }] }
-    } as never
-    console.log('debug fallback runtime accounts', JSON.stringify(fallbackAccountsForDebug.map((account) => ({
-      id: account.id,
-      name: account.name,
-      type: account.type,
-      providerCode: account.providerCode,
-      clientCompatibility: account.clientCompatibility,
-      supportedEndpointModes: account.supportedEndpointModes,
-      supportedModels: account.supportedModels,
-      modelMappings: account.modelMappings,
-      baseUrl: account.baseUrl,
-      accountAuthorizationId: account.accountAuthorizationId,
-      accountAuthorizationQuotaLimited: account.accountAuthorizationQuotaLimited,
-      apiKey: account.apiKey
-    })), null, 2))
-    console.log('debug fallback capability', JSON.stringify(filterGatewayAccountsByRequestCapability(fakeReq, fallbackAccountsForDebug), null, 2))
-  }
-
   const firstResponse = await requestChatCompletion(gatewayBaseUrl, seededRoute.apiKey, 'trace-route-cache-first')
   assert.equal(firstResponse.status, 200, `首次请求应完成主分组到后备分组的预派发切换，实际 ${firstResponse.status}: ${firstResponse.text}`)
   assert.equal(upstreamRequests.at(-1)?.accountKey, seededRoute.fallbackUpstreamKey, '首次请求应命中后备授权账号')

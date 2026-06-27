@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 
 import type { AccountModelMapping, AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { ANTHROPIC_PROVIDER_CODE, GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -22,7 +22,7 @@ runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const draftMessagesSourceModel = 'claude-draft-activation-source'
+const draftChatSourceModel = 'gpt-draft-activation-chat-source'
 const draftChatUpstreamModel = 'gpt-draft-activation-chat-upstream'
 
 const [
@@ -71,7 +71,7 @@ try {
   assert.deepEqual(
     storedTask?.draftAccount?.modelMappings,
     accountInput.modelMappings,
-    '草稿测试任务记录读回后应保留 Messages -> Chat Completions 模型映射'
+    '草稿测试任务记录读回后应保留 Chat Completions 同协议模型别名'
   )
 
   const createStatus = accountDraftTest.accountCreateStatusFromActivationTest({
@@ -133,17 +133,17 @@ function apiKeyActivationRequest(input: {
     priority: 0,
     clientCompatibility: 'codex_responses' as const,
     supportedModels: [],
-    modelMappings: [draftMessagesToChatMapping()],
+    modelMappings: [draftChatAliasMapping()],
     notes: 'API Key 草稿测试成功后保存应直接启用'
   }
 }
 
 function registerDraftModelCatalog(systemAccountId: string): void {
   saveCustomProviderModel({
-    providerCode: ANTHROPIC_PROVIDER_CODE,
-    model: draftMessagesSourceModel,
+    providerCode: GPT_VENDOR_CODE,
+    model: draftChatSourceModel,
     scope: 'global',
-    supportedApiProtocols: ['messages'],
+    supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
     actorSystemAccountId: systemAccountId
@@ -159,10 +159,10 @@ function registerDraftModelCatalog(systemAccountId: string): void {
   })
 }
 
-function draftMessagesToChatMapping(): AccountModelMapping {
+function draftChatAliasMapping(): AccountModelMapping {
   return {
-    sourceModel: draftMessagesSourceModel,
-    sourceEndpointFamily: 'messages',
+    sourceModel: draftChatSourceModel,
+    sourceEndpointFamily: 'chat_completions',
     upstreamModel: draftChatUpstreamModel,
     upstreamEndpointFamily: 'chat_completions',
     enabled: true

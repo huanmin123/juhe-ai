@@ -104,7 +104,6 @@ const consumptionRankingQuerySchema = z.object({
 const providerCodeSchema = z.string({ required_error: '供应商编码不能为空' }).trim().min(1, '供应商编码不能为空').max(60)
 const providerProtocolProfileIdSchema = z.string().trim().min(1).max(120)
 const connectionTypeSchema = z.string().trim().min(1).max(80)
-const clientCompatibilitySchema = z.enum(['openai_standard', 'codex_responses'])
 const publicAccountTypeSchema = z.custom<'api_key'>((value) => value === 'api_key', {
   message: '公开账号接口仅支持 API Key 账户'
 })
@@ -115,7 +114,6 @@ const accountPushSchema = z.object({
   providerCode: providerCodeSchema,
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
   connectionType: connectionTypeSchema.optional(),
-  clientCompatibility: clientCompatibilitySchema.optional(),
   name: z.string().trim().min(1).max(120),
   type: publicAccountTypeSchema,
   baseUrl: z.string().trim().min(1).max(500),
@@ -132,7 +130,6 @@ const accountUpdateMutableFields = [
   'baseUrl',
   'apiKey',
   'supportedModels',
-  'clientCompatibility',
   'status',
   'concurrencyLimit',
   'priority',
@@ -147,7 +144,6 @@ const accountUpdateSchema = z.object({
   providerCode: providerCodeSchema.optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
   connectionType: connectionTypeSchema.optional(),
-  clientCompatibility: clientCompatibilitySchema.optional(),
   name: z.string().trim().min(1).max(120).optional(),
   type: publicAccountTypeSchema.optional(),
   baseUrl: z.string().trim().min(1).max(500).optional(),

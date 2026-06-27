@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountClientCompatibility, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import { connectionTypeForProviderProtocolProfile } from '../../domain/provider-connection-type.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getProxyTestConfig, listAccounts, type ProxyProfileTestConfig } from '../../storage/repositories.js'
@@ -34,7 +34,6 @@ export interface AccountExportAccount {
   providerCode: string
   providerProtocolProfileId?: string
   connectionType?: string
-  clientCompatibility?: AccountClientCompatibility
   type: AccountType
   status: AccountExportStatus
   groupId?: string
@@ -164,9 +163,6 @@ function exportAccount(account: AccountSummary, proxyRefsById: Map<string, strin
     type: account.type,
     status,
     credentials: exportCredentials(account.type, account.credentials)
-  }
-  if (account.protocolCode === 'openai') {
-    output.clientCompatibility = account.clientCompatibility
   }
   if (account.boundGroupName) {
     output.groupName = account.boundGroupName

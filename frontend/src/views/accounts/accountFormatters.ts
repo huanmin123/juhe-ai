@@ -137,15 +137,17 @@ function accountQualityStatusInfo(account: AccountSummary): AccountQualityStatus
 
   const successRateText = successRate === undefined ? '' : `，成功率 ${Math.round(successRate * 100)}%`
   const lines = [
-    `近期质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
-    '持久状态仍为正常；这是近期质量反馈，不参与状态筛选'
+    `AI账户质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
+    '归因范围：仅统计真实上游失败和账号依赖失败',
+    '不计入：并发满、额度/认证/规则拦截、客户端断开',
+    '账户状态：数据库仍为正常，不参与状态筛选'
   ]
   if (account.qualityLastErrorAt) {
-    lines.push(`最后失败：${formatDateTime(account.qualityLastErrorAt)}`)
+    lines.push(`最后质量失败：${formatDateTime(account.qualityLastErrorAt)}`)
   }
   const lastErrorMessage = formatAccountQualityLastError(account.qualityLastErrorMessage)
   if (lastErrorMessage) {
-    lines.push(`最后原因：${lastErrorMessage}`)
+    lines.push(`最后质量原因：${lastErrorMessage}`)
   }
   if (account.qualityUpdatedAt) {
     lines.push(`统计刷新：${formatDateTime(account.qualityUpdatedAt)}`)

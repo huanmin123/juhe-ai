@@ -12,7 +12,7 @@ import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMapping } from '../../domain/types.js'
+import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
@@ -111,12 +111,12 @@ try {
       groupId: group.id,
       status: 'active',
       schedulable: true,
-      supportedModels: [upstreamModel],
-      modelMappings: messagesToChatMappings()
+      supportedModels: [upstreamModel]
     }, access)
     const apiKey = repositories.createApiKeyRecord({
       name: 'Anthropic Messages 到 OpenAI Chat 真实 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: messagesToChatRouteRules(group.id),
       status: 'active'
     }, access)
     assert(apiKey.key, '真实 Messages -> Chat E2E 本地 API Key 未返回明文密钥')
@@ -349,13 +349,18 @@ function registerCustomModels(): void {
   })
 }
 
-function messagesToChatMappings(): AccountModelMapping[] {
+function messagesToChatRouteRules(targetGroupId: string): ApiKeyExplicitHybridRouteRule[] {
   return [{
+    id: 'messages_to_chat',
+    enabled: true,
+    priority: 1,
+    sourceClientProfile: 'generic_anthropic',
     sourceModel,
     sourceEndpointFamily: 'messages',
+    targetGroupId,
     upstreamModel,
     upstreamEndpointFamily: 'chat_completions',
-    enabled: true
+    adapterMode: 'bridge'
   }]
 }
 

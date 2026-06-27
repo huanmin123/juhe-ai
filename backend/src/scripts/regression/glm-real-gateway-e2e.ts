@@ -12,7 +12,7 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMapping } from '../../domain/types.js'
+import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -94,7 +94,6 @@ try {
       providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
       name: 'GLM Coding 真实上游 E2E 账户',
       type: 'api_key',
-      clientCompatibility: 'codex_responses',
       credentials: {
         api_key: realApiKey,
         base_url: realBaseUrl,
@@ -102,8 +101,7 @@ try {
       },
       groupId: codingGroup.id,
       status: 'active',
-      schedulable: true,
-      modelMappings: codexBridgeModelMappings(realModels)
+      schedulable: true
     }, access)
     const generalApiKey = repositories.createApiKeyRecord({
       name: 'GLM 真实上游 E2E Key',
@@ -114,6 +112,7 @@ try {
     const codingApiKey = repositories.createApiKeyRecord({
       name: 'GLM Coding 真实上游 E2E Key',
       groupBindings: [{ groupId: codingGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: codexBridgeRouteRules(codingGroup.id, realModels),
       status: 'active'
     }, access)
     assert(codingApiKey.key, '回归 API Key 未返回明文密钥')
@@ -287,13 +286,18 @@ function modelsFromEnv(value: string | undefined): string[] {
   return models
 }
 
-function codexBridgeModelMappings(models: string[]): AccountModelMapping[] {
-  return models.map((model) => ({
+function codexBridgeRouteRules(targetGroupId: string, models: string[]): ApiKeyExplicitHybridRouteRule[] {
+  return models.map((model, index) => ({
+    id: `responses_to_chat_${index + 1}`,
+    enabled: true,
+    priority: index + 1,
+    sourceClientProfile: 'codex',
     sourceModel: model,
     sourceEndpointFamily: 'responses',
+    targetGroupId,
     upstreamModel: model,
     upstreamEndpointFamily: 'chat_completions',
-    enabled: true
+    adapterMode: 'bridge'
   }))
 }
 

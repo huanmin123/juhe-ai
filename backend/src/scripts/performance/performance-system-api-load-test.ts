@@ -257,8 +257,8 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
         },
         supportedModels: ['gpt-5-mini'],
         modelMappings: [{
-          sourceModel: 'gpt-5-mini',
-          sourceEndpointFamily: 'responses',
+          sourceModel: 'gpt-5-nano',
+          sourceEndpointFamily: 'chat_completions',
           upstreamModel: 'gpt-5-mini',
           upstreamEndpointFamily: 'chat_completions',
           enabled: true
@@ -352,8 +352,8 @@ async function runWorkers(
         groupId: loadFixture.groupId,
         supportedModels: ['gpt-5-mini'],
         modelMappings: [{
-          sourceModel: 'gpt-5-mini',
-          sourceEndpointFamily: 'responses',
+          sourceModel: 'gpt-5-nano',
+          sourceEndpointFamily: 'chat_completions',
           upstreamModel: 'gpt-5-mini',
           upstreamEndpointFamily: 'chat_completions',
           enabled: true

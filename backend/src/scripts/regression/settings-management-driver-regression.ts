@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+const backendSrcRoot = fileURLToPath(new URL('../..', import.meta.url))
+const settingsRepositorySource = readFileSync(resolve(backendSrcRoot, 'storage/settings.repository.ts'), 'utf8')
+
+assert(settingsRepositorySource.includes('createSharedJsonCache<Record<string, unknown>>'), '设置 async 缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(settingsRepositorySource, 'listGlobalSettingsAsync', 'getGlobalSettingsSharedCache()', '全局设置 async 读取应先读 Redis 共享缓存')
+assertFunctionIncludes(settingsRepositorySource, 'getSettingsAsync', 'getSystemSettingsSharedCache()', '系统设置 async 读取应先读 Redis 共享缓存')
+assertFunctionIncludes(settingsRepositorySource, 'updateGlobalSettingsAsync', 'loadGlobalSettingsFromDatabaseAsync()', '全局设置 async 更新后应绕过旧共享缓存从数据库重读')
+assertFunctionIncludes(settingsRepositorySource, 'updateSettingsAsync', 'loadSystemSettingsFromDatabaseAsync()', '系统设置 async 更新后应绕过旧共享缓存从数据库重读')
+assertFunctionIncludes(settingsRepositorySource, 'clearSystemSettingsCache', 'clearSystemSettingsSharedCache()', '系统设置失效应清理 Redis 共享缓存命名空间')
+assertFunctionIncludes(settingsRepositorySource, 'clearGlobalSettingsCache', 'clearGlobalSettingsSharedCache()', '全局设置失效应清理 Redis 共享缓存命名空间')
 
 if (process.env.JUHE_SETTINGS_MANAGEMENT_DRIVER_CHILD === 'postgres') {
   const repositories = await import('../../storage/repositories.js')
@@ -116,4 +127,37 @@ async function closeSqliteStorageDatabases(): Promise<void> {
   } catch {
     // The regression may fail before SQLite storage is imported.
   }
+}
+
+function assertFunctionIncludes(source: string, functionName: string, pattern: string, message: string): void {
+  assert(functionBody(source, functionName).includes(pattern), message)
+}
+
+function functionBody(source: string, functionName: string): string {
+  const start = source.indexOf(`function ${functionName}`)
+  assert(start >= 0, `缺少函数 ${functionName}`)
+  let openBrace = -1
+  let parenDepth = 0
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '(') parenDepth += 1
+    if (char === ')') parenDepth = Math.max(0, parenDepth - 1)
+    if (char === '{' && parenDepth === 0) {
+      openBrace = index
+      break
+    }
+  }
+  assert(openBrace >= 0, `函数 ${functionName} 缺少函数体`)
+  let depth = 0
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return source.slice(openBrace, index + 1)
+      }
+    }
+  }
+  throw new Error(`函数 ${functionName} 函数体未闭合`)
 }

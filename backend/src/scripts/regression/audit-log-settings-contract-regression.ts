@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { fixedAuditLogSettings, readAuditLogSettings } from '../../modules/audit-logs/audit-log-settings.js'
 
 const auditDesignDoc = readFileSync(new URL('../../../../docs/functions/原始审计日志设计.md', import.meta.url), 'utf8')
@@ -15,6 +16,14 @@ assert.equal(settings.queueMaxItems, 50000, '审计日志 worker 本地队列请
 assert.equal(settings.queueMaxBytes, 256 * 1024 * 1024, '审计日志 worker 本地队列字节数必须按轻量部署控制在固定硬上限内')
 assert.equal(settings.successHotRetentionHours, 1, '普通成功请求最近内容必须固定保留 1 小时')
 assert.equal(Object.hasOwn(settings, 'fullBodyCapture'), false, '审计设置不应再暴露临时全量捕获配置')
+
+runtimeConfig.runtimeMode = 'performance'
+runtimeConfig.databaseDriver = 'postgres'
+const performanceSettings = readAuditLogSettings()
+runtimeConfig.runtimeMode = 'standalone'
+runtimeConfig.databaseDriver = 'sqlite'
+assert.equal(performanceSettings.successSampleRate, 0.03, '高性能 PostgreSQL 模式成功审计应降为 3% 抽样，避免审计尾部拖垮网关')
+assert.equal(performanceSettings.successHotRetentionHours, 0, '高性能 PostgreSQL 模式不启用成功审计热窗口，失败审计仍全量保留')
 
 assert(auditDesignDoc.includes('| `batchSize` | `500` |'), '原始审计日志设计文档必须声明 batchSize 固定为 500')
 assert(auditDesignDoc.includes('| `queueMaxItems` | `50000` |'), '原始审计日志设计文档必须声明 queueMaxItems 固定硬上限')

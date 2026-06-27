@@ -287,8 +287,8 @@ async function runHttpSmoke(): Promise<void> {
       },
       supportedModels: [smokeModel],
       modelMappings: [{
-        sourceModel: smokeModel,
-        sourceEndpointFamily: 'responses',
+        sourceModel: smokeFallbackModel,
+        sourceEndpointFamily: 'chat_completions',
         upstreamModel: smokeModel,
         upstreamEndpointFamily: 'chat_completions',
         enabled: true
@@ -299,7 +299,7 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(createdAiAccount.status, 'temporary_unavailable', 'performance smoke 应能创建临时不可用 AI 账户')
     assert.equal(createdAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户应绑定目标分组')
     assert.deepEqual(createdAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户应保存支持模型')
-    assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeModel, 'performance smoke AI 账户应保存模型映射')
+    assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeFallbackModel, 'performance smoke AI 账户应保存同协议模型别名映射')
     const aiAccountDetail = await getEnvelope<{
       id: string
       status: string
@@ -337,8 +337,8 @@ async function runHttpSmoke(): Promise<void> {
       groupId: createdGroup.id,
       supportedModels: [smokeModel],
       modelMappings: [{
-        sourceModel: smokeModel,
-        sourceEndpointFamily: 'responses',
+        sourceModel: smokeFallbackModel,
+        sourceEndpointFamily: 'chat_completions',
         upstreamModel: smokeModel,
         upstreamEndpointFamily: 'chat_completions',
         enabled: true

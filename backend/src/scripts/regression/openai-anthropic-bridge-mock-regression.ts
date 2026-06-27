@@ -128,43 +128,23 @@ try {
         supported_endpoint_modes: ['messages_json', 'messages_sse']
       },
       supportedModels: ['claude-haiku-4-5'],
-      clientCompatibility: 'codex_responses',
-      modelMappings: [
-        {
-          sourceModel: 'gpt-5.5',
-          sourceEndpointFamily: 'chat_completions',
-          upstreamModel: 'claude-haiku-4-5',
-          upstreamEndpointFamily: 'messages',
-          enabled: true
-        },
-        {
-          sourceModel: 'gpt-5.5',
-          sourceEndpointFamily: 'responses',
-          upstreamModel: 'claude-haiku-4-5',
-          upstreamEndpointFamily: 'messages',
-          enabled: true
-        }
-      ],
       groupId: group.id,
       status: 'active',
       schedulable: true
     }, access)
-    assert.equal(account.modelMappings?.length, 2, '桥接账号应保存 Chat/Responses 映射')
-    const chatCandidates = repositories.listOpenAIAccountsForGroup(group.id, access.systemAccountId, {
-      requestedModel: 'gpt-5.5',
-      requestedEndpointFamily: 'chat_completions'
-    })
-    assert.equal(chatCandidates.length, 1, `Chat 桥接模型窗口应返回 Anthropic 映射账号，实际 ${chatCandidates.length}`)
-    assert.equal(chatCandidates[0]?.modelMappings?.length, 2, 'Chat 桥接模型窗口返回的账号应带模型映射')
+    assert.equal(account.modelMappings?.length ?? 0, 0, '桥接账号不应保存跨协议模型映射')
     const apiKey = repositories.createApiKeyRecord({
       name: 'OpenAI 到 Anthropic 桥接 mock Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: openAIToAnthropicRules(group.id),
       status: 'active'
     }, access)
     assert(apiKey.key, '回归 API Key 未返回明文密钥')
+    assert.equal(apiKey.explicitHybridRouteRules?.length, 2, '桥接 API Key 应保存 Chat/Responses 显式混合路由规则')
     const otherApiKey = repositories.createApiKeyRecord({
       name: 'OpenAI 到 Anthropic 桥接 mock 隔离 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: openAIToAnthropicRules(group.id),
       status: 'active'
     }, access)
     assert(otherApiKey.key, '隔离回归 API Key 未返回明文密钥')
@@ -345,6 +325,35 @@ function clearMockImageGenerationProvider(): void {
   runtimeConfig.imageGenerationProvider.apiKey = undefined
   runtimeConfig.imageGenerationProvider.api = 'images'
   runtimeConfig.imageGenerationProvider.model = 'gpt-image-2'
+}
+
+function openAIToAnthropicRules(groupId: string) {
+  return [
+    {
+      id: 'chat_to_messages',
+      enabled: true,
+      priority: 1,
+      sourceClientProfile: 'auto',
+      sourceEndpointFamily: 'chat_completions',
+      sourceModel: 'gpt-5.5',
+      targetGroupId: groupId,
+      upstreamEndpointFamily: 'messages',
+      upstreamModel: 'claude-haiku-4-5',
+      adapterMode: 'bridge'
+    },
+    {
+      id: 'responses_to_messages',
+      enabled: true,
+      priority: 2,
+      sourceClientProfile: 'auto',
+      sourceEndpointFamily: 'responses',
+      sourceModel: 'gpt-5.5',
+      targetGroupId: groupId,
+      upstreamEndpointFamily: 'messages',
+      upstreamModel: 'claude-haiku-4-5',
+      adapterMode: 'bridge'
+    }
+  ]
 }
 
 async function assertChatJsonBridge(baseUrl: string, localApiKey: string): Promise<void> {

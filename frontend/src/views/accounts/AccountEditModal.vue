@@ -178,7 +178,6 @@ import {
   endpointModesEqual
 } from './accountEndpointModes'
 import type { AccountFormModel } from './accountFormTypes'
-import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
@@ -259,9 +258,7 @@ const sourceAccountStatusText = computed(() => {
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
-const mappingUpstreamModelOptions = computed(() => (
-  props.form.providerCode === 'openai' ? props.mappingSourceModelOptions : props.modelOptions
-))
+const mappingUpstreamModelOptions = computed(() => props.modelOptions)
 
 function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']): string {
   if (value === 'responses') return 'Responses'
@@ -280,8 +277,7 @@ const advancedConfiguredCount = computed(() => {
   const checks = [
     form.supportedModels.length > 0,
     form.modelMappings.length > 0,
-    form.clientCompatibility !== defaultAccountClientCompatibility(form.providerCode, props.providers, form.providerProtocolProfileId),
-    !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, form.clientCompatibility, {
+    !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
       provider: props.selectedProvider,
       protocolProfile: props.selectedProtocolProfile
     })),

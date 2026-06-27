@@ -255,17 +255,7 @@ try {
       groupId: codexBridgeGroup.id,
       status: 'active',
       schedulable: true,
-      clientCompatibility: 'codex_responses',
-      supportedModels: ['deepseek-ai-v4-flash'],
-      modelMappings: [
-        {
-          sourceModel: 'deepseek-v4-flash',
-          sourceEndpointFamily: 'responses',
-          upstreamModel: 'deepseek-ai-v4-flash',
-          upstreamEndpointFamily: 'chat_completions',
-          enabled: true
-        }
-      ]
+      supportedModels: ['deepseek-ai-v4-flash']
     }, access)
     assert.deepEqual(codexBridgeAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
     assertDeepSeekCodexDispatchCapability(codexBridgeGroup.id, codexBridgeAccount.id)
@@ -297,6 +287,20 @@ try {
     const codexBridgeApiKey = repositories.createApiKeyRecord({
       name: 'DeepSeek Codex bridge Mock AI 回归 Key',
       groupBindings: [{ groupId: codexBridgeGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: [
+        {
+          id: 'responses_to_deepseek_chat',
+          enabled: true,
+          priority: 1,
+          sourceClientProfile: 'auto',
+          sourceEndpointFamily: 'responses',
+          sourceModel: 'deepseek-v4-flash',
+          targetGroupId: codexBridgeGroup.id,
+          upstreamEndpointFamily: 'chat_completions',
+          upstreamModel: 'deepseek-ai-v4-flash',
+          adapterMode: 'bridge'
+        }
+      ],
       status: 'active'
     }, access)
     assert(codexBridgeApiKey.key, 'Codex bridge 回归 API Key 未返回明文密钥')
@@ -1304,7 +1308,21 @@ function assertDeepSeekCodexDispatchCapability(groupId: string, accountId: strin
     ignoreAvailability: true
   })
   assert(dispatchAccount, 'DeepSeek Codex bridge dispatch account 应可从分组选择')
-  assert.equal(providerDriverForAccount(dispatchAccount)?.id, 'deepseek')
+  const bridgeDispatchAccount = {
+    ...dispatchAccount,
+    modelMappings: [
+      {
+        sourceModel: 'deepseek-v4-flash',
+        sourceEndpointFamily: 'responses' as const,
+        upstreamModel: 'deepseek-ai-v4-flash',
+        upstreamEndpointFamily: 'chat_completions' as const,
+        enabled: true,
+        runtimeSource: 'explicit_hybrid_route' as const,
+        runtimeRouteRuleId: 'responses_to_deepseek_chat'
+      }
+    ]
+  }
+  assert.equal(providerDriverForAccount(bridgeDispatchAccount)?.id, 'deepseek')
   const codexResponsesRequest = {
     method: 'POST',
     path: '/v1/responses',
@@ -1313,17 +1331,17 @@ function assertDeepSeekCodexDispatchCapability(groupId: string, accountId: strin
     body: { model: 'deepseek-v4-flash', stream: true }
   } as unknown as express.Request
   assert.deepEqual(
-    buildGatewayUpstreamUrlsForAccount(dispatchAccount, codexResponsesRequest),
-    [`${dispatchAccount.baseUrl}/v1/chat/completions?trace=driver-check`],
+    buildGatewayUpstreamUrlsForAccount(bridgeDispatchAccount, codexResponsesRequest),
+    [`${bridgeDispatchAccount.baseUrl}/v1/chat/completions?trace=driver-check`],
     'DeepSeek Codex bridge 应把 /responses 上游 URL 改写到 /chat/completions 并保留查询参数'
   )
   assert.equal(
-    accountSupportsGatewayRequest(codexResponsesRequest, dispatchAccount, { requestClientCompatibility: 'codex_responses' }),
+    accountSupportsGatewayRequest(codexResponsesRequest, bridgeDispatchAccount, { requestClientCompatibility: 'codex_responses' }),
     true,
     'DeepSeek Codex bridge 账号应支持 Codex Responses SSE 请求'
   )
   assert.equal(
-    accountSupportsGatewayRequest(codexResponsesRequest, dispatchAccount, { requestClientCompatibility: 'openai_standard' }),
+    accountSupportsGatewayRequest(codexResponsesRequest, bridgeDispatchAccount, { requestClientCompatibility: 'openai_standard' }),
     true,
     'DeepSeek 显式协议映射不应再依赖 Codex 客户端兼容才支持 Responses -> Chat bridge'
   )

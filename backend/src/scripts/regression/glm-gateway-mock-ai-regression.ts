@@ -101,26 +101,16 @@ try {
     const coding = createGlmScenario({
       accountName: 'GLM Mock Coding 账户',
       baseUrl: `${upstreamOrigin}/api/coding/paas/v4`,
-      clientCompatibility: 'codex_responses',
       groupName: 'GLM Mock Coding 分组',
       localApiKeyName: 'GLM Mock Coding Key',
       supportedModels: ['glm-5.2'],
-      modelMappings: [
-        {
-          sourceModel: 'glm-5.2',
-          sourceEndpointFamily: 'responses',
-          upstreamModel: 'glm-5.2',
-          upstreamEndpointFamily: 'chat_completions',
-          enabled: true
-        }
-      ],
       providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
-      upstreamApiKey: 'sk-glm-coding-upstream'
+      upstreamApiKey: 'sk-glm-coding-upstream',
+      explicitHybridRouteRules: glmCodexBridgeRules('glm-5.2')
     })
     const codingOpenAIStandard = createGlmScenario({
       accountName: 'GLM Mock Coding OpenAI 标准账户',
       baseUrl: `${upstreamOrigin}/api/coding-standard/paas/v4`,
-      clientCompatibility: 'openai_standard',
       groupName: 'GLM Mock Coding OpenAI 标准分组',
       localApiKeyName: 'GLM Mock Coding OpenAI 标准 Key',
       providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
@@ -290,16 +280,9 @@ function createGlmScenario(input: {
   accountName: string
   baseUrl: string
   groupName: string
-  clientCompatibility?: 'openai_standard' | 'codex_responses'
   localApiKeyName: string
   supportedModels?: string[]
-  modelMappings?: Array<{
-    sourceModel: string
-    sourceEndpointFamily: 'chat_completions' | 'responses'
-    upstreamModel: string
-    upstreamEndpointFamily: 'chat_completions' | 'responses'
-    enabled: boolean
-  }>
+  explicitHybridRouteRules?: ReturnType<typeof glmCodexBridgeRules>
   providerProtocolProfileId: string
   upstreamApiKey: string
 }): { accountId: string; groupId: string; localApiKey: string } {
@@ -318,9 +301,7 @@ function createGlmScenario(input: {
       api_key: input.upstreamApiKey,
       base_url: input.baseUrl
     },
-    clientCompatibility: input.clientCompatibility,
     supportedModels: input.supportedModels,
-    modelMappings: input.modelMappings,
     groupId: group.id,
     status: 'active',
     priority: 0,
@@ -329,10 +310,31 @@ function createGlmScenario(input: {
   const apiKey = repositories.createApiKeyRecord({
     name: input.localApiKeyName,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    explicitHybridRouteRules: input.explicitHybridRouteRules?.map((rule) => ({
+      ...rule,
+      targetGroupId: group.id
+    })),
     status: 'active'
   }, access)
   assert(apiKey.key, '回归 API Key 未返回明文密钥')
   return { accountId: account.id, groupId: group.id, localApiKey: apiKey.key }
+}
+
+function glmCodexBridgeRules(model: string) {
+  return [
+    {
+      id: 'glm_codex_responses_to_chat',
+      enabled: true,
+      priority: 1,
+      sourceClientProfile: 'auto' as const,
+      sourceEndpointFamily: 'responses' as const,
+      sourceModel: model,
+      targetGroupId: '',
+      upstreamEndpointFamily: 'chat_completions' as const,
+      upstreamModel: model,
+      adapterMode: 'bridge' as const
+    }
+  ]
 }
 
 function createGlmFailoverScenario(baseUrl: string): { localApiKey: string; rescueAccountId: string } {
@@ -448,7 +450,6 @@ function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccou
         name: 'GLM 导入预览 Coding 账号',
         providerCode: GLM_PROVIDER_CODE,
         connectionType: GLM_CODING_CONNECTION_TYPE,
-        clientCompatibility: 'codex_responses',
         type: 'api_key',
         status: 'disabled',
         groupId: codingGroupId,
@@ -470,8 +471,8 @@ function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccou
   const coding = exported.accounts.find((account) => account.ref === codingAccountId)
   assert.equal(general?.connectionType, GLM_GENERAL_CONNECTION_TYPE, '导出通用 GLM 账号应保留 general_api_key')
   assert.equal(coding?.connectionType, GLM_CODING_CONNECTION_TYPE, '导出 GLM Coding 账号应保留 coding_api_key')
-  assert.equal(general?.clientCompatibility, 'openai_standard', '导出通用 GLM 账号应保留 OpenAI 标准客户端兼容')
-  assert.equal(coding?.clientCompatibility, 'codex_responses', '导出 GLM Coding Codex 账号应保留 Codex Responses 客户端兼容')
+  assert.equal('clientCompatibility' in (general ?? {}), false, '导出通用 GLM 账号不应再携带账号客户端兼容')
+  assert.equal('clientCompatibility' in (coding ?? {}), false, '导出 GLM Coding 账号不应再携带账号客户端兼容')
 }
 
 async function assertGlmJsonErrorSuppressesAndRecovers(baseUrl: string, localApiKey: string, rescueAccountId: string): Promise<void> {
@@ -1275,14 +1276,14 @@ async function assertGlmCodingOpenAIStandardRejectsCodexBridge(baseUrl: string, 
     },
     body: JSON.stringify({
       model: 'glm-5.2',
-      input: 'codex bridge should require account clientCompatibility',
+      input: 'codex bridge should require api key explicit hybrid route',
       stream: true,
       store: false
     })
   })
   const text = await response.text()
-  assert.notEqual(response.status, 200, `GLM Coding OpenAI 标准账号不应承接 Codex bridge，实际返回成功：${text}`)
-  assert.equal(upstreamHits.length, start, 'GLM Coding OpenAI 标准账号拒绝 Codex bridge 时不应命中上游')
+  assert.notEqual(response.status, 200, `未配置显式混合路由的 GLM Coding Key 不应承接 Codex bridge，实际返回成功：${text}`)
+  assert.equal(upstreamHits.length, start, '未配置显式混合路由的 GLM Coding Key 拒绝 Codex bridge 时不应命中上游')
 }
 
 function createGlmMockUpstream(): http.Server {

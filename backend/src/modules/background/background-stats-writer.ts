@@ -20,6 +20,7 @@ import {
   insertSystemMetricsSample,
   refreshDirtyGroupAccountStatsCacheWithWriter,
   refreshUsageQuotaHourlyWindowsCache,
+  refreshUsageQuotaHourlyWindowsCacheAsync,
   refreshUsageRankSnapshotsInStages,
   type ProcessEventLoopSampleInput,
   type SystemMetricsSampleInput,
@@ -55,7 +56,7 @@ import {
   sendClientIpPolicySnapshotToServer,
   sendGatewayQuotaSnapshotToServer
 } from './background-ipc.js'
-import { buildGatewayQuotaSnapshot } from '../../storage/gateway-quota-snapshot.repository.js'
+import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../../storage/gateway-quota-snapshot.repository.js'
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 
@@ -264,7 +265,9 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
   }
   if (processed > 0) {
     if (runtimeConfig.databaseDriver === 'postgres') {
-      return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
+      await refreshUsageQuotaHourlyWindowsCacheAsync()
+      sendGatewayQuotaSnapshotToServer(await buildGatewayQuotaSnapshotAsync())
+      return { processed, quotaSnapshotSent: true, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
     }
     refreshUsageQuotaHourlyWindowsCache()
     sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())

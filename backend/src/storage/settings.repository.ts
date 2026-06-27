@@ -1,7 +1,8 @@
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { createAppCache } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
 import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
@@ -152,6 +153,16 @@ const globalSettingsCache = createAppCache<string, Record<string, unknown>>({
   max: 1,
   ttlMs: settingsCacheTtlMs
 })
+const systemSettingsSharedCache = createSharedJsonCache<Record<string, unknown>>({
+  name: 'settings:system',
+  max: 1,
+  ttlMs: settingsCacheTtlMs
+})
+const globalSettingsSharedCache = createSharedJsonCache<Record<string, unknown>>({
+  name: 'settings:global',
+  max: 1,
+  ttlMs: settingsCacheTtlMs
+})
 
 export function listGlobalSettings(): Record<string, unknown> {
   const cached = globalSettingsCache.get('current')
@@ -173,6 +184,17 @@ export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>
   if (cached) {
     return { ...cached }
   }
+  const sharedCached = await getGlobalSettingsSharedCache()
+  if (sharedCached) {
+    globalSettingsCache.set('current', sharedCached)
+    return { ...sharedCached }
+  }
+  const settings = await loadGlobalSettingsFromDatabaseAsync()
+  await setGlobalSettingsCacheAsync(settings)
+  return { ...settings }
+}
+
+async function loadGlobalSettingsFromDatabaseAsync(): Promise<Record<string, unknown>> {
   const client = await getSettingsDatabaseClient()
   const rows = await client.query<GlobalSettingRow>(`
     SELECT key, value_json, updated_at
@@ -185,8 +207,7 @@ export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>
     settings[row.key] = normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
   assertAllSettingsPresent(settings, globalSettingKeys, '全局设置')
-  globalSettingsCache.set('current', settings)
-  return { ...settings }
+  return settings
 }
 
 export function listPublicGlobalSettings(): Record<string, unknown> {
@@ -222,7 +243,9 @@ export async function updateGlobalSettingsAsync(input: Record<string, unknown>):
     }
   })
   clearGlobalSettingsCache()
-  return listGlobalSettingsAsync()
+  const settings = await loadGlobalSettingsFromDatabaseAsync()
+  await setGlobalSettingsCacheAsync(settings)
+  return { ...settings }
 }
 
 function pickGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -253,6 +276,17 @@ export async function getSettingsAsync(): Promise<Record<string, unknown>> {
   if (cached) {
     return { ...cached }
   }
+  const sharedCached = await getSystemSettingsSharedCache()
+  if (sharedCached) {
+    systemSettingsCache.set('current', sharedCached)
+    return { ...sharedCached }
+  }
+  const settings = await loadSystemSettingsFromDatabaseAsync()
+  await setSystemSettingsCacheAsync(settings)
+  return { ...settings }
+}
+
+async function loadSystemSettingsFromDatabaseAsync(): Promise<Record<string, unknown>> {
   const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
   const client = await getSettingsDatabaseClient()
   const rows = await client.query<{ key: string; value_json: string }>(`
@@ -266,8 +300,7 @@ export async function getSettingsAsync(): Promise<Record<string, unknown>> {
     settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
   assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
-  systemSettingsCache.set('current', settings)
-  return { ...settings }
+  return settings
 }
 
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -305,7 +338,9 @@ export async function updateSettingsAsync(input: Record<string, unknown>): Promi
   })
   clearSystemSettingsCache()
   notifyGatewayRuntimeCacheInvalidation('settings_updated')
-  return getSettingsAsync()
+  const settings = await loadSystemSettingsFromDatabaseAsync()
+  await setSystemSettingsCacheAsync(settings)
+  return { ...settings }
 }
 
 export function clearSettingsRepositoryCache(): void {
@@ -319,11 +354,73 @@ function isSystemSettingKey(key: string): key is SystemSettingKey {
 
 function clearSystemSettingsCache(): void {
   systemSettingsCache.clear()
+  clearSystemSettingsSharedCache()
   clearUsageStatsTimezoneCache()
 }
 
 function clearGlobalSettingsCache(): void {
   globalSettingsCache.clear()
+  clearGlobalSettingsSharedCache()
+}
+
+async function getSystemSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
+  return getSettingsSharedCache(systemSettingsSharedCache, 'settings_system_shared_cache_read_failed')
+}
+
+async function getGlobalSettingsSharedCache(): Promise<Record<string, unknown> | undefined> {
+  return getSettingsSharedCache(globalSettingsSharedCache, 'settings_global_shared_cache_read_failed')
+}
+
+async function getSettingsSharedCache(
+  cache: typeof systemSettingsSharedCache,
+  event: string
+): Promise<Record<string, unknown> | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const value = await cache.get('current')
+    return value ? { ...value } : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event }), '读取设置 Redis 共享缓存失败，继续读取数据库')
+    return undefined
+  }
+}
+
+async function setSystemSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
+  systemSettingsCache.set('current', settings)
+  await setSettingsSharedCache(systemSettingsSharedCache, settings, 'settings_system_shared_cache_write_failed')
+}
+
+async function setGlobalSettingsCacheAsync(settings: Record<string, unknown>): Promise<void> {
+  globalSettingsCache.set('current', settings)
+  await setSettingsSharedCache(globalSettingsSharedCache, settings, 'settings_global_shared_cache_write_failed')
+}
+
+async function setSettingsSharedCache(
+  cache: typeof systemSettingsSharedCache,
+  settings: Record<string, unknown>,
+  event: string
+): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await cache.set('current', { ...settings }, { ttlMs: settingsCacheTtlMs })
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event }), '写入设置 Redis 共享缓存失败')
+  }
+}
+
+function clearSystemSettingsSharedCache(): void {
+  clearSettingsSharedCache(systemSettingsSharedCache, 'settings_system_shared_cache_clear_failed')
+}
+
+function clearGlobalSettingsSharedCache(): void {
+  clearSettingsSharedCache(globalSettingsSharedCache, 'settings_global_shared_cache_clear_failed')
+}
+
+function clearSettingsSharedCache(cache: typeof systemSettingsSharedCache, event: string): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void cache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, { event }), '清理设置 Redis 共享缓存失败')
+  })
 }
 
 async function getSettingsDatabaseClient(): Promise<DatabaseClient> {

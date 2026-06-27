@@ -1,10 +1,83 @@
-import type { AccountStatus, AccountSummary, ApiKeySummary } from '@/types/domain'
+import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary, ApiKeySummary } from '@/types/domain'
 import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
 import type { AccountFilters } from '../../views/accounts/accountFormTypes'
 import { filterAccounts } from '../../views/accounts/accountListFilters'
 import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } from '../../views/api-keys/apiKeyFormatters'
 
+const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
+
 assertStatus('正常账户', accountFixture(), '正常', 'green')
+assertStatus('待测试账户', accountFixture({
+  status: 'pending_test',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_pending_test',
+    label: '账户待测试',
+    color: 'blue',
+    blockerScope: 'account',
+    reason: '账户尚未测试通过，当前不会参与调度'
+  }
+}), '待测试', 'blue')
+assertStatus('停用账户', accountFixture({
+  status: 'disabled',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_disabled',
+    label: '账户停用',
+    color: 'default',
+    blockerScope: 'account',
+    reason: '账户已停用，当前不可用'
+  }
+}), '停用', 'default')
+assertStatus('异常账户', accountFixture({
+  status: 'error',
+  lastErrorCode: 'upstream_failure',
+  lastErrorMessage: 'mock account error for formatter regression',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_error',
+    label: '账户异常',
+    color: 'red',
+    blockerScope: 'account',
+    reason: 'mock account error for formatter regression'
+  }
+}), '异常', 'red')
+assertStatus('限流账户', accountFixture({
+  status: 'rate_limited',
+  cooldownUntil: '2099-01-01T00:00:00.000Z',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_rate_limited',
+    label: '账户限流中',
+    color: 'orange',
+    blockerScope: 'account',
+    reason: '账户限流中，恢复前不会参与调度',
+    retryAt: '2099-01-01T00:00:00.000Z'
+  }
+}), '限流中', 'orange')
+assertStatus('冷却账户', accountFixture({
+  cooldownUntil: '2099-01-01T00:00:00.000Z',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_cooldown',
+    label: '账户冷却',
+    color: 'gold',
+    blockerScope: 'account',
+    reason: '账户正在冷却，恢复前不会参与调度',
+    retryAt: '2099-01-01T00:00:00.000Z'
+  }
+}), '冷却中', 'gold')
+assertStatus('停调账户', accountFixture({
+  schedulable: false,
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_unschedulable',
+    label: '账户停调',
+    color: 'orange',
+    blockerScope: 'account',
+    reason: '账户暂时不可调用，恢复前不会参与调度'
+  }
+}), '停调', 'orange')
 assertStatus('近窗口少量失败', accountFixture({
   qualityRecentRequestCount: 3,
   qualityRecentErrorCount: 2
@@ -81,6 +154,36 @@ assertStatus('运行态事前确认', accountFixture({
     precheckAttemptCount: 1
   }
 }), '待探针确认', 'blue')
+assertStatus('运行态半开探测', accountFixture({
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_half_open',
+    label: '半开探测',
+    color: 'blue',
+    blockerScope: 'runtime',
+    reason: 'mock half open'
+  },
+  runtimeAvailability: {
+    status: 'half_open',
+    reason: 'mock half open',
+    until: '2099-01-01T00:00:00.000Z'
+  }
+}), '半开探测', 'blue')
+assertStatus('运行态探针确认失败', accountFixture({
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_precheck_failed',
+    label: '探针确认失败',
+    color: 'gold',
+    blockerScope: 'runtime',
+    reason: 'mock precheck failed'
+  },
+  runtimeAvailability: {
+    status: 'precheck_failed',
+    reason: 'mock precheck failed',
+    failureCount: 5
+  }
+}), '探针确认失败', 'gold')
 assertStatus('持久临时不可调用', accountFixture({
   status: 'temporary_unavailable',
   effectiveAvailability: {
@@ -171,6 +274,40 @@ const permissionDeniedAccount = accountFixture({
   }
 })
 assertStatus('无可用权限', permissionDeniedAccount, '无可用权限', 'red')
+assertStatus('授权额度耗尽', accountFixture({
+  accessType: 'authorized',
+  authorizationQuotaExceeded: true,
+  effectiveAvailability: {
+    available: false,
+    status: 'authorization_quota_exceeded',
+    label: '授权额度已用完',
+    color: 'red',
+    blockerScope: 'authorization',
+    reason: '授权额度已用完，当前账户不能调用'
+  }
+}), '授权额度已用完', 'red')
+assertStatus('授权未绑定分组', accountFixture({
+  accessType: 'authorized',
+  boundGroupId: undefined,
+  effectiveAvailability: {
+    available: false,
+    status: 'binding_missing',
+    label: '未绑定分组',
+    color: 'red',
+    blockerScope: 'binding',
+    reason: '授权账户需要先绑定到你的分组'
+  }
+}), '未绑定分组', 'red')
+assertStatus('账户 Key 池全部不可用', accountFixture({
+  effectiveAvailability: {
+    available: false,
+    status: 'api_key_pool_unavailable',
+    label: 'Key 全部不可用',
+    color: 'red',
+    blockerScope: 'api_key_pool',
+    reason: '账户内 2 个 API Key 均不可用，后台探测恢复前不会参与调度'
+  }
+}), 'Key 全部不可用', 'red')
 assertEqual(
   filterAccounts({ accounts: [permissionDeniedAccount], filters: accountFilters(['disabled']), isManagementView: false }).length,
   1,
@@ -188,8 +325,10 @@ const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({
   qualityRecentSuccessRate: 1 / 6,
   qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression'
 }))
-assertTrue(frequentFailureTooltip.some((line) => line.includes('持久状态仍为正常')), '质量反馈 tooltip 应说明不参与持久状态筛选')
-assertTrue(frequentFailureTooltip.some((line) => line.includes('mock upstream 504')), '质量反馈 tooltip 应展示最后失败原因')
+assertTrue(frequentFailureTooltip.some((line) => line.includes('账户状态：数据库仍为正常')), '质量反馈 tooltip 应说明不参与持久状态筛选')
+assertTrue(frequentFailureTooltip.some((line) => line.includes('仅统计真实上游失败和账号依赖失败')), '质量反馈 tooltip 应说明账号质量归因范围')
+assertTrue(frequentFailureTooltip.some((line) => line.includes('并发满') && line.includes('客户端断开')), '质量反馈 tooltip 应说明本地容量和客户端生命周期不计入账号质量')
+assertTrue(frequentFailureTooltip.some((line) => line.includes('最后质量原因') && line.includes('mock upstream 504')), '质量反馈 tooltip 应展示最后质量失败原因')
 
 const precheckTooltip = accountStatusTooltipLines(accountFixture({
   runtimeAvailability: {
@@ -236,6 +375,44 @@ const sourceScheduleInactiveTooltip = accountStatusTooltipLines(accountFixture({
 assertTrue(sourceScheduleInactiveTooltip.some((line) => line.includes('授权方原账户当前不在允许使用时段')), '来源时段外 tooltip 应展示授权来源原因')
 assertTrue(!sourceScheduleInactiveTooltip.some((line) => line.includes('实际状态：来源时段外')), '来源时段外不应作为状态名进入 tooltip')
 
+const effectiveAvailabilityStatusFilterExpectations = {
+  available: 'active',
+  permission_denied: 'disabled',
+  authorization_expired: 'disabled',
+  authorization_paused: 'disabled',
+  authorization_unavailable: 'disabled',
+  authorization_quota_exceeded: 'rate_limited',
+  source_deleted: 'disabled',
+  source_expired: 'disabled',
+  source_pending_test: 'pending_test',
+  source_disabled: 'disabled',
+  source_error: 'error',
+  source_rate_limited: 'rate_limited',
+  source_temporary_unavailable: 'temporary_unavailable',
+  source_cooldown: 'temporary_unavailable',
+  source_unschedulable: 'disabled',
+  source_schedule_inactive: 'disabled',
+  instance_expired: 'disabled',
+  instance_pending_test: 'pending_test',
+  instance_disabled: 'disabled',
+  instance_error: 'error',
+  instance_rate_limited: 'rate_limited',
+  instance_temporary_unavailable: 'temporary_unavailable',
+  instance_cooldown: 'temporary_unavailable',
+  instance_unschedulable: 'disabled',
+  instance_schedule_inactive: 'disabled',
+  binding_missing: 'disabled',
+  api_key_pool_unavailable: 'temporary_unavailable',
+  runtime_degraded: 'active',
+  runtime_local_suppressed: 'temporary_unavailable',
+  runtime_half_open: 'temporary_unavailable',
+  runtime_precheck_pending: 'temporary_unavailable',
+  runtime_precheck_failed: 'temporary_unavailable'
+} satisfies Record<AccountEffectiveAvailabilityStatus, AccountStatus>
+for (const [effectiveStatus, expectedStatus] of Object.entries(effectiveAvailabilityStatusFilterExpectations) as Array<[AccountEffectiveAvailabilityStatus, AccountStatus]>) {
+  assertEffectiveAvailabilityFilter(effectiveStatus, expectedStatus)
+}
+
 const apiKeyScheduleInactive = apiKeyFixture({
   status: 'disabled',
   availabilityScheduleActive: false
@@ -251,7 +428,7 @@ assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactiveWaitingSync), '停用', '
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactiveWaitingSync), 'default', 'API Key 时间计划外状态颜色仍应使用停用颜色')
 assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactiveWaitingSync).some((line) => line.includes('可提前启用')), 'API Key 时间计划外 tooltip 应展示提前启用提示')
 
-console.log('账户状态 formatter 回归通过：正常、近期失败、近期不稳、频繁失败、运行态调度降级、运行态短暂避让、运行态事前确认、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
+console.log('账户状态 formatter 回归通过：正常、待测试、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)
@@ -333,6 +510,25 @@ function accountFilters(status: AccountStatus[]): AccountFilters {
     tagIds: [],
     status,
     systemAccountId: 'all'
+  }
+}
+
+function assertEffectiveAvailabilityFilter(effectiveStatus: AccountEffectiveAvailabilityStatus, expectedStatus: AccountStatus): void {
+  const account = accountFixture({
+    effectiveAvailability: {
+      available: effectiveStatus === 'available' || effectiveStatus === 'runtime_degraded',
+      status: effectiveStatus,
+      label: effectiveStatus,
+      color: 'default'
+    }
+  })
+  for (const status of accountStatusValues) {
+    const matched = filterAccounts({ accounts: [account], filters: accountFilters([status]), isManagementView: false }).length
+    assertEqual(
+      matched,
+      status === expectedStatus ? 1 : 0,
+      `派生状态 ${effectiveStatus} 应只命中 ${expectedStatus} 筛选，不应命中 ${status}`
+    )
   }
 }
 

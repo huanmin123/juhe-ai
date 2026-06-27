@@ -37,6 +37,8 @@
     "test:db-service-system-api-boundary": "tsx src/scripts/regression/db-service-system-api-boundary-regression.ts",
     "test:db-service-system-api-http": "tsx src/scripts/regression/db-service-system-api-http-regression.ts",
     "test:db-service-http-proxy-boundary": "tsx src/scripts/regression/db-service-http-proxy-boundary-regression.ts",
+    "test:db-service-sqlite-dispatch-fallback": "tsx src/scripts/regression/db-service-sqlite-dispatch-fallback-regression.ts",
+    "test:db-service-postgres-openai-compatible-dispatch": "tsx src/scripts/regression/db-service-postgres-openai-compatible-dispatch-regression.ts",
     "test:external-source-auth": "tsx src/scripts/regression/external-source-auth-demo-regression.ts",
     "test:external-integration-source-expires-at": "tsx src/scripts/regression/external-integration-source-expires-at-regression.ts",
     "test:external-public-account-usage-query-guard": "tsx src/scripts/regression/external-public-account-usage-query-guard-regression.ts",

@@ -54,7 +54,7 @@ export function defaultAccountForm(
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     clientCompatibility,
-    supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, clientCompatibility, { provider, protocolProfile: profile }),
+    supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile }),
     supportedModels: [],
     modelMappings: [],
     tags: [],

@@ -24,10 +24,11 @@ import {
 } from './model-pricing.service.js'
 import { OPENAI_COMPATIBLE_PROVIDER_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
-import { createAppCache } from '../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
@@ -123,6 +124,12 @@ const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogIte
   ttlMs: modelCatalogCacheTtlMs
 })
 
+const providerModelCatalogSharedCache = createSharedJsonCache<ProviderModelCatalogItem[]>({
+  name: 'model-pricing:provider-model-catalog',
+  max: 1000,
+  ttlMs: modelCatalogCacheTtlMs
+})
+
 export function listProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
   const cacheKey = modelCatalogCacheKey(options)
   const cached = providerModelCatalogCache.get(cacheKey)
@@ -140,8 +147,13 @@ export async function listProviderModelCatalogAsync(options: ModelCatalogListOpt
   if (cached) {
     return cloneProviderModelCatalogItems(cached)
   }
+  const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
+  if (sharedCached) {
+    providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(sharedCached))
+    return cloneProviderModelCatalogItems(sharedCached)
+  }
   const catalog = await buildProviderModelCatalogAsync(options)
-  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(catalog))
+  await setProviderModelCatalogCacheEntryAsync(cacheKey, cloneProviderModelCatalogItems(catalog))
   return cloneProviderModelCatalogItems(catalog)
 }
 
@@ -656,4 +668,48 @@ function sumCostParts(...parts: Array<number | undefined>): number | undefined {
   return values.length ? roundCost(values.reduce((sum, part) => sum + part, 0)) : undefined
 }
 
-registerGatewayRuntimeCacheInvalidator(() => providerModelCatalogCache.clear())
+async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const cached = await providerModelCatalogSharedCache.get(cacheKey)
+    return cached ? cloneProviderModelCatalogItems(cached) : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'model_catalog_shared_cache_read_failed'
+    }), '读取模型目录 Redis 共享缓存失败，继续读取数据库')
+    return undefined
+  }
+}
+
+async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
+  const cached = cloneProviderModelCatalogItems(value)
+  providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(cached))
+  await setProviderModelCatalogSharedCacheEntry(cacheKey, cached)
+}
+
+async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'model_catalog_shared_cache_write_failed'
+    }), '写入模型目录 Redis 共享缓存失败')
+  }
+}
+
+function clearProviderModelCatalogSharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void providerModelCatalogSharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'model_catalog_shared_cache_clear_failed'
+    }), '清理模型目录 Redis 共享缓存失败')
+  })
+}
+
+function clearProviderModelCatalogCaches(): void {
+  providerModelCatalogCache.clear()
+  clearProviderModelCatalogSharedCache()
+}
+
+registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)

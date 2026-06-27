@@ -101,7 +101,6 @@ function accountDraftPayloadFromSavePayload(
     providerProtocolProfileId: payload.providerProtocolProfileId,
     name: payload.name ?? fallbackName,
     type: payload.type,
-    clientCompatibility: payload.clientCompatibility,
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,

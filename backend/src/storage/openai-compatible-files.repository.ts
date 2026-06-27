@@ -1,4 +1,6 @@
 import { getBusinessDatabase, nowIso } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 
 export interface OpenAICompatibleFileRecord {
   id: string
@@ -47,6 +49,12 @@ export interface OpenAICompatibleFileListResult {
   hasMore: boolean
 }
 
+export interface OpenAICompatibleFileLookupInput {
+  fileId: string
+  systemAccountId: string
+  apiKeyId: string
+}
+
 interface OpenAICompatibleFileRow {
   id: string
   system_account_id: string
@@ -67,6 +75,7 @@ interface OpenAICompatibleFileRow {
 
 const maxOpenAICompatibleFilesListLimit = 100
 const defaultOpenAICompatibleFilesListLimit = 20
+const businessSchemaName = 'juhe_business'
 
 export function createOpenAICompatibleFile(input: OpenAICompatibleFileCreateInput): OpenAICompatibleFileRecord {
   const now = nowIso()
@@ -91,6 +100,40 @@ export function createOpenAICompatibleFile(input: OpenAICompatibleFileCreateInpu
     input.expiresAt ?? null
   )
   const record = findOpenAICompatibleFile({
+    fileId: input.id,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId
+  })
+  if (!record) {
+    throw new Error(`OpenAI compatible file ${input.id} was not readable after insert`)
+  }
+  return record
+}
+
+export async function createOpenAICompatibleFileAsync(input: OpenAICompatibleFileCreateInput): Promise<OpenAICompatibleFileRecord> {
+  const client = await openAICompatibleFilePostgresClient()
+  const now = nowIso()
+  await client.execute(`
+    INSERT INTO ${openAICompatibleFileTable(client)} (
+      id, system_account_id, api_key_id, purpose, container_id, filename, bytes, media_type,
+      storage_key, sha256, status, created_at, updated_at, expires_at, deleted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processed', ?, ?, ?, NULL)
+  `, [
+    input.id,
+    input.systemAccountId,
+    input.apiKeyId,
+    input.purpose,
+    input.containerId ?? null,
+    input.filename,
+    input.bytes,
+    input.mediaType ?? null,
+    input.storageKey,
+    input.sha256,
+    now,
+    now,
+    input.expiresAt ?? null
+  ])
+  const record = await findOpenAICompatibleFileWithClient(client, {
     fileId: input.id,
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId
@@ -143,11 +186,50 @@ export function listOpenAICompatibleFiles(options: OpenAICompatibleFileListOptio
   }
 }
 
-export function findOpenAICompatibleFile(input: {
-  fileId: string
-  systemAccountId: string
-  apiKeyId: string
-}): OpenAICompatibleFileRecord | undefined {
+export async function listOpenAICompatibleFilesAsync(options: OpenAICompatibleFileListOptions): Promise<OpenAICompatibleFileListResult> {
+  const client = await openAICompatibleFilePostgresClient()
+  const limit = normalizeListLimit(options.limit)
+  const order = options.order === 'asc' ? 'asc' : 'desc'
+  const params: Array<string | number | null> = [options.systemAccountId, options.apiKeyId]
+  const clauses = [
+    'system_account_id = ?',
+    'api_key_id = ?',
+    'deleted_at IS NULL'
+  ]
+  const purpose = options.purpose?.trim()
+  if (purpose) {
+    clauses.push('purpose = ?')
+    params.push(purpose)
+  }
+  const containerId = options.containerId?.trim()
+  if (containerId) {
+    clauses.push('container_id = ?')
+    params.push(containerId)
+  }
+  const cursor = options.after ? await findOpenAICompatibleFileCursorWithClient(client, options.after, options.systemAccountId, options.apiKeyId) : undefined
+  if (options.after && !cursor) {
+    return { items: [], hasMore: false }
+  }
+  if (cursor) {
+    clauses.push(order === 'asc'
+      ? '(created_at > ? OR (created_at = ? AND id > ?))'
+      : '(created_at < ? OR (created_at = ? AND id < ?))')
+    params.push(cursor.created_at, cursor.created_at, cursor.id)
+  }
+  const rows = await client.query<OpenAICompatibleFileRow>(`
+    SELECT ${openAICompatibleFileSelectColumns()}
+    FROM ${openAICompatibleFileTable(client)}
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY created_at ${order.toUpperCase()}, id ${order.toUpperCase()}
+    LIMIT ?
+  `, [...params, limit + 1])
+  return {
+    items: rows.slice(0, limit).map(openAICompatibleFileFromRow),
+    hasMore: rows.length > limit
+  }
+}
+
+export function findOpenAICompatibleFile(input: OpenAICompatibleFileLookupInput): OpenAICompatibleFileRecord | undefined {
   const row = getBusinessDatabase().prepare(`
     SELECT ${openAICompatibleFileSelectColumns()}
     FROM openai_compatible_files
@@ -160,11 +242,27 @@ export function findOpenAICompatibleFile(input: {
   return row ? openAICompatibleFileFromRow(row) : undefined
 }
 
-export function deleteOpenAICompatibleFile(input: {
-  fileId: string
-  systemAccountId: string
-  apiKeyId: string
-}): OpenAICompatibleFileRecord | undefined {
+export async function findOpenAICompatibleFileAsync(input: OpenAICompatibleFileLookupInput): Promise<OpenAICompatibleFileRecord | undefined> {
+  return await findOpenAICompatibleFileWithClient(await openAICompatibleFilePostgresClient(), input)
+}
+
+export async function findOpenAICompatibleFileWithClient(
+  client: DatabaseClient,
+  input: OpenAICompatibleFileLookupInput
+): Promise<OpenAICompatibleFileRecord | undefined> {
+  const row = await client.one<OpenAICompatibleFileRow>(`
+    SELECT ${openAICompatibleFileSelectColumns()}
+    FROM ${openAICompatibleFileTable(client)}
+    WHERE id = ?
+      AND system_account_id = ?
+      AND api_key_id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `, [input.fileId, input.systemAccountId, input.apiKeyId])
+  return row ? openAICompatibleFileFromRow(row) : undefined
+}
+
+export function deleteOpenAICompatibleFile(input: OpenAICompatibleFileLookupInput): OpenAICompatibleFileRecord | undefined {
   const existing = findOpenAICompatibleFile(input)
   if (!existing) return undefined
   const now = nowIso()
@@ -178,6 +276,29 @@ export function deleteOpenAICompatibleFile(input: {
       AND api_key_id = ?
       AND deleted_at IS NULL
   `).run(now, now, input.fileId, input.systemAccountId, input.apiKeyId)
+  return {
+    ...existing,
+    status: 'deleted',
+    deletedAt: now,
+    updatedAt: now
+  }
+}
+
+export async function deleteOpenAICompatibleFileAsync(input: OpenAICompatibleFileLookupInput): Promise<OpenAICompatibleFileRecord | undefined> {
+  const client = await openAICompatibleFilePostgresClient()
+  const existing = await findOpenAICompatibleFileWithClient(client, input)
+  if (!existing) return undefined
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${openAICompatibleFileTable(client)}
+    SET status = 'deleted',
+        deleted_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND api_key_id = ?
+      AND deleted_at IS NULL
+  `, [now, now, input.fileId, input.systemAccountId, input.apiKeyId])
   return {
     ...existing,
     status: 'deleted',
@@ -200,6 +321,23 @@ function findOpenAICompatibleFileCursor(
       AND deleted_at IS NULL
     LIMIT 1
   `).get(fileId, systemAccountId, apiKeyId) as unknown as { id: string; created_at: string } | undefined
+}
+
+async function findOpenAICompatibleFileCursorWithClient(
+  client: DatabaseClient,
+  fileId: string,
+  systemAccountId: string,
+  apiKeyId: string
+): Promise<{ id: string; created_at: string } | undefined> {
+  return await client.one<{ id: string; created_at: string }>(`
+    SELECT id, created_at
+    FROM ${openAICompatibleFileTable(client)}
+    WHERE id = ?
+      AND system_account_id = ?
+      AND api_key_id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `, [fileId, systemAccountId, apiKeyId])
 }
 
 function openAICompatibleFileSelectColumns(): string {
@@ -245,4 +383,14 @@ function openAICompatibleFileFromRow(row: OpenAICompatibleFileRow): OpenAICompat
 function normalizeListLimit(value: number | undefined): number {
   if (!Number.isFinite(value)) return defaultOpenAICompatibleFilesListLimit
   return Math.max(1, Math.min(Math.trunc(value ?? defaultOpenAICompatibleFilesListLimit), maxOpenAICompatibleFilesListLimit))
+}
+
+async function openAICompatibleFilePostgresClient(): Promise<DatabaseClient> {
+  return createPostgresDatabaseClient(await getPostgresPool())
+}
+
+function openAICompatibleFileTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'openai_compatible_files')
+    : client.dialect.quoteIdentifier('openai_compatible_files')
 }

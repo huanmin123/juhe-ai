@@ -9,7 +9,7 @@ import {
   setDbServiceQueueRuntimeProvider,
   type DbServiceQueueRuntimeMetrics
 } from './modules/db-service/db-service-handlers.js'
-import type { DbServiceParentMessage } from './modules/db-service/db-service-types.js'
+import type { DbServiceOperation, DbServiceParentMessage } from './modules/db-service/db-service-types.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
@@ -45,6 +45,24 @@ const dbServiceRequestQueueMaxBytes = 128 * 1024 * 1024
 const dbServiceHighDispatchesBeforeNormal = 8
 const dbServiceHighDispatchesBeforeLow = 16
 const dbServiceConcurrentRequestMaxActive = 8
+const postgresConcurrentDbServiceOperationTypes = new Set<DbServiceOperation['type']>([
+  'list_public_global_settings',
+  'validate_gateway_api_key',
+  'read_gateway_settings',
+  'resolve_group_usage_access',
+  'list_openai_accounts_for_group',
+  'list_openai_accounts_for_group_result',
+  'list_recoverable_unavailable_openai_accounts_for_group',
+  'read_gateway_runtime',
+  'list_provider_model_catalog',
+  'check_api_key_quota',
+  'check_authorization_quota',
+  'check_authorization_quota_batch',
+  'find_openai_oauth_account_for_refresh',
+  'list_active_client_ip_policies',
+  'list_active_response_inspection_policies',
+  'status'
+])
 let queuedDbServiceRequestBytes = 0
 let dbServiceRequestQueueDraining = false
 let dbServiceRequestQueueDrainScheduled = false
@@ -312,7 +330,11 @@ function canShiftQueuedDbServiceRequest(request: QueuedDbServiceRequest): boolea
 }
 
 function shouldDispatchDbServiceRequestConcurrently(message: DbServiceRequestParentMessage): boolean {
-  return isCodexContextStateWriterPoolOperation(message.operation)
+  if (isCodexContextStateWriterPoolOperation(message.operation)) {
+    return true
+  }
+  return runtimeConfig.databaseDriver === 'postgres'
+    && postgresConcurrentDbServiceOperationTypes.has(message.operation.type)
 }
 
 async function yieldDbServiceRequestQueue(): Promise<void> {

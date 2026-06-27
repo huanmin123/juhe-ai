@@ -19,9 +19,13 @@ export type {
 
 export {
   getOperationLogDetail,
+  getOperationLogDetailAsync,
   getOperationLogDetailForViewer,
+  getOperationLogDetailForViewerAsync,
   listOperationLogs,
-  listOperationLogsForViewer
+  listOperationLogsAsync,
+  listOperationLogsForViewer,
+  listOperationLogsForViewerAsync
 } from './operation-log-read.repository.js'
 
 export {

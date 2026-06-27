@@ -9,13 +9,17 @@ import {
   enqueueAuditLogsLocal,
   flushAuditLogQueueForShutdown,
   getAuditLogQueueRuntime,
-  installAuditLogQueueShutdownHooks
+  installAuditLogQueueShutdownHooks,
+  startAuditLogRedisStreamConsumer,
+  stopAuditLogRedisStreamConsumer
 } from './modules/audit-logs/audit-log-queue.service.js'
 import {
   enqueueOperationLogsLocal,
   flushOperationLogQueueForShutdown,
   getOperationLogQueueRuntime,
-  installOperationLogQueueShutdownHooks
+  installOperationLogQueueShutdownHooks,
+  startOperationLogRedisStreamConsumer,
+  stopOperationLogRedisStreamConsumer
 } from './modules/operation-logs/operation-log-queue.service.js'
 import {
   enqueuePublicApiLogsLocal,
@@ -98,6 +102,8 @@ if (isIngestWorker()) {
     setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
   }
   startUsageRecordRedisStreamConsumer()
+  startOperationLogRedisStreamConsumer()
+  startAuditLogRedisStreamConsumer()
   if (runtimeConfig.databaseDriver === 'sqlite') {
     startRuntimeLogFileImport()
   }
@@ -384,6 +390,8 @@ async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
 async function flushWorkerQueuesForShutdown(): Promise<void> {
   if (isIngestWorker()) {
     await stopUsageRecordRedisStreamConsumer()
+    await stopOperationLogRedisStreamConsumer()
+    await stopAuditLogRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()

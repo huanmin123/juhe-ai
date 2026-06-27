@@ -1,4 +1,6 @@
-import { createAppCache } from '../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { syncGatewayCacheInvalidationsFromRuntimeState } from '../shared/gateway-cache-invalidation.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { maxApiKeyGroupBindings } from './api-key-group-binding-limits.js'
 import {
   normalizeApiKeyGroupBindingWeight,
@@ -74,6 +76,11 @@ const gatewayApiKeyCache = createAppCache<string, GatewayApiKeyCacheEntry>({
     gatewayApiKeyCacheKeysById.clear()
   }
 })
+const gatewayApiKeySharedCache = createSharedJsonCache<GatewayApiKeyCacheEntry>({
+  name: 'gateway:api-key-validation',
+  max: 10000,
+  ttlMs: GATEWAY_API_KEY_CACHE_TTL_MS
+})
 const gatewayApiKeyCacheKeysById = new Map<string, Set<string>>()
 
 export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined {
@@ -141,6 +148,9 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return validateGatewayApiKey(key)
   }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    await syncGatewayCacheInvalidationsFromRuntimeState()
+  }
   if (!key.startsWith('sk-')) {
     return undefined
   }
@@ -153,6 +163,21 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     && !isGatewayApiKeyRowExpired(cached.row, now)
   ) {
     return cloneGatewayApiKeyRow(cached.row)
+  }
+  const sharedCached = await getGatewayApiKeySharedCacheEntry(keyHash)
+  if (
+    sharedCached
+    && sharedCached.forceRevalidateAtMs > now
+    && !isGatewayApiKeyRowExpired(sharedCached.row, now)
+  ) {
+    setGatewayApiKeyCacheEntry(keyHash, {
+      row: cloneGatewayApiKeyRow(sharedCached.row),
+      forceRevalidateAtMs: sharedCached.forceRevalidateAtMs
+    }, {
+      ttlMs: gatewayApiKeyCacheTtlMs(now, sharedCached.row),
+      skipSharedCache: true
+    })
+    return cloneGatewayApiKeyRow(sharedCached.row)
   }
 
   const client = await getGatewayApiKeyDatabaseClient()
@@ -195,7 +220,7 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     return undefined
   }
   row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
-  setGatewayApiKeyCacheEntry(keyHash, {
+  await setGatewayApiKeyCacheEntryAsync(keyHash, {
     row: cloneGatewayApiKeyRow(row),
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
@@ -256,15 +281,18 @@ function normalizeGatewayApiKeyRouteFields(row: GatewayApiKeyRow): void {
 
 export function clearGatewayApiKeyValidationCache(): void {
   gatewayApiKeyCache.clear()
+  clearGatewayApiKeySharedCache()
 }
 
 export function invalidateGatewayApiKeyCacheById(id: string): void {
   const keyHashes = gatewayApiKeyCacheKeysById.get(id)
-  if (!keyHashes) return
-  for (const keyHash of [...keyHashes]) {
-    gatewayApiKeyCache.delete(keyHash)
+  if (keyHashes) {
+    for (const keyHash of [...keyHashes]) {
+      gatewayApiKeyCache.delete(keyHash)
+    }
+    gatewayApiKeyCacheKeysById.delete(id)
   }
-  gatewayApiKeyCacheKeysById.delete(id)
+  clearGatewayApiKeySharedCache()
 }
 
 function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
@@ -284,13 +312,32 @@ function gatewayApiKeyCacheTtlMs(now: number, row: GatewayApiKeyRow): number {
   return Math.max(1, ttlMs)
 }
 
-function setGatewayApiKeyCacheEntry(keyHash: string, entry: GatewayApiKeyCacheEntry, options?: { ttlMs?: number }): void {
+function setGatewayApiKeyCacheEntry(
+  keyHash: string,
+  entry: GatewayApiKeyCacheEntry,
+  options: { ttlMs?: number; skipSharedCache?: boolean } = {}
+): void {
   const previous = gatewayApiKeyCache.get(keyHash)
   if (previous) {
     removeGatewayApiKeyCacheIndex(previous.row.id, keyHash)
   }
   gatewayApiKeyCache.set(keyHash, entry, options)
   addGatewayApiKeyCacheIndex(entry.row.id, keyHash)
+  if (!options.skipSharedCache) {
+    void setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
+  }
+}
+
+async function setGatewayApiKeyCacheEntryAsync(
+  keyHash: string,
+  entry: GatewayApiKeyCacheEntry,
+  options: { ttlMs?: number } = {}
+): Promise<void> {
+  setGatewayApiKeyCacheEntry(keyHash, entry, {
+    ...options,
+    skipSharedCache: true
+  })
+  await setGatewayApiKeySharedCacheEntry(keyHash, entry, options)
 }
 
 function addGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void {
@@ -433,4 +480,49 @@ function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
     explicit_hybrid_route_rules: row.explicit_hybrid_route_rules?.map((rule) => ({ ...rule })),
     group_bindings: row.group_bindings?.map((binding) => ({ ...binding }))
   }
+}
+
+async function getGatewayApiKeySharedCacheEntry(keyHash: string): Promise<GatewayApiKeyCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const entry = await gatewayApiKeySharedCache.get(keyHash)
+    return entry
+      ? {
+          row: cloneGatewayApiKeyRow(entry.row),
+          forceRevalidateAtMs: entry.forceRevalidateAtMs
+        }
+      : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_api_key_validation_shared_cache_read_failed'
+    }), '读取 API Key 校验 Redis 共享缓存失败，继续读取数据库')
+    return undefined
+  }
+}
+
+async function setGatewayApiKeySharedCacheEntry(
+  keyHash: string,
+  entry: GatewayApiKeyCacheEntry,
+  options: { ttlMs?: number } = {}
+): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await gatewayApiKeySharedCache.set(keyHash, {
+      row: cloneGatewayApiKeyRow(entry.row),
+      forceRevalidateAtMs: entry.forceRevalidateAtMs
+    }, { ttlMs: options.ttlMs ?? GATEWAY_API_KEY_CACHE_TTL_MS })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_api_key_validation_shared_cache_write_failed'
+    }), '写入 API Key 校验 Redis 共享缓存失败')
+  }
+}
+
+function clearGatewayApiKeySharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void gatewayApiKeySharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_api_key_validation_shared_cache_clear_failed'
+    }), '清理 API Key 校验 Redis 共享缓存失败')
+  })
 }

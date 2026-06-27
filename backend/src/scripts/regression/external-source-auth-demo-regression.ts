@@ -586,6 +586,23 @@ async function runChild(): Promise<void> {
     })
     assert.equal(legacyExternalIdAdd.status, 400, '公开账号新增不应再接收 externalId')
 
+    const clientCompatibilityAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      targetUsername: 'client_compatibility_input_user',
+      targetGroupName: '客户端兼容字段拒绝分组',
+      providerCode: 'gpt',
+      name: '客户端兼容字段不应公开写入',
+      type: 'api_key',
+      baseUrl: 'https://push.example/v1',
+      apiKey: 'sk-public-push-regression-client-compatibility',
+      supportedModels: ['gpt-5.5'],
+      clientCompatibility: 'codex_responses'
+    })
+    assert.equal(clientCompatibilityAdd.status, 400, '公开账号新增不应再接收 clientCompatibility')
+    assert.match(clientCompatibilityAdd.body.message, /clientCompatibility|Unrecognized|未知/, '公开账号新增拒绝 clientCompatibility 时应暴露字段名')
+    assert.equal(findSystemAccountByUsername('client_compatibility_input_user'), undefined, 'clientCompatibility 在路由校验阶段拒绝后不应创建目标用户')
+
     const accountAdd = await requestJson(baseUrl, '/__aipublic__/account/add', {
       Authorization: `Bearer ${accountWriteToken}`
     }, 'POST', {
@@ -652,6 +669,15 @@ async function runChild(): Promise<void> {
     assert(listedAccount, '公开账号列表应能按目标用户和分组返回刚新增的账号')
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'externalId'), false, '公开账号列表不应回显外部来源系统业务 ID')
     assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'credentials'), false, '公开账号列表不能返回上游凭据')
+
+    const clientCompatibilityUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
+      Authorization: `Bearer ${accountWriteToken}`
+    }, 'POST', {
+      accountId: accountAdd.body.data.account.id,
+      clientCompatibility: 'codex_responses'
+    })
+    assert.equal(clientCompatibilityUpdate.status, 400, '公开账号修改不应再接收 clientCompatibility')
+    assert.match(clientCompatibilityUpdate.body.message, /clientCompatibility|Unrecognized|未知/, '公开账号修改拒绝 clientCompatibility 时应暴露字段名')
 
     const accountKeyUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
       Authorization: `Bearer ${accountWriteToken}`

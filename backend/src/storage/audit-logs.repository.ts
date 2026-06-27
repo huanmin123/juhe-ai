@@ -1,6 +1,6 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { appendAuditHotSearchEntries, appendAuditHotSearchEntriesAsync } from './audit-log-hot-search-files.js'
-import { prepareAuditErrorGroupStatements, upsertAuditErrorGroup } from './audit-log-error-groups.repository.js'
+import { prepareAuditErrorGroupStatements, upsertAuditErrorGroup, upsertAuditErrorGroupAsync } from './audit-log-error-groups.repository.js'
 import {
   applyAuditPayloadBlobPersistencePlan,
   cleanupCreatedAuditBlobFiles,
@@ -56,10 +56,15 @@ export {
 } from './audit-log-retention.repository.js'
 export {
   getAuditLogDetail,
+  getAuditLogDetailAsync,
   getAuditLogPayload,
+  listAuditErrorGroupEventsAsync,
   listAuditErrorGroupEvents,
+  listAuditErrorGroupsAsync,
   listAuditErrorGroups,
+  listAuditLogsAsync,
   listAuditLogs,
+  listAuditLogsByIdsAsync,
   listAuditLogsByIds
 } from './audit-log-read.repository.js'
 export type { AuditPayloadBlobStorageStatus } from './audit-log-payload-blobs.js'
@@ -500,6 +505,11 @@ async function createAuditLogsBatchPostgres(inputs: AuditLogInput[]): Promise<vo
       for (const prepared of preparedLogs) {
         const inserted = await insertPostgresAuditLog(tx, prepared)
         if (!inserted) continue
+        const trafficSource = normalizeAuditTrafficSource(prepared.input.trafficSource)
+        const errorGroupId = await upsertAuditErrorGroupAsync(tx, prepared.input, prepared.id, prepared.payloads, prepared.createdAt, trafficSource)
+        if (errorGroupId) {
+          await updatePostgresAuditLogErrorGroup(tx, prepared.id, errorGroupId)
+        }
         insertedHotSearchLogs.push({ ...prepared.input, id: prepared.id, createdAt: prepared.createdAt })
         await insertPostgresAuditLogAttempts(tx, prepared)
         await insertPostgresAuditPayloadRefs(tx, prepared, blobPlans, createdStorageKeys)
@@ -658,6 +668,10 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
     createdAt
   ])
   return result.changes > 0
+}
+
+async function updatePostgresAuditLogErrorGroup(client: DatabaseClient, auditLogId: string, errorGroupId: string): Promise<void> {
+  await client.execute('UPDATE juhe_dataset.audit_logs SET error_group_id = ? WHERE id = ?', [errorGroupId, auditLogId])
 }
 
 async function insertPostgresAuditLogAttempts(client: DatabaseClient, prepared: PreparedAuditLogForWrite): Promise<void> {

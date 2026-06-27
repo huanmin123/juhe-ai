@@ -11,7 +11,7 @@ import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMapping } from '../../domain/types.js'
+import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
 
@@ -110,7 +110,6 @@ try {
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Codex Bridge Real E2E 账户',
       type: 'api_key',
-      clientCompatibility: 'codex_responses',
       credentials: {
         api_key: realApiKey,
         base_url: realBaseUrl,
@@ -120,10 +119,9 @@ try {
       status: 'active',
       schedulable: true,
       concurrencyLimit: 4,
-      supportedModels: realModels,
-      modelMappings: codexBridgeModelMappings(realModels)
+      supportedModels: realModels
     }, access)
-    assert.equal(codexBridgeAccount.clientCompatibility, 'codex_responses')
+    assert.equal(codexBridgeAccount.modelMappings?.length ?? 0, 0, 'Codex bridge 账号不应保存跨协议模型映射')
 
     const apiKey = repositories.createApiKeyRecord({
       name: 'DeepSeek Real E2E Key',
@@ -134,6 +132,7 @@ try {
     const codexBridgeApiKey = repositories.createApiKeyRecord({
       name: 'DeepSeek Codex Bridge Real E2E Key',
       groupBindings: [{ groupId: codexBridgeGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: codexBridgeRouteRules(codexBridgeGroup.id, realModels),
       status: 'active'
     }, access)
     assert(codexBridgeApiKey.key, '真实联调本地 Codex Bridge API Key 未返回明文密钥')
@@ -373,13 +372,18 @@ function modelListFromEnv(): string[] {
   return models
 }
 
-function codexBridgeModelMappings(models: string[]): AccountModelMapping[] {
-  return models.map((model) => ({
+function codexBridgeRouteRules(targetGroupId: string, models: string[]): ApiKeyExplicitHybridRouteRule[] {
+  return models.map((model, index) => ({
+    id: `responses_to_chat_${index + 1}`,
+    enabled: true,
+    priority: index + 1,
+    sourceClientProfile: 'codex',
     sourceModel: model,
     sourceEndpointFamily: 'responses',
+    targetGroupId,
     upstreamModel: model,
     upstreamEndpointFamily: 'chat_completions',
-    enabled: true
+    adapterMode: 'bridge'
   }))
 }
 

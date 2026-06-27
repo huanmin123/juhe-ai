@@ -328,7 +328,8 @@ export async function fetchFirstAvailableUpstream(
                 upstreamUrl,
                 method: req.method,
                 headers,
-                body
+                body,
+                requestForModelAccounting: req
               })
               try {
                 const response = await performUpstreamRequestAttempt({

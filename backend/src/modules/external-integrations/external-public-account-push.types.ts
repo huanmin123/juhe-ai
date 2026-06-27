@@ -7,7 +7,6 @@ export interface PublicAccountPushInput {
   providerCode: string
   providerProtocolProfileId?: string
   connectionType?: string
-  clientCompatibility?: AccountClientCompatibility
   name: string
   type: 'api_key'
   baseUrl: string
@@ -28,7 +27,6 @@ export interface PublicAccountUpdateInput {
   providerCode?: string
   providerProtocolProfileId?: string
   connectionType?: string
-  clientCompatibility?: AccountClientCompatibility
   name?: string
   type?: 'api_key'
   baseUrl?: string

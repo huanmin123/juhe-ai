@@ -8,6 +8,7 @@ import { createGunzip, gzip, gzipSync } from 'node:zlib'
 
 import { backendRoot } from '../config/runtime.js'
 import { getDatasetDatabase, newId } from './database.js'
+import type { DatabaseClient } from './database-client.js'
 import { optionalString } from './value-utils.js'
 
 export type StoredAuditPayloadCompression = 'none' | 'gzip'
@@ -358,8 +359,58 @@ export async function readAuditPayloadBlobWindow(
   }
 }
 
+export async function readAuditPayloadBlobWindowWithClient(
+  client: DatabaseClient,
+  blobId: string | undefined,
+  options: { offset?: number; limit?: number }
+): Promise<AuditPayloadBlobWindow> {
+  const offset = normalizePayloadReadOffset(options.offset)
+  const limit = normalizePayloadReadLimit(options.limit)
+  if (!blobId) {
+    return emptyPayloadBlobWindow(offset, limit, 0, 'not_saved')
+  }
+  const meta = await loadPayloadBlobMetaWithClient(client, blobId)
+  if (!meta) {
+    return emptyPayloadBlobWindow(offset, limit, 0, 'metadata_missing')
+  }
+  const filePath = blobFilePath(meta.storageKey)
+  if (!await fileExists(filePath)) {
+    return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes, 'file_missing')
+  }
+  const bytes = meta.compression === 'gzip'
+    ? await readGzipPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
+    : await readPlainPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
+  const nextOffset = offset + (bytes?.byteLength ?? 0)
+  const truncated = nextOffset < meta.rawSizeBytes
+  return {
+    bytes,
+    offset,
+    limit,
+    totalBytes: meta.rawSizeBytes,
+    nextOffset: truncated ? nextOffset : undefined,
+    truncated,
+    storageStatus: 'available'
+  }
+}
+
 export async function readAuditHeadersBlobDetail(blobId: string | undefined): Promise<AuditHeadersBlobDetail> {
   const window = await readAuditPayloadBlobWindow(blobId, {
+    offset: 0,
+    limit: auditPayloadMaxReadLimitBytes
+  })
+  if (!window.bytes) return { storageStatus: window.storageStatus }
+  try {
+    return {
+      headers: JSON.parse(window.bytes.toString('utf8')) as Record<string, string | string[]>,
+      storageStatus: window.storageStatus
+    }
+  } catch {
+    return { storageStatus: window.storageStatus }
+  }
+}
+
+export async function readAuditHeadersBlobDetailWithClient(client: DatabaseClient, blobId: string | undefined): Promise<AuditHeadersBlobDetail> {
+  const window = await readAuditPayloadBlobWindowWithClient(client, blobId, {
     offset: 0,
     limit: auditPayloadMaxReadLimitBytes
   })
@@ -445,6 +496,22 @@ function loadPayloadBlobMeta(blobId: string): StoredPayloadBlobMeta | undefined 
   const row = getDatasetDatabase()
     .prepare('SELECT storage_key, compression, raw_size_bytes, compressed_size_bytes FROM audit_payload_blobs WHERE id = ?')
     .get(blobId) as AuditPayloadBlobRow | undefined
+  const storageKey = optionalString(row?.storage_key)
+  if (!storageKey) return undefined
+  return {
+    storageKey,
+    compression: optionalString(row?.compression) === 'gzip' ? 'gzip' : 'none',
+    rawSizeBytes: Math.max(0, Number(row?.raw_size_bytes ?? 0)),
+    compressedSizeBytes: Math.max(0, Number(row?.compressed_size_bytes ?? 0))
+  }
+}
+
+async function loadPayloadBlobMetaWithClient(client: DatabaseClient, blobId: string): Promise<StoredPayloadBlobMeta | undefined> {
+  const row = await client.one<AuditPayloadBlobRow>(`
+    SELECT storage_key, compression, raw_size_bytes, compressed_size_bytes
+    FROM juhe_dataset.audit_payload_blobs
+    WHERE id = ?
+  `, [blobId])
   const storageKey = optionalString(row?.storage_key)
   if (!storageKey) return undefined
   return {

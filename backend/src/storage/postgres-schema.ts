@@ -27,6 +27,49 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
   { source: 'codex-context', schemaName: 'juhe_codex_context', apply: applyCodexContextStateSchema }
 ]
 
+const supplementalSchemaStatements: PostgresSchemaStatement[] = [
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS usage_semantic text'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS cache_write_tokens integer'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS cache_write_1h_tokens integer'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS cache_write_cost_usd double precision'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS thinking_tokens integer'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS provider_protocol_profile_id text'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS failure_attribution text'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at)'
+  }
+]
+
 export function collectPostgresSchemaStatements(): PostgresSchemaStatement[] {
   const statements: PostgresSchemaStatement[] = []
   for (const definition of schemaSourceDefinitions) {
@@ -41,6 +84,7 @@ export function collectPostgresSchemaStatements(): PostgresSchemaStatement[] {
       })
     }
   }
+  statements.push(...supplementalSchemaStatements)
   return orderSchemaStatements(statements)
 }
 
@@ -82,13 +126,156 @@ export async function applyPostgresSchema(client: Pick<DatabaseClient, 'execute'
 
 function collectSqlStatements(applySchema: (database: DatabaseSync) => void): string[] {
   const statements: string[] = []
+  const tableColumns = new Map<string, Set<string>>()
   const recorder = {
     exec(sql: string): void {
       statements.push(sql)
+      rememberSchemaColumns(sql, tableColumns)
+    },
+    prepare(sql: string) {
+      const tableName = extractPragmaTableInfoTableName(sql)
+      return {
+        all: () => tableName
+          ? [...(tableColumns.get(tableName) ?? new Set<string>())].map((name) => ({ name }))
+          : [],
+        get: () => undefined,
+        run: () => ({ changes: 0, lastInsertRowid: 0 })
+      }
     }
-  } as DatabaseSync
+  } as unknown as DatabaseSync
   applySchema(recorder)
   return statements.flatMap(splitSqlStatements)
+}
+
+function rememberSchemaColumns(sql: string, tableColumns: Map<string, Set<string>>): void {
+  for (const statement of splitSqlStatements(sql)) {
+    const createdTable = extractCreatedTableColumns(statement)
+    if (createdTable) {
+      tableColumns.set(createdTable.tableName, new Set(createdTable.columns))
+      continue
+    }
+    const addedColumn = extractAlterTableAddedColumn(statement)
+    if (!addedColumn) continue
+    const columns = tableColumns.get(addedColumn.tableName) ?? new Set<string>()
+    columns.add(addedColumn.columnName)
+    tableColumns.set(addedColumn.tableName, columns)
+  }
+}
+
+function extractPragmaTableInfoTableName(sql: string): string | undefined {
+  const match = /^\s*PRAGMA\s+(?:main\.)?table_info\s*\(\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*\)/i.exec(sql)
+  return normalizeSqlIdentifier(match?.[1] ?? match?.[2] ?? match?.[3])
+}
+
+function extractCreatedTableColumns(sql: string): { tableName: string; columns: string[] } | undefined {
+  const tableName = extractCreatedTableName(sql)
+  if (!tableName) return undefined
+  const body = extractCreateTableBody(sql)
+  if (!body) return undefined
+  const columns = splitTopLevelCommaList(body)
+    .map(extractColumnName)
+    .filter((columnName): columnName is string => Boolean(columnName))
+  return { tableName, columns }
+}
+
+function extractCreateTableBody(sql: string): string | undefined {
+  const start = sql.indexOf('(')
+  if (start < 0) return undefined
+  let depth = 0
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  for (let index = start; index < sql.length; index += 1) {
+    const current = sql[index]
+    const next = sql[index + 1]
+    if (current === "'" && !inDoubleQuote) {
+      if (inSingleQuote && next === "'") {
+        index += 1
+        continue
+      }
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (current === '"' && !inSingleQuote) {
+      if (inDoubleQuote && next === '"') {
+        index += 1
+        continue
+      }
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (inSingleQuote || inDoubleQuote) continue
+    if (current === '(') {
+      depth += 1
+      continue
+    }
+    if (current !== ')') continue
+    depth -= 1
+    if (depth === 0) {
+      return sql.slice(start + 1, index)
+    }
+  }
+  return undefined
+}
+
+function splitTopLevelCommaList(input: string): string[] {
+  const items: string[] = []
+  let buffer = ''
+  let depth = 0
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  for (let index = 0; index < input.length; index += 1) {
+    const current = input[index]
+    const next = input[index + 1]
+    if (current === "'" && !inDoubleQuote) {
+      buffer += current
+      if (inSingleQuote && next === "'") {
+        buffer += next
+        index += 1
+        continue
+      }
+      inSingleQuote = !inSingleQuote
+      continue
+    }
+    if (current === '"' && !inSingleQuote) {
+      buffer += current
+      if (inDoubleQuote && next === '"') {
+        buffer += next
+        index += 1
+        continue
+      }
+      inDoubleQuote = !inDoubleQuote
+      continue
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (current === '(') depth += 1
+      else if (current === ')') depth = Math.max(0, depth - 1)
+      else if (current === ',' && depth === 0) {
+        const item = buffer.trim()
+        if (item) items.push(item)
+        buffer = ''
+        continue
+      }
+    }
+    buffer += current
+  }
+  const item = buffer.trim()
+  if (item) items.push(item)
+  return items
+}
+
+function extractColumnName(definition: string): string | undefined {
+  if (/^(?:PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(definition.trim())) {
+    return undefined
+  }
+  const match = /^\s*(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\b/.exec(definition)
+  return normalizeSqlIdentifier(match?.[1] ?? match?.[2])
+}
+
+function extractAlterTableAddedColumn(sql: string): { tableName: string; columnName: string } | undefined {
+  const match = /^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\b/i.exec(sql.trim())
+  const tableName = normalizeSqlIdentifier(match?.[1] ?? match?.[2])
+  const columnName = normalizeSqlIdentifier(match?.[3] ?? match?.[4])
+  return tableName && columnName ? { tableName, columnName } : undefined
 }
 
 function splitSqlStatements(sql: string): string[] {
@@ -246,6 +433,11 @@ function extractReferencedTableNames(sql: string): string[] {
     tableNames.push(match[1].toLowerCase())
   }
   return tableNames
+}
+
+function normalizeSqlIdentifier(value: string | undefined): string | undefined {
+  const normalized = value?.trim().replace(/^"|"$/g, '').toLowerCase()
+  return normalized ? normalized : undefined
 }
 
 function quoteIdentifier(identifier: string): string {

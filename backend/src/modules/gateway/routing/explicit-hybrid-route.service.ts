@@ -88,18 +88,19 @@ export async function resolveExplicitHybridGatewayRoute(input: {
         return failedRoute(rule, requestedModel, 'explicit_hybrid_target_account_unavailable', `显式混合路由目标账号不可用或不在目标分组中：${rule.targetAccountId}`)
       }
     }
-    const syntheticMapping: AccountModelMapping = {
-      sourceModel: rule.sourceModel?.trim() || requestedModel,
-      sourceEndpointFamily,
-      upstreamModel: rule.upstreamModel,
-      upstreamEndpointFamily: rule.upstreamEndpointFamily,
-      enabled: true,
-      runtimeSource: 'explicit_hybrid_route',
-      runtimeRouteRuleId: rule.id
-    }
     const accountsWithRule = accounts.map((account) => ({
       ...account,
-      modelMappings: mergeExplicitHybridRouteMapping(account.modelMappings, syntheticMapping)
+      modelMappings: mergeExplicitHybridRouteMappings(
+        account.modelMappings,
+        explicitHybridRouteRuntimeMappingsForAccount({
+          rules,
+          selectedRule: rule,
+          requestedModel,
+          account,
+          clientProfile: input.clientStrategy.clientProfile,
+          targetProviderProtocolProfileId: binding.provider_protocol_profile_id
+        })
+      )
     }))
     const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({
       protocolCode: groupAccess.protocolCode,
@@ -127,15 +128,86 @@ export async function resolveExplicitHybridGatewayRoute(input: {
   return { outcome: 'skipped', reason: 'no_explicit_hybrid_route_matched', requestedModel }
 }
 
-function mergeExplicitHybridRouteMapping(
+function explicitHybridRouteRuntimeMappingsForAccount(input: {
+  rules: ApiKeyExplicitHybridRouteRule[]
+  selectedRule: ApiKeyExplicitHybridRouteRule
+  requestedModel: string
+  account: OpenAIAccountSecret
+  clientProfile: OpenAIGatewayClientStrategyContext['clientProfile']
+  targetProviderProtocolProfileId?: string
+}): AccountModelMapping[] {
+  const selectedSourceModel = input.selectedRule.sourceModel?.trim() || input.requestedModel
+  const selectedMapping = explicitHybridRouteRuntimeMapping(input.selectedRule, selectedSourceModel)
+  const companionMappings = input.rules
+    .filter((rule) => rule.id !== input.selectedRule.id)
+    .filter((rule) => rule.enabled !== false)
+    .filter((rule) => rule.targetGroupId === input.selectedRule.targetGroupId)
+    .filter((rule) => !rule.targetProviderProtocolProfileId || rule.targetProviderProtocolProfileId === input.targetProviderProtocolProfileId)
+    .filter((rule) => !rule.targetAccountId || rule.targetAccountId === input.account.id)
+    .filter((rule) => rule.sourceClientProfile === 'auto' || rule.sourceClientProfile === input.clientProfile)
+    .filter((rule) => (rule.sourceModel?.trim() || input.requestedModel).toLowerCase() === selectedSourceModel.toLowerCase())
+    .filter((rule) => accountCanUseExplicitHybridRuntimeMapping(input.account, rule))
+    .map((rule) => explicitHybridRouteRuntimeMapping(rule, rule.sourceModel?.trim() || input.requestedModel))
+  return [selectedMapping, ...companionMappings].filter((mapping) => !isExactIdentityModelMapping(mapping))
+}
+
+function explicitHybridRouteRuntimeMapping(
+  rule: ApiKeyExplicitHybridRouteRule,
+  sourceModel: string
+): AccountModelMapping {
+  return {
+    sourceModel,
+    sourceEndpointFamily: rule.sourceEndpointFamily,
+    upstreamModel: rule.upstreamModel,
+    upstreamEndpointFamily: rule.upstreamEndpointFamily,
+    enabled: true,
+    runtimeSource: 'explicit_hybrid_route',
+    runtimeRouteRuleId: rule.id
+  }
+}
+
+function mergeExplicitHybridRouteMappings(
   mappings: AccountModelMapping[] | undefined,
-  mapping: AccountModelMapping
+  runtimeMappings: AccountModelMapping[]
 ): AccountModelMapping[] {
-  const withoutSameSource = (mappings ?? []).filter((item) => !(
-    item.sourceModel === mapping.sourceModel
-    && item.sourceEndpointFamily === mapping.sourceEndpointFamily
-  ))
-  return [mapping, ...withoutSameSource]
+  if (!runtimeMappings.length) return mappings ?? []
+  const runtimeMappingKeys = new Set(runtimeMappings.map((mapping) => modelMappingSourceKey(mapping)))
+  const withoutSameSource = (mappings ?? []).filter((item) => !runtimeMappingKeys.has(modelMappingSourceKey(item)))
+  return [...runtimeMappings, ...withoutSameSource]
+}
+
+function modelMappingSourceKey(mapping: AccountModelMapping): string {
+  return `${mapping.sourceEndpointFamily}:${mapping.sourceModel.toLowerCase()}`
+}
+
+function isExactIdentityModelMapping(mapping: AccountModelMapping): boolean {
+  return mapping.sourceModel === mapping.upstreamModel
+    && mapping.sourceEndpointFamily === mapping.upstreamEndpointFamily
+}
+
+function accountCanUseExplicitHybridRuntimeMapping(
+  account: OpenAIAccountSecret,
+  rule: ApiKeyExplicitHybridRouteRule
+): boolean {
+  const supportedModels = account.supportedModels ?? []
+  if (supportedModels.length && !supportedModels.some((model) => model === rule.upstreamModel)) {
+    return false
+  }
+  const modes = account.supportedEndpointModes ?? []
+  if (!modes.length) return true
+  if (rule.upstreamEndpointFamily === 'chat_completions') {
+    return modes.includes('chat_json') || modes.includes('chat_sse')
+  }
+  if (rule.upstreamEndpointFamily === 'responses') {
+    return modes.includes('responses_json') || modes.includes('responses_sse')
+  }
+  if (rule.upstreamEndpointFamily === 'messages') {
+    return modes.includes('messages_json') || modes.includes('messages_sse')
+  }
+  if (rule.upstreamEndpointFamily === 'generate_content') {
+    return modes.includes('generate_content_json') || modes.includes('generate_content_sse')
+  }
+  return false
 }
 
 function failedRoute(

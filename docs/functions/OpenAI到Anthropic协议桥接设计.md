@@ -6,7 +6,7 @@
 
 - Anthropic API Key 原生中转：下游按 Anthropic Messages 协议请求 `/v1/messages`，上游按 Anthropic Messages 透传。
 - OpenAI 协议内部桥接：Codex `/v1/responses` 可以在显式条件下转为上游 OpenAI-compatible `/v1/chat/completions`。
-- 账号级模型映射：在 API Key 已授权账号池内，用 `sourceModel + sourceEndpointFamily` 映射到当前账号真实 `upstreamModel + upstreamEndpointFamily`。
+- API Key 显式混合路由：在当前 Key 已绑定的目标分组内，用 `sourceModel + sourceEndpointFamily -> targetGroupId + upstreamModel + upstreamEndpointFamily` 声明跨协议桥接。
 
 现有缺口是：当下游是 Codex、OpenAI SDK、OpenAI-compatible 客户端或混合智能路由入口，而混合路由最终选中了 Anthropic Messages 账号时，OpenAI Chat / Responses 与 Anthropic Messages 协议不兼容。仅做 `responses -> chat_completions` 不能解决这个问题，因为 Anthropic 原生上游只承接 `/v1/messages`。
 
@@ -52,8 +52,8 @@ v1 不强制承接：
 
 - 下游协议保持下游可见形态：Chat 请求必须返回 Chat 形态；Responses 请求必须返回 Responses 形态。
 - 上游账号真实能力保持 Anthropic Messages：`supported_endpoint_modes` 仍保存 `messages_json`、`messages_sse`、`message_token_counting`，不新增伪造的 `chat_json`、`responses_sse`。
-- 桥接必须显式触发：通过请求目标模型直接定位到 Anthropic Messages 档案，或通过账号模型映射声明 `chat_completions/responses -> messages`。
-- 模型映射右侧仍以当前账号为边界：Anthropic 官方账号右侧模型来自 Anthropic 模型目录；DeepSeek / GLM Anthropic-compatible 档案右侧模型来自各自供应商目录。
+- 桥接必须显式触发：通过 API Key 显式混合路由声明 `chat_completions/responses -> messages`，并且目标分组必须已绑定到当前 Key。
+- 路由右侧仍以目标分组供应商为边界：Anthropic 官方账号右侧模型来自 Anthropic 模型目录；DeepSeek / GLM Anthropic-compatible 档案右侧模型来自各自供应商目录。
 - 混合智能路由只负责选目标模型和目标分组；目标分组能通过原生协议或本桥接承接当前下游协议时才可进入候选。
 - OpenAI 下游本地错误、上游 Anthropic 错误和流内错误都要按下游协议渲染，不能把 Anthropic error shape 直接返回给 OpenAI 客户端。
 - 使用记录和审计必须同时记录下游 endpoint family、上游实际 endpoint family、下游模型、实际上游模型、桥接类型和 usage 语义。
@@ -65,10 +65,10 @@ v1 不强制承接：
 
 1. 下游请求是 `POST /v1/chat/completions`、`POST /chat/completions`、`POST /v1/responses` 或 `POST /responses`。
 2. 当前 API Key 已授权的候选账号中存在 Anthropic v1 Messages 档案账号。
-3. 请求目标模型能明确定位到该账号：
-   - 账号模型映射显式声明 `sourceEndpointFamily = chat_completions|responses` 且 `upstreamEndpointFamily = messages`。
-   - 或混合智能路由已把顶层 `model` 改写为当前 Anthropic Messages 档案可承接的目标模型。
-   - 或普通路由下请求模型本身属于当前 Anthropic Messages 档案模型目录，并且 API Key 只在当前已绑定分组范围内命中该档案。
+3. 请求目标模型能通过 API Key 显式混合路由明确定位到目标分组：
+   - 规则声明 `sourceEndpointFamily = chat_completions|responses` 且 `upstreamEndpointFamily = messages`。
+   - `targetGroupId` 必须属于当前 API Key 的有效绑定分组。
+   - 目标分组内账号必须能按 `upstreamModel` 和 `messages_json/messages_sse` 承接请求。
 4. 账户 endpoint mode 满足传输要求：
    - 下游非流式 JSON 要求上游 `messages_json`。
    - 下游 SSE 要求上游 `messages_sse`。
@@ -76,7 +76,7 @@ v1 不强制承接：
 
 不允许的触发方式：
 
-- 不允许仅凭 `clientCompatibility = codex_responses` 自动把任意 Anthropic 账号加入 OpenAI 请求候选。
+- 不允许仅凭客户端画像或 API Key 默认画像自动把任意 Anthropic 账号加入 OpenAI 请求候选；必须配置 API Key 显式混合路由规则。
 - 不允许 API Key 未绑定 Anthropic 目标分组时通过桥接越权访问该账号。
 - 不允许模型无法唯一定位时猜测 Anthropic 账号。
 - 不允许把 Anthropic native `/v1/messages` 请求反向包装成 OpenAI Chat / Responses。
@@ -253,17 +253,22 @@ Responses SSE 不能复用 Chat SSE chunk handler。OpenAI Responses 是 typed e
 - 工具调用历史不完整时必须受控拒绝，不能把 orphan tool result 发给 Anthropic。
 - JSON schema 严格输出必须走合成 Anthropic tool 或后续账号显式启用的原生 structured output，并通过本地 schema 校验；校验失败不能冒充成功。
 
-## 9. 路由与模型映射
+## 9. 路由与显式混合规则
 
-模型映射需要允许新增跨协议目标：
+跨协议目标通过 API Key 显式混合路由声明：
 
 ```json
 {
+  "id": "openai_responses_to_anthropic_messages",
+  "enabled": true,
+  "priority": 1,
+  "sourceClientProfile": "auto",
   "sourceModel": "gpt-5.5-codex",
   "sourceEndpointFamily": "responses",
+  "targetGroupId": "grp_anthropic_messages",
   "upstreamModel": "claude-opus-4-8",
   "upstreamEndpointFamily": "messages",
-  "enabled": true
+  "adapterMode": "bridge"
 }
 ```
 
@@ -271,20 +276,26 @@ Chat 入口示例：
 
 ```json
 {
+  "id": "openai_chat_to_anthropic_messages",
+  "enabled": true,
+  "priority": 2,
+  "sourceClientProfile": "auto",
   "sourceModel": "gpt-5.5",
   "sourceEndpointFamily": "chat_completions",
+  "targetGroupId": "grp_anthropic_messages",
   "upstreamModel": "claude-sonnet-4-6",
   "upstreamEndpointFamily": "messages",
-  "enabled": true
+  "adapterMode": "bridge"
 }
 ```
 
 保存校验：
 
 - `sourceEndpointFamily` 允许 `chat_completions` 或 `responses`。
-- `upstreamEndpointFamily = messages` 只允许当前账号协议档案为 Anthropic v1 Messages。
-- Anthropic 官方账号的 `upstreamModel` 必须来自 Anthropic 模型目录或当前账号支持模型。
-- Anthropic-compatible 第三方账号的 `upstreamModel` 必须来自该供应商模型目录或当前账号支持模型。
+- `targetGroupId` 必须是当前 API Key 已绑定且启用的目标分组。
+- `upstreamEndpointFamily = messages` 只允许目标分组协议档案为 Anthropic v1 Messages。
+- Anthropic 官方目标分组的 `upstreamModel` 必须来自 Anthropic 模型目录或目标账号支持模型。
+- Anthropic-compatible 第三方目标分组的 `upstreamModel` 必须来自该供应商模型目录或目标账号支持模型。
 - `responses -> messages` 的 SSE 请求要求 `messages_sse`；JSON 请求要求 `messages_json`。
 - `chat_completions -> messages` 同理按 stream 选择 `messages_sse` 或 `messages_json`。
 
@@ -305,8 +316,8 @@ Chat 入口示例：
 - 下游请求模型。
 - 实际上游模型。
 - 桥接类型：`openai_to_anthropic_messages`。
-- 是否命中账号模型映射。
-- 是否命中混合智能路由。
+- 是否命中 API Key 显式混合路由。
+- 命中的路由规则 ID。
 - Responses 状态 id / compact id 的摘要引用，不能记录完整敏感 payload。
 - Anthropic `usage_semantic = anthropic`，包括 cache read、cache write、1h cache write 和 thinking tokens。
 

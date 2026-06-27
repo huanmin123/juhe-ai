@@ -108,7 +108,6 @@ export function planImportAccount(
   source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? ''
   source.providerProtocolProfileId = optionalTextField(value, 'providerProtocolProfileId', '账户 providerProtocolProfileId', item.messages)
   source.connectionType = optionalTextField(value, 'connectionType', '账户 connectionType', item.messages)
-  source.clientCompatibility = optionalTextField(value, 'clientCompatibility', '账户 clientCompatibility', item.messages) as AccountClientCompatibility | undefined
   if (!source.providerCode) {
     item.messages.push('账户 providerCode 不能为空')
   }
@@ -246,7 +245,6 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
     account.messages.push(errorMessage(error))
   }
 }
-
 function applyImportAccountProtocolProfileDefaults(account: NormalizedImportAccount, context: AccountImportProviderContext): void {
   const provider = context.providerByCode.get(account.providerCode)
   if (!provider) return
@@ -271,7 +269,6 @@ function applyImportAccountProtocolProfileDefaults(account: NormalizedImportAcco
   account.protocolCode = profile.protocolCode
   account.protocolVersion = profile.protocolVersion
 }
-
 function assertImportEndpointModesCompatible(
   account: Pick<NormalizedImportAccount, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>,
   input: {

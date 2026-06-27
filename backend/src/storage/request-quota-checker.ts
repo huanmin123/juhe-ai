@@ -1,7 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { RequestQuotaLimits } from '../domain/types.js'
+import type { DatabaseClient } from './database-client.js'
 import { dateKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
+
+const statsSchemaName = 'juhe_stats'
 
 export interface RequestQuotaCosts {
   hourly: number
@@ -116,6 +119,57 @@ export function loadRequestQuotaCostsBatch(database: DatabaseSync, inputs: Reque
   return output
 }
 
+export async function loadRequestQuotaCostsBatchAsync(client: DatabaseClient, inputs: RequestQuotaCostInput[]): Promise<Map<string, RequestQuotaCosts>> {
+  if (client.driver !== 'postgres') {
+    throw new Error('loadRequestQuotaCostsBatchAsync 仅支持 PostgreSQL DatabaseClient')
+  }
+  const timezone = usageStatsTimezone()
+  const requests = uniqueRequestQuotaCostInputs(inputs, timezone)
+  const output = new Map<string, RequestQuotaCosts>()
+  for (const request of requests) {
+    output.set(request.key, { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 })
+  }
+  if (!requests.length) return output
+
+  const totalKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId])
+  for (const row of await loadCostRowsAsync(client, statsTableName(client, 'usage_stats_totals'), 'total_cost', ['system_account_id', 'scope_type', 'scope_id'], [...totalKeys.keys()].map(splitTupleKey))) {
+    for (const key of totalKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.total = Number(row.total_cost ?? 0)
+    }
+  }
+  const dailyKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.statDate])
+  for (const row of await loadCostRowsAsync(client, statsTableName(client, 'usage_stats_daily'), 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'stat_date'], [...dailyKeys.keys()].map(splitTupleKey))) {
+    for (const key of dailyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.stat_date])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.daily = Number(row.total_cost ?? 0)
+    }
+  }
+  const weeklyKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.statWeek])
+  for (const row of await loadCostRowsAsync(client, statsTableName(client, 'usage_stats_weekly'), 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'stat_week'], [...weeklyKeys.keys()].map(splitTupleKey))) {
+    for (const key of weeklyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.stat_week])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.weekly = Number(row.total_cost ?? 0)
+    }
+  }
+  const monthlyKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.statMonth])
+  for (const row of await loadCostRowsAsync(client, statsTableName(client, 'usage_stats_monthly'), 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'stat_month'], [...monthlyKeys.keys()].map(splitTupleKey))) {
+    for (const key of monthlyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.stat_month])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.monthly = Number(row.total_cost ?? 0)
+    }
+  }
+  const hourlyRequests = requests.filter((request) => request.hourlyWindowHours !== undefined)
+  const hourlyKeys = requestKeysByTuple(hourlyRequests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.hourlyWindowHours])
+  for (const row of await loadCostRowsAsync(client, statsTableName(client, 'usage_quota_hourly_windows'), 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'window_hours'], [...hourlyKeys.keys()].map(splitTupleKey))) {
+    for (const key of hourlyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.window_hours])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.hourly = Number(row.total_cost ?? 0)
+    }
+  }
+  return output
+}
+
 export function requestQuotaCostKey(input: RequestQuotaCostInput): string {
   const timezone = usageStatsTimezone()
   return requestQuotaCostKeyFromParts(
@@ -207,6 +261,30 @@ function loadCostRows(database: DatabaseSync, tableName: string, costAlias: stri
     `).all(...chunk.flat()) as unknown as CostRow[])
   }
   return rows
+}
+
+async function loadCostRowsAsync(client: DatabaseClient, tableName: string, costAlias: string, columns: string[], tuples: Array<Array<string | number | undefined>>): Promise<CostRow[]> {
+  const normalizedTuples = uniqueTuples(tuples).filter((tuple) => tuple.every((value) => value !== undefined))
+  if (!normalizedTuples.length) return []
+  const rows: CostRow[] = []
+  const chunkSize = Math.max(1, Math.floor(800 / Math.max(1, columns.length)))
+  for (let index = 0; index < normalizedTuples.length; index += chunkSize) {
+    const chunk = normalizedTuples.slice(index, index + chunkSize)
+    const where = chunk
+      .map(() => `(${columns.map((column) => `${column} = ?`).join(' AND ')})`)
+      .join(' OR ')
+    const selectColumns = new Set(['system_account_id', 'scope_type', 'scope_id', ...columns])
+    rows.push(...await client.query<CostRow>(`
+      SELECT ${[...selectColumns].join(', ')}, COALESCE(total_cost_usd, 0) AS ${costAlias}
+      FROM ${tableName}
+      WHERE ${where}
+    `, chunk.flat()))
+  }
+  return rows
+}
+
+function statsTableName(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable(statsSchemaName, tableName)
 }
 
 function requestKeysByTuple(requests: RequestQuotaCostLookup[], toTuple: (request: RequestQuotaCostLookup) => Array<string | number | undefined>): Map<string, string[]> {

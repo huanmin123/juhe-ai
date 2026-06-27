@@ -57,9 +57,9 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
-  getRuntimeLogFacets,
-  getRuntimeLogDetail,
-  listRuntimeLogs
+  getRuntimeLogFacetsAsync,
+  getRuntimeLogDetailAsync,
+  listRuntimeLogsAsync
 } from '../../storage/runtime-logs.repository.js'
 import {
   listActiveClientIpPolicies,
@@ -104,21 +104,35 @@ import {
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import {
   createOpenAICompatibleFile,
+  createOpenAICompatibleFileAsync,
   deleteOpenAICompatibleFile,
+  deleteOpenAICompatibleFileAsync,
   findOpenAICompatibleFile,
-  listOpenAICompatibleFiles
+  findOpenAICompatibleFileAsync,
+  listOpenAICompatibleFiles,
+  listOpenAICompatibleFilesAsync
 } from '../../storage/openai-compatible-files.repository.js'
 import {
   createOpenAICompatibleVectorStore,
+  createOpenAICompatibleVectorStoreAsync,
   createOpenAICompatibleVectorStoreFile,
+  createOpenAICompatibleVectorStoreFileAsync,
   deleteOpenAICompatibleVectorStore,
+  deleteOpenAICompatibleVectorStoreAsync,
   deleteOpenAICompatibleVectorStoreFile,
+  deleteOpenAICompatibleVectorStoreFileAsync,
   findOpenAICompatibleVectorStore,
+  findOpenAICompatibleVectorStoreAsync,
   findOpenAICompatibleVectorStoreFile,
+  findOpenAICompatibleVectorStoreFileAsync,
+  listOpenAICompatibleVectorStoreFileChunksAsync,
   listOpenAICompatibleVectorStoreFileChunks,
   listOpenAICompatibleVectorStoreFiles,
+  listOpenAICompatibleVectorStoreFilesAsync,
   listOpenAICompatibleVectorStores,
-  searchOpenAICompatibleVectorStore
+  listOpenAICompatibleVectorStoresAsync,
+  searchOpenAICompatibleVectorStore,
+  searchOpenAICompatibleVectorStoreAsync
 } from '../../storage/openai-compatible-vector-stores.repository.js'
 import type {
   DbServiceGatewayRuntime,
@@ -185,19 +199,19 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listPublicGlobalSettingsAsync()
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'validate_gateway_api_key':
       return await validateGatewayApiKeyAsync(operation.key)
     case 'read_gateway_settings':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await readGatewaySettingsAsync()
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'resolve_group_usage_access':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await resolveGroupUsageAccessMetadataAsync(operation.groupId, operation.systemAccountId)
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'list_openai_accounts_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return (await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -205,7 +219,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           requestedEndpointFamily: operation.requestedEndpointFamily
         })).accounts
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'list_openai_accounts_for_group_result':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -213,7 +227,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           requestedEndpointFamily: operation.requestedEndpointFamily
         })
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'list_recoverable_unavailable_openai_accounts_for_group':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return recoverableUnavailableOpenAIAccounts(await listOpenAIAccountsForGroupResultAsync(operation.groupId, operation.systemAccountId, {
@@ -222,9 +236,111 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnavailable: true
         }), operation.windowMs)
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'read_gateway_runtime':
       return await readGatewayRuntimeAsync(operation)
+    case 'create_openai_compatible_file':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await createOpenAICompatibleFileAsync(operation.input)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_openai_compatible_files':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listOpenAICompatibleFilesAsync(operation.options)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'get_openai_compatible_file':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findOpenAICompatibleFileAsync({
+          fileId: operation.fileId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'delete_openai_compatible_file':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await deleteOpenAICompatibleFileAsync({
+          fileId: operation.fileId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'create_openai_compatible_vector_store':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await createOpenAICompatibleVectorStoreAsync(operation.input)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_openai_compatible_vector_stores':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listOpenAICompatibleVectorStoresAsync(operation.options)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'get_openai_compatible_vector_store':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findOpenAICompatibleVectorStoreAsync({
+          vectorStoreId: operation.vectorStoreId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'delete_openai_compatible_vector_store':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await deleteOpenAICompatibleVectorStoreAsync({
+          vectorStoreId: operation.vectorStoreId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'create_openai_compatible_vector_store_file':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await createOpenAICompatibleVectorStoreFileAsync(operation.input)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_openai_compatible_vector_store_files':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listOpenAICompatibleVectorStoreFilesAsync(operation.options)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'get_openai_compatible_vector_store_file':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findOpenAICompatibleVectorStoreFileAsync({
+          vectorStoreId: operation.vectorStoreId,
+          fileId: operation.fileId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'delete_openai_compatible_vector_store_file':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await deleteOpenAICompatibleVectorStoreFileAsync({
+          vectorStoreId: operation.vectorStoreId,
+          fileId: operation.fileId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'search_openai_compatible_vector_store':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await searchOpenAICompatibleVectorStoreAsync(operation.options)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_openai_compatible_vector_store_file_chunks':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listOpenAICompatibleVectorStoreFileChunksAsync({
+          vectorStoreId: operation.vectorStoreId,
+          fileId: operation.fileId,
+          systemAccountId: operation.systemAccountId,
+          apiKeyId: operation.apiKeyId,
+          limit: operation.limit
+        })
+      }
+      return handleDbServiceOperationSync(operation)
     case 'list_provider_model_catalog':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await listProviderModelCatalogAsync({
@@ -234,7 +350,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnpriced: operation.includeUnpriced
         })
       }
-      break
+      return handleDbServiceOperationSync(operation)
     case 'save_codex_context_response_state':
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
@@ -715,11 +831,11 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'record_client_ip_policy_hits':
       throw new Error('record_client_ip_policy_hits 必须投递 stats-writer，禁止在 DB service 写 stats DB')
     case 'list_runtime_logs':
-      return listRuntimeLogs(operation.options)
+      return listRuntimeLogsAsync(operation.options)
     case 'get_runtime_log_detail':
-      return getRuntimeLogDetail(operation.id)
+      return getRuntimeLogDetailAsync(operation.id)
     case 'get_runtime_log_facets':
-      return getRuntimeLogFacets()
+      return getRuntimeLogFacetsAsync()
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     default:

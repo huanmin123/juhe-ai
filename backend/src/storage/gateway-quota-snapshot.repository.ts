@@ -10,9 +10,14 @@ import {
   maxGatewayQuotaSnapshotCostEntries
 } from '../modules/gateway/quota/quota-snapshot-cache.service.js'
 import type { RequestQuotaLimits } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, loadRequestQuotaCostsBatchAsync, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
+
+const businessSchemaName = 'juhe_business'
 
 interface ApiKeyQuotaSnapshotRow {
   id: string
@@ -121,6 +126,76 @@ export function buildGatewayQuotaSnapshot(now = new Date()): GatewayQuotaSnapsho
   }
 }
 
+export async function buildGatewayQuotaSnapshotAsync(now = new Date()): Promise<GatewayQuotaSnapshot> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return buildGatewayQuotaSnapshot(now)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const apiKeyWindow = await loadApiKeyQuotaSnapshotRowsAsync(client)
+  const authorizationWindow = await loadAuthorizationQuotaSnapshotRowsAsync(client)
+  const teamAuthorizationWindow = await loadTeamAuthorizationQuotaSnapshotRowsAsync(client)
+  const apiKeys = apiKeyWindow.rows
+  const authorizations = authorizationWindow.rows
+  const teamAuthorizations = teamAuthorizationWindow.rows
+
+  const apiKeyChecks = apiKeys
+    .map((row) => apiKeyQuotaCostCheck(row, now))
+    .filter((check): check is QuotaCostCheck & { apiKey: ApiKeyQuotaSnapshotRow } => Boolean(check))
+  const authorizationChecksById = new Map<string, QuotaCostCheck[]>()
+  for (const row of authorizations) {
+    const check = authorizationQuotaCostCheck(row, authorizationScopeType(row.resource_type), now)
+    if (check) {
+      authorizationChecksById.set(row.id, [...(authorizationChecksById.get(row.id) ?? []), check])
+    }
+  }
+  for (const row of teamAuthorizations) {
+    const check = teamAuthorizationQuotaCostCheck(row, authorizationScopeType(row.resource_type), now)
+    if (check) {
+      authorizationChecksById.set(row.authorization_id, [...(authorizationChecksById.get(row.authorization_id) ?? []), check])
+    }
+  }
+
+  const allCostChecks = uniqueQuotaCostChecks([
+    ...apiKeyChecks,
+    ...[...authorizationChecksById.values()].flat()
+  ])
+  const costsByKey = await loadRequestQuotaCostsBatchAsync(client, allCostChecks.map((check) => check.costInput))
+  const costEntries: GatewayQuotaCostSnapshotEntry[] = apiKeyChecks.map((check) => ({
+    systemAccountId: check.costInput.systemAccountId,
+    scopeType: check.costInput.scopeType,
+    scopeId: check.costInput.scopeId,
+    hourlyWindowHours: check.costInput.hourlyWindowHours,
+    costs: costsByKey.get(requestQuotaCostKey(check.costInput)) ?? emptyRequestQuotaCosts()
+  }))
+  const authorizationEntries: GatewayAuthorizationQuotaSnapshotEntry[] = []
+  for (const row of authorizations) {
+    const checks = authorizationChecksById.get(row.id) ?? []
+    if (!checks.length) {
+      continue
+    }
+    const allowed = checks.every((check) => {
+      const costs = costsByKey.get(requestQuotaCostKey(check.costInput)) ?? emptyRequestQuotaCosts()
+      return !isRequestQuotaExceeded(check.limits, costs)
+    })
+    authorizationEntries.push({
+      scopeType: authorizationScopeType(row.resource_type),
+      authorizationId: row.id,
+      decision: {
+        allowed,
+        message: allowed ? undefined : '额度已用完，请联系管理员提升额度'
+      }
+    })
+  }
+
+  return {
+    generatedAt: nowIso(),
+    costEntries,
+    authorizationEntries,
+    costEntriesComplete: apiKeyWindow.complete,
+    authorizationEntriesComplete: authorizationWindow.complete && teamAuthorizationWindow.complete
+  }
+}
+
 function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<ApiKeyQuotaSnapshotRow> {
   const rows = database.prepare(`
     SELECT id, system_account_id, quota_limits_json
@@ -130,6 +205,21 @@ function loadApiKeyQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<A
     ORDER BY updated_at DESC, id ASC
     LIMIT ?
   `).all(maxGatewayQuotaSnapshotCostEntries + 1) as unknown as ApiKeyQuotaSnapshotRow[]
+  return {
+    rows: rows.slice(0, maxGatewayQuotaSnapshotCostEntries),
+    complete: rows.length <= maxGatewayQuotaSnapshotCostEntries
+  }
+}
+
+async function loadApiKeyQuotaSnapshotRowsAsync(client: DatabaseClient): Promise<BoundedQuotaRows<ApiKeyQuotaSnapshotRow>> {
+  const rows = await client.query<ApiKeyQuotaSnapshotRow>(`
+    SELECT id, system_account_id, quota_limits_json
+    FROM ${businessTableName(client, 'api_keys')}
+    WHERE status = 'active'
+      AND quota_limits_json IS NOT NULL
+    ORDER BY updated_at DESC, id ASC
+    LIMIT ?
+  `, [maxGatewayQuotaSnapshotCostEntries + 1])
   return {
     rows: rows.slice(0, maxGatewayQuotaSnapshotCostEntries),
     complete: rows.length <= maxGatewayQuotaSnapshotCostEntries
@@ -174,6 +264,44 @@ function loadAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuot
   }
 }
 
+async function loadAuthorizationQuotaSnapshotRowsAsync(client: DatabaseClient): Promise<BoundedQuotaRows<AuthorizationQuotaSnapshotRow>> {
+  const rows = await client.query<AuthorizationQuotaSnapshotRow>(`
+    SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
+      instance_accounts.id AS instance_account_id,
+      ra.effective_source_team_id, ra.limits_json
+    FROM ${businessTableName(client, 'resource_authorizations')} ra
+    LEFT JOIN ${businessTableName(client, 'accounts')} instance_accounts
+      ON ra.resource_type = 'account'
+      AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+    WHERE ra.status = 'active'
+      AND (
+        ra.limits_json IS NOT NULL
+        OR (
+          ra.effective_source_team_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM ${businessTableName(client, 'resource_authorization_grants')} grant_rows
+            WHERE grant_rows.resource_type = ra.resource_type
+              AND grant_rows.resource_id = ra.resource_id
+              AND grant_rows.grantee_type = 'team'
+              AND grant_rows.grantee_team_id = ra.effective_source_team_id
+              AND grant_rows.status = 'active'
+              AND grant_rows.limits_json IS NOT NULL
+            LIMIT 1
+          )
+        )
+      )
+    ORDER BY ra.updated_at DESC, ra.id ASC
+    LIMIT ?
+  `, [maxGatewayQuotaSnapshotAuthorizationEntries + 1])
+  return {
+    rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
+    complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
+  }
+}
+
 function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): BoundedQuotaRows<TeamAuthorizationQuotaSnapshotRow> {
   const rows = database.prepare(`
     SELECT
@@ -203,6 +331,41 @@ function loadTeamAuthorizationQuotaSnapshotRows(database: DatabaseSync): Bounded
     ORDER BY ra.updated_at DESC, ra.id ASC
     LIMIT ?
   `).all(maxGatewayQuotaSnapshotAuthorizationEntries + 1) as unknown as TeamAuthorizationQuotaSnapshotRow[]
+  return {
+    rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
+    complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
+  }
+}
+
+async function loadTeamAuthorizationQuotaSnapshotRowsAsync(client: DatabaseClient): Promise<BoundedQuotaRows<TeamAuthorizationQuotaSnapshotRow>> {
+  const rows = await client.query<TeamAuthorizationQuotaSnapshotRow>(`
+    SELECT
+      ra.id AS authorization_id,
+      grant_rows.resource_owner_system_account_id,
+      ra.grantee_system_account_id AS authorization_grantee_system_account_id,
+      grant_rows.resource_type,
+      grant_rows.resource_id,
+      instance_accounts.id AS authorization_instance_account_id,
+      ra.effective_source_team_id,
+      grant_rows.limits_json
+    FROM ${businessTableName(client, 'resource_authorizations')} ra
+    INNER JOIN ${businessTableName(client, 'resource_authorization_grants')} grant_rows
+      ON grant_rows.resource_type = ra.resource_type
+      AND grant_rows.resource_id = ra.resource_id
+      AND grant_rows.grantee_type = 'team'
+      AND grant_rows.grantee_team_id = ra.effective_source_team_id
+      AND grant_rows.status = 'active'
+    LEFT JOIN ${businessTableName(client, 'accounts')} instance_accounts
+      ON ra.resource_type = 'account'
+      AND instance_accounts.authorization_instance_authorization_id = ra.id
+      AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+    WHERE ra.status = 'active'
+      AND ra.effective_source_team_id IS NOT NULL
+      AND grant_rows.limits_json IS NOT NULL
+    ORDER BY ra.updated_at DESC, ra.id ASC
+    LIMIT ?
+  `, [maxGatewayQuotaSnapshotAuthorizationEntries + 1])
   return {
     rows: rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries),
     complete: rows.length <= maxGatewayQuotaSnapshotAuthorizationEntries
@@ -315,4 +478,8 @@ function uniqueQuotaCostChecks(checks: QuotaCostCheck[]): QuotaCostCheck[] {
 
 function emptyRequestQuotaCosts() {
   return { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 }
+}
+
+function businessTableName(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable(businessSchemaName, tableName)
 }

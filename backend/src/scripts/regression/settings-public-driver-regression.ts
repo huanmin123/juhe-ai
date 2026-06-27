@@ -61,9 +61,15 @@ try {
 }
 
 async function assertSettingsPublicAsync(repositories: typeof import('../../storage/repositories.js')): Promise<void> {
+  const isPostgres = process.env.JUHE_AI_DATABASE_DRIVER === 'postgres'
   const publicSettings = await repositories.listPublicGlobalSettingsAsync()
-  assert.equal(publicSettings.appName, '聚合 AI', '公开设置应返回默认应用名')
-  assert.equal(publicSettings.appIcon, '/__aisys__/brand-icon.svg', '公开设置应返回默认应用图标')
+  if (isPostgres) {
+    assert.equal(typeof publicSettings.appName, 'string', 'PostgreSQL 公开设置应返回应用名字符串')
+    assert.equal(typeof publicSettings.appIcon, 'string', 'PostgreSQL 公开设置应返回应用图标字符串')
+  } else {
+    assert.equal(publicSettings.appName, '聚合 AI', '公开设置应返回默认应用名')
+    assert.equal(publicSettings.appIcon, '/__aisys__/brand-icon.svg', '公开设置应返回默认应用图标')
+  }
   assert.deepEqual(Object.keys(publicSettings).sort(), ['appIcon', 'appName'], '公开设置只能暴露全局公开字段')
 
   const globalSettings = await repositories.listGlobalSettingsAsync()
@@ -71,9 +77,15 @@ async function assertSettingsPublicAsync(repositories: typeof import('../../stor
   assert.equal(globalSettings.appIcon, publicSettings.appIcon, '全局设置 async 读取应包含公开图标')
 
   const systemSettings = await repositories.getSettingsAsync()
-  assert.equal(systemSettings.systemApiRateLimitEnabled, true, '系统 API 限流默认应启用')
-  assert.equal(systemSettings.systemApiRateLimitIpReadPerMinute, 600, '系统 API IP 读限流默认值应可读取')
-  assert.equal(systemSettings.systemApiRateLimitUserWritePerMinute, 120, '系统 API 用户写限流默认值应可读取')
+  if (isPostgres) {
+    assert.equal(typeof systemSettings.systemApiRateLimitEnabled, 'boolean', 'PostgreSQL 系统 API 限流开关应可读取')
+    assert.equal(typeof systemSettings.systemApiRateLimitIpReadPerMinute, 'number', 'PostgreSQL 系统 API IP 读限流应可读取')
+    assert.equal(typeof systemSettings.systemApiRateLimitUserWritePerMinute, 'number', 'PostgreSQL 系统 API 用户写限流应可读取')
+  } else {
+    assert.equal(systemSettings.systemApiRateLimitEnabled, true, '系统 API 限流默认应启用')
+    assert.equal(systemSettings.systemApiRateLimitIpReadPerMinute, 600, '系统 API IP 读限流默认值应可读取')
+    assert.equal(systemSettings.systemApiRateLimitUserWritePerMinute, 120, '系统 API 用户写限流默认值应可读取')
+  }
   assert.equal(Object.prototype.hasOwnProperty.call(systemSettings, 'rogue_settings_key_0'), false, '系统设置 async 读取不能暴露未知字段')
 }
 

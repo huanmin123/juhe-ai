@@ -4,11 +4,13 @@ import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import { refreshSystemMetricsTrendWindowSnapshotsStage } from './system-metrics.repository.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
@@ -29,14 +31,16 @@ import {
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
 import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
-import { shouldAggregateUsageStatsRecord, usageStatsEntries } from './usage-stats-aggregation.js'
-import { usageStatsTimeBuckets } from './usage-stats-time-buckets.js'
+import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
+import { addAggregatedLatencyEntries, type AggregatedLatencyEntry } from './usage-stats-latency-writer.js'
+import { usageErrorTimeBuckets, usageModelTimeBuckets, usageStatsTimeBuckets, type UsageStatsTimeBucketDefinition, type UsageStatsTimeKeys } from './usage-stats-time-buckets.js'
 import {
   aggregateUsageRowsForRange,
   type UsageStatsDailyWindowRow
 } from './usage-stats-window-aggregates.js'
 import {
   fixedUsageStatsRanges,
+  HOUR_MS,
   nextDateKey,
   rangeWindowKey,
   rowsByStatDate
@@ -238,16 +242,46 @@ interface PostgresAggregatedUsageStatsEntry {
 }
 
 interface PostgresAggregatedUsageStatsTimeEntry extends PostgresAggregatedUsageStatsEntry {
-  bucket: { tableName: string; columnName: string; valueKey: keyof PostgresUsageStatsTimeKeys }
+  bucket: UsageStatsTimeBucketDefinition
   timeValue: string
 }
 
-interface PostgresUsageStatsTimeKeys {
+interface PostgresAggregatedUsageModelEntry {
+  bucket: UsageStatsTimeBucketDefinition
+  systemAccountId: string
+  providerCode: string
+  model: string
+  timeValue: string
+  accumulator: UsageStatsAccumulator
+}
+
+interface PostgresAggregatedUsageErrorEntry {
+  bucket: UsageStatsTimeBucketDefinition
+  systemAccountId: string
+  timeValue: string
+  errorGroup: string
+  providerCode: string
+  errorCode: string
+  statusCode: number
+  errorMessage?: string | null
+  requestCount: number
+  errorCount: number
+}
+
+interface PostgresAggregatedAccountQualityEntry {
+  accountId: string
+  systemAccountId: string
+  providerCode: string
   statMinute: string
-  statHour: string
-  statDate: string
-  statWeek: string
-  statMonth: string
+  requestCount: number
+  successCount: number
+  errorCount: number
+  firstTokenMsSum: number
+  firstTokenMsCount: number
+  lastSampleAt: string
+  lastSuccessAt?: string
+  lastErrorAt?: string
+  lastErrorMessage?: string
 }
 
 async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: UsageStatsRecordRow[], updatedAt: string): Promise<void> {
@@ -256,17 +290,28 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
   const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
   const totalEntries = new Map<string, PostgresAggregatedUsageStatsEntry>()
   const timeEntries = new Map<string, PostgresAggregatedUsageStatsTimeEntry>()
+  const latencyEntries = new Map<string, AggregatedLatencyEntry>()
+  const modelEntries = new Map<string, PostgresAggregatedUsageModelEntry>()
+  const errorEntries = new Map<string, PostgresAggregatedUsageErrorEntry>()
+  const accountQualityEntries = new Map<string, PostgresAggregatedAccountQualityEntry>()
 
   for (const row of rows) {
     if (!shouldAggregateUsageStatsRecord(row)) {
       continue
     }
+    applyPostgresEstimatedCacheReadCost(row)
     const timeKeys = postgresUsageStatsTimeKeys(row, timezone)
     for (const entry of usageStatsEntries(row, lookup)) {
       addPostgresAggregatedUsageStatsEntry(totalEntries, entry)
       for (const bucket of usageStatsTimeBuckets) {
         addPostgresAggregatedUsageStatsTimeEntry(timeEntries, bucket, timeKeys[bucket.valueKey], entry)
       }
+      addAggregatedLatencyEntries(latencyEntries, entry, row, timeKeys)
+    }
+    addPostgresAggregatedUsageModelEntries(modelEntries, row, timeKeys)
+    addPostgresAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    if (row.success !== 1) {
+      addPostgresAggregatedUsageErrorEntries(errorEntries, row, timeKeys)
     }
   }
 
@@ -279,6 +324,10 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
       updatedAt
     )
   }
+  await upsertPostgresUsageLatencyEntries(client, [...latencyEntries.values()], updatedAt)
+  await upsertPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
+  await upsertPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
+  await upsertPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
 }
 
 async function createPostgresUsageStatsAuthorizationLookup(
@@ -346,6 +395,123 @@ function addPostgresAggregatedUsageStatsTimeEntry(
     scopeId: entry.scopeId,
     accumulator: { ...entry.accumulator }
   })
+}
+
+function addPostgresAggregatedUsageModelEntries(
+  target: Map<string, PostgresAggregatedUsageModelEntry>,
+  row: UsageStatsRecordRow,
+  timeKeys: UsageStatsTimeKeys
+): void {
+  const model = row.model?.trim()
+  if (!model) return
+  const accumulator = usageStatsAccumulatorFromRecord(row)
+  const providerCode = row.provider_code ?? 'unknown'
+  for (const systemAccountId of [row.system_account_id, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    for (const bucket of usageModelTimeBuckets) {
+      const timeValue = timeKeys[bucket.valueKey]
+      const key = `${bucket.tableName}\u0000${timeValue}\u0000${systemAccountId}\u0000${providerCode}\u0000${model}`
+      const existing = target.get(key)
+      if (existing) {
+        mergePostgresUsageStatsAccumulator(existing.accumulator, accumulator)
+        continue
+      }
+      target.set(key, {
+        bucket,
+        systemAccountId,
+        providerCode,
+        model,
+        timeValue,
+        accumulator: { ...accumulator }
+      })
+    }
+  }
+}
+
+function addPostgresAggregatedUsageErrorEntries(
+  target: Map<string, PostgresAggregatedUsageErrorEntry>,
+  row: UsageStatsRecordRow,
+  timeKeys: UsageStatsTimeKeys
+): void {
+  const errorGroup = row.provider_code ?? 'unknown'
+  const providerCode = row.provider_code ?? 'unknown'
+  const errorCode = row.error_code ?? String(row.status_code ?? 'unknown')
+  const statusCode = row.status_code ?? 0
+  for (const systemAccountId of [row.system_account_id, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    for (const bucket of usageErrorTimeBuckets) {
+      const timeValue = timeKeys[bucket.valueKey]
+      const key = `${bucket.tableName}\u0000${timeValue}\u0000${systemAccountId}\u0000${errorGroup}\u0000${providerCode}\u0000${errorCode}\u0000${statusCode}`
+      const existing = target.get(key)
+      if (existing) {
+        existing.requestCount += 1
+        existing.errorCount += 1
+        existing.errorMessage = row.error_message ?? existing.errorMessage
+        continue
+      }
+      target.set(key, {
+        bucket,
+        systemAccountId,
+        timeValue,
+        errorGroup,
+        providerCode,
+        errorCode,
+        statusCode,
+        errorMessage: row.error_message ?? null,
+        requestCount: 1,
+        errorCount: 1
+      })
+    }
+  }
+}
+
+function addPostgresAggregatedAccountQualityEntry(
+  target: Map<string, PostgresAggregatedAccountQualityEntry>,
+  row: UsageStatsRecordRow,
+  timeKeys: UsageStatsTimeKeys
+): void {
+  if (!shouldRecordPostgresAccountQualityStats(row) || !row.account_id || !row.api_key_id) {
+    return
+  }
+  const success = row.success === 1
+  const firstTokenMsValue = Number(row.first_token_ms ?? NaN)
+  const hasFirstTokenSample = success && Number.isFinite(firstTokenMsValue) && firstTokenMsValue >= 0
+  const firstTokenMs = hasFirstTokenSample ? firstTokenMsValue : 0
+  const statsSystemAccountId = postgresAccountQualityStatsSystemAccountId(row)
+  const key = `${row.account_id}\u0000${timeKeys.statMinute}`
+  const existing = target.get(key)
+  if (!existing) {
+    target.set(key, {
+      accountId: row.account_id,
+      systemAccountId: statsSystemAccountId,
+      providerCode: row.provider_code ?? 'unknown',
+      statMinute: timeKeys.statMinute,
+      requestCount: 1,
+      successCount: success ? 1 : 0,
+      errorCount: success ? 0 : 1,
+      firstTokenMsSum: firstTokenMs,
+      firstTokenMsCount: hasFirstTokenSample ? 1 : 0,
+      lastSampleAt: row.created_at,
+      lastSuccessAt: success ? row.created_at : undefined,
+      lastErrorAt: success ? undefined : row.created_at,
+      lastErrorMessage: success ? undefined : row.error_message ?? undefined
+    })
+    return
+  }
+  existing.requestCount += 1
+  existing.successCount += success ? 1 : 0
+  existing.errorCount += success ? 0 : 1
+  existing.firstTokenMsSum += firstTokenMs
+  existing.firstTokenMsCount += hasFirstTokenSample ? 1 : 0
+  if (row.created_at > existing.lastSampleAt) {
+    existing.lastSampleAt = row.created_at
+    existing.systemAccountId = statsSystemAccountId
+    existing.providerCode = row.provider_code ?? 'unknown'
+  }
+  if (success) {
+    existing.lastSuccessAt = maxOptionalIso(existing.lastSuccessAt, row.created_at)
+  } else if (!existing.lastErrorAt || row.created_at >= existing.lastErrorAt) {
+    existing.lastErrorAt = row.created_at
+    existing.lastErrorMessage = row.error_message ?? undefined
+  }
 }
 
 async function upsertPostgresUsageStatsTotals(client: DatabaseClient, entries: PostgresAggregatedUsageStatsEntry[], updatedAt: string): Promise<void> {
@@ -465,6 +631,207 @@ async function upsertPostgresUsageStatsTimeBucket(
   }
 }
 
+async function upsertPostgresUsageLatencyEntries(client: DatabaseClient, entries: AggregatedLatencyEntry[], updatedAt: string): Promise<void> {
+  if (entries.length === 0) return
+  const entriesByTable = groupByPostgresBucketTable(entries)
+  for (const [tableName, tableEntries] of entriesByTable) {
+    const bucket = tableEntries[0].bucket
+    const columns = [
+      'system_account_id',
+      'scope_type',
+      'scope_id',
+      'metric_type',
+      bucket.columnName,
+      'bucket_upper_bound_ms',
+      'sample_count',
+      'updated_at'
+    ]
+    for (const chunk of chunkValues(tableEntries, 700)) {
+      await client.execute(`
+        INSERT INTO juhe_stats.${tableName} (${columns.join(', ')})
+        VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+        ON CONFLICT(system_account_id, scope_type, scope_id, metric_type, ${bucket.columnName}, bucket_upper_bound_ms) DO UPDATE SET
+          sample_count = ${tableName}.sample_count + EXCLUDED.sample_count,
+          updated_at = EXCLUDED.updated_at
+      `, chunk.flatMap((entry) => [
+        entry.systemAccountId,
+        entry.scopeType,
+        entry.scopeId,
+        entry.metricType,
+        entry.timeValue,
+        entry.bucketUpperBoundMs,
+        entry.sampleCount,
+        updatedAt
+      ]))
+    }
+  }
+}
+
+async function upsertPostgresUsageModelEntries(client: DatabaseClient, entries: PostgresAggregatedUsageModelEntry[], updatedAt: string): Promise<void> {
+  if (entries.length === 0) return
+  const entriesByTable = groupByPostgresBucketTable(entries)
+  for (const [tableName, tableEntries] of entriesByTable) {
+    const bucket = tableEntries[0].bucket
+    const columns = [
+      'system_account_id',
+      bucket.columnName,
+      'provider_code',
+      'model',
+      'request_count',
+      'success_count',
+      'error_count',
+      'input_tokens',
+      'output_tokens',
+      'cache_read_tokens',
+      'cache_read_cost_usd',
+      'total_cost_usd',
+      'updated_at'
+    ]
+    for (const chunk of chunkValues(tableEntries, 500)) {
+      await client.execute(`
+        INSERT INTO juhe_stats.${tableName} (${columns.join(', ')})
+        VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+        ON CONFLICT(system_account_id, ${bucket.columnName}, provider_code, model) DO UPDATE SET
+          request_count = ${tableName}.request_count + EXCLUDED.request_count,
+          success_count = ${tableName}.success_count + EXCLUDED.success_count,
+          error_count = ${tableName}.error_count + EXCLUDED.error_count,
+          input_tokens = ${tableName}.input_tokens + EXCLUDED.input_tokens,
+          output_tokens = ${tableName}.output_tokens + EXCLUDED.output_tokens,
+          cache_read_tokens = ${tableName}.cache_read_tokens + EXCLUDED.cache_read_tokens,
+          cache_read_cost_usd = ${tableName}.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+          total_cost_usd = ${tableName}.total_cost_usd + EXCLUDED.total_cost_usd,
+          updated_at = EXCLUDED.updated_at
+      `, chunk.flatMap((entry) => {
+        const stats = entry.accumulator
+        return [
+          entry.systemAccountId,
+          entry.timeValue,
+          entry.providerCode,
+          entry.model,
+          stats.requestCount,
+          stats.successCount,
+          stats.errorCount,
+          stats.inputTokens,
+          stats.outputTokens,
+          stats.cacheReadTokens,
+          stats.cacheReadCostUsd,
+          stats.totalCostUsd,
+          updatedAt
+        ]
+      }))
+    }
+  }
+}
+
+async function upsertPostgresUsageErrorEntries(client: DatabaseClient, entries: PostgresAggregatedUsageErrorEntry[], updatedAt: string): Promise<void> {
+  if (entries.length === 0) return
+  const entriesByTable = groupByPostgresBucketTable(entries)
+  for (const [tableName, tableEntries] of entriesByTable) {
+    const bucket = tableEntries[0].bucket
+    const columns = [
+      'system_account_id',
+      bucket.columnName,
+      'error_group',
+      'provider_code',
+      'error_code',
+      'status_code',
+      'error_message',
+      'request_count',
+      'error_count',
+      'updated_at'
+    ]
+    for (const chunk of chunkValues(tableEntries, 650)) {
+      await client.execute(`
+        INSERT INTO juhe_stats.${tableName} (${columns.join(', ')})
+        VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+        ON CONFLICT(system_account_id, ${bucket.columnName}, error_group, provider_code, error_code, status_code) DO UPDATE SET
+          error_message = COALESCE(EXCLUDED.error_message, ${tableName}.error_message),
+          request_count = ${tableName}.request_count + EXCLUDED.request_count,
+          error_count = ${tableName}.error_count + EXCLUDED.error_count,
+          updated_at = EXCLUDED.updated_at
+      `, chunk.flatMap((entry) => [
+        entry.systemAccountId,
+        entry.timeValue,
+        entry.errorGroup,
+        entry.providerCode,
+        entry.errorCode,
+        entry.statusCode,
+        entry.errorMessage ?? null,
+        entry.requestCount,
+        entry.errorCount,
+        updatedAt
+      ]))
+    }
+  }
+}
+
+async function upsertPostgresAccountQualityEntries(client: DatabaseClient, entries: PostgresAggregatedAccountQualityEntry[], updatedAt: string): Promise<void> {
+  if (entries.length === 0) return
+  const columns = [
+    'account_id',
+    'system_account_id',
+    'provider_code',
+    'stat_minute',
+    'request_count',
+    'success_count',
+    'error_count',
+    'first_token_ms_sum',
+    'first_token_ms_count',
+    'last_sample_at',
+    'last_success_at',
+    'last_error_at',
+    'last_error_message',
+    'updated_at'
+  ]
+  for (const chunk of chunkValues(entries, 450)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.account_quality_minute_stats (${columns.join(', ')})
+      VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(account_id, stat_minute) DO UPDATE SET
+        system_account_id = EXCLUDED.system_account_id,
+        provider_code = EXCLUDED.provider_code,
+        request_count = account_quality_minute_stats.request_count + EXCLUDED.request_count,
+        success_count = account_quality_minute_stats.success_count + EXCLUDED.success_count,
+        error_count = account_quality_minute_stats.error_count + EXCLUDED.error_count,
+        first_token_ms_sum = account_quality_minute_stats.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+        first_token_ms_count = account_quality_minute_stats.first_token_ms_count + EXCLUDED.first_token_ms_count,
+        last_sample_at = CASE WHEN account_quality_minute_stats.last_sample_at IS NULL OR EXCLUDED.last_sample_at > account_quality_minute_stats.last_sample_at THEN EXCLUDED.last_sample_at ELSE account_quality_minute_stats.last_sample_at END,
+        last_success_at = CASE WHEN EXCLUDED.last_success_at IS NULL THEN account_quality_minute_stats.last_success_at WHEN account_quality_minute_stats.last_success_at IS NULL OR EXCLUDED.last_success_at > account_quality_minute_stats.last_success_at THEN EXCLUDED.last_success_at ELSE account_quality_minute_stats.last_success_at END,
+        last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN account_quality_minute_stats.last_error_at WHEN account_quality_minute_stats.last_error_at IS NULL OR EXCLUDED.last_error_at > account_quality_minute_stats.last_error_at THEN EXCLUDED.last_error_at ELSE account_quality_minute_stats.last_error_at END,
+        last_error_message = CASE WHEN EXCLUDED.last_error_at IS NULL THEN account_quality_minute_stats.last_error_message WHEN account_quality_minute_stats.last_error_at IS NULL OR EXCLUDED.last_error_at >= account_quality_minute_stats.last_error_at THEN EXCLUDED.last_error_message ELSE account_quality_minute_stats.last_error_message END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((entry) => [
+      entry.accountId,
+      entry.systemAccountId,
+      entry.providerCode,
+      entry.statMinute,
+      entry.requestCount,
+      entry.successCount,
+      entry.errorCount,
+      entry.firstTokenMsSum,
+      entry.firstTokenMsCount,
+      entry.lastSampleAt,
+      entry.lastSuccessAt ?? null,
+      entry.lastErrorAt ?? null,
+      entry.lastErrorMessage ?? null,
+      updatedAt
+    ]))
+  }
+
+  for (const chunk of chunkValues(entries, 900)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.account_quality_dirty_accounts (account_id, first_dirty_at, updated_at)
+      VALUES ${postgresMultiRowPlaceholders(chunk.length, 3)}
+      ON CONFLICT(account_id) DO UPDATE SET
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((entry) => [
+      entry.accountId,
+      updatedAt,
+      updatedAt
+    ]))
+  }
+}
+
 async function postgresStatsJobState(client: DatabaseClient): Promise<{ cursorCreatedAt: string; cursorId: string }> {
   const row = await client.one<StatsJobStateRow>(`
     SELECT cursor_created_at, cursor_id, lag_seconds
@@ -504,7 +871,7 @@ async function latestPostgresUsageRecordLagSeconds(client: DatabaseClient, safeC
   return latest?.created_at ? statsLagSecondsFromCursor(latest.created_at) : 0
 }
 
-function postgresUsageStatsTimeKeys(row: UsageStatsRecordRow, timezone: string): PostgresUsageStatsTimeKeys {
+function postgresUsageStatsTimeKeys(row: UsageStatsRecordRow, timezone: string): UsageStatsTimeKeys {
   const createdAt = new Date(row.created_at)
   return {
     statMinute: minuteKey(createdAt, timezone),
@@ -528,6 +895,79 @@ function normalizePostgresUsageStatsRecordRow(row: UsageStatsRecordRow): UsageSt
     cache_read_cost_usd: nullableNumber(row.cache_read_cost_usd),
     cost_usd: nullableNumber(row.cost_usd)
   }
+}
+
+function applyPostgresEstimatedCacheReadCost(row: UsageStatsRecordRow): void {
+  if (row.cache_read_cost_usd !== null && row.cache_read_cost_usd !== undefined) {
+    return
+  }
+  const cacheReadCostUsd = estimateProviderCacheReadCostUsd({
+    providerCode: row.provider_code ?? '',
+    model: row.model ?? undefined,
+    cacheReadTokens: row.cache_read_tokens ?? undefined
+  }) ?? 0
+  if (cacheReadCostUsd > 0) {
+    row.cache_read_cost_usd = cacheReadCostUsd
+  }
+}
+
+function shouldRecordPostgresAccountQualityStats(row: UsageStatsRecordRow): boolean {
+  if (
+    row.traffic_source === 'cooldown_retest'
+    || row.traffic_source === 'hybrid_scoring'
+    || row.traffic_source === 'hybrid_quality_scoring'
+  ) {
+    return false
+  }
+  if (row.success === 1) {
+    return true
+  }
+  return row.failure_attribution === 'account_upstream'
+    || row.failure_attribution === 'account_dependency'
+}
+
+function postgresAccountQualityStatsSystemAccountId(row: UsageStatsRecordRow): string {
+  if (!row.account_access_type) {
+    throw new Error(`使用记录 ${row.id} 缺少账户访问类型字段 account_access_type`)
+  }
+  if (row.account_access_type === 'account_authorized') {
+    return row.system_account_id
+  }
+  if (!row.account_owner_system_account_id) {
+    throw new Error(`使用记录 ${row.id} 缺少账户归属字段 account_owner_system_account_id`)
+  }
+  return row.account_owner_system_account_id
+}
+
+function groupByPostgresBucketTable<T extends { bucket: UsageStatsTimeBucketDefinition }>(entries: T[]): Map<string, T[]> {
+  const result = new Map<string, T[]>()
+  for (const entry of entries) {
+    const tableEntries = result.get(entry.bucket.tableName)
+    if (tableEntries) {
+      tableEntries.push(entry)
+    } else {
+      result.set(entry.bucket.tableName, [entry])
+    }
+  }
+  return result
+}
+
+async function listPostgresRequestQuotaHourlyWindowHours(client: DatabaseClient): Promise<number[]> {
+  const rows = await client.query<{ window_hours?: number | string | null }>(`
+    SELECT window_hours
+    FROM juhe_business.request_quota_hourly_window_configs
+    WHERE window_hours BETWEEN 1 AND ?
+    ORDER BY window_hours ASC
+    LIMIT ?
+  `, [maxRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours])
+  const windows = new Set<number>(defaultRequestQuotaHourlyWindowHours)
+  for (const row of rows) {
+    const hours = Number(row.window_hours)
+    if (Number.isInteger(hours) && hours >= 1 && hours <= maxRequestQuotaHourlyWindowHours) {
+      windows.add(hours)
+    }
+  }
+  return [...windows].sort((left, right) => left - right)
 }
 
 function nullableNumber(value: unknown): number | null {
@@ -681,6 +1121,31 @@ export function refreshUsageQuotaHourlyWindowsCache(): void {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
+}
+
+export async function refreshUsageQuotaHourlyWindowsCacheAsync(): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    refreshUsageQuotaHourlyWindowsCache()
+    return
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.transaction(async (tx) => {
+    const updatedAt = nowIso()
+    const timezone = await usageStatsTimezoneAsync()
+    await tx.execute('DELETE FROM juhe_stats.usage_quota_hourly_windows')
+    for (const hours of await listPostgresRequestQuotaHourlyWindowHours(tx)) {
+      await tx.execute(`
+        INSERT INTO juhe_stats.usage_quota_hourly_windows (
+          system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
+        )
+        SELECT system_account_id, scope_type, scope_id, ?, COALESCE(SUM(total_cost_usd), 0), ?
+        FROM juhe_stats.usage_stats_hourly
+        WHERE stat_hour >= ?
+        GROUP BY system_account_id, scope_type, scope_id
+        HAVING COALESCE(SUM(total_cost_usd), 0) > 0
+      `, [hours, updatedAt, hourKey(new Date(Date.now() - hours * HOUR_MS), timezone)])
+    }
+  })
 }
 
 export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRankSnapshotsInStagesOptions = {}): Promise<UsageRankSnapshotRefreshResult> {

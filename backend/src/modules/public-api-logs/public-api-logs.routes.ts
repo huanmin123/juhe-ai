@@ -3,25 +3,34 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
-  getPublicApiLogDetail,
-  listPublicApiLogs,
+  getPublicApiLogDetailAsync,
+  listPublicApiLogsAsync,
   type PublicApiLogListOptions,
   type PublicApiLogResultFilter
 } from '../../storage/repositories.js'
 
 export const publicApiLogsRouter = Router()
 
-publicApiLogsRouter.get('/', (req, res) => {
-  res.json(ok(listPublicApiLogs(parsePublicApiLogListOptions(req.query))))
+publicApiLogsRouter.get('/', async (req, res, next) => {
+  try {
+    const result = await listPublicApiLogsAsync(parsePublicApiLogListOptions(req.query))
+    res.json(ok(result))
+  } catch (error) {
+    next(error)
+  }
 })
 
-publicApiLogsRouter.get('/:id', (req, res) => {
-  const detail = getPublicApiLogDetail(req.params.id)
-  if (!detail) {
-    sendNotFound(res, '公开接口日志不存在')
-    return
+publicApiLogsRouter.get('/:id', async (req, res, next) => {
+  try {
+    const detail = await getPublicApiLogDetailAsync(req.params.id)
+    if (!detail) {
+      sendNotFound(res, '公开接口日志不存在')
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(detail))
 })
 
 const resultFilters = new Set<PublicApiLogResultFilter>(['success', 'failed', 'all'])

@@ -91,12 +91,23 @@ interface StorageSnapshot {
 }
 
 interface RedisStreamSnapshot {
-  sampledAt: string
   length: number
   pendingCount: number
+  lagCount: number
+  backlogCount: number
   minPendingId?: string
   maxPendingId?: string
   consumers: Array<{ name: string; pending: number }>
+  error?: string
+}
+
+interface RedisStreamsSnapshot {
+  sampledAt: string
+  pendingCount: number
+  backlogCount: number
+  usageRecords: RedisStreamSnapshot
+  auditLogs: RedisStreamSnapshot
+  operationLogs: RedisStreamSnapshot
   error?: string
 }
 
@@ -122,7 +133,7 @@ interface MetricSnapshot {
   }
   storage: StorageSnapshot
   postgres: PostgresSample
-  redis: RedisStreamSnapshot
+  redis: RedisStreamsSnapshot
 }
 
 interface LatencySummary {
@@ -160,6 +171,10 @@ const runId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const tracePrefix = `perf-gateway-${runId}`
 const usageRecordRedisStreamKey = 'juhe-ai:queue:usage-records'
 const usageRecordRedisStreamGroup = 'juhe-ai:usage-record-writers'
+const auditLogRedisStreamKey = 'juhe-ai:queue:audit-logs'
+const auditLogRedisStreamGroup = 'juhe-ai:audit-log-writers'
+const operationLogRedisStreamKey = 'juhe-ai:queue:operation-logs'
+const operationLogRedisStreamGroup = 'juhe-ai:operation-log-writers'
 const childOutput: ProcessOutput = { stdout: '', stderr: '' }
 
 logger.level = 'silent'
@@ -214,7 +229,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
       await resetPgStatStatements()
     }
     const deadlocksBefore = await queryDeadlocks()
-    const redisBefore = await sampleRedisStream()
+    const redisBefore = await sampleRedisStreams()
     const storageBefore = await sampleStorage(seeded)
 
     const port = await freePort()
@@ -271,7 +286,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
     upstreamServer = undefined
 
     const deadlocksAfter = await queryDeadlocks()
-    const redisAfter = await sampleRedisStream()
+    const redisAfter = await sampleRedisStreams()
     const storageAfter = await sampleStorage(seeded)
     const postgresSamples = samples.map((sample) => sample.postgres)
     const slowStatements = await querySlowStatements()
@@ -337,7 +352,7 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
       providerCode: 'gpt',
       name: `压测网关账户-${suffix}-${index + 1}`,
       type: 'api_key',
-      clientCompatibility: 'openai_standard',
+      clientCompatibility: 'codex_responses',
       credentials: {
         api_key: `sk-perf-gateway-${suffix}-${index + 1}`,
         base_url: upstreamBaseUrl
@@ -350,13 +365,6 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
         {
           sourceModel: input.model,
           sourceEndpointFamily: 'chat_completions',
-          upstreamModel: input.model,
-          upstreamEndpointFamily: 'chat_completions',
-          enabled: true
-        },
-        {
-          sourceModel: input.model,
-          sourceEndpointFamily: 'responses',
           upstreamModel: input.model,
           upstreamEndpointFamily: 'chat_completions',
           enabled: true
@@ -429,7 +437,7 @@ function startBackendServer(port: number): ChildProcess {
       JUHE_AI_PORT: String(port),
       JUHE_AI_DB_SERVICE_HTTP_HOST: '127.0.0.1',
       JUHE_AI_DB_SERVICE_HTTP_PORT: '0',
-      JUHE_AI_SECRET: process.env.JUHE_AI_SECRET?.trim() || 'performance-gateway-load-test-secret-please-change',
+      JUHE_AI_SECRET: runtimeConfig.secret,
       JUHE_AI_LOG_LEVEL: process.env.JUHE_AI_GATEWAY_LOAD_CHILD_LOG_LEVEL ?? 'warn',
       JUHE_AI_LOG_CONSOLE_ENABLED: process.env.JUHE_AI_GATEWAY_LOAD_CHILD_LOG_CONSOLE_ENABLED ?? 'false',
       JUHE_AI_LOG_FILE_ENABLED: process.env.JUHE_AI_GATEWAY_LOAD_CHILD_LOG_FILE_ENABLED ?? 'false',
@@ -754,7 +762,7 @@ async function collectSnapshot(stats: LoadStats, seeded: SeededGateway): Promise
   const [storage, postgres, redis] = await Promise.all([
     sampleStorage(seeded),
     samplePostgres(),
-    sampleRedisStream()
+    sampleRedisStreams()
   ])
   return {
     elapsedSeconds: round(elapsedSeconds, 3),
@@ -848,41 +856,47 @@ async function samplePostgres(): Promise<PostgresSample> {
   }
 }
 
-async function sampleRedisStream(): Promise<RedisStreamSnapshot> {
+async function sampleRedisStreams(): Promise<RedisStreamsSnapshot> {
   const url = runtimeConfig.redis.queueUrl
   if (!url) {
+    const error = 'JUHE_AI_REDIS_QUEUE_URL 未配置'
     return {
       sampledAt: new Date().toISOString(),
-      length: 0,
       pendingCount: 0,
-      consumers: [],
-      error: 'JUHE_AI_REDIS_QUEUE_URL 未配置'
+      backlogCount: 0,
+      usageRecords: emptyRedisStreamSnapshot(error),
+      auditLogs: emptyRedisStreamSnapshot(error),
+      operationLogs: emptyRedisStreamSnapshot(error),
+      error
     }
   }
   let client: RedisSampleClient | undefined
   try {
     client = await createRedisSampleClient(url)
-    const [lengthRaw, pendingRaw] = await Promise.all([
-      client.sendCommand(['XLEN', usageRecordRedisStreamKey]).catch(() => 0),
-      client.sendCommand(['XPENDING', usageRecordRedisStreamKey, usageRecordRedisStreamGroup]).catch((error) => ({ error }))
+    const [usageRecords, auditLogs, operationLogs] = await Promise.all([
+      sampleRedisStream(client, usageRecordRedisStreamKey, usageRecordRedisStreamGroup),
+      sampleRedisStream(client, auditLogRedisStreamKey, auditLogRedisStreamGroup),
+      sampleRedisStream(client, operationLogRedisStreamKey, operationLogRedisStreamGroup)
     ])
-    const pending = parsePendingSummary(pendingRaw)
     return {
       sampledAt: new Date().toISOString(),
-      length: numberValue(lengthRaw),
-      pendingCount: pending.pendingCount,
-      minPendingId: pending.minPendingId,
-      maxPendingId: pending.maxPendingId,
-      consumers: pending.consumers,
-      error: pending.error
+      pendingCount: usageRecords.pendingCount + auditLogs.pendingCount + operationLogs.pendingCount,
+      backlogCount: usageRecords.backlogCount + auditLogs.backlogCount + operationLogs.backlogCount,
+      usageRecords,
+      auditLogs,
+      operationLogs,
+      error: usageRecords.error ?? auditLogs.error ?? operationLogs.error
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     return {
       sampledAt: new Date().toISOString(),
-      length: 0,
       pendingCount: 0,
-      consumers: [],
-      error: error instanceof Error ? error.message : String(error)
+      backlogCount: 0,
+      usageRecords: emptyRedisStreamSnapshot(message),
+      auditLogs: emptyRedisStreamSnapshot(message),
+      operationLogs: emptyRedisStreamSnapshot(message),
+      error: message
     }
   } finally {
     await client?.quit?.().catch(() => undefined)
@@ -891,6 +905,38 @@ async function sampleRedisStream(): Promise<RedisStreamSnapshot> {
     } catch {
       // destroy() can throw after a clean quit().
     }
+  }
+}
+
+async function sampleRedisStream(client: RedisSampleClient, streamKey: string, groupName: string): Promise<RedisStreamSnapshot> {
+  const [lengthRaw, pendingRaw, groupsRaw] = await Promise.all([
+    client.sendCommand(['XLEN', streamKey]).catch(() => 0),
+    client.sendCommand(['XPENDING', streamKey, groupName]).catch((error) => ({ error })),
+    client.sendCommand(['XINFO', 'GROUPS', streamKey]).catch((error) => ({ error }))
+  ])
+  const pending = parsePendingSummary(pendingRaw)
+  const group = parseStreamGroupInfo(groupsRaw, groupName)
+  const lagCount = Math.max(0, group.lagCount)
+  return {
+    length: numberValue(lengthRaw),
+    pendingCount: pending.pendingCount,
+    lagCount,
+    backlogCount: pending.pendingCount + lagCount,
+    minPendingId: pending.minPendingId,
+    maxPendingId: pending.maxPendingId,
+    consumers: pending.consumers,
+    error: pending.error ?? group.error
+  }
+}
+
+function emptyRedisStreamSnapshot(error?: string): RedisStreamSnapshot {
+  return {
+    length: 0,
+    pendingCount: 0,
+    lagCount: 0,
+    backlogCount: 0,
+    consumers: [],
+    error
   }
 }
 
@@ -957,6 +1003,42 @@ function parsePendingSummary(value: unknown): {
   return { pendingCount: 0, consumers: [] }
 }
 
+function parseStreamGroupInfo(value: unknown, groupName: string): { lagCount: number; error?: string } {
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'error' in value) {
+    const error = (value as { error?: unknown }).error
+    return {
+      lagCount: 0,
+      error: error instanceof Error ? error.message : String(error)
+    }
+  }
+  const groups = Array.isArray(value) ? value : []
+  for (const group of groups) {
+    const record = redisInfoGroupRecord(group)
+    const name = optionalText(record.name)
+    if (name !== groupName) {
+      continue
+    }
+    return {
+      lagCount: numberValue(record.lag ?? record.lagCount)
+    }
+  }
+  return { lagCount: 0 }
+}
+
+function redisInfoGroupRecord(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) {
+    const record: Record<string, unknown> = {}
+    for (let index = 0; index < value.length; index += 2) {
+      const key = optionalText(value[index])
+      if (key) {
+        record[key] = value[index + 1]
+      }
+    }
+    return record
+  }
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
 async function queryDeadlocks(): Promise<number> {
   const pool = await getPostgresPool()
   const result = await pool.query(`
@@ -1008,8 +1090,8 @@ function buildReport(input: {
   samples: MetricSnapshot[]
   deadlocksBefore: number
   deadlocksAfter: number
-  redisBefore: RedisStreamSnapshot
-  redisAfter: RedisStreamSnapshot
+  redisBefore: RedisStreamsSnapshot
+  redisAfter: RedisStreamsSnapshot
   storageBefore: StorageSnapshot
   storageAfter: StorageSnapshot
   postgresSamples: PostgresSample[]
@@ -1041,8 +1123,8 @@ function buildReport(input: {
   if (maxLockWaiters > input.input.maxAllowedLockWaiters || maxNotGrantedLocks > input.input.maxAllowedLockWaiters) {
     violations.push(`PostgreSQL 锁等待过高：lockWaiters=${maxLockWaiters}, notGranted=${maxNotGrantedLocks}`)
   }
-  if (input.redisAfter.pendingCount > input.input.maxAllowedRedisPending) {
-    violations.push(`Redis Stream pending=${input.redisAfter.pendingCount} 超过阈值 ${input.input.maxAllowedRedisPending}`)
+  if (input.redisAfter.backlogCount > input.input.maxAllowedRedisPending) {
+    violations.push(`Redis Stream backlog=${input.redisAfter.backlogCount} 超过阈值 ${input.input.maxAllowedRedisPending}（pending=${input.redisAfter.pendingCount}）`)
   }
   if (input.stats.successRequests > 0 && usageRecordsDelta < Math.floor(input.stats.successRequests * 0.95)) {
     violations.push(`使用记录消化不足：usageRecordsDelta=${usageRecordsDelta}, successRequests=${input.stats.successRequests}`)
@@ -1146,13 +1228,16 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const storage = report.storage as Record<string, unknown>
   const postgres = report.postgres as Record<string, unknown>
   const redis = report.redis as Record<string, unknown>
-  const redisAfter = redis.after as RedisStreamSnapshot | undefined
+  const redisAfter = redis.after as RedisStreamsSnapshot | undefined
+  const usageStream = redisAfter?.usageRecords
+  const auditStream = redisAfter?.auditLogs
+  const operationStream = redisAfter?.operationLogs
   console.log('\n高性能网关压测汇总')
   console.log(`- pass=${report.pass}`)
   console.log(`- requests total=${requests.total} success=${requests.success} qps=${requests.successQps} p95=${(requests.latencyMs as LatencySummary).p95}ms errorRate=${requests.errorRate}`)
   console.log(`- storage delta=${JSON.stringify((storage.delta as Record<string, unknown>) ?? {})}`)
   console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
-  console.log(`- redis usageStream length=${redisAfter?.length ?? 0} pending=${redisAfter?.pendingCount ?? 0}`)
+  console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
   if (report.violations.length > 0) {
     console.log(`- violations=${report.violations.join('；')}`)
   }
@@ -1521,7 +1606,8 @@ async function waitForHealth(url: string, child: ChildProcess): Promise<void> {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1000) })
       if (response.ok) return
-      lastError = new Error(`${url} HTTP ${response.status}`)
+      const body = await response.text().catch(() => '')
+      lastError = new Error(`${url} HTTP ${response.status}${body ? ` body=${tailText(body)}` : ''}`)
     } catch (error) {
       lastError = error
     }

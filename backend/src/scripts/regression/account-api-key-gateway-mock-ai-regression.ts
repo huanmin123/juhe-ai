@@ -196,7 +196,10 @@ try {
     ['Bearer sk-gateway-authorized-bad', 'Bearer sk-gateway-authorized-good'],
     '被授权实例命中来源账户坏 Key 后，本次请求应在预算内切到来源账户后续 Key'
   )
-  await sleep(200)
+  await waitFor(
+    () => apiKeyRuntimeStateTargetAccountIdOrMissing('sk-gateway-authorized-bad') === authorizedScenario.sourceAccountId,
+    5000
+  )
   const authorizedRuntimeTarget = apiKeyRuntimeStateTargetAccountIdOrMissing('sk-gateway-authorized-bad')
   assert.equal(authorizedRuntimeTarget, authorizedScenario.sourceAccountId, '授权实例命中来源账户坏 Key 并由同账号好 Key 成功确认后，应写入来源账户 Key 运行态')
   const authorizedInstanceSummary = repositories.findAccountForTest(authorizedScenario.authorizedInstanceAccountId, authorizedScenario.granteeAccess)

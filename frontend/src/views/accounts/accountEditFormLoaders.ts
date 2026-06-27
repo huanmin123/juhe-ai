@@ -71,7 +71,7 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     clientCompatibility: accountClientCompatibilityForForm(account),
-    supportedEndpointModes: accountEndpointModesForForm(account, credentials, defaults),
+    supportedEndpointModes: accountEndpointModesForForm(account, credentials),
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt,
     groupId: selectedGroup?.id ?? fallbackGroupId,
@@ -117,7 +117,7 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     clientCompatibility: accountClientCompatibilityForForm(account),
-    supportedEndpointModes: accountEndpointModesForForm(account, credentials, defaults),
+    supportedEndpointModes: accountEndpointModesForForm(account, credentials),
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt,
     groupId: selectedGroup?.id ?? fallbackGroupId,
@@ -159,12 +159,11 @@ function accountClientCompatibilityForForm(account: AccountSummary): AccountForm
 
 function accountEndpointModesForForm(
   account: AccountSummary,
-  credentials: Record<string, unknown>,
-  defaults: AccountFormModel
+  credentials: Record<string, unknown>
 ): AccountFormModel['supportedEndpointModes'] {
   return normalizeAccountEndpointModes(
     credentials.supported_endpoint_modes,
-    defaultAccountEndpointModes(account.providerCode, account.type, accountClientCompatibilityForForm(account) ?? defaults.clientCompatibility, {
+    defaultAccountEndpointModes(account.providerCode, account.type, undefined, {
       protocolProfile: account
     })
   )

@@ -65,7 +65,7 @@ export function resolveOpenAIAccountModelMapping(
     && item.sourceEndpointFamily === sourceEndpointFamily
   ))
   if (!mapping || (mapping.upstreamModel === mapping.sourceModel && mapping.upstreamEndpointFamily === mapping.sourceEndpointFamily)) return undefined
-  if (!isOpenAIModelMappingRuntimeConversionSupported(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) return undefined
+  if (!isOpenAIModelMappingRuntimeConversionSupported(mapping)) return undefined
   return {
     sourceModel: mapping.sourceModel,
     sourceEndpointFamily: mapping.sourceEndpointFamily,
@@ -163,9 +163,13 @@ export function openAIModelMappedUpstreamPathAndQuery(req: Request, mapping: Res
 }
 
 function isOpenAIModelMappingRuntimeConversionSupported(
-  source: AccountModelMappingSourceEndpointFamily,
-  upstream: AccountModelMappingUpstreamEndpointFamily
+  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily' | 'runtimeSource'>
 ): boolean {
+  const { sourceEndpointFamily: source, upstreamEndpointFamily: upstream } = mapping
+  if (mapping.runtimeSource !== 'explicit_hybrid_route') {
+    return source === upstream
+      || (source === GEMINI_STREAM_GENERATE_CONTENT_FAMILY && upstream === GEMINI_GENERATE_CONTENT_FAMILY)
+  }
   if (source === upstream) {
     return true
   }

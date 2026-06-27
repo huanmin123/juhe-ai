@@ -74,6 +74,7 @@ interface StartAttemptInput {
   method: string
   headers: Headers
   body?: Buffer | string
+  requestForModelAccounting?: Request
 }
 
 interface CompleteAttemptInput {
@@ -252,8 +253,9 @@ export class AuditCaptureContext {
 
   startAttempt(input: StartAttemptInput): string {
     if (!this.enabled) return ''
+    const accountingRequest = input.requestForModelAccounting ?? this.req
     this.bindContext({ providerCode: input.account.providerCode })
-    this.bindContext(auditModelAccounting(input.account, requestModel(this.req), this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(this.req)))
+    this.bindContext(auditModelAccounting(input.account, requestModel(accountingRequest), this.gatewayContext.systemAccountId, gatewayRequestEndpointFamily(accountingRequest)))
     const tempId = `attempt_${input.attemptIndex}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const startedAtMs = Date.now()
     const attempt: AuditLogAttemptInput = {

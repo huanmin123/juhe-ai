@@ -195,8 +195,8 @@ function assertApiKeyDraftActivationPayload(): void {
   }
   const savePayload = buildAccountSavePayload(input)
   const draftPayload = buildAccountDraftTestPayload(input)
-  assert.equal(savePayload.clientCompatibility, 'codex_responses', '账号保存 payload 必须显式提交账号级客户端兼容字段')
-  assert.equal(draftPayload.clientCompatibility, 'codex_responses', '草稿测试账号 payload 必须显式提交账号级客户端兼容字段')
+  assert.equal(Object.prototype.hasOwnProperty.call(savePayload, 'clientCompatibility'), false, '账号保存 payload 不应提交账号级客户端兼容字段')
+  assert.equal(Object.prototype.hasOwnProperty.call(draftPayload, 'clientCompatibility'), false, '草稿测试账号 payload 不应提交账号级客户端兼容字段')
   assert.deepEqual(savePayload.modelMappings, [{
     sourceModel: 'gpt-5.5-alias',
     sourceEndpointFamily: 'chat_completions',

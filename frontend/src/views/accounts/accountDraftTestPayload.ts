@@ -45,7 +45,6 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
     providerProtocolProfileId: payload.providerProtocolProfileId,
     name: payload.name ?? input.accountDetail?.name ?? input.form.name.trim(),
     type: payload.type,
-    clientCompatibility: payload.clientCompatibility,
     credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,

@@ -30,6 +30,11 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
+import { OPENAI_RESPONSES_FAMILY } from '../../../domain/provider-protocol.js'
+import { requestModel } from '../request/metadata.js'
+import {
+  resolveOpenAIAccountModelMapping
+} from '../protocols/openai-v1/model-mapping.js'
 
 type JsonRecord = Record<string, unknown>
 type CodexContextRestoreFailureOutcome = 'not_found' | 'expired' | 'boundary_mismatch' | 'chain_too_deep' | 'chain_broken'
@@ -527,9 +532,23 @@ function isChatOnlyCodexResponsesBridgeStateRequest(
   requestClientCompatibility: ClientCompatibilityCapability,
   accounts: readonly UpstreamAccount[]
 ): boolean {
-  void requestClientCompatibility
   return isOpenAIResponsesPostRequest(req)
-    && accounts.some((account) => account.clientCompatibility === 'codex_responses')
+    && hasCodexResponsesChatBridgeRuntimeAccount(req, accounts, requestClientCompatibility)
+}
+
+export function hasCodexResponsesChatBridgeRuntimeAccount(
+  req: Request,
+  accounts: readonly UpstreamAccount[],
+  requestClientCompatibility: ClientCompatibilityCapability
+): boolean {
+  const model = requestModel(req)
+  return accounts.some((account) => {
+    if (requestClientCompatibility === 'codex_responses' && account.clientCompatibility === 'codex_responses') return true
+    const mapping = resolveOpenAIAccountModelMapping(account, model, OPENAI_RESPONSES_FAMILY)
+    return mapping?.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
+      && mapping.runtimeSource === 'explicit_hybrid_route'
+      && (mapping.upstreamEndpointFamily === 'chat_completions' || mapping.upstreamEndpointFamily === 'messages')
+  })
 }
 
 function codexContextBoundary(input: {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { newId } from './database.js'
+import type { DatabaseClient } from './database-client.js'
 import { stableJsonStringify } from './audit-log-stable-json.js'
 import type {
   AuditLogInput,
@@ -18,7 +19,7 @@ export interface AuditErrorGroupStatements {
   insertGroup: AuditErrorGroupStatement
 }
 
-interface AuditErrorGroupPayloadInput {
+export interface AuditErrorGroupPayloadInput {
   partType: AuditPayloadPartType
   bodySha256?: string
 }
@@ -112,6 +113,78 @@ export function upsertAuditErrorGroup(
     timestamp
   )
   return id
+}
+
+export async function upsertAuditErrorGroupAsync(
+  client: DatabaseClient,
+  input: AuditLogInput,
+  auditLogId: string,
+  payloads: AuditErrorGroupPayloadInput[],
+  timestamp: string,
+  trafficSource: AuditTrafficSource
+): Promise<string | null> {
+  if (input.auditOutcome === 'success') {
+    return null
+  }
+  const requestFingerprint = auditRequestFingerprint(input, payloads)
+  const errorFingerprint = auditErrorFingerprint(input)
+  const windowStartedAt = auditErrorWindowStart(timestamp)
+  const windowEndedAt = new Date(Date.parse(windowStartedAt) + auditErrorGroupWindowMs).toISOString()
+  const fingerprint = sha256Text(stableJsonStringify({
+    systemAccountId: input.systemAccountId ?? '',
+    apiKeyId: input.apiKeyId ?? '',
+    groupId: input.groupId ?? '',
+    accountId: input.accountId ?? '',
+    providerCode: input.providerCode ?? '',
+    trafficSource,
+    path: input.path,
+    model: input.model ?? '',
+    statusCode: input.finalStatusCode ?? '',
+    errorPhase: input.errorPhase ?? '',
+    errorCode: input.errorCode ?? '',
+    requestFingerprint,
+    errorFingerprint
+  }))
+  const row = await client.one<{ id?: string }>(`
+    INSERT INTO juhe_dataset.audit_error_groups (
+      id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id, group_id, account_id,
+      provider_code, path, model, status_code, error_phase, error_code, error_type, request_fingerprint,
+      error_fingerprint, count, first_event_id, last_event_id, sample_event_id, last_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(fingerprint, window_started_at) DO UPDATE SET
+      count = audit_error_groups.count + 1,
+      window_ended_at = EXCLUDED.window_ended_at,
+      last_event_id = EXCLUDED.last_event_id,
+      sample_event_id = COALESCE(audit_error_groups.sample_event_id, EXCLUDED.sample_event_id),
+      last_message = EXCLUDED.last_message,
+      updated_at = EXCLUDED.updated_at
+    RETURNING id
+  `, [
+    newId('audgrp'),
+    fingerprint,
+    windowStartedAt,
+    windowEndedAt,
+    input.systemAccountId ?? null,
+    input.apiKeyId ?? null,
+    input.groupId ?? null,
+    input.accountId ?? null,
+    input.providerCode ?? null,
+    input.path,
+    input.model ?? null,
+    input.finalStatusCode ?? null,
+    input.errorPhase ?? null,
+    input.errorCode ?? null,
+    input.auditOutcome,
+    requestFingerprint,
+    errorFingerprint,
+    auditLogId,
+    auditLogId,
+    auditLogId,
+    input.errorMessage ?? null,
+    timestamp,
+    timestamp
+  ])
+  return optionalString(row?.id) ?? null
 }
 
 function auditRequestFingerprint(input: AuditLogInput, payloads: AuditErrorGroupPayloadInput[]): string {

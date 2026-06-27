@@ -222,6 +222,7 @@ function usageStatsRecordBase(systemAccountId: string, accountId: string): Usage
     model: 'gpt-5.5',
     status_code: 200,
     success: 1,
+    failure_attribution: null,
     first_token_ms: 100,
     duration_ms: 200,
     input_tokens: 10,

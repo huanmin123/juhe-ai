@@ -12,7 +12,7 @@ import {
   GEMINI_PROVIDER_CODE,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMapping } from '../../domain/types.js'
+import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
@@ -95,12 +95,12 @@ try {
       groupId: group.id,
       status: 'active',
       schedulable: true,
-      supportedModels: [...new Set([chatModel, responsesUpstreamModel])],
-      modelMappings: codexBridgeModelMappings()
+      supportedModels: [...new Set([chatModel, responsesUpstreamModel])]
     }, access)
     const apiKey = repositories.createApiKeyRecord({
       name: 'Gemini OpenAI Chat 真实网关 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: codexBridgeRouteRules(group.id),
       status: 'active'
     }, access)
     assert(apiKey.key, '真实联调本地 API Key 未返回明文密钥')
@@ -290,13 +290,18 @@ function registerCustomModels(): void {
   }
 }
 
-function codexBridgeModelMappings(): AccountModelMapping[] {
+function codexBridgeRouteRules(targetGroupId: string): ApiKeyExplicitHybridRouteRule[] {
   return [{
+    id: 'responses_to_chat',
+    enabled: true,
+    priority: 1,
+    sourceClientProfile: 'codex',
     sourceModel: responsesSourceModel,
     sourceEndpointFamily: 'responses',
+    targetGroupId,
     upstreamModel: responsesUpstreamModel,
     upstreamEndpointFamily: 'chat_completions',
-    enabled: true
+    adapterMode: 'bridge'
   }]
 }
 

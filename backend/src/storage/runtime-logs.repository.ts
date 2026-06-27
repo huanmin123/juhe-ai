@@ -1,4 +1,7 @@
+import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 
@@ -174,6 +177,35 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
   }
 }
 
+export async function listRuntimeLogsAsync(options: RuntimeLogListOptions = {}): Promise<RuntimeLogListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listRuntimeLogs(options)
+  }
+  const filters = buildRuntimeLogFilters(options)
+  const pageSize = normalizeRuntimeLogPageSize(options.pageSize)
+  const page = normalizeRuntimeLogPage(options.page, pageSize)
+  const offset = (page - 1) * pageSize
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+
+  const rows = await client.query<RuntimeLogRow>(`
+    SELECT ${runtimeLogListSelectColumns('rl')}
+    FROM juhe_dataset.runtime_logs rl
+    ${filters.clause}
+    ORDER BY rl.time DESC, rl.id DESC
+    LIMIT ? OFFSET ?
+  `, [...filters.params, pageSize + 1, offset])
+
+  const pageRows = takePageRows(rows, pageSize)
+  const items = pageRows.rows.map(runtimeLogFromRow)
+  return {
+    items,
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page,
+    pageSize
+  }
+}
+
 export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
   const row = getDatasetDatabase()
     .prepare(`
@@ -183,6 +215,20 @@ export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
       LIMIT 1
     `)
     .get(id.trim()) as RuntimeLogRow | undefined
+  return row ? runtimeLogFromRow(row) : undefined
+}
+
+export async function getRuntimeLogDetailAsync(id: string): Promise<RuntimeLogDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getRuntimeLogDetail(id)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<RuntimeLogRow>(`
+    SELECT ${runtimeLogDetailSelectColumns('rl')}
+    FROM juhe_dataset.runtime_logs rl
+    WHERE rl.id = ?
+    LIMIT 1
+  `, [id.trim()])
   return row ? runtimeLogFromRow(row) : undefined
 }
 
@@ -208,6 +254,40 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
       LIMIT ?
     `)
     .all(runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents) as RuntimeLogRow[]
+  return {
+    retentionDays: runtimeLogIndexRetentionDays,
+    earliestIndexedAt: optionalString(range?.earliest_time),
+    latestIndexedAt: optionalString(range?.latest_time),
+    totalIndexed: Number(range?.total_count ?? 0),
+    levels: levels.map((row) => ({ value: String(row.value), count: Number(row.count ?? 0) })),
+    events: events.map((row) => String(row.event))
+  }
+}
+
+export async function getRuntimeLogFacetsAsync(): Promise<RuntimeLogFacets> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getRuntimeLogFacets()
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const [range, levels, events] = await Promise.all([
+    client.one<RuntimeLogRow>(
+      'SELECT earliest_time, latest_time, total_count FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = ?',
+      [runtimeLogFacetBucketKey]
+    ),
+    client.query<RuntimeLogRow>(`
+      SELECT level AS value, count
+      FROM juhe_dataset.runtime_log_level_facets
+      WHERE bucket_key = ? AND count > 0
+      ORDER BY count DESC, level ASC
+    `, [runtimeLogFacetBucketKey]),
+    client.query<RuntimeLogRow>(`
+      SELECT event
+      FROM juhe_dataset.runtime_log_event_facets
+      WHERE bucket_key = ? AND count > 0
+      ORDER BY latest_time DESC, event ASC
+      LIMIT ?
+    `, [runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents])
+  ])
   return {
     retentionDays: runtimeLogIndexRetentionDays,
     earliestIndexedAt: optionalString(range?.earliest_time),

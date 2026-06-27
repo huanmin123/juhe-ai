@@ -9,22 +9,56 @@ const backendSrcRoot = fileURLToPath(new URL('../..', import.meta.url))
 
 const gatewayApiKeyRepositorySource = readSource('storage/gateway-api-key.repository.ts')
 const apiKeyQuotaServiceSource = readSource('modules/gateway/quota/api-key-quota.service.ts')
+const authorizationQuotaServiceSource = readSource('modules/gateway/quota/authorization-quota.service.ts')
+const gatewayRuntimeCacheSource = readSource('modules/gateway/runtime/runtime-cache.service.ts')
+const modelCatalogSource = readSource('modules/model-pricing/model-catalog.service.ts')
 const appCacheSource = readSource('shared/cache.ts')
 
 assertFunctionDoesNotScanCacheEntries(gatewayApiKeyRepositorySource, 'invalidateGatewayApiKeyCacheById')
 assertFunctionUsesReverseIndex(gatewayApiKeyRepositorySource, 'invalidateGatewayApiKeyCacheById', 'gatewayApiKeyCacheKeysById')
 assert(gatewayApiKeyRepositorySource.includes('dispose: (entry, keyHash)'), '网关 API Key 校验缓存应在 LRU 逐出时同步反向索引')
+assert(gatewayApiKeyRepositorySource.includes('createSharedJsonCache<GatewayApiKeyCacheEntry>'), '网关 API Key 校验缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'syncGatewayCacheInvalidationsFromRuntimeState()', '网关 API Key 异步校验应先同步 Redis runtime state 失效版本')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'getGatewayApiKeySharedCacheEntry(keyHash)', '网关 API Key 异步校验应读取 Redis 共享缓存')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'setGatewayApiKeyCacheEntryAsync(keyHash', '网关 API Key 异步校验 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'clearGatewayApiKeyValidationCache', 'clearGatewayApiKeySharedCache()', '网关 API Key 校验全量失效应清理 Redis 共享缓存命名空间')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'invalidateGatewayApiKeyCacheById', 'clearGatewayApiKeySharedCache()', '网关 API Key 校验定点失效应清理 Redis 共享缓存命名空间')
 
 assertFunctionDoesNotScanCacheEntries(apiKeyQuotaServiceSource, 'invalidateApiKeyQuotaCacheById')
 assertFunctionUsesReverseIndex(apiKeyQuotaServiceSource, 'invalidateApiKeyQuotaCacheById', 'apiKeyQuotaCacheKeysById')
 assert(apiKeyQuotaServiceSource.includes('dispose: (_entry, cacheKey)'), 'API Key 额度缓存应在 LRU 逐出时同步反向索引')
+assert(apiKeyQuotaServiceSource.includes('createSharedJsonCache<ApiKeyQuotaCacheEntry>'), 'API Key 额度缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(apiKeyQuotaServiceSource, 'checkGatewayApiKeyQuotaAsync', 'getApiKeyQuotaSharedCacheEntry(cacheKey)', 'API Key 额度异步判定应先读取 Redis 共享缓存')
+assertFunctionIncludes(apiKeyQuotaServiceSource, 'setApiKeyQuotaCacheEntryAsync', 'setApiKeyQuotaSharedCacheEntry(cacheKey, entry)', 'API Key 额度异步写入应同步写 Redis 共享缓存')
+assertFunctionIncludes(apiKeyQuotaServiceSource, 'clearApiKeyQuotaCache', 'clearApiKeyQuotaSharedCache()', 'API Key 额度全量失效应清理 Redis 共享缓存命名空间')
+
+assert(authorizationQuotaServiceSource.includes('createSharedJsonCache<AuthorizationQuotaCacheEntry>'), '授权额度缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(authorizationQuotaServiceSource, 'checkGatewayAuthorizationQuotaAsync', 'getAuthorizationQuotaSharedCacheEntry(cacheKey)', '授权额度异步判定应先读取 Redis 共享缓存')
+assertFunctionIncludes(authorizationQuotaServiceSource, 'checkGatewayAuthorizationQuotaBatchAsync', 'getAuthorizationQuotaSharedCacheEntry', '授权额度批量判定应读取 Redis 共享缓存')
+assertFunctionIncludes(authorizationQuotaServiceSource, 'setAuthorizationQuotaCacheEntryAsync', 'setAuthorizationQuotaSharedCacheEntry(cacheKey, entry)', '授权额度异步写入应同步写 Redis 共享缓存')
+assertFunctionIncludes(authorizationQuotaServiceSource, 'clearAuthorizationQuotaCache', 'clearAuthorizationQuotaSharedCache()', '授权额度全量失效应清理 Redis 共享缓存命名空间')
+
+assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ProviderModelCatalogItem[]>'), '网关模型目录缓存应声明 Redis JSON 共享缓存')
+assert(gatewayRuntimeCacheSource.includes('createSharedJsonCache<ResponseInspectionPolicyCacheEntry>'), '网关响应检查策略缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'getProviderModelCatalogSharedCacheEntry(cacheKey)', '网关模型目录异步读取应先读取 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedProviderModelCatalogAsync', 'setProviderModelCatalogCacheEntryAsync(cacheKey', '网关模型目录 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'getResponseInspectionPolicySharedCacheEntry(cacheKey)', '网关响应检查策略异步读取应先读取 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'listCachedActiveResponseInspectionPoliciesAsync', 'setResponseInspectionPolicyCacheEntryAsync(cacheKey', '网关响应检查策略 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearProviderModelCatalogSharedCache()', '网关运行态全量失效应清理模型目录 Redis 共享缓存')
+assertFunctionIncludes(gatewayRuntimeCacheSource, 'clearGatewayRuntimeCacheLocal', 'clearResponseInspectionPolicySharedCache()', '网关运行态全量失效应清理响应检查策略 Redis 共享缓存')
+
+assert(modelCatalogSource.includes('createSharedJsonCache<ProviderModelCatalogItem[]>'), '模型目录服务缓存应声明 Redis JSON 共享缓存')
+assertFunctionIncludes(modelCatalogSource, 'listProviderModelCatalogAsync', 'getProviderModelCatalogSharedCacheEntry(cacheKey)', '模型目录服务异步读取应先读取 Redis 共享缓存')
+assertFunctionIncludes(modelCatalogSource, 'listProviderModelCatalogAsync', 'setProviderModelCatalogCacheEntryAsync(cacheKey', '模型目录服务 DB 命中后应写 Redis 共享缓存')
+assertFunctionIncludes(modelCatalogSource, 'clearProviderModelCatalogCaches', 'clearProviderModelCatalogSharedCache()', '模型目录服务失效应清理 Redis 共享缓存命名空间')
+assert(modelCatalogSource.includes('registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)'), '模型目录服务应复用网关运行态失效事件清理本地和 Redis shared cache')
 
 assert(!/store\.clear\(\)/.test(appCacheSource), '通用缓存 clear 不应线性清空 LRU 条目')
 assert(appCacheSource.includes('store = createStore(options)'), '通用缓存 clear 应替换底层 LRU 实例以保持常量时间')
 
 await assertGatewayCacheInvalidationBehavior()
 
-console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
+console.log('网关缓存定点失效回归通过：API Key 校验和额度缓存按反向索引删除，网关 / 管理端模型目录和响应检查策略包含 Redis shared cache 路径，行为级定点失效正确，通用缓存清理不再扫描全部缓存条目')
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(backendSrcRoot, relativePath), 'utf8')
@@ -40,10 +74,25 @@ function assertFunctionUsesReverseIndex(source: string, functionName: string, in
   assert(body.includes(`${indexName}.get(id)`), `${functionName} 应通过 ${indexName} 按 API Key ID 定位缓存键`)
 }
 
+function assertFunctionIncludes(source: string, functionName: string, pattern: string, message: string): void {
+  const body = functionBody(source, functionName)
+  assert(body.includes(pattern), message)
+}
+
 function functionBody(source: string, functionName: string): string {
   const start = source.indexOf(`function ${functionName}`)
   assert(start >= 0, `缺少函数 ${functionName}`)
-  const openBrace = source.indexOf('{', start)
+  let openBrace = -1
+  let parenDepth = 0
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '(') parenDepth += 1
+    if (char === ')') parenDepth = Math.max(0, parenDepth - 1)
+    if (char === '{' && parenDepth === 0) {
+      openBrace = index
+      break
+    }
+  }
   assert(openBrace >= 0, `函数 ${functionName} 缺少函数体`)
   let depth = 0
   for (let index = openBrace; index < source.length; index += 1) {

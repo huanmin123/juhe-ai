@@ -32,4 +32,3 @@ console.log('用量统计供应商展示回归通过：统计页不直接依赖 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(frontendRoot, relativePath), 'utf8')
 }
-

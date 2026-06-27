@@ -210,7 +210,7 @@ Anthropic API Key 账户按原生 Messages API 透传，不走 OpenAI v1 adapter
 - 除账户模型映射只改写顶层 `model` 外，默认 raw body passthrough，保留 Anthropic 原生字段：`max_tokens`、`messages`、`system`、`tools`、`tool_choice`、`thinking`、`stop_sequences`、`stream`、`metadata`、`service_tier`、`container`、`context_management`、`mcp_servers`、`output_format`、`output_config`、`cache_control` 等。
 - 模型映射必须复用现有大 body JSON 解析边界，只在 JSON body 顶层 `model` 命中映射时改写；不解析或改写 `messages`、`tools`、`thinking` 等嵌套字段。
 - Anthropic native 客户端应按 Anthropic 格式提交；只有 OpenAI -> Anthropic bridge 命中时，才把 OpenAI `messages[].role = system/developer` 转成 Anthropic 顶层 `system`。
-- `/v1/chat/completions`、`/v1/responses` 只有在目标模型或账号模型映射明确命中 Anthropic Messages 档案时才改写为 `/v1/messages`。如果 API Key 只绑定 Anthropic native 分组但没有显式可承接模型或映射，应在本地请求能力过滤阶段返回明确不兼容错误，错误码为 `anthropic_native_group_openai_compatible_request`，并提示配置 OpenAI -> Anthropic bridge 或改用 Anthropic `/v1/messages`。
+- `/v1/chat/completions`、`/v1/responses` 只有在 API Key 显式混合路由明确命中 Anthropic Messages 档案时才改写为 `/v1/messages`。如果 API Key 只绑定 Anthropic native 分组但没有显式可承接路由，应在本地请求能力过滤阶段返回明确不兼容错误，错误码为 `anthropic_native_group_openai_compatible_request`，并提示配置 OpenAI -> Anthropic bridge 或改用 Anthropic `/v1/messages`。
 - `max_tokens` 是 Anthropic Messages 必填字段之一。账户测试由后端生成最小请求时必须显式传入；对真实客户端请求，默认让上游返回真实错误，除非后续明确要做本地兼容补齐。
 
 请求头：

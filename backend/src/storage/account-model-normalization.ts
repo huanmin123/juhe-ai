@@ -7,7 +7,6 @@ import {
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
-  OPENAI_COMPATIBLE_PROVIDER_CODE,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
   OPENAI_RESPONSES_FAMILY,
@@ -237,9 +236,6 @@ export async function geminiProtocolModelPoolAsync(systemAccountId: string): Pro
 
 function upstreamModelPoolForAccount(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Set<string> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
-  if (normalizedProviderCode === OPENAI_COMPATIBLE_PROVIDER_CODE) {
-    return openAIProtocolModelPool(systemAccountId)
-  }
   const models = new Set<string>()
   if (!normalizedProviderCode) {
     return models
@@ -268,9 +264,6 @@ function sourceModelPoolForMapping(sourceEndpointFamily: AccountModelMapping['so
 
 async function upstreamModelPoolForAccountAsync(providerCode: string, systemAccountId: string, providerProfile: ProviderProtocolProfileDefinition): Promise<Set<string>> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
-  if (normalizedProviderCode === OPENAI_COMPATIBLE_PROVIDER_CODE) {
-    return openAIProtocolModelPoolAsync(systemAccountId)
-  }
   const models = new Set<string>()
   if (!normalizedProviderCode) {
     return models

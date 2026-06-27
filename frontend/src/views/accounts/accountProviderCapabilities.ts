@@ -172,13 +172,7 @@ export function defaultEndpointModesForAccount(input: {
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'gemini_v1beta') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'openai_v1') {
-    if (input.clientCompatibility === 'codex_responses' && profileSupportsCodexResponsesChatBridge(input.profile ?? input.provider)) {
-      return [...chatEndpointModes]
-    }
-    return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
-      || input.clientCompatibility === 'codex_responses'
-      ? [...openAIEndpointModes]
-      : [...chatEndpointModes]
+    return endpointModesForProfile(input.profile ?? input.provider)
   }
   return [...allAccountEndpointModes]
 }

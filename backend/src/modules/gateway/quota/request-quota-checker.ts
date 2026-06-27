@@ -2,6 +2,7 @@ export {
   isRequestQuotaExceeded,
   loadRequestQuotaCosts,
   loadRequestQuotaCostsBatch,
+  loadRequestQuotaCostsBatchAsync,
   requestQuotaCostKey,
   type RequestQuotaCostInput,
   type RequestQuotaCosts

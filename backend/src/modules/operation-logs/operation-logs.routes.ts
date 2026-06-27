@@ -3,10 +3,10 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
-  getOperationLogDetail,
-  getOperationLogDetailForViewer,
-  listOperationLogs,
-  listOperationLogsForViewer,
+  getOperationLogDetailAsync,
+  getOperationLogDetailForViewerAsync,
+  listOperationLogsAsync,
+  listOperationLogsForViewerAsync,
   type OperationLogListOptions
 } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
@@ -15,40 +15,58 @@ import { getRequestAuthContext } from '../auth/request-context.js'
 export const operationLogsRouter = Router()
 export const myOperationLogsRouter = Router()
 
-myOperationLogsRouter.get('/', (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
+myOperationLogsRouter.get('/', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const result = await listOperationLogsForViewerAsync(context.systemAccountId, parseOperationLogListOptions(req.query, false))
+    res.json(ok(result))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(listOperationLogsForViewer(context.systemAccountId, parseOperationLogListOptions(req.query, false))))
 })
 
-myOperationLogsRouter.get('/:id', (req, res) => {
-  const context = getRequestAuthContext()
-  if (!context) {
-    res.status(401).json({ message: '请先登录' })
-    return
+myOperationLogsRouter.get('/:id', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const detail = await getOperationLogDetailForViewerAsync(req.params.id, context.systemAccountId)
+    if (!detail) {
+      sendNotFound(res, '操作日志不存在')
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
   }
-  const detail = getOperationLogDetailForViewer(req.params.id, context.systemAccountId)
-  if (!detail) {
-    sendNotFound(res, '操作日志不存在')
-    return
-  }
-  res.json(ok(detail))
 })
 
-operationLogsRouter.get('/', requireAdmin, (req, res) => {
-  res.json(ok(listOperationLogs(parseOperationLogListOptions(req.query, true))))
+operationLogsRouter.get('/', requireAdmin, async (req, res, next) => {
+  try {
+    const result = await listOperationLogsAsync(parseOperationLogListOptions(req.query, true))
+    res.json(ok(result))
+  } catch (error) {
+    next(error)
+  }
 })
 
-operationLogsRouter.get('/:id', requireAdmin, (req, res) => {
-  const detail = getOperationLogDetail(req.params.id)
-  if (!detail) {
-    sendNotFound(res, '操作日志不存在')
-    return
+operationLogsRouter.get('/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const detail = await getOperationLogDetailAsync(req.params.id)
+    if (!detail) {
+      sendNotFound(res, '操作日志不存在')
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(detail))
 })
 
 function parseOperationLogListOptions(query: Record<string, unknown>, includeAdminFilters: boolean): OperationLogListOptions {

@@ -17,7 +17,7 @@ import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { ApiKeyHybridRoutingConfig } from '../../domain/types.js'
+import type { ApiKeyExplicitHybridRouteRule, ApiKeyHybridRoutingConfig } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { replaceGatewayJsonBody } from '../../modules/gateway/request/body.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
@@ -461,107 +461,32 @@ function createSingleCodexApiKey(): { id: string; key?: string } {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: [upstreamModel],
-    modelMappings: [codexBridgeModelMapping(downstreamModel, upstreamModel)]
+    supportedModels: [upstreamModel]
   }, access)
   return repositories.createApiKeyRecord({
     name: `Codex GPT 转 ${realProvider.label} 真实网关 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    explicitHybridRouteRules: [codexBridgeRouteRule(group.id, downstreamModel, upstreamModel)],
     status: 'active'
   }, access)
 }
 
 function createHybridCodexApiKey(): { id: string; key?: string } {
-  const scoring = createRealGroupAccount({
-    accountName: 'Codex Hybrid 评分账户',
-    clientCompatibility: 'openai_standard',
-    groupName: 'Codex Hybrid 评分分组',
-    modelMappings: [],
-    supportedModel: hybridScoringModel
-  })
-  const targetGroups = new Map<string, { accountId: string; groupId: string }>()
-  for (const route of hybridLevelRoutes()) {
-    if (targetGroups.has(route.targetModel)) continue
-    targetGroups.set(route.targetModel, createRealGroupAccount({
-      accountName: `Codex Hybrid ${route.targetModel} 目标账户`,
-      clientCompatibility: 'openai_standard',
-      groupName: `Codex Hybrid ${route.targetModel} 目标分组`,
-      modelMappings: [
-        codexBridgeModelMapping(downstreamModel, route.targetModel),
-        codexBridgeModelMapping(route.targetModel, route.targetModel)
-      ],
-      supportedModel: route.targetModel
-    }))
-  }
-  const groupBindings = [scoring, ...targetGroups.values()].map((item, index) => ({
-    groupId: item.groupId,
-    priority: index + 1,
-    weight: 1,
-    status: 'active' as const
-  }))
-  return repositories.createApiKeyRecord({
-    name: 'Codex Hybrid 真实混合路由 Key',
-    routeMode: 'hybrid',
-    groupRouteStrategy: 'priority_failover',
-    groupBindings,
-    hybridRoutingConfig: {
-      scoringModel: hybridScoringModel,
-      scoringContextMode: 'full_request',
-      qualityPreference: 'balanced',
-      scoringTimeoutMs: 45_000,
-      scoringFallbackMaxLevel: 5,
-      scoringCacheEnabled: true,
-      scoringCacheTtlSeconds: 300,
-      cacheAffinityEnabled: true,
-      affinityTtlSeconds: 900,
-      switchMinLevelDelta: 0,
-      downgradeConsecutiveLowCount: 1,
-      levelRoutes: hybridLevelRoutes()
-    } satisfies ApiKeyHybridRoutingConfig,
-    status: 'active'
-  }, access)
+  throw new Error('JUHE_REAL_CODEX_HYBRID=1 暂不支持 Codex Responses 到 Chat-only 上游的智能分级 hybrid route；请使用 API Key 显式混合路由，或先扩展 hybrid level route 的目标 endpoint family / adapter mode。')
 }
 
-function createRealGroupAccount(input: {
-  accountName: string
-  clientCompatibility: 'openai_standard' | 'codex_responses'
-  groupName: string
-  modelMappings: Array<ReturnType<typeof codexBridgeModelMapping>>
-  supportedModel: string
-}): { accountId: string; groupId: string } {
-  const group = repositories.createGroup({
-    name: input.groupName,
-    providerCode: realProvider.providerCode,
-    providerProtocolProfileId: realProvider.profileId,
-    enabled: true
-  }, access)
-  const account = repositories.createAccount({
-    providerCode: realProvider.providerCode,
-    providerProtocolProfileId: realProvider.profileId,
-    name: input.accountName,
-    type: 'api_key',
-    clientCompatibility: input.clientCompatibility,
-    credentials: {
-      api_key: realApiKey,
-      base_url: realBaseUrl,
-      supported_endpoint_modes: ['chat_json', 'chat_sse']
-    },
-    groupId: group.id,
-    status: 'active',
-    schedulable: true,
-    supportedModels: [input.supportedModel],
-    modelMappings: input.modelMappings
-  }, access)
-  return { accountId: account.id, groupId: group.id }
-}
-
-function codexBridgeModelMapping(sourceModel: string, targetModel: string) {
+function codexBridgeRouteRule(targetGroupId: string, sourceModel: string, targetModel: string): ApiKeyExplicitHybridRouteRule {
   return {
+    id: `responses_to_chat_${targetModel.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    enabled: true,
+    priority: 1,
+    sourceClientProfile: 'codex',
     sourceModel,
-    sourceEndpointFamily: 'responses' as const,
+    sourceEndpointFamily: 'responses',
+    targetGroupId,
     upstreamModel: targetModel,
-    upstreamEndpointFamily: 'chat_completions' as const,
-    enabled: true
+    upstreamEndpointFamily: 'chat_completions',
+    adapterMode: 'bridge'
   }
 }
 

@@ -1,4 +1,4 @@
-import { createAppCache } from '../../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds } from '../../../shared/account-concurrency.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
@@ -108,6 +108,12 @@ const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogIte
   ttlMs: providerModelCatalogTtlMs
 })
 
+const providerModelCatalogSharedCache = createSharedJsonCache<ProviderModelCatalogItem[]>({
+  name: 'gateway:provider-model-catalog',
+  max: 1000,
+  ttlMs: providerModelCatalogTtlMs
+})
+
 const providerModelRouteIndexCache = createAppCache<string, ProviderModelRouteIndexCacheEntry>({
   name: 'gateway:provider-model-route-index',
   max: 1000,
@@ -115,6 +121,12 @@ const providerModelRouteIndexCache = createAppCache<string, ProviderModelRouteIn
 })
 
 const responseInspectionPolicyCache = createAppCache<string, ResponseInspectionPolicyCacheEntry>({
+  name: 'gateway:response-inspection-policies',
+  max: 100,
+  ttlMs: responseInspectionPolicyRetainTtlMs
+})
+
+const responseInspectionPolicySharedCache = createSharedJsonCache<ResponseInspectionPolicyCacheEntry>({
   name: 'gateway:response-inspection-policies',
   max: 100,
   ttlMs: responseInspectionPolicyRetainTtlMs
@@ -304,6 +316,11 @@ export async function listCachedProviderModelCatalogAsync(input: {
   if (cached) {
     return cached.map((item) => ({ ...item }))
   }
+  const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
+  if (sharedCached) {
+    providerModelCatalogCache.set(cacheKey, sharedCached.map((item) => ({ ...item })))
+    return sharedCached.map((item) => ({ ...item }))
+  }
   const value = await requestDbService({
     type: 'list_provider_model_catalog',
     providerCode: input.providerCode,
@@ -311,7 +328,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
     includeInactive: input.includeInactive,
     includeUnpriced: input.includeUnpriced
   })
-  providerModelCatalogCache.set(cacheKey, value.map((item) => ({ ...item })))
+  await setProviderModelCatalogCacheEntryAsync(cacheKey, value.map((item) => ({ ...item })))
   return value.map((item) => ({ ...item }))
 }
 
@@ -372,6 +389,16 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
     }
     return cached.policies.map(cloneResponseInspectionPolicy)
   }
+  const sharedCached = await getResponseInspectionPolicySharedCacheEntry(cacheKey)
+  if (sharedCached) {
+    responseInspectionPolicyCache.set(cacheKey, responseInspectionPolicyCacheEntry(sharedCached.policies, Date.now(), sharedCached.revalidateAtMs), {
+      ttlMs: responseInspectionPolicyRetainTtlMs
+    })
+    if (!isGatewayRuntimeCacheEntryFresh(sharedCached)) {
+      refreshActiveResponseInspectionPoliciesInBackground(input, cacheKey)
+    }
+    return sharedCached.policies.map(cloneResponseInspectionPolicy)
+  }
   const value = runtimeConfig.processRole !== 'server'
     ? listActiveResponseInspectionPoliciesForGateway(input)
     : await requestDbService({
@@ -379,9 +406,7 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
         protocolCode: input.protocolCode,
         providerCode: input.providerCode
       })
-  responseInspectionPolicyCache.set(cacheKey, responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy)), {
-    ttlMs: responseInspectionPolicyRetainTtlMs
-  })
+  await setResponseInspectionPolicyCacheEntryAsync(cacheKey, responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy)))
   return value.map(cloneResponseInspectionPolicy)
 }
 
@@ -441,6 +466,8 @@ export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean
   providerModelCatalogCache.clear()
   providerModelRouteIndexCache.clear()
   responseInspectionPolicyCache.clear()
+  clearProviderModelCatalogSharedCache()
+  clearResponseInspectionPolicySharedCache()
   if (options.clearSettings ?? true) {
     clearSettingsRepositoryCache()
   }
@@ -565,10 +592,10 @@ async function loadGatewayRuntimeAndPopulateCaches(
 
 function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewayRuntime): void {
   if (!runtime.apiKey) {
-  gatewayRuntimeCache.set(cacheKey, {
-    runtime: cloneStaticGatewayRuntime(runtime),
-    revalidateAtMs: Date.now() + invalidGatewayRuntimeTtlMs
-  }, { ttlMs: gatewayRuntimeRetainTtlMs })
+    gatewayRuntimeCache.set(cacheKey, {
+      runtime: cloneStaticGatewayRuntime(runtime),
+      revalidateAtMs: Date.now() + invalidGatewayRuntimeTtlMs
+    }, { ttlMs: gatewayRuntimeRetainTtlMs })
     gatewaySettingsCache.set('current', runtime.settings)
     return
   }
@@ -596,6 +623,10 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
       responseInspectionPolicyCacheKey(runtime.groupAccess.protocolCode, runtime.groupAccess.providerCode),
       responseInspectionPolicyCacheEntry(runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy), nowMs),
       { ttlMs: responseInspectionPolicyRetainTtlMs }
+    )
+    void setResponseInspectionPolicySharedCacheEntry(
+      responseInspectionPolicyCacheKey(runtime.groupAccess.protocolCode, runtime.groupAccess.providerCode),
+      responseInspectionPolicyCacheEntry(runtime.responseInspectionPolicies.map(cloneResponseInspectionPolicy), nowMs)
     )
   }
 }
@@ -778,10 +809,14 @@ function openAIAccountsCacheEntry(accounts: OpenAIAccountSecret[], now = Date.no
   }
 }
 
-function responseInspectionPolicyCacheEntry(policies: ResponseInspectionPolicySummary[], now = Date.now()): ResponseInspectionPolicyCacheEntry {
+function responseInspectionPolicyCacheEntry(
+  policies: ResponseInspectionPolicySummary[],
+  now = Date.now(),
+  revalidateAtMs = now + gatewayRuntimeTtlMs
+): ResponseInspectionPolicyCacheEntry {
   return {
     policies: policies.map(cloneResponseInspectionPolicy),
-    revalidateAtMs: now + gatewayRuntimeTtlMs
+    revalidateAtMs
   }
 }
 
@@ -953,9 +988,9 @@ function refreshActiveResponseInspectionPoliciesInBackground(
       })
     : Promise.resolve(listActiveResponseInspectionPoliciesForGateway(input)))
     .then((value) => {
-      responseInspectionPolicyCache.set(cacheKey, responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy)), {
-        ttlMs: responseInspectionPolicyRetainTtlMs
-      })
+      const entry = responseInspectionPolicyCacheEntry(value.map(cloneResponseInspectionPolicy))
+      responseInspectionPolicyCache.set(cacheKey, entry, { ttlMs: responseInspectionPolicyRetainTtlMs })
+      void setResponseInspectionPolicySharedCacheEntry(cacheKey, entry)
     })
     .catch((error) => {
       logger.warn(errorLogFields(error, {
@@ -968,6 +1003,88 @@ function refreshActiveResponseInspectionPoliciesInBackground(
       pendingResponseInspectionPolicyRefreshes.delete(cacheKey)
     })
   pendingResponseInspectionPolicyRefreshes.set(cacheKey, refresh)
+}
+
+async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const cached = await providerModelCatalogSharedCache.get(cacheKey)
+    return cached ? cached.map((item) => ({ ...item })) : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_provider_model_catalog_shared_cache_read_failed'
+    }), '读取网关模型目录 Redis 共享缓存失败，继续读取 DB service')
+    return undefined
+  }
+}
+
+async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
+  const cached = value.map((item) => ({ ...item }))
+  providerModelCatalogCache.set(cacheKey, cached.map((item) => ({ ...item })))
+  await setProviderModelCatalogSharedCacheEntry(cacheKey, cached)
+}
+
+async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await providerModelCatalogSharedCache.set(cacheKey, value.map((item) => ({ ...item })), { ttlMs: providerModelCatalogTtlMs })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_provider_model_catalog_shared_cache_write_failed'
+    }), '写入网关模型目录 Redis 共享缓存失败')
+  }
+}
+
+function clearProviderModelCatalogSharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void providerModelCatalogSharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_provider_model_catalog_shared_cache_clear_failed'
+    }), '清理网关模型目录 Redis 共享缓存失败')
+  })
+}
+
+async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Promise<ResponseInspectionPolicyCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const cached = await responseInspectionPolicySharedCache.get(cacheKey)
+    return cached
+      ? responseInspectionPolicyCacheEntry(cached.policies, Date.now(), cached.revalidateAtMs)
+      : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_response_inspection_policy_shared_cache_read_failed'
+    }), '读取网关响应检查策略 Redis 共享缓存失败，继续读取 DB service')
+    return undefined
+  }
+}
+
+async function setResponseInspectionPolicyCacheEntryAsync(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
+  const cachedEntry = responseInspectionPolicyCacheEntry(entry.policies, Date.now(), entry.revalidateAtMs)
+  responseInspectionPolicyCache.set(cacheKey, cachedEntry, { ttlMs: responseInspectionPolicyRetainTtlMs })
+  await setResponseInspectionPolicySharedCacheEntry(cacheKey, cachedEntry)
+}
+
+async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await responseInspectionPolicySharedCache.set(cacheKey, responseInspectionPolicyCacheEntry(entry.policies, Date.now(), entry.revalidateAtMs), {
+      ttlMs: responseInspectionPolicyRetainTtlMs
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_response_inspection_policy_shared_cache_write_failed'
+    }), '写入网关响应检查策略 Redis 共享缓存失败')
+  }
+}
+
+function clearResponseInspectionPolicySharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void responseInspectionPolicySharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_response_inspection_policy_shared_cache_clear_failed'
+    }), '清理网关响应检查策略 Redis 共享缓存失败')
+  })
 }
 
 registerGatewayRuntimeCacheInvalidator(clearGatewayRuntimeCache)

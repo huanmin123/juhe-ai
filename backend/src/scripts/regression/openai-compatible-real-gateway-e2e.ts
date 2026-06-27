@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { AccountModelMapping } from '../../domain/types.js'
+import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
@@ -87,12 +87,12 @@ try {
       groupId: group.id,
       status: 'active',
       schedulable: true,
-      supportedModels: [...new Set([chatModel, responsesUpstreamModel])],
-      modelMappings: codexBridgeModelMappings()
+      supportedModels: [...new Set([chatModel, responsesUpstreamModel])]
     }, access)
     const apiKey = repositories.createApiKeyRecord({
       name: '通用 OpenAI 兼容真实网关 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: codexBridgeRouteRules(group.id),
       status: 'active'
     }, access)
     assert(apiKey.key, '真实联调本地 API Key 未返回明文密钥')
@@ -242,13 +242,18 @@ function registerCustomModels(): void {
   }
 }
 
-function codexBridgeModelMappings(): AccountModelMapping[] {
+function codexBridgeRouteRules(targetGroupId: string): ApiKeyExplicitHybridRouteRule[] {
   return [{
+    id: 'responses_to_chat',
+    enabled: true,
+    priority: 1,
+    sourceClientProfile: 'codex',
     sourceModel: responsesSourceModel,
     sourceEndpointFamily: 'responses',
+    targetGroupId,
     upstreamModel: responsesUpstreamModel,
     upstreamEndpointFamily: 'chat_completions',
-    enabled: true
+    adapterMode: 'bridge'
   }]
 }
 

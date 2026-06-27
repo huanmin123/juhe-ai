@@ -694,7 +694,7 @@ function assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl: string
     groupId: group.id,
     status: 'active',
     schedulable: true
-  }, access), /当前供应商协议不支持 OpenAI 模型映射/, 'Anthropic Messages 账号不应允许配置 OpenAI 协议模型映射')
+  }, access), /当前供应商协议不支持 OpenAI 账号模型别名/, 'Anthropic Messages 账号不应允许配置 OpenAI 协议模型映射')
 }
 
 async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseUrl: string): Promise<void> {

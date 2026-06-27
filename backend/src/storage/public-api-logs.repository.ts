@@ -357,10 +357,50 @@ export function listPublicApiLogs(options: PublicApiLogListOptions = {}): Public
   }
 }
 
+export async function listPublicApiLogsAsync(options: PublicApiLogListOptions = {}): Promise<PublicApiLogListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listPublicApiLogs(options)
+  }
+  const pageSize = normalizePublicApiLogPageSize(options.pageSize)
+  const page = normalizeListPage(options.page, pageSize, publicApiLogMaxListWindowRows)
+  const offset = (page - 1) * pageSize
+  const filters = buildPublicApiLogFilters(options)
+  const whereClause = filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : ''
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<PublicApiLogRow>(`
+    SELECT ${publicApiLogSummarySelectColumns('pal')}
+    FROM juhe_dataset.public_api_logs pal
+    ${whereClause}
+    ORDER BY pal.created_at DESC, pal.id DESC
+    LIMIT ? OFFSET ?
+  `, [...filters.params, pageSize + 1, offset])
+  const pageRows = takePageRows(rows, pageSize)
+  const items = pageRows.rows.map(publicApiLogSummaryFromRow)
+  return {
+    items,
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page,
+    pageSize
+  }
+}
+
 export function getPublicApiLogDetail(id: string): PublicApiLogDetail | undefined {
   const row = getDatasetDatabase()
     .prepare('SELECT * FROM public_api_logs WHERE id = ?')
     .get(id) as PublicApiLogRow | undefined
+  return row ? publicApiLogDetailFromRow(row) : undefined
+}
+
+export async function getPublicApiLogDetailAsync(id: string): Promise<PublicApiLogDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getPublicApiLogDetail(id)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<PublicApiLogRow>(
+    'SELECT * FROM juhe_dataset.public_api_logs WHERE id = ?',
+    [id]
+  )
   return row ? publicApiLogDetailFromRow(row) : undefined
 }
 

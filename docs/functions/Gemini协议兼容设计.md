@@ -20,7 +20,7 @@
 | 下游路径 | `/v1beta/models/{model}:generateContent` | `/v1/chat/completions` 或 OpenAI SDK 等价路径 | 按路径识别协议，不按模型名猜 |
 | 上游默认 Base URL | `https://generativelanguage.googleapis.com` | `https://generativelanguage.googleapis.com/v1beta/openai` | 分属不同协议档案 |
 | 模型字段 | 路径 `{model}` | 请求体 `model` | 各自协议适配器提取 |
-| 请求内容 | `contents[].parts[]`、`systemInstruction`、`tools`、`generationConfig` | `messages[]`、`tools`、`tool_choice` 等 OpenAI Chat 字段 | 默认不互转；只有显式模型映射会在 Gemini native 与 OpenAI / Anthropic 之间重构生成类请求 |
+| 请求内容 | `contents[].parts[]`、`systemInstruction`、`tools`、`generationConfig` | `messages[]`、`tools`、`tool_choice` 等 OpenAI Chat 字段 | 默认不互转；只有 API Key 显式混合路由规则会在 Gemini native 与 OpenAI / Anthropic 之间重构生成类请求 |
 | 流式 | `:streamGenerateContent?alt=sse`，`data: GenerateContentResponse` | OpenAI Chat SSE chunk | 保持各自原始事件 |
 | usage | `usageMetadata` | OpenAI compatible `usage` | 单独 usage semantic |
 | 错误 | Google API error shape | OpenAI error shape | 按下游协议渲染本地错误 |
@@ -160,7 +160,7 @@ Gemini native 直连请求体字段扩展较快，默认保持 raw passthrough�
 - `cachedContent`
 - `labels`
 
-如果命中 Gemini native 直连账号级路径模型映射，只改 URL 中的 `{model}`，不改请求体。如果命中 `generate_content|stream_generate_content -> chat_completions` 或 `generate_content|stream_generate_content -> messages` 桥接映射，才由共享 bridge 将 `contents`、`systemInstruction`、`generationConfig`、`tools.functionDeclarations` 和 `toolConfig` 转为目标上游请求；不支持的 Gemini native 能力返回 Gemini 形态的 agent guidance。
+如果命中 Gemini native 直连账号模型别名，只改 URL 中的 `{model}`，不改请求体。如果命中 API Key 显式混合路由里的 `generate_content|stream_generate_content -> chat_completions` 或 `generate_content|stream_generate_content -> messages` 桥接规则，才由共享 bridge 将 `contents`、`systemInstruction`、`generationConfig`、`tools.functionDeclarations` 和 `toolConfig` 转为目标上游请求；不支持的 Gemini native 能力返回 Gemini 形态的 agent guidance。
 
 ## 响应兼容细节
 
@@ -247,7 +247,7 @@ baseUrl = https://generativelanguage.googleapis.com/v1beta/openai
 endpointFamilies = [chat_completions]
 ```
 
-该档案只是 Gemini 供应商下的 OpenAI Chat 直连 surface。OpenAI / Anthropic 到 Gemini native 目标必须显式配置在 `profile_gemini_native_v1beta` 账号上；Gemini native 到 Chat / Messages 的方向也只能通过账号模型映射显式触发。
+该档案只是 Gemini 供应商下的 OpenAI Chat 直连 surface。OpenAI / Anthropic 到 Gemini native 目标必须通过 API Key 显式混合路由指向 `profile_gemini_native_v1beta` 分组；Gemini native 到 Chat / Messages 的方向也只能通过 API Key 显式混合路由触发。
 
 ## gemini-cli 请求矩阵
 

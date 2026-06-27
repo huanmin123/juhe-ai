@@ -158,15 +158,6 @@ try {
         base_url: `${upstreamOrigin}/v1beta/openai`
       },
       groupId: openAIChatGroup.id,
-      modelMappings: [
-        {
-          sourceModel: 'gpt-5.5',
-          sourceEndpointFamily: 'responses',
-          upstreamModel: 'gemini-3.5-flash',
-          upstreamEndpointFamily: 'chat_completions',
-          enabled: true
-        }
-      ],
       status: 'active',
       schedulable: true
     }, access)
@@ -195,12 +186,22 @@ try {
         status: 'active',
         schedulable: true
       }, access),
-      /Gemini OpenAI Chat.*Messages/,
-      'Gemini OpenAI Chat 不应支持 Anthropic Messages 来源映射'
+      /账号模型别名只支持同协议映射|请改用 API Key 显式混合路由/,
+      'Gemini OpenAI Chat 账号别名不应承接 Anthropic Messages 来源映射'
     )
     const openAIChatApiKey = repositories.createApiKeyRecord({
       name: 'Gemini OpenAI Chat Mock AI 回归 Key',
       groupBindings: [{ groupId: openAIChatGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: [
+        explicitHybridRule({
+          id: 'gemini_openai_chat_codex_responses',
+          sourceEndpointFamily: 'responses',
+          sourceModel: 'gpt-5.5',
+          targetGroupId: openAIChatGroup.id,
+          upstreamEndpointFamily: 'chat_completions',
+          upstreamModel: 'gemini-3.5-flash'
+        })
+      ],
       status: 'active'
     }, access)
     assert(openAIChatApiKey.key, 'Gemini OpenAI Chat 回归 API Key 未返回明文密钥')
@@ -247,22 +248,6 @@ try {
         base_url: upstreamOrigin
       },
       groupId: glmBridgeGroup.id,
-      modelMappings: [
-        {
-          sourceModel: 'gemini-3.5-flash',
-          sourceEndpointFamily: 'generate_content',
-          upstreamModel: 'glm-5.2',
-          upstreamEndpointFamily: 'chat_completions',
-          enabled: true
-        },
-        {
-          sourceModel: 'gemini-3.5-flash',
-          sourceEndpointFamily: 'stream_generate_content',
-          upstreamModel: 'glm-5.2',
-          upstreamEndpointFamily: 'chat_completions',
-          enabled: true
-        }
-      ],
       status: 'active',
       schedulable: true
     }, access)
@@ -289,12 +274,31 @@ try {
         status: 'active',
         schedulable: true
       }, access),
-      /Gemini GenerateContent/,
-      'Gemini GenerateContent 下游协议不应允许桥接到非 Chat Completions / Messages 上游'
+      /账号模型别名只支持同协议映射|请改用 API Key 显式混合路由/,
+      '账号模型别名不应允许 Gemini GenerateContent 跨协议桥接'
     )
+    const glmBridgeRules = [
+      explicitHybridRule({
+        id: 'gemini_generate_to_glm_chat',
+        sourceEndpointFamily: 'generate_content',
+        sourceModel: 'gemini-3.5-flash',
+        targetGroupId: glmBridgeGroup.id,
+        upstreamEndpointFamily: 'chat_completions',
+        upstreamModel: 'glm-5.2'
+      }),
+      explicitHybridRule({
+        id: 'gemini_stream_generate_to_glm_chat',
+        sourceEndpointFamily: 'stream_generate_content',
+        sourceModel: 'gemini-3.5-flash',
+        targetGroupId: glmBridgeGroup.id,
+        upstreamEndpointFamily: 'chat_completions',
+        upstreamModel: 'glm-5.2'
+      })
+    ]
     const glmBridgeApiKey = repositories.createApiKeyRecord({
       name: 'Gemini Native 转 GLM Chat 回归 Key',
       groupBindings: [{ groupId: glmBridgeGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: glmBridgeRules,
       status: 'active'
     }, access)
     assert(glmBridgeApiKey.key, 'Gemini Native 转 GLM Chat 回归 API Key 未返回明文密钥')
@@ -305,7 +309,7 @@ try {
       providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const anthropicBridgeAccount = repositories.createAccount({
       providerCode: ANTHROPIC_PROVIDER_CODE,
       providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
       name: 'Gemini Native 转 Anthropic Messages 回归账户',
@@ -317,29 +321,31 @@ try {
       },
       groupId: anthropicBridgeGroup.id,
       supportedModels: ['claude-haiku-4-5'],
-      modelMappings: [
-        {
-          sourceModel: 'gemini-3.5-flash',
-          sourceEndpointFamily: 'generate_content',
-          upstreamModel: 'claude-haiku-4-5',
-          upstreamEndpointFamily: 'messages',
-          enabled: true
-        },
-        {
-          sourceModel: 'gemini-3.5-flash',
-          sourceEndpointFamily: 'stream_generate_content',
-          upstreamModel: 'claude-haiku-4-5',
-          upstreamEndpointFamily: 'messages',
-          enabled: true
-        }
-      ],
       status: 'active',
       schedulable: true
     }, access)
-    const anthropicBridgeRuntimeAccounts = repositories.listOpenAIAccountsForGroup(anthropicBridgeGroup.id, access.systemAccountId, {
-      requestedModel: 'gemini-3.5-flash',
-      requestedEndpointFamily: 'generate_content'
-    })
+    const anthropicBridgeRules = [
+      explicitHybridRule({
+        id: 'gemini_generate_to_anthropic_messages',
+        sourceEndpointFamily: 'generate_content',
+        sourceModel: 'gemini-3.5-flash',
+        targetGroupId: anthropicBridgeGroup.id,
+        upstreamEndpointFamily: 'messages',
+        upstreamModel: 'claude-haiku-4-5'
+      }),
+      explicitHybridRule({
+        id: 'gemini_stream_generate_to_anthropic_messages',
+        sourceEndpointFamily: 'stream_generate_content',
+        sourceModel: 'gemini-3.5-flash',
+        targetGroupId: anthropicBridgeGroup.id,
+        upstreamEndpointFamily: 'messages',
+        upstreamModel: 'claude-haiku-4-5'
+      })
+    ]
+    const anthropicBridgeRuntimeAccounts = repositories.listOpenAIAccountsForGroup(anthropicBridgeGroup.id, access.systemAccountId)
+      .map((item) => item.id === anthropicBridgeAccount.id
+        ? { ...item, modelMappings: runtimeMappingsFromExplicitRules(anthropicBridgeRules) }
+        : item)
     assert(
       anthropicBridgeRuntimeAccounts.some((item) => item.modelMappings?.some((mapping) => (
         mapping.sourceModel === 'gemini-3.5-flash'
@@ -364,6 +370,7 @@ try {
     const anthropicBridgeApiKey = repositories.createApiKeyRecord({
       name: 'Gemini Native 转 Anthropic Messages 回归 Key',
       groupBindings: [{ groupId: anthropicBridgeGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: anthropicBridgeRules,
       status: 'active'
     }, access)
     assert(anthropicBridgeApiKey.key, 'Gemini Native 转 Anthropic Messages 回归 API Key 未返回明文密钥')
@@ -386,36 +393,40 @@ try {
       },
       groupId: geminiNativeTargetBridgeGroup.id,
       supportedModels: ['gemini-3.5-flash'],
-      modelMappings: [
-        {
-          sourceModel: 'gpt-5.5',
-          sourceEndpointFamily: 'chat_completions',
-          upstreamModel: 'gemini-3.5-flash',
-          upstreamEndpointFamily: 'generate_content',
-          enabled: true
-        },
-        {
-          sourceModel: 'gpt-5.5',
-          sourceEndpointFamily: 'responses',
-          upstreamModel: 'gemini-3.5-flash',
-          upstreamEndpointFamily: 'generate_content',
-          enabled: true
-        },
-        {
-          sourceModel: 'claude-haiku-4-5',
-          sourceEndpointFamily: 'messages',
-          upstreamModel: 'gemini-3.5-flash',
-          upstreamEndpointFamily: 'generate_content',
-          enabled: true
-        }
-      ],
       status: 'active',
       schedulable: true
     }, access)
-    const geminiNativeTargetRuntimeAccount = repositories.listOpenAIAccountsForGroup(geminiNativeTargetBridgeGroup.id, access.systemAccountId, {
-      requestedModel: 'gpt-5.5',
-      requestedEndpointFamily: 'chat_completions'
-    }).find((item) => item.id === geminiNativeTargetBridgeAccount.id)
+    const geminiNativeTargetBridgeRules = [
+      explicitHybridRule({
+        id: 'openai_chat_to_gemini_generate',
+        sourceEndpointFamily: 'chat_completions',
+        sourceModel: 'gpt-5.5',
+        targetGroupId: geminiNativeTargetBridgeGroup.id,
+        upstreamEndpointFamily: 'generate_content',
+        upstreamModel: 'gemini-3.5-flash'
+      }),
+      explicitHybridRule({
+        id: 'openai_responses_to_gemini_generate',
+        sourceEndpointFamily: 'responses',
+        sourceModel: 'gpt-5.5',
+        targetGroupId: geminiNativeTargetBridgeGroup.id,
+        upstreamEndpointFamily: 'generate_content',
+        upstreamModel: 'gemini-3.5-flash'
+      }),
+      explicitHybridRule({
+        id: 'anthropic_messages_to_gemini_generate',
+        sourceEndpointFamily: 'messages',
+        sourceModel: 'claude-haiku-4-5',
+        targetGroupId: geminiNativeTargetBridgeGroup.id,
+        upstreamEndpointFamily: 'generate_content',
+        upstreamModel: 'gemini-3.5-flash'
+      })
+    ]
+    const geminiNativeTargetRuntimeAccount = repositories.listOpenAIAccountsForGroup(geminiNativeTargetBridgeGroup.id, access.systemAccountId)
+      .map((item) => item.id === geminiNativeTargetBridgeAccount.id
+        ? { ...item, modelMappings: runtimeMappingsFromExplicitRules(geminiNativeTargetBridgeRules) }
+        : item)
+      .find((item) => item.id === geminiNativeTargetBridgeAccount.id)
     assert(geminiNativeTargetRuntimeAccount, 'OpenAI Chat -> Gemini native 回归账号必须进入运行时账号窗口')
     const geminiNativeTargetRuntimeRequest = fakeGatewayPostRequest('/v1/chat/completions')
     geminiNativeTargetRuntimeRequest.body = { model: 'gpt-5.5', messages: [{ role: 'user', content: 'ping' }] }
@@ -432,6 +443,7 @@ try {
     const geminiNativeTargetBridgeApiKey = repositories.createApiKeyRecord({
       name: 'OpenAI Anthropic 转 Gemini Native 回归 Key',
       groupBindings: [{ groupId: geminiNativeTargetBridgeGroup.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: geminiNativeTargetBridgeRules,
       status: 'active'
     }, access)
     assert(geminiNativeTargetBridgeApiKey.key, 'OpenAI Anthropic 转 Gemini Native 回归 API Key 未返回明文密钥')
@@ -553,6 +565,40 @@ function assertGeminiProtocolHelpers(): void {
   assert.equal(parsedError.code, '429')
   assert.equal(parsedError.type, 'RESOURCE_EXHAUSTED')
   assert.equal(parsedError.message, 'quota exhausted')
+}
+
+function explicitHybridRule(input: {
+  id: string
+  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
+  sourceModel: string
+  targetGroupId: string
+  upstreamEndpointFamily: 'chat_completions' | 'messages' | 'generate_content'
+  upstreamModel: string
+}) {
+  return {
+    id: input.id,
+    enabled: true,
+    priority: 1,
+    sourceClientProfile: 'auto' as const,
+    sourceEndpointFamily: input.sourceEndpointFamily,
+    sourceModel: input.sourceModel,
+    targetGroupId: input.targetGroupId,
+    upstreamEndpointFamily: input.upstreamEndpointFamily,
+    upstreamModel: input.upstreamModel,
+    adapterMode: 'bridge' as const
+  }
+}
+
+function runtimeMappingsFromExplicitRules(rules: Array<ReturnType<typeof explicitHybridRule>>) {
+  return rules.map((rule) => ({
+    sourceModel: rule.sourceModel,
+    sourceEndpointFamily: rule.sourceEndpointFamily,
+    upstreamModel: rule.upstreamModel,
+    upstreamEndpointFamily: rule.upstreamEndpointFamily,
+    enabled: true,
+    runtimeSource: 'explicit_hybrid_route' as const,
+    runtimeRouteRuleId: rule.id
+  }))
 }
 
 async function assertGeminiModels(baseUrl: string, localApiKey: string): Promise<void> {

@@ -1135,7 +1135,8 @@ function ensureUsageRecordShardColumns(database: DatabaseSync): void {
     { name: 'cache_write_1h_tokens', definition: 'INTEGER' },
     { name: 'cache_write_cost_usd', definition: 'REAL' },
     { name: 'thinking_tokens', definition: 'INTEGER' },
-    { name: 'provider_protocol_profile_id', definition: 'TEXT' }
+    { name: 'provider_protocol_profile_id', definition: 'TEXT' },
+    { name: 'failure_attribution', definition: 'TEXT' }
   ]
   for (const column of columns) {
     if (existing.has(column.name)) continue

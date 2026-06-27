@@ -16,6 +16,11 @@ import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
+import type {
+  AccountModelMappingSourceEndpointFamily,
+  AccountModelMappingUpstreamEndpointFamily,
+  ApiKeyExplicitHybridRouteRule
+} from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
@@ -205,6 +210,16 @@ function registerCustomModels(): void {
   })
   saveCustomProviderModel({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+    model: openAIChatSourceModel,
+    scope: 'global',
+    status: 'active',
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: access.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     model: nativeResponsesUpstreamModel,
     scope: 'global',
     status: 'active',
@@ -254,16 +269,15 @@ function createOpenAIChatTargetRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [openAIChatUpstreamModel],
-    modelMappings: [
-      mapping(openAIResponsesSourceModel, 'responses', openAIChatUpstreamModel, 'chat_completions'),
-      mapping(anthropicMessagesSourceModel, 'messages', openAIChatUpstreamModel, 'chat_completions'),
-      mapping(geminiGenerateContentSourceModel, 'generate_content', openAIChatUpstreamModel, 'chat_completions'),
-      mapping(geminiGenerateContentSourceModel, 'stream_generate_content', openAIChatUpstreamModel, 'chat_completions')
-    ],
     status: 'active',
     schedulable: true
   }, access)
-  return runtime(group.id, account.id, '协议交叉矩阵 OpenAI Chat Key')
+  return runtime(group.id, account.id, '协议交叉矩阵 OpenAI Chat Key', [
+    explicitRule('responses_to_chat', group.id, openAIResponsesSourceModel, 'responses', openAIChatUpstreamModel, 'chat_completions'),
+    explicitRule('messages_to_chat', group.id, anthropicMessagesSourceModel, 'messages', openAIChatUpstreamModel, 'chat_completions'),
+    explicitRule('gemini_generate_to_chat', group.id, geminiGenerateContentSourceModel, 'generate_content', openAIChatUpstreamModel, 'chat_completions'),
+    explicitRule('gemini_stream_to_chat', group.id, geminiGenerateContentSourceModel, 'stream_generate_content', openAIChatUpstreamModel, 'chat_completions')
+  ])
 }
 
 function createAnthropicMessagesTargetRuntime(upstreamOrigin: string): CrossRuntime {
@@ -285,16 +299,15 @@ function createAnthropicMessagesTargetRuntime(upstreamOrigin: string): CrossRunt
     },
     groupId: group.id,
     supportedModels: [anthropicMessagesUpstreamModel],
-    modelMappings: [
-      mapping(openAIChatSourceModel, 'chat_completions', anthropicMessagesUpstreamModel, 'messages'),
-      mapping(openAIResponsesSourceModel, 'responses', anthropicMessagesUpstreamModel, 'messages'),
-      mapping(geminiGenerateContentSourceModel, 'generate_content', anthropicMessagesUpstreamModel, 'messages'),
-      mapping(geminiGenerateContentSourceModel, 'stream_generate_content', anthropicMessagesUpstreamModel, 'messages')
-    ],
     status: 'active',
     schedulable: true
   }, access)
-  return runtime(group.id, account.id, '协议交叉矩阵 Anthropic Messages Key')
+  return runtime(group.id, account.id, '协议交叉矩阵 Anthropic Messages Key', [
+    explicitRule('chat_to_messages', group.id, openAIChatSourceModel, 'chat_completions', anthropicMessagesUpstreamModel, 'messages'),
+    explicitRule('responses_to_messages', group.id, openAIResponsesSourceModel, 'responses', anthropicMessagesUpstreamModel, 'messages'),
+    explicitRule('gemini_generate_to_messages', group.id, geminiGenerateContentSourceModel, 'generate_content', anthropicMessagesUpstreamModel, 'messages'),
+    explicitRule('gemini_stream_to_messages', group.id, geminiGenerateContentSourceModel, 'stream_generate_content', anthropicMessagesUpstreamModel, 'messages')
+  ])
 }
 
 function createGeminiNativeTargetRuntime(upstreamOrigin: string): CrossRuntime {
@@ -316,15 +329,14 @@ function createGeminiNativeTargetRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [geminiGenerateContentUpstreamModel],
-    modelMappings: [
-      mapping(openAIChatSourceModel, 'chat_completions', geminiGenerateContentUpstreamModel, 'generate_content'),
-      mapping(openAIResponsesSourceModel, 'responses', geminiGenerateContentUpstreamModel, 'generate_content'),
-      mapping(anthropicMessagesSourceModel, 'messages', geminiGenerateContentUpstreamModel, 'generate_content')
-    ],
     status: 'active',
     schedulable: true
   }, access)
-  return runtime(group.id, account.id, '协议交叉矩阵 Gemini native Key')
+  return runtime(group.id, account.id, '协议交叉矩阵 Gemini native Key', [
+    explicitRule('chat_to_gemini_generate', group.id, openAIChatSourceModel, 'chat_completions', geminiGenerateContentUpstreamModel, 'generate_content'),
+    explicitRule('responses_to_gemini_generate', group.id, openAIResponsesSourceModel, 'responses', geminiGenerateContentUpstreamModel, 'generate_content'),
+    explicitRule('messages_to_gemini_generate', group.id, anthropicMessagesSourceModel, 'messages', geminiGenerateContentUpstreamModel, 'generate_content')
+  ])
 }
 
 function createAgentGuidanceFallbackRuntime(upstreamOrigin: string): CrossRuntime {
@@ -346,9 +358,6 @@ function createAgentGuidanceFallbackRuntime(upstreamOrigin: string): CrossRuntim
     },
     groupId: primaryGroup.id,
     supportedModels: [anthropicMessagesUpstreamModel],
-    modelMappings: [
-      mapping(openAIChatSourceModel, 'chat_completions', anthropicMessagesUpstreamModel, 'messages')
-    ],
     status: 'active',
     schedulable: true
   }, access)
@@ -382,6 +391,9 @@ function createAgentGuidanceFallbackRuntime(upstreamOrigin: string): CrossRuntim
       { groupId: primaryGroup.id, priority: 1, status: 'active' },
       { groupId: fallbackGroup.id, priority: 2, status: 'active' }
     ],
+    explicitHybridRouteRules: [
+      explicitRule('guidance_primary_chat_to_messages', primaryGroup.id, openAIChatSourceModel, 'chat_completions', anthropicMessagesUpstreamModel, 'messages')
+    ],
     status: 'active'
   }, access)
   assert(apiKey.key, '协议交叉矩阵 guidance 后备 Key 未返回明文密钥')
@@ -409,31 +421,52 @@ function assertForbiddenResponsesTargets(upstreamOrigin: string): void {
     status: 'active' as const,
     schedulable: true
   }
-  assert.throws(() => repositories.createAccount({
+  repositories.createAccount({
     ...base,
-    name: '禁止 Chat 到 Responses',
-    modelMappings: [mapping(openAIChatSourceModel, 'chat_completions', nativeResponsesUpstreamModel, 'responses')]
-  }, access), /暂不支持 Chat Completions 到 Responses 的协议转换/)
-  assert.throws(() => repositories.createAccount({
-    ...base,
-    name: '禁止 Messages 到 Responses',
-    modelMappings: [mapping(anthropicMessagesSourceModel, 'messages', nativeResponsesUpstreamModel, 'responses')]
-  }, access), /Anthropic Messages 下游协议当前只支持/)
-  assert.throws(() => repositories.createAccount({
-    ...base,
-    name: '禁止 Gemini 到 Responses',
-    modelMappings: [mapping(geminiGenerateContentSourceModel, 'generate_content', nativeResponsesUpstreamModel, 'responses')]
-  }, access), /Gemini GenerateContent 下游协议当前只支持/)
+    name: 'Responses 禁止方向目标账号'
+  }, access)
+  assert.throws(() => runtime(group.id, '', '禁止 Chat 到 Responses Key', [
+    explicitRule('forbidden_chat_to_responses', group.id, openAIChatSourceModel, 'chat_completions', nativeResponsesUpstreamModel, 'responses')
+  ]), /显式混合路由暂不支持 Chat Completions 到 Responses 的协议转换/)
+  assert.throws(() => runtime(group.id, '', '禁止 Messages 到 Responses Key', [
+    explicitRule('forbidden_messages_to_responses', group.id, anthropicMessagesSourceModel, 'messages', nativeResponsesUpstreamModel, 'responses')
+  ]), /显式混合路由暂不支持 Messages 到 Responses 的协议转换/)
+  assert.throws(() => runtime(group.id, '', '禁止 Gemini 到 Responses Key', [
+    explicitRule('forbidden_gemini_to_responses', group.id, geminiGenerateContentSourceModel, 'generate_content', nativeResponsesUpstreamModel, 'responses')
+  ]), /显式混合路由暂不支持 Gemini GenerateContent 到 Responses 的协议转换/)
 }
 
-function runtime(groupId: string, accountId: string, name: string): CrossRuntime {
+function runtime(groupId: string, accountId: string, name: string, explicitHybridRouteRules?: ApiKeyExplicitHybridRouteRule[]): CrossRuntime {
   const apiKey = repositories.createApiKeyRecord({
     name,
     groupBindings: [{ groupId, priority: 1, status: 'active' }],
+    explicitHybridRouteRules,
     status: 'active'
   }, access)
   assert(apiKey.key, `${name} 未返回明文密钥`)
   return { apiKey: apiKey.key, groupId, accountId }
+}
+
+function explicitRule(
+  id: string,
+  targetGroupId: string,
+  sourceModel: string,
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
+  upstreamModel: string,
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+): ApiKeyExplicitHybridRouteRule {
+  return {
+    id,
+    enabled: true,
+    priority: 1,
+    sourceClientProfile: 'auto',
+    sourceEndpointFamily,
+    sourceModel,
+    targetGroupId,
+    upstreamEndpointFamily,
+    upstreamModel,
+    adapterMode: sourceEndpointFamily === upstreamEndpointFamily ? 'direct' : 'bridge'
+  }
 }
 
 function mapping(

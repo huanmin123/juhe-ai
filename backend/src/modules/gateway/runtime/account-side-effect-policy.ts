@@ -44,4 +44,3 @@ function isQueuedAccountErrorHandlingForRuntimeKey(
   return item.operation.type === 'apply_account_error_handling'
     && gatewayAccountRuntimeKey(item.operation.account) === runtimeKey
 }
-

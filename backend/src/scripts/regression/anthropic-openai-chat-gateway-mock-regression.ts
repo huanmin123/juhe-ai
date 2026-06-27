@@ -18,7 +18,7 @@ import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import type { AccountModelMapping, ProviderCode } from '../../domain/types.js'
+import type { ProviderCode } from '../../domain/types.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
@@ -204,13 +204,6 @@ function createCaseRuntime(item: MessagesBridgeCase, upstreamOrigin: string): Me
     providerProtocolProfileId: item.providerProtocolProfileId,
     enabled: true
   }, access)
-  const mapping: AccountModelMapping = {
-    sourceModel,
-    sourceEndpointFamily: 'messages',
-    upstreamModel: item.upstreamModel,
-    upstreamEndpointFamily: 'chat_completions',
-    enabled: true
-  }
   const account = repositories.createAccount({
     providerCode: item.providerCode,
     providerProtocolProfileId: item.providerProtocolProfileId,
@@ -225,12 +218,25 @@ function createCaseRuntime(item: MessagesBridgeCase, upstreamOrigin: string): Me
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: [item.upstreamModel],
-    modelMappings: [mapping]
+    supportedModels: [item.upstreamModel]
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: `${item.label} Messages -> Chat 桥接 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    explicitHybridRouteRules: [
+      {
+        id: 'messages_to_chat',
+        enabled: true,
+        priority: 1,
+        sourceClientProfile: 'auto',
+        sourceEndpointFamily: 'messages',
+        sourceModel,
+        targetGroupId: group.id,
+        upstreamEndpointFamily: 'chat_completions',
+        upstreamModel: item.upstreamModel,
+        adapterMode: 'bridge'
+      }
+    ],
     status: 'active'
   }, access)
   assert(apiKey.key, `${item.label} 回归 API Key 未返回明文密钥`)

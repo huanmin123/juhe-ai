@@ -21,8 +21,10 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { fetchFirstAvailableUpstream } from '../dispatch/upstream-dispatch.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
+import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
   createCodexResponsesChatBridgeCompactSnapshot,
+  hasCodexResponsesChatBridgeRuntimeAccount,
   restoreCodexResponsesChatBridgeInputForCompact
 } from './chat-bridge-state.js'
 
@@ -107,6 +109,11 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       })
       return 'completed'
     }
+    const summaryUpstreamModel = resolveGatewayUsageModel(
+      upstreamResult.account,
+      normalizedOptionalText(summaryRequest.model),
+      'chat_completions'
+    ).upstreamModel ?? normalizedOptionalText(summaryRequest.model)
     const compactSnapshot = await createCodexResponsesChatBridgeCompactSnapshot({
       sessionId: restoreResult.sessionId,
       sourceResponseId: previousResponseId,
@@ -114,7 +121,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       summary,
       upstreamAccountId: upstreamResult.account.id,
       model: normalizedOptionalText(body.model),
-      upstreamModel: normalizedOptionalText(summaryRequest.model)
+      upstreamModel: summaryUpstreamModel
     })
     const responsePayload = buildCodexCompactResponse({
       compactId: compactSnapshot.compactId,
@@ -286,9 +293,8 @@ function isChatOnlyCodexResponsesCompactRequest(
   requestClientCompatibility: ClientCompatibilityCapability,
   accounts: readonly UpstreamAccount[]
 ): boolean {
-  void requestClientCompatibility
   return isOpenAIResponsesCompactPostRequest(req)
-    && accounts.some((account) => account.clientCompatibility === 'codex_responses')
+    && hasCodexResponsesChatBridgeRuntimeAccount(req, accounts, requestClientCompatibility)
 }
 
 function isOpenAIResponsesCompactPostRequest(req: Request): boolean {

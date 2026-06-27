@@ -46,7 +46,7 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | Pub
       name: accountName,
       providerCode,
       type: 'api_key',
-      clientCompatibility: input.clientCompatibility ?? 'openai_standard',
+      clientCompatibility: 'openai_standard',
       status: input.status === 'disabled' ? 'disabled' : 'active',
       supportedModels: normalizedStringList(input.supportedModels),
       boundGroupId: 'mock_group_welfare',

@@ -12,6 +12,7 @@ const createdGroupIds: string[] = []
 const createdAccountIds: string[] = []
 const adminAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const driverRegressionModel = 'gpt-5-mini'
+const driverRegressionUpstreamModel = 'gpt-5'
 
 if (process.env.JUHE_API_KEY_MANAGEMENT_DRIVER_CHILD === 'postgres') {
   const repositories = await import('../../storage/repositories.js')
@@ -112,11 +113,11 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   assert.equal(gatewayRuntime.accounts.length, 1, 'DB service 网关运行态应返回分组内可调度账号候选')
   assert.equal(gatewayRuntime.accounts[0]?.id, accountId, 'DB service 网关运行态候选账号应来自当前分组绑定')
   assert.equal(gatewayRuntime.accounts[0]?.apiKey, `sk-api-key-management-driver-${suffix}`, 'DB service 网关运行态应解密候选账号 API Key')
-  assert.deepEqual(gatewayRuntime.accounts[0]?.supportedModels, [driverRegressionModel], 'DB service 网关运行态应读取候选账号支持模型')
+  assert.deepEqual([...(gatewayRuntime.accounts[0]?.supportedModels ?? [])].sort(), [driverRegressionModel, driverRegressionUpstreamModel].sort(), 'DB service 网关运行态应读取候选账号支持模型')
   assert.deepEqual(gatewayRuntime.accounts[0]?.modelMappings, [{
     sourceModel: driverRegressionModel,
-    sourceEndpointFamily: 'responses',
-    upstreamModel: driverRegressionModel,
+    sourceEndpointFamily: 'chat_completions',
+    upstreamModel: driverRegressionUpstreamModel,
     upstreamEndpointFamily: 'chat_completions',
     enabled: true
   }], 'DB service 网关运行态应读取候选账号模型映射')
@@ -221,11 +222,11 @@ async function seedActiveGatewayAccountForGroup(
       base_url: 'https://example.invalid/v1'
     },
     concurrencyLimit: 20,
-    supportedModels: [driverRegressionModel],
+    supportedModels: [driverRegressionModel, driverRegressionUpstreamModel],
     modelMappings: [{
       sourceModel: driverRegressionModel,
-      sourceEndpointFamily: 'responses',
-      upstreamModel: driverRegressionModel,
+      sourceEndpointFamily: 'chat_completions',
+      upstreamModel: driverRegressionUpstreamModel,
       upstreamEndpointFamily: 'chat_completions',
       enabled: true
     }]

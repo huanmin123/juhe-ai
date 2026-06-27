@@ -1194,16 +1194,7 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
     groupId: deepSeekGroup.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['deepseek-ai-v4-flash'],
-    modelMappings: [
-      {
-        sourceModel: 'gpt-5.5',
-        sourceEndpointFamily: 'chat_completions',
-        upstreamModel: 'deepseek-ai-v4-flash',
-        upstreamEndpointFamily: 'chat_completions',
-        enabled: true
-      }
-    ]
+    supportedModels: ['deepseek-ai-v4-flash']
   }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '普通 Key 跨供应商模型路由 API Key',
@@ -1211,6 +1202,20 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
     groupBindings: [
       { groupId: gptGroup.id, priority: 1, status: 'active' },
       { groupId: deepSeekGroup.id, priority: 2, status: 'active' }
+    ],
+    explicitHybridRouteRules: [
+      {
+        id: 'route_normal_cross_provider_gpt_to_deepseek',
+        enabled: true,
+        priority: 1,
+        sourceClientProfile: 'auto',
+        sourceEndpointFamily: 'chat_completions',
+        sourceModel: 'gpt-5.5',
+        targetGroupId: deepSeekGroup.id,
+        upstreamEndpointFamily: 'chat_completions',
+        upstreamModel: 'deepseek-ai-v4-flash',
+        adapterMode: 'bridge'
+      }
     ]
   }, access)
   gatewayCache.clearGatewayRuntimeCache()
@@ -1225,7 +1230,7 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.equal(newRequests.length, 1, '普通 Key 跨供应商模型路由切换后只应请求一次目标供应商上游')
   assert.equal(newRequests[0]?.accountKey, deepSeekUpstreamKey, 'DeepSeek 模型请求应命中 DeepSeek 号池账号')
-  assert.equal(newRequests[0]?.model, 'deepseek-ai-v4-flash', 'DeepSeek 跨供应商路由应继续应用账号模型映射后再打上游')
+  assert.equal(newRequests[0]?.model, 'deepseek-ai-v4-flash', 'DeepSeek 跨供应商路由应应用 API Key 显式混合路由后再打上游')
   assert(!newRequests.some((request) => request.accountKey === gptUpstreamKey), 'DeepSeek 模型请求不应派发到 GPT 号池账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
@@ -1238,12 +1243,12 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
   const auditLog = auditLogs.items[0]
   assert.equal(auditLog?.groupId, deepSeekGroup.id, '普通 Key 跨供应商模型路由审计主记录必须归属 DeepSeek 分组')
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
-  assert(metadataPayloads.some((metadata) => metadata.label === 'normal_model_route'
+  assert(metadataPayloads.some((metadata) => metadata.label === 'explicit_hybrid_route'
     && metadata.metadata?.requestedModel === 'gpt-5.5'
     && metadata.metadata?.fromGroupId === gptGroup.id
     && metadata.metadata?.toGroupId === deepSeekGroup.id
-    && metadata.metadata?.routeSource === 'account_mapping'
-    && metadata.metadata?.matchedProviderCode === 'deepseek'), '审计 metadata 应记录普通 Key 根据请求模型从 GPT 分组切到 DeepSeek 分组')
+    && metadata.metadata?.upstreamModel === 'deepseek-ai-v4-flash'
+    && metadata.metadata?.upstreamEndpointFamily === 'chat_completions'), '审计 metadata 应记录 API Key 显式混合路由从 GPT 分组切到 DeepSeek 分组')
 }
 
 async function assertNormalApiKeyUnknownModelReturnsLocalError(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {

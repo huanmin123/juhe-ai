@@ -1950,7 +1950,7 @@ export async function requestBackgroundWorkerDbService<T extends import('../db-s
   operation: T,
   timeoutMs = 5000
 ): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T> | undefined> {
-  if (runtimeConfig.processRole === 'server') {
+  if (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'db-service') {
     const { requestDbService } = await import('../db-service/db-service-ipc.js')
     return await requestDbService(operation, { timeoutMs })
   }

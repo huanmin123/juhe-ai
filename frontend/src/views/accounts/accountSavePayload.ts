@@ -27,7 +27,6 @@ export type AccountSavePayload = {
   providerProtocolProfileId: AccountFormModel['providerProtocolProfileId']
   name?: string
   type: AccountFormModel['type']
-  clientCompatibility: AccountFormModel['clientCompatibility']
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
@@ -99,8 +98,6 @@ export function validateAccountSaveForm(input: {
   const endpointModeValidation = validateAccountEndpointModes({
     modes: form.supportedEndpointModes,
     type: form.type,
-    clientCompatibility: form.clientCompatibility,
-    modelMappings: form.modelMappings,
     profile: formProviderProfile.profile ?? formProviderProfile.provider,
     allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider)
   })
@@ -137,7 +134,6 @@ export function buildAccountSavePayload(input: {
     providerProtocolProfileId: input.form.providerProtocolProfileId,
     name: input.form.name.trim() || undefined,
     type: input.form.type,
-    clientCompatibility: input.form.clientCompatibility,
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
@@ -155,7 +151,6 @@ export function buildAccountSavePayload(input: {
 export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountUpdatePayload {
   return {
     name: payload.name,
-    clientCompatibility: payload.clientCompatibility,
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,

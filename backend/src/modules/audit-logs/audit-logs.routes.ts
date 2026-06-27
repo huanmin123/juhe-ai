@@ -3,13 +3,13 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
-  getAuditLogDetail,
+  getAuditLogDetailAsync,
   getAuditLogPayload,
-  listAuditErrorGroupEvents,
-  listAuditErrorGroups,
-  listAuditLogsByIds,
+  listAuditErrorGroupEventsAsync,
+  listAuditErrorGroupsAsync,
+  listAuditLogsByIdsAsync,
   type AuditErrorGroupListOptions,
-  listAuditLogs,
+  listAuditLogsAsync,
   type AuditLogListOptions,
   type AuditOutcome,
   type AuditTrafficSource
@@ -27,14 +27,18 @@ auditLogsRouter.use((req, res, next) => {
   next()
 })
 
-auditLogsRouter.get('/', (req, res) => {
-  res.json(ok(listAuditLogs(parseAuditLogListOptions(req.query))))
+auditLogsRouter.get('/', async (req, res, next) => {
+  try {
+    res.json(ok(await listAuditLogsAsync(parseAuditLogListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
 auditLogsRouter.get('/search-hot', async (req, res, next) => {
   try {
     const grepResult = await grepAuditHotSearchFiles(parseAuditHotSearchOptions(req.query))
-    const items = listAuditLogsByIds(grepResult.auditLogIds)
+    const items = await listAuditLogsByIdsAsync(grepResult.auditLogIds)
     res.json(ok({
       items,
       total: grepResult.truncated ? Math.max(items.length + 1, grepResult.auditLogIds.length) : items.length,
@@ -91,21 +95,33 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
   }))
 })
 
-auditLogsRouter.get('/error-groups', (req, res) => {
-  res.json(ok(listAuditErrorGroups(parseAuditErrorGroupListOptions(req.query))))
-})
-
-auditLogsRouter.get('/error-groups/:id/events', (req, res) => {
-  res.json(ok(listAuditErrorGroupEvents(req.params.id, parseAuditLogListOptions(req.query))))
-})
-
-auditLogsRouter.get('/:id', (req, res) => {
-  const detail = getAuditLogDetail(req.params.id)
-  if (!detail) {
-    sendNotFound(res, '审计日志不存在')
-    return
+auditLogsRouter.get('/error-groups', async (req, res, next) => {
+  try {
+    res.json(ok(await listAuditErrorGroupsAsync(parseAuditErrorGroupListOptions(req.query))))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(detail))
+})
+
+auditLogsRouter.get('/error-groups/:id/events', async (req, res, next) => {
+  try {
+    res.json(ok(await listAuditErrorGroupEventsAsync(req.params.id, parseAuditLogListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
+})
+
+auditLogsRouter.get('/:id', async (req, res, next) => {
+  try {
+    const detail = await getAuditLogDetailAsync(req.params.id)
+    if (!detail) {
+      sendNotFound(res, '审计日志不存在')
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
+  }
 })
 
 auditLogsRouter.get('/:id/payloads/:payloadId', async (req, res, next) => {

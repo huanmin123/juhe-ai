@@ -92,7 +92,7 @@ try {
         upstreamEndpointFamily: 'responses',
         enabled: true
       }]
-    }, access), /暂不支持 Chat Completions 到 Responses 的协议转换/, '通用 OpenAI-compatible 账号必须拒绝 Chat -> Responses 映射')
+    }, access), /账号模型别名只支持同协议映射|请改用 API Key 显式混合路由/, '通用 OpenAI-compatible 账号必须拒绝 Chat -> Responses 映射')
 
     const account = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,

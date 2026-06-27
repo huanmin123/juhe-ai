@@ -1,0 +1,5806 @@
+{
+  "generatedAt": "2026-06-27T00:55:31.083Z",
+  "note": "真实 server + DB service + background workers + PostgreSQL + Redis/Redis Stream + 本地 mock 上游压测。cleanup=true 会删除本次夹具与 trace 明细，但已聚合的全局统计可能无法完全回滚，生产环境不要直接打开 stats-worker 观察压测。",
+  "mode": {
+    "runtimeMode": "performance",
+    "databaseDriver": "postgres",
+    "cacheDriver": "redis",
+    "runtimeStateDriver": "redis",
+    "queueDriver": "redis_stream"
+  },
+  "config": {
+    "scenarios": [
+      "responses",
+      "chat"
+    ],
+    "durationSeconds": 20,
+    "warmupSeconds": 3,
+    "settleSeconds": 35,
+    "concurrency": 100,
+    "requestTimeoutMs": 30000,
+    "sampleIntervalMs": 1000,
+    "upstreamLatencyMs": 50,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 64,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5-mini",
+    "promptBytes": 64,
+    "enableStatsWorkerObservation": false,
+    "cleanup": true,
+    "maxAllowedErrorRate": 0.01,
+    "maxAllowedP95Ms": 3000,
+    "maxAllowedDeadlocks": 0,
+    "maxAllowedLockWaiters": 0,
+    "maxAllowedRedisPending": 100,
+    "resetPgStatStatements": true,
+    "reportPath": "F:\\sub2api-lite\\backend\\reports\\performance-gateway-load-operation-stream-20260627T005403Z.json"
+  },
+  "tracePrefix": "perf-gateway-1782521644862-f81d0e",
+  "startedAt": "2026-06-27T00:54:04.862Z",
+  "finishedAt": "2026-06-27T00:55:31.080Z",
+  "durationMs": 86218.558,
+  "seeded": {
+    "apiKeyId": "key_1782521670248_7df198dd",
+    "groupId": "grp_1782521645397_81c22ad4",
+    "accountIds": [
+      "acc_1782521645420_0625e097",
+      "acc_1782521645860_f1209299",
+      "acc_1782521646315_2ea0f776",
+      "acc_1782521646670_66e32308",
+      "acc_1782521647192_c359f11a",
+      "acc_1782521647533_fe2c9f42",
+      "acc_1782521647834_4d4e961f",
+      "acc_1782521648123_db7c7f5e",
+      "acc_1782521648475_949c9ce1",
+      "acc_1782521648869_cf50feea",
+      "acc_1782521649198_1be7c834",
+      "acc_1782521649591_303f1b3c",
+      "acc_1782521649991_b8e6c414",
+      "acc_1782521650502_028aae23",
+      "acc_1782521650947_ef6595dd",
+      "acc_1782521651391_5bd07431",
+      "acc_1782521651892_2c7cee00",
+      "acc_1782521652199_77a3b7cc",
+      "acc_1782521652567_a234c419",
+      "acc_1782521653127_1f12176a",
+      "acc_1782521653545_16741672",
+      "acc_1782521653953_fc211b0f",
+      "acc_1782521654437_970e821d",
+      "acc_1782521655013_e4cb4b16",
+      "acc_1782521655474_9c80b8e8",
+      "acc_1782521655925_b8ad4680",
+      "acc_1782521656348_f9c66398",
+      "acc_1782521656677_73becf54",
+      "acc_1782521657057_795016b3",
+      "acc_1782521657490_ad73e34e",
+      "acc_1782521657927_6cb1f255",
+      "acc_1782521658435_f7c00e18",
+      "acc_1782521658795_4b3d1846",
+      "acc_1782521659148_81c01d2b",
+      "acc_1782521659475_1322921e",
+      "acc_1782521659775_5114ecbd",
+      "acc_1782521660097_60613f31",
+      "acc_1782521660450_72fb6d97",
+      "acc_1782521660793_29c8ff89",
+      "acc_1782521661131_f87ea481",
+      "acc_1782521661501_4e4bc802",
+      "acc_1782521661856_211528e8",
+      "acc_1782521662173_1a1bc299",
+      "acc_1782521662493_35c12971",
+      "acc_1782521662820_6ab821e5",
+      "acc_1782521663196_37555a7e",
+      "acc_1782521663541_98c09d62",
+      "acc_1782521663919_410df6ab",
+      "acc_1782521664249_ec4bb3c4",
+      "acc_1782521664621_1a9b00f1",
+      "acc_1782521664995_eb775c68",
+      "acc_1782521665319_6b9c677b",
+      "acc_1782521665653_f87053e4",
+      "acc_1782521665998_51cbff08",
+      "acc_1782521666287_10bf5acd",
+      "acc_1782521666595_2a50fc12",
+      "acc_1782521667267_bac0bc2c",
+      "acc_1782521667651_8a212979",
+      "acc_1782521667943_eb468ea4",
+      "acc_1782521668246_3c198efb",
+      "acc_1782521668633_3738c7c3",
+      "acc_1782521669019_be1d648a",
+      "acc_1782521669364_deb590a5",
+      "acc_1782521669855_97bc25d4"
+    ],
+    "accountCount": 64
+  },
+  "requests": {
+    "total": 10496,
+    "success": 10496,
+    "failed": 0,
+    "qps": 187.83,
+    "successQps": 187.83,
+    "errorRate": 0,
+    "latencyMs": {
+      "min": 60.64,
+      "avg": 191.16,
+      "p50": 192.4,
+      "p90": 213.26,
+      "p95": 218.8,
+      "p99": 256.73,
+      "max": 324.31
+    },
+    "statusCounts": {
+      "200": 10496
+    },
+    "errorCounts": {},
+    "statusSamples": {
+      "200": "{\"id\":\"chatcmpl_perf_gateway\",\"object\":\"chat.completion\",\"created\":1782521675,\"model\":\"gpt-5-mini\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK OK"
+    },
+    "responseBytes": 8155380
+  },
+  "storage": {
+    "before": {
+      "sampledAt": "2026-06-27T00:54:30.368Z",
+      "usageRecords": 0,
+      "usageCatalogEntries": 0,
+      "auditLogs": 0,
+      "operationLogs": 0,
+      "publicApiLogs": 0,
+      "usageStatsTotalsRowsForFixture": 0,
+      "statsJobState": {
+        "scope_type": "global",
+        "scope_id": "",
+        "cursor_created_at": "2026-06-27T00:04:11.228Z",
+        "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+        "last_success_at": "2026-06-27T00:45:43.508Z",
+        "last_error_message": null,
+        "lag_seconds": 0,
+        "updated_at": "2026-06-27T00:45:43.580Z"
+      }
+    },
+    "after": {
+      "sampledAt": "2026-06-27T00:55:30.976Z",
+      "usageRecords": 11501,
+      "usageCatalogEntries": 11501,
+      "auditLogs": 370,
+      "operationLogs": 0,
+      "publicApiLogs": 0,
+      "usageStatsTotalsRowsForFixture": 0,
+      "statsJobState": {
+        "scope_type": "global",
+        "scope_id": "",
+        "cursor_created_at": "2026-06-27T00:04:11.228Z",
+        "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+        "last_success_at": "2026-06-27T00:54:33.767Z",
+        "last_error_message": null,
+        "lag_seconds": 0,
+        "updated_at": "2026-06-27T00:54:33.841Z"
+      }
+    },
+    "delta": {
+      "usageRecords": 11501,
+      "usageCatalogEntries": 11501,
+      "auditLogs": 370,
+      "operationLogs": 0,
+      "publicApiLogs": 0,
+      "usageStatsTotalsRowsForFixture": 0,
+      "expectedAuditLogsMinimum": 366
+    }
+  },
+  "postgres": {
+    "deadlocksBefore": 0,
+    "deadlocksAfter": 0,
+    "deadlocksDelta": 0,
+    "maxActive": 6,
+    "maxIdleInTransaction": 2,
+    "maxLockWaiters": 1,
+    "maxNotGrantedLocks": 0,
+    "maxXactAgeSeconds": 4.48,
+    "maxActiveQuerySeconds": 1.65,
+    "samples": [
+      {
+        "sampledAt": "2026-06-27T00:54:35.248Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.29,
+        "maxActiveQuerySeconds": 1.25
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:36.272Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.31,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:37.319Z",
+        "active": 5,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.35,
+        "maxActiveQuerySeconds": 0.31
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:38.356Z",
+        "active": 5,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 4.39,
+        "maxActiveQuerySeconds": 1.35
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:39.388Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.43,
+        "maxActiveQuerySeconds": 0.05
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:40.414Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.46,
+        "maxActiveQuerySeconds": 1.08
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:41.445Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.15,
+        "maxActiveQuerySeconds": 0.02
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:42.476Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.18,
+        "maxActiveQuerySeconds": 0.51
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:43.517Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.58,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:44.566Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.64,
+        "maxActiveQuerySeconds": 0.21
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:45.652Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.71,
+        "maxActiveQuerySeconds": 1.28
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:46.701Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.39,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:47.737Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.44,
+        "maxActiveQuerySeconds": 0.6
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:48.783Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 4.48,
+        "maxActiveQuerySeconds": 1.65
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:49.825Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.72,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:50.869Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.76,
+        "maxActiveQuerySeconds": 0.63
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:51.912Z",
+        "active": 3,
+        "idleInTransaction": 2,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.7,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:52.942Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.73,
+        "maxActiveQuerySeconds": 0.21
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:53.974Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.77,
+        "maxActiveQuerySeconds": 1.24
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:55.010Z",
+        "active": 3,
+        "idleInTransaction": 2,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.33,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:56.044Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.37,
+        "maxActiveQuerySeconds": 0.87
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:57.078Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.93,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:58.113Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.97,
+        "maxActiveQuerySeconds": 1
+      },
+      {
+        "sampledAt": "2026-06-27T00:54:59.147Z",
+        "active": 6,
+        "idleInTransaction": 0,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.06,
+        "maxActiveQuerySeconds": 0.37
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:00.187Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.45,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:01.228Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.49,
+        "maxActiveQuerySeconds": 0.57
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:02.257Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.62,
+        "maxActiveQuerySeconds": 0.03
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:03.295Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.66,
+        "maxActiveQuerySeconds": 1.07
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:04.325Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.12,
+        "maxActiveQuerySeconds": 0.32
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:05.363Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.38,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:06.390Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.41,
+        "maxActiveQuerySeconds": 0.91
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:07.422Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.96,
+        "maxActiveQuerySeconds": 0.28
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:08.465Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.35,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:09.488Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.38,
+        "maxActiveQuerySeconds": 0.86
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:10.517Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.91,
+        "maxActiveQuerySeconds": 0.28
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:11.569Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.36,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:12.603Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.4,
+        "maxActiveQuerySeconds": 0.27
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:13.631Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.33,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:14.666Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.36,
+        "maxActiveQuerySeconds": 0.2
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:15.694Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.26,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:16.853Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.28,
+        "maxActiveQuerySeconds": 0.55
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:17.885Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.75,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:18.929Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.79,
+        "maxActiveQuerySeconds": 0.51
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:19.970Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.59,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:21.005Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.62,
+        "maxActiveQuerySeconds": 0.59
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:22.041Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.65,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:23.098Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.7,
+        "maxActiveQuerySeconds": 0.63
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:24.126Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.7,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:25.164Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.74,
+        "maxActiveQuerySeconds": 0.46
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:26.206Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.56,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:27.244Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.6,
+        "maxActiveQuerySeconds": 0.36
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:28.273Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.42,
+        "maxActiveQuerySeconds": 0
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:29.302Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.45,
+        "maxActiveQuerySeconds": 0.36
+      },
+      {
+        "sampledAt": "2026-06-27T00:55:30.342Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.43,
+        "maxActiveQuerySeconds": 0
+      }
+    ],
+    "slowStatements": [
+      {
+        "calls": "4274",
+        "mean_exec_time_ms": "8.417",
+        "max_exec_time_ms": "2175.903",
+        "rows": "4274",
+        "query": "UPDATE juhe_dataset.audit_payload_blobs SET ref_count = ref_count + $3, last_seen_at = $1 WHERE id = $2"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "75.213",
+        "max_exec_time_ms": "75.213",
+        "rows": "292",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "72.896",
+        "max_exec_time_ms": "72.896",
+        "rows": "236",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "5",
+        "mean_exec_time_ms": "60.433",
+        "max_exec_time_ms": "71.707",
+        "rows": "1000",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "70.692",
+        "max_exec_time_ms": "70.692",
+        "rows": "223",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "2",
+        "mean_exec_time_ms": "60.783",
+        "max_exec_time_ms": "68.798",
+        "rows": "422",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "66.954",
+        "max_exec_time_ms": "66.954",
+        "rows": "226",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "2",
+        "mean_exec_time_ms": "45.397",
+        "max_exec_time_ms": "65.678",
+        "rows": "356",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "64.153",
+        "max_exec_time_ms": "64.153",
+        "rows": "201",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "2",
+        "mean_exec_time_ms": "59.196",
+        "max_exec_time_ms": "63.591",
+        "rows": "360",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "2",
+        "mean_exec_time_ms": "54.246",
+        "max_exec_time_ms": "61.306",
+        "rows": "374",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "60.821",
+        "max_exec_time_ms": "60.821",
+        "rows": "199",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "58.973",
+        "max_exec_time_ms": "58.973",
+        "rows": "182",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "58.629",
+        "max_exec_time_ms": "58.629",
+        "rows": "196",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "2",
+        "mean_exec_time_ms": "55.050",
+        "max_exec_time_ms": "58.622",
+        "rows": "378",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "58.591",
+        "max_exec_time_ms": "58.591",
+        "rows": "192",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "54.957",
+        "max_exec_time_ms": "54.957",
+        "rows": "176",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "53.945",
+        "max_exec_time_ms": "53.945",
+        "rows": "120",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "53.798",
+        "max_exec_time_ms": "53.798",
+        "rows": "195",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      },
+      {
+        "calls": "1",
+        "mean_exec_time_ms": "50.544",
+        "max_exec_time_ms": "50.544",
+        "rows": "205",
+        "query": "INSERT INTO juhe_usage.usage_record_shard_entries (usage_id, shard_key, system_account_id, trace_id, api_key_id, account_id, group_id, model, traffic_source, success, status_code, client_ip, first_token_ms, duration_ms, cost_usd, created_at, indexed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $1"
+      }
+    ]
+  },
+  "redis": {
+    "before": {
+      "sampledAt": "2026-06-27T00:54:30.323Z",
+      "pendingCount": 25,
+      "backlogCount": 305,
+      "usageRecords": {
+        "length": 191936,
+        "pendingCount": 0,
+        "lagCount": 0,
+        "backlogCount": 0,
+        "consumers": []
+      },
+      "auditLogs": {
+        "length": 1868,
+        "pendingCount": 25,
+        "lagCount": 280,
+        "backlogCount": 305,
+        "minPendingId": "1782521154079-0",
+        "maxPendingId": "1782521154878-1",
+        "consumers": [
+          {
+            "name": "juhe-ai:audit-log-writers:PC-20230602DNMH:65912",
+            "pending": 25
+          }
+        ]
+      },
+      "operationLogs": {
+        "length": 0,
+        "pendingCount": 0,
+        "lagCount": 0,
+        "backlogCount": 0,
+        "consumers": []
+      }
+    },
+    "after": {
+      "sampledAt": "2026-06-27T00:55:30.940Z",
+      "pendingCount": 50,
+      "backlogCount": 210,
+      "usageRecords": {
+        "length": 203437,
+        "pendingCount": 0,
+        "lagCount": 0,
+        "backlogCount": 0,
+        "consumers": []
+      },
+      "auditLogs": {
+        "length": 2448,
+        "pendingCount": 50,
+        "lagCount": 160,
+        "backlogCount": 210,
+        "minPendingId": "1782521688567-0",
+        "maxPendingId": "1782521690573-0",
+        "consumers": [
+          {
+            "name": "juhe-ai:audit-log-writers:40132:0",
+            "pending": 25
+          },
+          {
+            "name": "juhe-ai:audit-log-writers:40132:1",
+            "pending": 25
+          }
+        ]
+      },
+      "operationLogs": {
+        "length": 0,
+        "pendingCount": 0,
+        "lagCount": 0,
+        "backlogCount": 0,
+        "consumers": []
+      }
+    }
+  },
+  "upstream": {
+    "totalRequests": 11501,
+    "pathCounts": {
+      "POST /v1/chat/completions": 5751,
+      "POST /v1/responses": 5750
+    },
+    "connections": {
+      "acceptedSockets": 100,
+      "closedSockets": 100,
+      "activeSockets": 0,
+      "peakActiveSockets": 100,
+      "socketsWithRequests": 100,
+      "reusedSockets": 100,
+      "maxRequestsPerSocket": 122,
+      "avgRequestsPerSocket": 115.01
+    }
+  },
+  "childProcess": {
+    "stdoutTail": "",
+    "stderrTail": "(node:51624) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:63444) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:40132) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:13136) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n(node:65116) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+  },
+  "samples": [
+    {
+      "elapsedSeconds": 0.001,
+      "requests": {
+        "total": 0,
+        "success": 0,
+        "failed": 0,
+        "qps": 0,
+        "successQps": 0,
+        "latencyMs": {
+          "min": 0,
+          "avg": 0,
+          "p50": 0,
+          "p90": 0,
+          "p95": 0,
+          "p99": 0,
+          "max": 0
+        },
+        "statusCounts": {},
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:35.230Z",
+        "usageRecords": 805,
+        "usageCatalogEntries": 805,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:35.248Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.29,
+        "maxActiveQuerySeconds": 1.25
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:35.229Z",
+        "pendingCount": 152,
+        "backlogCount": 548,
+        "usageRecords": {
+          "length": 192941,
+          "pendingCount": 102,
+          "lagCount": 98,
+          "backlogCount": 200,
+          "minPendingId": "1782521675337-0",
+          "maxPendingId": "1782521675495-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 102
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 1911,
+          "pendingCount": 50,
+          "lagCount": 298,
+          "backlogCount": 348,
+          "minPendingId": "1782521154079-0",
+          "maxPendingId": "1782521155803-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 1.052,
+      "requests": {
+        "total": 501,
+        "success": 501,
+        "failed": 0,
+        "qps": 476.25,
+        "successQps": 476.25,
+        "latencyMs": {
+          "min": 118.1,
+          "avg": 199.24,
+          "p50": 203.03,
+          "p90": 221.64,
+          "p95": 221.91,
+          "p99": 222.28,
+          "max": 230.05
+        },
+        "statusCounts": {
+          "200": 501
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:36.272Z",
+        "usageRecords": 1220,
+        "usageCatalogEntries": 1220,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:36.272Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.31,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:36.276Z",
+        "pendingCount": 50,
+        "backlogCount": 531,
+        "usageRecords": {
+          "length": 193442,
+          "pendingCount": 0,
+          "lagCount": 187,
+          "backlogCount": 187,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 1932,
+          "pendingCount": 50,
+          "lagCount": 294,
+          "backlogCount": 344,
+          "minPendingId": "1782521154079-0",
+          "maxPendingId": "1782521156511-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 2.097,
+      "requests": {
+        "total": 1001,
+        "success": 1001,
+        "failed": 0,
+        "qps": 477.34,
+        "successQps": 477.34,
+        "latencyMs": {
+          "min": 118.1,
+          "avg": 203.16,
+          "p50": 204.29,
+          "p90": 216.17,
+          "p95": 221.64,
+          "p99": 222.23,
+          "max": 230.05
+        },
+        "statusCounts": {
+          "200": 1001
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:37.326Z",
+        "usageRecords": 1806,
+        "usageCatalogEntries": 1806,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:37.319Z",
+        "active": 5,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.35,
+        "maxActiveQuerySeconds": 0.31
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:37.310Z",
+        "pendingCount": 150,
+        "backlogCount": 566,
+        "usageRecords": {
+          "length": 193942,
+          "pendingCount": 100,
+          "lagCount": 100,
+          "backlogCount": 200,
+          "minPendingId": "1782521677416-0",
+          "maxPendingId": "1782521677553-11",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 100
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 1954,
+          "pendingCount": 50,
+          "lagCount": 316,
+          "backlogCount": 366,
+          "minPendingId": "1782521154079-0",
+          "maxPendingId": "1782521156511-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 3.132,
+      "requests": {
+        "total": 1514,
+        "success": 1514,
+        "failed": 0,
+        "qps": 483.47,
+        "successQps": 483.47,
+        "latencyMs": {
+          "min": 115.73,
+          "avg": 200.21,
+          "p50": 202.24,
+          "p90": 214.22,
+          "p95": 219.18,
+          "p99": 222,
+          "max": 230.05
+        },
+        "statusCounts": {
+          "200": 1514
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:38.356Z",
+        "usageRecords": 2337,
+        "usageCatalogEntries": 2337,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:38.356Z",
+        "active": 5,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 4.39,
+        "maxActiveQuerySeconds": 1.35
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:38.360Z",
+        "pendingCount": 144,
+        "backlogCount": 572,
+        "usageRecords": {
+          "length": 194455,
+          "pendingCount": 94,
+          "lagCount": 88,
+          "backlogCount": 182,
+          "minPendingId": "1782521678546-0",
+          "maxPendingId": "1782521678642-5",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 94
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 1978,
+          "pendingCount": 50,
+          "lagCount": 340,
+          "backlogCount": 390,
+          "minPendingId": "1782521154079-0",
+          "maxPendingId": "1782521156511-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 4.174,
+      "requests": {
+        "total": 2015,
+        "success": 2015,
+        "failed": 0,
+        "qps": 482.78,
+        "successQps": 482.78,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 202.26,
+          "p50": 203.67,
+          "p90": 216.11,
+          "p95": 219.5,
+          "p99": 221.99,
+          "max": 230.05
+        },
+        "statusCounts": {
+          "200": 2015
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:39.398Z",
+        "usageRecords": 2840,
+        "usageCatalogEntries": 2840,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:39.388Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.43,
+        "maxActiveQuerySeconds": 0.05
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:39.392Z",
+        "pendingCount": 230,
+        "backlogCount": 578,
+        "usageRecords": {
+          "length": 194956,
+          "pendingCount": 180,
+          "lagCount": 0,
+          "backlogCount": 180,
+          "minPendingId": "1782521679591-0",
+          "maxPendingId": "1782521679726-13",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 180
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2011,
+          "pendingCount": 50,
+          "lagCount": 348,
+          "backlogCount": 398,
+          "minPendingId": "1782521155900-0",
+          "maxPendingId": "1782521157311-2",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 5.201,
+      "requests": {
+        "total": 2523,
+        "success": 2523,
+        "failed": 0,
+        "qps": 485.14,
+        "successQps": 485.14,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 201.59,
+          "p50": 203.41,
+          "p90": 215.19,
+          "p95": 218.65,
+          "p99": 221.96,
+          "max": 230.05
+        },
+        "statusCounts": {
+          "200": 2523
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:40.425Z",
+        "usageRecords": 3239,
+        "usageCatalogEntries": 3239,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:40.414Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.46,
+        "maxActiveQuerySeconds": 1.08
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:40.415Z",
+        "pendingCount": 239,
+        "backlogCount": 717,
+        "usageRecords": {
+          "length": 195464,
+          "pendingCount": 189,
+          "lagCount": 100,
+          "backlogCount": 289,
+          "minPendingId": "1782521680347-0",
+          "maxPendingId": "1782521680608-7",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 189
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2041,
+          "pendingCount": 50,
+          "lagCount": 378,
+          "backlogCount": 428,
+          "minPendingId": "1782521155900-0",
+          "maxPendingId": "1782521157311-2",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 6.231,
+      "requests": {
+        "total": 3107,
+        "success": 3107,
+        "failed": 0,
+        "qps": 498.61,
+        "successQps": 498.61,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 198.16,
+          "p50": 201.1,
+          "p90": 214.17,
+          "p95": 217.23,
+          "p99": 221.87,
+          "max": 230.05
+        },
+        "statusCounts": {
+          "200": 3107
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:41.461Z",
+        "usageRecords": 3765,
+        "usageCatalogEntries": 3765,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:41.445Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.15,
+        "maxActiveQuerySeconds": 0.02
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:41.449Z",
+        "pendingCount": 221,
+        "backlogCount": 734,
+        "usageRecords": {
+          "length": 196004,
+          "pendingCount": 171,
+          "lagCount": 132,
+          "backlogCount": 303,
+          "minPendingId": "1782521681372-0",
+          "maxPendingId": "1782521681567-11",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 171
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2069,
+          "pendingCount": 50,
+          "lagCount": 381,
+          "backlogCount": 431,
+          "minPendingId": "1782521156553-0",
+          "maxPendingId": "1782521158481-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 7.261,
+      "requests": {
+        "total": 3622,
+        "success": 3622,
+        "failed": 0,
+        "qps": 498.82,
+        "successQps": 498.82,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 199.56,
+          "p50": 200.61,
+          "p90": 216.03,
+          "p95": 221.23,
+          "p99": 321.77,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 3622
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:42.489Z",
+        "usageRecords": 4262,
+        "usageCatalogEntries": 4262,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:42.476Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.18,
+        "maxActiveQuerySeconds": 0.51
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:42.480Z",
+        "pendingCount": 234,
+        "backlogCount": 753,
+        "usageRecords": {
+          "length": 196500,
+          "pendingCount": 184,
+          "lagCount": 118,
+          "backlogCount": 302,
+          "minPendingId": "1782521682438-0",
+          "maxPendingId": "1782521682623-27",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 184
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2089,
+          "pendingCount": 50,
+          "lagCount": 401,
+          "backlogCount": 451,
+          "minPendingId": "1782521156553-0",
+          "maxPendingId": "1782521158481-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 8.291,
+      "requests": {
+        "total": 4150,
+        "success": 4150,
+        "failed": 0,
+        "qps": 500.53,
+        "successQps": 500.53,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 197.96,
+          "p50": 199.05,
+          "p90": 215.45,
+          "p95": 221.09,
+          "p99": 321.52,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 4150
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:43.515Z",
+        "usageRecords": 4855,
+        "usageCatalogEntries": 4855,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:43.517Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.58,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:43.532Z",
+        "pendingCount": 250,
+        "backlogCount": 756,
+        "usageRecords": {
+          "length": 197091,
+          "pendingCount": 200,
+          "lagCount": 100,
+          "backlogCount": 300,
+          "minPendingId": "1782521683445-0",
+          "maxPendingId": "1782521683731-7",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 200
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2119,
+          "pendingCount": 50,
+          "lagCount": 406,
+          "backlogCount": 456,
+          "minPendingId": "1782521157312-0",
+          "maxPendingId": "1782521159440-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 9.348,
+      "requests": {
+        "total": 4715,
+        "success": 4715,
+        "failed": 0,
+        "qps": 504.38,
+        "successQps": 504.38,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 197.61,
+          "p50": 198.68,
+          "p90": 214.38,
+          "p95": 220.73,
+          "p99": 307.25,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 4715
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:44.573Z",
+        "usageRecords": 5475,
+        "usageCatalogEntries": 5475,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:44.566Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.64,
+        "maxActiveQuerySeconds": 0.21
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:44.583Z",
+        "pendingCount": 231,
+        "backlogCount": 658,
+        "usageRecords": {
+          "length": 197592,
+          "pendingCount": 181,
+          "lagCount": 0,
+          "backlogCount": 181,
+          "minPendingId": "1782521684705-0",
+          "maxPendingId": "1782521684979-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 181
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2140,
+          "pendingCount": 50,
+          "lagCount": 427,
+          "backlogCount": 477,
+          "minPendingId": "1782521157312-0",
+          "maxPendingId": "1782521159440-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 10.414,
+      "requests": {
+        "total": 5250,
+        "success": 5250,
+        "failed": 0,
+        "qps": 504.11,
+        "successQps": 504.11,
+        "latencyMs": {
+          "min": 110.77,
+          "avg": 197.19,
+          "p50": 198.49,
+          "p90": 213.85,
+          "p95": 219.18,
+          "p99": 307.17,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 5250
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:45.652Z",
+        "usageRecords": 5879,
+        "usageCatalogEntries": 5879,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:45.652Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.71,
+        "maxActiveQuerySeconds": 1.28
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:45.666Z",
+        "pendingCount": 246,
+        "backlogCount": 884,
+        "usageRecords": {
+          "length": 198191,
+          "pendingCount": 196,
+          "lagCount": 180,
+          "backlogCount": 376,
+          "minPendingId": "1782521685483-0",
+          "maxPendingId": "1782521685808-5",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 196
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2171,
+          "pendingCount": 50,
+          "lagCount": 458,
+          "backlogCount": 508,
+          "minPendingId": "1782521157312-0",
+          "maxPendingId": "1782521159440-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 11.476,
+      "requests": {
+        "total": 5881,
+        "success": 5881,
+        "failed": 0,
+        "qps": 512.48,
+        "successQps": 512.48,
+        "latencyMs": {
+          "min": 107.31,
+          "avg": 195.38,
+          "p50": 197.6,
+          "p90": 213.62,
+          "p95": 218.83,
+          "p99": 303.21,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 5881
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:46.699Z",
+        "usageRecords": 6605,
+        "usageCatalogEntries": 6605,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:46.701Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.39,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:46.704Z",
+        "pendingCount": 231,
+        "backlogCount": 693,
+        "usageRecords": {
+          "length": 198729,
+          "pendingCount": 181,
+          "lagCount": 7,
+          "backlogCount": 188,
+          "minPendingId": "1782521686819-0",
+          "maxPendingId": "1782521687023-14",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 181
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2193,
+          "pendingCount": 50,
+          "lagCount": 455,
+          "backlogCount": 505,
+          "minPendingId": "1782521158482-0",
+          "maxPendingId": "1782521160216-3",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 12.514,
+      "requests": {
+        "total": 6396,
+        "success": 6396,
+        "failed": 0,
+        "qps": 511.12,
+        "successQps": 511.12,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 194.2,
+          "p50": 196.75,
+          "p90": 213.37,
+          "p95": 218.33,
+          "p99": 302.99,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 6396
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:47.757Z",
+        "usageRecords": 7200,
+        "usageCatalogEntries": 7200,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:47.737Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.44,
+        "maxActiveQuerySeconds": 0.6
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:47.751Z",
+        "pendingCount": 251,
+        "backlogCount": 743,
+        "usageRecords": {
+          "length": 199337,
+          "pendingCount": 201,
+          "lagCount": 0,
+          "backlogCount": 201,
+          "minPendingId": "1782521687826-0",
+          "maxPendingId": "1782521688141-5",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 201
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2230,
+          "pendingCount": 50,
+          "lagCount": 492,
+          "backlogCount": 542,
+          "minPendingId": "1782521158482-0",
+          "maxPendingId": "1782521160216-3",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 13.569,
+      "requests": {
+        "total": 6944,
+        "success": 6944,
+        "failed": 0,
+        "qps": 511.76,
+        "successQps": 511.76,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 194.51,
+          "p50": 196.72,
+          "p90": 213.64,
+          "p95": 220.95,
+          "p99": 300.9,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 6944
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:48.806Z",
+        "usageRecords": 7612,
+        "usageCatalogEntries": 7612,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:48.783Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 4.48,
+        "maxActiveQuerySeconds": 1.65
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:48.787Z",
+        "pendingCount": 286,
+        "backlogCount": 872,
+        "usageRecords": {
+          "length": 199856,
+          "pendingCount": 236,
+          "lagCount": 72,
+          "backlogCount": 308,
+          "minPendingId": "1782521688701-0",
+          "maxPendingId": "1782521689072-7",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 236
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2252,
+          "pendingCount": 50,
+          "lagCount": 514,
+          "backlogCount": 564,
+          "minPendingId": "1782521158482-0",
+          "maxPendingId": "1782521160216-3",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 14.606,
+      "requests": {
+        "total": 7542,
+        "success": 7542,
+        "failed": 0,
+        "qps": 516.37,
+        "successQps": 516.37,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 193.31,
+          "p50": 196.3,
+          "p90": 213.74,
+          "p95": 219.98,
+          "p99": 300.45,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 7542
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:49.828Z",
+        "usageRecords": 8140,
+        "usageCatalogEntries": 8140,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:49.825Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.72,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:49.829Z",
+        "pendingCount": 276,
+        "backlogCount": 881,
+        "usageRecords": {
+          "length": 200396,
+          "pendingCount": 226,
+          "lagCount": 94,
+          "backlogCount": 320,
+          "minPendingId": "1782521689569-0",
+          "maxPendingId": "1782521689994-10",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 226
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2274,
+          "pendingCount": 50,
+          "lagCount": 511,
+          "backlogCount": 561,
+          "minPendingId": "1782521159440-1",
+          "maxPendingId": "1782521161115-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 15.65,
+      "requests": {
+        "total": 8058,
+        "success": 8058,
+        "failed": 0,
+        "qps": 514.87,
+        "successQps": 514.87,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 193.27,
+          "p50": 196.43,
+          "p90": 213.65,
+          "p95": 219.33,
+          "p99": 298.45,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 8058
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:50.875Z",
+        "usageRecords": 8747,
+        "usageCatalogEntries": 8747,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:50.869Z",
+        "active": 6,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.76,
+        "maxActiveQuerySeconds": 0.63
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:50.875Z",
+        "pendingCount": 266,
+        "backlogCount": 833,
+        "usageRecords": {
+          "length": 200923,
+          "pendingCount": 216,
+          "lagCount": 24,
+          "backlogCount": 240,
+          "minPendingId": "1782521690774-0",
+          "maxPendingId": "1782521691100-5",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 216
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2306,
+          "pendingCount": 50,
+          "lagCount": 543,
+          "backlogCount": 593,
+          "minPendingId": "1782521159440-1",
+          "maxPendingId": "1782521161115-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 16.695,
+      "requests": {
+        "total": 8659,
+        "success": 8659,
+        "failed": 0,
+        "qps": 518.66,
+        "successQps": 518.66,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 192.4,
+          "p50": 195.44,
+          "p90": 213.38,
+          "p95": 219.03,
+          "p99": 297.59,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 8659
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:51.923Z",
+        "usageRecords": 9386,
+        "usageCatalogEntries": 9386,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:51.912Z",
+        "active": 3,
+        "idleInTransaction": 2,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.7,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:51.919Z",
+        "pendingCount": 228,
+        "backlogCount": 806,
+        "usageRecords": {
+          "length": 201527,
+          "pendingCount": 178,
+          "lagCount": 27,
+          "backlogCount": 205,
+          "minPendingId": "1782521692010-0",
+          "maxPendingId": "1782521692193-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 178
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2339,
+          "pendingCount": 50,
+          "lagCount": 551,
+          "backlogCount": 601,
+          "minPendingId": "1782521160217-0",
+          "maxPendingId": "1782521161825-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 17.723,
+      "requests": {
+        "total": 9174,
+        "success": 9174,
+        "failed": 0,
+        "qps": 517.62,
+        "successQps": 517.62,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.68,
+          "p50": 193.89,
+          "p90": 213.23,
+          "p95": 218.71,
+          "p99": 296.22,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 9174
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:52.953Z",
+        "usageRecords": 9880,
+        "usageCatalogEntries": 9880,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:52.942Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.73,
+        "maxActiveQuerySeconds": 0.21
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:52.945Z",
+        "pendingCount": 249,
+        "backlogCount": 931,
+        "usageRecords": {
+          "length": 202115,
+          "pendingCount": 199,
+          "lagCount": 100,
+          "backlogCount": 299,
+          "minPendingId": "1782521692829-0",
+          "maxPendingId": "1782521693042-14",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 199
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2370,
+          "pendingCount": 50,
+          "lagCount": 582,
+          "backlogCount": 632,
+          "minPendingId": "1782521160217-0",
+          "maxPendingId": "1782521161825-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 18.757,
+      "requests": {
+        "total": 9780,
+        "success": 9780,
+        "failed": 0,
+        "qps": 521.41,
+        "successQps": 521.41,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.31,
+          "p50": 192.55,
+          "p90": 212.95,
+          "p95": 218.59,
+          "p99": 295.69,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 9780
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:53.986Z",
+        "usageRecords": 10498,
+        "usageCatalogEntries": 10498,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:53.974Z",
+        "active": 4,
+        "idleInTransaction": 2,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.77,
+        "maxActiveQuerySeconds": 1.24
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:53.981Z",
+        "pendingCount": 237,
+        "backlogCount": 870,
+        "usageRecords": {
+          "length": 202637,
+          "pendingCount": 187,
+          "lagCount": 16,
+          "backlogCount": 203,
+          "minPendingId": "1782521694030-0",
+          "maxPendingId": "1782521694238-4",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 187
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2405,
+          "pendingCount": 50,
+          "lagCount": 617,
+          "backlogCount": 667,
+          "minPendingId": "1782521160217-0",
+          "maxPendingId": "1782521161825-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 19.791,
+      "requests": {
+        "total": 10285,
+        "success": 10285,
+        "failed": 0,
+        "qps": 519.67,
+        "successQps": 519.67,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.65,
+          "p50": 193.25,
+          "p90": 213.31,
+          "p95": 218.95,
+          "p99": 256.75,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10285
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:55.019Z",
+        "usageRecords": 10885,
+        "usageCatalogEntries": 10885,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:55.010Z",
+        "active": 3,
+        "idleInTransaction": 2,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.33,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:55.016Z",
+        "pendingCount": 250,
+        "backlogCount": 1066,
+        "usageRecords": {
+          "length": 203212,
+          "pendingCount": 200,
+          "lagCount": 191,
+          "backlogCount": 391,
+          "minPendingId": "1782521694712-0",
+          "maxPendingId": "1782521695042-2",
+          "consumers": [
+            {
+              "name": "juhe-ai:usage-record-writers:PC-20230602DNMH:40132",
+              "pending": 200
+            }
+          ]
+        },
+        "auditLogs": {
+          "length": 2438,
+          "pendingCount": 50,
+          "lagCount": 625,
+          "backlogCount": 675,
+          "minPendingId": "1782521161116-0",
+          "maxPendingId": "1782521163054-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 20.83,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 503.88,
+        "successQps": 503.88,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:56.053Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:56.044Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 3.37,
+        "maxActiveQuerySeconds": 0.87
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:56.048Z",
+        "pendingCount": 50,
+        "backlogCount": 685,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 635,
+          "backlogCount": 685,
+          "minPendingId": "1782521161116-0",
+          "maxPendingId": "1782521163054-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 21.864,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 480.05,
+        "successQps": 480.05,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:57.091Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:57.078Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.93,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:57.079Z",
+        "pendingCount": 50,
+        "backlogCount": 660,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 610,
+          "backlogCount": 660,
+          "minPendingId": "1782521161825-1",
+          "maxPendingId": "1782521163839-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 22.9,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 458.34,
+        "successQps": 458.34,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:58.126Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:58.113Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.97,
+        "maxActiveQuerySeconds": 1
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:58.117Z",
+        "pendingCount": 50,
+        "backlogCount": 660,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 610,
+          "backlogCount": 660,
+          "minPendingId": "1782521161825-1",
+          "maxPendingId": "1782521163839-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 23.928,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 438.65,
+        "successQps": 438.65,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:54:59.158Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:54:59.147Z",
+        "active": 6,
+        "idleInTransaction": 0,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.06,
+        "maxActiveQuerySeconds": 0.37
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:54:59.147Z",
+        "pendingCount": 50,
+        "backlogCount": 635,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 585,
+          "backlogCount": 635,
+          "minPendingId": "1782521163101-0",
+          "maxPendingId": "1782521164935-2",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 24.967,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 420.4,
+        "successQps": 420.4,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:00.199Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:00.187Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.45,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:00.187Z",
+        "pendingCount": 50,
+        "backlogCount": 610,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 560,
+          "backlogCount": 610,
+          "minPendingId": "1782521163979-0",
+          "maxPendingId": "1782521674579-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 26.01,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 403.53,
+        "successQps": 403.53,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:01.237Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:01.228Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.49,
+        "maxActiveQuerySeconds": 0.57
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:01.228Z",
+        "pendingCount": 50,
+        "backlogCount": 610,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 560,
+          "backlogCount": 610,
+          "minPendingId": "1782521163979-0",
+          "maxPendingId": "1782521674579-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 27.041,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 388.15,
+        "successQps": 388.15,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:02.260Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:02.257Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.62,
+        "maxActiveQuerySeconds": 0.03
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:02.261Z",
+        "pendingCount": 50,
+        "backlogCount": 585,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 535,
+          "backlogCount": 585,
+          "minPendingId": "1782521165010-0",
+          "maxPendingId": "1782521675899-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 28.081,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 373.78,
+        "successQps": 373.78,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:03.300Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 0,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:03.295Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.66,
+        "maxActiveQuerySeconds": 1.07
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:03.300Z",
+        "pendingCount": 50,
+        "backlogCount": 585,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 535,
+          "backlogCount": 585,
+          "minPendingId": "1782521165010-0",
+          "maxPendingId": "1782521675899-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 29.106,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 360.61,
+        "successQps": 360.61,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:04.331Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 20,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:04.325Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.12,
+        "maxActiveQuerySeconds": 0.32
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:04.330Z",
+        "pendingCount": 50,
+        "backlogCount": 560,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 510,
+          "backlogCount": 560,
+          "minPendingId": "1782521674580-0",
+          "maxPendingId": "1782521677143-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 30.15,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 348.13,
+        "successQps": 348.13,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:05.372Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 45,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:05.363Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.38,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:05.367Z",
+        "pendingCount": 50,
+        "backlogCount": 535,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 485,
+          "backlogCount": 535,
+          "minPendingId": "1782521675900-0",
+          "maxPendingId": "1782521678156-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 31.176,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 336.67,
+        "successQps": 336.67,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:06.398Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 45,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:06.390Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.41,
+        "maxActiveQuerySeconds": 0.91
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:06.394Z",
+        "pendingCount": 50,
+        "backlogCount": 535,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 485,
+          "backlogCount": 535,
+          "minPendingId": "1782521675900-0",
+          "maxPendingId": "1782521678156-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 32.209,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 325.88,
+        "successQps": 325.88,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:07.430Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 70,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:07.422Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.96,
+        "maxActiveQuerySeconds": 0.28
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:07.428Z",
+        "pendingCount": 50,
+        "backlogCount": 510,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 460,
+          "backlogCount": 510,
+          "minPendingId": "1782521677143-1",
+          "maxPendingId": "1782521679164-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 33.245,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 315.72,
+        "successQps": 315.72,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:08.469Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 95,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:08.465Z",
+        "active": 3,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.35,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:08.465Z",
+        "pendingCount": 50,
+        "backlogCount": 485,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 435,
+          "backlogCount": 485,
+          "minPendingId": "1782521678156-1",
+          "maxPendingId": "1782521679941-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 34.276,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 306.22,
+        "successQps": 306.22,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:09.500Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 95,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:09.488Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.38,
+        "maxActiveQuerySeconds": 0.86
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:09.492Z",
+        "pendingCount": 50,
+        "backlogCount": 485,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 435,
+          "backlogCount": 485,
+          "minPendingId": "1782521678156-1",
+          "maxPendingId": "1782521679941-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 35.304,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 297.31,
+        "successQps": 297.31,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:10.534Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 120,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:10.517Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.91,
+        "maxActiveQuerySeconds": 0.28
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:10.522Z",
+        "pendingCount": 50,
+        "backlogCount": 460,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 410,
+          "backlogCount": 460,
+          "minPendingId": "1782521679167-0",
+          "maxPendingId": "1782521680730-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 36.344,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 288.79,
+        "successQps": 288.79,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:11.564Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 145,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:11.569Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.36,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:11.573Z",
+        "pendingCount": 25,
+        "backlogCount": 435,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 25,
+          "lagCount": 410,
+          "backlogCount": 435,
+          "minPendingId": "1782521680003-0",
+          "maxPendingId": "1782521680730-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 37.387,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 280.74,
+        "successQps": 280.74,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:12.607Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 145,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:12.603Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.4,
+        "maxActiveQuerySeconds": 0.27
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:12.607Z",
+        "pendingCount": 50,
+        "backlogCount": 435,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 385,
+          "backlogCount": 435,
+          "minPendingId": "1782521680003-0",
+          "maxPendingId": "1782521681725-2",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 38.413,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 273.24,
+        "successQps": 273.24,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:13.640Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 170,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:13.631Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.33,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:13.635Z",
+        "pendingCount": 25,
+        "backlogCount": 410,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 25,
+          "lagCount": 385,
+          "backlogCount": 410,
+          "minPendingId": "1782521680732-0",
+          "maxPendingId": "1782521681725-2",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 39.445,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 266.09,
+        "successQps": 266.09,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:14.669Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 170,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:14.666Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.36,
+        "maxActiveQuerySeconds": 0.2
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:14.672Z",
+        "pendingCount": 50,
+        "backlogCount": 410,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 360,
+          "backlogCount": 410,
+          "minPendingId": "1782521680732-0",
+          "maxPendingId": "1782521682817-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 40.481,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 259.28,
+        "successQps": 259.28,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:15.702Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 195,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:15.694Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.26,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:15.698Z",
+        "pendingCount": 50,
+        "backlogCount": 385,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 335,
+          "backlogCount": 385,
+          "minPendingId": "1782521681726-0",
+          "maxPendingId": "1782521683729-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 41.504,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 252.89,
+        "successQps": 252.89,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:16.848Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 195,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:16.853Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.28,
+        "maxActiveQuerySeconds": 0.55
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:16.856Z",
+        "pendingCount": 50,
+        "backlogCount": 385,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 335,
+          "backlogCount": 385,
+          "minPendingId": "1782521681726-0",
+          "maxPendingId": "1782521683729-1",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 42.67,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 245.98,
+        "successQps": 245.98,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:17.905Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 220,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:17.885Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.75,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:17.891Z",
+        "pendingCount": 50,
+        "backlogCount": 360,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 310,
+          "backlogCount": 360,
+          "minPendingId": "1782521682876-0",
+          "maxPendingId": "1782521684835-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 43.713,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 240.11,
+        "successQps": 240.11,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:18.950Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 220,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:18.929Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.79,
+        "maxActiveQuerySeconds": 0.51
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:18.932Z",
+        "pendingCount": 50,
+        "backlogCount": 360,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 310,
+          "backlogCount": 360,
+          "minPendingId": "1782521682876-0",
+          "maxPendingId": "1782521684835-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 44.754,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 234.53,
+        "successQps": 234.53,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:19.975Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 245,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:19.970Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.59,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:19.975Z",
+        "pendingCount": 50,
+        "backlogCount": 335,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 285,
+          "backlogCount": 335,
+          "minPendingId": "1782521683730-0",
+          "maxPendingId": "1782521685829-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 45.787,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 229.24,
+        "successQps": 229.24,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:21.015Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 245,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:21.005Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.62,
+        "maxActiveQuerySeconds": 0.59
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:21.005Z",
+        "pendingCount": 50,
+        "backlogCount": 335,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 285,
+          "backlogCount": 335,
+          "minPendingId": "1782521683730-0",
+          "maxPendingId": "1782521685829-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 46.825,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 224.15,
+        "successQps": 224.15,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:22.053Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 270,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:22.041Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.65,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:22.045Z",
+        "pendingCount": 50,
+        "backlogCount": 310,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 260,
+          "backlogCount": 310,
+          "minPendingId": "1782521684836-0",
+          "maxPendingId": "1782521686778-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 47.869,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 219.26,
+        "successQps": 219.26,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:23.098Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 270,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:23.098Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.7,
+        "maxActiveQuerySeconds": 0.63
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:23.104Z",
+        "pendingCount": 50,
+        "backlogCount": 310,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 260,
+          "backlogCount": 310,
+          "minPendingId": "1782521684836-0",
+          "maxPendingId": "1782521686778-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 48.91,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 214.6,
+        "successQps": 214.6,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:24.136Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 295,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:24.126Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.7,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:24.130Z",
+        "pendingCount": 50,
+        "backlogCount": 285,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 235,
+          "backlogCount": 285,
+          "minPendingId": "1782521685954-0",
+          "maxPendingId": "1782521687767-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 49.946,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 210.15,
+        "successQps": 210.15,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:25.173Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 295,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:25.164Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.74,
+        "maxActiveQuerySeconds": 0.46
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:25.166Z",
+        "pendingCount": 50,
+        "backlogCount": 285,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 235,
+          "backlogCount": 285,
+          "minPendingId": "1782521685954-0",
+          "maxPendingId": "1782521687767-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 50.987,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 205.86,
+        "successQps": 205.86,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:26.213Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 320,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:26.206Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.56,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:26.213Z",
+        "pendingCount": 50,
+        "backlogCount": 260,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 210,
+          "backlogCount": 260,
+          "minPendingId": "1782521686833-0",
+          "maxPendingId": "1782521688563-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 52.028,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 201.74,
+        "successQps": 201.74,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:27.254Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 320,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:27.244Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.6,
+        "maxActiveQuerySeconds": 0.36
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:27.244Z",
+        "pendingCount": 50,
+        "backlogCount": 260,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 210,
+          "backlogCount": 260,
+          "minPendingId": "1782521686833-0",
+          "maxPendingId": "1782521688563-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 53.057,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 197.82,
+        "successQps": 197.82,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:28.284Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 345,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:28.273Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.42,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:28.277Z",
+        "pendingCount": 50,
+        "backlogCount": 235,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 185,
+          "backlogCount": 235,
+          "minPendingId": "1782521687767-1",
+          "maxPendingId": "1782521689869-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 54.086,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 194.06,
+        "successQps": 194.06,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:29.314Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 345,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:29.302Z",
+        "active": 5,
+        "idleInTransaction": 1,
+        "lockWaiters": 1,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 2.45,
+        "maxActiveQuerySeconds": 0.36
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:29.305Z",
+        "pendingCount": 50,
+        "backlogCount": 235,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 185,
+          "backlogCount": 235,
+          "minPendingId": "1782521687767-1",
+          "maxPendingId": "1782521689869-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    },
+    {
+      "elapsedSeconds": 55.13,
+      "requests": {
+        "total": 10496,
+        "success": 10496,
+        "failed": 0,
+        "qps": 190.39,
+        "successQps": 190.39,
+        "latencyMs": {
+          "min": 60.64,
+          "avg": 191.16,
+          "p50": 192.4,
+          "p90": 213.26,
+          "p95": 218.8,
+          "p99": 256.73,
+          "max": 324.31
+        },
+        "statusCounts": {
+          "200": 10496
+        },
+        "errorCounts": {}
+      },
+      "storage": {
+        "sampledAt": "2026-06-27T00:55:30.355Z",
+        "usageRecords": 11501,
+        "usageCatalogEntries": 11501,
+        "auditLogs": 370,
+        "operationLogs": 0,
+        "publicApiLogs": 0,
+        "usageStatsTotalsRowsForFixture": 0,
+        "statsJobState": {
+          "scope_type": "global",
+          "scope_id": "",
+          "cursor_created_at": "2026-06-27T00:04:11.228Z",
+          "cursor_id": "perf_gateway_readiness_1782518650232_5bed7d29d0c12_usage_team_group",
+          "last_success_at": "2026-06-27T00:54:33.767Z",
+          "last_error_message": null,
+          "lag_seconds": 0,
+          "updated_at": "2026-06-27T00:54:33.841Z"
+        }
+      },
+      "postgres": {
+        "sampledAt": "2026-06-27T00:55:30.342Z",
+        "active": 4,
+        "idleInTransaction": 1,
+        "lockWaiters": 0,
+        "notGrantedLocks": 0,
+        "maxXactAgeSeconds": 1.43,
+        "maxActiveQuerySeconds": 0
+      },
+      "redis": {
+        "sampledAt": "2026-06-27T00:55:30.346Z",
+        "pendingCount": 50,
+        "backlogCount": 210,
+        "usageRecords": {
+          "length": 203437,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        },
+        "auditLogs": {
+          "length": 2448,
+          "pendingCount": 50,
+          "lagCount": 160,
+          "backlogCount": 210,
+          "minPendingId": "1782521688567-0",
+          "maxPendingId": "1782521690573-0",
+          "consumers": [
+            {
+              "name": "juhe-ai:audit-log-writers:40132:0",
+              "pending": 25
+            },
+            {
+              "name": "juhe-ai:audit-log-writers:40132:1",
+              "pending": 25
+            }
+          ]
+        },
+        "operationLogs": {
+          "length": 0,
+          "pendingCount": 0,
+          "lagCount": 0,
+          "backlogCount": 0,
+          "consumers": []
+        }
+      }
+    }
+  ],
+  "pass": false,
+  "violations": [
+    "PostgreSQL 锁等待过高：lockWaiters=1, notGranted=0",
+    "Redis Stream backlog=210 超过阈值 100（pending=50）"
+  ]
+}

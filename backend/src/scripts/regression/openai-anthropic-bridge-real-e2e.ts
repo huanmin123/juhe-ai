@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { ANTHROPIC_ANTHROPIC_V1_PROFILE_ID, ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import type { ApiKeyExplicitHybridRouteRule } from '../../domain/types.js'
 import {
   captureGatewayRawBody,
   rejectGatewayRawBodyByContentLength
@@ -108,45 +109,22 @@ try {
         supported_endpoint_modes: ['messages_json', 'messages_sse']
       },
       supportedModels: [upstreamModel],
-      clientCompatibility: 'codex_responses',
-      modelMappings: [
-        {
-          sourceModel,
-          sourceEndpointFamily: 'chat_completions',
-          upstreamModel,
-          upstreamEndpointFamily: 'messages',
-          enabled: true
-        },
-        {
-          sourceModel,
-          sourceEndpointFamily: 'responses',
-          upstreamModel,
-          upstreamEndpointFamily: 'messages',
-          enabled: true
-        }
-      ],
       groupId: group.id,
       status: 'active',
       schedulable: true
     }, access)
-    assert.equal(account.modelMappings?.length, 2, '真实 E2E 桥接账号应保存 Chat/Responses 映射')
+    assert.equal(account.modelMappings?.length ?? 0, 0, '真实 E2E 桥接账号不应保存 Chat/Responses 跨协议映射')
     const defaultCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId)
     assert.equal(defaultCandidateResult.accounts.length, 1, `真实 E2E 默认候选窗口应返回桥接账号，实际 ${defaultCandidateResult.accounts.length}，诊断 ${JSON.stringify(defaultCandidateResult.diagnostics)}`)
-    const chatCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
-      requestedModel: sourceModel,
-      requestedEndpointFamily: 'chat_completions'
+    const upstreamCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
+      requestedModel: upstreamModel,
+      requestedEndpointFamily: 'messages'
     })
-    assert.equal(chatCandidateResult.accounts.length, 1, `真实 E2E Chat 模型候选窗口应返回桥接账号，实际 ${chatCandidateResult.accounts.length}，诊断 ${JSON.stringify(chatCandidateResult.diagnostics)}`)
-    assert.equal(chatCandidateResult.accounts[0]?.modelMappings?.length, 2, '真实 E2E Chat 模型候选窗口返回的账号应带模型映射')
-    const responsesCandidateResult = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
-      requestedModel: sourceModel,
-      requestedEndpointFamily: 'responses'
-    })
-    assert.equal(responsesCandidateResult.accounts.length, 1, `真实 E2E Responses 模型候选窗口应返回桥接账号，实际 ${responsesCandidateResult.accounts.length}，诊断 ${JSON.stringify(responsesCandidateResult.diagnostics)}`)
-    assert.equal(responsesCandidateResult.accounts[0]?.modelMappings?.length, 2, '真实 E2E Responses 模型候选窗口返回的账号应带模型映射')
+    assert.equal(upstreamCandidateResult.accounts.length, 1, `真实 E2E 上游模型候选窗口应返回 Anthropic 账号，实际 ${upstreamCandidateResult.accounts.length}，诊断 ${JSON.stringify(upstreamCandidateResult.diagnostics)}`)
     const localKey = repositories.createApiKeyRecord({
       name: 'OpenAI 到 Anthropic 桥接真实 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      explicitHybridRouteRules: openAIToAnthropicRouteRules(group.id),
       status: 'active'
     }, access)
     assert(localKey.key, '真实 E2E 本地 API Key 未返回明文密钥')
@@ -853,6 +831,35 @@ async function uploadOpenAICompatibleRealFile(input: {
   const body = JSON.parse(text) as { id?: string }
   assert(body.id, '真实 Files upload 应返回 file id')
   return { id: body.id }
+}
+
+function openAIToAnthropicRouteRules(targetGroupId: string): ApiKeyExplicitHybridRouteRule[] {
+  return [
+    {
+      id: 'chat_to_messages',
+      enabled: true,
+      priority: 1,
+      sourceClientProfile: 'auto',
+      sourceEndpointFamily: 'chat_completions',
+      sourceModel,
+      targetGroupId,
+      upstreamEndpointFamily: 'messages',
+      upstreamModel,
+      adapterMode: 'bridge'
+    },
+    {
+      id: 'responses_to_messages',
+      enabled: true,
+      priority: 2,
+      sourceClientProfile: 'auto',
+      sourceEndpointFamily: 'responses',
+      sourceModel,
+      targetGroupId,
+      upstreamEndpointFamily: 'messages',
+      upstreamModel,
+      adapterMode: 'bridge'
+    }
+  ]
 }
 
 async function optionalCheck(name: string, run: () => Promise<void>): Promise<string> {

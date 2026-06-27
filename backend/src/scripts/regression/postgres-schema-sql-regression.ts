@@ -22,6 +22,11 @@ assert.equal(
   true,
   'juhe_usage schema 应包含高性能模式使用记录主表'
 )
+assert.equal(
+  statements.some((statement) => statement.schemaName === 'juhe_usage' && statement.source === 'usage-records-supplemental'),
+  true,
+  'juhe_usage schema 应包含使用记录主表补列语句'
+)
 assertPostgresCreateTableOrder(statements)
 
 for (const schemaName of schemaNames) {
@@ -31,8 +36,15 @@ for (const schemaName of schemaNames) {
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_records/, '应包含使用记录主表 schema')
+assert.match(sql, /ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS failure_attribution text/, '应包含使用记录失败归因补列语句')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Codex context schema')
+assert.match(sql, /client_profile text NOT NULL DEFAULT 'auto'/, 'api_keys 建表语句应包含 client_profile 字段')
+assert.match(sql, /explicit_hybrid_route_rules_json text/, 'api_keys 建表语句应包含 explicit_hybrid_route_rules_json 字段')
+assert.match(sql, /container_id text/, 'openai_compatible_files 建表语句应包含 container_id 字段')
+assert.doesNotMatch(sql, /ALTER TABLE api_keys ADD COLUMN client_profile\b/, 'PostgreSQL schema 不应重复为 api_keys.client_profile 补列')
+assert.doesNotMatch(sql, /ALTER TABLE api_keys ADD COLUMN explicit_hybrid_route_rules_json\b/, 'PostgreSQL schema 不应重复为 api_keys.explicit_hybrid_route_rules_json 补列')
+assert.doesNotMatch(sql, /ALTER TABLE openai_compatible_files ADD COLUMN container_id\b/, 'PostgreSQL schema 不应重复为 openai_compatible_files.container_id 补列')
 
 assert.doesNotMatch(sql, /\bPRAGMA\b/i, 'PostgreSQL SQL 不应残留 SQLite PRAGMA')
 assert.doesNotMatch(sql, /COLLATE\s+NOCASE/i, 'PostgreSQL SQL 不应残留 SQLite NOCASE collation')
