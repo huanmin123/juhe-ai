@@ -43,7 +43,7 @@ export function readAuditLogSettings(): AuditLogSettings {
   if (runtimeConfig.runtimeMode === 'performance' || runtimeConfig.databaseDriver === 'postgres') {
     return {
       ...baseSettings,
-      successSampleRate: 0.03,
+      successSampleRate: 0.02,
       successHotRetentionHours: 0
     }
   }

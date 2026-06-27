@@ -17,6 +17,7 @@ const [
   operationLogQueue,
   recordMaintenanceQueue,
   auditLogQueue,
+  auditLogSettings,
   publicApiLogQueue,
   runtimeLogIndexQueue
 ] = await Promise.all([
@@ -24,6 +25,7 @@ const [
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../modules/record-maintenance/record-maintenance-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-settings.js'),
   import('../../modules/public-api-logs/public-api-log-queue.service.js'),
   import('../../modules/runtime-logs/runtime-log-index-queue.service.js')
 ])
@@ -84,13 +86,14 @@ try {
 
   runtimeConfig.workerRole = 'ingest-worker'
   auditLogQueue.clearAuditLogQueueForTest()
-  for (let index = 0; index < 5000; index += 1) {
+  const auditQueueMaxItems = auditLogSettings.readAuditLogSettings().queueMaxItems
+  for (let index = 0; index < auditQueueMaxItems; index += 1) {
     auditLogQueue.enqueueAuditLogsLocal([buildAuditLog(index, true)])
   }
-  assert.equal(auditLogQueue.getAuditLogQueueRuntime().queueLength, 5000, '审计日志 worker 本地队列应达到硬上限')
-  auditLogQueue.enqueueAuditLogsLocal([buildAuditLog(5000, true)])
+  assert.equal(auditLogQueue.getAuditLogQueueRuntime().queueLength, auditQueueMaxItems, '审计日志 worker 本地队列应达到硬上限')
+  auditLogQueue.enqueueAuditLogsLocal([buildAuditLog(auditQueueMaxItems, true)])
   const auditAfterOverflow = auditLogQueue.getAuditLogQueueRuntime()
-  assert.equal(auditAfterOverflow.queueLength, 5000, '审计日志 worker 本地队列满后不应继续增长')
+  assert.equal(auditAfterOverflow.queueLength, auditQueueMaxItems, '审计日志 worker 本地队列满后不应继续增长')
   assert.equal(auditAfterOverflow.droppedOverflowCount, 1, '审计日志 worker 本地队列满后应记录溢出丢弃')
   auditLogQueue.clearAuditLogQueueForTest()
 

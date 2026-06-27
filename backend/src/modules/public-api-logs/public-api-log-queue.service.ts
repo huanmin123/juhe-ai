@@ -1,5 +1,6 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
+import { RedisStreamQueue, type RedisStreamMessage } from '../../shared/redis-stream-queue.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
@@ -11,6 +12,10 @@ const publicApiLogFlushBatchSize = 50
 const publicApiLogShutdownFlushMaxBatches = 100
 const publicApiLogDropWarnInterval = 100
 const publicApiLogRetryDelayMs = 1000
+const publicApiLogRedisStreamKey = 'juhe-ai:queue:public-api-logs'
+const publicApiLogRedisStreamGroup = 'juhe-ai:public-api-log-writers'
+const publicApiLogRedisConsumerErrorRetryMs = 1000
+const publicApiLogRedisStopWaitMs = 2000
 
 interface QueuedPublicApiLog {
   input: PublicApiLogInput
@@ -24,8 +29,16 @@ let flushRetryTimer: NodeJS.Timeout | undefined
 let flushing = false
 let droppedPublicApiLogCount = 0
 let publicApiLogFlushFailureCount = 0
+let publicApiLogRedisStreamQueueInstance: RedisStreamQueue<PublicApiLogInput> | undefined
+let publicApiLogRedisConsumerStarted = false
+let publicApiLogRedisConsumerStopping = false
+let publicApiLogRedisConsumerPromise: Promise<void> | undefined
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
+  if (shouldEnqueuePublicApiLogToRedisStream()) {
+    void enqueuePublicApiLogToRedisStream(input)
+    return true
+  }
   if (runtimeConfig.processRole === 'server') {
     return sendPublicApiLogsToWorker([input])
   }
@@ -33,6 +46,36 @@ export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
     return sendPublicApiLogToParent(input)
   }
   return enqueuePublicApiLogsLocal([input])
+}
+
+export function startPublicApiLogRedisStreamConsumer(): void {
+  if (!shouldUseRedisStreamPublicApiLogQueue() || !isPublicApiLogIngestWorker() || publicApiLogRedisConsumerStarted) {
+    return
+  }
+  publicApiLogRedisConsumerStarted = true
+  publicApiLogRedisConsumerStopping = false
+  publicApiLogRedisConsumerPromise = runPublicApiLogRedisStreamConsumer().catch((error) => {
+    logger.error(errorLogFields(error, {
+      event: 'public_api_log_redis_stream_consumer_stopped'
+    }), 'Redis Stream 公开接口日志消费循环异常退出')
+  }).finally(() => {
+    publicApiLogRedisConsumerStarted = false
+    publicApiLogRedisConsumerPromise = undefined
+  })
+}
+
+export async function stopPublicApiLogRedisStreamConsumer(): Promise<void> {
+  publicApiLogRedisConsumerStopping = true
+  const queue = publicApiLogRedisStreamQueueInstance
+  if (queue) {
+    await queue.closeConsumer().catch(() => undefined)
+  }
+  if (publicApiLogRedisConsumerPromise) {
+    await Promise.race([
+      publicApiLogRedisConsumerPromise.catch(() => undefined),
+      delay(publicApiLogRedisStopWaitMs)
+    ])
+  }
 }
 
 export function enqueuePublicApiLogsLocal(inputs: PublicApiLogInput[]): boolean {
@@ -107,6 +150,11 @@ export function clearPublicApiLogQueueForTest(): void {
   droppedPublicApiLogCount = 0
   publicApiLogFlushFailureCount = 0
   flushing = false
+  publicApiLogRedisConsumerStopping = true
+  publicApiLogRedisConsumerStarted = false
+  publicApiLogRedisConsumerPromise = undefined
+  void publicApiLogRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
+  publicApiLogRedisStreamQueueInstance = undefined
   clearPublicApiLogFlushTimers()
 }
 
@@ -249,6 +297,84 @@ function flushPublicApiLogQueueBatch(): boolean {
   }
 }
 
+async function enqueuePublicApiLogToRedisStream(input: PublicApiLogInput): Promise<void> {
+  try {
+    await publicApiLogRedisStreamQueue().enqueue(input)
+  } catch (error) {
+    recordPublicApiLogDispatchFailure(error, input)
+    fallbackPublicApiLogAfterRedisStreamFailure(input)
+  }
+}
+
+function fallbackPublicApiLogAfterRedisStreamFailure(input: PublicApiLogInput): void {
+  if (runtimeConfig.processRole === 'server') {
+    if (!sendPublicApiLogsToWorker([input])) {
+      recordPublicApiLogDispatchFailure(new Error('ingest-worker IPC 不可用'), input)
+    }
+    return
+  }
+  if (runtimeConfig.processRole === 'db-service') {
+    sendPublicApiLogToParent(input)
+    return
+  }
+  if (isPublicApiLogIngestWorker()) {
+    enqueuePublicApiLogsLocal([input])
+  }
+}
+
+async function runPublicApiLogRedisStreamConsumer(): Promise<void> {
+  const queue = publicApiLogRedisStreamQueue()
+  while (!publicApiLogRedisConsumerStopping) {
+    try {
+      const claimed = await queue.claimPending()
+      const messages = claimed.length > 0 ? claimed : await queue.readNew()
+      if (messages.length === 0) {
+        continue
+      }
+      await flushPublicApiLogRedisStreamMessages(messages)
+    } catch (error) {
+      if (publicApiLogRedisConsumerStopping) {
+        break
+      }
+      publicApiLogFlushFailureCount += 1
+      logger.error(errorLogFields(error, {
+        event: 'public_api_log_redis_stream_consume_failed',
+        flushFailureCount: publicApiLogFlushFailureCount
+      }), 'Redis Stream 公开接口日志消费失败，稍后重试')
+      await delay(publicApiLogRedisConsumerErrorRetryMs)
+    }
+  }
+}
+
+async function flushPublicApiLogRedisStreamMessages(messages: Array<RedisStreamMessage<PublicApiLogInput>>): Promise<void> {
+  if (messages.length === 0) return
+  const queue = publicApiLogRedisStreamQueue()
+  try {
+    await createPublicApiLogsBatchAsync(messages.map((message) => message.payload))
+    publicApiLogFlushFailureCount = 0
+    await queue.ack(messages.map((message) => message.id))
+  } catch (error) {
+    publicApiLogFlushFailureCount += 1
+    logger.error(errorLogFields(error, {
+      event: 'public_api_log_redis_stream_flush_failed',
+      batchSize: messages.length,
+      firstMessageId: messages[0]?.id,
+      flushFailureCount: publicApiLogFlushFailureCount
+    }), 'Redis Stream 公开接口日志落库失败，消息保持 pending 等待重投')
+  }
+}
+
+function publicApiLogRedisStreamQueue(): RedisStreamQueue<PublicApiLogInput> {
+  if (!publicApiLogRedisStreamQueueInstance) {
+    publicApiLogRedisStreamQueueInstance = new RedisStreamQueue<PublicApiLogInput>({
+      streamKey: publicApiLogRedisStreamKey,
+      groupName: publicApiLogRedisStreamGroup,
+      readCount: publicApiLogFlushBatchSize
+    })
+  }
+  return publicApiLogRedisStreamQueueInstance
+}
+
 async function flushPublicApiLogQueueBatchAsync(): Promise<boolean> {
   const batch = publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)
   if (batch.length === 0) {
@@ -323,7 +449,26 @@ function recordPublicApiLogDispatchFailure(error: unknown, input: PublicApiLogIn
 }
 
 function assertLocalPublicApiLogWriteAllowed(operation: string): void {
-  if (runtimeConfig.processRole !== 'worker' || runtimeConfig.workerRole !== 'ingest-worker') {
+  if (!isPublicApiLogIngestWorker()) {
     throw new Error(`${operation} 只能在 ingest-worker 本地执行`)
   }
+}
+
+function isPublicApiLogIngestWorker(): boolean {
+  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function shouldUseRedisStreamPublicApiLogQueue(): boolean {
+  return runtimeConfig.queueDriver === 'redis_stream'
+}
+
+function shouldEnqueuePublicApiLogToRedisStream(): boolean {
+  return shouldUseRedisStreamPublicApiLogQueue() && !isPublicApiLogIngestWorker()
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+  })
 }

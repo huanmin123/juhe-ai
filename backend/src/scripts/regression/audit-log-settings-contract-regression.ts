@@ -22,7 +22,7 @@ runtimeConfig.databaseDriver = 'postgres'
 const performanceSettings = readAuditLogSettings()
 runtimeConfig.runtimeMode = 'standalone'
 runtimeConfig.databaseDriver = 'sqlite'
-assert.equal(performanceSettings.successSampleRate, 0.03, '高性能 PostgreSQL 模式成功审计应降为 3% 抽样，避免审计尾部拖垮网关')
+assert.equal(performanceSettings.successSampleRate, 0.02, '高性能 PostgreSQL 模式成功审计应降为 2% 抽样，避免审计尾部拖垮网关')
 assert.equal(performanceSettings.successHotRetentionHours, 0, '高性能 PostgreSQL 模式不启用成功审计热窗口，失败审计仍全量保留')
 
 assert(auditDesignDoc.includes('| `batchSize` | `500` |'), '原始审计日志设计文档必须声明 batchSize 固定为 500')

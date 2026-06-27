@@ -25,7 +25,9 @@ import {
   enqueuePublicApiLogsLocal,
   flushPublicApiLogQueueForShutdown,
   getPublicApiLogQueueRuntime,
-  installPublicApiLogQueueShutdownHooks
+  installPublicApiLogQueueShutdownHooks,
+  startPublicApiLogRedisStreamConsumer,
+  stopPublicApiLogRedisStreamConsumer
 } from './modules/public-api-logs/public-api-log-queue.service.js'
 import {
   enqueueRecordMaintenanceJobsLocal,
@@ -103,6 +105,7 @@ if (isIngestWorker()) {
   }
   startUsageRecordRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
+  startPublicApiLogRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
   if (runtimeConfig.databaseDriver === 'sqlite') {
     startRuntimeLogFileImport()
@@ -391,6 +394,7 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
   if (isIngestWorker()) {
     await stopUsageRecordRedisStreamConsumer()
     await stopOperationLogRedisStreamConsumer()
+    await stopPublicApiLogRedisStreamConsumer()
     await stopAuditLogRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
