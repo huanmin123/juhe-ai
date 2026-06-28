@@ -64,13 +64,17 @@ function assertAccountImportRouteBoundary(): void {
   assert(importRouteSource.includes("router.post('/import/preview'"), '账户导入子路由必须保留 preview 入口')
   assert(importRouteSource.includes("router.post('/import/confirm'"), '账户导入子路由必须保留 confirm 入口')
   assert(importRouteSource.includes('accountImportRequestSchema.safeParse'), '账户导入子路由必须负责请求体 schema 校验')
-  assert(importRouteSource.includes('previewAccountImport'), '账户导入子路由必须调用导入预览服务')
-  assert(importRouteSource.includes('executeAccountImport'), '账户导入子路由必须调用导入执行服务')
+  assert(importRouteSource.includes('previewAccountImportAsync'), '账户导入子路由必须调用 async 导入预览服务')
+  assert(importRouteSource.includes('executeAccountImportAsync'), '账户导入子路由必须调用 async 导入执行服务')
   assert(importRouteSource.includes("operationKey: 'accounts.import'"), '账户导入确认必须保留幂等与操作日志 key')
-  assert(importRouteSource.includes('runLoggedOperation'), '账户导入确认必须保留操作日志记录边界')
+  assert(importRouteSource.includes('runLoggedOperationAsync'), '账户导入确认必须保留 async 操作日志记录边界')
+  assert(!/\brunLoggedOperation\(/.test(importRouteSource), '账户导入 HTTP 入口不应回退到同步操作日志边界')
   assert(!importRouteSource.includes('createAccount('), '账户导入子路由不应直接创建账户')
   assert(!importRouteSource.includes('updateAccount('), '账户导入子路由不应包含普通账户编辑逻辑')
   assert(!importRouteSource.includes('deleteAccountWithRelatedCleanup('), '账户导入子路由不应包含普通账户删除逻辑')
+  assert(importServiceSource.includes('export async function previewAccountImportAsync'), '账户导入 service 必须提供 async 预览入口')
+  assert(importServiceSource.includes('export async function executeAccountImportAsync'), '账户导入 service 必须提供 async 执行入口')
+  assert(importServiceSource.includes('listProvidersAsync'), '账户导入 async 计划构建必须使用 async 供应商读取')
   assert(importServiceSource.includes("from './account-import-root-validation.js'"), '账户导入 service 必须使用根对象校验 helper')
   assert(importServiceSource.includes('validateAccountImportRoot'), '账户导入 service 必须调用根对象校验 helper')
   assert(!importServiceSource.includes('appendUnknownFieldMessages'), '账户导入根未知字段校验不应回退到 service')
@@ -92,15 +96,20 @@ function assertAccountImportRouteBoundary(): void {
   assert(!importServiceSource.includes('findGroupSummary('), '账户导入 service 不应直接读取分组摘要')
   assert(!importServiceSource.includes('findProxy('), '账户导入 service 不应直接读取代理详情')
   assert(resourceResolverSource.includes('export function resolveAccountGroup'), '账户导入资源解析 helper 必须承接分组解析')
+  assert(resourceResolverSource.includes('export async function resolveAccountGroupAsync'), '账户导入资源解析 helper 必须承接 async 分组解析')
   assert(resourceResolverSource.includes('export function resolveAccountProxy'), '账户导入资源解析 helper 必须承接代理解析')
+  assert(resourceResolverSource.includes('export async function resolveAccountProxyAsync'), '账户导入资源解析 helper 必须承接 async 代理解析')
   assert(resourceResolverSource.includes('listGroupOptions('), '账户导入资源解析 helper 必须保留分组选项查找')
+  assert(resourceResolverSource.includes('listGroupOptionsAsync('), '账户导入资源解析 helper 必须保留 async 分组选项查找')
   assert(resourceResolverSource.includes('listProxyOptions('), '账户导入资源解析 helper 必须保留代理选项查找')
+  assert(resourceResolverSource.includes('listProxyOptionsAsync('), '账户导入资源解析 helper 必须保留 async 代理选项查找')
   assert(importServiceSource.includes("from './account-import-proxy-plan.js'"), '账户导入 service 必须使用代理 plan helper')
   assert(!importServiceSource.includes('function planProxy('), '账户导入代理字段解析不应回退到 service')
   assert(!importServiceSource.includes('normalizeProxyType'), '账户导入 service 不应直接规范化代理类型')
   assert(!importServiceSource.includes('findProxyOptionByName'), '账户导入 service 不应直接判断代理同名复用')
   assert(!importServiceSource.includes('代理 ref 重复'), '账户导入代理 ref 重复处理不应回退到 service')
   assert(proxyPlanSource.includes('export function planImportProxies'), '账户导入代理 plan helper 必须承接代理计划构建')
+  assert(proxyPlanSource.includes('export async function planImportProxiesAsync'), '账户导入代理 plan helper 必须承接 async 代理计划构建')
   assert(proxyPlanSource.includes('normalizeProxyType'), '账户导入代理 plan helper 必须保留代理类型规范化')
   assert(proxyPlanSource.includes('findProxyOptionByName'), '账户导入代理 plan helper 必须保留代理同名复用判断')
   assert(proxyPlanSource.includes('代理 ref 重复'), '账户导入代理 plan helper 必须保留代理 ref 重复处理')
@@ -110,11 +119,15 @@ function assertAccountImportRouteBoundary(): void {
   assert(!importServiceSource.includes('normalizeStatus'), '账户导入 service 不应直接规范化账户状态')
   assert(!importServiceSource.includes('importAvailabilityScheduleInput'), '账户导入 service 不应直接解析账户时间计划')
   assert(accountPlanSource.includes('export function planImportAccount'), '账户导入账户 plan helper 必须承接账户计划构建')
+  assert(accountPlanSource.includes('export async function planImportAccountAsync'), '账户导入账户 plan helper 必须承接 async 账户计划构建')
   assert(accountPlanSource.includes('normalizeAccountCredentialsForWrite'), '账户导入账户 plan helper 必须保留账户凭据归一化')
   assert(accountPlanSource.includes('validateImportAccountProviderAndBasics'), '账户导入账户 plan helper 必须保留 provider / profile 基础校验')
   assert(accountPlanSource.includes('validateAccountModelCatalogFields'), '账户导入账户 plan helper 必须保留模型目录校验')
+  assert(accountPlanSource.includes('validateAccountModelCatalogFieldsAsync'), '账户导入账户 plan helper 必须保留 async 模型目录校验')
   assert(accountPlanSource.includes('resolveAccountGroup'), '账户导入账户 plan helper 必须保留分组解析')
+  assert(accountPlanSource.includes('resolveAccountGroupAsync'), '账户导入账户 plan helper 必须保留 async 分组解析')
   assert(accountPlanSource.includes('resolveAccountProxy'), '账户导入账户 plan helper 必须保留代理引用解析')
+  assert(accountPlanSource.includes('resolveAccountProxyAsync'), '账户导入账户 plan helper 必须保留 async 代理引用解析')
   assert(accountPlanSource.includes("from './account-import-provider-resolver.js'"), '账户导入账户 plan helper 必须使用 provider 解析 helper')
   assert(!importServiceSource.includes('function validateAccountBasics('), '账户导入基础校验不应回退到 service')
   assert(!importServiceSource.includes('function resolveImportAccountProtocolProfile('), '账户导入协议档案解析不应回退到 service')
@@ -126,6 +139,7 @@ function assertAccountImportRouteBoundary(): void {
   assert(!importServiceSource.includes('normalizeAccountSupportedModelsForProvider'), '账户导入 service 不应直接规范化 supportedModels')
   assert(!importServiceSource.includes('normalizeAccountModelMappingsForProvider'), '账户导入 service 不应直接规范化 modelMappings')
   assert(modelCatalogSource.includes('export function validateAccountModelCatalogFields'), '账户导入模型目录 helper 必须承接模型目录校验')
+  assert(modelCatalogSource.includes('export async function validateAccountModelCatalogFieldsAsync'), '账户导入模型目录 helper 必须承接 async 模型目录校验')
   assert(modelCatalogSource.includes('normalizeAccountSupportedModelsForProvider'), '账户导入模型目录 helper 必须保留 supportedModels 规范化')
   assert(modelCatalogSource.includes('normalizeAccountModelMappingsForProvider'), '账户导入模型目录 helper 必须保留 modelMappings 规范化')
   assert(accountCreatorSource.includes("from './account-import-account-payload.js'"), '账户导入账户创建 helper 必须使用创建 payload helper')
@@ -135,6 +149,7 @@ function assertAccountImportRouteBoundary(): void {
   assert(createPayloadSource.includes("return status === 'active' ? 'pending_test' : status"), '账户导入创建 payload helper 必须保留 active 导入转 pending_test 语义')
   assert(importServiceSource.includes("from './account-import-executor.js'"), '账户导入 service 必须使用导入执行 helper')
   assert(importServiceSource.includes('executeAccountImportPlan'), '账户导入 service 必须调用导入执行 helper')
+  assert(importServiceSource.includes('executeAccountImportPlanAsync'), '账户导入 service 必须调用 async 导入执行 helper')
   assert(!importServiceSource.includes("from './account-import-resource-creator.js'"), '账户导入 service 不应直接使用资源创建 helper')
   assert(!importServiceSource.includes("from './account-import-account-creator.js'"), '账户导入 service 不应直接使用账户创建 helper')
   assert(!importServiceSource.includes('createPlannedImportProxies'), '账户导入代理创建执行不应回退到 service')
@@ -142,6 +157,7 @@ function assertAccountImportRouteBoundary(): void {
   assert(!importServiceSource.includes('failAccountsWithUnresolvedImportProxy'), '账户导入代理创建失败联动账户不应回退到 service')
   assert(!importServiceSource.includes('createPlannedImportAccounts'), '账户导入账户创建执行不应回退到 service')
   assert(executorSource.includes('export function executeAccountImportPlan'), '账户导入执行 helper 必须承接导入执行编排')
+  assert(executorSource.includes('export async function executeAccountImportPlanAsync'), '账户导入执行 helper 必须承接 async 导入执行编排')
   assert(executorSource.includes('createPlannedImportProxies'), '账户导入执行 helper 必须调用代理创建执行')
   assert(executorSource.includes('failAccountsWithUnresolvedImportProxy'), '账户导入执行 helper 必须调用代理失败联动账户')
   assert(executorSource.includes('createPlannedImportGroups'), '账户导入执行 helper 必须调用分组创建执行')
@@ -152,7 +168,9 @@ function assertAccountImportRouteBoundary(): void {
   assert(!importServiceSource.includes('function createPlannedGroups('), '账户导入分组创建执行不应回退到 service')
   assert(!importServiceSource.includes('function failAccountsWithUnresolvedProxy('), '账户导入代理创建失败联动账户不应回退到 service')
   assert(resourceCreatorSource.includes('export function createPlannedImportProxies'), '账户导入资源创建 helper 必须承接代理创建执行')
+  assert(resourceCreatorSource.includes('export async function createPlannedImportProxiesAsync'), '账户导入资源创建 helper 必须承接 async 代理创建执行')
   assert(resourceCreatorSource.includes('export function createPlannedImportGroups'), '账户导入资源创建 helper 必须承接分组创建执行')
+  assert(resourceCreatorSource.includes('export async function createPlannedImportGroupsAsync'), '账户导入资源创建 helper 必须承接 async 分组创建执行')
   assert(resourceCreatorSource.includes('export function failAccountsWithUnresolvedImportProxy'), '账户导入资源创建 helper 必须承接代理失败联动账户')
   assert(resourceCreatorSource.includes('createProxy('), '账户导入资源创建 helper 必须保留代理创建调用')
   assert(resourceCreatorSource.includes('createGroup('), '账户导入资源创建 helper 必须保留分组创建调用')
@@ -160,8 +178,10 @@ function assertAccountImportRouteBoundary(): void {
   assert(!importServiceSource.includes('function isDuplicateAccountError('), '账户导入重复账户错误处理不应回退到 service')
   assert(!importServiceSource.includes('function groupIdForAccount('), '账户导入创建阶段分组 ID 兜底不应回退到 service')
   assert(accountCreatorSource.includes('export function createPlannedImportAccounts'), '账户导入账户创建 helper 必须承接账户创建执行')
+  assert(accountCreatorSource.includes('export async function createPlannedImportAccountsAsync'), '账户导入账户创建 helper 必须承接 async 账户创建执行')
   assert(accountCreatorSource.includes('buildAccountImportCreatePayload'), '账户导入账户创建 helper 必须调用创建 payload helper')
   assert(accountCreatorSource.includes('createAccount('), '账户导入账户创建 helper 必须保留账户创建调用')
+  assert(accountCreatorSource.includes('createAccountAsync('), '账户导入账户创建 helper 必须保留 async 账户创建调用')
   assert(accountCreatorSource.includes('isDuplicateAccountError'), '账户导入账户创建 helper 必须保留重复账户处理')
 }
 
@@ -208,6 +228,29 @@ try {
   const result = accountImport.executeAccountImport(importData, {}, access)
   assert.equal(result.imported, true, '显式时间计划的账户导入应成功')
 
+  const asyncImportData = {
+    type: accountImport.accountImportProtocolType,
+    version: accountImport.accountImportProtocolVersion,
+    accounts: [
+      {
+        name: '导入 async 计划账户',
+        providerCode: 'gpt',
+        type: 'api_key',
+        status: 'active',
+        groupName: importGroupName,
+        availabilitySchedule: schedule,
+        credentials: {
+          api_key: 'sk-import-schedule-async',
+          base_url: 'https://api.openai.com/v1'
+        }
+      }
+    ]
+  }
+  const asyncPreview = await accountImport.previewAccountImportAsync(asyncImportData, {}, access)
+  assert.equal(asyncPreview.canImport, true, 'async 导入预览应可导入')
+  const asyncResult = await accountImport.executeAccountImportAsync(asyncImportData, {}, access)
+  assert.equal(asyncResult.imported, true, 'async 导入执行应成功')
+
   const scheduled = repositories.listAccounts(access, { keyword: '导入计划账户', providerCode: 'gpt' })
     .find((item) => item.name === '导入计划账户')
   assert(scheduled, '显式计划的导入账户应创建成功')
@@ -218,6 +261,12 @@ try {
     .find((item) => item.name === '导入无计划账户')
   assert(withoutSchedule, '未配置计划的导入账户应创建成功')
   assert.equal(withoutSchedule.availabilitySchedule, undefined, '未填写 availabilitySchedule 时账户不应生成计划')
+  assert(withoutSchedule.supportedModels?.includes('gpt-5.5'), '未填写 supportedModels 时账户导入应按供应商默认支持模型回填')
+
+  const asyncScheduled = repositories.listAccounts(access, { keyword: '导入 async 计划账户', providerCode: 'gpt' })
+    .find((item) => item.name === '导入 async 计划账户')
+  assert(asyncScheduled, 'async 导入账户应创建成功')
+  assert.equal(asyncScheduled.availabilitySchedule?.enabled, true, 'async 账户导入应保存账户级 availabilitySchedule')
 
   const invalidPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -321,6 +370,18 @@ try {
           api_key: 'sk-import-account-invalid-values',
           base_url: 'https://api.openai.com/v1'
         }
+      },
+      {
+        name: '导入账户空支持模型',
+        providerCode: 'gpt',
+        type: 'api_key',
+        status: 'pending_test',
+        groupName: importGroupName,
+        supportedModels: [],
+        credentials: {
+          api_key: 'sk-import-account-empty-supported-models',
+          base_url: 'https://api.openai.com/v1'
+        }
       }
     ]
   }, {}, access)
@@ -332,6 +393,7 @@ try {
   assert.match(strictAccountPreview.accounts[1]?.messages.join('\n') ?? '', /账户 superPriorityEnabled必须是布尔值/, '账户布尔字段不应接收字符串')
   assert.match(strictAccountPreview.accounts[1]?.messages.join('\n') ?? '', /账户 supportedModels必须是非空字符串数组/, '账户 supportedModels 不应过滤非法成员后继续导入')
   assert.match(strictAccountPreview.accounts[1]?.messages.join('\n') ?? '', /账户 accountExpiresAt必须是有效时间字符串/, '账户不存在的日历日期不应被 Date 自动修正')
+  assert.match(strictAccountPreview.accounts[2]?.messages.join('\n') ?? '', /账户 supportedModels必须是非空字符串数组/, '账户 supportedModels 显式空数组不应按省略处理')
 
   const strictProxyPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,

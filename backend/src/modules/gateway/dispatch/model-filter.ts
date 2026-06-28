@@ -41,27 +41,13 @@ export function filterGatewayAccountsByRequestedModel(
   let mappingMatchedCount = 0
   const directMatchedAccounts: UpstreamAccount[] = []
   const mappingMatchedAccounts: UpstreamAccount[] = []
-  const unrestrictedAccounts: UpstreamAccount[] = []
   const rankByAccountId = new Map<string, number>()
 
   for (const account of accounts) {
     const supportedModels = account.supportedModels ?? []
-    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
-    if (mapping && isMappingAllowedBySupportedModels(mapping.upstreamModel, supportedModels)) {
-      if (supportedModels.length) {
-        limitedAccountCount += 1
-      } else {
-        unrestrictedAccountCount += 1
-      }
-      mappingMatchedCount += 1
-      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.mapping)
-      mappingMatchedAccounts.push(account)
-      continue
-    }
     if (!supportedModels.length) {
-      unrestrictedAccountCount += 1
-      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unrestricted)
-      unrestrictedAccounts.push(account)
+      skippedCount += 1
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unsupported)
       continue
     }
     limitedAccountCount += 1
@@ -72,13 +58,19 @@ export function filterGatewayAccountsByRequestedModel(
       directMatchedAccounts.push(account)
       continue
     }
+    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
+    if (mapping && isMappingAllowedBySupportedModels(mapping.upstreamModel, supportedModels)) {
+      mappingMatchedCount += 1
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.mapping)
+      mappingMatchedAccounts.push(account)
+      continue
+    }
     skippedCount += 1
     rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unsupported)
   }
   const filtered = [
     ...directMatchedAccounts,
-    ...mappingMatchedAccounts,
-    ...unrestrictedAccounts
+    ...mappingMatchedAccounts
   ]
 
   return {
@@ -102,7 +94,7 @@ export function filterGatewayAccountsByRequestedModel(
 }
 
 function isMappingAllowedBySupportedModels(upstreamModel: string, supportedModels: string[]): boolean {
-  if (!supportedModels.length) return true
+  if (!supportedModels.length) return false
   return supportedModels.some((model) => model === upstreamModel)
 }
 
@@ -121,7 +113,7 @@ function resolveGatewayAccountModelMatch(
 
 export function gatewayModelFilterFailureMessage(result: GatewayModelAccountFilterResult): string {
   if (result.reason === 'missing_model') {
-    return '请求缺少 model，当前分组内可用账户均配置了模型限制，无法调度'
+    return '请求缺少 model，当前分组内账户均需要按支持模型匹配，无法调度'
   }
   return `当前分组无账户支持请求模型：${result.requestedModel ?? '未知模型'}`
 }

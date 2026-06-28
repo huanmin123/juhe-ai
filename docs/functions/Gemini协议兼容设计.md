@@ -39,7 +39,7 @@
 4. OpenAI Chat / Responses 路径先按 OpenAI 协议解析 source family；命中混合供应商账户中的 `chat_completions|responses -> generate_content` 配置时，才进入 Gemini native 真实上游。
 5. Anthropic Messages 路径先按 Anthropic 协议解析 source family；命中混合供应商账户中的 `messages -> generate_content` 配置时，才进入 Gemini native 真实上游。
 6. 模型名只在已识别协议和显式映射范围内参与路由，不跨协议猜测。
-7. 当前 API Key 没有绑定目标协议档案分组或目标映射账号不可用时，返回本地错误，不全局兜底。
+7. 当前 API Key 没有绑定目标供应商分组或目标映射账号不可用时，返回本地错误，不全局兜底。
 
 禁止行为：
 

@@ -50,9 +50,11 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
 
   function apiKeyPrimaryActions(apiKey: ApiKeySummary): RowActionItem[] {
     const busy = apiKeyActionBusy(apiKey)
-    return [
-      { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: busy },
-      {
+    const actions: RowActionItem[] = [
+      { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: busy }
+    ]
+    if (!apiKey.isDefault) {
+      actions.push({
         key: 'delete',
         label: '删除',
         icon: 'delete',
@@ -60,8 +62,9 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
         disabled: busy,
         confirmTitle: `确认删除 API Key ${apiKey.name}？`,
         confirmOkText: '删除'
-      }
-    ]
+      })
+    }
+    return actions
   }
 
   function apiKeyMoreActions(apiKey: ApiKeySummary): RowActionItem[] {

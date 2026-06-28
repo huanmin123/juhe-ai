@@ -160,7 +160,7 @@ accountsRouter.post('/', mutationGuard({
       providerCode,
       providerProtocolProfileId: parsed.data.providerProtocolProfileId,
       connectionType: parsed.data.connectionType
-    }) ?? group?.providerProtocolProfileId ?? provider.defaultProtocolProfileId
+    }) ?? provider.defaultProtocolProfileId
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '账户接入类型无效'))
     return
@@ -170,11 +170,6 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(`供应商协议档案不支持账户类型：${parsed.data.type}`))
     return
   }
-  if (group && group.providerProtocolProfileId !== providerProfile.id) {
-    res.status(400).json(badRequest('账户分组协议档案无效'))
-    return
-  }
-
   let createStatus: AccountStatus
   try {
     createStatus = await accountCreateStatusFromActivationTestAsync({

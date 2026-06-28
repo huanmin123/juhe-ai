@@ -1,21 +1,33 @@
 import { computed } from 'vue'
 
 import { api } from '@/api/client'
-import type { ProviderModelPricing, ProviderModelsParams } from '@/types/domain'
+import type { ProviderModelOption, ProviderModelPricing, ProviderModelsParams } from '@/types/domain'
 import {
   invalidateAccountProviderModelOptionsCache,
   useAccountProviderModelOptions
 } from '../../views/accounts/useAccountProviderModelOptions'
 
 type ModelsLoader = (code: string, params?: ProviderModelsParams) => Promise<ProviderModelPricing[]>
+type ModelOptionsLoader = typeof api.providers.modelOptions
 
 const originalModels = api.providers.models
+const originalModelOptions = api.providers.modelOptions
 const calls: Array<{ code: string; params?: ProviderModelsParams }> = []
+const modelOptionCalls: unknown[] = []
 let latestModels = [providerModel('gpt-cache-old')]
+const latestGlobalModels: ProviderModelOption[] = [
+  { providerCode: 'gpt', model: 'gpt-global-model' },
+  { providerCode: 'anthropic', model: 'claude-global-model' },
+  { providerCode: 'gemini', model: 'gemini-global-model' }
+]
 
 ;(api.providers as unknown as { models: ModelsLoader }).models = async (code, params) => {
   calls.push({ code, params })
   return latestModels
+}
+;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = async (params) => {
+  modelOptionCalls.push(params ?? {})
+  return latestGlobalModels
 }
 
 try {
@@ -47,9 +59,25 @@ try {
   assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old', 'gpt-cache-new'], '当前供应商失效后应重新读取模型目录')
   assertEqual(calls.length, 2, '当前供应商失效后应重新请求模型目录')
 
+  const hybridModelOptions = useAccountProviderModelOptions({
+    createScopeParams: computed(() => ({ systemAccountId: 'sys_admin' })),
+    currentProviderCode: () => 'hybrid',
+    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
+    isManagementView: computed(() => true)
+  })
+  await hybridModelOptions.loadProviderModelOptions('hybrid')
+  assertDeepEqual(
+    optionValues(hybridModelOptions.providerModelOptions.value),
+    ['gpt-global-model', 'claude-global-model', 'gemini-global-model'],
+    '混合供应商应加载全局模型池而不是 hybrid 自身模型目录'
+  )
+  assertEqual(modelOptionCalls.length, 1, '混合供应商应请求一次全局模型选项接口')
+  assertEqual(calls.length, 2, '混合供应商不应请求 /providers/hybrid/models 作为创建页模型候选')
+
   console.log('账户模型选项缓存回归通过：自定义模型变更后可按供应商失效并重新拉取模型目录')
 } finally {
   ;(api.providers as unknown as { models: ModelsLoader }).models = originalModels
+  ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalModelOptions
   invalidateAccountProviderModelOptionsCache()
 }
 

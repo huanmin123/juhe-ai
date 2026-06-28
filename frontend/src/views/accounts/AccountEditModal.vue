@@ -46,6 +46,8 @@
         :base-url-placeholder="baseUrlPlaceholder"
         :editing="editing"
         :form="form"
+        :model-options="modelOptions"
+        :models-loading="modelsLoading"
         :title="credentialTitle"
       />
 
@@ -56,6 +58,8 @@
         :editing="editing"
         :form="form"
         :is-open-a-i="isOpenAIOAuthForm"
+        :model-options="modelOptions"
+        :models-loading="modelsLoading"
         :title="credentialTitle"
         @copy-auth-url="$emit('copy-auth-url', $event)"
         @generate-auth-url="$emit('generate-auth-url')"
@@ -75,6 +79,12 @@
         </div>
         <a-descriptions bordered size="small" :column="2">
           <a-descriptions-item label="Base URL" :span="2">{{ form.baseUrl || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="支持模型" :span="2">
+            <a-space v-if="form.supportedModels.length" wrap>
+              <a-tag v-for="model in form.supportedModels" :key="model" class="mono-cell">{{ model }}</a-tag>
+            </a-space>
+            <span v-else>-</span>
+          </a-descriptions-item>
           <a-descriptions-item label="来源账户状态">{{ sourceAccountStatusText }}</a-descriptions-item>
           <a-descriptions-item label="来源套餐到期">{{ sourceAccountExpiresAtText }}</a-descriptions-item>
           <a-descriptions-item v-for="item in publicCredentialItems" :key="item.key" :label="item.label">
@@ -113,8 +123,6 @@
               :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
               :mapping-source-model-options="mappingSourceModelOptions"
               :mapping-upstream-model-options="mappingUpstreamModelOptions"
-              :model-options="modelOptions"
-              :models-loading="modelsLoading"
               :proxy-options="proxyOptions"
               :selected-protocol-profile="selectedProtocolProfile"
               :authorized-editing="authorizedEditing"
@@ -258,7 +266,18 @@ const sourceAccountStatusText = computed(() => {
 
 const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
-const mappingUpstreamModelOptions = computed(() => props.modelOptions)
+const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
+  const output: SelectOption[] = []
+  const seen = new Set<string>()
+  for (const item of props.form.supportedModels) {
+    const model = item.trim()
+    const key = model.toLowerCase()
+    if (!model || seen.has(key)) continue
+    seen.add(key)
+    output.push({ label: model, value: model })
+  }
+  return output
+})
 
 function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']): string {
   if (value === 'responses') return 'Responses'
@@ -275,7 +294,6 @@ const shouldRenderAdvancedSections = computed(() => props.authorizedEditing || a
 const advancedConfiguredCount = computed(() => {
   const form = props.form
   const checks = [
-    form.supportedModels.length > 0,
     form.modelMappings.length > 0,
     !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
       provider: props.selectedProvider,

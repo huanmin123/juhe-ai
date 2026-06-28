@@ -54,7 +54,7 @@ function account(id: string, supportedModels?: string[], modelMappings?: Account
   } as UpstreamAccount
 }
 
-const unrestricted = account('unrestricted', [])
+const noSupportedModels = account('no-supported-models', [])
 const gpt55Only = account('gpt55-only', ['gpt-5.5'])
 const gpt54Only = account('gpt54-only', ['gpt-5.4'])
 const mappedByUpstream = account('mapped-by-upstream', ['gpt-5.5-private'], [
@@ -67,27 +67,27 @@ const mappedToUnsupportedUpstream = account('mapped-to-unsupported-upstream', ['
   { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'chat_completions', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: true }
 ])
 
-const matched = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted, gpt54Only], 'gpt-5.5')
-assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only', 'unrestricted'])
-assert.equal(matched.skippedCount, 1)
-assert.equal(matched.unrestrictedAccountCount, 1)
+const matched = filterGatewayAccountsByRequestedModel([gpt55Only, noSupportedModels, gpt54Only], 'gpt-5.5')
+assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only'])
+assert.equal(matched.skippedCount, 2)
+assert.equal(matched.unrestrictedAccountCount, 0)
 assert.equal(matched.directMatchedCount, 1)
 assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
 
-const prioritized = filterGatewayAccountsByRequestedModel([unrestricted, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
+const prioritized = filterGatewayAccountsByRequestedModel([noSupportedModels, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
 assert.deepEqual(
   prioritized.accounts.map((item) => item.id),
-  ['gpt55-only', 'mapped-by-upstream', 'unrestricted'],
-  '模型过滤应保留直接命中账户、映射命中账户和不限制模型账户'
+  ['gpt55-only', 'mapped-by-upstream'],
+  '模型过滤应只保留直接命中账户和映射命中账户'
 )
-assert.equal(prioritized.skippedCount, 0)
+assert.equal(prioritized.skippedCount, 1)
 assert.equal(prioritized.directMatchedCount, 1)
 assert.equal(prioritized.mappingMatchedCount, 1)
-assert.equal(prioritized.unrestrictedAccountCount, 1)
+assert.equal(prioritized.unrestrictedAccountCount, 0)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('gpt55-only'), 0)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('mapped-by-upstream'), 1)
-assert.equal(prioritized.modelPriority.rankByAccountId.get('unrestricted'), 2)
+assert.equal(prioritized.modelPriority.rankByAccountId.get('no-supported-models'), 3)
 
 const mapped = filterGatewayAccountsByRequestedModel([
   mappedByUpstream,
@@ -101,12 +101,12 @@ assert.equal(mapped.directMatchedCount, 0)
 assert.equal(mapped.mappingMatchedCount, 1)
 assert.equal(mapped.reason, undefined)
 
-const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, unrestricted], undefined)
-assert.deepEqual(missingModel.accounts.map((item) => item.id), ['unrestricted'])
-assert.equal(missingModel.skippedCount, 1)
+const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, noSupportedModels], undefined)
+assert.deepEqual(missingModel.accounts, [])
+assert.equal(missingModel.skippedCount, 2)
 assert.equal(missingModel.directMatchedCount, 0)
 assert.equal(missingModel.mappingMatchedCount, 0)
-assert.equal(missingModel.reason, undefined)
+assert.equal(missingModel.reason, 'missing_model')
 
 const allRestrictedMissingModel = filterGatewayAccountsByRequestedModel([gpt55Only, gpt54Only], undefined)
 assert.deepEqual(allRestrictedMissingModel.accounts, [])
@@ -173,9 +173,26 @@ async function assertStorageRoundTrip(): Promise<void> {
     assert.deepEqual(sorted(renamed?.supportedModels), ['gpt-5.4'], '未提交 supportedModels 时不应清空已有模型限制')
     assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4'], '未提交 supportedModels 时关系表应保持不变')
 
-    const cleared = repositories.updateAccount(account.id, { supportedModels: [] }, access)
-    assert.deepEqual(cleared?.supportedModels, [], '提交空数组应清空模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), [], '提交空数组应清空关系表')
+    assert.throws(
+      () => repositories.updateAccount(account.id, { supportedModels: [] }, access),
+      /账户支持模型不能为空/,
+      '提交空数组不应清空模型限制'
+    )
+    assert.deepEqual(sorted(repositories.findAccountSummary(account.id, access)?.supportedModels), ['gpt-5.4'], '提交空数组失败后应保留原模型限制')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4'], '提交空数组失败后关系表应保持不变')
+
+    const defaultedAccount = repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      name: '账户模型限制默认回填回归',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-account-model-filter-default',
+        base_url: 'https://api.openai.com/v1'
+      },
+      status: 'active',
+      groupId: group.id
+    }, access)
+    assert(defaultedAccount.supportedModels?.includes('gpt-5.5'), '创建账户未提交 supportedModels 时应回填供应商默认支持模型')
 
     const openAICompatibleGroup = repositories.createGroup({
       name: '账户模型限制 OpenAI 兼容分组',

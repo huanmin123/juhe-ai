@@ -90,6 +90,18 @@
         :placeholder="baseUrlPlaceholder"
       />
     </a-form-item>
+    <a-form-item label="支持模型" required tooltip="声明这个 Base URL 实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
+      <a-select
+        v-model:value="form.supportedModels"
+        allow-clear
+        mode="multiple"
+        :loading="modelsLoading"
+        option-filter-prop="label"
+        placeholder="选择这个 Base URL 支持的模型"
+        :options="modelOptions"
+        show-search
+      />
+    </a-form-item>
   </section>
 </template>
 
@@ -108,6 +120,8 @@ const props = defineProps<{
   baseUrlPlaceholder: string
   editing: boolean
   form: AccountFormModel
+  modelOptions: Array<{ label: string; value: string }>
+  modelsLoading: boolean
   title: string
 }>()
 

@@ -14,7 +14,9 @@ import {
   openAIEndpointModeForRequestShape
 } from '../../../../domain/openai-endpoint-modes.js'
 import {
+  ANTHROPIC_MESSAGES_FAMILY,
   ANTHROPIC_PROTOCOL_CODE,
+  GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_PROTOCOL_CODE,
   HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
   HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
@@ -23,10 +25,7 @@ import {
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
-  isAnthropicProtocolProfile,
-  isGeminiProtocolProfile,
-  isHybridProviderCode,
-  isOpenAIProtocolProfile
+  isHybridProviderCode
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { buildAnthropicUpstreamUrl, buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
@@ -130,34 +129,37 @@ export const hybridProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account, req) {
-    if (isHybridOpenAITarget(account)) return buildHybridOpenAIUpstreamUrls(account, req)
-    if (isHybridAnthropicTarget(account)) return buildHybridAnthropicUpstreamUrls(account, req)
-    if (isHybridGeminiTarget(account)) return buildHybridGeminiUpstreamUrls(account, req)
+    const target = hybridUpstreamTargetForRequest(req, account)
+    if (target === 'openai') return buildHybridOpenAIUpstreamUrls(account, req)
+    if (target === 'anthropic') return buildHybridAnthropicUpstreamUrls(account, req)
+    if (target === 'gemini') return buildHybridGeminiUpstreamUrls(account, req)
     return []
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
     if (account.type !== 'api_key') {
       throw new Error('混合供应商账户当前仅支持 API Key')
     }
-    if (isHybridOpenAITarget(account)) {
+    const target = hybridUpstreamTargetForRequest(req, account)
+    if (target === 'openai') {
       return await buildHybridOpenAIRequestParts(req, account, signal, context)
     }
-    if (isHybridAnthropicTarget(account)) {
+    if (target === 'anthropic') {
       return await buildHybridAnthropicRequestParts(req, account, signal, context)
     }
-    if (isHybridGeminiTarget(account)) {
+    if (target === 'gemini') {
       return await buildHybridGeminiRequestParts(req, account, signal)
     }
-    throw new Error(`混合供应商协议档案未注册请求构造器：${account.providerProtocolProfileId}`)
+    throw new Error('混合供应商无法根据请求和模型映射确定真实上游协议')
   },
   transformUpstreamResponse(req, account, response, context) {
-    if (isHybridOpenAITarget(account)) {
+    const target = hybridUpstreamTargetForRequest(req, account)
+    if (target === 'openai') {
       return transformHybridOpenAIResponse(req, account, response, context)
     }
-    if (isHybridAnthropicTarget(account)) {
+    if (target === 'anthropic') {
       return transformHybridAnthropicResponse(req, account, response, context)
     }
-    if (isHybridGeminiTarget(account)) {
+    if (target === 'gemini') {
       const mapping = resolveOpenAIRequestModelMapping(req, account)
       return isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)
         ? transformGeminiNativeTargetBridgeUpstreamResponse(req, response, { mapping })
@@ -166,35 +168,38 @@ export const hybridProviderDriver: ProviderDriver = {
     return response
   },
   endpointModeForRequest(req, account) {
-    if (isHybridOpenAITarget(account)) return hybridOpenAIEndpointModeForGatewayRequest(req, account)
-    if (isHybridAnthropicTarget(account)) return hybridAnthropicEndpointModeForGatewayRequest(req, account)
-    if (isHybridGeminiTarget(account)) return hybridGeminiEndpointModeForGatewayRequest(req, account)
+    const target = hybridUpstreamTargetForRequest(req, account)
+    if (target === 'openai') return hybridOpenAIEndpointModeForGatewayRequest(req, account)
+    if (target === 'anthropic') return hybridAnthropicEndpointModeForGatewayRequest(req, account)
+    if (target === 'gemini') return hybridGeminiEndpointModeForGatewayRequest(req, account)
     return undefined
   },
   accountSupportsRequest(req, account, context) {
-    if (isHybridOpenAITarget(account)) return hybridOpenAIAccountSupportsRequest(req, account, context)
-    if (isHybridAnthropicTarget(account)) return hybridAnthropicAccountSupportsRequest(req, account, context)
-    if (isHybridGeminiTarget(account)) return hybridGeminiAccountSupportsRequest(req, account)
+    const target = hybridUpstreamTargetForRequest(req, account)
+    if (target === 'openai') return hybridOpenAIAccountSupportsRequest(req, account, context)
+    if (target === 'anthropic') return hybridAnthropicAccountSupportsRequest(req, account, context)
+    if (target === 'gemini') return hybridGeminiAccountSupportsRequest(req, account)
     return false
   }
 }
 
-function isHybridOpenAITarget(account: ProviderDriverAccount): boolean {
-  return isHybridProviderCode(account.providerCode)
-    && (account.providerProtocolProfileId ?? account.id) === HYBRID_OPENAI_CHAT_V1_PROFILE_ID
-    && isOpenAIProtocolProfile(account)
+type HybridUpstreamTarget = 'openai' | 'anthropic' | 'gemini'
+
+function hybridUpstreamTargetForRequest(req: Request, account: ProviderDriverAccount): HybridUpstreamTarget | undefined {
+  if (!isHybridProviderCode(account.providerCode)) return undefined
+  const mapping = resolveOpenAIRequestModelMapping(req, account)
+  const mappedTarget = mapping ? hybridUpstreamTargetForEndpointFamily(mapping.upstreamEndpointFamily) : undefined
+  if (mappedTarget) return mappedTarget
+  if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE)) return 'anthropic'
+  if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) || isGeminiNativeRequest(req)) return 'gemini'
+  return 'openai'
 }
 
-function isHybridAnthropicTarget(account: ProviderDriverAccount): boolean {
-  return isHybridProviderCode(account.providerCode)
-    && (account.providerProtocolProfileId ?? account.id) === HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID
-    && isAnthropicProtocolProfile(account)
-}
-
-function isHybridGeminiTarget(account: ProviderDriverAccount): boolean {
-  return isHybridProviderCode(account.providerCode)
-    && (account.providerProtocolProfileId ?? account.id) === HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID
-    && isGeminiProtocolProfile(account)
+function hybridUpstreamTargetForEndpointFamily(endpointFamily: string | undefined): HybridUpstreamTarget | undefined {
+  if (endpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) return 'openai'
+  if (endpointFamily === ANTHROPIC_MESSAGES_FAMILY) return 'anthropic'
+  if (endpointFamily === GEMINI_GENERATE_CONTENT_FAMILY) return 'gemini'
+  return undefined
 }
 
 function buildHybridOpenAIUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {

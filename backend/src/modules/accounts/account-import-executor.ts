@@ -1,10 +1,12 @@
 import { type AccessScope } from '../../storage/access-scope.js'
 import {
   createPlannedImportGroups,
+  createPlannedImportGroupsAsync,
   createPlannedImportProxies,
+  createPlannedImportProxiesAsync,
   failAccountsWithUnresolvedImportProxy
 } from './account-import-resource-creator.js'
-import { createPlannedImportAccounts } from './account-import-account-creator.js'
+import { createPlannedImportAccounts, createPlannedImportAccountsAsync } from './account-import-account-creator.js'
 import { type AccountImportGroupCreateMap } from './account-import-plan.js'
 import { type AccountImportAccountPlan } from './account-import-account-plan.js'
 import { type AccountImportProxyPlan } from './account-import-proxy-plan.js'
@@ -34,6 +36,25 @@ export function executeAccountImportPlan(plan: AccountImportExecutionPlan, acces
 
   createPlannedImportGroups(plan, access)
   createPlannedImportAccounts(plan, access)
+
+  plan.result.imported = true
+  plan.result.canImport = false
+  return plan.result
+}
+
+export async function executeAccountImportPlanAsync(plan: AccountImportExecutionPlan, access: AccessScope): Promise<AccountImportResult> {
+  const createdProxyIds = await createPlannedImportProxiesAsync(plan, access)
+  for (const [ref, proxyId] of createdProxyIds) {
+    for (const account of plan.accounts) {
+      if (account.source.proxyRef === ref && !account.proxyProfileId) {
+        account.proxyProfileId = proxyId
+      }
+    }
+  }
+  failAccountsWithUnresolvedImportProxy(plan)
+
+  await createPlannedImportGroupsAsync(plan, access)
+  await createPlannedImportAccountsAsync(plan, access)
 
   plan.result.imported = true
   plan.result.canImport = false

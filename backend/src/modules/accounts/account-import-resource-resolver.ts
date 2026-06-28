@@ -2,9 +2,13 @@ import { isAdminRole } from '../../domain/types.js'
 import { currentSystemAccountId, manageableSystemAccountId, type AccessScope } from '../../storage/access-scope.js'
 import {
   findGroupSummary,
+  findGroupSummaryAsync,
   findProxy,
+  findProxyAsync,
   listGroupOptions,
+  listGroupOptionsAsync,
   listProxyOptions,
+  listProxyOptionsAsync,
   type GroupOptionSummary,
   type ProxyProfileOptionSummary,
   type ProxyProfileSummary
@@ -75,8 +79,54 @@ export function resolveAccountGroup(
       item.messages.push(`分组供应商与账户供应商不一致：${group.name}`)
       return undefined
     }
-    if (group.providerProtocolProfileId !== account.providerProtocolProfileId) {
-      item.messages.push(`分组协议档案与账户协议档案不一致：${group.name}`)
+    return group.id
+  }
+  if (!account.groupName) {
+    item.messages.push('账户 groupId 或 groupName 必填')
+    return undefined
+  }
+  if (!account.providerProtocolProfileId) {
+    item.messages.push('账户 providerProtocolProfileId 无效')
+    return undefined
+  }
+  const key = accountImportGroupKey(account.providerCode, account.groupName)
+  const existingGroupId = groupIdsByKey.get(key)
+  if (existingGroupId) return existingGroupId
+  const group = findGroupOptionByName(account.providerCode, account.providerProtocolProfileId, account.groupName, context)
+  if (group) {
+    groupIdsByKey.set(key, group.id)
+    return group.id
+  }
+  if (!context.options.createMissingGroups) {
+    item.messages.push(`分组不存在：${account.groupName}`)
+    return undefined
+  }
+  groupNamesToCreate.set(key, {
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    name: account.groupName
+  })
+  return undefined
+}
+
+export async function resolveAccountGroupAsync(
+  account: AccountImportResourceAccount,
+  context: AccountImportResourceContext,
+  groupIdsByKey: Map<string, string>,
+  groupNamesToCreate: Map<string, { providerCode: string, providerProtocolProfileId: string, name: string }>,
+  item: AccountImportResourceMessageItem
+): Promise<string | undefined> {
+  if (account.groupId && account.groupName) {
+    item.warnings.push('同时填写 groupId 和 groupName 时优先使用 groupId')
+  }
+  if (account.groupId) {
+    const group = await findGroupSummaryAsync(account.groupId, context.access)
+    if (!group) {
+      item.messages.push(`分组不存在或无权使用：${account.groupId}`)
+      return undefined
+    }
+    if (group.providerCode !== account.providerCode) {
+      item.messages.push(`分组供应商与账户供应商不一致：${group.name}`)
       return undefined
     }
     return group.id
@@ -89,10 +139,10 @@ export function resolveAccountGroup(
     item.messages.push('账户 providerProtocolProfileId 无效')
     return undefined
   }
-  const key = accountImportGroupKey(account.providerProtocolProfileId, account.groupName)
+  const key = accountImportGroupKey(account.providerCode, account.groupName)
   const existingGroupId = groupIdsByKey.get(key)
   if (existingGroupId) return existingGroupId
-  const group = findGroupOptionByName(account.providerCode, account.providerProtocolProfileId, account.groupName, context)
+  const group = await findGroupOptionByNameAsync(account.providerCode, account.providerProtocolProfileId, account.groupName, context)
   if (group) {
     groupIdsByKey.set(key, group.id)
     return group.id
@@ -155,19 +205,81 @@ export function resolveAccountProxy(
   return proxy.id
 }
 
+export async function resolveAccountProxyAsync(
+  account: AccountImportResourceAccount,
+  proxyByRef: Map<string, AccountImportProxyReferencePlan>,
+  item: AccountImportResourceMessageItem
+): Promise<string | undefined> {
+  if (account.proxyRef && account.proxyProfileId) {
+    item.messages.push('proxyRef 和 proxyProfileId 只能填写一个')
+    return undefined
+  }
+  if (account.proxyProfileId) {
+    const proxy = await findProxyAsync(account.proxyProfileId)
+    if (!proxy) {
+      item.messages.push(`代理不存在：${account.proxyProfileId}`)
+      return undefined
+    }
+    if (!proxy.enabled) {
+      item.messages.push(`代理已停用：${proxy.name}`)
+      return undefined
+    }
+    return proxy.id
+  }
+  if (!account.proxyRef) {
+    return undefined
+  }
+  const plannedProxy = proxyByRef.get(account.proxyRef)
+  if (plannedProxy) {
+    if (plannedProxy.item.action === 'failed') {
+      item.messages.push(`代理引用不可用：${account.proxyRef}`)
+    }
+    if (plannedProxy.item.action === 'skip') {
+      item.messages.push(`代理引用未创建：${account.proxyRef}`)
+    }
+    return plannedProxy.proxyProfileId
+  }
+  const proxy = await findProxyAsync(account.proxyRef)
+  if (!proxy) {
+    item.messages.push(`代理引用不存在：${account.proxyRef}`)
+    return undefined
+  }
+  if (!proxy.enabled) {
+    item.messages.push(`代理已停用：${proxy.name}`)
+    return undefined
+  }
+  return proxy.id
+}
+
 export function findGroupOptionByName(providerCode: string, providerProtocolProfileId: string, name: string, context: AccountImportResourceContext): GroupOptionSummary | undefined {
-  const key = accountImportGroupKey(providerProtocolProfileId, name)
+  const key = accountImportGroupKey(providerCode, name)
   if (context.groupLookup.has(key)) {
     return context.groupLookup.get(key)
   }
   const normalized = name.trim().toLowerCase()
   const group = listGroupOptions(context.access, {
     providerCode,
-    providerProtocolProfileId,
     keyword: name,
     manageableOnly: true,
     limit: 50
-  }).find((item) => item.providerProtocolProfileId === providerProtocolProfileId && item.name.trim().toLowerCase() === normalized)
+  }).find((item) => item.providerCode === providerCode && item.name.trim().toLowerCase() === normalized)
+  context.groupLookup.set(key, group)
+  return group
+}
+
+export async function findGroupOptionByNameAsync(providerCode: string, providerProtocolProfileId: string, name: string, context: AccountImportResourceContext): Promise<GroupOptionSummary | undefined> {
+  void providerProtocolProfileId
+  const key = accountImportGroupKey(providerCode, name)
+  if (context.groupLookup.has(key)) {
+    return context.groupLookup.get(key)
+  }
+  const normalized = name.trim().toLowerCase()
+  const group = (await listGroupOptionsAsync(context.access, {
+    providerCode,
+    keyword: name,
+    manageableOnly: true,
+    limit: 50
+  })).find((item) => item.providerCode === providerCode && item.name.trim().toLowerCase() === normalized)
   context.groupLookup.set(key, group)
   return group
 }
@@ -182,9 +294,24 @@ export function findProxyOptionByName(name: string, context: AccountImportResour
   return proxy
 }
 
+export async function findProxyOptionByNameAsync(name: string, context: AccountImportResourceContext): Promise<ProxyProfileOptionSummary | undefined> {
+  const key = name.trim().toLowerCase()
+  if (context.proxyLookup.has(key)) {
+    return context.proxyLookup.get(key)
+  }
+  const proxy = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim().toLowerCase() === key)
+  context.proxyLookup.set(key, proxy)
+  return proxy
+}
+
 export function findProxyByName(name: string): ProxyProfileSummary | undefined {
   const option = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
   return option ? findProxy(option.id) : undefined
+}
+
+export async function findProxyByNameAsync(name: string): Promise<ProxyProfileSummary | undefined> {
+  const option = (await listProxyOptionsAsync({ keyword: name, limit: 50 })).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  return option ? await findProxyAsync(option.id) : undefined
 }
 
 export function canCreateImportProxy(context: AccountImportResourceContext, item: AccountImportResourceMessageItem): boolean {

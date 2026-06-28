@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:parallel": "pnpm -r --parallel dev",
     "mockdata": "pnpm --filter juhe-ai-backend mockdata",
     "build": "pnpm -r build",
     "package:release": "pwsh ./scripts/package-release.ps1",

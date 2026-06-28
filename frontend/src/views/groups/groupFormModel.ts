@@ -1,8 +1,8 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import { defaultProviderProtocolProfileId as resolveDefaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
+import { preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
-import { GPT_PROVIDER, GPT_VENDOR_CODE } from '../accounts/accountOptions'
+import { GPT_VENDOR_CODE } from '../accounts/accountOptions'
 import {
   cloneHighConcurrencySchedulingPolicy,
   defaultClientIpConcurrencyLimit,
@@ -13,7 +13,6 @@ import {
 export type GroupEditForm = {
   name: string
   providerCode: string
-  providerProtocolProfileId: string
   description: string
   enabled: boolean
   groupType: GroupType
@@ -24,7 +23,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
   const form = reactive<GroupEditForm>({
     name: '',
     providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_PROVIDER.defaultProtocolProfileId,
     description: '',
     enabled: true,
     groupType: 'personal',
@@ -49,21 +47,11 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     return providerCode
   }
 
-  function defaultProviderProtocolProfileId(providerCode = form.providerCode): string {
-    const provider = availableProviders.value.find((item) => item.code === providerCode)
-    return resolveDefaultProviderProtocolProfileId(provider)
-  }
-
-  function handleGroupProviderChange(providerCode: string) {
-    form.providerProtocolProfileId = defaultProviderProtocolProfileId(providerCode)
-  }
-
   function resetGroupFormForCreate() {
     const providerCode = defaultProviderCode()
     Object.assign(form, {
       name: '',
       providerCode,
-      providerProtocolProfileId: defaultProviderProtocolProfileId(providerCode),
       description: '',
       enabled: true,
       groupType: 'personal' as GroupType,
@@ -78,7 +66,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     Object.assign(form, {
       name: group.name,
       providerCode: group.providerCode,
-      providerProtocolProfileId: group.providerProtocolProfileId ?? defaultProviderProtocolProfileId(group.providerCode),
       description: group.description ?? '',
       enabled: group.enabled,
       groupType: group.groupType,
@@ -119,7 +106,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     return {
       name: form.name,
       providerCode: form.providerCode,
-      providerProtocolProfileId: form.providerProtocolProfileId,
       description: form.description,
       ...localSettings
     }
@@ -132,7 +118,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     formMaxQueueWaitSeconds,
     applyGroupToForm,
     groupFormPayload,
-    handleGroupProviderChange,
     resetGroupFormForCreate,
     setFormClientIpConcurrencyLimit,
     setFormMaxQueueWaitSeconds

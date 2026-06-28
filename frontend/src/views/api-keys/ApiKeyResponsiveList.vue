@@ -21,7 +21,13 @@
       <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定策略路由；接入说明可点击右上角帮助查看。" />
     </template>
     <template #bodyCell="{ column, record }">
-      <template v-if="column.key === 'status'">
+      <template v-if="column.key === 'name'">
+        <div class="name-with-tag">
+          <span>{{ record.name }}</span>
+          <a-tag v-if="record.isDefault" color="blue">默认</a-tag>
+        </div>
+      </template>
+      <template v-else-if="column.key === 'status'">
         <a-tooltip v-if="apiKeyStatusTooltipLines(record).length" placement="topLeft">
           <template #title>
             <div class="status-tooltip">
@@ -83,7 +89,10 @@
     <template #card="{ record }">
       <article class="mobile-list-card">
         <div class="mobile-list-card-head">
-          <div class="mobile-list-card-title">{{ record.name }}</div>
+          <div class="mobile-list-card-title">
+            <span>{{ record.name }}</span>
+            <a-tag v-if="record.isDefault" color="blue">默认</a-tag>
+          </div>
           <div class="mobile-list-card-tags">
             <a-tooltip v-if="apiKeyStatusTooltipLines(record).length" placement="topLeft">
               <template #title>
@@ -205,6 +214,22 @@ const emit = defineEmits<{
   align-items: center;
   gap: 4px;
   max-width: 320px;
+}
+
+.name-with-tag,
+.mobile-list-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.name-with-tag span,
+.mobile-list-card-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .route-strategy-cell span {

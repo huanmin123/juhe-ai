@@ -1,8 +1,11 @@
 import { type AccountModelMapping, type AccountSupportedEndpointMode, type ProviderDefinition } from '../../domain/types.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
+  assertAccountSupportedModelsRequired,
   normalizeAccountModelMappingsForProvider,
-  normalizeAccountSupportedModelsForProvider
+  normalizeAccountModelMappingsForProviderAsync,
+  normalizeAccountSupportedModelsForProvider,
+  normalizeAccountSupportedModelsForProviderAsync
 } from '../../storage/repositories.js'
 import { errorMessage } from './account-import-field-parser.js'
 
@@ -28,16 +31,50 @@ export function validateAccountModelCatalogFields(
     return
   }
   try {
+    const provider = context.providerByCode.get(account.providerCode)
     account.supportedModels = normalizeAccountSupportedModelsForProvider(
-      account.supportedModels,
+      account.supportedModels?.length ? account.supportedModels : provider?.defaultSupportedModels,
       account.providerCode,
       context.targetSystemAccountId
     )
+    assertAccountSupportedModelsRequired(account.supportedModels ?? [])
     account.modelMappings = normalizeAccountModelMappingsForProvider(
       account.modelMappings,
       account.providerCode,
       context.targetSystemAccountId,
-      context.providerByCode.get(account.providerCode)?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId),
+      provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId),
+      {
+        supportedEndpointModes: Array.isArray(account.credentials?.supported_endpoint_modes)
+          ? account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+          : undefined
+      }
+    )
+    assertAccountModelMappingUpstreamsAllowedBySupportedModels(account.modelMappings ?? [], account.supportedModels ?? [])
+  } catch (error) {
+    account.messages.push(errorMessage(error))
+  }
+}
+
+export async function validateAccountModelCatalogFieldsAsync(
+  account: AccountImportModelCatalogAccount,
+  context: AccountImportModelCatalogContext
+): Promise<void> {
+  if (!account.providerCode || !context.providerByCode.has(account.providerCode) || !context.targetSystemAccountId) {
+    return
+  }
+  try {
+    const provider = context.providerByCode.get(account.providerCode)
+    account.supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
+      account.supportedModels?.length ? account.supportedModels : provider?.defaultSupportedModels,
+      account.providerCode,
+      context.targetSystemAccountId
+    )
+    assertAccountSupportedModelsRequired(account.supportedModels ?? [])
+    account.modelMappings = await normalizeAccountModelMappingsForProviderAsync(
+      account.modelMappings,
+      account.providerCode,
+      context.targetSystemAccountId,
+      provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId),
       {
         supportedEndpointModes: Array.isArray(account.credentials?.supported_endpoint_modes)
           ? account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]

@@ -16,6 +16,7 @@
         <a-select
           v-model:value="form.routeStrategyId"
           show-search
+          :disabled="editingIsDefault"
           :filter-option="false"
           :loading="routeStrategyOptionsLoading"
           :options="routeStrategyOptions"
@@ -96,6 +97,7 @@ const emit = defineEmits<{
 
 const modalOpen = ref(false)
 const editingId = ref<string>()
+const editingIsDefault = ref(false)
 const editingSystemAccountId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
@@ -124,6 +126,7 @@ async function openCreate() {
     return
   }
   editingId.value = undefined
+  editingIsDefault.value = false
   editingSystemAccountId.value = undefined
   Object.assign(form, {
     name: '',
@@ -162,6 +165,7 @@ async function openEdit(apiKey: ApiKeySummary) {
     return
   }
   editingId.value = apiKey.id
+  editingIsDefault.value = apiKey.isDefault === true
   editingSystemAccountId.value = editScopeParams?.systemAccountId
   Object.assign(form, {
     name: apiKey.name,

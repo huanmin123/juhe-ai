@@ -287,7 +287,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     resetForm('', '')
     void options.loadGroupOptions('', false, {
       providerCode: form.providerCode,
-      providerProtocolProfileId: form.providerProtocolProfileId,
       systemAccountId: options.accountScopeParams.value?.systemAccountId
     }, {
       useLocalWindow: false
@@ -339,14 +338,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = undefined
     const providerCode = choice.providerCode || form.providerCode
     const providerProtocolProfileId = choice.providerProtocolProfileId
-    const keepCurrentGroup = form.providerCode === providerCode && form.providerProtocolProfileId === providerProtocolProfileId
+    const keepCurrentGroup = form.providerCode === providerCode
+    const defaults = defaultForm(providerCode, choice.type, providerProtocolProfileId)
     Object.assign(form, {
-      ...defaultForm(providerCode, choice.type, providerProtocolProfileId),
+      ...defaults,
       groupId: keepCurrentGroup ? form.groupId : undefined,
       group: keepCurrentGroup ? form.group : undefined,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
-      supportedModels: form.supportedModels,
+      supportedModels: form.supportedModels.length ? form.supportedModels : defaults.supportedModels,
       modelMappings: form.modelMappings,
       tags: form.tags,
       concurrencyLimit: form.concurrencyLimit,
@@ -400,7 +400,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = true
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
-      providerProtocolProfileId: sourceAccount.providerProtocolProfileId,
       systemAccountId: editScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     }, {
@@ -454,7 +453,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = true
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
-      providerProtocolProfileId: sourceAccount.providerProtocolProfileId,
       systemAccountId: cloneScopeParams?.systemAccountId,
       selectedIds: [form.groupId]
     }, {
@@ -471,7 +469,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     await nextTick()
     await options.loadGroupOptions('', false, {
       providerCode,
-      providerProtocolProfileId,
       systemAccountId: createScopeParams.value?.systemAccountId,
       selectedIds: [form.groupId]
     }, {

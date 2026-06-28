@@ -173,7 +173,7 @@ function assertApiKeyDraftActivationPayload(): void {
     priority: 0,
     clientCompatibility: 'codex_responses',
     supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-    supportedModels: ['gpt-5.5'],
+    supportedModels: ['gpt-5.5', 'gpt-5.5-chat-latest'],
     modelMappings: [{
       sourceModel: 'gpt-5.5-alias',
       sourceEndpointFamily: 'chat_completions',
@@ -462,7 +462,7 @@ function apiKeyFormFixture(): AccountFormModel {
     priority: 0,
     clientCompatibility: 'codex_responses',
     supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-    supportedModels: ['gpt-5.5'],
+    supportedModels: ['gpt-5.5', 'gpt-5.5-chat-latest', 'gpt-5.5-responses-native'],
     modelMappings: [{
       sourceModel: 'gpt-5.5-alias',
       sourceEndpointFamily: 'chat_completions',

@@ -167,8 +167,7 @@ export function resolvePublicGroup(
   if (!providerCode) {
     return undefined
   }
-  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId)
-  return findExistingTargetGroup({ access, providerCode, providerProtocolProfileId, groupName: name })
+  return findExistingTargetGroup({ access, providerCode, groupName: name })
 }
 
 export async function resolvePublicGroupAsync(
@@ -187,8 +186,7 @@ export async function resolvePublicGroupAsync(
   if (!providerCode) {
     return undefined
   }
-  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId)
-  return await findExistingTargetGroupAsync({ access, providerCode, providerProtocolProfileId, groupName: name })
+  return await findExistingTargetGroupAsync({ access, providerCode, groupName: name })
 }
 
 export function resolveAccountListGroupId(
@@ -207,8 +205,7 @@ export function resolveAccountListGroupId(
   if (!providerCode) {
     throw new Error('按目标分组名称查询账号时必须提供 providerCode')
   }
-  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId)
-  return findExistingTargetGroup({ access, providerCode, providerProtocolProfileId, groupName })?.id ?? '__public_group_not_found__'
+  return findExistingTargetGroup({ access, providerCode, groupName })?.id ?? '__public_group_not_found__'
 }
 
 export async function resolveAccountListGroupIdAsync(
@@ -227,8 +224,7 @@ export async function resolveAccountListGroupIdAsync(
   if (!providerCode) {
     throw new Error('按目标分组名称查询账号时必须提供 providerCode')
   }
-  const providerProtocolProfileId = normalizedText(input.providerProtocolProfileId)
-  return (await findExistingTargetGroupAsync({ access, providerCode, providerProtocolProfileId, groupName }))?.id ?? '__public_group_not_found__'
+  return (await findExistingTargetGroupAsync({ access, providerCode, groupName }))?.id ?? '__public_group_not_found__'
 }
 
 export function ensureTargetGroup(input: {
@@ -244,9 +240,8 @@ export function ensureTargetGroup(input: {
   const existing = listGroupOptions(input.access, {
     keyword: groupName,
     providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     limit: 20
-  }).find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, groupName))
+  }).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
 
   if (existing) {
     const group = findGroupSummary(existing.id, input.access)
@@ -263,7 +258,6 @@ export function ensureTargetGroup(input: {
     group: createGroup({
       name: groupName,
       providerCode: input.providerCode,
-      providerProtocolProfileId: input.providerProtocolProfileId,
       description: '由公开接口自动创建',
       enabled: true,
       groupType: 'personal'
@@ -285,9 +279,8 @@ export async function ensureTargetGroupAsync(input: {
   const existing = (await listGroupOptionsAsync(input.access, {
     keyword: groupName,
     providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     limit: 20
-  })).find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, groupName))
+  })).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
 
   if (existing) {
     const group = await findGroupSummaryAsync(existing.id, input.access)
@@ -304,7 +297,6 @@ export async function ensureTargetGroupAsync(input: {
     group: await createGroupAsync({
       name: groupName,
       providerCode: input.providerCode,
-      providerProtocolProfileId: input.providerProtocolProfileId,
       description: '由公开接口自动创建',
       enabled: true,
       groupType: 'personal'
@@ -316,7 +308,6 @@ export async function ensureTargetGroupAsync(input: {
 export function findExistingTargetGroup(input: {
   access: PublicPushTargetAccess
   providerCode: string
-  providerProtocolProfileId?: string
   groupName: string
 }): GroupSummary | undefined {
   const groupName = normalizedText(input.groupName)
@@ -326,16 +317,14 @@ export function findExistingTargetGroup(input: {
   const existing = listGroupOptions(input.access, {
     keyword: groupName,
     providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     limit: 20
-  }).find((item) => item.providerCode === input.providerCode && (!input.providerProtocolProfileId || item.providerProtocolProfileId === input.providerProtocolProfileId) && sameText(item.name, groupName))
+  }).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
   return existing ? findGroupSummary(existing.id, input.access) : undefined
 }
 
 export async function findExistingTargetGroupAsync(input: {
   access: PublicPushTargetAccess
   providerCode: string
-  providerProtocolProfileId?: string
   groupName: string
 }): Promise<GroupSummary | undefined> {
   const groupName = normalizedText(input.groupName)
@@ -345,9 +334,8 @@ export async function findExistingTargetGroupAsync(input: {
   const existing = (await listGroupOptionsAsync(input.access, {
     keyword: groupName,
     providerCode: input.providerCode,
-    providerProtocolProfileId: input.providerProtocolProfileId,
     limit: 20
-  })).find((item) => item.providerCode === input.providerCode && (!input.providerProtocolProfileId || item.providerProtocolProfileId === input.providerProtocolProfileId) && sameText(item.name, groupName))
+  })).find((item) => item.providerCode === input.providerCode && sameText(item.name, groupName))
   return existing ? await findGroupSummaryAsync(existing.id, input.access) : undefined
 }
 

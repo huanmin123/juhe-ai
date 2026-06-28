@@ -120,20 +120,20 @@ export function findOpenAIAccountForGroup(
       FROM accounts
       LEFT JOIN accounts source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
       WHERE accounts.id = ?
-        AND accounts.provider_protocol_profile_id = ?
+        AND accounts.provider_code = ?
         AND accounts.deleted_at IS NULL
         AND (
           (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.deleted_at IS NULL
-            AND source_accounts.provider_protocol_profile_id = ?
+            AND source_accounts.provider_code = ?
             AND source_accounts.type IN ('api_key', 'oauth')
           )
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     `)
-    .get(accountId, groupAccess.providerProtocolProfileId, groupAccess.providerProtocolProfileId, now) as unknown as OpenAIAccountRow | undefined
+    .get(accountId, groupAccess.providerCode, groupAccess.providerCode, now) as unknown as OpenAIAccountRow | undefined
   if (!row) {
     return undefined
   }

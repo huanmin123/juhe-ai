@@ -77,6 +77,17 @@ try {
 async function assertApiKeyManagementAsync(repositories: typeof import('../../storage/repositories.js')): Promise<void> {
   const { logger } = await import('../../shared/logger.js')
   logger.level = 'silent'
+  const defaultApiKeyPage = await repositories.listApiKeysPageAsync(adminAccess, { page: 1, pageSize: 50 })
+  const defaultApiKey = defaultApiKeyPage.items.find((item) => item.isDefault)
+  assert(defaultApiKey, 'API Key 列表应自动补齐并返回默认 API Key')
+  await assert.rejects(
+    () => repositories.deleteApiKeyWithRelatedCleanupAsync(defaultApiKey.id, adminAccess),
+    /默认 API Key 不允许删除/,
+    '默认 API Key 不允许删除'
+  )
+  const refreshedDefaultApiKey = await repositories.refreshApiKeySecretAsync(defaultApiKey.id, adminAccess)
+  assert.ok(refreshedDefaultApiKey?.key.startsWith('sk-'), '默认 API Key 允许刷新密钥')
+
   const suffix = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`
   const group = await repositories.createGroupAsync({
     name: `APIKey回归分组${suffix}`,

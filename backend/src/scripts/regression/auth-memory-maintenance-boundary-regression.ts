@@ -4,12 +4,19 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Request } from 'express'
 
-import { consumeCaptchaIssueAllowance, createCaptchaChallenge } from '../../modules/auth/captcha.service.js'
+import {
+  consumeCaptchaIssueAllowance,
+  consumeCaptchaIssueAllowanceAsync,
+  createCaptchaChallenge,
+  createCaptchaChallengeAsync,
+  verifyCaptchaChallengeAsync
+} from '../../modules/auth/captcha.service.js'
 import { parseCookie, sessionCookieName } from '../../modules/auth/auth.routes.js'
 import { checkLoginAllowed, getLoginClientIp, recordFailedLogin } from '../../modules/auth/login-guard.service.js'
 
 const backendSrcRoot = fileURLToPath(new URL('../..', import.meta.url))
 const captchaSource = readSource('modules/auth/captcha.service.ts')
+const authRoutesSource = readSource('modules/auth/auth.routes.ts')
 const loginGuardSource = readSource('modules/auth/login-guard.service.ts')
 
 assert(!/\[\s*\.\.\.captchaChallenges\.entries\(\)\s*\]/.test(captchaSource), '验证码容量维护不应展开全部 challenge 条目')
@@ -18,6 +25,14 @@ assert(captchaSource.includes('captchaCleanupBatchSize'), '验证码过期清理
 assert(captchaSource.includes('runCaptchaMaintenance(now)'), '验证码创建和校验应只触发有节流的维护入口')
 assert(captchaSource.includes('consumeCaptchaIssueAllowance'), '公开验证码生成必须先通过独立限频入口')
 assert(captchaSource.includes('captchaIssueThreshold'), '验证码生成限频必须有固定单 key 阈值')
+assert(captchaSource.includes("createRuntimeStateStore('auth_captcha')"), '验证码高性能模式必须使用 RuntimeStateStore 承接跨进程 challenge 和限频状态')
+assert(captchaSource.includes('createCaptchaChallengeAsync'), '验证码服务必须暴露 async 入口，供 HTTP 路由按 runtime state driver 切换')
+assert(captchaSource.includes('consumeCaptchaIssueAllowanceAsync'), '验证码生成限频必须暴露 async 入口，避免高性能模式只走进程内 Map')
+assert(captchaSource.includes('verifyCaptchaChallengeAsync'), '验证码校验必须暴露 async 入口，避免高性能模式只走进程内 Map')
+assert(captchaSource.includes('getDeleteJson<CaptchaChallengeRecord>'), 'Redis 验证码校验必须一次性读取并删除 challenge，避免并发重复使用')
+assert(authRoutesSource.includes('await consumeCaptchaIssueAllowanceAsync(clientIp)'), '验证码 HTTP 路由必须 await async 限频入口')
+assert(authRoutesSource.includes('await createCaptchaChallengeAsync()'), '验证码 HTTP 路由必须 await async challenge 创建入口')
+assert(authRoutesSource.includes('await verifyCaptchaChallengeAsync'), '登录路由必须 await async 验证码校验入口')
 
 assert(!/\[\s*\.\.\.records\.entries\(\)\s*\]/.test(loginGuardSource), '登录失败维护不应展开全部限频记录')
 assert(!/\bsort\(/.test(loginGuardSource), '登录失败维护不应通过排序淘汰旧记录')
@@ -57,6 +72,12 @@ try {
   for (let index = 0; index <= 1000; index += 1) {
     createCaptchaChallenge()
   }
+
+  const asyncCaptcha = await createCaptchaChallengeAsync()
+  assert.equal(await verifyCaptchaChallengeAsync(asyncCaptcha.captchaId, 'wrong'), false, 'async 验证码校验错误答案应失败')
+  assert.equal(await verifyCaptchaChallengeAsync(asyncCaptcha.captchaId, 'wrong'), false, 'async 验证码被消费后不能重复使用')
+  const asyncIssueResult = await consumeCaptchaIssueAllowanceAsync('198.51.100.21')
+  assert.equal(asyncIssueResult.blocked, false, 'async 验证码限频入口在内存模式下应保持兼容')
 
   let captchaIssueBlocked = false
   for (let index = 0; index < 80; index += 1) {

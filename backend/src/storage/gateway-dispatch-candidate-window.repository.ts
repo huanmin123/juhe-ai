@@ -174,7 +174,7 @@ export function listGatewayDispatchCandidateRows(
       WHERE group_accounts.group_id = ?
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND accounts.provider_protocol_profile_id = ?
+        AND accounts.provider_code = ?
         AND accounts.deleted_at IS NULL
         AND accounts.status IN (${statusSetSql})
         AND accounts.schedulable = 1
@@ -185,7 +185,7 @@ export function listGatewayDispatchCandidateRows(
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.deleted_at IS NULL
-            AND source_accounts.provider_protocol_profile_id = ?
+            AND source_accounts.provider_code = ?
             AND source_accounts.type IN ('api_key', 'oauth')
             AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
@@ -207,10 +207,10 @@ export function listGatewayDispatchCandidateRows(
     .all(
       groupId,
       groupAccess.groupOwnerSystemAccountId,
-      groupAccess.providerProtocolProfileId,
+      groupAccess.providerCode,
       includeUnavailableFlag,
       now,
-      groupAccess.providerProtocolProfileId,
+      groupAccess.providerCode,
       includeUnavailableFlag,
       now,
       now,
@@ -266,7 +266,7 @@ export async function listGatewayDispatchCandidateRowsAsync(
     WHERE group_accounts.group_id = ?
       AND group_accounts.system_account_id = ?
       AND group_accounts.enabled = 1
-      AND accounts.provider_protocol_profile_id = ?
+      AND accounts.provider_code = ?
       AND accounts.deleted_at IS NULL
       AND accounts.status IN (${statusSetSql})
       AND accounts.schedulable = 1
@@ -277,7 +277,7 @@ export async function listGatewayDispatchCandidateRowsAsync(
         OR (
           accounts.authorization_instance_authorization_id IS NOT NULL
           AND source_accounts.deleted_at IS NULL
-          AND source_accounts.provider_protocol_profile_id = ?
+          AND source_accounts.provider_code = ?
           AND source_accounts.type IN ('api_key', 'oauth')
           AND source_accounts.status IN (${statusSetSql})
           AND source_accounts.schedulable = 1
@@ -298,10 +298,10 @@ export async function listGatewayDispatchCandidateRowsAsync(
   `, [
     groupId,
     groupAccess.groupOwnerSystemAccountId,
-    groupAccess.providerProtocolProfileId,
+    groupAccess.providerCode,
     includeUnavailableFlag,
     now,
-    groupAccess.providerProtocolProfileId,
+    groupAccess.providerCode,
     includeUnavailableFlag,
     now,
     now,
@@ -364,7 +364,7 @@ export function listGatewayDispatchModelCandidateRows(
         WHERE group_accounts.group_id = ?
           AND group_accounts.system_account_id = ?
           AND group_accounts.enabled = 1
-          AND accounts.provider_protocol_profile_id = ?
+          AND accounts.provider_code = ?
           AND accounts.deleted_at IS NULL
           AND accounts.status IN (${statusSetSql})
           AND accounts.schedulable = 1
@@ -375,7 +375,7 @@ export function listGatewayDispatchModelCandidateRows(
             OR (
               accounts.authorization_instance_authorization_id IS NOT NULL
               AND source_accounts.deleted_at IS NULL
-              AND source_accounts.provider_protocol_profile_id = ?
+              AND source_accounts.provider_code = ?
               AND source_accounts.type IN ('api_key', 'oauth')
               AND source_accounts.status IN (${statusSetSql})
               AND source_accounts.schedulable = 1
@@ -449,10 +449,10 @@ export function listGatewayDispatchModelCandidateRows(
     .all(
       groupId,
       groupAccess.groupOwnerSystemAccountId,
-      groupAccess.providerProtocolProfileId,
+      groupAccess.providerCode,
       includeUnavailableFlag,
       now,
-      groupAccess.providerProtocolProfileId,
+      groupAccess.providerCode,
       includeUnavailableFlag,
       now,
       now,
@@ -538,7 +538,7 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
       WHERE group_accounts.group_id = ?
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND accounts.provider_protocol_profile_id = ?
+        AND accounts.provider_code = ?
         AND accounts.deleted_at IS NULL
         AND accounts.status IN (${statusSetSql})
         AND accounts.schedulable = 1
@@ -549,7 +549,7 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.deleted_at IS NULL
-            AND source_accounts.provider_protocol_profile_id = ?
+            AND source_accounts.provider_code = ?
             AND source_accounts.type IN ('api_key', 'oauth')
             AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
@@ -622,10 +622,10 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
   `, [
     groupId,
     groupAccess.groupOwnerSystemAccountId,
-    groupAccess.providerProtocolProfileId,
+    groupAccess.providerCode,
     includeUnavailableFlag,
     now,
-    groupAccess.providerProtocolProfileId,
+    groupAccess.providerCode,
     includeUnavailableFlag,
     now,
     now,

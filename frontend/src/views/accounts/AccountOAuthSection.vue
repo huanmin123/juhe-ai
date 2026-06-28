@@ -43,6 +43,19 @@
     </template>
 
     <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，当前支持 GPT OAuth。" />
+
+    <a-form-item label="支持模型" required tooltip="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
+      <a-select
+        v-model:value="form.supportedModels"
+        allow-clear
+        mode="multiple"
+        :loading="modelsLoading"
+        option-filter-prop="label"
+        placeholder="选择这个账户支持的模型"
+        :options="modelOptions"
+        show-search
+      />
+    </a-form-item>
   </section>
 </template>
 
@@ -57,6 +70,8 @@ defineProps<{
   editing: boolean
   form: AccountFormModel
   isOpenAI: boolean
+  modelOptions: Array<{ label: string; value: string }>
+  modelsLoading: boolean
   title: string
 }>()
 

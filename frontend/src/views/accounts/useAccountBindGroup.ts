@@ -54,7 +54,6 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     await options.loadGroupOptions('', false, {
       providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId,
       systemAccountId: scopeParams?.systemAccountId,
       selectedIds: [bindGroupForm.groupId]
     })

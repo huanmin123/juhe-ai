@@ -24,7 +24,7 @@ export const baseModelColumns = [
   { title: '音频 token 价格', key: 'audioTokenPrice', width: 180 },
   { title: '每张价格', key: 'imageUnitPrice', width: 130 },
   { title: '上下文', key: 'context', width: 180 },
-  { title: '操作', key: 'actions', width: 86, fixed: 'right' }
+  { title: '操作', key: 'actions', width: 116, fixed: 'right' }
 ]
 
 export function buildProviderModelColumns(category: ModelCategoryKey, rows: ProviderModelPricing[]) {

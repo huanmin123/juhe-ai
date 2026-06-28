@@ -27,14 +27,16 @@ const [
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
   repositories,
-  { createAccountTestTask }
+  { createAccountTestTask },
+  { upsertProviderDefaultTestModelPreferenceAsync }
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-test-tasks.repository.js')
+  import('../../storage/account-test-tasks.repository.js'),
+  import('../../storage/provider-default-test-model.repository.js')
 ])
 
 let mockOpenAIServer: http.Server | undefined
@@ -147,6 +149,33 @@ try {
   assert.equal(defaultModelTested.success, true, `默认模型账户测试应成功：${defaultModelTested.message}`)
   assert.equal(defaultModelTested.model, 'gpt-5.5', '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
   assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.5', '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
+
+  await upsertProviderDefaultTestModelPreferenceAsync({
+    systemAccountId: admin.id,
+    providerCode: 'gpt',
+    model: 'gpt-5.4-mini'
+  })
+  const userDefaultModelAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    name: '测试 Responses 用户默认测试模型账户',
+    type: 'api_key',
+    groupId: group.id,
+    credentials: { api_key: 'sk-account-test-user-default-model', base_url: mockBaseUrl }
+  }, access)
+  const userDefaultModelTested = await testOpenAIAccount(userDefaultModelAccount, {
+    systemAccountId: admin.id,
+    requestShape: {
+      endpoint: '/v1/responses',
+      model: 'gpt-5.4',
+      stream: true,
+      createdAt: new Date().toISOString()
+    }
+  })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(userDefaultModelTested.success, true, `用户默认测试模型账户测试应成功：${userDefaultModelTested.message}`)
+  assert.equal(userDefaultModelTested.model, 'gpt-5.4-mini', '未显式指定测试模型时，应优先使用当前用户默认测试模型偏好')
+  assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.4-mini', '用户默认测试模型偏好应写入上游测试请求')
 
   console.log('账户测试 Responses 当前契约回归通过：客户端画像内部推导，API Key 测试不发送 max_output_tokens')
 } finally {

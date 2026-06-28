@@ -4,9 +4,9 @@ import { z } from 'zod'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { nowIso } from '../../storage/database.js'
-import { getTableStorageOverview, listDatabaseStorageHistory, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
+import { getTableStorageOverviewAsync, listDatabaseStorageHistoryAsync, listTableStorageHistoryAsync, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
-import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export const tableMonitorRouter = Router()
@@ -54,17 +54,21 @@ interface NonBusinessDataCleanupResult {
   blockedReason?: string
 }
 
-tableMonitorRouter.get('/overview', (req, res) => {
+tableMonitorRouter.get('/overview', async (req, res, next) => {
   const parsed = overviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '表监控参数无效')))
     return
   }
-  res.json(ok(getTableStorageOverview({
-    startAt: parsed.data.startAt,
-    endAt: parsed.data.endAt,
-    limit: parsed.data.limit
-  })))
+  try {
+    res.json(ok(await getTableStorageOverviewAsync({
+      startAt: parsed.data.startAt,
+      endAt: parsed.data.endAt,
+      limit: parsed.data.limit
+    })))
+  } catch (error) {
+    next(error)
+  }
 })
 
 tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
@@ -74,7 +78,7 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
     batchSize: bodyField(req, 'batchSize'),
     maxBatches: bodyField(req, 'maxBatches')
   })
-}), (req, res) => {
+}), async (req, res) => {
   const parsed = nonBusinessDataCleanupSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '非业务数据清理参数无效')))
@@ -123,7 +127,7 @@ tableMonitorRouter.post('/non-business-data/cleanup', mutationGuard({
   }
 
   try {
-    recordNonBusinessDataCleanupOperation(result, req)
+    await recordNonBusinessDataCleanupOperation(result, req)
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'table_monitor_non_business_data_cleanup_operation_log_failed' }), '表监控非业务数据清理操作日志写入失败')
   }
@@ -136,8 +140,8 @@ function normalizeCleanupCutoff(value: string): { iso: string; time: number } | 
   return Number.isNaN(time) ? undefined : { iso: new Date(time).toISOString(), time }
 }
 
-function recordNonBusinessDataCleanupOperation(result: NonBusinessDataCleanupResult, req: Parameters<typeof recordOperationLog>[1]): void {
-  recordOperationLog({
+async function recordNonBusinessDataCleanupOperation(result: NonBusinessDataCleanupResult, req: Parameters<typeof recordOperationLogAsync>[1]): Promise<void> {
+  await recordOperationLogAsync({
     module: 'table_monitor',
     action: 'cleanup_non_business_data',
     operationKey: 'table_monitor.cleanup_non_business_data',
@@ -170,30 +174,38 @@ function recordNonBusinessDataCleanupOperation(result: NonBusinessDataCleanupRes
   }, req)
 }
 
-tableMonitorRouter.get('/history', (req, res) => {
+tableMonitorRouter.get('/history', async (req, res, next) => {
   const parsed = historyQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '表监控历史参数无效')))
     return
   }
-  res.json(ok(listTableStorageHistory({
-    databaseRole: parsed.data.databaseRole as MonitoredDatabaseRole,
-    tableName: parsed.data.tableName,
-    startAt: parsed.data.startAt,
-    endAt: parsed.data.endAt,
-    limit: parsed.data.limit
-  })))
+  try {
+    res.json(ok(await listTableStorageHistoryAsync({
+      databaseRole: parsed.data.databaseRole as MonitoredDatabaseRole,
+      tableName: parsed.data.tableName,
+      startAt: parsed.data.startAt,
+      endAt: parsed.data.endAt,
+      limit: parsed.data.limit
+    })))
+  } catch (error) {
+    next(error)
+  }
 })
 
-tableMonitorRouter.get('/database-history', (req, res) => {
+tableMonitorRouter.get('/database-history', async (req, res, next) => {
   const parsed = databaseHistoryQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '数据库增长历史参数无效')))
     return
   }
-  res.json(ok(listDatabaseStorageHistory({
-    startAt: parsed.data.startAt,
-    endAt: parsed.data.endAt,
-    limit: parsed.data.limit
-  })))
+  try {
+    res.json(ok(await listDatabaseStorageHistoryAsync({
+      startAt: parsed.data.startAt,
+      endAt: parsed.data.endAt,
+      limit: parsed.data.limit
+    })))
+  } catch (error) {
+    next(error)
+  }
 })

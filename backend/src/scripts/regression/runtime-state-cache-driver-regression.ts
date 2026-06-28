@@ -16,6 +16,9 @@ const stateStore = createRuntimeStateStore(`regression_state_${suffix}`)
 
 await stateStore.setJson('profile', { ok: true }, 1000)
 assert.deepEqual(await stateStore.getJson('profile'), { ok: true })
+assert.deepEqual(await stateStore.getDeleteJson('profile'), { ok: true })
+assert.equal(await stateStore.getJson('profile'), undefined)
+await stateStore.setJson('profile', { ok: true }, 1000)
 await stateStore.delete('profile')
 assert.equal(await stateStore.getJson('profile'), undefined)
 

@@ -121,30 +121,14 @@ export function assertHybridAccountModelMappingProtocolAllowed(
     supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
   }
 ): void {
-  const profileId = options.providerProfile.providerProtocolProfileId ?? options.providerProfile.id
-  const openAIProfile = isOpenAIProtocolProfile(options.providerProfile)
-  const anthropicProfile = isAnthropicProtocolProfile(options.providerProfile)
-  const geminiProfile = isGeminiProtocolProfile(options.providerProfile)
   const rule = hybridAccountModelMappingProtocolRules.find((item) => (
     item.source === mapping.sourceEndpointFamily && item.upstream === mapping.upstreamEndpointFamily
   ))
   if (!rule) {
     throw new Error(unsupportedHybridProtocolConversionMessage(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily))
   }
-  if (rule.upstreamProfile === 'openai' && !openAIProfile) {
-    throw new Error('混合供应商当前账户真实上游不是 OpenAI Chat，不能配置目标为 Chat Completions 的映射')
-  }
-  if (rule.upstreamProfile === 'anthropic' && !anthropicProfile) {
-    throw new Error('混合供应商当前账户真实上游不是 Anthropic Messages，不能配置目标为 Messages 的映射')
-  }
-  if (rule.upstreamProfile === 'gemini' && !geminiProfile) {
-    throw new Error('混合供应商当前账户真实上游不是 Gemini native，不能配置目标为 Gemini GenerateContent 的映射')
-  }
   if (rule.requiresNativeResponses && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
     throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
-  }
-  if (profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) {
-    throw new Error('混合供应商不能使用 Gemini OpenAI Chat 普通档案，请选择混合供应商真实上游档案')
   }
 }
 

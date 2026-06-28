@@ -1,13 +1,13 @@
 import { Router } from 'express'
 
 import type { AccountSummary } from '../../domain/types.js'
-import { migrateAccountTraffic } from '../../storage/repositories.js'
+import { migrateAccountTrafficAsync } from '../../storage/repositories.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { migrateServerOpenAIAccountTrafficRuntime } from '../db-service/db-service-ipc.js'
 import type { OpenAIAccountTrafficMigrationRuntimeRequest } from '../db-service/db-service-types.js'
-import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { accountTrafficMigrationSchema } from './account-request.schemas.js'
 import { sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 
@@ -28,8 +28,8 @@ export function registerAccountTrafficMigrationRoutes(router: Router): void {
     try {
       let runtimeMigrationInput: OpenAIAccountTrafficMigrationRuntimeRequest | undefined
       const sourceStatus = parsed.data.sourceStatus ?? 'temporary_unavailable'
-      const migration = runLoggedOperation(() => {
-        const migration = migrateAccountTraffic({
+      const migration = await runLoggedOperationAsync(async () => {
+        const migration = await migrateAccountTrafficAsync({
           sourceAccountId: req.params.id,
           targetAccountId: parsed.data.targetAccountId,
           sourceStatus

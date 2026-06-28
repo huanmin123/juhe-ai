@@ -11,6 +11,7 @@ import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
+import { DEFAULT_OPENAI_SUPPORTED_MODELS } from '../../storage/schema-defaults.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-negative-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'proxy-negative.sqlite3')
@@ -34,6 +35,7 @@ const [
   { groupsRouter },
   { openAIGatewayRouter },
   { proxiesRouter },
+  { routeStrategiesRouter },
   { usageRecordsRouter },
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
@@ -50,6 +52,7 @@ const [
   import('../../modules/groups/groups.routes.js'),
   import('../../modules/gateway/routes.js'),
   import('../../modules/proxies/proxies.routes.js'),
+  import('../../modules/route-strategies/route-strategies.routes.js'),
   import('../../modules/usage-records/usage-records.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
@@ -77,6 +80,7 @@ app.use('/__aisys__/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)
 app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 app.use('/__aisys__/api/groups', requireAdmin, groupsRouter)
 app.use('/__aisys__/api/api-keys', requireAdmin, apiKeysRouter)
+app.use('/__aisys__/api/route-strategies', requireAdmin, routeStrategiesRouter)
 app.use('/__aisys__/api/proxies', proxiesRouter)
 app.use('/__aisys__/api/usage-records', requireAdmin, usageRecordsRouter)
 
@@ -113,6 +117,13 @@ interface ApiKeySummary {
   id: string
   name: string
   key?: string
+  routeStrategyId?: string
+}
+
+interface RouteStrategySummary {
+  id: string
+  name: string
+  groupBindings: Array<{ groupId: string }>
 }
 
 interface AccountTestResult {
@@ -143,6 +154,7 @@ interface UsageRecordListResult {
 }
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const proxyRegressionModel = DEFAULT_OPENAI_SUPPORTED_MODELS[0]
 
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
@@ -179,6 +191,7 @@ async function main(): Promise<void> {
         api_key: 'sk-proxy-negative',
         base_url: upstreamBaseUrl
       },
+      supportedModels: [proxyRegressionModel],
       groupId: group.id
     }
     const activationTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
@@ -194,11 +207,19 @@ async function main(): Promise<void> {
     })
     assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
     directUpstreamHitCount = 0
-    const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
-      name: '代理负向回归 Key',
+    const routeStrategy = await postEnvelope<RouteStrategySummary>(baseUrl, '/__aisys__/api/route-strategies', adminCookie, {
+      name: '代理负向回归普通路由',
+      mode: 'normal',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     })
+    assert(routeStrategy.groupBindings.some((binding) => binding.groupId === group.id), '代理负向策略路由应绑定当前分组')
+    const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
+      name: '代理负向回归 Key',
+      routeStrategyId: routeStrategy.id,
+      status: 'active'
+    })
+    assert(apiKey.routeStrategyId === routeStrategy.id, '代理负向 API Key 应绑定当前策略路由')
     assert(apiKey.key, '临时 API Key 未返回明文密钥')
 
     await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: false })
@@ -209,7 +230,7 @@ async function main(): Promise<void> {
       path: `/__aisys__/api/accounts/${account.id}/test`,
       cookie: adminCookie,
       body: {
-        model: 'gpt-4o-mini',
+        model: proxyRegressionModel,
         prompt: 'hi'
       }
     }))
@@ -239,7 +260,7 @@ async function main(): Promise<void> {
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'gpt-4o-mini',
+            model: proxyRegressionModel,
             input: 'hi',
             stream: false
           })
@@ -289,7 +310,7 @@ function createDirectUpstreamServer(): http.Server {
         id: 'resp_proxy_negative',
         object: 'response',
         status: 'completed',
-        model: 'gpt-4o-mini',
+        model: proxyRegressionModel,
         output: [],
         usage: {
           input_tokens: 1,
@@ -348,7 +369,7 @@ async function login(baseUrl: string): Promise<string> {
 async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, account: Record<string, unknown>): Promise<AccountTestTask<AccountTestResult>> {
   const task = await postEnvelope<AccountTestTask<AccountTestResult>>(baseUrl, '/__aisys__/api/accounts/test-draft', cookie, {
     account,
-    model: 'gpt-4o-mini'
+    model: proxyRegressionModel
   })
   return await waitForAccountTestTask(baseUrl, cookie, task.id)
 }

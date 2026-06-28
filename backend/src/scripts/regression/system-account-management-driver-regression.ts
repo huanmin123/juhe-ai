@@ -90,11 +90,14 @@ async function assertSystemAccountManagementAsync(repositories: typeof import('.
   const defaultGroupCount = await defaultGroupCountForSystemAccount(created.id)
   assert.equal(defaultGroupCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应同步创建全部默认内置分组')
   const defaultRouteStrategyCount = await defaultRouteStrategyCountForSystemAccount(created.id)
-  assert.equal(defaultRouteStrategyCount, 1, '异步创建系统账户应同步创建唯一默认策略路由')
+  assert.equal(defaultRouteStrategyCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应为每个默认分组同步创建默认策略路由')
+  const defaultApiKeyCount = await defaultApiKeyCountForSystemAccount(created.id)
+  assert.equal(defaultApiKeyCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应为每个默认策略路由同步创建默认 API Key')
 
-  const routeStrategyOptions = await repositories.listRouteStrategyOptionsAsync({ systemAccountId: created.id, role: 'user' }, { limit: 10 })
+  const routeStrategyOptions = await repositories.listRouteStrategyOptionsAsync({ systemAccountId: created.id, role: 'user' }, { limit: DEFAULT_BUILT_IN_GROUPS.length + 5 })
   assert.equal(routeStrategyOptions[0]?.isDefault, true, '策略路由选项应优先返回默认策略路由')
   assert.equal(routeStrategyOptions[0]?.mode, 'normal', '默认策略路由应为普通路由')
+  assert.equal(routeStrategyOptions.filter((item) => item.isDefault).length, DEFAULT_BUILT_IN_GROUPS.length, '策略路由选项应返回全部默认策略路由')
 
   const page = await repositories.listSystemAccountsPageAsync({ keyword: username, page: 1, pageSize: 20 })
   assert.ok(page.items.some((item) => item.id === created.id), '异步系统账户列表应能按用户名查到新账户')
@@ -165,6 +168,26 @@ async function defaultRouteStrategyCountForSystemAccount(systemAccountId: string
   return Number(row?.count ?? 0)
 }
 
+async function defaultApiKeyCountForSystemAccount(systemAccountId: string): Promise<number> {
+  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+    const [{ createPostgresDatabaseClient }, { getPostgresPool }] = await Promise.all([
+      import('../../storage/database-client.js'),
+      import('../../storage/postgres-client.js')
+    ])
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const row = await client.one<{ count?: string | number }>(
+      'SELECT COUNT(*) AS count FROM "juhe_business"."api_keys" WHERE system_account_id = ? AND is_default = 1',
+      [systemAccountId]
+    )
+    return Number(row?.count ?? 0)
+  }
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const row = getBusinessDatabase()
+    .prepare('SELECT COUNT(*) AS count FROM api_keys WHERE system_account_id = ? AND is_default = 1')
+    .get(systemAccountId) as { count?: number } | undefined
+  return Number(row?.count ?? 0)
+}
+
 async function cleanupCreatedSystemAccounts(): Promise<void> {
   if (!createdSystemAccountIds.length) {
     return
@@ -176,6 +199,9 @@ async function cleanupCreatedSystemAccounts(): Promise<void> {
     ])
     const client = createPostgresDatabaseClient(await getPostgresPool())
     for (const id of createdSystemAccountIds.splice(0)) {
+      await client.execute('DELETE FROM "juhe_business"."api_keys" WHERE system_account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategy_groups" WHERE system_account_id = ?', [id])
+      await client.execute('DELETE FROM "juhe_business"."route_strategies" WHERE system_account_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."groups" WHERE system_account_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."system_sessions" WHERE system_account_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."system_accounts" WHERE id = ?', [id])
@@ -186,6 +212,9 @@ async function cleanupCreatedSystemAccounts(): Promise<void> {
   const { getBusinessDatabase } = await import('../../storage/database.js')
   const database = getBusinessDatabase()
   for (const id of createdSystemAccountIds.splice(0)) {
+    database.prepare('DELETE FROM api_keys WHERE system_account_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategy_groups WHERE system_account_id = ?').run(id)
+    database.prepare('DELETE FROM route_strategies WHERE system_account_id = ?').run(id)
     database.prepare('DELETE FROM groups WHERE system_account_id = ?').run(id)
     database.prepare('DELETE FROM system_sessions WHERE system_account_id = ?').run(id)
     database.prepare('DELETE FROM system_accounts WHERE id = ?').run(id)

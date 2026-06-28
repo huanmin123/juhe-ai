@@ -152,6 +152,7 @@ export interface ApiKeySummary {
   keySuffix: string
   key: string
   status: 'active' | 'disabled'
+  isDefault?: boolean
   routeStrategyId: string
   routeStrategyName?: string
   routeStrategyMode?: RouteStrategyMode

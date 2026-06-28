@@ -153,7 +153,7 @@ function oauthDraftActivationSnapshot(input: {
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility,
-    supportedModels: [],
+    supportedModels: ['gpt-5.5'],
     modelMappings: []
   }
 }
@@ -175,7 +175,7 @@ function oauthCreateActivationRequest(input: {
     activationTestTaskId: input.activationTestTaskId,
     concurrencyLimit: 20,
     priority: 0,
-    supportedModels: [],
+    supportedModels: ['gpt-5.5'],
     modelMappings: []
   }
 }

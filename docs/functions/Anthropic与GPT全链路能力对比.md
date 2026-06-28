@@ -43,7 +43,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 | 账户测试 | 按账户能力选择 Chat / Responses / Codex 请求，复用真实网关链路 | 用 `/v1/messages` 最小请求，支持 Anthropic 模型目录 | 主链路已对齐 |
 | 后台冷却复测 | 复用账户测试链路，恢复临时不可用 / 限流账号 | 复用同一测试服务，Anthropic 协议已进入测试服务 | 基础对齐 |
 | 接口能力限制 | `chat_json/chat_sse/responses_json/responses_sse` | `messages_json/messages_sse/message_token_counting` | 已对齐 |
-| 分组与授权 | 同协议档案硬边界，授权实例独立运行态和用量归属 | 同样使用 `provider_protocol_profile_id` 硬边界 | 已对齐 |
+| 分组与授权 | 分组按供应商隔离，授权实例独立运行态和用量归属 | 同样按供应商进入分组，账户协议档案保留真实上游能力 | 已对齐 |
 | API Key 多分组 fallback | 同档案号池可 fallback，跨供应商依赖模型路由计划 | Anthropic 同档案可复用现有 fallback；跨供应商同样依赖模型路由计划 | 和 GPT 同级，跨供应商不是 Anthropic 单点缺口 |
 | 模型限制 | 候选账号按请求 `model` 过滤 | 已复用候选过滤 | 已对齐 |
 | 模型映射 | OpenAI adapter 会改写请求体 `model` | Anthropic native 请求会按账户模型映射改写顶层 `model`，保留其他原生字段 | 已对齐 |

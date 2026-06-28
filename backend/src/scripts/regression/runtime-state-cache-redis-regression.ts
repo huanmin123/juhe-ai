@@ -23,19 +23,22 @@ const loginIp = `198.51.100.10-${suffix}`
 const loginUser = `redis-${suffix}@example.test`
 const loginFailIp = `198.51.100.11-${suffix}`
 const loginFailUser = `redis-fail-${suffix}@example.test`
+const captchaIp = `198.51.100.12-${suffix}`
 
 const [
   { createDedicatedRedisClient, closeRedisClients },
   { createRuntimeStateStore },
   { createSharedJsonCache },
   accountConcurrency,
-  loginGuard
+  loginGuard,
+  captchaService
 ] = await Promise.all([
   import('../../shared/redis-client.js'),
   import('../../shared/runtime-state-store.js'),
   import('../../shared/cache.js'),
   import('../../shared/account-concurrency.js'),
-  import('../../modules/auth/login-guard.service.js')
+  import('../../modules/auth/login-guard.service.js'),
+  import('../../modules/auth/captcha.service.js')
 ])
 
 const cacheClient = await createDedicatedRedisClient(cacheUrl)
@@ -50,6 +53,7 @@ const cleanupPatterns = [
   `juhe-ai:state:auth_login_guard:login:username:${loginUser}:*`,
   `juhe-ai:state:auth_login_guard:login:ip:${loginFailIp}:*`,
   `juhe-ai:state:auth_login_guard:login:username:${loginFailUser}:*`,
+  `juhe-ai:state:auth_captcha:issue:${captchaIp}`,
   `juhe-ai:account-concurrency:${accountId}:*`,
   `juhe-ai:account-concurrency:${accountId}_parallel:*`
 ]
@@ -60,6 +64,7 @@ try {
   await verifySharedJsonCache()
   await verifyRuntimeStateStore()
   await verifyLoginGuard()
+  await verifyCaptchaRuntimeState()
   await verifyAccountConcurrency()
 
   await cleanupRedisKeys()
@@ -97,7 +102,10 @@ async function verifyRuntimeStateStore(): Promise<void> {
 
   await stateStore.setJson('profile', { ok: true }, 1000)
   assert.deepEqual(await stateStore.getJson('profile'), { ok: true }, 'Redis state 应能读取刚写入的 JSON')
+  assert.deepEqual(await stateStore.getDeleteJson('profile'), { ok: true }, 'Redis state getDeleteJson 应返回旧值并原子删除')
+  assert.equal(await stateStore.getJson('profile'), undefined, 'Redis state getDeleteJson 后应读不到旧值')
 
+  await stateStore.setJson('profile', { ok: true }, 1000)
   await stateStore.delete('profile')
   assert.equal(await stateStore.getJson('profile'), undefined, 'Redis state delete 后应读不到旧值')
 
@@ -128,6 +136,27 @@ async function verifyLoginGuard(): Promise<void> {
 
   await loginGuard.recordSuccessfulLoginAsync(loginFailIp, loginFailUser)
   assert.equal((await loginGuard.checkLoginAllowedAsync(loginFailIp, loginFailUser)).blocked, false, '成功登录应清理 Redis 登录防护计数和锁')
+}
+
+async function verifyCaptchaRuntimeState(): Promise<void> {
+  const challenge = await captchaService.createCaptchaChallengeAsync()
+  const answer = captchaService.captchaAnswerForTest(challenge.captchaId)
+  assert.ok(answer, 'Redis 验证码回归应能通过测试夹具读取刚生成的答案')
+  assert.equal(await stateClient.get(`juhe-ai:state:auth_captcha:challenge:${challenge.captchaId}`) !== null, true, 'Redis 验证码 challenge 应写入 runtime state')
+  assert.equal(await captchaService.verifyCaptchaChallengeAsync(challenge.captchaId, answer), true, 'Redis 验证码应支持正确答案校验')
+  assert.equal(await stateClient.get(`juhe-ai:state:auth_captcha:challenge:${challenge.captchaId}`), null, 'Redis 验证码校验后应原子消费 challenge')
+  assert.equal(await captchaService.verifyCaptchaChallengeAsync(challenge.captchaId, answer), false, 'Redis 验证码 challenge 不应允许重复使用')
+
+  let blocked = false
+  for (let index = 0; index < 80; index += 1) {
+    const result = await captchaService.consumeCaptchaIssueAllowanceAsync(captchaIp)
+    if (result.blocked) {
+      blocked = true
+      assert.ok(result.retryAfterSeconds && result.retryAfterSeconds > 0, 'Redis 验证码限频应返回 Retry-After 秒数')
+      break
+    }
+  }
+  assert.equal(blocked, true, 'Redis 验证码限频应在单 IP 高频生成后触发')
 }
 
 async function verifyAccountConcurrency(): Promise<void> {

@@ -4,7 +4,7 @@ import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
 import {
@@ -28,7 +28,9 @@ import {
 import { type AccountImportGroupCreateMap } from './account-import-plan.js'
 import {
   resolveAccountGroup,
+  resolveAccountGroupAsync,
   resolveAccountProxy,
+  resolveAccountProxyAsync,
   type AccountImportProxyReferencePlan,
   type AccountImportResourceContext
 } from './account-import-resource-resolver.js'
@@ -36,7 +38,7 @@ import {
   validateImportAccountProviderAndBasics,
   type AccountImportProviderContext
 } from './account-import-provider-resolver.js'
-import { validateAccountModelCatalogFields } from './account-import-model-catalog.js'
+import { validateAccountModelCatalogFields, validateAccountModelCatalogFieldsAsync } from './account-import-model-catalog.js'
 import type { AccountImportItem } from './account-import.service.js'
 
 export interface NormalizedImportAccount {
@@ -87,6 +89,55 @@ export function planImportAccount(
   groupIdsByKey: Map<string, string>,
   groupNamesToCreate: AccountImportGroupCreateMap
 ): AccountImportAccountPlan {
+  const { source, item, shouldResolve } = prepareImportAccountPlan(value, index, context)
+  if (!shouldResolve) return { source, item }
+  validateAccountModelCatalogFields(source, context)
+  const groupId = resolveAccountGroup(source, context, groupIdsByKey, groupNamesToCreate, item)
+  const proxyProfileId = resolveAccountProxy(source, proxyByRef, item)
+  if (item.messages.length > 0) {
+    item.action = 'failed'
+  }
+  return {
+    source,
+    item,
+    groupId,
+    proxyProfileId
+  }
+}
+
+export async function planImportAccountAsync(
+  value: unknown,
+  index: number,
+  context: AccountImportAccountPlanContext,
+  proxyByRef: Map<string, AccountImportProxyReferencePlan>,
+  groupIdsByKey: Map<string, string>,
+  groupNamesToCreate: AccountImportGroupCreateMap
+): Promise<AccountImportAccountPlan> {
+  const { source, item, shouldResolve } = prepareImportAccountPlan(value, index, context)
+  if (!shouldResolve) return { source, item }
+  await validateAccountModelCatalogFieldsAsync(source, context)
+  const groupId = await resolveAccountGroupAsync(source, context, groupIdsByKey, groupNamesToCreate, item)
+  const proxyProfileId = await resolveAccountProxyAsync(source, proxyByRef, item)
+  if (item.messages.length > 0) {
+    item.action = 'failed'
+  }
+  return {
+    source,
+    item,
+    groupId,
+    proxyProfileId
+  }
+}
+
+function prepareImportAccountPlan(
+  value: unknown,
+  index: number,
+  context: AccountImportAccountPlanContext
+): {
+  source: NormalizedImportAccount
+  item: AccountImportItem
+  shouldResolve: boolean
+} {
   const item: AccountImportItem = { index, action: 'create', messages: [], warnings: [] }
   const source: NormalizedImportAccount = {
     index,
@@ -101,7 +152,7 @@ export function planImportAccount(
   if (!isRecord(value)) {
     item.action = 'failed'
     item.messages.push('账户配置必须是对象')
-    return { source, item }
+    return { source, item, shouldResolve: false }
   }
   appendUnknownFieldMessages(value, importAccountKeys, '账户配置', item.messages)
   source.ref = optionalTextField(value, 'ref', '账户 ref', item.messages)
@@ -188,17 +239,10 @@ export function planImportAccount(
   item.protocolCode = source.protocolCode
   item.protocolVersion = source.protocolVersion
   item.accountType = source.type
-  validateAccountModelCatalogFields(source, context)
-  const groupId = resolveAccountGroup(source, context, groupIdsByKey, groupNamesToCreate, item)
-  const proxyProfileId = resolveAccountProxy(source, proxyByRef, item)
-  if (item.messages.length > 0) {
-    item.action = 'failed'
-  }
   return {
     source,
     item,
-    groupId,
-    proxyProfileId
+    shouldResolve: true
   }
 }
 
@@ -279,6 +323,9 @@ function assertImportEndpointModesCompatible(
     clientCompatibility: AccountClientCompatibility
   }
 ): void {
+  if (isHybridProviderCode(account.providerCode)) {
+    return
+  }
   if (isAnthropicProtocolProfile(account)) {
     assertAnthropicEndpointModesCompatible({
       modes: input.modes,

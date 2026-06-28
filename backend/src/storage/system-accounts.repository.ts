@@ -5,9 +5,10 @@ import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPass
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
+import { ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { ensureDefaultRouteStrategyForSystemAccount, ensureDefaultRouteStrategyForSystemAccountAsync } from './route-strategy.repository.js'
+import { ensureDefaultRouteStrategiesForSystemAccount, ensureDefaultRouteStrategiesForSystemAccountAsync } from './route-strategy.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
@@ -452,7 +453,8 @@ export function createSystemAccountWithPasswordHash(input: {
       `)
       .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
     ensureDefaultBuiltInGroupsForSystemAccount(summary.id, now)
-    ensureDefaultRouteStrategyForSystemAccount(summary.id, now)
+    ensureDefaultRouteStrategiesForSystemAccount(summary.id, now)
+    ensureDefaultApiKeysForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -503,7 +505,8 @@ export async function createSystemAccountWithPasswordHashAsync(input: {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now])
     await ensureDefaultBuiltInGroupsForSystemAccountAsync(tx, summary.id, now)
-    await ensureDefaultRouteStrategyForSystemAccountAsync(tx, summary.id, now)
+    await ensureDefaultRouteStrategiesForSystemAccountAsync(tx, summary.id, now)
+    await ensureDefaultApiKeysForSystemAccountAsync(tx, summary.id, now)
   })
   invalidateSystemAccountLookupCache(summary.id)
   return summary
@@ -867,10 +870,10 @@ async function ensureDefaultBuiltInGroupsForSystemAccountAsync(client: DatabaseC
     const existing = await client.one<{ id?: string }>(`
       SELECT id
       FROM ${groupsTable}
-      WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1
+      WHERE system_account_id = ? AND provider_code = ? AND is_default = 1
       ORDER BY updated_at DESC, id ASC
       LIMIT 1
-    `, [systemAccountId, group.providerProtocolProfileId])
+    `, [systemAccountId, group.providerCode])
     if (existing?.id) {
       continue
     }

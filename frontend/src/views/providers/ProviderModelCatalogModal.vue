@@ -40,6 +40,7 @@
           <template v-if="column.key === 'model'">
             <a-space size="small">
               <span class="mono-cell">{{ record.model }}</span>
+              <a-tag v-if="isDefaultTestModel(record)" color="green">默认测试</a-tag>
               <a-tag color="default">{{ record.providerCode }}</a-tag>
               <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
             </a-space>
@@ -109,6 +110,7 @@
               <strong class="mono-cell">{{ record.model }}</strong>
               <a-space size="small" wrap>
                 <a-tag color="default">{{ record.providerCode }}</a-tag>
+                <a-tag v-if="isDefaultTestModel(record)" color="green">默认测试</a-tag>
                 <a-tag>{{ formatModelCategory(record) }}</a-tag>
                 <a-tag :color="modelStatusColor(record.status)">{{ formatModelStatus(record.status) }}</a-tag>
               </a-space>
@@ -161,13 +163,14 @@ const open = defineModel<boolean>('open', { required: true })
 const keyword = defineModel<string>('keyword', { required: true })
 const selectedCategory = defineModel<ModelCategoryKey>('selectedCategory', { required: true })
 
-defineProps<{
+const props = defineProps<{
   title: string
   loading: boolean
   categoryTabs: Array<{ key: ModelCategoryKey; label: string }>
   columns: Array<Record<string, any>>
   models: ProviderModelPricing[]
   currentCategoryCount: number
+  defaultTestModel?: string
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
 }>()
 
@@ -176,6 +179,11 @@ const emit = defineEmits<{
   create: []
   'model-action': [key: string, record: ProviderModelPricing]
 }>()
+
+function isDefaultTestModel(record: ProviderModelPricing): boolean {
+  const defaultModel = props.defaultTestModel?.trim().toLowerCase()
+  return Boolean(defaultModel && record.model.trim().toLowerCase() === defaultModel)
+}
 </script>
 
 <style scoped>

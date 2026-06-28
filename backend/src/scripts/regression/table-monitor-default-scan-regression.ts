@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
@@ -25,6 +25,8 @@ const [databaseModule, tableMonitorRepository] = await Promise.all([
 ])
 
 try {
+  assertTableMonitorAsyncSourceGuard()
+
   const businessDatabase = databaseModule.getBusinessDatabase()
   for (let index = 0; index < 8; index += 1) {
     businessDatabase.prepare(`CREATE TABLE table_monitor_default_${index} (id TEXT PRIMARY KEY, value TEXT)`).run()
@@ -100,6 +102,16 @@ try {
   const overviewTablePlan = explainQueryPlan(statsDatabase, overviewTableSql, ['2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'])
   assertNoTempBtree(overviewTablePlan, '表监控概览表快照查询')
   assert(overviewTablePlan.includes('idx_table_storage_snapshots_latest_id'), `表监控概览表快照应使用 latest+id 索引，实际计划：${overviewTablePlan}`)
+  const asyncOverview = await tableMonitorRepository.getTableStorageOverviewAsync({
+    startAt: '2026-01-01T00:00:00.000Z',
+    endAt: '2026-01-01T00:00:00.000Z',
+    limit: 200
+  })
+  assert.deepEqual(asyncOverview, tableMonitorRepository.getTableStorageOverview({
+    startAt: '2026-01-01T00:00:00.000Z',
+    endAt: '2026-01-01T00:00:00.000Z',
+    limit: 200
+  }), 'SQLite 模式下表监控概览 async 入口应回退同步读取并保持结果一致')
 
   const capturedHistorySql: string[] = []
   statsDatabase.prepare = ((sql: string) => {
@@ -127,8 +139,36 @@ try {
   const databaseHistoryPlan = explainQueryPlan(statsDatabase, databaseHistorySql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 720])
   assertNoTempBtree(databaseHistoryPlan, '三库增长趋势查询')
   assert(databaseHistoryPlan.includes('idx_database_storage_snapshots_role_time_id'), `三库增长趋势应使用 role+time+id 索引，实际计划：${databaseHistoryPlan}`)
+  assert.deepEqual(await tableMonitorRepository.listDatabaseStorageHistoryAsync({
+    startAt: '2026-01-01T00:00:00.000Z',
+    endAt: '2026-01-01T00:00:00.000Z',
+    limit: 720
+  }), databaseHistory, 'SQLite 模式下数据库增长趋势 async 入口应回退同步读取并保持结果一致')
 
-  console.log('表监控默认采样回归通过：默认 cursor，滚动写入行数且不做全表扫描和精确 COUNT(*)')
+  const sampledTable = statsDatabase.prepare(`
+    SELECT database_role AS databaseRole, table_name AS tableName
+    FROM table_storage_snapshots
+    WHERE database_role = 'business'
+    ORDER BY sampled_at DESC, table_name ASC
+    LIMIT 1
+  `).get() as { databaseRole?: 'business'; tableName?: string } | undefined
+  assert(sampledTable?.databaseRole && sampledTable.tableName, '测试应存在业务库表快照')
+  const tableHistory = tableMonitorRepository.listTableStorageHistory({
+    databaseRole: sampledTable.databaseRole,
+    tableName: sampledTable.tableName,
+    startAt: '2026-01-01T00:00:00.000Z',
+    endAt: '2026-01-01T00:00:00.000Z',
+    limit: 720
+  })
+  assert.deepEqual(await tableMonitorRepository.listTableStorageHistoryAsync({
+    databaseRole: sampledTable.databaseRole,
+    tableName: sampledTable.tableName,
+    startAt: '2026-01-01T00:00:00.000Z',
+    endAt: '2026-01-01T00:00:00.000Z',
+    limit: 720
+  }), tableHistory, 'SQLite 模式下单表增长趋势 async 入口应回退同步读取并保持结果一致')
+
+  console.log('表监控默认采样回归通过：默认 cursor，滚动写入行数，不做全表扫描，并固定管理端 async 读取入口')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -147,4 +187,26 @@ function explainQueryPlan(database: DatabaseSync, sql: string, params: SQLInputV
 
 function assertNoTempBtree(details: string, label: string): void {
   assert(!/USE TEMP B-TREE/i.test(details), `${label}不应创建临时排序树，实际计划：${details}`)
+}
+
+function assertTableMonitorAsyncSourceGuard(): void {
+  const repositorySource = readSource('../../storage/table-monitor.repository.ts')
+  const routesSource = readSource('../../modules/table-monitor/table-monitor.routes.ts')
+  for (const name of ['getTableStorageOverviewAsync', 'listTableStorageHistoryAsync', 'listDatabaseStorageHistoryAsync']) {
+    assert(repositorySource.includes(`export async function ${name}`), `表监控仓储应导出 ${name}`)
+    assert(routesSource.includes(name), `表监控路由应调用 ${name}`)
+  }
+  assert(repositorySource.includes('createPostgresDatabaseClient(await getPostgresPool())'), '表监控 async 读路径应使用 PostgreSQL client')
+  assert(repositorySource.includes("statsTable(client, 'database_storage_snapshots')"), '表监控数据库快照 PG 读路径应使用 juhe_stats schema 表名')
+  assert(repositorySource.includes("statsTable(client, 'table_storage_snapshots')"), '表监控表快照 PG 读路径应使用 juhe_stats schema 表名')
+  assert(routesSource.includes('await getTableStorageOverviewAsync('), '表监控 overview 路由必须 await async 读入口')
+  assert(routesSource.includes('await listTableStorageHistoryAsync('), '表监控 history 路由必须 await async 读入口')
+  assert(routesSource.includes('await listDatabaseStorageHistoryAsync('), '表监控 database-history 路由必须 await async 读入口')
+  assert(!/import \{[^}]*\bgetTableStorageOverview\b/.test(routesSource), '表监控路由不应重新导入同步 overview 入口')
+  assert(!/import \{[^}]*\blistTableStorageHistory\b/.test(routesSource), '表监控路由不应重新导入同步 table history 入口')
+  assert(!/import \{[^}]*\blistDatabaseStorageHistory\b/.test(routesSource), '表监控路由不应重新导入同步 database history 入口')
+}
+
+function readSource(path: string): string {
+  return readFileSync(new URL(path, import.meta.url), 'utf8')
 }

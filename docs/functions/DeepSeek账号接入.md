@@ -26,7 +26,7 @@ DeepSeek hosted API 没有需要本项目优先接入的独立 native 网关协�
 - 前端已新增 DeepSeek 供应商展示、账户表单能力、导入协议示例、模型目录分类和模型检测入口隔离。
 - 已落地部分支持 OpenAI-compatible Chat Completions JSON / SSE；当前不进入 Responses 模型检测。
 - 已落地混合供应商账户下的 DeepSeek Responses -> Chat SSE 桥接，覆盖 `/v1/responses` 入站、上游 `/v1/chat/completions` 改写、function tools、`web_search` guidance、`input_image` data URL、`reasoning_content`、截断失败和 SSE error 事件。
-- DeepSeek Anthropic v1 已新增 `profile_deepseek_anthropic_v1`、默认 DeepSeek Claude Code 分组、前端接入类型、凭据归一化和 Anthropic 协议 driver 分支；默认只启用 Messages JSON / SSE，不启用 Count Tokens。
+- DeepSeek Anthropic v1 已新增 `profile_deepseek_anthropic_v1`、前端接入类型、凭据归一化和 Anthropic 协议 driver 分支；默认只启用 Messages JSON / SSE，不启用 Count Tokens。默认分组按 `providerCode=deepseek` 归并。
 - 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、同协议模型映射、非兼容 `/responses` 拒绝、混合供应商账户 bridge、`web_search` guidance 且不命中上游、cache usage、`reasoning_content`、`insufficient_system_resource` 和上游 `Content-Length`。
 - 历史 `https://vsllm.com` 验证中，`deepseek-ai-v4-flash` JSON / SSE 曾通过；本轮 `2026-06-24` 使用当前 vsllm 账号复测时，`deepseek-v4-flash` 直连和网关链路均超时，`deepseek-ai-v4-flash` 返回当天额度耗尽，`deepseek-v4-pro` 超时或 TLS 连接错误。当前不能把该通道作为 DeepSeek 真实成功样本，待更换 Key、额度恢复或上游稳定后补测。
 
@@ -347,9 +347,9 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 ### 账户、分组与 API Key 路由
 
-- DeepSeek 账户只允许加入自身 `provider_protocol_profile_id` 对应分组；OpenAI-compatible 账户进入 `profile_deepseek_openai_v1` 分组，Claude Code 账户进入 `profile_deepseek_anthropic_v1` 分组
+- DeepSeek 账户只允许加入 `providerCode=deepseek` 的分组；OpenAI-compatible 与 Anthropic-compatible 的差异由账户 `provider_protocol_profile_id`、endpoint mode、支持模型和模型映射表达
 - 默认 DeepSeek 分组承接 DeepSeek Chat Completions 请求；当混合供应商账户把 Codex Responses 来源指向 DeepSeek OpenAI-compatible 真实上游，且请求为 Codex Responses SSE 时，可通过本地 bridge 承接 Codex `/responses`
-- DeepSeek OpenAI-compatible 分组不承接 Anthropic Messages、普通 OpenAI Responses、FIM 或 Chat Prefix beta；DeepSeek Claude Code 分组只承接 Anthropic v1 Messages / Models，不承接 OpenAI Chat 或 Count Tokens
+- DeepSeek 分组本身不承接协议语义；OpenAI-compatible 账户不承接 Anthropic Messages、普通 OpenAI Responses、FIM 或 Chat Prefix beta，DeepSeek Claude Code 账户只承接 Anthropic v1 Messages / Models，不承接 OpenAI Chat 或 Count Tokens
 - API Key 只绑定策略路由；每次请求先由策略路由选择分组，再由混合供应商账户或模型目录、协议档案定位真实 DeepSeek 上游能力。
 - 会话亲和、IP 级账号回避、本地账号屏蔽、上游桶避让和高并发队列继续使用现有运行态，不为 DeepSeek 另起一套调度状态
 - 如果后续 DeepSeek API Key 账户支持同一账户内多个上游 Key，应复用账户内 Key 故障隔离能力：只摘除当前失败 Key，不因单个 Key 的认证失败、余额不足或限流直接打坏整个账户；第一阶段如果只开放单 Key 表单，则不展示 Key 池配置
@@ -385,7 +385,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 | 风险点 | 易出错表现 | 约束 |
 | --- | --- | --- |
-| 协议误扩散 | DeepSeek 账户进入官方 Anthropic 分组，或官方 Anthropic 账户进入 DeepSeek 分组 | `profile_deepseek_openai_v1` 和 `profile_deepseek_anthropic_v1` 必须分别隔离；DeepSeek Anthropic 仍归属 `providerCode=deepseek` |
+| 协议误扩散 | DeepSeek 账户进入官方 Anthropic 分组，或官方 Anthropic 账户进入 DeepSeek 分组 | 分组按 `providerCode=deepseek` 隔离；`profile_deepseek_openai_v1` 和 `profile_deepseek_anthropic_v1` 是账户接入类型，不拆分默认分组 |
 | 客户端画像误当协议 | 只改 API Key 默认画像就切换 Base URL 或 endpoint modes | 上游协议由 `provider_protocol_profile_id` 决定，客户端画像只影响下游工具语义和显式路由匹配 |
 | endpoint mode 误放开 | 普通 `/responses`、FIM、Prefix beta、Images、count_tokens 被路由到 DeepSeek | OpenAI 档案默认只开 `chat_json`、`chat_sse`；Codex bridge 只在混合供应商账户命中时接收 `/responses` |
 | 通用 OpenAI 层丢字段 | `thinking` 被 sanitizer 删除，`reasoning_content` 或 cache usage 解析不到 | DeepSeek 扩展字段由供应商层保留 |
@@ -395,7 +395,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 | reasoning 误入正文 | 把 `reasoning_content` 拼入普通 `content` 或列表页完整展示 | 可审计 / 摘要，不进入普通回答文本 |
 | keep-alive 误判 | SSE comment 被当成可见输出，非流式空行被当成非法 JSON | 只作为传输保活刷新活跃时间 |
 | 模型混池 | DeepSeek 模型进入 GPT 目录或 GPT 账号兜底承接 DeepSeek 请求 | `providerCode = deepseek` 独立目录和价格 |
-| 跨供应商切号 | OpenAI/GPT/GLM 账号失败后切到 DeepSeek，或反向切换 | 按 `provider_protocol_profile_id` 和模型路由过滤 |
+| 跨供应商切号 | OpenAI/GPT/GLM 账号失败后切到 DeepSeek，或反向切换 | 按 `provider_code`、模型路由和账户能力过滤 |
 | 旧别名默认化 | 新账号默认测试 `deepseek-chat` / `deepseek-reasoner` | 新默认使用 `deepseek-v4-flash` |
 | 错误硬编码 | 401/403/402/429/5xx 或余额文案直接写死账号状态 | 只进诊断和账户错误处理策略输入，持久状态需确认 |
 | `insufficient_system_resource` 误判 | 当成本地网关错误或立即打坏账号 | 作为响应语义异常完成，可观察 / 重试，不能直接写持久状态 |
@@ -406,14 +406,11 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 ## 分组、授权与 API Key 路由
 
-DeepSeek 目标创建两个默认分组：
+DeepSeek 默认只创建一个供应商默认分组：默认 DeepSeek 分组。OpenAI-compatible 与 Anthropic-compatible 的差异由账户接入类型表达，不拆成默认 DeepSeek Claude Code 分组。
 
-- 默认 DeepSeek 分组：绑定 `profile_deepseek_openai_v1`
-- 默认 DeepSeek Anthropic 分组：绑定 `profile_deepseek_anthropic_v1`
+账户只能加入相同 `provider_code` 的分组。
 
-账户只能加入相同 `provider_protocol_profile_id` 的分组。
-
-API Key 多分组绑定允许跨供应商协议档案；一个本地 API Key 可以同时绑定 DeepSeek OpenAI、DeepSeek Anthropic 和其他供应商分组，但每次请求必须先用入口协议与 `model` 命中目标 `provider_protocol_profile_id`，再只在该 Key 已绑定的目标档案分组内调度。
+API Key 多分组绑定允许跨供应商；一个本地 API Key 可以同时绑定 DeepSeek、GPT、GLM 和其他供应商分组，但每次请求必须先用入口协议与 `model` 命中目标供应商，再只在该 Key 已绑定的目标供应商分组内调度。
 
 ## 账号测试
 
@@ -450,7 +447,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 - 新增 `deepseek` 供应商种子
 - 新增 `profile_deepseek_openai_v1`
 - 新增 `profile_deepseek_anthropic_v1`
-- 新增默认 DeepSeek 分组和默认 DeepSeek Claude Code 分组
+- 新增默认 DeepSeek 分组
 - 前端账户创建在选择 `DeepSeek` 后展示 `DeepSeek OpenAI-compatible API Key`
 - 前端账户创建在选择 `DeepSeek` 后展示 `DeepSeek Claude Code API Key`
 - 后端账户创建、编辑、导入和公开推送接口按协议档案解析 DeepSeek 接入类型

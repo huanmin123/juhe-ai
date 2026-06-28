@@ -23,8 +23,6 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
-  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
-  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
   HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   HYBRID_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
@@ -39,6 +37,13 @@ import {
 
 export { GPT_VENDOR_CODE }
 
+export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2']
+export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5']
+export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
+export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-ai-v4-flash', 'deepseek-ai-v4-pro']
+export const DEFAULT_GLM_SUPPORTED_MODELS = ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flashx', 'glm-4.7-flash']
+export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.5', 'claude-opus-4-8', 'gemini-3.5-flash', 'deepseek-v4-flash', 'glm-5.2']
+
 export const OPENAI_COMPATIBLE_PROVIDER: ProviderDefinition = {
   id: OPENAI_COMPATIBLE_PROVIDER_CODE,
   code: OPENAI_COMPATIBLE_PROVIDER_CODE,
@@ -49,6 +54,7 @@ export const OPENAI_COMPATIBLE_PROVIDER: ProviderDefinition = {
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
   defaultTestModel: 'gpt-5.5',
+  defaultSupportedModels: DEFAULT_OPENAI_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['responses', 'chat', 'passthrough'],
   protocolProfiles: [
@@ -82,6 +88,7 @@ export const GPT_PROVIDER: ProviderDefinition = {
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
   defaultTestModel: '',
+  defaultSupportedModels: DEFAULT_OPENAI_SUPPORTED_MODELS,
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['responses', 'chat'],
   protocolProfiles: [
@@ -114,6 +121,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
   defaultTestModel: 'claude-opus-4-8',
+  defaultSupportedModels: DEFAULT_ANTHROPIC_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   protocolProfiles: [
@@ -147,6 +155,7 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
   protocolVersion: GEMINI_PROTOCOL_VERSION,
   baseUrl: 'https://generativelanguage.googleapis.com',
   defaultTestModel: 'gemini-3.5-flash',
+  defaultSupportedModels: DEFAULT_GEMINI_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['generate_content', 'count_tokens', 'embed_content', 'passthrough'],
   protocolProfiles: [
@@ -196,6 +205,7 @@ export const HYBRID_PROVIDER: ProviderDefinition = {
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: '',
   defaultTestModel: '',
+  defaultSupportedModels: DEFAULT_HYBRID_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['chat', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
   protocolProfiles: [
@@ -230,6 +240,7 @@ export const DEEPSEEK_PROVIDER: ProviderDefinition = {
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.deepseek.com',
   defaultTestModel: 'deepseek-v4-flash',
+  defaultSupportedModels: DEFAULT_DEEPSEEK_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['chat', 'messages', 'passthrough'],
   protocolProfiles: [
@@ -277,6 +288,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
   defaultTestModel: 'glm-5.2',
+  defaultSupportedModels: DEFAULT_GLM_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['chat', 'messages', 'passthrough'],
   protocolProfiles: [

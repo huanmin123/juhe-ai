@@ -170,8 +170,13 @@ export function assertAccountModelMappingUpstreamsAllowedBySupportedModels(
     .map((mapping) => mapping.upstreamModel)
     .filter((model) => !supportedModelSet.has(model.trim().toLowerCase()))
   if (invalidUpstreamModels.length > 0) {
-    throw new Error(`账户已配置支持模型时，映射上游模型只能选择支持模型：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+    throw new Error(`映射上游模型只能选择账户支持模型：${invalidUpstreamModels.slice(0, 5).join('、')}`)
   }
+}
+
+export function assertAccountSupportedModelsRequired(supportedModels: readonly string[]): void {
+  if (supportedModels.some((model) => model.trim())) return
+  throw new Error('账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型')
 }
 
 export function openAIProtocolModelPool(systemAccountId: string): Set<string> {

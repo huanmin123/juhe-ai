@@ -3,11 +3,18 @@ import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProvidersAsync } from '../../storage/repositories.js'
+import type { ProviderDefinition } from '../../domain/types.js'
 import {
   listAnthropicProtocolProviderCodesAsync,
   listGeminiProtocolProviderCodesAsync,
   listOpenAIProtocolProviderCodesAsync
 } from '../../storage/provider.repository.js'
+import { isHybridProviderCode } from '../../domain/provider-protocol.js'
+import {
+  clearProviderDefaultTestModelPreferenceIfModelAsync,
+  listProviderDefaultTestModelPreferencesAsync,
+  upsertProviderDefaultTestModelPreferenceAsync
+} from '../../storage/provider-default-test-model.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import {
@@ -28,7 +35,8 @@ interface ProviderModelOption {
 
 providersRouter.get('/', requireAdmin, async (_req, res, next) => {
   try {
-    res.json(ok(await listProvidersAsync()))
+    const context = getRequestAuthContext()
+    res.json(ok(await listProvidersForRequestAsync(context?.systemAccountId)))
   } catch (error) {
     next(error)
   }
@@ -36,7 +44,8 @@ providersRouter.get('/', requireAdmin, async (_req, res, next) => {
 
 providersRouter.get('/options', async (_req, res, next) => {
   try {
-    res.json(ok((await listProvidersAsync()).filter((provider) => provider.enabled)))
+    const context = getRequestAuthContext()
+    res.json(ok((await listProvidersForRequestAsync(context?.systemAccountId)).filter((provider) => provider.enabled)))
   } catch (error) {
     next(error)
   }
@@ -76,7 +85,9 @@ async function providerModelOptionProviderCodesAsync(protocol: unknown): Promise
   if (value === 'gemini') {
     return new Set(await listGeminiProtocolProviderCodesAsync())
   }
-  return new Set((await listProvidersAsync()).filter((provider) => provider.enabled).map((provider) => provider.code))
+  return new Set((await listProvidersAsync())
+    .filter((provider) => provider.enabled && !isHybridProviderCode(provider.code))
+    .map((provider) => provider.code))
 }
 
 providersRouter.get('/:code/models', async (req, res, next) => {
@@ -94,6 +105,51 @@ providersRouter.get('/:code/models', async (req, res, next) => {
       includeInactive: booleanQueryValue(req.query.includeInactive),
       includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
     })))
+  } catch (error) {
+    next(error)
+  }
+})
+
+const defaultTestModelSchema = z.object({
+  model: z.string().trim().min(1)
+}).strict()
+
+providersRouter.put('/:code/default-test-model', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    if (!context) {
+      res.status(401).json({ message: '请先登录' })
+      return
+    }
+    const provider = (await listProvidersAsync()).find((item) => item.code === req.params.code)
+    if (!provider) {
+      sendNotFound(res, '供应商不存在')
+      return
+    }
+    const parsed = defaultTestModelSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json(badRequest('默认测试模型参数无效'))
+      return
+    }
+    const model = parsed.data.model
+    const validation = await validateDefaultTestModelSelection({
+      providerCode: provider.code,
+      systemAccountId: context.systemAccountId,
+      model
+    })
+    if (!validation.success) {
+      res.status(400).json(badRequest(validation.message))
+      return
+    }
+    const saved = await upsertProviderDefaultTestModelPreferenceAsync({
+      providerCode: provider.code,
+      systemAccountId: context.systemAccountId,
+      model: validation.model
+    })
+    res.json(ok({
+      providerCode: saved.providerCode,
+      defaultTestModel: saved.model
+    }))
   } catch (error) {
     next(error)
   }
@@ -229,12 +285,20 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       return
     }
     try {
-      res.json(ok(await saveCustomProviderModelAsync({
+      const saved = await saveCustomProviderModelAsync({
         ...next,
         providerCode: existing.providerCode,
         systemAccountId: existing.systemAccountId,
         actorSystemAccountId: context.systemAccountId
-      })))
+      })
+      if (saved.status !== 'active') {
+        await clearProviderDefaultTestModelPreferenceIfModelAsync({
+          providerCode: saved.providerCode,
+          systemAccountId: saved.systemAccountId,
+          model: saved.model
+        })
+      }
+      res.json(ok(saved))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
     }
@@ -271,11 +335,43 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
       })
       return
     }
-    res.json(ok({ deleted: await removeCustomProviderModelAsync(existing.id) }))
+    const deleted = await removeCustomProviderModelAsync(existing.id)
+    if (deleted) {
+      await clearProviderDefaultTestModelPreferenceIfModelAsync({
+        providerCode: existing.providerCode,
+        systemAccountId: existing.systemAccountId,
+        model: existing.model
+      })
+    }
+    res.json(ok({ deleted }))
   } catch (error) {
     next(error)
   }
 })
+
+async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {
+  const providers = await listProvidersAsync()
+  const preferences = await listProviderDefaultTestModelPreferencesAsync(
+    systemAccountId,
+    providers.map((provider) => provider.code)
+  )
+  if (!preferences.size) return providers
+  return providers.map((provider) => providerWithDefaultTestModelPreference(provider, preferences.get(provider.code)))
+}
+
+function providerWithDefaultTestModelPreference(provider: ProviderDefinition, preferredModel?: string): ProviderDefinition {
+  const model = preferredModel?.trim()
+  if (!model) return provider
+  return {
+    ...provider,
+    defaultTestModel: model,
+    protocolProfiles: provider.protocolProfiles.map((profile) => (
+      profile.id === provider.defaultProtocolProfileId
+        ? { ...profile, defaultTestModel: model }
+        : profile
+    ))
+  }
+}
 
 export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
   const seenProviderModels = new Set<string>()
@@ -300,12 +396,59 @@ async function listProviderModelsForRequestAsync(input: {
   includeInactive?: boolean
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
+  if (isHybridProviderCode(input.providerCode)) {
+    const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && !isHybridProviderCode(provider.code))
+    return (await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
+      providerCode: provider.code,
+      systemAccountId: input.systemAccountId,
+      includeInactive: input.includeInactive,
+      includeUnpriced: input.includeUnpriced
+    })))).flat()
+  }
   return listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
     includeInactive: input.includeInactive,
     includeUnpriced: input.includeUnpriced
   })
+}
+
+async function validateDefaultTestModelSelection(input: {
+  providerCode: string
+  systemAccountId: string
+  model: string
+}): Promise<{ success: true; model: string } | { success: false; message: string }> {
+  const model = input.model.trim()
+  const catalog = await listProviderModelsForRequestAsync({
+    providerCode: input.providerCode,
+    systemAccountId: input.systemAccountId,
+    includeInactive: true,
+    includeUnpriced: true
+  })
+  const item = catalog.find((entry) => entry.model.trim().toLowerCase() === model.toLowerCase())
+  if (!item) {
+    return { success: false, message: `模型不在当前用户可见目录中：${model}` }
+  }
+  if ((item.status ?? 'active') !== 'active') {
+    return { success: false, message: '只能把启用模型设置为默认测试模型' }
+  }
+  if (!isProviderModelUsableForAccountTest(item)) {
+    return { success: false, message: '默认测试模型只能选择文本生成模型' }
+  }
+  return { success: true, model: item.model }
+}
+
+function isProviderModelUsableForAccountTest(item: ProviderModelCatalogItem): boolean {
+  if (item.mode === 'image' || item.mode === 'audio') return false
+  const protocols = item.supportedApiProtocols ?? []
+  if (!protocols.length) return true
+  return protocols.some((protocol) => [
+    'chat_completions',
+    'responses',
+    'messages',
+    'generate_content',
+    'stream_generate_content'
+  ].includes(protocol))
 }
 
 function booleanQueryValue(value: unknown): boolean | undefined {

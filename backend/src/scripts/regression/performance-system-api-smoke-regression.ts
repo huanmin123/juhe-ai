@@ -1096,6 +1096,7 @@ async function cleanupCreatedSystemAccounts(systemAccountIds: string[]): Promise
     ])
     const client = createPostgresDatabaseClient(await getPostgresPool())
     for (const id of systemAccountIds.splice(0)) {
+      await cleanupSystemAccountBusinessDependents(client, id)
       await client.execute('DELETE FROM "juhe_business"."groups" WHERE system_account_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."system_sessions" WHERE system_account_id = ?', [id])
       await client.execute('DELETE FROM "juhe_business"."system_accounts" WHERE id = ?', [id])
@@ -1105,10 +1106,86 @@ async function cleanupCreatedSystemAccounts(systemAccountIds: string[]): Promise
   }
   const { getBusinessDatabase } = await import('../../storage/database.js')
   const database = getBusinessDatabase()
+  const client = await createBusinessDatabaseClient()
   for (const id of systemAccountIds.splice(0)) {
+    await cleanupSystemAccountBusinessDependents(client, id)
     database.prepare('DELETE FROM groups WHERE system_account_id = ?').run(id)
     database.prepare('DELETE FROM system_sessions WHERE system_account_id = ?').run(id)
     database.prepare('DELETE FROM system_accounts WHERE id = ?').run(id)
+  }
+}
+
+async function cleanupSystemAccountBusinessDependents(client: DatabaseClient, systemAccountId: string): Promise<void> {
+  const apiKeys = businessTable(client, 'api_keys')
+  const routeStrategies = businessTable(client, 'route_strategies')
+  const routeStrategyGroups = businessTable(client, 'route_strategy_groups')
+  const groupAccounts = businessTable(client, 'group_accounts')
+  const accounts = businessTable(client, 'accounts')
+  const authorizations = businessTable(client, 'resource_authorizations')
+  const authorizationSources = businessTable(client, 'resource_authorization_sources')
+  const authorizationGrants = businessTable(client, 'resource_authorization_grants')
+  const announcements = businessTable(client, 'announcements')
+
+  await client.execute(`
+    DELETE FROM ${apiKeys}
+    WHERE system_account_id = ?
+      OR route_strategy_id IN (
+        SELECT id FROM ${routeStrategies} WHERE system_account_id = ?
+      )
+  `, [systemAccountId, systemAccountId])
+  await client.execute(`DELETE FROM ${routeStrategyGroups} WHERE system_account_id = ?`, [systemAccountId])
+  await client.execute(`DELETE FROM ${routeStrategies} WHERE system_account_id = ?`, [systemAccountId])
+
+  await client.execute(`
+    DELETE FROM ${groupAccounts}
+    WHERE account_authorization_id IN (
+      SELECT id FROM ${authorizations} WHERE grantee_system_account_id = ?
+    )
+  `, [systemAccountId])
+  await client.execute(`
+    DELETE FROM ${groupAccounts}
+    WHERE account_id IN (
+      SELECT id FROM ${accounts}
+      WHERE system_account_id = ?
+        AND authorization_instance_authorization_id IS NOT NULL
+    )
+  `, [systemAccountId])
+  await deleteAuthorizationInstanceAccountRows(client, systemAccountId)
+  await client.execute(`
+    DELETE FROM ${accounts}
+    WHERE system_account_id = ?
+      AND authorization_instance_authorization_id IS NOT NULL
+  `, [systemAccountId])
+  await client.execute(`
+    DELETE FROM ${authorizationSources}
+    WHERE authorization_id IN (
+      SELECT id FROM ${authorizations} WHERE grantee_system_account_id = ?
+    )
+  `, [systemAccountId])
+  await client.execute(`DELETE FROM ${authorizations} WHERE grantee_system_account_id = ?`, [systemAccountId])
+  await client.execute(`DELETE FROM ${authorizationGrants} WHERE grantee_system_account_id = ?`, [systemAccountId])
+  await client.execute(`DELETE FROM ${announcements} WHERE created_by = ? OR updated_by = ?`, [systemAccountId, systemAccountId])
+}
+
+async function deleteAuthorizationInstanceAccountRows(client: DatabaseClient, systemAccountId: string): Promise<void> {
+  const accounts = businessTable(client, 'accounts')
+  const accountChildTables = [
+    'account_supported_models',
+    'account_model_mappings',
+    'account_tag_bindings',
+    'account_name_search_terms',
+    'account_name_search_documents',
+    'account_api_key_runtime_states'
+  ]
+  for (const tableName of accountChildTables) {
+    await client.execute(`
+      DELETE FROM ${businessTable(client, tableName)}
+      WHERE account_id IN (
+        SELECT id FROM ${accounts}
+        WHERE system_account_id = ?
+          AND authorization_instance_authorization_id IS NOT NULL
+      )
+    `, [systemAccountId])
   }
 }
 

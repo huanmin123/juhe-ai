@@ -3,7 +3,7 @@ import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
-import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountClientCompatibility, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
@@ -18,6 +18,9 @@ import {
 import { newId } from '../../storage/database.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
+  assertAccountSupportedModelsRequired,
+  findProviderDefaultSupportedModels,
+  findProviderDefaultSupportedModelsAsync,
   findGroupSummary,
   findGroupSummaryAsync,
   listProviders,
@@ -143,10 +146,6 @@ function prepareAccountDraftTestSnapshotResolved(
   if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
     throw new Error('账户分组无效')
   }
-  const groupProviderProtocolProfileId = group.providerProtocolProfileId?.trim()
-  if (!groupProviderProtocolProfileId) {
-    throw new Error('账户分组协议档案无效')
-  }
   const provider = providers.find((item) => item.code === accountInput.providerCode)
   let providerProtocolProfileId: string
   try {
@@ -154,7 +153,7 @@ function prepareAccountDraftTestSnapshotResolved(
       providerCode: accountInput.providerCode,
       providerProtocolProfileId: accountInput.providerProtocolProfileId,
       connectionType: accountInput.connectionType
-    }) ?? groupProviderProtocolProfileId
+    }) ?? provider?.defaultProtocolProfileId ?? ''
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : '账户接入类型无效')
   }
@@ -166,7 +165,7 @@ function prepareAccountDraftTestSnapshotResolved(
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${accountInput.providerCode}`)
   }
-  if (group.providerProtocolProfileId !== providerProfile.id || !isGatewaySupportedProtocolProfile(providerProfile)) {
+  if (!isGatewaySupportedProtocolProfile(providerProfile)) {
     throw new Error('当前仅支持测试 OpenAI 或 Anthropic 协议账户')
   }
   const ownerSystemAccountId = group.ownerSystemAccountId
@@ -203,6 +202,7 @@ function prepareAccountDraftTestSnapshotResolved(
     credentials,
     groupName: group.name,
     ownerSystemAccountId,
+    defaultSupportedModels: provider.defaultSupportedModels,
     providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion
@@ -341,7 +341,8 @@ function assertActivationTestTaskMatchesCreate(input: {
     providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion,
-    ownerSystemAccountId
+    ownerSystemAccountId,
+    defaultSupportedModels: findProviderDefaultSupportedModels(input.account.providerCode)
   })
   const actual = draftActivationFingerprintSnapshot(task.draftAccount)
   if (hashStableValue(expected) !== hashStableValue(actual)) {
@@ -382,7 +383,8 @@ async function assertActivationTestTaskMatchesCreateAsync(input: {
     providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion,
-    ownerSystemAccountId
+    ownerSystemAccountId,
+    defaultSupportedModels: await findProviderDefaultSupportedModelsAsync(input.account.providerCode)
   })
   const actual = draftActivationFingerprintSnapshot(task.draftAccount)
   if (hashStableValue(expected) !== hashStableValue(actual)) {
@@ -406,6 +408,7 @@ function accountCreateActivationFingerprintSnapshot(input: {
   protocolCode: string
   protocolVersion: string
   ownerSystemAccountId: string
+  defaultSupportedModels?: string[]
 }): Record<string, unknown> {
   const account = accountDraftRequestFromCreate(input.account)
   const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
@@ -429,7 +432,11 @@ function accountCreateActivationFingerprintSnapshot(input: {
     protocolVersion: input.protocolVersion
   })
   const availabilitySchedule = accountAvailabilityScheduleFromRequest({ availabilitySchedule: account.availabilitySchedule })
-  const supportedModels = normalizedTextList(account.supportedModels)
+  const supportedModels = draftSupportedModels(
+    account.providerCode,
+    account.supportedModels,
+    input.defaultSupportedModels ?? findProviderDefaultSupportedModels(account.providerCode)
+  )
   const modelMappings = normalizeDraftAccountModelMappings(account.modelMappings, account.providerCode, input.ownerSystemAccountId, {
     providerCode: account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
@@ -476,6 +483,9 @@ function assertDraftEndpointModesCompatible(
     clientCompatibility: AccountSummary['clientCompatibility']
   }
 ): void {
+  if (isHybridProviderCode(providerProfile.providerCode)) {
+    return
+  }
   if (isAnthropicProtocolProfile(providerProfile)) {
     assertAnthropicEndpointModesCompatible({
       modes: input.modes,
@@ -557,12 +567,13 @@ function draftTestAccountSummary(input: {
   credentials: Record<string, unknown>
   groupName?: string
   ownerSystemAccountId: string
+  defaultSupportedModels: string[]
   providerProtocolProfileId: string
   protocolCode: string
   protocolVersion: string
 }): AccountSummary {
   const usage = emptyAccountUsageSummary()
-  const supportedModels = normalizedTextList(input.account.supportedModels)
+  const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
   const modelMappings = normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId, {
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
@@ -634,6 +645,14 @@ function emptyAccountUsageSummary(): AccountSummary['usage'] {
 
 function normalizedTextList(value: string[] | undefined): string[] {
   return [...new Set((value ?? []).map((item) => item.trim()).filter(Boolean))]
+}
+
+function draftSupportedModels(providerCode: string, value: string[] | undefined, defaultSupportedModels: readonly string[]): string[] {
+  void providerCode
+  const supportedModels = normalizedTextList(value)
+  const result = supportedModels.length ? supportedModels : normalizedTextList([...defaultSupportedModels])
+  assertAccountSupportedModelsRequired(result)
+  return result
 }
 
 function normalizeDraftAccountModelMappings(

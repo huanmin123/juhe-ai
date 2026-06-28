@@ -81,8 +81,8 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     await query(
       `
         INSERT INTO ${businessTable('providers')} (
-          id, code, name, description, parent_code, enabled, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT DO NOTHING
       `,
       [
@@ -92,9 +92,19 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         provider.description,
         provider.parentCode,
         provider.enabled,
+        JSON.stringify(provider.defaultSupportedModels),
         now,
         now
       ]
+    )
+    await query(
+      `
+        UPDATE ${businessTable('providers')}
+        SET default_supported_models_json = $1, updated_at = $2
+        WHERE code = $3
+          AND (default_supported_models_json IS NULL OR btrim(default_supported_models_json) = '' OR default_supported_models_json = '[]')
+      `,
+      [JSON.stringify(provider.defaultSupportedModels), now, provider.code]
     )
   }
 
@@ -188,6 +198,19 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
   }
 
   for (const group of DEFAULT_BUILT_IN_GROUPS) {
+    const existingDefault = await client.one<{ id?: string }>(
+      `
+        SELECT id
+        FROM ${businessTable('groups')}
+        WHERE system_account_id = ? AND provider_code = ? AND is_default = 1
+        ORDER BY updated_at DESC, id ASC
+        LIMIT 1
+      `,
+      [group.systemAccountId, group.providerCode]
+    )
+    if (existingDefault?.id) {
+      continue
+    }
     await query(
       `
         INSERT INTO ${businessTable('groups')} (

@@ -331,8 +331,9 @@ function assertDeepSeekSeeds(): void {
   assert(deepSeekProvider.protocolProfiles.some((profile) => profile.id === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID), 'DeepSeek provider 应包含 Anthropic Messages 档案')
 
   const defaultGroups = repositories.listGroups(access).filter((group) => group.providerCode === DEEPSEEK_PROVIDER_CODE && group.isDefault)
-  assert(defaultGroups.some((group) => group.providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID), '默认分组应包含 DeepSeek OpenAI-compatible 分组')
-  assert(defaultGroups.some((group) => group.providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID), '默认分组应包含 DeepSeek Claude Code 分组')
+  assert.equal(defaultGroups.length, 1, 'DeepSeek 默认分组应只按供应商创建一个')
+  assert.equal(defaultGroups[0]?.name, '默认 DeepSeek 分组', 'DeepSeek 默认分组应使用供应商级名称')
+  assert.equal(defaultGroups[0]?.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek 默认分组只保留默认协议档案作为元数据')
 }
 
 async function assertDeepSeekModels(baseUrl: string, localApiKey: string): Promise<void> {

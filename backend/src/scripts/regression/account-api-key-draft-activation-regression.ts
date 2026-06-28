@@ -132,7 +132,7 @@ function apiKeyActivationRequest(input: {
     concurrencyLimit: 20,
     priority: 0,
     clientCompatibility: 'codex_responses' as const,
-    supportedModels: [],
+    supportedModels: [draftChatUpstreamModel],
     modelMappings: [draftChatAliasMapping()],
     notes: 'API Key 草稿测试成功后保存应直接启用'
   }

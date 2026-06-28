@@ -29,6 +29,13 @@
         <template v-else-if="column.key === 'defaultTestModel'">
           <span class="mono-cell">{{ record.defaultTestModel }}</span>
         </template>
+        <template v-else-if="column.key === 'defaultSupportedModels'">
+          <a-space wrap>
+            <a-tag v-for="model in visibleDefaultSupportedModels(record)" :key="model" class="mono-cell">{{ model }}</a-tag>
+            <a-tag v-if="hiddenDefaultSupportedModelCount(record) > 0">+{{ hiddenDefaultSupportedModelCount(record) }}</a-tag>
+            <span v-if="!record.defaultSupportedModels?.length" class="muted-text">-</span>
+          </a-space>
+        </template>
         <template v-else-if="column.key === 'actions'">
           <RowActions :actions="providerActions" @action-click="handleProviderAction($event, record)" />
         </template>
@@ -62,6 +69,10 @@
               <span>默认测试模型</span>
               <strong class="mono-cell">{{ record.defaultTestModel }}</strong>
             </div>
+            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>默认支持模型</span>
+              <strong class="mono-cell">{{ formatDefaultSupportedModels(record) }}</strong>
+            </div>
           </div>
           <div class="mobile-list-card-actions">
             <RowActions variant="button" :actions="providerActions" @action-click="handleProviderAction($event, record)" />
@@ -77,6 +88,7 @@
       :category-tabs="modelCategoryTabs"
       :columns="modelColumns"
       :current-category-count="currentCategoryModels.length"
+      :default-test-model="activeProviderDefaultTestModel"
       :loading="modelLoading"
       :models="filteredModels"
       :row-actions="modelRowActions"
@@ -255,6 +267,7 @@ const currentCategoryModels = computed(() => {
 const modelColumns = computed(() => buildProviderModelColumns(selectedModelCategory.value, currentCategoryModels.value))
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
+const activeProviderDefaultTestModel = computed(() => activeProvider.value?.defaultTestModel ?? '')
 const customModelModalTitle = computed(() => customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 
@@ -267,6 +280,21 @@ const pricingTemplateOptions = computed(() => buildPricingTemplateOptions(
 const modelCategoryTabs = computed(() => buildModelCategoryTabs(providerModels.value))
 
 const filteredModels = computed(() => filterProviderModelsByKeyword(currentCategoryModels.value, modelKeyword.value))
+
+function visibleDefaultSupportedModels(provider: ProviderDefinition): string[] {
+  return (provider.defaultSupportedModels ?? []).slice(0, 5)
+}
+
+function hiddenDefaultSupportedModelCount(provider: ProviderDefinition): number {
+  return Math.max(0, (provider.defaultSupportedModels?.length ?? 0) - 5)
+}
+
+function formatDefaultSupportedModels(provider: ProviderDefinition): string {
+  const visible = visibleDefaultSupportedModels(provider)
+  if (!visible.length) return '-'
+  const hiddenCount = hiddenDefaultSupportedModelCount(provider)
+  return hiddenCount > 0 ? `${visible.join(' / ')} / +${hiddenCount}` : visible.join(' / ')
+}
 
 async function loadProviders() {
   loading.value = true
@@ -404,6 +432,22 @@ function handleCustomModelModeChange() {
   clearCustomModelPricesOutsideCategory(customModelForm, category)
 }
 
+async function setDefaultTestModel(record: ProviderModelPricing) {
+  const provider = activeProvider.value
+  if (!provider) return
+  modelLoading.value = true
+  try {
+    const result = await api.providers.setDefaultTestModel(provider.code, record.model)
+    applyProviderDefaultTestModel(provider.code, result.defaultTestModel)
+    message.success(`默认测试模型已设置为 ${result.defaultTestModel}`)
+  } catch (error) {
+    console.error(error)
+    message.error(extractModelErrorMessage(error, '默认测试模型设置失败'))
+  } finally {
+    modelLoading.value = false
+  }
+}
+
 function handlePricingTemplateChange(value?: string) {
   applyPricingTemplateToCustomModelForm(customModelForm, providerModels.value, value)
 }
@@ -416,14 +460,30 @@ function modelCatalogQueryParams(): ProviderModelsParams {
 }
 
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
-  if (!canMutateModel(record)) return []
-  return [
+  const actions: RowActionItem[] = []
+  const isDefault = isActiveProviderDefaultTestModel(record.model)
+  if (getModelCategory(record) === 'text') {
+    actions.push({
+      key: 'set-default-test-model',
+      label: isDefault ? '默认测试' : '设为默认测试',
+      icon: 'test',
+      tone: isDefault ? 'success' : 'info',
+      disabled: isDefault || (record.status ?? 'active') !== 'active'
+    })
+  }
+  if (!canMutateModel(record)) return actions
+  actions.push(
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'info' },
     { key: 'delete', label: '删除', icon: 'delete', danger: true, confirmTitle: `确认删除模型 ${record.model}？已绑定 AI 账户时需要先从账户支持模型或模型映射中移除。`, confirmOkText: '删除' }
-  ]
+  )
+  return actions
 }
 
 function handleModelAction(key: string, record: ProviderModelPricing) {
+  if (key === 'set-default-test-model') {
+    void setDefaultTestModel(record)
+    return
+  }
   if (key === 'edit') {
     openEditCustomModel(record)
     return
@@ -436,6 +496,34 @@ function handleModelAction(key: string, record: ProviderModelPricing) {
 function canMutateModel(record: ProviderModelPricing): boolean {
   if (!record.id || record.scope === 'built_in') return false
   return record.systemAccountId === authState.currentUser.value?.id
+}
+
+function isActiveProviderDefaultTestModel(model: string): boolean {
+  const current = activeProviderDefaultTestModel.value.trim().toLowerCase()
+  return Boolean(current && model.trim().toLowerCase() === current)
+}
+
+function applyProviderDefaultTestModel(providerCode: string, defaultTestModel: string) {
+  providers.value = providers.value.map((provider) => (
+    provider.code === providerCode
+      ? providerWithDefaultTestModel(provider, defaultTestModel)
+      : provider
+  ))
+  if (activeProvider.value?.code === providerCode) {
+    activeProvider.value = providerWithDefaultTestModel(activeProvider.value, defaultTestModel)
+  }
+}
+
+function providerWithDefaultTestModel(provider: ProviderDefinition, defaultTestModel: string): ProviderDefinition {
+  return {
+    ...provider,
+    defaultTestModel,
+    protocolProfiles: provider.protocolProfiles.map((profile) => (
+      profile.id === provider.defaultProtocolProfileId
+        ? { ...profile, defaultTestModel }
+        : profile
+    ))
+  }
 }
 
 function extractModelErrorMessage(error: unknown, fallback: string) {

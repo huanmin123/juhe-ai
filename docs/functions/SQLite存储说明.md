@@ -49,7 +49,7 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `system_accounts`、`system_sessions`
 - `global_settings`、`system_settings`
 - `providers`、`protocols`、`protocol_endpoint_families`、`provider_protocol_profiles`、`provider_protocol_profile_families`、`proxy_profiles`
-- `accounts`、`account_supported_models`、`account_model_mappings`、`account_tags`、`account_tag_bindings`、`account_test_tasks`、`account_test_sessions`、`account_test_session_tasks`、`custom_provider_models`、`groups`、`group_authorization_settings`、`group_accounts`、`group_account_stats_dirty`、`route_strategies`、`route_strategy_groups`、`api_keys`
+- `accounts`、`account_supported_models`、`account_model_mappings`、`account_tags`、`account_tag_bindings`、`account_test_tasks`、`account_test_sessions`、`account_test_session_tasks`、`custom_provider_models`、`provider_default_test_models`、`groups`、`group_authorization_settings`、`group_accounts`、`group_account_stats_dirty`、`route_strategies`、`route_strategy_groups`、`api_keys`
 - `system_teams`、`system_team_members`
 - `resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`
 - `external_integration_sources`、`external_integration_source_tokens`
@@ -123,7 +123,7 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 
 - 使用 Node 内置 `node:sqlite`，要求官方 Node.js LTS；当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 `node:sqlite` 必须可用。
 - 启动时自动建表
-- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1` 供应商协议档案、默认 OpenAI 兼容分组、默认 GPT 分组、默认 Anthropic 分组、目标默认 DeepSeek OpenAI 分组、目标默认 DeepSeek Claude Code 分组、目标默认 GLM 通用分组、目标默认 GLM Coding 分组、目标默认 GLM Coding Anthropic 分组、默认全局设置和默认系统设置
+- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`hybrid` 混合供应商、各供应商协议档案、全部内置默认分组、每个默认分组对应的默认普通路由、每条默认路由对应的默认 API Key、默认全局设置和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
@@ -141,7 +141,7 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `protocols` 保存协议族和版本，当前包含 `openai/v1` 和 `anthropic/v1`；`protocol_endpoint_families` 保存协议下的端点族，OpenAI v1 当前包含 `chat_completions` 和 `responses`，Anthropic v1 当前包含 `messages`、`models` 和 `message_token_counting`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商、`gpt.parent_code = openai` 子供应商、独立 `anthropic` 供应商、目标 `deepseek` 供应商，以及 `glm.parent_code = openai` 子供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、默认测试模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1` 和 `profile_glm_coding_anthropic_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。Anthropic 当前只允许 `api_key` 账户类型并启用 Messages / Models / Count Tokens，不保存 OAuth 或 Claude Code token 生命周期字段；DeepSeek Anthropic 和 GLM Coding Anthropic 当前只允许 `api_key`，只启用 Messages / Models，不默认启用 Count Tokens；GLM OpenAI 档案当前只启用 `chat_completions`，Anthropic 档案只启用 `messages`。账户凭据 JSON 中的 `supported_endpoint_modes` 保存单个上游实际支持的协议端点与 JSON / SSE 组合，OpenAI v1 使用 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，Anthropic v1 使用 `messages_json`、`messages_sse`、`message_token_counting`；网关候选筛选和账户测试都按该字段执行。Anthropic 账户省略该字段时默认视为 `messages_json`、`messages_sse`、`message_token_counting`，DeepSeek Anthropic 和 GLM Coding Anthropic 省略该字段时默认视为 `messages_json`、`messages_sse`，GLM 账户省略该字段时默认视为 `chat_json`、`chat_sse`。
 - `provider_protocol_profiles` 的长期唯一性不能只使用 `provider_code + protocol_code + protocol_version`。同一供应商可能在同一协议版本下暴露多个业务档案，例如智谱 GLM 的通用 API 和 Coding Plan 都是 `glm + openai/v1`，但默认 Base URL、账户创建类型、额度解释和默认分组不同。落地 GLM 前，schema 应以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 并按 `provider_code + connection_type` 建业务唯一约束；运行路径不得通过 `provider_code + protocol_code + protocol_version` 反查唯一档案。
-- `accounts.provider_protocol_profile_id`、`groups.provider_protocol_profile_id` 和 `account_test_tasks.provider_protocol_profile_id` 保存供应商协议档案；`protocol_code` / `protocol_version` 从档案冗余写入，用于运行时策略、审计和排障。账户只能加入同 `provider_protocol_profile_id` 的分组；分组名称唯一和默认分组唯一都按协议档案维度判断，不能只按 `provider_code` 判断。API Key 可绑定多个供应商协议档案分组，但请求链路必须先按 `model` 在当前 Key 已绑定范围内筛出目标档案。
+- `accounts.provider_protocol_profile_id` 和 `account_test_tasks.provider_protocol_profile_id` 保存账户真实供应商协议档案；`groups.provider_protocol_profile_id` 仅保留分组默认档案元数据，`protocol_code` / `protocol_version` 从档案冗余写入用于运行时审计和排障。账户只能加入同 `provider_code` 的分组；分组名称唯一和默认分组唯一都按供应商维度判断。API Key 可绑定多个供应商分组，请求链路先按 `model` 和账户能力在当前 Key 已绑定范围内筛出目标供应商，再进入目标分组调度。
 - 账户级错误处理策略保存在 `accounts.credentials.error_handling_rules`，用于描述该账户上游非 `2xx` 错误命中后的账号副作用。规则保存启用状态、名称、优先级、状态码 / 错误码 / 错误类型 / 关键字匹配条件、动作和限流恢复策略。请求头、请求体和上下文改写不进入该字段，仍由网关 adapter 内部处理。
 - `response_inspection_policies` 保存管理端响应检查策略。`scope_type = protocol` 时 `provider_code` 为空，表示当前 `protocol_code` 下的协议层规则；`scope_type = provider` 时必须写入同一协议下已启用的 `provider_code`，表示 GPT、DeepSeek、GLM、Kimi 或其他 OpenAI v1 兼容供应商的局部规则。`enabled`、`priority`、`scope_type`、`action` 和 `match_json` 都由数据库 CHECK 约束兜底，`match_json` 必须是合法 JSON 对象；写入路径不保留旧 action 或旧 matcher 默认值。运行时只在 API Key 校验和分组选定后按当前 `protocol_code + provider_code` 读取候选策略；fallback 切换到后备分组时必须重新读取目标分组协议和供应商对应的策略，不得沿用原分组策略。账户专属响应检查规则保存于账户凭据 `response_inspection_rules`，运行时优先于管理端策略执行；当前新版本不保留旧 `stream_intercept_policies` 表或账户凭据里的 `stream_intercept_rules`。
 - `accounts.system_account_id` 和 `groups.system_account_id` 表示当前资源行所属系统账户；授权实例账户的 `accounts.system_account_id` 是被授权用户，`authorization_instance_source_account_id` 记录来源账户，`authorization_instance_authorization_id` 指向用户级授权，`authorization_instance_owner_system_account_id` 记录原资源归属人。`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户；授权账户绑定到被授权用户分组时写入授权实例账户 ID 和稳定的 `account_authorization_id`。授权实例自己的 `accounts.status / schedulable / cooldown_until / last_error_* / stream_failure_*` 是被授权侧本地运行态；当前分组内排序、超级优先和降级备用以 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled` 为准；真实上游资源事实从来源账户补齐，包括凭据、`base_url`、账号类型、支持模型、代理、并发、可用时段和账户追加流式规则。归属人原账户停用、异常、限流 / 临时不可调用、冷却、关闭调度、套餐到期或测试失败不会覆盖或回写授权实例本地运行态，但会参与授权实例 `effectiveAvailability` 实际可用性计算并阻断调度、账户测试和迁移目标选择；来源账户资源配置变化会同步影响授权实例运行时。来源账户被逻辑删除时，来源账户及其授权实例都会立即隐藏且不可调度，对应授权关系转为已回收；授权实例账户不能通过账户删除接口删除，被授权人不想继续使用个人直授权时通过授权归还入口把个人授权标记为 `returned` 并隐藏该实例。
@@ -149,13 +149,14 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
 - `accounts.availability_schedule_json` 保存账户时间计划；为空表示不限制时段。启用计划后，创建或编辑计划时按当前时间初始化 `accounts.availability_schedule_active` 派生字段，并计算下一次计划边界写入 `accounts.availability_schedule_next_check_at`；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的账户，每轮最多 500 个，不能每 10 秒全量加载全部计划行，也不能用滚动 `updated_at` 游标延迟边界切换。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。该字段只作为网关账号候选过滤和列表展示事实，不驱动 `accounts.status` 自动改写。时段外账户不进入网关候选；跨天窗口按窗口开始日期应用 `dateRange` 和例外日期，结束日期当天启动的窗口可延续到次日凌晨，重叠窗口结束时仍有其他允许窗口则不能关闭派生状态。系统时区由后端统一默认值决定，前端不暴露用户时区配置。
 - `accounts.last_error_code` 保存账户异常子类型；顶层状态仍统一使用 `status = error` 表示“异常”，可读细节继续放在 `accounts.last_error_message`。
-- `accounts.last_successful_test_model` 保存该账户最近一次手动账户测试通过时使用的模型；后台系统复测优先使用该模型，没有手动成功记录时使用供应商协议档案 `provider_protocol_profiles.default_test_model`。
+- `accounts.last_successful_test_model` 保存该账户最近一次手动账户测试通过时使用的模型；后台系统复测优先使用该模型，没有手动成功记录时使用账户归属用户在 `provider_default_test_models` 中配置的供应商默认测试模型，再兜底使用供应商协议档案 `provider_protocol_profiles.default_test_model`。
 - `account_test_tasks` 保存手动 AI 账户测试任务的轻量状态，任务由管理 API 创建并投递给 background worker 执行；表内只保留任务发起人、管理筛选作用域、账户摘要、状态、取消标记和最终脱敏结果，创建 / 编辑弹窗发起的未保存账户测试会额外保存加密草稿快照 `draft_account_encrypted`，默认只保留已完成任务 24 小时。前端手动测试和批量测试只能查询该表的任务状态，不在管理 API 请求链路等待上游测试完成。任务运行超时只从 `started_at` 开始计算，`queued` 或等待 worker 接收阶段不参与 60 秒运行超时。
 - `account_test_sessions` 保存一次测试窗口或批量测试的会话租约，包括发起作用域、状态、最后心跳、取消原因和完成时间；`account_test_session_tasks` 关联 session 与 task。单测和批测都先创建 session，停止、关闭窗口或心跳过期时按 session 批量取消未完成任务，避免前端离开后后台继续消费已提交任务。
 - `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。进入慢速恢复后仍继续自动退避复测；超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后，账户主状态保持 `temporary_unavailable` / `rate_limited`，`last_error_code` 写入 `cooldown_retest_long_term_unavailable`，并按 `cooldownAccountRetestLongTermIntervalHours` 继续低频自动复测。
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写不敏感唯一；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
 - `custom_provider_models` 保存管理员全局自定义模型和用户个人自定义模型。`scope = global` 的模型不绑定 `system_account_id`，所有系统账户可见；`scope = personal` 的模型只对对应 `system_account_id` 可见。模型路由方案落地后，`model` 需要按 `lower(trim(model))` 在全系统维度唯一，不能按供应商、scope 或用户维度放宽；内置、全局和个人模型之间出现同名都必须在写入时拒绝，已有重名数据按离线清洗处理，不在运行路径做覆盖式去重。自定义模型不再保存可见性或显示名称字段，模型 ID 同时作为页面和协议展示名；状态为 `active` 且可解析价格的模型会进入当前作用域的 `/v1/models`、账号支持模型和账号模型映射选项。`/v1/models` 对外只输出 OpenAI 标准字段，不暴露价格、scope、`pricingModel` 或备注。
+- `provider_default_test_models` 保存系统账户维度的供应商默认测试模型偏好，主键为 `system_account_id + provider_code`。写入时模型必须存在于该用户当前可见供应商模型目录中，且必须是启用的文本生成模型；读取供应商选项和账户测试兜底模型时先按当前系统账户读取该表，没有个人配置时才使用 `provider_protocol_profiles.default_test_model`。删除或停用个人自定义模型时，如果该模型正被同一用户设为默认测试模型，需要同步清理偏好，避免默认值指向不可见模型。
 - 高并发分组已使用 `groups.group_type` 和 `groups.scheduling_policy_json`：前者保存分组调度类型，默认 `personal`；后者接收最大单账户排队阈值和分组最大等待时间，快速优先、慢请求分流、亲和打破、备用启用和分组级短等待容量都使用代码内置默认开启策略。默认分组使用个人分组语义。
 - 高并发分组的单账户排队阈值只来自 `groups.scheduling_policy_json` 里的分组目标配置；账户绑定关系不再保存绑定级权重或绑定级单账户排队阈值。实际调度阈值仍不能突破账号 `concurrency_limit` 硬上限。
 - 高并发分组需要的近期质量、超时率、首 token 和总耗时趋势应由 background worker 或请求终态事件增量写入紧凑缓存，网关热路径只读取 DB service 已批量带出的运行时快照，不实时回扫 `usage_records` 或 `account_quality_minute_stats`。跨进程共享指标必须落到 SQLite 缓存表或明确 IPC，不能只放在 worker 进程内存。
@@ -282,12 +283,13 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `account_test_tasks(finished_at, id) WHERE finished_at IS NOT NULL`：清理已完成的短期测试任务记录。
 - `account_test_sessions(status, last_heartbeat_at, id)`：后台过期清理按 session 心跳和状态取消失联测试窗口。
 - `account_test_session_tasks(session_id, task_id)`、`account_test_session_tasks(task_id)`：按 session 批量取消任务，以及按 task 反查 session 租约。
-- `groups(system_account_id, provider_protocol_profile_id, lower(name))`：保证同一用户同一供应商协议档案下分组名称唯一。
+- `groups(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下分组名称唯一。
 - `groups(name, id)`、`groups(system_account_id, name, id)`：账户绑定分组和分组选项按分组名前缀定位。
-- 当前未为 `group_type` 单独增加索引；分组列表和网关候选快照仍复用所有者、供应商协议档案和名称相关索引读取，只有出现明确查询瓶颈时再补 `groups(system_account_id, provider_protocol_profile_id, group_type, id)` 这类定向索引。
-- `groups(system_account_id, provider_protocol_profile_id) WHERE is_default = 1`：保证同一用户同一供应商协议档案只有一个默认分组；默认分组读取只认 `is_default = 1`，不按固定名称或最新分组兜底。
+- 当前未为 `group_type` 单独增加索引；分组列表和网关候选快照仍复用所有者、供应商和名称相关索引读取，只有出现明确查询瓶颈时再补 `groups(system_account_id, provider_code, group_type, id)` 这类定向索引。
+- `groups(system_account_id, provider_code) WHERE is_default = 1`：保证同一用户同一供应商只有一个默认分组；默认分组读取只认 `is_default = 1`，不按固定名称或最新分组兜底。
 - `system_teams(name, id)`：授权团队列表只按团队名称精确 / 前缀匹配，不搜索团队 ID 或说明。
 - `api_keys(system_account_id, lower(name))`：保证同一用户下 API Key 名称唯一，密钥本身仍由 `key_hash` 兜底。
+- `api_keys(is_default, updated_at, created_at, id)`、`api_keys(system_account_id, is_default, updated_at, created_at, id)`：API Key 列表按默认 Key 置顶并稳定分页，账户筛选和全量管理视图都不能依赖临时排序。
 - `api_keys(name, id)`、`api_keys(system_account_id, name, id)`：API Key 列表关键词只按名称精确 / 前缀匹配，不搜索 Key 前缀或说明，也不做无边界包含匹配。
 - API Key 列表不维护 Key 前缀、后缀、说明或多字段组合搜索索引；`key_prefix` 和 `key_suffix` 只作为摘要展示字段保留，不参与列表关键词查询。
 - `external_integration_sources(lower(name))`：保证外部来源系统名称唯一。
@@ -296,7 +298,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `external_integration_source_tokens(token_hash)`：保证来源 token 摘要唯一；来源系统鉴权按 token hash 点查，不扫描表；完整 token 只保存在 `token_secret_encrypted` 密文中，列表只展示前缀和后缀。
 - `external_integration_source_tokens(source_ref_id, status, expires_at)`：管理页面按来源系统读取 token 状态和过期边界。
 - `route_strategies(system_account_id, lower(name))`：保证同一用户下策略路由名称唯一。
-- `route_strategies(system_account_id) WHERE is_default = 1`：保证同一用户最多只有一条默认策略路由；默认策略路由是 API Key 的默认入口选择，属于策略路由层，不允许删除。
+- `route_strategies.is_default = 1` 的默认策略路由按内置默认分组生成；同一用户可以有多条默认策略路由，但每条默认路由只绑定一个对应默认分组，默认策略路由属于策略路由层，不允许删除。
 - `route_strategy_groups(route_strategy_id, group_id)`：保证同一条策略路由不重复绑定同一分组。
 - `route_strategy_groups(route_strategy_id, priority) WHERE status = 'active'`：保证同一条策略路由的 active 分组优先级唯一。
 - `route_strategy_groups(route_strategy_id, status, priority, created_at, id)`：网关按策略路由读取 active 分组候选时固定最多取 20 条窗口，并按路由优先级稳定排序，不能扫描全部绑定或临时排序。
@@ -848,10 +850,10 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 授权实例持久状态以授权实例 `accounts` 行为准；冷却、最近错误和流失败诊断窗口不落在 `group_accounts` 本地绑定字段上，真实网关的调度降级和事前确认运行态只保存在当前 Web 进程内。
 - 来源 AI 账户删除时，来源账户和对应授权实例账户都只做逻辑删除并立即隐藏；对应 `resource_authorization_grants` 和 `resource_authorizations` 必须标记为 `revoked`，历史统计和用量在逻辑删除阶段继续保留原授权 ID；默认授权列表不再把它作为生效授权展示。超过 1 个月后，物理清理任务再删除授权实例、授权记录、绑定关系、历史记录和统计窗口。
 - `api_keys` 不保存主号池、分组绑定或路由规则字段；API Key 的路由事实只来自 `route_strategy_id` 指向的 `route_strategies` 和 `route_strategy_groups`。
-- `route_strategies.is_default` 标识系统账户的默认策略路由。系统账户创建时同步生成默认内置分组和默认普通路由；默认普通路由绑定默认 GPT 分组，不向 API Key、分组或账户下沉供应商、模型或协议语义。
+- `route_strategies.is_default` 标识系统账户的默认策略路由。系统账户创建时同步生成默认内置分组，并为每个默认分组生成一条默认普通路由；默认普通路由只绑定对应默认分组，不向 API Key、分组或账户下沉供应商、模型或协议语义。`api_keys.is_default` 标识系统生成的默认 API Key；每条默认普通路由同步生成一个默认 API Key，默认 API Key 不允许删除，但允许编辑入口属性和刷新密钥。
 - `api_keys.availability_schedule_json` 保存 API Key 时间计划；为空表示不设置计划，API Key 完全按 `api_keys.status` 手动启停。启用计划后，创建或编辑计划时按当前时间初始化 `api_keys.availability_schedule_active` 派生字段，并计算下一次计划边界写入 `api_keys.availability_schedule_next_check_at`；background worker 之后只在开始 / 结束边界按分钟事件切换该派生字段，不覆盖人工启停 `status`。人工提前启用会立即把派生字段置为可用，人工提前关闭会立即把派生字段置为停用，后续仍由下一次计划边界继续接管。跨天窗口的日期范围和例外日期都按窗口开始日期解释，结束日期当天启动的窗口可延续到次日凌晨；多个窗口重叠时按当前整体允许状态写派生字段，避免较短窗口结束时错误停用。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的 API Key，每轮最多 500 个，并通过 `availability_schedule_next_check_at + id` 部分索引定位；网关只读取落库后的人工状态和派生计划状态，不在请求链路解析计划 JSON。
 - `accounts.availability_schedule_json` 与 API Key 计划使用同一结构；账户计划作用在具体账户行上，授权实例账户按自己的实例行计划参与调度，来源账户计划作为来源账户可用性的一部分参与授权实例实际可用性判断。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的账户，每轮最多 500 个，并通过 `availability_schedule_next_check_at + id` 部分索引定位；`account_schedule_status_events` 记录账户时间计划边界事件，避免同步任务在非边界时覆盖人工提前启用 / 提前关闭。
-- `route_strategy_groups.route_strategy_id / group_id / priority / status` 保存策略路由到多个可用分组号池的路由绑定；新建和编辑时可以绑定策略所属系统账户自己的分组，也可以绑定有效授权给该系统账户的分组。至少保留一个 `active` 绑定，同一策略下 active 绑定优先级唯一。当前实现允许同一策略绑定不同供应商协议档案的分组，运行时按请求 `model` 在当前策略绑定范围内解析目标 `provider_protocol_profile_id` 后筛选绑定分组；无法明确解析时继续按有界候选顺序和账号模型过滤处理。
+- `route_strategy_groups.route_strategy_id / group_id / priority / status` 保存策略路由到多个可用分组号池的路由绑定；新建和编辑时可以绑定策略所属系统账户自己的分组，也可以绑定有效授权给该系统账户的分组。至少保留一个 `active` 绑定，同一策略下 active 绑定优先级唯一。当前实现允许同一策略绑定不同供应商分组，运行时按请求 `model` 在当前策略绑定范围内解析目标供应商后筛选绑定分组；无法明确解析时继续按有界候选顺序和账号模型过滤处理。
 - 授权实例账户通过 `group_accounts.account_authorization_id` 进入被授权用户自己的分组后参与调度；调度时必须重新校验最终用户授权、调用方系统账户、实例账户状态、实例绑定状态、额度缓存和来源账户可用性。上游凭据、`base_url`、模型、代理、并发、可用时段和账户追加流式规则从来源账户补齐，并随来源账户资源配置更新同步进入列表、账户测试和网关运行缓存；列表读取来源账户状态、调度开关、到期和错误摘要作为 `effectiveAvailability` 的来源侧阻断依据，但这些来源状态字段不能覆盖或回写授权实例自己的本地运行态。
 - 当同一用户对同一账户或分组同时拥有个人来源和团队来源时，只允许存在一条用户级授权，并在资源行返回全部来源供排查。
 - 调度只校验用户级授权是否仍有效；来源变化不应导致资源重复或历史绑定断裂。

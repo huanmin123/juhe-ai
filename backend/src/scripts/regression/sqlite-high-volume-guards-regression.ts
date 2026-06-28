@@ -7,6 +7,9 @@ const statsWriterSource = source('src/modules/background/background-stats-writer
 const usageRangeWindowsSource = source('src/storage/usage-range-windows.repository.ts')
 const apiKeyScheduleSyncSource = source('src/storage/api-key-schedule-status-sync.repository.ts')
 const accountScheduleSyncSource = source('src/storage/account-availability-schedule-status-sync.repository.ts')
+const resourceAuthorizationWriteSource = source('src/storage/resource-authorization-write.repository.ts')
+const dbServiceHandlersSource = source('src/modules/db-service/db-service-handlers.ts')
+const backgroundJobsSource = source('src/modules/background/background-jobs.ts')
 const businessSchemaSource = source('src/storage/schema/business-schema.ts')
 const routeStrategyAvailabilityGuardSource = source('src/storage/route-strategy-availability-guard.ts')
 const groupWriteRepositorySource = source('src/storage/group-write.repository.ts')
@@ -36,6 +39,66 @@ for (const [name, fileSource] of [
   assert.match(fileSource, /ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC\s+LIMIT \?/s, `${name} 时间计划同步查询必须按 next_check_at/id 命中窗口索引`)
   assert.doesNotMatch(fileSource, /ScheduleStatusSyncCursor|updated_at > \?/, `${name} 时间计划同步不能使用滚动 updated_at 游标延迟边界切换`)
   assert.doesNotMatch(fileSource, /\.all\(\)\s+as unknown as Scheduled/, `${name} 时间计划同步不能无参数 .all() 拉取全部计划行`)
+  assert.match(fileSource, /export async function sync.*AvailabilityScheduleStatusesAsync/, `${name} 时间计划同步必须提供 PostgreSQL async 入口`)
+  assert.match(fileSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+return sync.*AvailabilityScheduleStatuses\(now\)/, `${name} 时间计划 async 入口必须保留 SQLite fallback`)
+  assert.match(fileSource, /createPostgresDatabaseClient\(await getPostgresPool\(\)\)/, `${name} 时间计划 async 入口必须使用 PostgreSQL client`)
+  assert.match(fileSource, /await client\.transaction\(async \(tx\) => \{[\s\S]+ON CONFLICT\(event_key\) DO NOTHING/, `${name} 时间计划 async 状态切换必须在事务内写事件去重`)
+  assert.match(fileSource, /client\.dialect\.qualifyTable\(businessSchemaName, tableName\)/, `${name} 时间计划 async SQL 必须限定 juhe_business schema`)
+}
+
+const dbServiceDispatchSource = sourceBetween(dbServiceHandlersSource, 'async function handleDbServiceOperationDispatch', 'async function handleAccountTestTaskMaintenanceAsync')
+assert.match(
+  dbServiceDispatchSource,
+  /case 'sync_api_key_availability_schedule_statuses': \{[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+await syncApiKeyAvailabilityScheduleStatusesAsync\(\)[\s\S]+return handleDbServiceOperationSync\(operation\)/,
+  'PG 模式 DB service 必须使用 async API Key 时间计划同步，SQLite 模式才回退同步分支'
+)
+assert.match(
+  dbServiceDispatchSource,
+  /case 'sync_account_availability_schedule_statuses': \{[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+await syncAccountAvailabilityScheduleStatusesAsync\(\)[\s\S]+return handleDbServiceOperationSync\(operation\)/,
+  'PG 模式 DB service 必须使用 async 账户时间计划同步，SQLite 模式才回退同步分支'
+)
+assert.match(
+  resourceAuthorizationWriteSource,
+  /export async function expireDueResourceAuthorizationsAsync[\s\S]+runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+return expireDueResourceAuthorizations\(limit\)/,
+  '资源授权过期扫描必须提供 PostgreSQL async 入口，并保留 SQLite fallback'
+)
+assert.match(
+  resourceAuthorizationWriteSource,
+  /await client\.transaction\(async \(tx\) => \{[\s\S]+resource_authorization_grants[\s\S]+ORDER BY expires_at ASC, updated_at ASC, id ASC[\s\S]+LIMIT \?[\s\S]+FOR UPDATE SKIP LOCKED[\s\S]+await syncResourceAuthorizationGrantRuntimeAsync/,
+  '资源授权过期 async 扫描必须在事务内按固定窗口锁定读取并同步运行态授权'
+)
+assert.match(
+  resourceAuthorizationWriteSource,
+  /client\.dialect\.qualifyTable\(businessSchemaName, tableName\)/,
+  '资源授权过期 async SQL 必须限定 juhe_business schema'
+)
+assert.match(
+  dbServiceDispatchSource,
+  /case 'expire_due_resource_authorizations': \{[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+await expireDueResourceAuthorizationsAsync\(\)[\s\S]+return handleDbServiceOperationSync\(operation\)/,
+  'PG 模式 DB service 必须使用 async 资源授权过期扫描，SQLite 模式才回退同步分支'
+)
+const opsWorkerScheduleSource = sourceBetween(backgroundJobsSource, "case 'ops-worker':", '    default:')
+const postgresOpsGuardIndex = opsWorkerScheduleSource.indexOf('if (isPostgresHighPerformanceMode())')
+assert.notEqual(postgresOpsGuardIndex, -1, 'ops-worker 必须保留 PostgreSQL 高性能模式调度边界')
+for (const jobName of [
+  'api-key-availability-schedule-status-sync',
+  'account-availability-schedule-status-sync',
+  'resource-authorization-expiry-sweep',
+  'expired-deleted-account-cleanup',
+  'account-health-check',
+  'cooldown-account-retest',
+  'account-api-key-cooldown-retest',
+  'proxy-latency-refresh'
+] as const) {
+  const jobIndex = opsWorkerScheduleSource.indexOf(`backgroundScheduledJobName('${jobName}')`)
+  assert(jobIndex >= 0, `ops-worker 必须注册 ${jobName}`)
+  assert(jobIndex < postgresOpsGuardIndex, `${jobName} 必须在 PG 高性能 return 前注册，避免已迁 async 后台一致性任务不启动`)
+}
+for (const jobName of [
+  'openai-oauth-access-token-refresh'
+] as const) {
+  const jobIndex = opsWorkerScheduleSource.indexOf(`backgroundScheduledJobName('${jobName}')`)
+  assert(jobIndex > postgresOpsGuardIndex, `${jobName} 当前不能在 PG 高性能 return 前注册，避免打开未完成迁移的 ops 任务`)
 }
 assert.match(
   businessSchemaSource,

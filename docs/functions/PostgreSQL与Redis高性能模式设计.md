@@ -211,7 +211,7 @@ repository 迁移原则：
 
 - 新增分组列表、分页、选项、账户组选项、摘要读取、创建、更新和删除的 async 双 driver 版本。
 - PostgreSQL 查询通过 `juhe_business` schema 读取 `groups`、`group_accounts`、`accounts`、`resource_authorizations`、`group_authorization_settings`、`api_keys`、`route_strategies` 和 `route_strategy_groups`。
-- 创建和更新保留供应商协议档案校验、同协议档案分组名称唯一性、默认分组只读、高并发分组调度策略、授权分组本地设置和网关缓存失效语义。
+- 创建和更新保留供应商校验、同供应商分组名称唯一性、默认分组只读、高并发分组调度策略、授权分组本地设置和网关缓存失效语义。
 - 删除保留 API Key 唯一启用号池保护；PG 模式下删除后暂不写 SQLite stats dirty 标记，等待统计 repository PG 适配后改写 `juhe_stats`。
 - PG 模式下分组列表和账户组选项会读取真实分组与绑定账户 ID；`accountStats` 的用量、状态聚合和授权来源详情仍等待账号、授权、usage 和 stats repository 迁移，当前不在请求链路临时扫描明细表。
 - `backend/src/modules/groups/groups.routes.ts` 的列表、选项、账户组选项、创建、更新和删除已切到 async repository；`return-authorization` 仍依赖 resource authorization 写仓库，待授权 repository 迁移后再切换。
@@ -270,6 +270,7 @@ interface SharedJsonCache<V> {
 
 interface RuntimeStateStore {
   getJson<T>(key: RuntimeKey): Promise<T | undefined>
+  getDeleteJson<T>(key: RuntimeKey): Promise<T | undefined>
   setJson<T>(key: RuntimeKey, value: T, ttlMs: number): Promise<void>
   delete(key: RuntimeKey): Promise<void>
   incr(key: RuntimeKey, options: { ttlMs: number; max?: number }): Promise<number>
@@ -297,7 +298,7 @@ juhe-ai:{env}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - Redis payload 使用 JSON，并带 `schemaVersion`；结构变化时递增 cache domain version。
 - API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文和可能造成越权的权限中间结果不得进入通用 Redis cache。
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
-- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、账号并发槽 Redis 原子获取 / 释放和网关缓存失效 runtime state 版本广播；仍需继续迁移会话亲和、客户端 IP 并发、错误熔断和验证码挑战。
+- 当前已落地 `RuntimeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放和网关缓存失效 runtime state 版本广播；仍需继续迁移会话亲和、客户端 IP 并发和错误熔断。
 
 ## 队列与消费并发
 
@@ -328,8 +329,11 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 
 - server 进程仍不直接导入管理路由和 repository。
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
-- ingest-worker、stats-worker、ops-worker、probe-worker 继续各司其职，但写入 PostgreSQL 时可以按队列并发消费。
-- `metrics-worker`、`snapshot-worker` 仍不直接写统计事实，只提交 typed operation 或读取快照。
+- 常驻后台进程收敛为 ingest-worker、stats-worker、ops-worker 三类；写入 PostgreSQL 时按 typed operation、队列优先级和连接池背压并发消费。
+- 高性能模式下 ops-worker 已恢复 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账号健康检测、账号冷却复测、账户内 API Key 冷却复测和代理延迟刷新；这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
+- ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
+- OpenAI OAuth access token 刷新在 PG 高性能模式下仍需要独立验证后再打开；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。
+- 已退役的 `metrics-worker`、`snapshot-worker`、`probe-worker` 和 `maintenance-worker` 不再作为独立 worker role 出现在调度分支中。
 
 ## 事务与一致性
 

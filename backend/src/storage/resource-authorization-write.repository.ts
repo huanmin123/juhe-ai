@@ -4,6 +4,7 @@ import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInv
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { replaceAccountNameSearchTermsAsync } from './account-name-search.repository.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
+import { maxAuthorizationExpirySweepBatchSize } from './authorization-sweep-limits.js'
 import { encryptJson } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -329,6 +330,48 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
   if (!updated) return undefined
   refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_updated')
   return findResourceAuthorizationAfterWriteAsync(authorizationId, access)
+}
+
+export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizationExpirySweepBatchSize): Promise<number> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return expireDueResourceAuthorizations(limit)
+  }
+  const now = nowIso()
+  const client = await getResourceAuthorizationWriteClient()
+  const batchSize = Math.max(1, Math.trunc(limit))
+  const expired = await client.transaction(async (tx) => {
+    const dueGrants = await tx.query<ResourceAuthorizationGrantRow>(`
+      SELECT *
+      FROM ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
+      WHERE status IN ('active', 'paused')
+        AND expires_at IS NOT NULL
+        AND expires_at <= ?
+      ORDER BY expires_at ASC, updated_at ASC, id ASC
+      LIMIT ?
+      FOR UPDATE SKIP LOCKED
+    `, [now, batchSize])
+    for (const grant of dueGrants) {
+      await tx.execute(`
+        UPDATE ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
+        SET status = 'expired',
+            revoked_at = COALESCE(revoked_at, ?),
+            updated_at = ?
+        WHERE id = ?
+          AND status IN ('active', 'paused')
+      `, [now, now, grant.id])
+      await syncResourceAuthorizationGrantRuntimeAsync({
+        ...grant,
+        status: 'expired',
+        revoked_at: grant.revoked_at ?? now,
+        updated_at: now
+      }, grant.revoked_by ?? grant.created_by, tx, now)
+    }
+    return dueGrants.length
+  })
+  if (expired > 0) {
+    refreshAfterResourceAuthorizationBusinessWrite('authorization_expired')
+  }
+  return expired
 }
 
 function findResourceAuthorizationAfterWrite(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
@@ -1060,7 +1103,7 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
   if (authorization.resource_type !== 'account') return
   if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
   const instance = await ensureAccountAuthorizationInstanceAsync(client, authorization, now)
-  if (!instance?.id || !instance.provider_protocol_profile_id) return
+  if (!instance?.id || !instance.provider_code) return
   const requestedGroupId = targetGroupId?.trim()
   const existingBinding = await client.one<{ group_id?: string | null }>(`
     SELECT group_id
@@ -1073,7 +1116,7 @@ async function bindActiveAccountAuthorizationToGranteeGroupAsync(client: Databas
     LIMIT 1
   `, [instance.id, authorization.grantee_system_account_id, authorization.id])
   if (existingBinding?.group_id && (!requestedGroupId || existingBinding.group_id === requestedGroupId)) return
-  const bindGroupId = await groupIdForAuthorizationBindingAsync(client, instance.provider_protocol_profile_id, authorization.grantee_system_account_id, requestedGroupId)
+  const bindGroupId = await groupIdForAuthorizationBindingAsync(client, instance.provider_code, authorization.grantee_system_account_id, requestedGroupId)
   if (!bindGroupId) return
   if (existingBinding?.group_id && existingBinding.group_id !== bindGroupId) {
     await client.execute(`
@@ -1246,10 +1289,10 @@ async function isAccountNameAvailableAsync(client: DatabaseClient, systemAccount
   return !row?.id
 }
 
-async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, providerProtocolProfileId: string, systemAccountId: string, targetGroupId?: string): Promise<string> {
+async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, systemAccountId: string, targetGroupId?: string): Promise<string> {
   if (targetGroupId) {
-    const group = await client.one<{ id?: string; system_account_id?: string | null; provider_protocol_profile_id?: string | null; enabled?: number | boolean | null }>(`
-      SELECT id, system_account_id, provider_protocol_profile_id, enabled
+    const group = await client.one<{ id?: string; system_account_id?: string | null; provider_code?: string | null; enabled?: number | boolean | null }>(`
+      SELECT id, system_account_id, provider_code, enabled
       FROM ${resourceAuthorizationWriteTable(client, 'groups')}
       WHERE id = ?
       LIMIT 1
@@ -1257,28 +1300,28 @@ async function groupIdForAuthorizationBindingAsync(client: DatabaseClient, provi
     if (!group?.id || group.system_account_id !== systemAccountId) {
       throw new Error('目标分组不存在或不属于被授权用户')
     }
-    if (group.provider_protocol_profile_id !== providerProtocolProfileId) {
-      throw new Error('目标分组协议档案与授权账户不一致')
+    if (group.provider_code !== providerCode) {
+      throw new Error('目标分组供应商与授权账户不一致')
     }
     if (Number(group.enabled) !== 1) {
       throw new Error('目标分组已停用，请选择启用分组')
     }
     return group.id
   }
-  return defaultGroupIdForAuthorizationBindingAsync(client, providerProtocolProfileId, systemAccountId)
+  return defaultGroupIdForAuthorizationBindingAsync(client, providerCode, systemAccountId)
 }
 
-async function defaultGroupIdForAuthorizationBindingAsync(client: DatabaseClient, providerProtocolProfileId: string, systemAccountId: string): Promise<string> {
+async function defaultGroupIdForAuthorizationBindingAsync(client: DatabaseClient, providerCode: string, systemAccountId: string): Promise<string> {
   const existing = await client.one<{ id?: string }>(`
     SELECT id
     FROM ${resourceAuthorizationWriteTable(client, 'groups')}
     WHERE system_account_id = ?
-      AND provider_protocol_profile_id = ?
+      AND provider_code = ?
       AND is_default = 1
       AND enabled = 1
     ORDER BY updated_at DESC, id ASC
     LIMIT 1
-  `, [systemAccountId, providerProtocolProfileId])
+  `, [systemAccountId, providerCode])
   if (existing?.id) return existing.id
   throw new Error('目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权')
 }

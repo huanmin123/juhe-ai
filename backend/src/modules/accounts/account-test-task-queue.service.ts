@@ -543,6 +543,7 @@ async function runOpenAIAccountTestWithSideEffects(
       clientCompatibility: input.clientCompatibility,
       signal: input.signal,
       diagnostics: input.diagnostics,
+      systemAccountId: access.systemAccountId,
       requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
       onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
       findAccountForTest: loadAccountForTestViaDbService

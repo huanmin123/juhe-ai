@@ -111,7 +111,7 @@ async function groupOwnerAndProviderAsync(client: DatabaseClient, groupId: strin
     : undefined
 }
 
-function validAccountIdsForGroup(providerCode: string, providerProtocolProfileId: string, accountIds: string[], systemAccountId: string): string[] {
+function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId: string): string[] {
   const uniqueIds = [...new Set(accountIds)]
   const accountsById = new Map<string, { provider_code?: string; provider_protocol_profile_id?: string }>()
   const database = getBusinessDatabase()
@@ -131,7 +131,6 @@ function validAccountIdsForGroup(providerCode: string, providerProtocolProfileId
   return uniqueIds.filter((accountId) => {
     const account = accountsById.get(accountId)
     return account?.provider_code === providerCode
-      && account.provider_protocol_profile_id === providerProtocolProfileId
       && canUseAccount(accountId, systemAccountId)
   })
 }
@@ -156,7 +155,7 @@ export function setAccountGroup(
   if (!canUseAccount(accountId, group.systemAccountId)) {
     return undefined
   }
-  if (group.providerCode !== current.providerCode || group.providerProtocolProfileId !== current.providerProtocolProfileId) {
+  if (group.providerCode !== current.providerCode) {
     return undefined
   }
   const accountAuthorizationId = accountBindingAuthorizationId(accountId, group.systemAccountId, current)
@@ -224,7 +223,7 @@ export async function setAccountGroupAsync(
   if (!current || current.accessType === 'authorized' || current.accountAuthorizationId) {
     return undefined
   }
-  if (group.providerCode !== current.providerCode || group.providerProtocolProfileId !== current.providerProtocolProfileId) {
+  if (group.providerCode !== current.providerCode) {
     return undefined
   }
 
@@ -285,7 +284,7 @@ export function addAccountToGroup(groupId: string, accountId: string): GroupSumm
   if (!canManageResourceOwner(current.systemAccountId)) {
     return undefined
   }
-  if (!validAccountIdsForGroup(current.providerCode, current.providerProtocolProfileId ?? '', [accountId], current.systemAccountId).includes(accountId)) {
+  if (!validAccountIdsForGroup(current.providerCode, [accountId], current.systemAccountId).includes(accountId)) {
     return undefined
   }
   const account = findAccountSummary(accountId, { systemAccountId: current.systemAccountId, role: 'user' })

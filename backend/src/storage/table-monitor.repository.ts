@@ -3,6 +3,8 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, newId, nowIso, rollbackDatabaseTransaction, statsDatabasePath, usageCatalogDatabasePath } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
 
 export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats'
@@ -124,6 +126,7 @@ interface LatestDatabaseSnapshotRow {
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
 const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats']
+const statsSchemaName = 'juhe_stats'
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -213,6 +216,50 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
   }
 }
 
+export async function getTableStorageOverviewAsync(input: { startAt?: string; endAt?: string; limit?: number } = {}): Promise<TableStorageOverview> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getTableStorageOverview(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const range = normalizeDateRange(input.startAt, input.endAt)
+  const databaseRows = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.one<LatestDatabaseSnapshotRow>(`
+    SELECT ${databaseStorageSnapshotSelectColumns()}
+    FROM ${statsTable(client, 'database_storage_snapshots')}
+    WHERE database_role = ?
+      AND sampled_at >= ?
+      AND sampled_at <= ?
+    ORDER BY sampled_at DESC, id DESC
+    LIMIT 1
+  `, [databaseRole, range.startAt, range.endAt])))
+  const databases = databaseRows
+    .filter((row): row is LatestDatabaseSnapshotRow => Boolean(row))
+    .sort(compareDatabaseSnapshotsByRole)
+  const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
+  const tables = await client.query<LatestTableSnapshotRow>(`
+    SELECT ${tableStorageSnapshotSelectColumns('ranked')}
+    FROM (
+      SELECT
+        ${tableStorageSnapshotSelectColumns()},
+        ROW_NUMBER() OVER (
+          PARTITION BY database_role, table_name
+          ORDER BY sampled_at DESC, id DESC
+        ) AS rank
+      FROM ${statsTable(client, 'table_storage_snapshots')}
+      WHERE sampled_at >= ?
+        AND sampled_at <= ?
+    ) ranked
+    WHERE ranked.rank = 1
+  `, [range.startAt, range.endAt])
+  return {
+    sampledAt,
+    databases: databases.map(databaseSnapshotFromRow),
+    tables: tables
+      .sort(compareTableSnapshotsForOverview)
+      .slice(0, normalizeLimit(input.limit ?? 200))
+      .map(tableSnapshotFromRow)
+  }
+}
+
 export function listTableStorageHistory(input: {
   databaseRole: MonitoredDatabaseRole
   tableName: string
@@ -242,6 +289,37 @@ export function listTableStorageHistory(input: {
   return rows.reverse().map(tableSnapshotFromRow)
 }
 
+export async function listTableStorageHistoryAsync(input: {
+  databaseRole: MonitoredDatabaseRole
+  tableName: string
+  startAt?: string
+  endAt?: string
+  limit?: number
+}): Promise<TableStorageSnapshotSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listTableStorageHistory(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const range = normalizeDateRange(input.startAt, input.endAt)
+  const rows = await client.query<LatestTableSnapshotRow>(`
+    SELECT ${tableStorageSnapshotSelectColumns()}
+    FROM ${statsTable(client, 'table_storage_snapshots')}
+    WHERE database_role = ?
+      AND table_name = ?
+      AND sampled_at >= ?
+      AND sampled_at <= ?
+    ORDER BY sampled_at DESC
+    LIMIT ?
+  `, [
+    input.databaseRole,
+    input.tableName,
+    range.startAt,
+    range.endAt,
+    normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
+  ])
+  return rows.reverse().map(tableSnapshotFromRow)
+}
+
 export function listDatabaseStorageHistory(input: {
   startAt?: string
   endAt?: string
@@ -264,6 +342,32 @@ export function listDatabaseStorageHistory(input: {
     statement.all(databaseRole, range.startAt, range.endAt, limit) as unknown as LatestDatabaseSnapshotRow[]
   ))
   return rows
+    .sort(compareDatabaseSnapshotsByTimeAsc)
+    .map(databaseSnapshotFromRow)
+}
+
+export async function listDatabaseStorageHistoryAsync(input: {
+  startAt?: string
+  endAt?: string
+  limit?: number
+} = {}): Promise<DatabaseStorageSnapshotSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listDatabaseStorageHistory(input)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const range = normalizeDateRange(input.startAt, input.endAt)
+  const limit = normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
+  const rowsByRole = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.query<LatestDatabaseSnapshotRow>(`
+    SELECT ${databaseStorageSnapshotSelectColumns()}
+    FROM ${statsTable(client, 'database_storage_snapshots')}
+    WHERE database_role = ?
+      AND sampled_at >= ?
+      AND sampled_at <= ?
+    ORDER BY sampled_at DESC, id DESC
+    LIMIT ?
+  `, [databaseRole, range.startAt, range.endAt, limit])))
+  return rowsByRole
+    .flat()
     .sort(compareDatabaseSnapshotsByTimeAsc)
     .map(databaseSnapshotFromRow)
 }
@@ -585,6 +689,10 @@ function tableStorageSnapshotSelectColumns(alias?: string): string {
   ].map((column) => `${prefix}${column}`).join(', ')
 }
 
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable(statsSchemaName, tableName)
+}
+
 function compareDatabaseSnapshotsByRole(left: LatestDatabaseSnapshotRow, right: LatestDatabaseSnapshotRow): number {
   return databaseRoleSortRank(left.database_role) - databaseRoleSortRank(right.database_role)
 }
@@ -707,6 +815,7 @@ function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshot
   }
 }
 
-function optionalNumber(value: number | null | undefined): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+function optionalNumber(value: number | string | null | undefined): number | undefined {
+  const numberValue = typeof value === 'string' ? Number(value) : value
+  return typeof numberValue === 'number' && Number.isFinite(numberValue) ? numberValue : undefined
 }

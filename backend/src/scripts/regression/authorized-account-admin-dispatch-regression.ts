@@ -9,6 +9,7 @@ import express from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
+import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-admin-dispatch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-admin-dispatch.sqlite3')
@@ -21,6 +22,8 @@ runtimeConfig.processRole = 'worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [
   { accountsRouter },
@@ -81,6 +84,18 @@ assert(
 assert(
   accountTrafficMigrationRoutesSource.includes("operationKey: 'accounts.traffic_migration'"),
   '账户流量迁移子路由必须保留操作日志 operationKey'
+)
+assert(
+  accountTrafficMigrationRoutesSource.includes('migrateAccountTrafficAsync'),
+  '账户流量迁移子路由必须使用 async repository'
+)
+assert(
+  accountTrafficMigrationRoutesSource.includes('runLoggedOperationAsync'),
+  '账户流量迁移子路由必须使用 async 操作日志包裹'
+)
+assert(
+  !accountTrafficMigrationRoutesSource.includes('runLoggedOperation('),
+  '账户流量迁移子路由不能重新引入同步操作日志包裹'
 )
 assert(
   accountTrafficMigrationRoutesSource.includes('migrateServerOpenAIAccountTrafficRuntime'),
@@ -390,6 +405,7 @@ try {
 } finally {
   await closeServer(server)
   await closeServer(mockOpenAIServer)
+  restoreWorkerParentIpc()
   try {
     flushAllUsageRecordQueue()
     flushAllOperationLogQueue()

@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../config/runtime.js'
 import {
   markAllGroupAccountStatsDirty,
   markGroupAccountStatsDirty,
@@ -10,6 +11,9 @@ export function refreshGroupAccountStatsAfterWrite(input: {
   all?: boolean
   reason?: string
 } = {}): void {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return
+  }
   const reason = input.reason ?? 'business_write'
   if (input.all) {
     markAllGroupAccountStatsDirty(reason)

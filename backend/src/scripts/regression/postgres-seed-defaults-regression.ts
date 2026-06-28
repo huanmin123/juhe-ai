@@ -8,9 +8,11 @@ import {
 
 const providerCodes = new Set(DEFAULT_PROVIDER_SEEDS.map((provider) => provider.code))
 const profileIds = new Set(DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS.map((profile) => profile.id))
+const defaultGroupProviderCodes = new Set(DEFAULT_BUILT_IN_GROUPS.map((group) => group.providerCode))
 
 assert.equal(providerCodes.size, DEFAULT_PROVIDER_SEEDS.length, '默认 provider seed code 不能重复')
 assert.equal(profileIds.size, DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS.length, '默认 provider protocol profile seed id 不能重复')
+assert.equal(defaultGroupProviderCodes.size, DEFAULT_BUILT_IN_GROUPS.length, '默认内置分组必须按供应商唯一')
 
 for (const profile of DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS) {
   assert.ok(

@@ -145,7 +145,7 @@
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
       :auth-result="authResult"
-      :base-url-placeholder="selectedProtocolProfile?.baseUrl || selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
+      :base-url-placeholder="accountBaseUrlPlaceholder"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
@@ -226,6 +226,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
+import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountTagSummary } from '@/types/domain'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -665,6 +666,11 @@ const proxyByIdMapRef = computed(() => proxyByIdMap(proxies.value))
 
 const proxyOptions = computed(() => buildProxyOptions(proxies.value))
 const proxyById = (proxyProfileId?: string) => proxyProfileId ? proxyByIdMapRef.value.get(proxyProfileId) : undefined
+const accountBaseUrlPlaceholder = computed(() => (
+  isHybridProviderCode(form.providerCode)
+    ? '填写真实上游 Base URL'
+    : selectedProtocolProfile.value?.baseUrl || selectedProvider.value?.baseUrl || 'https://api.openai.com/v1'
+))
 
 function groupIdForAccount(accountId: string) {
   return accountById.value.get(accountId)?.boundGroupId

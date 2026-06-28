@@ -272,19 +272,16 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 
 ## 分组、授权与 API Key 路由
 
-默认创建：
-
-- 默认 Gemini 分组：绑定 `profile_gemini_native_v1beta`。
-- 默认 Gemini OpenAI Chat 分组：绑定 `profile_gemini_openai_chat_v1beta`。
+默认只创建一个供应商默认分组：默认 Gemini 分组。Gemini native 和 Gemini OpenAI Chat 的差异由账户接入类型和 `provider_protocol_profile_id` 表达，不拆成多个默认分组。
 
 规则：
 
-- Gemini native 账户只能加入同 `provider_protocol_profile_id` 的分组。
-- Gemini OpenAI Chat 账户只能加入 `profile_gemini_openai_chat_v1beta` 分组，真实能力仍是 Chat Completions。
-- API Key 可以绑定 Gemini native、OpenAI、Anthropic、GLM、DeepSeek 等多个供应商档案分组。
-- Gemini native 请求通过路径协议和路径模型定位 `profile_gemini_native_v1beta`，再只在当前本地 API Key 已绑定的 Gemini native 分组内调度。
+- Gemini 账户只能加入 `providerCode=gemini` 的分组。
+- Gemini OpenAI Chat 账户真实能力仍是 Chat Completions，由账户协议档案和 endpoint mode 过滤。
+- API Key 可以绑定 Gemini、OpenAI、Anthropic、GLM、DeepSeek 等多个供应商分组。
+- Gemini native 请求通过路径协议和路径模型定位 Gemini 供应商，再在当前本地 API Key 已绑定的 Gemini 分组内按账户能力调度。
 - Gemini native `generateContent` / `streamGenerateContent` 请求默认按 Gemini native 直连调度；如果后续命中混合供应商账户，可由该账户配置进入目标 Chat 或 Anthropic Messages 上游。
-- OpenAI Chat 请求不会因为模型名是 `gemini-*` 就自动进入 Gemini native 分组；如要用 Gemini 官方 OpenAI compatibility，必须进入 Gemini OpenAI Chat 分组。
+- OpenAI Chat 请求不会因为模型名是 `gemini-*` 就自动进入 Gemini native 账户；如要用 Gemini 官方 OpenAI compatibility，必须命中 Gemini OpenAI Chat 账户。
 - Codex / Responses 请求要用 Gemini Chat 上游时，应通过混合供应商账户声明 `responses -> chat_completions`，API Key 只绑定能调度到该混合账户的策略路由。
 - Anthropic Messages 请求不允许桥接到 Gemini OpenAI Chat；Gemini native 不允许桥接到 Responses，只允许生成类请求显式桥接到 Chat Completions 或 Anthropic Messages。
 - 模型不匹配、端点不支持、本地认证失败、额度不足和分组无账号都不写 Gemini 账号状态。
@@ -339,7 +336,7 @@ Gemini 账户测试必须复用真实网关链路。
 
 - 新增 `gemini` 供应商种子。
 - 新增 `protocolCode = gemini`、`protocolVersion = v1beta`。
-- 新增 `profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta`、默认 Gemini 分组和默认 Gemini OpenAI Chat 分组。
+- 新增 `profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta` 和默认 Gemini 分组。
 - 新增 Gemini native ProtocolDriver：路径识别、模型提取、本地错误 shape、JSON / SSE 语义帧、Gemini 模型列表响应。
 - 新增 Gemini ProviderDriver：凭据归一化、Base URL 拼接、`x-goog-api-key` 上游认证、query `key` 清理、账号测试请求。
 - 前端账户创建支持 Gemini API Key、Base URL、endpoint modes，并区分 Gemini 原生和 Gemini OpenAI Chat。
@@ -358,7 +355,7 @@ Gemini 账户测试必须复用真实网关链路。
 
 - 默认创建 Gemini API Key 账户后落到 `profile_gemini_native_v1beta`；显式选择 Gemini OpenAI Chat 时落到 `profile_gemini_openai_chat_v1beta`。
 - 新 Gemini native 账户默认 `supported_endpoint_modes = generate_content_json/generate_content_sse/count_tokens`；新 Gemini OpenAI Chat 账户默认 `chat_json/chat_sse`。
-- Gemini 账户只能加入相同供应商协议档案的分组。
+- Gemini 账户只能加入相同供应商的分组，协议档案由账户接入类型决定。
 - 本地 `x-goog-api-key`、`Authorization` 和 query `key` 都可作为本地 API Key 认证来源。
 - 上游请求使用账户 `x-goog-api-key`，不泄漏本地 Key。
 - `POST /v1beta/models/gemini-3.5-flash:generateContent` JSON 返回 Gemini 原生 response。

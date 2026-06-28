@@ -70,26 +70,24 @@ try {
   insertSystemAccount(database, missingDefaultUserId, 'default_contract_missing', now)
   defaultGroupRepository.ensureDefaultBuiltInGroupsForSystemAccount(missingDefaultUserId, now)
   const createdDefault = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
-    .get(missingDefaultUserId, GPT_OPENAI_V1_PROFILE_ID) as { id?: string } | undefined
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, GPT_VENDOR_CODE) as { id?: string } | undefined
   const createdOpenAICompatibleDefault = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
-    .get(missingDefaultUserId, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID) as { id?: string } | undefined
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, OPENAI_COMPATIBLE_PROVIDER_CODE) as { id?: string } | undefined
   const createdDeepSeekDefault = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
-    .get(missingDefaultUserId, DEEPSEEK_OPENAI_V1_PROFILE_ID) as { id?: string } | undefined
-  const createdDeepSeekAnthropicDefault = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
-    .get(missingDefaultUserId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) as { id?: string } | undefined
-  const createdGlmCodingAnthropicDefault = database
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 LIMIT 1')
-    .get(missingDefaultUserId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID) as { id?: string } | undefined
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, DEEPSEEK_PROVIDER_CODE) as { id?: string } | undefined
+  const createdGlmDefault = database
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 LIMIT 1')
+    .get(missingDefaultUserId, GLM_PROVIDER_CODE) as { id?: string } | undefined
   assert(createdDefault?.id, '缺失默认 GPT 分组时应创建 is_default = 1 的当前默认分组')
   assert(createdOpenAICompatibleDefault?.id, '缺失默认 OpenAI 兼容分组时应创建 is_default = 1 的当前默认分组')
   assert(createdDeepSeekDefault?.id, '缺失默认 DeepSeek 分组时应创建 is_default = 1 的当前默认分组')
-  assert(createdDeepSeekAnthropicDefault?.id, '缺失默认 DeepSeek Claude Code 分组时应创建 is_default = 1 的当前默认分组')
-  assert(createdGlmCodingAnthropicDefault?.id, '缺失默认 GLM Coding Anthropic 分组时应创建 is_default = 1 的当前默认分组')
+  assert(createdGlmDefault?.id, '缺失默认 GLM 分组时应创建 is_default = 1 的当前默认分组')
   assert.equal(defaultGroupRepository.defaultGptGroupIdForSystemAccount(missingDefaultUserId), createdDefault.id)
+  assert.equal(defaultGroupRepository.defaultGroupIdForSystemAccount(DEEPSEEK_ANTHROPIC_V1_PROFILE_ID, missingDefaultUserId), createdDeepSeekDefault.id, 'DeepSeek Anthropic 档案应复用 DeepSeek 供应商默认分组')
+  assert.equal(defaultGroupRepository.defaultGroupIdForSystemAccount(GLM_CODING_ANTHROPIC_V1_PROFILE_ID, missingDefaultUserId), createdGlmDefault.id, 'GLM Coding Anthropic 档案应复用 GLM 供应商默认分组')
 
   await assertGroupProviderCodeUsesProviderLayer()
 
@@ -141,14 +139,14 @@ async function assertGroupProviderCodeUsesProviderLayer(): Promise<void> {
   assert.equal(deepSeekGroup.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek 分组应使用 DeepSeek OpenAI v1 档案')
 
   const deepSeekAnthropicGroup = repositories.createGroup({
-    name: 'DeepSeek Claude Code 供应商分组回归',
+    name: 'DeepSeek 同供应商元数据档案回归',
     providerCode: DEEPSEEK_PROVIDER_CODE,
     providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
   }, access)
-  assert.equal(deepSeekAnthropicGroup.providerCode, DEEPSEEK_PROVIDER_CODE, 'DeepSeek Claude Code 分组仍应落在 DeepSeek 独立供应商层')
-  assert.equal(deepSeekAnthropicGroup.providerProtocolProfileId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID, 'DeepSeek Claude Code 分组应使用 DeepSeek Anthropic v1 档案')
-  assert.equal(deepSeekAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'DeepSeek Claude Code 分组应使用 Anthropic 协议代码')
-  assert.equal(deepSeekAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'DeepSeek Claude Code 分组应使用 Anthropic v1 协议版本')
+  assert.equal(deepSeekAnthropicGroup.providerCode, DEEPSEEK_PROVIDER_CODE, 'DeepSeek 分组调度归属仍应落在 DeepSeek 独立供应商层')
+  assert.equal(deepSeekAnthropicGroup.providerProtocolProfileId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID, 'DeepSeek 分组可以保留 Anthropic v1 档案作为元数据')
+  assert.equal(deepSeekAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'DeepSeek 分组元数据可以记录 Anthropic 协议代码')
+  assert.equal(deepSeekAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'DeepSeek 分组元数据可以记录 Anthropic v1 协议版本')
 
   const glmGroup = repositories.createGroup({
     name: 'GLM 供应商分组回归',
@@ -158,14 +156,14 @@ async function assertGroupProviderCodeUsesProviderLayer(): Promise<void> {
   assert.equal(glmGroup.providerProtocolProfileId, GLM_CODING_OPENAI_V1_PROFILE_ID, 'GLM 默认分组应使用 GLM Coding Plan OpenAI v1 档案')
 
   const glmCodingAnthropicGroup = repositories.createGroup({
-    name: 'GLM Coding Anthropic 供应商分组回归',
+    name: 'GLM 同供应商元数据档案回归',
     providerCode: GLM_PROVIDER_CODE,
     providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   }, access)
-  assert.equal(glmCodingAnthropicGroup.providerCode, GLM_PROVIDER_CODE, 'GLM Coding Anthropic 分组仍应落在 GLM 独立供应商层')
-  assert.equal(glmCodingAnthropicGroup.providerProtocolProfileId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID, 'GLM Coding Anthropic 分组应使用 GLM Coding Anthropic v1 档案')
-  assert.equal(glmCodingAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'GLM Coding Anthropic 分组应使用 Anthropic 协议代码')
-  assert.equal(glmCodingAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'GLM Coding Anthropic 分组应使用 Anthropic v1 协议版本')
+  assert.equal(glmCodingAnthropicGroup.providerCode, GLM_PROVIDER_CODE, 'GLM 分组调度归属仍应落在 GLM 独立供应商层')
+  assert.equal(glmCodingAnthropicGroup.providerProtocolProfileId, GLM_CODING_ANTHROPIC_V1_PROFILE_ID, 'GLM 分组可以保留 Coding Anthropic v1 档案作为元数据')
+  assert.equal(glmCodingAnthropicGroup.protocolCode, ANTHROPIC_PROTOCOL_CODE, 'GLM 分组元数据可以记录 Anthropic 协议代码')
+  assert.equal(glmCodingAnthropicGroup.protocolVersion, ANTHROPIC_PROTOCOL_VERSION, 'GLM 分组元数据可以记录 Anthropic v1 协议版本')
 
   const moved = repositories.updateGroup(group.id, {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE

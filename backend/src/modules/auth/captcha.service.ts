@@ -1,6 +1,9 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
 
+import { runtimeConfig } from '../../config/runtime.js'
+import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
+
 export interface CaptchaChallengeSummary {
   captchaId: string
   image: string
@@ -31,9 +34,11 @@ const captchaIssueThreshold = 60
 const maxCaptchaIssueKeys = 2000
 const captchaChars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
 const captchaChallenges = new Map<string, CaptchaChallengeRecord>()
+const captchaTestAnswers = new Map<string, CaptchaChallengeRecord>()
 const captchaIssueRecords = new Map<string, CaptchaIssueRecord>()
 let nextCaptchaCleanupAt = 0
 let nextCaptchaIssueCleanupAt = 0
+let captchaRuntimeStateStore: RuntimeStateStore | undefined
 
 export function createCaptchaChallenge(): CaptchaChallengeSummary {
   const now = Date.now()
@@ -55,6 +60,26 @@ export function createCaptchaChallenge(): CaptchaChallengeSummary {
   }
 }
 
+export async function createCaptchaChallengeAsync(): Promise<CaptchaChallengeSummary> {
+  if (runtimeConfig.runtimeStateDriver === 'memory') {
+    return createCaptchaChallenge()
+  }
+
+  const now = Date.now()
+  const answer = createCaptchaAnswer()
+  const captchaId = randomUUID()
+  const expiresAt = now + captchaTtlMs
+  const record = { answer, expiresAt }
+  await getCaptchaRuntimeStateStore().setJson(captchaChallengeKey(captchaId), record, captchaTtlMs)
+  rememberCaptchaAnswerForTest(captchaId, record)
+
+  return {
+    captchaId,
+    image: renderCaptchaImage(answer),
+    expiresAt: new Date(expiresAt).toISOString()
+  }
+}
+
 export function verifyCaptchaChallenge(captchaId: string, captchaCode: string): boolean {
   const now = Date.now()
   runCaptchaMaintenance(now)
@@ -67,8 +92,29 @@ export function verifyCaptchaChallenge(captchaId: string, captchaCode: string): 
   return normalizeCaptchaCode(captchaCode) === challenge.answer
 }
 
+export async function verifyCaptchaChallengeAsync(captchaId: string, captchaCode: string): Promise<boolean> {
+  if (runtimeConfig.runtimeStateDriver === 'memory') {
+    return verifyCaptchaChallenge(captchaId, captchaCode)
+  }
+
+  const now = Date.now()
+  const challenge = await getCaptchaRuntimeStateStore().getDeleteJson<CaptchaChallengeRecord>(captchaChallengeKey(captchaId))
+  forgetCaptchaAnswerForTest(captchaId)
+  if (!challenge || challenge.expiresAt < now) return false
+
+  return normalizeCaptchaCode(captchaCode) === challenge.answer
+}
+
 export function captchaAnswerForTest(captchaId: string): string | undefined {
-  return captchaChallenges.get(captchaId)?.answer
+  const memoryAnswer = captchaChallenges.get(captchaId)?.answer
+  if (memoryAnswer) return memoryAnswer
+  const testAnswer = captchaTestAnswers.get(captchaId)
+  if (!testAnswer) return undefined
+  if (testAnswer.expiresAt <= Date.now()) {
+    captchaTestAnswers.delete(captchaId)
+    return undefined
+  }
+  return testAnswer.answer
 }
 
 export function consumeCaptchaIssueAllowance(clientIp: string): CaptchaIssueGuardResult {
@@ -93,6 +139,25 @@ export function consumeCaptchaIssueAllowance(clientIp: string): CaptchaIssueGuar
   captchaIssueRecords.delete(clientIp)
   captchaIssueRecords.set(clientIp, record)
   return { blocked: false }
+}
+
+export async function consumeCaptchaIssueAllowanceAsync(clientIp: string): Promise<CaptchaIssueGuardResult> {
+  if (runtimeConfig.runtimeStateDriver === 'memory') {
+    return consumeCaptchaIssueAllowance(clientIp)
+  }
+
+  const count = await getCaptchaRuntimeStateStore().incr(captchaIssueKey(clientIp), {
+    ttlMs: captchaIssueWindowMs,
+    max: captchaIssueThreshold
+  })
+  if (count <= captchaIssueThreshold) {
+    return { blocked: false }
+  }
+  return {
+    blocked: true,
+    message: '验证码请求过于频繁，请稍后再试',
+    retryAfterSeconds: Math.ceil(captchaIssueWindowMs / 1000)
+  }
 }
 
 function createCaptchaAnswer(): string {
@@ -177,6 +242,27 @@ function trimRecentCaptchaIssueTimestamps(timestamps: number[], now: number): nu
     recentTimestamps.push(timestamp)
   }
   return recentTimestamps.reverse()
+}
+
+function getCaptchaRuntimeStateStore(): RuntimeStateStore {
+  captchaRuntimeStateStore ??= createRuntimeStateStore('auth_captcha')
+  return captchaRuntimeStateStore
+}
+
+function captchaChallengeKey(captchaId: string): string {
+  return `challenge:${captchaId}`
+}
+
+function captchaIssueKey(clientIp: string): string {
+  return `issue:${clientIp.trim() || 'unknown'}`
+}
+
+function rememberCaptchaAnswerForTest(captchaId: string, record: CaptchaChallengeRecord): void {
+  captchaTestAnswers.set(captchaId, record)
+}
+
+function forgetCaptchaAnswerForTest(captchaId: string): void {
+  captchaTestAnswers.delete(captchaId)
 }
 
 function renderCaptchaImage(answer: string): string {

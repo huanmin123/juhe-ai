@@ -7,6 +7,7 @@ const managementProviderColumns = [
   { title: '接口能力', key: 'capabilities', width: 280 },
   { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 240 },
   { title: '默认测试模型', dataIndex: 'defaultTestModel', key: 'defaultTestModel', width: 160 },
+  { title: '默认支持模型', dataIndex: 'defaultSupportedModels', key: 'defaultSupportedModels', width: 260 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
   { title: '操作', key: 'actions', fixed: 'right' }
 ]
@@ -24,7 +25,7 @@ export function providerColumnsForScope(isManagementView: boolean) {
 }
 
 export function providerScrollXForScope(isManagementView: boolean): number {
-  return isManagementView ? 1320 : 850
+  return isManagementView ? 1580 : 850
 }
 
 export function providerEmptyDescriptionForScope(isManagementView: boolean): string {

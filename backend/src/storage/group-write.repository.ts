@@ -109,7 +109,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
   const name = requiredTextInput(input.name, '分组名称')
   const enabled = normalizeOptionalBooleanInput(input, 'enabled', true, '分组启用状态')
-  assertGroupNameAvailable(systemAccountId, providerProfile.id, name)
+  assertGroupNameAvailable(systemAccountId, providerCode, name)
   const group: GroupSummary = {
     id: newId('grp'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
@@ -133,7 +133,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
       .run(group.id, systemAccountId, group.name, group.providerCode, providerProfile.id, providerProfile.protocolCode, providerProfile.protocolVersion, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一协议档案下分组名称已存在：${group.name}`)
+      throw new Error(`同一供应商下分组名称已存在：${group.name}`)
     }
     throw error
   }
@@ -172,7 +172,7 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
   const client = await getGroupWriteDatabaseClient()
   try {
     await client.transaction(async (tx) => {
-      await assertGroupNameAvailableAsync(tx, systemAccountId, providerProfile.id, name)
+      await assertGroupNameAvailableAsync(tx, systemAccountId, providerCode, name)
       await tx.execute(`
         INSERT INTO ${groupWriteTable(tx, 'groups')} (
           id, system_account_id, name, provider_code, provider_protocol_profile_id, protocol_code,
@@ -197,7 +197,7 @@ export async function createGroupAsync(input: Record<string, unknown>, access?: 
     })
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一协议档案下分组名称已存在：${group.name}`)
+      throw new Error(`同一供应商下分组名称已存在：${group.name}`)
     }
     throw error
   }
@@ -251,8 +251,8 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     groupType: nextGroupType,
     schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
   }
-  if ((next.providerCode !== current.providerCode || next.providerProtocolProfileId !== current.providerProtocolProfileId) && current.accountStats.total > 0) {
-    throw new Error('已有账户的分组不允许修改供应商或协议档案')
+  if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
+    throw new Error('已有账户的分组不允许修改供应商')
   }
   const providerProfile = requireEnabledProviderProtocolProfile(next.providerCode, next.providerProtocolProfileId)
   next.providerProtocolProfileId = providerProfile.id
@@ -261,7 +261,7 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    assertGroupNameAvailable(systemAccountId, providerProfile.id, next.name, id)
+    assertGroupNameAvailable(systemAccountId, next.providerCode, next.name, id)
     if (current.enabled && !next.enabled) {
       assertRouteStrategiesCanLoseGroupAvailability(database, id, current.name, '停用分组')
     }
@@ -272,7 +272,7 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateGroupNameError(error)) {
-      throw new Error(`同一协议档案下分组名称已存在：${next.name}`)
+      throw new Error(`同一供应商下分组名称已存在：${next.name}`)
     }
     throw error
   }
@@ -326,8 +326,8 @@ export async function updateGroupAsync(id: string, input: Record<string, unknown
     groupType: nextGroupType,
     schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
   }
-  if ((next.providerCode !== current.providerCode || next.providerProtocolProfileId !== current.providerProtocolProfileId) && current.accountStats.total > 0) {
-    throw new Error('已有账户的分组不允许修改供应商或协议档案')
+  if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
+    throw new Error('已有账户的分组不允许修改供应商')
   }
   const providerProfile = await requireEnabledProviderProtocolProfileAsync(next.providerCode, next.providerProtocolProfileId)
   next.providerProtocolProfileId = providerProfile.id
@@ -336,7 +336,7 @@ export async function updateGroupAsync(id: string, input: Record<string, unknown
   const client = await getGroupWriteDatabaseClient()
   await client.transaction(async (tx) => {
     await lockGroupMutationRowAsync(tx, id, owner.systemAccountId)
-    await assertGroupNameAvailableAsync(tx, owner.systemAccountId, providerProfile.id, next.name, id)
+    await assertGroupNameAvailableAsync(tx, owner.systemAccountId, next.providerCode, next.name, id)
     if (current.enabled && !next.enabled) {
       await assertRouteStrategiesCanLoseGroupAvailabilityAsync(tx, id, current.name, '停用分组')
     }
@@ -743,32 +743,32 @@ async function loadDeletedGroupApiKeyRouteChangesAsync(
   }
 }
 
-function assertGroupNameAvailable(systemAccountId: string, providerProtocolProfileId: string, name: string, excludeId?: string): void {
-  const params: string[] = [systemAccountId, providerProtocolProfileId, name]
+function assertGroupNameAvailable(systemAccountId: string, providerCode: string, name: string, excludeId?: string): void {
+  const params: string[] = [systemAccountId, providerCode, name]
   const excludeClause = excludeId ? ' AND id <> ?' : ''
   if (excludeId) {
     params.push(excludeId)
   }
   const row = getBusinessDatabase()
-    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
+    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
   if (row?.id) {
-    throw new Error(`同一协议档案下分组名称已存在：${name}`)
+    throw new Error(`同一供应商下分组名称已存在：${name}`)
   }
 }
 
-async function assertGroupNameAvailableAsync(client: DatabaseClient, systemAccountId: string, providerProtocolProfileId: string, name: string, excludeId?: string): Promise<void> {
+async function assertGroupNameAvailableAsync(client: DatabaseClient, systemAccountId: string, providerCode: string, name: string, excludeId?: string): Promise<void> {
   const row = await client.one<{ id?: string }>(`
     SELECT id
     FROM ${groupWriteTable(client, 'groups')}
     WHERE system_account_id = ?
-      AND provider_protocol_profile_id = ?
+      AND provider_code = ?
       AND lower(name) = lower(?)
       AND id <> ?
     LIMIT 1
-  `, [systemAccountId, providerProtocolProfileId, name, excludeId ?? ''])
+  `, [systemAccountId, providerCode, name, excludeId ?? ''])
   if (row?.id) {
-    throw new Error(`同一协议档案下分组名称已存在：${name}`)
+    throw new Error(`同一供应商下分组名称已存在：${name}`)
   }
 }
 
@@ -802,7 +802,8 @@ async function lockGroupMutationRowAsync(client: DatabaseClient, groupId: string
 
 function isDuplicateGroupNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
-  return error.message.includes('idx_groups_owner_protocol_profile_name_unique_lower')
+  return error.message.includes('idx_groups_owner_provider_name_unique_lower')
+    || error.message.includes('idx_groups_owner_protocol_profile_name_unique_lower')
 }
 
 function writeSystemAccountId(access?: AccessScope): string {

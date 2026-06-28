@@ -52,7 +52,7 @@
 ## 方案概述
 
 - 方案原则：Gemini native 是独立 `gemini/v1beta` 协议；OpenAI Chat 客户端走 Gemini 官方 OpenAI compatibility 直连，不做项目内 Gemini bridge。
-- 数据变化：新增 `providerCode = gemini`、`protocolCode = gemini`、`profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta`、默认 Gemini 分组、默认 Gemini OpenAI Chat 分组和 `usage_semantic = gemini/openai` 分档案语义。
+- 数据变化：新增 `providerCode = gemini`、`protocolCode = gemini`、`profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta` 和 `usage_semantic = gemini/openai` 分档案语义；当前默认分组已收敛为一个供应商级 `默认 Gemini 分组`，OpenAI Chat 兼容差异由账户协议档案表达。
 - 接口变化：新增本地 `/v1beta/models/*:generateContent`、`:streamGenerateContent`、`:countTokens`、`/v1beta/models` 等 Gemini native 入口。
 - 前端变化：AI 账户创建页新增 `Google Gemini` 供应商和 `Gemini API Key` 接入类型，中文文案说明 native / OpenAI-compatible 边界。
 - 后端变化：新增 Gemini protocol / provider / model catalog / pricing / usage semantic driver；本地认证读取 `Authorization`、`x-goog-api-key` 和 query `key`。

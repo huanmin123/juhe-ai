@@ -5,9 +5,6 @@ import {
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
-  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
-  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
-  HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
   isAnthropicProtocolProfile,
@@ -84,13 +81,6 @@ export function accountModelMappingProtocolValidationMessage(input: {
   const hybridProfile = isHybridProviderProfile(providerProfile)
 
   if (hybridProfile) {
-    const targetUpstreamFamily = hybridTargetUpstreamEndpointFamily(providerProfile)
-    if (!targetUpstreamFamily) {
-      return '当前混合供应商协议档案暂不支持账号模型映射'
-    }
-    if (upstreamEndpointFamily !== targetUpstreamFamily) {
-      return `混合供应商当前档案真实上游只能使用 ${accountModelMappingEndpointFamilyText(targetUpstreamFamily)}`
-    }
     const rule = hybridAccountModelMappingProtocolRules.find((item) => (
       item.source === sourceEndpointFamily && item.upstream === upstreamEndpointFamily
     ))
@@ -161,14 +151,6 @@ export function defaultAccountModelMappingUpstreamEndpointFamily(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   context: AccountModelMappingProtocolContext
 ): AccountModelMappingUpstreamEndpointFamily {
-  const hybridTarget = hybridTargetUpstreamEndpointFamily(context.providerProfile)
-  if (hybridTarget && isAccountModelMappingProtocolAllowed({
-    sourceEndpointFamily,
-    upstreamEndpointFamily: hybridTarget,
-    context
-  })) {
-    return hybridTarget
-  }
   const preferred = preferredUpstreamFamilies(sourceEndpointFamily)
   return preferred.find((upstreamEndpointFamily) => isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily,
@@ -206,18 +188,6 @@ function accountModelMappingProviderProfileId(providerProfile?: AccountModelMapp
 
 function isHybridProviderProfile(providerProfile?: AccountModelMappingProviderProfile): boolean {
   return isHybridProviderCode(providerProfile && 'providerCode' in providerProfile ? providerProfile.providerCode : undefined)
-}
-
-function hybridTargetUpstreamEndpointFamily(providerProfile?: AccountModelMappingProviderProfile): AccountModelMappingUpstreamEndpointFamily | undefined {
-  if (!isHybridProviderProfile(providerProfile)) return undefined
-  const profileId = accountModelMappingProviderProfileId(providerProfile)
-  if (profileId === HYBRID_OPENAI_CHAT_V1_PROFILE_ID) return OPENAI_CHAT_COMPLETIONS_FAMILY
-  if (profileId === HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID) return ANTHROPIC_MESSAGES_FAMILY
-  if (profileId === HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID) return GEMINI_GENERATE_CONTENT_FAMILY
-  if (isOpenAIProtocolProfile(providerProfile)) return OPENAI_CHAT_COMPLETIONS_FAMILY
-  if (isAnthropicProtocolProfile(providerProfile)) return ANTHROPIC_MESSAGES_FAMILY
-  if (isGeminiProtocolProfile(providerProfile)) return GEMINI_GENERATE_CONTENT_FAMILY
-  return undefined
 }
 
 function accountModelMappingRulesForContext(context: AccountModelMappingProtocolContext): readonly ProtocolConversionRule[] {

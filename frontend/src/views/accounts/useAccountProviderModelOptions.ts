@@ -2,7 +2,8 @@ import { message } from '@/lib/antd'
 import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import { providerModelsToOptions, type AccountModelSelectOption } from './accountEditFormPayload'
+import { isHybridProviderCode } from '@/shared/providerProtocol'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 
 interface UseAccountProviderModelOptionsOptions {
@@ -49,8 +50,13 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     }
     providerModelsLoading.value = true
     try {
-      const models = await api.providers.models(code)
-      const modelOptions = providerModelsToOptions(models)
+      const models = isHybridProviderCode(code)
+        ? await api.providers.modelOptions(options.createScopeParams.value)
+        : await api.providers.models(code)
+      const modelOptions = dedupeModelOptions(models.map((item) => ({
+        label: item.model,
+        value: item.model
+      })))
       providerModelOptionsCache.set(cacheKey, modelOptions)
       if (options.currentProviderCode() === code) {
         providerModelOptions.value = modelOptions
@@ -67,6 +73,20 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
 
   function providerModelCacheKey(providerCode: string): string {
     return `${providerCode}:${options.createScopeParams.value?.systemAccountId ?? 'self'}:${options.isManagementView.value ? 'management' : 'self'}`
+  }
+
+  function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
+    const seen = new Set<string>()
+    const output: AccountModelSelectOption[] = []
+    for (const option of options) {
+      const model = option.value.trim()
+      if (!model) continue
+      const key = model.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      output.push({ label: model, value: model })
+    }
+    return output
   }
 
   return {

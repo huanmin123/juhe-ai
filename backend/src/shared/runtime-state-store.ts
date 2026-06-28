@@ -5,6 +5,7 @@ export type RuntimeStateKey = string
 
 export interface RuntimeStateStore {
   getJson<T>(key: RuntimeStateKey): Promise<T | undefined>
+  getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined>
   setJson<T>(key: RuntimeStateKey, value: T, ttlMs: number): Promise<void>
   delete(key: RuntimeStateKey): Promise<void>
   incr(key: RuntimeStateKey, options: { ttlMs: number; max?: number }): Promise<number>
@@ -33,6 +34,12 @@ class MemoryRuntimeStateStore implements RuntimeStateStore {
 
   async getJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
     const entry = this.getFreshEntry(key)
+    return entry?.value as T | undefined
+  }
+
+  async getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
+    const entry = this.getFreshEntry(key)
+    this.entries.delete(key)
     return entry?.value as T | undefined
   }
 
@@ -113,6 +120,16 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
       return JSON.parse(rawValue) as T
     } catch {
       await this.delete(key)
+      return undefined
+    }
+  }
+
+  async getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
+    const rawValue = await (await this.client()).sendCommand(['GETDEL', this.redisKey(key)])
+    if (typeof rawValue !== 'string') return undefined
+    try {
+      return JSON.parse(rawValue) as T
+    } catch {
       return undefined
     }
   }

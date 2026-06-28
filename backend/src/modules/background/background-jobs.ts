@@ -114,18 +114,18 @@ export function startBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
     case 'ops-worker':
-      if (isPostgresHighPerformanceMode()) {
-        return
-      }
-      scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, task: runAccountAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
       scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
+      if (isPostgresHighPerformanceMode()) {
+        return
+      }
+      scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
       return
     default:
       return

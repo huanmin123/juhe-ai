@@ -429,7 +429,7 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 
 规则：
 
-- Anthropic 账户只能加入相同 `provider_protocol_profile_id` 的分组。
+- Anthropic 账户只能加入相同 `provider_code` 的分组；`provider_protocol_profile_id` 仍保留账户真实协议档案。
 - Anthropic 官方账户不能加入 DeepSeek Anthropic-compatible、GLM Anthropic-compatible 或其他第三方兼容档案分组。
 - 授权实例账户继承来源账户的官方 Anthropic 资源事实，但被授权侧实例状态、分组绑定、冷却和用量归属仍保持独立。
 - API Key 多分组绑定允许跨供应商协议档案。跨供应商 API Key 必须先按请求 `model` 定位目标档案，再进入该 Key 已绑定的对应档案分组调度。
@@ -454,7 +454,7 @@ Anthropic 账户测试必须复用真实网关链路。
 测试要求：
 
 - 测试路径使用 `/v1/messages`。
-- 默认测试模型使用供应商 `default_test_model`，并把本地 Anthropic 目录作为可选模型列表；目录落库以官方 Models API 返回值为准。
+- 默认测试模型优先使用当前用户在供应商模型目录中手动设置的默认测试模型；没有个人偏好时使用供应商 `default_test_model`，并把本地 Anthropic 目录作为可选模型列表。目录落库以官方 Models API 返回值为准。
 - 测试请求必须带 `anthropic-version: 2023-06-01`。
 - 测试成功后记录 `last_successful_test_model`。
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。

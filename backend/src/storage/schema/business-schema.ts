@@ -50,6 +50,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       description TEXT,
       parent_code TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      default_supported_models_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (parent_code) REFERENCES providers(code)
@@ -147,6 +148,17 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       CHECK (scope = 'personal'),
       CHECK (status IN ('draft', 'active', 'disabled')),
       CHECK (system_account_id IS NOT NULL)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_default_test_models (
+      system_account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, provider_code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
     CREATE TABLE IF NOT EXISTS proxy_profiles (
@@ -615,6 +627,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       key_suffix TEXT NOT NULL,
       key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      is_default INTEGER NOT NULL DEFAULT 0,
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
@@ -795,9 +808,21 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due
       ON accounts(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_pg_due
+      ON accounts(provider_protocol_profile_id, type, oauth_refresh_token_present, (oauth_access_token_expires_at IS NOT NULL), oauth_access_token_expires_at ASC, updated_at ASC, id ASC)
+      WHERE authorization_instance_authorization_id IS NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_health_check_due
       ON accounts(health_check_enabled, status, next_health_check_at, updated_at, id)
       WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_health_check_pg_due
+      ON accounts(provider_protocol_profile_id, status, health_check_enabled, next_health_check_at ASC, updated_at ASC, id ASC)
+      WHERE deleted_at IS NULL AND health_check_enabled = 1;
+    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_due
+      ON accounts(status, cooldown_until ASC, updated_at ASC, id ASC)
+      WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_pg_due
+      ON accounts(provider_protocol_profile_id, status, cooldown_until ASC, updated_at ASC, id ASC)
+      WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
@@ -814,6 +839,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE scope = 'personal';
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, scope, system_account_id, model);
+    CREATE INDEX IF NOT EXISTS idx_provider_default_test_models_model
+      ON provider_default_test_models(provider_code, lower(model), system_account_id);
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, source_endpoint_family, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, upstream_endpoint_family, account_id);
@@ -831,6 +858,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique_lower ON groups(system_account_id, provider_code, lower(name));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_protocol_profile_name_unique_lower ON groups(system_account_id, provider_protocol_profile_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_groups_name_lookup ON groups(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_name_lookup ON groups(system_account_id, name COLLATE NOCASE, id);
@@ -870,6 +898,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_route_strategy ON api_keys(route_strategy_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
       ON api_keys(status, updated_at DESC, id)
       WHERE quota_limits_json IS NOT NULL;
@@ -880,11 +910,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON api_keys(availability_schedule_next_check_at ASC, id ASC)
       WHERE availability_schedule_json IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_owner_mode ON route_strategies(system_account_id, mode, status, updated_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique_lower ON route_strategies(system_account_id, lower(name));
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique ON route_strategies(system_account_id) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_route_strategies_name_lookup ON route_strategies(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_system_account_name_lookup ON route_strategies(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_strategy_priority ON route_strategy_groups(route_strategy_id, status, priority ASC, created_at ASC, id ASC);
@@ -931,6 +961,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_updated ON proxy_profiles(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_enabled_name_lookup ON proxy_profiles(enabled, name COLLATE NOCASE, updated_at DESC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_latency_refresh_due
+      ON proxy_profiles(enabled, (last_tested_at IS NOT NULL), last_tested_at ASC, updated_at DESC, id ASC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_profiles_name_unique_lower ON proxy_profiles(lower(name));
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_name_lookup ON proxy_profiles(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
@@ -938,11 +970,29 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureProvidersSchema(database)
+  ensureGroupsSchema(database)
   ensureRouteStrategiesSchema(database)
+  ensureApiKeysSchema(database)
   ensureOpenAICompatibleFilesSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureGroupsSchema(database: DatabaseSync): void {
+  database.exec('DROP INDEX IF EXISTS idx_groups_owner_provider_default_unique')
+}
+
+function ensureProvidersSchema(database: DatabaseSync): void {
+  const columns = new Set(
+    (database.prepare("PRAGMA table_info('providers')").all() as Array<{ name?: string }>)
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0)
+  )
+  if (!columns.has('default_supported_models_json')) {
+    database.exec("ALTER TABLE providers ADD COLUMN default_supported_models_json TEXT NOT NULL DEFAULT '[]'")
+  }
 }
 
 function ensureRouteStrategiesSchema(database: DatabaseSync): void {
@@ -954,10 +1004,26 @@ function ensureRouteStrategiesSchema(database: DatabaseSync): void {
   if (!columns.has('is_default')) {
     database.exec('ALTER TABLE route_strategies ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
   }
+  database.exec('DROP INDEX IF EXISTS idx_route_strategies_owner_default_unique')
+}
+
+function ensureApiKeysSchema(database: DatabaseSync): void {
+  const columns = new Set(
+    (database.prepare("PRAGMA table_info('api_keys')").all() as Array<{ name?: string }>)
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0)
+  )
+  if (!columns.has('is_default')) {
+    database.exec('ALTER TABLE api_keys ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+  }
   database.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique
-      ON route_strategies(system_account_id)
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique
+      ON api_keys(route_strategy_id)
       WHERE is_default = 1;
+    CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated
+      ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated
+      ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC);
   `)
 }
 

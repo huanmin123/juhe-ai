@@ -124,6 +124,16 @@ try {
     outputUsdPer1M: 3,
     actorSystemAccountId: 'sys_admin'
   })
+  catalogService.saveCustomProviderModel({
+    providerCode: 'hybrid',
+    model: 'hybrid-regression-should-not-list',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 3,
+    actorSystemAccountId: 'sys_admin'
+  })
 
   const publicCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
@@ -640,6 +650,26 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert.equal(userADeletableModel.scope, 'personal', '普通用户应能创建可删除的个人模型')
 
+    const userADefaultPreference = await putEnvelope<{ providerCode: string; defaultTestModel: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/openai/default-test-model',
+      userACookie,
+      { model: userADeletableModel.model }
+    )
+    assert.equal(userADefaultPreference.defaultTestModel, userADeletableModel.model, '用户应能把自己可见的个人模型设置为默认测试模型')
+    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert.equal(userAProviderOptions.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '用户默认测试模型应覆盖自己的供应商选项')
+    const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
+    assert.notEqual(userBProviderOptions.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '用户默认测试模型不能泄露给其他用户')
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/openai/default-test-model`,
+      userACookie,
+      'PUT',
+      { model: userADraft.model },
+      400,
+      '草稿模型不应允许设置为默认测试模型'
+    )
+
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models`,
       adminCookie,
@@ -718,6 +748,8 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       200,
       '普通用户应能删除自己未绑定账户的个人模型'
     )
+    const userAProviderOptionsAfterDefaultDelete = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert.notEqual(userAProviderOptionsAfterDefaultDelete.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '删除个人模型时应清理指向该模型的个人默认测试模型')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${adminPersonalModel.id}`,
       userACookie,
@@ -802,6 +834,33 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '用户不应看到管理员个人模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '默认管理模型目录不应返回草稿模型')
 
+    const userAGlobalModelOptions = await getEnvelope<Array<{ providerCode: string; model: string }>>(
+      baseUrl,
+      '/__aisys__/api/providers/models/options',
+      userACookie
+    )
+    assert(userAGlobalModelOptions.some((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt'), '全局模型选项应包含真实供应商模型')
+    assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
+    assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
+
+    const userAHybridVisible = await getEnvelope<Array<{ model: string; providerCode: string }>>(
+      baseUrl,
+      '/__aisys__/api/providers/hybrid/models',
+      userACookie
+    )
+    assert(userAHybridVisible.some((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt'), '混合供应商模型目录应聚合真实供应商模型')
+    assert.equal(userAHybridVisible.some((item) => item.providerCode === 'hybrid'), false, '混合供应商模型目录不应返回 hybrid 自身模型')
+    assert.equal(userAHybridVisible.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '混合供应商模型目录不应返回 hybrid 自身模型')
+    const userAHybridDefaultPreference = await putEnvelope<{ providerCode: string; defaultTestModel: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/hybrid/default-test-model',
+      userACookie,
+      { model: 'gpt-http-user-a-gpt' }
+    )
+    assert.equal(userAHybridDefaultPreference.defaultTestModel, 'gpt-http-user-a-gpt', '混合供应商应允许把聚合目录中的真实文本模型设为默认测试模型')
+    const userAProviderOptionsAfterHybridDefault = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert.equal(userAProviderOptionsAfterHybridDefault.find((item) => item.code === 'hybrid')?.defaultTestModel, 'gpt-http-user-a-gpt', '混合供应商默认测试模型偏好应回填到用户供应商选项')
+
     const userAMaintenanceVisible = await getEnvelope<Array<{ model: string; status: string; providerCode: string }>>(
       baseUrl,
       '/__aisys__/api/providers/openai/models?includeInactive=true&includeUnpriced=true',
@@ -858,6 +917,15 @@ async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, bo
   return await unwrapEnvelope<T>(response, path)
 }
 
+async function putEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PUT',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  return await unwrapEnvelope<T>(response, path)
+}
+
 async function patchEnvelope<T = unknown>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'PATCH',
@@ -878,7 +946,7 @@ async function unwrapEnvelope<T>(response: Response, path: string): Promise<T> {
 async function assertHttpStatus(
   url: string,
   cookie: string,
-  method: 'POST' | 'PATCH' | 'DELETE',
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   body: unknown,
   expectedStatus: number,
   message: string

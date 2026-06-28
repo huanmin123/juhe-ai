@@ -30,6 +30,7 @@ export interface ProviderDefinition {
   protocolVersion: string
   baseUrl: string
   defaultTestModel: string
+  defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
   protocolProfiles: ProviderProtocolProfileDefinition[]
@@ -96,6 +97,11 @@ export interface ProviderModelPricing {
 export interface ProviderModelOption {
   providerCode: ProviderCode
   model: string
+}
+
+export interface ProviderDefaultTestModelResult {
+  providerCode: ProviderCode
+  defaultTestModel: string
 }
 
 export interface ProviderModelsParams {

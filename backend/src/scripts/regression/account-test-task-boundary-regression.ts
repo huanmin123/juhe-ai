@@ -24,6 +24,7 @@ const frontendAccountTestSessionClientSource = readFileSync(resolve(projectRoot,
 const frontendAccountBatchExecutionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountBatchExecution.ts'), 'utf8')
 const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
 const frontendAccountTestDisplayFormattersSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestDisplayFormatters.ts'), 'utf8')
+const accountTestQueueItemSource = interfaceBody(accountTestTaskQueueSource, 'AccountTestQueueItem')
 const runOpenAIAccountTestWithSideEffectsSource = accountTestTaskQueueSource.slice(
   accountTestTaskQueueSource.indexOf('async function runOpenAIAccountTestWithSideEffects'),
   accountTestTaskQueueSource.indexOf('function enqueueManualAccountTestFailurePrecheck')
@@ -196,8 +197,19 @@ assert(
 assert(
   accountTestTaskQueueSource.includes("type: 'account_test_task_maintenance'")
     && accountTestTaskQueueSource.includes('refillLimit: manualAccountTestRefillBatchSize()')
+    && accountTestTaskQueueSource.includes("runAccountTestTaskMaintenance('start')")
+    && accountTestTaskQueueSource.includes("runAccountTestTaskMaintenance('sweep')")
     && accountTestTaskQueueSource.includes('manualAccountTestRefillMaxBatchSize = 1000'),
   '手动账号测试队列应持续从 DB 补拉 queued 任务，避免 worker 重启后只执行首批任务'
+)
+assert(
+  accountTestQueueItemSource.includes('taskId: string'),
+  '手动账号测试本地执行队列只能保存任务 ID，任务详情必须从数据库加载'
+)
+assert.doesNotMatch(
+  accountTestQueueItemSource,
+  /\b(accountId|credentials|draftAccount|apiKey|proxyUrl|access)\b/,
+  '手动账号测试本地执行队列不得保存账号、凭据、草稿、代理或权限上下文'
 )
 assert.equal(
   runOpenAIAccountTestWithSideEffectsSource.includes('markAccountTestTemporaryUnavailable'),
@@ -386,3 +398,13 @@ assert(
 )
 
 console.log('账号测试任务边界回归通过：手动测试由后台 worker 队列执行，前端通过任务接口查询结果')
+
+function interfaceBody(source: string, interfaceName: string): string {
+  const start = source.indexOf(`interface ${interfaceName}`)
+  assert(start >= 0, `缺少接口 ${interfaceName}`)
+  const openBrace = source.indexOf('{', start)
+  assert(openBrace >= 0, `接口 ${interfaceName} 缺少函数体`)
+  const closeBrace = source.indexOf('}', openBrace)
+  assert(closeBrace >= 0, `接口 ${interfaceName} 未闭合`)
+  return source.slice(openBrace, closeBrace + 1)
+}

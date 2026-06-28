@@ -3,7 +3,7 @@ import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCom
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../domain/gemini-endpoint-modes.js'
-import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGeminiProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGeminiProtocolProfile, isGptVendorCode, isHybridProviderCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
@@ -15,6 +15,7 @@ import { maxAccountNameLength, replaceAccountNameSearchTerms, replaceAccountName
 import { loadAccountTagsByAccountIds, normalizeAccountTagNamesInput, replaceAccountTags, replaceAccountTagsAsync } from './account-tags.repository.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
+  assertAccountSupportedModelsRequired,
   normalizeAccountModelMappingsForProvider,
   normalizeAccountModelMappingsForProviderAsync,
   normalizeAccountSupportedModelsForProvider,
@@ -22,6 +23,7 @@ import {
 } from './account-model-normalization.js'
 export {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
+  assertAccountSupportedModelsRequired,
   normalizeAccountModelMappingsForProvider,
   normalizeAccountModelMappingsForProviderAsync,
   normalizeAccountSupportedModelsForProvider,
@@ -120,7 +122,7 @@ export {
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
-import { listOpenAIProtocolProfileIds } from './provider.repository.js'
+import { findProviderDefaultSupportedModels, findProviderDefaultSupportedModelsAsync, listOpenAIProtocolProfileIds, listOpenAIProtocolProfileIdsAsync } from './provider.repository.js'
 import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId } from './proxy.repository.js'
@@ -149,6 +151,7 @@ export {
 export {
   createResourceAuthorization,
   createResourceAuthorizationAsync,
+  expireDueResourceAuthorizationsAsync,
   revokeResourceAuthorization,
   revokeResourceAuthorizationAsync,
   updateResourceAuthorizationAsync,
@@ -174,26 +177,40 @@ import type { AccountRow, ResourceAuthorizationSourceRow } from './repository-ro
 export type { SystemTeamListOptions } from './system-team.repository.js'
 export {
   addSystemTeamMembers,
+  addSystemTeamMembersAsync,
   createSystemTeam,
+  createSystemTeamAsync,
   findSystemTeamSummary,
+  findSystemTeamSummaryAsync,
   listSystemTeams,
+  listSystemTeamsAsync,
   listSystemTeamsPage,
+  listSystemTeamsPageAsync,
   removeSystemTeamMember,
-  updateSystemTeam
+  removeSystemTeamMemberAsync,
+  updateSystemTeam,
+  updateSystemTeamAsync
 } from './system-team.repository.js'
 export {
   findAccountForCooldownRetest,
+  findAccountForCooldownRetestAsync,
   listAccountsDueForCooldownRetest,
+  listAccountsDueForCooldownRetestAsync,
   recordCooldownAccountRetestFailure,
+  recordCooldownAccountRetestFailureAsync,
   type CooldownAccountRetestFailureInput,
   type CooldownAccountRetestFailureResult
 } from './account-cooldown-retest.repository.js'
 export {
   findAccountForHealthCheck,
+  findAccountForHealthCheckAsync,
   listAccountsDueForHealthCheck,
+  listAccountsDueForHealthCheckAsync,
   normalizedHealthCheckSettings,
   recordAccountHealthCheckFailure,
+  recordAccountHealthCheckFailureAsync,
   recordAccountHealthCheckSuccess,
+  recordAccountHealthCheckSuccessAsync,
   recordAccountHealthSuccessSignals,
   type AccountHealthCheckFailureResult,
   type AccountHealthCheckListOptions,
@@ -254,6 +271,9 @@ function assertAccountEndpointModesCompatible(
     clientCompatibility: AccountClientCompatibility
   }
 ): void {
+  if (isHybridProviderCode(protocolProfile.providerCode)) {
+    return
+  }
   if (isAnthropicProtocolProfile(protocolProfile)) {
     assertAnthropicEndpointModesCompatible({
       modes: input.modes,
@@ -286,6 +306,11 @@ function findInternalAccountSummary(accountId: string): AccountSummary | undefin
 
 function openAIProtocolProfileIdsForQuery(): string[] {
   const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
+  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
+}
+
+async function openAIProtocolProfileIdsForQueryAsync(): Promise<string[]> {
+  const profileIds = (await listOpenAIProtocolProfileIdsAsync()).map((profileId) => profileId.trim()).filter(Boolean)
   return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
 }
 
@@ -407,6 +432,8 @@ export {
   deleteApiKeyAsync,
   deleteApiKeyWithRelatedCleanup,
   deleteApiKeyWithRelatedCleanupAsync,
+  ensureDefaultApiKeysForSystemAccount,
+  ensureDefaultApiKeysForSystemAccountAsync,
   findApiKeySecret,
   findApiKeySecretAsync,
   findApiKeySummary,
@@ -429,6 +456,8 @@ export {
   deleteRouteStrategyAsync,
   ensureDefaultRouteStrategyForSystemAccount,
   ensureDefaultRouteStrategyForSystemAccountAsync,
+  ensureDefaultRouteStrategiesForSystemAccount,
+  ensureDefaultRouteStrategiesForSystemAccountAsync,
   findRouteStrategySummary,
   findRouteStrategySummaryAsync,
   listRouteStrategiesPage,
@@ -451,6 +480,8 @@ export {
 export {
   defaultProviderProtocolProfile,
   defaultProviderProtocolProfileAsync,
+  findProviderDefaultSupportedModels,
+  findProviderDefaultSupportedModelsAsync,
   findProviderDefaultTestModel,
   findProviderDefaultTestModelAsync,
   findProviderProtocolProfile,
@@ -565,10 +596,12 @@ export {
   type GatewayApiKeyRow
 } from './gateway-api-key.repository.js'
 export {
+  syncApiKeyAvailabilityScheduleStatusesAsync,
   syncApiKeyAvailabilityScheduleStatuses,
   type ApiKeyScheduleStatusSyncResult
 } from './api-key-schedule-status-sync.repository.js'
 export {
+  syncAccountAvailabilityScheduleStatusesAsync,
   syncAccountAvailabilityScheduleStatuses,
   type AccountAvailabilityScheduleStatusSyncResult
 } from './account-availability-schedule-status-sync.repository.js'
@@ -1238,6 +1271,38 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
   return openAIOAuthRefreshCandidateSummaries(rows)
 }
 
+export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input: {
+  leadSeconds: number
+  limit: number
+  stoppedErrorCode: string
+}): Promise<AccountSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listOpenAIOAuthAccountsDueForAccessTokenRefresh(input)
+  }
+  const leadMs = Math.max(0, Math.trunc(input.leadSeconds)) * 1000
+  const dueBefore = new Date(Date.now() + leadMs).toISOString()
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit), 500))
+  const profileIds = await openAIProtocolProfileIdsForQueryAsync()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<OpenAIOAuthRefreshCandidateRow>(`
+    SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+      proxy_profile_id, concurrency_limit, priority,
+      super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
+      last_error_code, last_error_message, last_successful_test_model
+    FROM ${accountWriteTable(client, 'accounts')}
+    WHERE authorization_instance_authorization_id IS NULL
+      AND deleted_at IS NULL
+      AND provider_protocol_profile_id IN (${client.dialect.bindPlaceholders(profileIds.length)})
+      AND type = 'oauth'
+      AND oauth_refresh_token_present = 1
+      AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
+      AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
+    ORDER BY (oauth_access_token_expires_at IS NOT NULL) ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
+    LIMIT ?
+  `, [...profileIds, input.stoppedErrorCode, dueBefore, limit])
+  return openAIOAuthRefreshCandidateSummaries(rows)
+}
+
 export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
   stoppedErrorCode: string
   limit?: number
@@ -1335,10 +1400,14 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
-  const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels, providerCode, systemAccountId) ?? []
+  const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
+    ? input.supportedModels
+    : findProviderDefaultSupportedModels(providerCode)
+  const supportedModels = normalizeAccountSupportedModelsForProvider(supportedModelsInput, providerCode, systemAccountId) ?? []
   const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId, providerProfile, {
     supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
   }) ?? []
+  assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
@@ -1351,7 +1420,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('账户分组不能为空')
   }
   const group = explicitGroupId === groupId ? explicitGroup : groupOwnerAndProvider(groupId)
-  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode || group.providerProtocolProfileId !== providerProfile.id) {
+  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
     throw new Error('账户分组无效')
   }
   const proxyProfileId = globalProxyProfileId(normalizeNullableIdInput(input.proxyProfileId, '代理配置'))
@@ -1547,10 +1616,14 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     : null
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const hasAvailabilityScheduleActiveInput = hasOwnInput(input, 'availabilityScheduleActive')
-  const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, providerCode, systemAccountId) ?? []
+  const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
+    ? input.supportedModels
+    : await findProviderDefaultSupportedModelsAsync(providerCode)
+  const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(supportedModelsInput, providerCode, systemAccountId) ?? []
   const modelMappings = await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, providerCode, systemAccountId, providerProfile, {
     supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
   }) ?? []
+  assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const initialStatus = normalizedAccountStatusInput(input.status, 'pending_test')
@@ -1563,7 +1636,7 @@ export async function createAccountAsync(input: Record<string, unknown>, access?
     throw new Error('账户分组不能为空')
   }
   const group = explicitGroupId === groupId ? explicitGroup : await groupOwnerAndProviderForAccountWriteAsync(client, groupId)
-  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode || group.providerProtocolProfileId !== providerProfile.id) {
+  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
     throw new Error('账户分组无效')
   }
   const requestedProxyProfileId = normalizeNullableIdInput(input.proxyProfileId, '代理配置')
@@ -1780,6 +1853,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
       }) ?? []
     : current.modelMappings ?? []
+  assertAccountSupportedModelsRequired(nextSupportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
   const hasTagsInput = hasOwnInput(input, 'tags')
   const nextTagNames = hasTagsInput
@@ -2098,6 +2172,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
       }) ?? []
     : current.modelMappings ?? []
+  assertAccountSupportedModelsRequired(nextSupportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
   const hasTagsInput = hasOwnInput(input, 'tags')
   const nextTagNames = hasTagsInput
@@ -2464,6 +2539,7 @@ export async function deleteAccountAsync(id: string, access?: AccessScope): Prom
 }
 
 export {
+  cleanupExpiredLogicallyDeletedAccountsAsync,
   cleanupExpiredLogicallyDeletedAccounts,
   deleteAccountWithRelatedCleanupAsync,
   deleteAccountWithRelatedCleanup,
@@ -2480,11 +2556,13 @@ export {
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingFailureState,
   clearAuthorizedAccountBindingFailureStateByContext,
+  clearAuthorizedAccountBindingFailureStateByContextAsync,
   clearAuthorizedAccountBindingStreamFailureState,
   getAccountPrecheckMutationState,
   markAccountCooldown,
   markAccountDisabledByFailure,
   markAccountException,
+  markAccountExceptionAsync,
   markAccountTemporaryUnavailable,
   markAccountTestTemporaryUnavailable,
   markAccountTestTemporaryUnavailableAsync,
@@ -2492,6 +2570,7 @@ export {
   markAuthorizedAccountBindingDisabledByFailure,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
   migrateAccountTraffic,
+  migrateAccountTrafficAsync,
   recordAccountStreamFailure,
   recordAuthorizedAccountBindingStreamFailure,
   updateAuthorizedAccountBindingDispatch,

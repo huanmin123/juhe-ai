@@ -187,7 +187,7 @@ try {
         status: 'active',
         schedulable: true
       }, access),
-      /账号模型别名只支持同协议映射|请改用混合供应商账户/,
+      /Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions|账号模型别名只支持同协议映射|请改用混合供应商账户/,
       'Gemini OpenAI Chat 账号别名不应承接 Anthropic Messages 来源映射'
     )
     const openAIChatApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
@@ -265,7 +265,7 @@ try {
         status: 'active',
         schedulable: true
       }, access),
-      /账号模型别名只支持同协议映射|请改用混合供应商账户/,
+      /Gemini OpenAI Chat 档案的账号模型别名只能使用 Chat Completions|账号模型别名只支持同协议映射|请改用混合供应商账户/,
       '账号模型别名不应允许 Gemini GenerateContent 跨协议桥接'
     )
     const glmBridgeRules = [

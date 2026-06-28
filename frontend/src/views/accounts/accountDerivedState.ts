@@ -153,9 +153,9 @@ export function manageableGroupsForProvider(groups: GroupOptionSummary[], provid
 }
 
 export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string, providerProtocolProfileId?: string): boolean {
+  void providerProtocolProfileId
   return canManageGroupAccounts(group)
     && (!providerCode || group.providerCode === providerCode)
-    && (!providerProtocolProfileId || group.providerProtocolProfileId === providerProtocolProfileId)
 }
 
 export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string, providerProtocolProfileId?: string): SelectOption[] {

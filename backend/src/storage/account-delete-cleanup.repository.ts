@@ -511,6 +511,71 @@ export function cleanupExpiredLogicallyDeletedAccounts(options: ExpiredDeletedAc
   return result
 }
 
+export async function cleanupExpiredLogicallyDeletedAccountsAsync(options: ExpiredDeletedAccountCleanupOptions = {}): Promise<ExpiredDeletedAccountCleanupResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cleanupExpiredLogicallyDeletedAccounts(options)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const cutoffDeletedAt = options.cutoffDeletedAt?.trim() || deletedAccountPhysicalCleanupCutoffIso()
+  const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? deletedAccountPhysicalCleanupBatchSize), 200))
+  const result: ExpiredDeletedAccountCleanupResult = {
+    cutoffDeletedAt,
+    orphanedAuthorizationInstances: 0,
+    attempted: 0,
+    completed: 0,
+    deferred: 0,
+    failed: 0,
+    deletedRows: 0,
+    physicallyDeletedAccounts: 0,
+    physicallyDeletedAuthorizations: 0,
+    physicallyDeletedGrants: 0,
+    physicallyDeletedGroupBindings: 0,
+    recordCleanupTargets: []
+  }
+  const orphanedInstanceIds = await logicallyDeleteOrphanedAuthorizationInstancesForDeletedSourcesAsync(client, limit)
+  result.orphanedAuthorizationInstances = orphanedInstanceIds.length
+  if (orphanedInstanceIds.length > 0) {
+    for (const accountId of orphanedInstanceIds) {
+      invalidateAccountLookupCache(accountId)
+    }
+    invalidateGroupAccountIdsCache()
+    clearResourceAuthorizationLookupCaches()
+    invalidateGatewayRuntimeAfterBusinessWrite('orphaned_authorization_instance_deleted')
+    invalidateAuthorizationRuntimeAfterBusinessWrite('orphaned_authorization_instance_deleted')
+  }
+
+  const candidates = await listExpiredDeletedAccountCleanupCandidatesAsync(client, cutoffDeletedAt, limit)
+  for (const candidate of candidates) {
+    result.attempted += 1
+    try {
+      const target = await buildExpiredDeletedAccountBusinessCleanupTargetAsync(client, candidate)
+      if (await hasDeletedAccountRelatedRecordDataAsync(client, target)) {
+        result.deferred += 1
+        result.recordCleanupTargets.push(target)
+        continue
+      }
+      const businessCleanup = await physicallyDeleteExpiredDeletedAccountBusinessRowsAsync(client, target)
+      result.physicallyDeletedAccounts += businessCleanup.accounts
+      result.physicallyDeletedAuthorizations += businessCleanup.authorizations
+      result.physicallyDeletedGrants += businessCleanup.grants
+      result.physicallyDeletedGroupBindings += businessCleanup.groupBindings
+      result.completed += 1
+      if (businessCleanup.accounts > 0 || businessCleanup.authorizations > 0 || businessCleanup.groupBindings > 0 || businessCleanup.grants > 0) {
+        for (const accountId of target.accountIds) {
+          invalidateAccountLookupCache(accountId)
+        }
+        invalidateGroupAccountIdsCache()
+        clearResourceAuthorizationLookupCaches()
+        invalidateGatewayRuntimeAfterBusinessWrite('expired_deleted_account_cleanup')
+        invalidateAuthorizationRuntimeAfterBusinessWrite('expired_deleted_account_cleanup')
+      }
+    } catch {
+      result.failed += 1
+    }
+  }
+  return result
+}
+
 function logicallyDeleteOrphanedAuthorizationInstancesForDeletedSources(database: DatabaseSync, limit: number): string[] {
   const rows = database
     .prepare(`
@@ -561,6 +626,49 @@ function logicallyDeleteOrphanedAuthorizationInstancesForDeletedSources(database
   return uniqueNonEmpty(deletedIds)
 }
 
+async function logicallyDeleteOrphanedAuthorizationInstancesForDeletedSourcesAsync(client: DatabaseClient, limit: number): Promise<string[]> {
+  const rows = await client.query<OrphanedAuthorizationInstanceCleanupRow>(`
+    SELECT accounts.id, accounts.system_account_id,
+      accounts.authorization_instance_authorization_id,
+      accounts.authorization_instance_source_account_id,
+      accounts.deleted_at,
+      source_accounts.deleted_at AS source_deleted_at,
+      resource_accounts.deleted_at AS resource_deleted_at
+    FROM juhe_business.accounts accounts
+    LEFT JOIN juhe_business.resource_authorizations ra
+      ON ra.id = accounts.authorization_instance_authorization_id
+    LEFT JOIN juhe_business.accounts source_accounts
+      ON source_accounts.id = accounts.authorization_instance_source_account_id
+    LEFT JOIN juhe_business.accounts resource_accounts
+      ON resource_accounts.id = ra.resource_id
+    WHERE accounts.deleted_at IS NULL
+      AND accounts.authorization_instance_authorization_id IS NOT NULL
+      AND (
+        ra.id IS NULL
+        OR ra.resource_type <> 'account'
+        OR (accounts.authorization_instance_source_account_id IS NOT NULL AND source_accounts.id IS NULL)
+        OR source_accounts.deleted_at IS NOT NULL
+        OR resource_accounts.id IS NULL
+        OR resource_accounts.deleted_at IS NOT NULL
+      )
+    ORDER BY accounts.updated_at ASC, accounts.id ASC
+    LIMIT ?
+  `, [limit])
+  if (!rows.length) return []
+
+  const actor = internalAccountReadAccess.systemAccountId
+  const fallbackDeletedAt = nowIso()
+  const deletedIds: string[] = []
+  for (const row of rows) {
+    const deletedAt = fallbackDeletedAt
+    await client.transaction(async (tx) => {
+      await revokeAuthorizationInstanceForDeletedSourceAccountAsync(tx, row, actor, deletedAt)
+      deletedIds.push(...await logicallyDeleteAccountsAsync(tx, [row.id], actor, deletedAt))
+    })
+  }
+  return uniqueNonEmpty(deletedIds)
+}
+
 function revokeAuthorizationInstanceForDeletedSourceAccount(database: DatabaseSync, row: AccountDeleteRow, actor: string, deletedAt: string): void {
   const authorizationId = row.authorization_instance_authorization_id
   if (!authorizationId) return
@@ -606,6 +714,44 @@ function revokeAuthorizationInstanceForDeletedSourceAccount(database: DatabaseSy
   cleanupInactiveAuthorizationBindings(database, [authorizationId])
 }
 
+async function revokeAuthorizationInstanceForDeletedSourceAccountAsync(client: DatabaseClient, row: AccountDeleteRow, actor: string, deletedAt: string): Promise<void> {
+  const authorizationId = row.authorization_instance_authorization_id
+  if (!authorizationId) return
+  const authorization = await client.one<ResourceAuthorizationRow>(`
+    SELECT ${resourceAuthorizationSelectColumns()}
+    FROM juhe_business.resource_authorizations
+    WHERE id = ?
+    LIMIT 1
+  `, [authorizationId])
+  if (authorization?.resource_type === 'account' && authorization.resource_id) {
+    await revokeAccountAuthorizationsForDeletedResourceAsync(client, authorization.resource_id, actor, deletedAt)
+  }
+  await client.execute(`
+    UPDATE juhe_business.resource_authorization_sources
+    SET status = 'revoked',
+        ended_at = COALESCE(ended_at, ?),
+        ended_reason = COALESCE(ended_reason, 'account_deleted'),
+        revoked_by = ?,
+        revoked_at = ?,
+        updated_at = ?
+    WHERE authorization_id = ?
+      AND status IN ('active', 'superseded')
+  `, [deletedAt, actor, deletedAt, deletedAt, authorizationId])
+  await client.execute(`
+    UPDATE juhe_business.resource_authorizations
+    SET status = 'revoked',
+        effective_source_type = NULL,
+        effective_source_team_id = NULL,
+        revoked_by = COALESCE(revoked_by, ?),
+        revoked_at = COALESCE(revoked_at, ?),
+        revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
+        last_source_changed_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status <> 'returned'
+  `, [actor, deletedAt, deletedAt, deletedAt, authorizationId])
+}
+
 function listExpiredDeletedAccountCleanupCandidates(
   database: DatabaseSync,
   cutoffDeletedAt: string,
@@ -644,6 +790,44 @@ function listExpiredDeletedAccountCleanupCandidates(
       LIMIT ?
     `)
     .all(cutoffDeletedAt, cutoffDeletedAt, remaining) as unknown as DeletedAccountCleanupCandidateRow[]
+  return [...rootRows, ...instanceRows]
+}
+
+async function listExpiredDeletedAccountCleanupCandidatesAsync(
+  client: DatabaseClient,
+  cutoffDeletedAt: string,
+  limit: number
+): Promise<DeletedAccountCleanupCandidateRow[]> {
+  const rootRows = await client.query<DeletedAccountCleanupCandidateRow>(`
+    SELECT id, system_account_id, authorization_instance_authorization_id,
+      authorization_instance_source_account_id, deleted_at, updated_at
+    FROM juhe_business.accounts
+    WHERE deleted_at IS NOT NULL
+      AND deleted_at <= ?
+      AND authorization_instance_authorization_id IS NULL
+    ORDER BY deleted_at ASC, updated_at ASC, id ASC
+    LIMIT ?
+  `, [cutoffDeletedAt, limit])
+  const remaining = limit - rootRows.length
+  if (remaining <= 0) return rootRows
+  const instanceRows = await client.query<DeletedAccountCleanupCandidateRow>(`
+    SELECT child.id, child.system_account_id, child.authorization_instance_authorization_id,
+      child.authorization_instance_source_account_id, child.deleted_at, child.updated_at
+    FROM juhe_business.accounts child
+    LEFT JOIN juhe_business.accounts source_accounts
+      ON source_accounts.id = child.authorization_instance_source_account_id
+    WHERE child.deleted_at IS NOT NULL
+      AND child.deleted_at <= ?
+      AND child.authorization_instance_authorization_id IS NOT NULL
+      AND (
+        child.authorization_instance_source_account_id IS NULL
+        OR source_accounts.id IS NULL
+        OR source_accounts.deleted_at IS NULL
+        OR source_accounts.deleted_at > ?
+      )
+    ORDER BY child.deleted_at ASC, child.updated_at ASC, child.id ASC
+    LIMIT ?
+  `, [cutoffDeletedAt, cutoffDeletedAt, remaining])
   return [...rootRows, ...instanceRows]
 }
 
@@ -692,6 +876,60 @@ function buildExpiredDeletedAccountBusinessCleanupTarget(
   const grantIds = isAuthorizationInstance
     ? loadDeletedAuthorizationInstanceGrantIds(database, authorizationIds)
     : loadDeletedSourceAccountGrantIds(database, accountIds)
+  return {
+    accountId: row.id,
+    systemAccountId: row.system_account_id,
+    relatedAccountIds,
+    accountIds,
+    authorizationIds,
+    teamScopeIds,
+    grantIds
+  }
+}
+
+async function buildExpiredDeletedAccountBusinessCleanupTargetAsync(
+  client: DatabaseClient,
+  row: DeletedAccountCleanupCandidateRow
+): Promise<ExpiredDeletedAccountBusinessCleanupTarget> {
+  const isAuthorizationInstance = Boolean(row.authorization_instance_authorization_id)
+  const relatedRows = isAuthorizationInstance
+    ? []
+    : await client.query<DeletedAccountRelatedAccountRow>(`
+      SELECT id, authorization_instance_authorization_id
+      FROM juhe_business.accounts
+      WHERE authorization_instance_source_account_id = ?
+      ORDER BY created_at ASC, id ASC
+    `, [row.id])
+  const relatedAccountIds = uniqueNonEmpty(relatedRows.map((relatedRow) => relatedRow.id))
+  const accountIds = uniqueNonEmpty([row.id, ...relatedAccountIds])
+  const authorizationInstanceIdsByAuthorizationId = new Map<string, string>()
+  if (row.authorization_instance_authorization_id) {
+    authorizationInstanceIdsByAuthorizationId.set(row.authorization_instance_authorization_id, row.id)
+  }
+  for (const relatedRow of relatedRows) {
+    const authorizationId = typeof relatedRow.authorization_instance_authorization_id === 'string'
+      ? relatedRow.authorization_instance_authorization_id.trim()
+      : ''
+    const accountId = typeof relatedRow.id === 'string' ? relatedRow.id.trim() : ''
+    if (authorizationId && accountId) {
+      authorizationInstanceIdsByAuthorizationId.set(authorizationId, accountId)
+    }
+  }
+  const authorizationRows = await loadDeletedAccountCleanupAuthorizationRowsAsync(client, accountIds, [...authorizationInstanceIdsByAuthorizationId.keys()])
+  const loadedAuthorizationIds = uniqueNonEmpty(authorizationRows.map((authorizationRow) => authorizationRow.id))
+  const activeAuthorizationIds = isAuthorizationInstance
+    ? await loadActiveDeletedAccountCleanupAuthorizationInstanceIdsAsync(client, loadedAuthorizationIds)
+    : new Set<string>()
+  const authorizationIds = loadedAuthorizationIds.filter((authorizationId) => !activeAuthorizationIds.has(authorizationId))
+  const authorizationResourceIdById = new Map(
+    authorizationRows
+      .map((authorizationRow) => [String(authorizationRow.id ?? ''), String(authorizationRow.resource_id ?? '')] as const)
+      .filter(([authorizationId, resourceId]) => Boolean(authorizationId && resourceId))
+  )
+  const teamScopeIds = await loadDeletedAccountCleanupTeamScopeIdsAsync(client, authorizationIds, authorizationInstanceIdsByAuthorizationId, authorizationResourceIdById, row.id)
+  const grantIds = isAuthorizationInstance
+    ? await loadDeletedAuthorizationInstanceGrantIdsAsync(client, authorizationIds)
+    : await loadDeletedSourceAccountGrantIdsAsync(client, accountIds)
   return {
     accountId: row.id,
     systemAccountId: row.system_account_id,
@@ -826,6 +1064,245 @@ function loadDeletedAuthorizationInstanceGrantIds(database: DatabaseSync, author
   return uniqueNonEmpty(grantIds)
 }
 
+async function loadDeletedAccountCleanupAuthorizationRowsAsync(
+  client: DatabaseClient,
+  accountIds: string[],
+  authorizationInstanceAuthorizationIds: string[]
+): Promise<DeletedAccountCleanupAuthorizationRow[]> {
+  const rows = new Map<string, DeletedAccountCleanupAuthorizationRow>()
+  for (const chunk of chunkValues(uniqueNonEmpty(accountIds), 900)) {
+    const chunkRows = await client.query<DeletedAccountCleanupAuthorizationRow>(`
+      SELECT id, resource_id, grantee_system_account_id
+      FROM juhe_business.resource_authorizations
+      WHERE resource_type = 'account'
+        AND resource_id = ANY(?)
+    `, [chunk])
+    for (const row of chunkRows) {
+      if (row.id) rows.set(row.id, row)
+    }
+  }
+  for (const chunk of chunkValues(uniqueNonEmpty(authorizationInstanceAuthorizationIds), 900)) {
+    const chunkRows = await client.query<DeletedAccountCleanupAuthorizationRow>(`
+      SELECT id, resource_id, grantee_system_account_id
+      FROM juhe_business.resource_authorizations
+      WHERE id = ANY(?)
+    `, [chunk])
+    for (const row of chunkRows) {
+      if (row.id) rows.set(row.id, row)
+    }
+  }
+  return [...rows.values()]
+}
+
+async function loadActiveDeletedAccountCleanupAuthorizationInstanceIdsAsync(client: DatabaseClient, authorizationIds: string[]): Promise<Set<string>> {
+  const output = new Set<string>()
+  for (const chunk of chunkValues(uniqueNonEmpty(authorizationIds), 900)) {
+    const rows = await client.query<{ authorization_instance_authorization_id?: string | null }>(`
+      SELECT DISTINCT authorization_instance_authorization_id
+      FROM juhe_business.accounts
+      WHERE authorization_instance_authorization_id = ANY(?)
+        AND deleted_at IS NULL
+    `, [chunk])
+    for (const row of rows) {
+      const authorizationId = String(row.authorization_instance_authorization_id ?? '').trim()
+      if (authorizationId) output.add(authorizationId)
+    }
+  }
+  return output
+}
+
+async function loadDeletedAccountCleanupTeamScopeIdsAsync(
+  client: DatabaseClient,
+  authorizationIds: string[],
+  authorizationInstanceIdsByAuthorizationId: Map<string, string>,
+  authorizationResourceIdById: Map<string, string>,
+  fallbackAccountId: string
+): Promise<string[]> {
+  const teamScopeIds: string[] = []
+  for (const chunk of chunkValues(uniqueNonEmpty(authorizationIds), 900)) {
+    const rows = await client.query<DeletedAccountCleanupTeamSourceRow>(`
+      SELECT authorization_id, source_team_id
+      FROM juhe_business.resource_authorization_sources
+      WHERE authorization_id = ANY(?)
+        AND source_team_id IS NOT NULL
+    `, [chunk])
+    for (const row of rows) {
+      const authorizationId = String(row.authorization_id ?? '').trim()
+      const teamId = String(row.source_team_id ?? '').trim()
+      if (!authorizationId || !teamId) continue
+      const accountId = authorizationInstanceIdsByAuthorizationId.get(authorizationId)
+        ?? authorizationResourceIdById.get(authorizationId)
+        ?? fallbackAccountId
+      teamScopeIds.push(`${accountId}:${teamId}`)
+    }
+  }
+  return uniqueNonEmpty(teamScopeIds)
+}
+
+async function loadDeletedSourceAccountGrantIdsAsync(client: DatabaseClient, accountIds: string[]): Promise<string[]> {
+  const grantIds: string[] = []
+  for (const chunk of chunkValues(uniqueNonEmpty(accountIds), 900)) {
+    const rows = await client.query<{ id?: string | null }>(`
+      SELECT id
+      FROM juhe_business.resource_authorization_grants
+      WHERE resource_type = 'account'
+        AND resource_id = ANY(?)
+    `, [chunk])
+    grantIds.push(...rows.map((row) => String(row.id ?? '')))
+  }
+  return uniqueNonEmpty(grantIds)
+}
+
+async function loadDeletedAuthorizationInstanceGrantIdsAsync(client: DatabaseClient, authorizationIds: string[]): Promise<string[]> {
+  const grantIds: string[] = []
+  for (const chunk of chunkValues(uniqueNonEmpty(authorizationIds), 900)) {
+    const rows = await client.query<{ id?: string | null }>(`
+      SELECT DISTINCT grants.id
+      FROM juhe_business.resource_authorization_grants grants
+      INNER JOIN juhe_business.resource_authorizations authorizations
+        ON authorizations.resource_type = grants.resource_type
+        AND authorizations.resource_id = grants.resource_id
+        AND authorizations.resource_owner_system_account_id = grants.resource_owner_system_account_id
+        AND grants.grantee_type = 'system_account'
+        AND grants.grantee_system_account_id = authorizations.grantee_system_account_id
+      INNER JOIN juhe_business.resource_authorization_sources sources
+        ON sources.authorization_id = authorizations.id
+        AND sources.source_type = 'manual'
+      WHERE authorizations.id = ANY(?)
+    `, [chunk])
+    grantIds.push(...rows.map((row) => String(row.id ?? '')))
+  }
+  return uniqueNonEmpty(grantIds)
+}
+
+async function hasDeletedAccountRelatedRecordDataAsync(client: DatabaseClient, input: ExpiredDeletedAccountBusinessCleanupTarget): Promise<boolean> {
+  const accountIds = uniqueNonEmpty(input.accountIds ?? [])
+  const authorizationIds = uniqueNonEmpty(input.authorizationIds ?? [])
+  const teamScopeIds = uniqueNonEmpty(input.teamScopeIds ?? [])
+  if (await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_dataset.account_record_cleanup_targets
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  if (await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_usage.usage_records
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  if (authorizationIds.length > 0 && await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_usage.usage_records
+    WHERE account_authorization_id = ANY(?)
+    LIMIT 1
+  `, [authorizationIds])) {
+    return true
+  }
+  if (teamScopeIds.length > 0 && await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_usage.usage_records
+    WHERE group_authorization_id = ANY(?)
+    LIMIT 1
+  `, [teamScopeIds])) {
+    return true
+  }
+  if (await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_dataset.audit_logs
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  if (await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_dataset.model_check_runs
+    WHERE target_type = 'account'
+      AND target_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  if (await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_stats.account_quality_scores
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  if (await postgresRowsExist(client, `
+    SELECT 1
+    FROM juhe_stats.account_usage_snapshots
+    WHERE account_id = ANY(?)
+    LIMIT 1
+  `, [accountIds])) {
+    return true
+  }
+  return await hasDeletedAccountScopeStatsRowsAsync(client, input)
+}
+
+async function hasDeletedAccountScopeStatsRowsAsync(client: DatabaseClient, input: ExpiredDeletedAccountBusinessCleanupTarget): Promise<boolean> {
+  const scopeIdsByType = [
+    { type: 'account', ids: input.accountIds ?? [] },
+    { type: 'caller_account', ids: input.accountIds ?? [] },
+    { type: 'account_authorization', ids: input.authorizationIds ?? [] },
+    { type: 'account_authorization_team', ids: input.teamScopeIds ?? [] }
+  ]
+  const statsTables = [
+    'usage_stats_totals',
+    'usage_stats_minute',
+    'usage_stats_hourly',
+    'usage_stats_daily',
+    'usage_stats_weekly',
+    'usage_stats_monthly',
+    'usage_latency_minute',
+    'usage_latency_hourly',
+    'usage_latency_daily',
+    'usage_latency_weekly',
+    'usage_latency_monthly',
+    'usage_quota_hourly_windows',
+    'usage_scope_range_windows'
+  ]
+  for (const { type, ids } of scopeIdsByType) {
+    const scopeIds = uniqueNonEmpty(ids)
+    if (!scopeIds.length) continue
+    for (const tableName of statsTables) {
+      if (await postgresRowsExist(client, `
+        SELECT 1
+        FROM juhe_stats.${tableName}
+        WHERE system_account_id = ?
+          AND scope_type = ?
+          AND scope_id = ANY(?)
+        LIMIT 1
+      `, [input.systemAccountId, type, scopeIds])) {
+        return true
+      }
+    }
+    if (await postgresRowsExist(client, `
+      SELECT 1
+      FROM juhe_stats.usage_rank_snapshots
+      WHERE system_account_id = ?
+        AND scope_type = ?
+        AND scope_id = ANY(?)
+      LIMIT 1
+    `, [input.systemAccountId, type, scopeIds])) {
+      return true
+    }
+  }
+  return false
+}
+
+async function postgresRowsExist(client: DatabaseClient, sql: string, params: unknown[]): Promise<boolean> {
+  const rows = await client.query<{ exists_marker?: number }>(sql, params)
+  return rows.length > 0
+}
+
 function physicallyDeleteExpiredDeletedAccountBusinessRows(
   database: DatabaseSync,
   target: ExpiredDeletedAccountBusinessCleanupTarget
@@ -873,6 +1350,58 @@ function physicallyDeleteExpiredDeletedAccountBusinessRows(
     throw error
   }
   return result
+}
+
+async function physicallyDeleteExpiredDeletedAccountBusinessRowsAsync(
+  client: DatabaseClient,
+  target: ExpiredDeletedAccountBusinessCleanupTarget
+): Promise<{
+  accounts: number
+  authorizations: number
+  grants: number
+  groupBindings: number
+}> {
+  const accountIds = uniqueNonEmpty(target.accountIds)
+  const relatedAccountIds = accountIds.filter((accountId) => accountId !== target.accountId)
+  const authorizationIds = uniqueNonEmpty(target.authorizationIds)
+  const grantIds = uniqueNonEmpty(target.grantIds)
+  const result = {
+    accounts: 0,
+    authorizations: 0,
+    grants: 0,
+    groupBindings: 0
+  }
+  await client.transaction(async (tx) => {
+    for (const chunk of chunkValues(accountIds, 900)) {
+      result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_supported_models WHERE account_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_model_mappings WHERE account_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_tag_bindings WHERE account_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_name_search_terms WHERE account_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_name_search_documents WHERE account_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.account_api_key_runtime_states WHERE account_id = ANY(?)', [chunk])
+    }
+    for (const chunk of chunkValues(authorizationIds, 900)) {
+      result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_authorization_id = ANY(?)', [chunk])
+      await tx.execute('DELETE FROM juhe_business.resource_authorization_sources WHERE authorization_id = ANY(?)', [chunk])
+    }
+    for (const chunk of chunkValues(grantIds, 900)) {
+      result.grants += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?)', [chunk])
+    }
+    for (const chunk of chunkValues(relatedAccountIds, 900)) {
+      result.accounts += await executeChangedRows(tx, 'DELETE FROM juhe_business.accounts WHERE id = ANY(?)', [chunk])
+    }
+    result.accounts += await executeChangedRows(tx, 'DELETE FROM juhe_business.accounts WHERE id = ?', [target.accountId])
+    for (const chunk of chunkValues(authorizationIds, 900)) {
+      result.authorizations += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorizations WHERE id = ANY(?)', [chunk])
+    }
+  })
+  return result
+}
+
+async function executeChangedRows(client: DatabaseClient, sql: string, params: unknown[]): Promise<number> {
+  const result = await client.execute(sql, params)
+  return Number(result.changes ?? 0)
 }
 
 function deletedAccountPhysicalCleanupCutoffIso(nowMs = Date.now()): string {

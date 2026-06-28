@@ -159,7 +159,7 @@ export async function testOpenAIAccount(
       clientCompatibility,
       candidateAccount: input.candidateAccount
     })
-    const model = explicitModel || defaultAccountTestModel(account)
+    const model = explicitModel || defaultAccountTestModel(account, input.systemAccountId)
     // Anthropic 账户直接规范化 Anthropic 端点模式；OpenAI 账户规范化 OpenAI 端点模式
     const gatewaySupportedEndpointModes = anthropicProtocol
       ? normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
@@ -329,9 +329,9 @@ async function loadAccountForTest(
   return await reader(accountId, access)
 }
 
-export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel'>): string {
+export function preferredSystemAccountTestModel(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): string {
   return stringValue(account.lastSuccessfulTestModel)
-    || findProviderDefaultTestModel(account.providerCode)
+    || findProviderDefaultTestModel(account.providerCode, accountDefaultPreferenceSystemAccountId(account))
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
 }
@@ -488,10 +488,17 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   }
 }
 
-function defaultAccountTestModel(account: AccountSummary): string {
-  return findProviderDefaultTestModel(account.providerCode)
+function defaultAccountTestModel(account: AccountSummary, requestSystemAccountId?: string): string {
+  return findProviderDefaultTestModel(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
     || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
     || ''
+}
+
+function accountDefaultPreferenceSystemAccountId(account: Pick<AccountSummary, 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): string | undefined {
+  return stringValue(account.ownerSystemAccountId)
+    || stringValue(account.systemAccountId)
+    || stringValue(account.bindingSystemAccountId)
+    || undefined
 }
 
 function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {

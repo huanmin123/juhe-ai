@@ -70,14 +70,12 @@
       :max-queue-wait-seconds="formMaxQueueWaitSeconds"
       :provider-locked="providerLocked"
       :provider-options="providerOptions"
-      :provider-profile-options="providerProfileOptions"
       :saving="groupSaving"
       :show-target-alert="!editingId && isManagementView"
       :target-system-account-label="targetSystemAccountLabel"
       :title="groupModalTitle"
       @client-ip-concurrency-limit-change="setFormClientIpConcurrencyLimit"
       @max-queue-wait-seconds-change="setFormMaxQueueWaitSeconds"
-      @provider-change="handleGroupProviderChange"
       @save="saveGroup"
     />
 
@@ -147,7 +145,6 @@ const {
   formMaxQueueWaitSeconds,
   applyGroupToForm,
   groupFormPayload,
-  handleGroupProviderChange,
   resetGroupFormForCreate,
   setFormClientIpConcurrencyLimit,
   setFormMaxQueueWaitSeconds
@@ -218,14 +215,6 @@ const groupScopeParams = computed(() => {
   return systemAccountId ? { systemAccountId } : undefined
 })
 const providerOptions = computed(() => groupsProviderOptions(availableProviders.value))
-const providerProfileOptions = computed(() => {
-  const provider = availableProviders.value.find((item) => item.code === form.providerCode)
-  return (provider?.protocolProfiles ?? []).map((profile) => ({
-    label: profile.name,
-    value: profile.id,
-    disabled: !profile.enabled
-  }))
-})
 const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))
 const editingAuthorizedGroup = computed(() => Boolean(editingGroup.value && isAuthorizedGroup(editingGroup.value)))
 const groupModalTitle = computed(() => {
@@ -346,8 +335,8 @@ const saveGroup = submitAction('groups.save', async () => {
     message.warning('请填写分组名称')
     return
   }
-  if (!form.providerProtocolProfileId && !editingAuthorizedGroup.value) {
-    message.warning('当前供应商配置不完整，请刷新后重试')
+  if (!form.providerCode.trim() && !editingAuthorizedGroup.value) {
+    message.warning('请选择供应商')
     return
   }
   try {

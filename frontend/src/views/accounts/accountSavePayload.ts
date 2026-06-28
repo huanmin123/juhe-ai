@@ -91,6 +91,8 @@ export function validateAccountSaveForm(input: {
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
+  const supportedModels = normalizeSupportedModels(form.supportedModels)
+  if (!supportedModels.length) return '请选择支持模型'
   const tagValidation = validateAccountTags(form.tags)
   if (tagValidation) return tagValidation
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
@@ -106,7 +108,7 @@ export function validateAccountSaveForm(input: {
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)
   if (!responseInspectionValidation.valid) return responseInspectionValidation.message || '账户响应检查策略配置不完整'
-  return validateAccountModelMappings(form.modelMappings, form.supportedEndpointModes, formProviderProfile.profile ?? formProviderProfile.provider)
+  return validateAccountModelMappings(form.modelMappings, supportedModels, form.supportedEndpointModes, formProviderProfile.profile ?? formProviderProfile.provider)
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
@@ -137,7 +139,7 @@ export function buildAccountSavePayload(input: {
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
-    supportedModels: [...(input.form.supportedModels ?? [])],
+    supportedModels: normalizeSupportedModels(input.form.supportedModels),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
@@ -179,7 +181,7 @@ export function buildOAuthCreateCommonPayload(input: {
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
-    supportedModels: [...(input.form.supportedModels ?? [])],
+    supportedModels: normalizeSupportedModels(input.form.supportedModels),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,
@@ -238,6 +240,19 @@ function normalizeAccountTags(value: AccountFormModel['tags']): string[] {
   return output
 }
 
+function normalizeSupportedModels(value: AccountFormModel['supportedModels']): string[] {
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const item of value ?? []) {
+    const model = item.trim()
+    const key = model.toLowerCase()
+    if (!model || seen.has(key)) continue
+    seen.add(key)
+    output.push(model)
+  }
+  return output
+}
+
 function validateAccountTags(value: AccountFormModel['tags']): string | undefined {
   const normalized = normalizeAccountTags(value)
   if (normalized.length > 24) return '单个账户最多配置 24 个标签'
@@ -271,10 +286,12 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
 
 function validateAccountModelMappings(
   value: AccountFormModel['modelMappings'],
+  supportedModels: string[],
   supportedEndpointModes: AccountFormModel['supportedEndpointModes'],
   providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]
 ): string | undefined {
   const seenSources = new Set<string>()
+  const supportedModelSet = new Set(supportedModels.map((model) => model.toLowerCase()))
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
     const upstreamModel = item.upstreamModel.trim()
@@ -294,6 +311,9 @@ function validateAccountModelMappings(
     if (protocolValidation) return protocolValidation
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
+    }
+    if (!supportedModelSet.has(upstreamModel.toLowerCase())) {
+      return `模型映射的上游模型必须从支持模型中选择：${upstreamModel}`
     }
     const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
     if (seenSources.has(sourceKey)) {

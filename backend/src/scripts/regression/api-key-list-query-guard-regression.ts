@@ -72,7 +72,7 @@ try {
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
-    if (/\bFROM\s+api_keys\b/i.test(sql) && /\bORDER\s+BY\s+(?:api_keys\.)?updated_at\s+DESC\b/i.test(sql)) {
+    if (/\bFROM\s+api_keys\b/i.test(sql) && /\bORDER\s+BY\s+(?:api_keys\.)?is_default\s+DESC,\s*(?:api_keys\.)?updated_at\s+DESC\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         capturedCalls.push({ sql, params })
@@ -118,6 +118,8 @@ try {
   }
   assertBusinessIndexExists('idx_api_keys_name_lookup')
   assertBusinessIndexExists('idx_api_keys_system_account_name_lookup')
+  assertBusinessIndexExists('idx_api_keys_default_updated')
+  assertBusinessIndexExists('idx_api_keys_system_account_default_updated')
   assertBusinessIndexMissing('idx_api_keys_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_description_lookup')

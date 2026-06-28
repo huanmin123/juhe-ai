@@ -190,6 +190,7 @@ interface RouteAccountCreatePayload {
   type: 'api_key'
   credentials: Record<string, unknown>
   groupId: string
+  supportedModels: string[]
   clientCompatibility?: AccountSummary['clientCompatibility']
   status?: 'active' | 'pending_test'
   activationTestTaskId?: string
@@ -367,7 +368,8 @@ function routeAccountPayload(groupId: string, name: string, apiKey: string, base
     name,
     type: 'api_key',
     credentials: { api_key: apiKey, base_url: baseUrl },
-    groupId
+    groupId,
+    supportedModels: ['gpt-5.5']
   }
 }
 
@@ -422,7 +424,7 @@ function draftActivationSnapshot(payload: RouteAccountCreatePayload, ownerSystem
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility,
-    supportedModels: [],
+    supportedModels: payload.supportedModels,
     modelMappings: repositories.normalizeAccountModelMappingsForProvider([], payload.providerCode, ownerSystemAccountId) ?? []
   }
 }

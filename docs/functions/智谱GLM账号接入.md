@@ -40,7 +40,7 @@ type ProviderCode = 'glm'
 
 OpenAI Chat 两套档案的账户真实能力都只声明 `chat_completions` 端点族。Anthropic v1 档案只声明 Messages / Models，不默认写入 `message_token_counting`。不要默认写入 `responses_json` 或 `responses_sse`，除非官方后续明确提供 OpenAI Responses 兼容接口并完成真实验证。普通 GLM 账户不再启用 Codex bridge；需要把 Codex Responses 转到 GLM Coding Chat 时，必须通过后续混合供应商账户表达真实 GLM 上游和协议转换能力。
 
-存储实现必须允许同一供应商在同一协议版本下存在多条协议档案。当前如果 `provider_protocol_profiles` 仍用 `UNIQUE(provider_code, protocol_code, protocol_version)` 作为唯一约束，GLM 两条 `glm + openai/v1` 档案会互相冲突；落地前应改为以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 后按 `provider_code + connection_type` 做业务唯一约束。分组名称唯一、默认分组唯一和账户加入分组校验继续按 `provider_protocol_profile_id` 维度执行。
+存储实现必须允许同一供应商在同一协议版本下存在多条协议档案。当前如果 `provider_protocol_profiles` 仍用 `UNIQUE(provider_code, protocol_code, protocol_version)` 作为唯一约束，GLM 两条 `glm + openai/v1` 档案会互相冲突；落地前应改为以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 后按 `provider_code + connection_type` 做业务唯一约束。分组名称唯一、默认分组唯一和账户加入分组校验按 `provider_code` 维度执行。
 
 `https://open.bigmodel.cn/api/anthropic` 已接入为独立 Anthropic v1 档案：
 
@@ -195,15 +195,11 @@ GLM 模型目录必须单独维护在 `glm` 供应商下，不要混进 GPT 价�
 
 ## 分组、授权与 API Key 路由
 
-GLM 三个协议档案应创建独立默认分组：
+GLM 默认只创建一个供应商默认分组：默认 GLM 分组。通用 GLM API、GLM Coding OpenAI Chat 和 GLM Coding Anthropic Messages 的差异由 AI 账户接入类型和 `provider_protocol_profile_id` 表达，不再拆成多个默认分组。
 
-- 默认 GLM 通用分组：绑定 `profile_glm_general_openai_v1`。
-- 默认 GLM Coding 分组：绑定 `profile_glm_coding_openai_v1`。
-- 默认 GLM Coding Anthropic 分组：绑定 `profile_glm_coding_anthropic_v1`。
+账户加入分组只校验同一 `providerCode=glm`。分组只负责调度、并发、排序和 API Key 号池，不承接通用 / Coding / Anthropic 的协议语义。
 
-账户只能加入相同 `provider_protocol_profile_id` 的分组。通用 GLM API 账户不能加入 Coding Plan 或 Coding Anthropic 分组，Coding Plan Key 和 Coding Anthropic Key 也不能加入通用 GLM 分组。
-
-API Key 多分组绑定允许跨供应商协议档案；一个本地 API Key 可以同时绑定 GPT、GLM 通用和 GLM Coding 分组，但每次请求必须先用 `model` 命中目标 `provider_protocol_profile_id`，再只在该 Key 已绑定的目标档案分组内调度。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
+API Key 多分组绑定允许跨供应商；一个本地 API Key 可以同时绑定 GPT、GLM、DeepSeek 等供应商分组。请求进入网关后先按模型和账户能力筛选目标供应商，再在目标供应商分组内按账户自身接入类型、endpoint mode、支持模型和模型映射过滤候选账户。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [API Key 多分组路由设计](APIKey多分组路由设计.md)。
 
 ## 账号测试
 
@@ -224,7 +220,7 @@ GLM 账户测试必须复用真实网关链路：
 | --- | --- | --- |
 | 官方资料 | 实现前再次核对智谱 OpenAI 兼容、HTTP API、Coding Plan 工具接入、错误码和模型价格页。当前只声明可核验的 Chat Completions 上游能力，不声明原生 Responses；Codex 走本地 bridge。 | 官方文档存在“兼容 OpenAI Endpoint”这类宽泛表述，但实际示例和 API Reference 仍需逐项确认；误开原生 Responses 会导致客户端请求被错误调度。 |
 | SQLite schema | `provider_protocol_profiles` 必须支持同一 `provider_code + protocol_code + protocol_version` 下多条档案，或新增 `connection_type/profile_kind` 参与业务唯一约束。 | 现有唯一约束如果只按供应商和协议版本，会阻止 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1` 同时 seed；Anthropic Messages 档案也必须独立保存。 |
-| 供应商档案 | 代码中新增 `glm`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、三套默认分组和 profile family，不复用 GPT、通用 OpenAI 或官方 Anthropic 档案。 | 只靠 `base_url` 区分会导致分组、模型目录、价格、账号测试和错误排障混用。 |
+| 供应商档案 | 代码中新增 `glm`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、单个默认 GLM 分组和 profile family，不复用 GPT、通用 OpenAI 或官方 Anthropic 档案。 | 只靠 `base_url` 区分会导致模型目录、价格、账号测试和错误排障混用。 |
 | Driver 注册 | 新增 GLM provider driver、credential driver、model pricing/catalog driver 和前端 provider capability，不只新增数据库 seed。 | 未注册 driver 时会在凭据归一化、上游 URL 构造、模型目录或价格查找处失败。 |
 | 账户创建 | 前端、后端写接口、导入协议和外部推送接口都要显式接收 `connectionType = general_api_key / coding_api_key / coding_anthropic_api_key` 或等价字段，编辑时默认不允许原地切换接入类型。 | 只保存 `accounts.type = api_key` 无法区分通用 API Key、Coding Plan Key 与 Coding Anthropic Key，后续无法判断额度、默认模型和测试入口。 |
 | 导入导出 | GLM 导出必须输出可 round-trip 的 `connectionType`，导入预览、确认导入和导出 JSON 的字段白名单保持一致。 | 如果导出只保留 `providerCode/type/base_url`，重新导入时只能猜档案，容易把 Coding Key 导成通用账号。 |
@@ -239,7 +235,7 @@ GLM 账户测试必须复用真实网关链路：
 | 统计聚合 | `usage_records`、审计尝试、模型排行、错误排行和 AI 性能窗口都必须带 `providerCode=glm`、`provider_protocol_profile_id` 和实际 `model`；业务统计继续由 worker 预聚合，不在接口实时扫明细。 | GLM 通用和 Coding 可能有同名模型，仅按 `providerCode + model` 聚合会混掉不同档案的用量和错误。 |
 | 模型映射 | 下游模型名必须路由到目标 `provider_protocol_profile_id`；账户级模型映射要保存下游模型和 GLM 实际上游模型，用实际上游模型查价。 | 误把 `providerCode=openai` 聚合目录当作账号池，或让模型名在多个供应商档案中含义不清，会导致跨供应商错调度。 |
 | 审计排障 | 审计尝试、使用记录详情和错误详情应展示 `providerProtocolProfileId`、GLM 接入类型、下游模型、实际上游模型、价格模型和有界 usage 摘要。 | Coding Plan Key 错档案、同名模型路由、usage 字段异常时，只靠账号和分组反查定位成本高。 |
-| 授权与分组 | GLM 通用账户只能加入通用 GLM 档案分组，Coding Plan 账户只能加入 Coding OpenAI 档案分组，Coding Anthropic 账户只能加入 Coding Anthropic 档案分组；授权实例继承来源账户档案和上游凭据事实。 | 授权实例、分组绑定或 API Key 多分组路由如果只校验供应商，会把不同额度体系混在同一号池。 |
+| 授权与分组 | GLM 账户按供应商加入 GLM 分组；授权实例继承来源账户档案和上游凭据事实，调度时再按账户接入类型、endpoint mode、支持模型和模型映射过滤。 | 如果把通用 / Coding / Anthropic 写成分组语义，会导致同一供应商默认分组膨胀，用户创建账户时难以选择正确号池。 |
 | 前端体验 | 账户创建页、编辑页、批量导入说明、模型选择、测试连接、错误提示、状态标签和日志筛选都要显示中文，并明确区分“通用 GLM API Key”、“GLM Coding Plan Key”和“GLM Coding Anthropic Key”。 | 用户把 Key 填错档案时，如果前端只显示“API Key”，无法定位是 Key 无效还是接入类型选错。 |
 | Mock 与验证 | Mock AI 回归脚本和真实烟测需要覆盖三套 GLM 档案、Chat JSON/SSE、Messages JSON/SSE、普通账号拒绝 Responses、未来混合供应商 bridge、错误响应、无 usage 流式、错档案 Key、分组硬边界和统计落库。 | 只测保存账户会漏掉网关调度、协议转换、切号、恢复、usage 和统计链路的集成问题。 |
 | Anthropic 端点 | Coding Plan 的 Anthropic Messages 端点已纳入独立 `profile_glm_coding_anthropic_v1`，只启用 Messages JSON/SSE。 | 该端点不能混进 OpenAI Chat 档案；公开 schema、header、usage 和 stream 细节仍需按 mock / 真实上游持续验收。 |
@@ -258,7 +254,7 @@ GLM 账户测试必须复用真实网关链路：
   "connectionType": "coding_api_key",
   "type": "api_key",
   "status": "pending_test",
-  "groupName": "默认 GLM Coding 分组",
+  "groupName": "默认 GLM 分组",
   "credentials": {
     "api_key": "zhipu-api-key",
     "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
@@ -276,8 +272,8 @@ GLM 账户测试必须复用真实网关链路：
 - [x] 新增 `glm` 供应商种子、供应商常量和 profile family。
 - [x] 调整 `provider_protocol_profiles` 唯一约束，允许同一 `glm + openai/v1` 下存在通用和 Coding 两套档案。
 - [x] 新增 `profile_glm_general_openai_v1` 和 `profile_glm_coding_openai_v1`。
-- [x] 新增 `profile_glm_coding_anthropic_v1` 和默认 GLM Coding Anthropic 分组。
-- [x] 新增三个默认 GLM 分组。
+- [x] 新增 `profile_glm_coding_anthropic_v1`。
+- [x] 新增单个默认 GLM 分组，账户按接入类型区分协议档案。
 - [x] 新增 GLM provider driver、credential driver、模型价格 / 目录 driver 和前端 provider capability。
 - [x] 前端账户创建在选择 `智谱 GLM` 后展示“通用 GLM API Key”、“GLM Coding Plan Key”和“GLM Coding Anthropic Key”。
 - [x] 后端账户创建、编辑、导入、导出和公开推送接口按 `connectionType` 或等价字段解析 GLM 协议档案，并保证导出导入 round-trip。

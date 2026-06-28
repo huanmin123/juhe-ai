@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
@@ -17,6 +17,15 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const routesSource = readFileSync(resolve('src/modules/system-teams/system-teams.routes.ts'), 'utf8')
+assert(routesSource.includes('listSystemTeamsPageAsync'), '系统团队路由列表必须使用 async repository')
+assert(routesSource.includes('createSystemTeamAsync'), '系统团队路由创建必须使用 async repository')
+assert(routesSource.includes('updateSystemTeamAsync'), '系统团队路由更新必须使用 async repository')
+assert(routesSource.includes('addSystemTeamMembersAsync'), '系统团队路由成员添加必须使用 async repository')
+assert(routesSource.includes('removeSystemTeamMemberAsync'), '系统团队路由成员移除必须使用 async repository')
+assert(routesSource.includes('runLoggedOperationAsync'), '系统团队写操作日志必须使用 async 包裹')
+assert(!routesSource.includes('runLoggedOperation('), '系统团队路由不能重新引入同步操作日志包裹')
 
 const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),

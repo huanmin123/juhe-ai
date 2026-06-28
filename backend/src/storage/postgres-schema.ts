@@ -30,6 +30,16 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
+    source: 'providers-supplemental',
+    sql: "ALTER TABLE IF EXISTS providers ADD COLUMN IF NOT EXISTS default_supported_models_json text NOT NULL DEFAULT '[]'"
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'groups-supplemental',
+    sql: 'DROP INDEX IF EXISTS idx_groups_owner_provider_default_unique'
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'route-strategies-supplemental',
     sql: 'ALTER TABLE IF EXISTS route_strategies ADD COLUMN IF NOT EXISTS description text'
   },
@@ -41,7 +51,27 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
     source: 'route-strategies-supplemental',
-    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique ON route_strategies(system_account_id) WHERE is_default = 1'
+    sql: 'DROP INDEX IF EXISTS idx_route_strategies_owner_default_unique'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'api-keys-supplemental',
+    sql: 'ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS is_default integer NOT NULL DEFAULT 0'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'api-keys-supplemental',
+    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'api-keys-supplemental',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC)'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'api-keys-supplemental',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC)'
   },
   {
     schemaName: 'juhe_usage',

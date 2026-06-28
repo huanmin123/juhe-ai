@@ -20,6 +20,7 @@ import {
   isGptVendorCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
+  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
 
@@ -27,6 +28,7 @@ export type AccountProviderProtocolKind = 'openai_v1' | 'anthropic_v1' | 'gemini
 export type ClientCompatibilityCapability = 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
 
 export type AccountProviderProfileLike = {
+  code?: string
   providerCode?: string
   id?: string
   providerProtocolProfileId?: string
@@ -167,6 +169,7 @@ export function defaultEndpointModesForAccount(input: {
   type: AccountType
   clientCompatibility?: AccountClientCompatibility
 }): AccountSupportedEndpointMode[] {
+  if (isHybridProviderProfile(input.profile ?? input.provider)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
   if (input.type === 'oauth') return [...responsesEndpointModes]
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
@@ -185,6 +188,7 @@ export function profileSupportsCodexResponsesChatBridge(profile?: AccountProvide
 }
 
 export function endpointModesForProfile(profile?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
+  if (isHybridProviderProfile(profile)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(profile)
   if (protocolKind === 'anthropic_v1') return endpointModesForFamilies(profile, anthropicAccountEndpointModes, [
     { family: ANTHROPIC_MESSAGES_FAMILY, modes: ['messages_json', 'messages_sse'] },
@@ -196,10 +200,14 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     { family: GEMINI_COUNT_TOKENS_FAMILY, modes: ['count_tokens'] },
     { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] }
   ])
-  if (protocolKind === 'openai_v1') return endpointModesForFamilies(profile, openAIEndpointModes, [
-    { family: OPENAI_CHAT_COMPLETIONS_FAMILY, modes: chatEndpointModes },
-    { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
-  ])
+  if (protocolKind === 'openai_v1') return endpointModesForFamilies(
+    profile,
+    profileSupportsCodexResponsesChatBridge(profile) ? chatEndpointModes : openAIEndpointModes,
+    [
+      { family: OPENAI_CHAT_COMPLETIONS_FAMILY, modes: chatEndpointModes },
+      { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
+    ]
+  )
   return [...allAccountEndpointModes]
 }
 
@@ -226,4 +234,8 @@ function providerCodeForOAuthFlow(input: {
   profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
 }): string | undefined {
   return input.profile?.providerCode ?? input.provider?.code
+}
+
+function isHybridProviderProfile(profile?: AccountProviderProfileLike): boolean {
+  return isHybridProviderCode(profile?.providerCode ?? profile?.code)
 }

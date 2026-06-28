@@ -5,7 +5,7 @@ import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
 import { createSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
-import { consumeCaptchaIssueAllowance, createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
+import { consumeCaptchaIssueAllowanceAsync, createCaptchaChallengeAsync, verifyCaptchaChallengeAsync } from './captcha.service.js'
 import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recordSuccessfulLoginAsync } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
@@ -31,17 +31,21 @@ const profileSchema = z.object({
   displayName: z.string().min(1)
 }).strict()
 
-authRouter.get('/captcha', (req, res) => {
-  const clientIp = getLoginClientIp(req)
-  const issueAllowed = consumeCaptchaIssueAllowance(clientIp)
-  if (issueAllowed.blocked) {
-    if (issueAllowed.retryAfterSeconds) {
-      res.setHeader('Retry-After', String(issueAllowed.retryAfterSeconds))
+authRouter.get('/captcha', async (req, res, next) => {
+  try {
+    const clientIp = getLoginClientIp(req)
+    const issueAllowed = await consumeCaptchaIssueAllowanceAsync(clientIp)
+    if (issueAllowed.blocked) {
+      if (issueAllowed.retryAfterSeconds) {
+        res.setHeader('Retry-After', String(issueAllowed.retryAfterSeconds))
+      }
+      res.status(429).json({ message: issueAllowed.message ?? '验证码请求过于频繁，请稍后再试' })
+      return
     }
-    res.status(429).json({ message: issueAllowed.message ?? '验证码请求过于频繁，请稍后再试' })
-    return
+    res.json(ok(await createCaptchaChallengeAsync()))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(createCaptchaChallenge()))
 })
 
 authRouter.post('/login', async (req, res, next) => {
@@ -59,7 +63,7 @@ authRouter.post('/login', async (req, res, next) => {
       return
     }
 
-    if (!verifyCaptchaChallenge(parsed.data.captchaId, parsed.data.captchaCode)) {
+    if (!await verifyCaptchaChallengeAsync(parsed.data.captchaId, parsed.data.captchaCode)) {
       res.status(400).json({ message: '验证码错误或已过期' })
       return
     }

@@ -47,7 +47,7 @@ export function buildAccountImportSummary(
     if (item.groupId) {
       groupRefs.add(`id:${item.groupId}`)
     } else if (item.groupName) {
-      groupRefs.add(accountImportGroupKey(item.providerProtocolProfileId ?? '', item.groupName))
+      groupRefs.add(accountImportGroupKey(item.providerCode ?? '', item.groupName))
     }
   }
   return {
@@ -72,6 +72,6 @@ export function buildAccountImportSummary(
   }
 }
 
-export function accountImportGroupKey(providerProtocolProfileId: string, name: string): string {
-  return `${providerProtocolProfileId.trim().toLowerCase()}:${name.trim().toLowerCase()}`
+export function accountImportGroupKey(providerCode: string, name: string): string {
+  return `${providerCode.trim().toLowerCase()}:${name.trim().toLowerCase()}`
 }

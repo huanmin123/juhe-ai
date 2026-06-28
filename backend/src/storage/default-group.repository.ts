@@ -6,15 +6,17 @@ export function defaultGptGroupIdForSystemAccount(systemAccountId: string): stri
   const gptGroup = DEFAULT_BUILT_IN_GROUPS.find((group) => group.providerCode === GPT_VENDOR_CODE)
   if (!gptGroup) return undefined
   const row = getBusinessDatabase()
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
-    .get(systemAccountId, gptGroup.providerProtocolProfileId) as unknown as { id?: string } | undefined
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
+    .get(systemAccountId, gptGroup.providerCode) as unknown as { id?: string } | undefined
   return row?.id
 }
 
 export function defaultGroupIdForSystemAccount(providerProtocolProfileId: string, systemAccountId: string): string | undefined {
+  const providerCode = providerCodeForProtocolProfile(providerProtocolProfileId)
+  if (!providerCode) return undefined
   const row = getBusinessDatabase()
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_protocol_profile_id = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
-    .get(systemAccountId, providerProtocolProfileId) as unknown as { id?: string } | undefined
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
+    .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
   return row?.id
 }
 
@@ -26,7 +28,7 @@ export function ensureDefaultBuiltInGroupsForSystemAccount(systemAccountId: stri
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
     `)
   for (const group of DEFAULT_BUILT_IN_GROUPS) {
-    if (defaultGroupIdForSystemAccount(group.providerProtocolProfileId, systemAccountId)) {
+    if (defaultGroupIdForProviderCode(group.providerCode, systemAccountId)) {
       continue
     }
     statement.run(
@@ -42,4 +44,18 @@ export function ensureDefaultBuiltInGroupsForSystemAccount(systemAccountId: stri
       timestamp
     )
   }
+}
+
+function defaultGroupIdForProviderCode(providerCode: string, systemAccountId: string): string | undefined {
+  const row = getBusinessDatabase()
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1')
+    .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
+  return row?.id
+}
+
+function providerCodeForProtocolProfile(providerProtocolProfileId: string): string | undefined {
+  const row = getBusinessDatabase()
+    .prepare('SELECT provider_code FROM provider_protocol_profiles WHERE id = ? LIMIT 1')
+    .get(providerProtocolProfileId) as unknown as { provider_code?: string } | undefined
+  return row?.provider_code
 }

@@ -232,7 +232,7 @@ function draftAccountFixture(): AccountDraftTestPayload['account'] {
     credentials: { api_key: 'sk-test' },
     concurrencyLimit: 1,
     priority: 0,
-    supportedModels: [],
+    supportedModels: ['gpt-5.5'],
     modelMappings: [],
     groupId: 'group_1'
   }

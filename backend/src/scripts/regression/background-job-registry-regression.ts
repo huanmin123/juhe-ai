@@ -13,6 +13,16 @@ const backgroundIpcSource = readSource('../../modules/background/background-ipc.
 const backgroundIpcTypesSource = readSource('../../modules/background/background-ipc.types.ts')
 const backgroundIpcContractSource = `${backgroundIpcSource}\n${backgroundIpcTypesSource}`
 const recordMaintenanceSource = readSource('../../modules/record-maintenance/record-maintenance-queue.service.ts')
+const conditionalRuntimeModeDuplicateScheduledJobs = new Set([
+  'system-metrics-sample',
+  'usage-stats-aggregation',
+  'client-ip-stats-aggregation',
+  'usage-rank-snapshots-refresh',
+  'system-metrics-trend-windows-refresh',
+  'usage-overview-windows-refresh',
+  'usage-scope-range-windows-refresh',
+  'authorization-usage-range-windows-refresh'
+])
 
 const registryByName = new Map<string, BackgroundJobRegistryEntry>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
 const scheduledRegistryNames = new Set<string>(backgroundScheduledJobs.map((job) => job.jobName))
@@ -53,7 +63,13 @@ function assertScheduledJobsAreRegisteredAndUsed(): void {
   const scheduleCallCount = countMatches(backgroundJobsSource, /scheduler\.schedule\(\{/g)
   assert(scheduledNames.length > 0, 'background-jobs.ts 应至少注册一个后台定时任务')
   assert.equal(scheduledNames.length, scheduleCallCount, 'background-jobs.ts 每个 scheduler.schedule 都必须用 backgroundScheduledJobName(...)')
-  assert.equal(new Set(scheduledNames).size, scheduledNames.length, 'background-jobs.ts 不应重复注册同名定时任务')
+  const duplicateScheduledNames = scheduledNames.filter((name, index) => scheduledNames.indexOf(name) !== index)
+  const unexpectedDuplicateScheduledNames = duplicateScheduledNames.filter((name) => !conditionalRuntimeModeDuplicateScheduledJobs.has(name))
+  assert.equal(
+    unexpectedDuplicateScheduledNames.length,
+    0,
+    `background-jobs.ts 不应重复注册同名定时任务，除允许的 runtime-mode 分支外仍重复：${[...new Set(unexpectedDuplicateScheduledNames)].join(', ')}`
+  )
 
   for (const name of scheduledNames) {
     assert(scheduledRegistryNames.has(name), `定时任务 ${name} 未登记到 backgroundScheduledJobs`)

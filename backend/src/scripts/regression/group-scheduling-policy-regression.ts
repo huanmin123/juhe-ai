@@ -245,15 +245,12 @@ try {
     .get(highConcurrencyGroup.id, account.id) as unknown as { group_id?: string; account_id?: string } | undefined
   assert.equal(binding?.group_id, highConcurrencyGroup.id, '账户绑定不应依赖绑定级调度参数')
   const mismatchedProfileGroup = createSyntheticGptProfileMismatchGroup(access)
-  assert.equal(
-    repositories.setAccountGroup(account.id, mismatchedProfileGroup.id, access),
-    undefined,
-    '账户绑定分组必须同时校验 providerProtocolProfileId，不能只按 providerCode 放行'
-  )
+  const movedToSameProviderGroup = repositories.setAccountGroup(account.id, mismatchedProfileGroup.id, access)
+  assert.equal(movedToSameProviderGroup?.boundGroupId, mismatchedProfileGroup.id, '账户绑定分组只按供应商校验，协议档案由账户类型决定')
   const mismatchedBinding = database
     .prepare('SELECT group_id FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
     .get(account.id, access.systemAccountId) as unknown as { group_id?: string } | undefined
-  assert.equal(mismatchedBinding?.group_id, highConcurrencyGroup.id, 'profile 不匹配的绑定尝试不应删除原分组绑定')
+  assert.equal(mismatchedBinding?.group_id, mismatchedProfileGroup.id, '同供应商分组应允许承接同一账户')
 
   const personalGroup = repositories.updateGroup(highConcurrencyGroup.id, { groupType: 'personal' }, access)
   assert.equal(personalGroup?.groupType, 'personal')
@@ -301,7 +298,7 @@ function createSyntheticGptProfileMismatchGroup(access: { systemAccountId: strin
       'profile_gpt_profile_mismatch_regression',
       'gpt',
       '回归专用 GPT 非默认协议档案',
-      '仅用于验证账号绑定必须按 providerProtocolProfileId 隔离',
+      '仅用于验证账号绑定不再按 providerProtocolProfileId 隔离',
       ANTHROPIC_PROTOCOL_CODE,
       ANTHROPIC_PROTOCOL_VERSION,
       'https://example.invalid/v1',

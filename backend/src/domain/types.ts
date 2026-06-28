@@ -153,6 +153,7 @@ export interface ProviderDefinition {
   protocolVersion: string
   baseUrl: string
   defaultTestModel: string
+  defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
   protocolProfiles: ProviderProtocolProfileDefinition[]
@@ -1209,6 +1210,7 @@ export interface ApiKeySummary {
   keySuffix: string
   key: string
   status: 'active' | 'disabled'
+  isDefault?: boolean
   routeStrategyId: string
   routeStrategyName?: string
   routeStrategyMode?: RouteStrategyMode

@@ -10,29 +10,18 @@
         </h4>
       </div>
     </div>
-    <a-form-item label="支持模型" tooltip="为空表示不限制模型；填写后，只有客户端请求的 model 命中这里的模型，才会把请求调度到这个账号。">
-      <a-select
-        v-model:value="form.supportedModels"
-        allow-clear
-        mode="multiple"
-        :loading="modelsLoading"
-        :disabled="authorizedEditing"
-        option-filter-prop="label"
-        placeholder="不限制模型"
-        :options="modelOptions"
-        show-search
-      />
-    </a-form-item>
     <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
           <div class="model-mapping-side">
-            <a-input
+            <a-auto-complete
               v-if="isHybridAccount"
               v-model:value="mapping.sourceModel"
               allow-clear
               :disabled="authorizedEditing"
+              :options="mappingSourceModelOptionsFor(mapping.sourceEndpointFamily)"
               placeholder="来源模型"
+              show-search
             />
             <a-select
               v-else
@@ -54,12 +43,14 @@
           </div>
           <SwapRightOutlined class="model-mapping-arrow" />
           <div class="model-mapping-side">
-            <a-input
+            <a-auto-complete
               v-if="isHybridAccount"
               v-model:value="mapping.upstreamModel"
               allow-clear
               :disabled="authorizedEditing"
+              :options="mappingUpstreamModelOptions"
               placeholder="目标模型"
+              show-search
             />
             <a-select
               v-else
@@ -161,8 +152,6 @@ const props = defineProps<{
   mappingGeminiSourceModelOptions: Array<{ label: string; value: string }>
   mappingSourceModelOptions: Array<{ label: string; value: string }>
   mappingUpstreamModelOptions: Array<{ label: string; value: string }>
-  modelOptions: Array<{ label: string; value: string }>
-  modelsLoading: boolean
   proxyOptions: SelectOption[]
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
 }>()
@@ -171,8 +160,8 @@ const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form
 const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerCode))
 const modelMappingTooltip = computed(() => (
   isHybridAccount.value
-    ? '混合供应商账户在这里配置下游模型和协议入口到真实上游模型的映射；账号仍保存自己的真实上游凭据和 Base URL。'
-    : '只在当前供应商和当前协议内做模型名改写；跨供应商或跨协议映射请使用混合供应商账户配置。'
+    ? '混合供应商账户在这里配置下游模型和协议入口到真实上游模型的映射；右侧上游模型只能选择账户支持模型。'
+    : '只在当前供应商和当前协议内做模型名改写；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
@@ -213,8 +202,11 @@ watch(() => [
 })
 
 function mappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  void sourceEndpointFamily
-  return props.modelOptions
+  if (sourceEndpointFamily === 'messages') return props.mappingAnthropicSourceModelOptions
+  if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
+    return props.mappingGeminiSourceModelOptions
+  }
+  return props.mappingSourceModelOptions
 }
 
 function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {

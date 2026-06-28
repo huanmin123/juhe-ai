@@ -29,8 +29,26 @@ function findInternalAccountSummary(accountId: string): AccountSummary | undefin
   return findAccountSummary(accountId, internalAccountReadAccess)
 }
 
+async function findInternalAccountSummaryAsync(accountId: string): Promise<AccountSummary | undefined> {
+  return findAccountSummaryAsync(accountId, internalAccountReadAccess)
+}
+
 function accountRowForManage(accountId: string, access?: AccessScope): AccountRow | undefined {
   const row = getBusinessDatabase().prepare('SELECT * FROM accounts WHERE id = ? AND deleted_at IS NULL').get(accountId) as unknown as AccountRow | undefined
+  if (!row || !canManageResourceOwner(row.system_account_id, access)) {
+    return undefined
+  }
+  return row
+}
+
+async function accountRowForManageAsync(client: DatabaseClient, accountId: string, access?: AccessScope): Promise<AccountRow | undefined> {
+  const row = await client.one<AccountRow>(`
+    SELECT *
+    FROM ${accountRuntimeMutationTable(client, 'accounts')}
+    WHERE id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `, [accountId])
   if (!row || !canManageResourceOwner(row.system_account_id, access)) {
     return undefined
   }
@@ -57,6 +75,19 @@ function isLaterIso(value?: string, current?: string): boolean {
   const nextTime = Date.parse(value)
   const currentTime = Date.parse(current)
   return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
+}
+
+async function accountEnabledGroupIdForClientAsync(client: DatabaseClient, accountId: string, systemAccountId: string): Promise<string | undefined> {
+  const row = await client.one<{ group_id?: string }>(`
+    SELECT group_id
+    FROM ${accountRuntimeMutationTable(client, 'group_accounts')}
+    WHERE account_id = ?
+      AND system_account_id = ?
+      AND enabled = 1
+    ORDER BY updated_at DESC, group_id ASC, account_id ASC
+    LIMIT 1
+  `, [accountId, systemAccountId])
+  return row?.group_id
 }
 
 interface ClearAccountFailureStateOptions {
@@ -298,7 +329,7 @@ export async function clearAccountFailureStateResultAsync(
   return { account: await findAccountSummaryAsync(id, accountAccess), changed }
 }
 
-async function clearAuthorizedAccountBindingFailureStateByContextAsync(
+export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
   input: AuthorizedAccountBindingRuntimeTarget,
   options: ClearAccountFailureStateOptions = {}
 ): Promise<AccountFailureStateClearResult> {
@@ -1203,6 +1234,116 @@ export function migrateAccountTraffic(input: {
   return { sourceAccount, targetAccount, sourceCooldownUntil: sourceCooldownUntil ?? undefined, groupId: sourceGroupId }
 }
 
+export async function migrateAccountTrafficAsync(input: {
+  sourceAccountId: string
+  targetAccountId: string
+  sourceStatus: AccountTrafficMigrationSourceStatus
+}, access?: AccessScope): Promise<{ sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string; groupId?: string } | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return migrateAccountTraffic(input, access)
+  }
+
+  const sourceVisibleAccount = await findAccountSummaryAsync(input.sourceAccountId, access)
+  if (sourceVisibleAccount?.accessType === 'authorized') {
+    return migrateAuthorizedAccountBindingTrafficAsync(input, access)
+  }
+  if (input.sourceAccountId === input.targetAccountId) {
+    throw new Error('目标账户不能和当前账户相同')
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const sourceRow = await accountRowForManageAsync(client, input.sourceAccountId, access)
+  if (!sourceRow) {
+    return undefined
+  }
+  const targetRow = await accountRowForManageAsync(client, input.targetAccountId, access)
+  if (!targetRow) {
+    return undefined
+  }
+  if (sourceRow.system_account_id !== targetRow.system_account_id) {
+    throw new Error('目标账户必须和当前账户归属同一个系统账户')
+  }
+  if (sourceRow.provider_code !== targetRow.provider_code) {
+    throw new Error('目标账户必须和当前账户属于同一个供应商')
+  }
+  const sourceGroupId = await accountEnabledGroupIdForClientAsync(client, sourceRow.id, sourceRow.system_account_id)
+  const targetGroupId = await accountEnabledGroupIdForClientAsync(client, targetRow.id, targetRow.system_account_id)
+  if (!sourceGroupId || !targetGroupId || sourceGroupId !== targetGroupId) {
+    throw new Error('目标账户必须和当前账户在同一个分组内')
+  }
+  const targetCooldownUntil = targetRow.cooldown_until ?? undefined
+  if (targetRow.status !== 'active' || targetRow.schedulable !== 1 || isAccountExpired(targetRow.account_expires_at) || isLaterIso(targetCooldownUntil, nowIso())) {
+    throw new Error('目标账户当前不可调度，请选择正常可用的账户')
+  }
+
+  const ownerAccess = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
+  if (input.sourceStatus === 'unchanged') {
+    const sourceAccount = await findAccountSummaryAsync(input.sourceAccountId, ownerAccess)
+    const targetAccount = await findAccountSummaryAsync(input.targetAccountId, ownerAccess)
+    return sourceAccount && targetAccount
+      ? { sourceAccount, targetAccount, groupId: sourceGroupId }
+      : undefined
+  }
+
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  const reason = manualTrafficMigrationReason
+  const sourceTemporaryState = input.sourceStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState(nowMs)
+    : undefined
+  const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
+  const sourceObservationStartedAt = sourceTemporaryState?.observationStartedAt ?? null
+  const changed = await client.transaction(async (tx) => {
+    const result = input.sourceStatus === 'disabled'
+      ? await tx.execute(`
+          UPDATE ${accountRuntimeMutationTable(tx, 'accounts')}
+          SET status = 'disabled',
+              schedulable = 0,
+              cooldown_until = NULL,
+              last_error_code = NULL,
+              last_error_message = ?,
+              cooldown_retest_failure_count = 0,
+              cooldown_retest_observation_started_at = NULL,
+              cooldown_retest_last_at = NULL,
+              cooldown_retest_last_status_code = NULL,
+              stream_failure_count = 0,
+              stream_failure_window_started_at = NULL,
+              updated_at = ?
+          WHERE id = ?
+            AND system_account_id = ?
+        `, [reason, now, sourceRow.id, sourceRow.system_account_id])
+      : await tx.execute(`
+          UPDATE ${accountRuntimeMutationTable(tx, 'accounts')}
+          SET status = 'temporary_unavailable',
+              cooldown_until = ?,
+              last_error_code = NULL,
+              last_error_message = ?,
+              cooldown_retest_failure_count = 0,
+              cooldown_retest_observation_started_at = ?,
+              cooldown_retest_last_at = NULL,
+              cooldown_retest_last_status_code = NULL,
+              stream_failure_count = 0,
+              stream_failure_window_started_at = NULL,
+              updated_at = ?
+          WHERE id = ?
+            AND system_account_id = ?
+        `, [sourceCooldownUntil, reason, sourceObservationStartedAt ?? null, now, sourceRow.id, sourceRow.system_account_id])
+    return Number(result.changes ?? 0) > 0
+  })
+  if (!changed) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ accountIds: [sourceRow.id], reason: 'traffic_migration' })
+  invalidateGatewayRuntimeAfterBusinessWrite('traffic_migration')
+
+  const sourceAccount = await findAccountSummaryAsync(input.sourceAccountId, ownerAccess)
+  const targetAccount = await findAccountSummaryAsync(input.targetAccountId, ownerAccess)
+  if (!sourceAccount || !targetAccount) {
+    return undefined
+  }
+  return { sourceAccount, targetAccount, sourceCooldownUntil: sourceCooldownUntil ?? undefined, groupId: sourceGroupId }
+}
+
 export function updateAuthorizedAccountBindingDispatch(
   accountId: string,
   input: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean },
@@ -1530,6 +1671,98 @@ function migrateAuthorizedAccountBindingTraffic(input: {
     : undefined
 }
 
+async function migrateAuthorizedAccountBindingTrafficAsync(input: {
+  sourceAccountId: string
+  targetAccountId: string
+  sourceStatus: AccountTrafficMigrationSourceStatus
+}, access?: AccessScope): Promise<{ sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string; groupId?: string } | undefined> {
+  const systemAccountId = authorizedBindingSystemAccountId(access)
+  if (input.sourceAccountId === input.targetAccountId) {
+    throw new Error('目标账户不能和当前账户相同')
+  }
+  const accountAccess = { systemAccountId, role: 'user' as const }
+  const sourceAccount = await findAccountSummaryAsync(input.sourceAccountId, accountAccess)
+  const targetAccount = await findAccountSummaryAsync(input.targetAccountId, accountAccess)
+  if (sourceAccount?.accessType !== 'authorized') {
+    return undefined
+  }
+  if (!sourceAccount || !targetAccount) {
+    return undefined
+  }
+  if (!sourceAccount.boundGroupId || !sourceAccount.accountAuthorizationId || !targetAccount.boundGroupId || sourceAccount.boundGroupId !== targetAccount.boundGroupId) {
+    throw new Error('目标账户必须和当前账户在你的同一个分组内')
+  }
+  if (sourceAccount.providerCode !== targetAccount.providerCode) {
+    throw new Error('目标账户必须和当前账户属于同一个供应商')
+  }
+  const targetUnavailableMessage = accountDispatchUnavailableMessage(targetAccount, { requireAuthorizedBinding: targetAccount.accessType === 'authorized' })
+  if (targetUnavailableMessage) {
+    throw new Error(targetUnavailableMessage)
+  }
+  if (input.sourceStatus === 'unchanged') {
+    return { sourceAccount, targetAccount, groupId: sourceAccount.boundGroupId }
+  }
+  const sourceTemporaryState = input.sourceStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState()
+    : undefined
+  const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
+  const now = nowIso()
+  const sourceStatus: AccountStatus = input.sourceStatus === 'disabled' ? 'disabled' : 'temporary_unavailable'
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET status = ?,
+        schedulable = ?,
+        cooldown_until = ?,
+        last_error_code = NULL,
+        last_error_message = ?,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = ?,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND authorization_instance_authorization_id = ?
+      AND deleted_at IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+      )
+  `, [
+    sourceStatus,
+    sourceStatus === 'disabled' ? 0 : 1,
+    sourceCooldownUntil,
+    manualTrafficMigrationReason,
+    sourceTemporaryState?.observationStartedAt ?? null,
+    now,
+    sourceAccount.id,
+    systemAccountId,
+    sourceAccount.accountAuthorizationId,
+    systemAccountId,
+    sourceAccount.boundGroupId,
+    sourceAccount.accountAuthorizationId
+  ])
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ groupIds: [sourceAccount.boundGroupId], accountIds: [sourceAccount.id], reason: 'authorized_binding_migration' })
+  invalidateAccountLookupCache(sourceAccount.id)
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_migration')
+  const nextSource = await findAccountSummaryAsync(input.sourceAccountId, accountAccess)
+  const nextTarget = await findAccountSummaryAsync(input.targetAccountId, accountAccess)
+  return nextSource && nextTarget
+    ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined, groupId: sourceAccount.boundGroupId }
+    : undefined
+}
+
 export function markAccountException(
   id: string,
   errorCode: string,
@@ -1570,6 +1803,49 @@ export function markAccountException(
   }
 
   return findInternalAccountSummary(id)
+}
+
+export async function markAccountExceptionAsync(
+  id: string,
+  errorCode: string,
+  reason: string,
+  options: { preserveDisabled?: boolean } = {}
+): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markAccountException(id, errorCode, reason, options)
+  }
+  const current = await findInternalAccountSummaryAsync(id)
+  if (!current) {
+    return undefined
+  }
+  if (current.status === 'disabled' && options.preserveDisabled !== false) {
+    return undefined
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET status = 'error',
+        schedulable = 0,
+        cooldown_until = NULL,
+        last_error_code = ?,
+        last_error_message = ?,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+  `, [errorCode || null, reason || null, nowIso(), id])
+  if (Number(result.changes ?? 0) > 0) {
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
+  }
+
+  return await findInternalAccountSummaryAsync(id)
 }
 
 export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {

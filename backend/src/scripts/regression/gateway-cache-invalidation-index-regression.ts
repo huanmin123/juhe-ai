@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import type { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
@@ -112,6 +112,92 @@ console.log('网关缓存定点失效回归通过：API Key 校验和额度缓�
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(backendSrcRoot, relativePath), 'utf8')
+}
+
+interface CacheDeclaration {
+  file: string
+  name: string
+}
+
+const localOnlyAppCacheReasons = new Map<string, string>([
+  ['gateway:proxy-agents', 'holds http.Agent socket pools and destroys them on LRU eviction'],
+  ['gateway:codex-turn-retry', 'short-lived per-request retry hint'],
+  ['gateway:hybrid-route-affinity', 'best-effort sticky routing state with per-request session keys'],
+  ['gateway:client-ip-policy-by-ip', 'per-node derived lookup over the Redis-backed policy snapshot'],
+  ['gateway:client-ip-pre-auth-circuit', 'short-window defensive circuit state'],
+  ['gateway:client-ip-error-circuit', 'short-window defensive circuit state'],
+  ['gateway:client-ip-account-avoidance', 'short-window client/account avoidance state'],
+  ['gateway:upstream-bucket-health', 'per-node upstream failure bucket state'],
+  ['gateway:runtime', 'large gateway runtime snapshot invalidated by runtime-state versioning'],
+  ['gateway:openai-accounts', 'contains upstream account secrets and must stay process-local'],
+  ['gateway:openai-session-affinity', 'session affinity uses local reverse indexes for migration'],
+  ['gateway:openai-traffic-migration-preference', 'short-lived local preference coupled to session affinity migration'],
+  ['openai-oauth:recent-refresh', 'deduplicates sensitive OAuth refresh records inside one process']
+])
+
+assertProductionCacheClassification()
+
+function assertProductionCacheClassification(): void {
+  const appCaches = collectCacheDeclarations('createAppCache')
+  const sharedCacheNames = new Set(collectCacheDeclarations('createSharedJsonCache').map((cache) => cache.name))
+  const appCacheNames = new Set(appCaches.map((cache) => cache.name))
+  const unclassifiedLocalCaches = appCaches
+    .filter((cache) => !sharedCacheNames.has(cache.name) && !localOnlyAppCacheReasons.has(cache.name))
+    .map((cache) => `${cache.name} (${cache.file})`)
+  assert.deepEqual(
+    unclassifiedLocalCaches,
+    [],
+    '新增生产 LRU cache 必须接入 Redis shared cache，或在 localOnlyAppCacheReasons 中登记本地保留原因'
+  )
+  const staleLocalClassifications = [...localOnlyAppCacheReasons.keys()]
+    .filter((name) => !appCacheNames.has(name))
+  assert.deepEqual(
+    staleLocalClassifications,
+    [],
+    'localOnlyAppCacheReasons 中存在已经不存在的缓存分类，请同步清理'
+  )
+}
+
+function collectCacheDeclarations(factoryName: 'createAppCache' | 'createSharedJsonCache'): CacheDeclaration[] {
+  const result: CacheDeclaration[] = []
+  for (const file of productionSourceFiles(backendSrcRoot)) {
+    const source = readFileSync(file, 'utf8')
+    result.push(...cacheDeclarationsFromSource(file, source, factoryName))
+  }
+  return result
+}
+
+function cacheDeclarationsFromSource(
+  file: string,
+  source: string,
+  factoryName: 'createAppCache' | 'createSharedJsonCache'
+): CacheDeclaration[] {
+  const declarations: CacheDeclaration[] = []
+  const pattern = new RegExp(`${factoryName}<[^]*?>\\s*\\(\\s*\\{[^]*?name:\\s*'([^']+)'`, 'g')
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(source)) !== null) {
+    declarations.push({
+      file: file.replace(/\\/g, '/').replace(backendSrcRoot.replace(/\\/g, '/'), 'backend/src'),
+      name: match[1]
+    })
+  }
+  return declarations
+}
+
+function productionSourceFiles(directory: string): string[] {
+  const result: string[] = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const fullPath = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === 'scripts') continue
+      result.push(...productionSourceFiles(fullPath))
+      continue
+    }
+    if (entry.isFile() && entry.name.endsWith('.ts')) {
+      result.push(fullPath)
+    }
+  }
+  return result
 }
 
 function assertFunctionDoesNotScanCacheEntries(source: string, functionName: string): void {

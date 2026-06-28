@@ -30,20 +30,27 @@ import {
 import {
   clearGatewayApiKeyValidationCache,
   clearAuthorizedAccountBindingFailureStateByContext,
+  clearAuthorizedAccountBindingFailureStateByContextAsync,
   clearAccountFailureStateResult,
+  clearAccountFailureStateResultAsync,
   cleanupExpiredLogicallyDeletedAccounts,
+  cleanupExpiredLogicallyDeletedAccountsAsync,
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
   findAccountForTestAsync,
   findAccountForCooldownRetest,
+  findAccountForCooldownRetestAsync,
   findAccountForHealthCheck,
+  findAccountForHealthCheckAsync,
   getAccountPrecheckMutationState,
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listOpenAIAccountsForGroupResultAsync,
   listAccountsDueForCooldownRetest,
+  listAccountsDueForCooldownRetestAsync,
   listAccountsDueForHealthCheck,
+  listAccountsDueForHealthCheckAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
   listPublicGlobalSettings,
   listPublicGlobalSettingsAsync,
@@ -53,13 +60,17 @@ import {
   markAccountTestTemporaryUnavailable,
   markAccountTestTemporaryUnavailableAsync,
   markAccountTemporaryUnavailable,
+  markAccountExceptionAsync,
   markAuthorizedAccountBindingCooldownByContext,
   markAuthorizedAccountBindingDisabledByFailure,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
   recordAccountStreamFailure,
   recordAccountHealthCheckFailure,
+  recordAccountHealthCheckFailureAsync,
   recordAccountHealthCheckSuccess,
+  recordAccountHealthCheckSuccessAsync,
   recordCooldownAccountRetestFailure,
+  recordCooldownAccountRetestFailureAsync,
   recordAccountSuccessfulTestModel,
   recordAccountSuccessfulTestModelAsync,
   recordAuthorizedAccountBindingStreamFailure,
@@ -68,7 +79,9 @@ import {
   resolveProxyUrlForProfile,
   resolveProxyUrlForProfileAsync,
   syncAccountAvailabilityScheduleStatuses,
+  syncAccountAvailabilityScheduleStatusesAsync,
   syncApiKeyAvailabilityScheduleStatuses,
+  syncApiKeyAvailabilityScheduleStatusesAsync,
   type OpenAIAccountSecret,
   updateAccount,
   updateAccountAsync,
@@ -166,7 +179,7 @@ import type {
   DbServiceRuntimeSnapshot
 } from './db-service-types.js'
 import { currentProcessEventLoopLagMs } from '../../shared/process-event-loop-monitor.js'
-import { expireDueResourceAuthorizations } from '../../storage/repositories.js'
+import { expireDueResourceAuthorizations, expireDueResourceAuthorizationsAsync } from '../../storage/repositories.js'
 
 let handledRequestCount = 0
 let failedRequestCount = 0
@@ -394,6 +407,27 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
       return handleDbServiceOperationSync(operation)
     }
+    case 'clear_account_failure_state': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = operation.authorizedBinding
+          ? await clearAuthorizedAccountBindingFailureStateByContextAsync({
+            accountId: operation.accountId,
+            ...operation.authorizedBinding
+          }, {
+            allowPendingTestRestore: operation.allowPendingTestRestore,
+            allowErrorRestore: operation.allowErrorRestore
+          })
+          : await clearAccountFailureStateResultAsync(operation.accountId, internalDbServiceAccountAccess, {
+            allowPendingTestRestore: operation.allowPendingTestRestore,
+            allowErrorRestore: operation.allowErrorRestore
+          })
+        if (result.changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { changed: result.changed, accountStatus: result.account?.status }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
     case 'account_test_task_maintenance':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await handleAccountTestTaskMaintenanceAsync(operation)
@@ -487,6 +521,36 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
       return handleDbServiceOperationSync(operation)
     }
+    case 'sync_api_key_availability_schedule_statuses': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await syncApiKeyAvailabilityScheduleStatusesAsync()
+        if (result.changedIds.length > 0) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'sync_account_availability_schedule_statuses': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await syncAccountAvailabilityScheduleStatusesAsync()
+        if (result.changedIds.length > 0) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'expire_due_resource_authorizations': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const expired = await expireDueResourceAuthorizationsAsync()
+        if (expired > 0) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { expired }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
     case 'find_openai_oauth_account_for_refresh':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findOpenAIOAuthAccountForRefreshAsync(operation.accountId)
@@ -497,6 +561,82 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await listActiveClientIpPoliciesAsync()
       }
       return handleDbServiceOperationSync(operation)
+    case 'list_accounts_due_for_health_check':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listAccountsDueForHealthCheckAsync(operation.input)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'find_account_for_health_check':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findAccountForHealthCheckAsync(operation.accountId)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'record_account_health_check_success':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const changed = await recordAccountHealthCheckSuccessAsync(operation.accountId, operation.input)
+        if (changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { changed }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'record_account_health_check_failure':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await recordAccountHealthCheckFailureAsync(operation.accountId, operation.input)
+        if (result.changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_accounts_due_for_cooldown_retest':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listAccountsDueForCooldownRetestAsync(operation.limit)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'find_account_for_cooldown_retest':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findAccountForCooldownRetestAsync(operation.accountId)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'record_cooldown_account_retest_failure':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await recordCooldownAccountRetestFailureAsync(operation.accountId, operation.input)
+        if (result.changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return {
+          changed: result.changed,
+          failureCount: result.failureCount,
+          action: result.action,
+          cooldownUntil: result.cooldownUntil,
+          backoffSeconds: result.backoffSeconds,
+          backoffMinutes: result.backoffMinutes,
+          recoveryStage: result.recoveryStage,
+          fastThresholdSeconds: result.fastThresholdSeconds,
+          maxPauseSeconds: result.maxPauseSeconds,
+          maxRecoverySeconds: result.maxRecoverySeconds,
+          longTermIntervalSeconds: result.longTermIntervalSeconds,
+          maxedFailureCount: result.maxedFailureCount,
+          observationStartedAt: result.observationStartedAt,
+          observationElapsedSeconds: result.observationElapsedSeconds,
+          errorCode: result.errorCode,
+          errorMessage: result.errorMessage
+        }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'mark_account_exception': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const updated = await markAccountExceptionAsync(operation.accountId, operation.errorCode, operation.reason, {
+          preserveDisabled: operation.preserveDisabled
+        })
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated), accountStatus: updated?.status }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
     case 'save_codex_context_response_state':
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
@@ -521,6 +661,15 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
       })
+    case 'cleanup_expired_deleted_accounts':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await cleanupExpiredLogicallyDeletedAccountsAsync()
+        if (result.attempted > 0 || result.orphanedAuthorizationInstances > 0) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
     default:
       return handleDbServiceOperationSync(operation)
   }

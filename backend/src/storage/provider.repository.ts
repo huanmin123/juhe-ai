@@ -16,6 +16,10 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getPostgresPool } from './postgres-client.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { parseJsonArray } from './value-utils.js'
+import {
+  findProviderDefaultTestModelPreference,
+  findProviderDefaultTestModelPreferenceAsync
+} from './provider-default-test-model.repository.js'
 
 interface ProviderRow {
   id: string
@@ -24,6 +28,7 @@ interface ProviderRow {
   parent_code: ProviderCode | null
   description: string | null
   enabled: number
+  default_supported_models_json: string | null
 }
 
 interface ProviderProtocolProfileRow {
@@ -54,7 +59,7 @@ const businessSchemaName = 'juhe_business'
 export function listProviders(): ProviderDefinition[] {
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, code, name, parent_code, description, enabled
+      SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
       FROM providers
       ORDER BY name ASC, code ASC
       LIMIT ?
@@ -68,6 +73,7 @@ export function listProviders(): ProviderDefinition[] {
     parentCode: row.parent_code ?? undefined,
     description: row.description ?? undefined,
     enabled: row.enabled === 1,
+    defaultSupportedModels: providerDefaultSupportedModels(row.default_supported_models_json),
     ...providerDefaultProfileFields(profilesByProvider.get(row.code) ?? []),
     protocolProfiles: profilesByProvider.get(row.code) ?? []
   }))
@@ -76,7 +82,7 @@ export function listProviders(): ProviderDefinition[] {
 export async function listProvidersAsync(): Promise<ProviderDefinition[]> {
   const client = await getProviderDatabaseClient()
   const rows = await client.query<ProviderRow>(`
-    SELECT id, code, name, parent_code, description, enabled
+    SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
     FROM ${providerTable(client, 'providers')}
     ORDER BY name ASC, code ASC
     LIMIT ?
@@ -89,6 +95,7 @@ export async function listProvidersAsync(): Promise<ProviderDefinition[]> {
     parentCode: row.parent_code ?? undefined,
     description: row.description ?? undefined,
     enabled: Number(row.enabled) === 1,
+    defaultSupportedModels: providerDefaultSupportedModels(row.default_supported_models_json),
     ...providerDefaultProfileFields(profilesByProvider.get(row.code) ?? []),
     protocolProfiles: profilesByProvider.get(row.code) ?? []
   }))
@@ -256,9 +263,11 @@ export async function isProtocolProviderCodeAsync(providerCode: string, protocol
   return Boolean(row)
 }
 
-export function findProviderDefaultTestModel(providerCode: string): string | undefined {
+export function findProviderDefaultTestModel(providerCode: string, systemAccountId?: string): string | undefined {
   const code = providerCode.trim()
   if (!code) return undefined
+  const preference = findProviderDefaultTestModelPreference(code, systemAccountId)
+  if (preference) return preference
   const row = getBusinessDatabase()
     .prepare(`
       SELECT provider_protocol_profiles.default_test_model
@@ -275,9 +284,11 @@ export function findProviderDefaultTestModel(providerCode: string): string | und
   return model || undefined
 }
 
-export async function findProviderDefaultTestModelAsync(providerCode: string): Promise<string | undefined> {
+export async function findProviderDefaultTestModelAsync(providerCode: string, systemAccountId?: string): Promise<string | undefined> {
   const code = providerCode.trim()
   if (!code) return undefined
+  const preference = await findProviderDefaultTestModelPreferenceAsync(code, systemAccountId)
+  if (preference) return preference
   const client = await getProviderDatabaseClient()
   const profilesTable = providerTable(client, 'provider_protocol_profiles')
   const providersTable = providerTable(client, 'providers')
@@ -294,6 +305,35 @@ export async function findProviderDefaultTestModelAsync(providerCode: string): P
   `, [code])
   const model = row?.default_test_model?.trim()
   return model || undefined
+}
+
+export function findProviderDefaultSupportedModels(providerCode: string): string[] {
+  const code = providerCode.trim()
+  if (!code) return []
+  const row = getBusinessDatabase()
+    .prepare(`
+      SELECT default_supported_models_json
+      FROM providers
+      WHERE code = ?
+        AND enabled = 1
+      LIMIT 1
+    `)
+    .get(code) as unknown as Pick<ProviderRow, 'default_supported_models_json'> | undefined
+  return providerDefaultSupportedModels(row?.default_supported_models_json)
+}
+
+export async function findProviderDefaultSupportedModelsAsync(providerCode: string): Promise<string[]> {
+  const code = providerCode.trim()
+  if (!code) return []
+  const client = await getProviderDatabaseClient()
+  const row = await client.one<Pick<ProviderRow, 'default_supported_models_json'>>(`
+    SELECT default_supported_models_json
+    FROM ${providerTable(client, 'providers')}
+    WHERE code = ?
+      AND enabled = 1
+    LIMIT 1
+  `, [code])
+  return providerDefaultSupportedModels(row?.default_supported_models_json)
 }
 
 export function findProviderProtocolProfile(profileId: string): ProviderProtocolProfileDefinition | undefined {
@@ -537,7 +577,7 @@ function providerTable(client: DatabaseClient, tableName: string): string {
     : client.dialect.quoteIdentifier(tableName)
 }
 
-function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinition[]): Omit<ProviderDefinition, 'id' | 'code' | 'name' | 'description' | 'enabled' | 'protocolProfiles'> {
+function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinition[]): Omit<ProviderDefinition, 'id' | 'code' | 'name' | 'parentCode' | 'description' | 'enabled' | 'defaultSupportedModels' | 'protocolProfiles'> {
   const defaultProfile = preferredDefaultProtocolProfile(profiles)
   if (!defaultProfile) {
     return {
@@ -559,6 +599,20 @@ function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinitio
     accountTypes: defaultProfile.accountTypes,
     capabilities: defaultProfile.capabilities
   }
+}
+
+function providerDefaultSupportedModels(value: unknown): string[] {
+  if (typeof value !== 'string' || !value.trim()) return []
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const item of parseJsonArray(value)) {
+    const model = item.trim()
+    const key = model.toLowerCase()
+    if (!model || seen.has(key)) continue
+    seen.add(key)
+    output.push(model)
+  }
+  return output
 }
 
 function preferredDefaultProtocolProfile(profiles: ProviderProtocolProfileDefinition[]): ProviderProtocolProfileDefinition | undefined {

@@ -1,6 +1,6 @@
 import { type AccountType } from '../../domain/types.js'
 import { type AccessScope } from '../../storage/access-scope.js'
-import { listProviders } from '../../storage/repositories.js'
+import { listProviders, listProvidersAsync } from '../../storage/repositories.js'
 import {
   accountImportGroupKey,
   buildAccountImportSummary,
@@ -13,10 +13,10 @@ import {
   type AccountImportResourceContext
 } from './account-import-resource-resolver.js'
 import { type AccountImportProviderContext } from './account-import-provider-resolver.js'
-import { planImportProxies, type AccountImportProxyPlan } from './account-import-proxy-plan.js'
-import { planImportAccount, type AccountImportAccountPlan } from './account-import-account-plan.js'
+import { planImportProxies, planImportProxiesAsync, type AccountImportProxyPlan } from './account-import-proxy-plan.js'
+import { planImportAccount, planImportAccountAsync, type AccountImportAccountPlan } from './account-import-account-plan.js'
 import { validateAccountImportRoot } from './account-import-root-validation.js'
-import { executeAccountImportPlan } from './account-import-executor.js'
+import { executeAccountImportPlan, executeAccountImportPlanAsync } from './account-import-executor.js'
 
 export const accountImportProtocolType = 'juhe-ai-account-import'
 export const accountImportProtocolVersion = 1
@@ -110,6 +110,10 @@ export function previewAccountImport(data: unknown, options: AccountImportOption
   return buildImportPlan(data, options, access).result
 }
 
+export async function previewAccountImportAsync(data: unknown, options: AccountImportOptions = {}, access?: AccessScope): Promise<AccountImportResult> {
+  return (await buildImportPlanAsync(data, options, access)).result
+}
+
 export function executeAccountImport(data: unknown, options: AccountImportOptions = {}, access: AccessScope): AccountImportResult {
   const plan = buildImportPlan(data, options, access)
   const result = plan.result
@@ -119,6 +123,17 @@ export function executeAccountImport(data: unknown, options: AccountImportOption
   }
 
   return executeAccountImportPlan(plan, access)
+}
+
+export async function executeAccountImportAsync(data: unknown, options: AccountImportOptions = {}, access: AccessScope): Promise<AccountImportResult> {
+  const plan = await buildImportPlanAsync(data, options, access)
+  const result = plan.result
+  result.mode = 'import'
+  if (!result.canImport) {
+    return result
+  }
+
+  return executeAccountImportPlanAsync(plan, access)
 }
 
 export function defaultAccountImportOptions(options: AccountImportOptions = {}): Required<AccountImportOptions> {
@@ -156,6 +171,56 @@ function buildImportPlan(data: unknown, rawOptions: AccountImportOptions, access
   const groupIdsByKey = new Map<string, string>()
   const groupNamesToCreate = new Map<string, AccountImportGroupCreatePlan>()
   const accounts = root.rawAccounts.map((item, index) => planImportAccount(item, index + 1, context, proxyByRef, groupIdsByKey, groupNamesToCreate))
+  markDuplicateAccountImportItems(accounts, context.options.skipDuplicates)
+
+  result.proxies = proxyPlans.map((plan) => plan.item)
+  result.accounts = accounts.map((plan) => plan.item)
+  result.summary = buildAccountImportSummary(result.accounts, result.proxies, groupNamesToCreate)
+  result.canImport = result.summary.accounts.failed === 0
+    && result.summary.proxies.failed === 0
+    && result.summary.accounts.create > 0
+
+  return {
+    result,
+    accounts,
+    proxies: proxyPlans,
+    groupIdsByKey,
+    groupNamesToCreate,
+    options,
+    access
+  }
+}
+
+async function buildImportPlanAsync(data: unknown, rawOptions: AccountImportOptions, access?: AccessScope): Promise<ImportPlan> {
+  const options = defaultAccountImportOptions(rawOptions)
+  const providers = await listProvidersAsync()
+  const context: ImportContext = {
+    access,
+    options,
+    targetSystemAccountId: importTargetSystemAccountId(access),
+    providerByCode: new Map(providers.map((provider) => [provider.code, provider])),
+    groupLookup: new Map(),
+    proxyLookup: new Map()
+  }
+  const result = emptyResult('preview')
+  const root = validateAccountImportRoot(data, result.messages, {
+    maxAccounts: accountImportMaxAccounts,
+    maxProxies: accountImportMaxProxies,
+    protocolType: accountImportProtocolType,
+    protocolVersion: accountImportProtocolVersion
+  })
+  if (!root.success) {
+    return emptyPlan(result)
+  }
+
+  const { proxyPlans, proxyByRef } = await planImportProxiesAsync(root.rawProxies, context)
+
+  const groupIdsByKey = new Map<string, string>()
+  const groupNamesToCreate = new Map<string, AccountImportGroupCreatePlan>()
+  const accounts: AccountImportAccountPlan[] = []
+  for (let index = 0; index < root.rawAccounts.length; index += 1) {
+    accounts.push(await planImportAccountAsync(root.rawAccounts[index], index + 1, context, proxyByRef, groupIdsByKey, groupNamesToCreate))
+  }
   markDuplicateAccountImportItems(accounts, context.options.skipDuplicates)
 
   result.proxies = proxyPlans.map((plan) => plan.item)

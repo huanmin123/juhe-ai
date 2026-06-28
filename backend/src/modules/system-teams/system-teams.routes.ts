@@ -4,20 +4,20 @@ import { z } from 'zod'
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
-  addSystemTeamMembers,
-  createSystemTeam,
-  findSystemTeamSummary,
-  listSystemTeams,
-  listSystemTeamsPage,
-  removeSystemTeamMember,
-  updateSystemTeam
+  addSystemTeamMembersAsync,
+  createSystemTeamAsync,
+  findSystemTeamSummaryAsync,
+  listSystemTeamsPageAsync,
+  removeSystemTeamMemberAsync,
+  updateSystemTeamAsync
 } from '../../storage/repositories.js'
 import { maxSystemTeamMemberBatchSize } from '../../storage/system-team-limits.js'
+import type { SystemTeamSummary } from '../../domain/types.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sortedTextValues } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const systemTeamsRouter = Router()
 export const myTeamsRouter = Router()
@@ -52,17 +52,25 @@ function currentUserTeamScope() {
   return getRequestAccessScope(context?.systemAccountId)
 }
 
-myTeamsRouter.get('/', (req, res) => {
-  res.json(ok(listSystemTeamsPage(currentUserTeamScope(), parseSystemTeamListOptions(req.query))))
+myTeamsRouter.get('/', async (req, res, next) => {
+  try {
+    res.json(ok(await listSystemTeamsPageAsync(currentUserTeamScope(), parseSystemTeamListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
-systemTeamsRouter.get('/', requireAdmin, (req, res) => {
+systemTeamsRouter.get('/', requireAdmin, async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
-  res.json(ok(listSystemTeamsPage(getRequestAccessScope(scopeQuery.data.systemAccountId), parseSystemTeamListOptions(req.query))))
+  try {
+    res.json(ok(await listSystemTeamsPageAsync(getRequestAccessScope(scopeQuery.data.systemAccountId), parseSystemTeamListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
 })
 
 function parseSystemTeamListOptions(query: Record<string, unknown>) {
@@ -80,7 +88,7 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name'))
   })
-}), (req, res) => {
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -93,8 +101,8 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = runLoggedOperation(() => {
-      const team = createSystemTeam(parsed.data, requestAccess)
+    const team = await runLoggedOperationAsync(async () => {
+      const team = await createSystemTeamAsync(parsed.data, requestAccess)
       return {
         result: team,
         log: {
@@ -122,7 +130,7 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
   }
 })
 
-systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
+systemTeamsRouter.patch('/:id', requireAdmin, async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -140,9 +148,9 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = runLoggedOperation(() => {
-      const before = findSystemTeamSummary(paramsParsed.data.id, requestAccess)
-      const team = updateSystemTeam(paramsParsed.data.id, parsed.data, requestAccess)
+    const team = await runLoggedOperationAsync(async () => {
+      const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
+      const team = await updateSystemTeamAsync(paramsParsed.data.id, parsed.data, requestAccess)
       if (!team) {
         throw new Error('团队不存在')
       }
@@ -185,7 +193,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
     teamId: req.params.id,
     systemAccountIds: sortedTextValues(bodyField(req, 'systemAccountIds'))
   })
-}), (req, res) => {
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -203,10 +211,10 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = runLoggedOperation(() => {
-      const before = findSystemTeamSummary(paramsParsed.data.id, requestAccess)
+    const team = await runLoggedOperationAsync(async () => {
+      const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
       const beforeMemberIds = new Set((before?.members ?? []).map((member) => member.systemAccountId))
-      const team = addSystemTeamMembers(paramsParsed.data.id, parsed.data, requestAccess)
+      const team = await addSystemTeamMembersAsync(paramsParsed.data.id, parsed.data, requestAccess)
       if (!team) {
         throw new Error('团队不存在或已停用')
       }
@@ -247,7 +255,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   }
 })
 
-systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
+systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -260,10 +268,10 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = runLoggedOperation(() => {
-      const before = findSystemTeamSummary(paramsParsed.data.id, requestAccess)
+    const team = await runLoggedOperationAsync(async () => {
+      const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
       const removedMember = before?.members?.find((member) => member.id === paramsParsed.data.memberId)
-      const team = removeSystemTeamMember(paramsParsed.data.id, paramsParsed.data.memberId, requestAccess)
+      const team = await removeSystemTeamMemberAsync(paramsParsed.data.id, paramsParsed.data.memberId, requestAccess)
       if (!team) {
         throw new Error('团队成员不存在')
       }
@@ -303,7 +311,7 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
   }
 })
 
-function teamMemberTargets(team: ReturnType<typeof listSystemTeams>[number]) {
+function teamMemberTargets(team: SystemTeamSummary) {
   return (team.members ?? []).map((member) => ownerTarget({
     targetType: 'system_account',
     targetId: member.systemAccountId,
@@ -313,6 +321,6 @@ function teamMemberTargets(team: ReturnType<typeof listSystemTeams>[number]) {
   }))
 }
 
-function teamMemberViewers(team: ReturnType<typeof listSystemTeams>[number]) {
+function teamMemberViewers(team: SystemTeamSummary) {
   return viewers(...(team.members ?? []).map((member) => viewer(member.systemAccountId, 'team_member')))
 }

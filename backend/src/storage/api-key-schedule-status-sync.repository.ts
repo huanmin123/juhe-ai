@@ -3,6 +3,8 @@ import {
   nextApiKeyAvailabilityScheduleCheckAt,
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import {
   beginDatabaseTransaction,
   commitDatabaseTransaction,
@@ -10,6 +12,7 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
+import { getPostgresPool } from './postgres-client.js'
 
 interface ScheduledApiKeyStatusRow {
   id: string
@@ -38,6 +41,7 @@ export interface ApiKeyScheduleStatusSyncResult {
 }
 
 const availabilityScheduleStatusSyncBatchLimit = 500
+const businessSchemaName = 'juhe_business'
 
 export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKeyScheduleStatusSyncResult {
   const database = getBusinessDatabase()
@@ -145,6 +149,99 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
   return result
 }
 
+export async function syncApiKeyAvailabilityScheduleStatusesAsync(now = new Date()): Promise<ApiKeyScheduleStatusSyncResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return syncApiKeyAvailabilityScheduleStatuses(now)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
+  const rows = await listScheduledApiKeyStatusRowsAsync(client, updatedAt)
+  const result: ApiKeyScheduleStatusSyncResult = {
+    scanned: rows.length,
+    activated: 0,
+    disabled: 0,
+    unchanged: 0,
+    skipped: 0,
+    invalid: 0,
+    changedIds: [],
+    invalidIds: []
+  }
+  const updates: ScheduledApiKeyStatusUpdate[] = []
+
+  for (const row of rows) {
+    try {
+      const schedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
+      const nextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(schedule, now)
+      const event = dueApiKeyAvailabilityScheduleEvent(schedule, now)
+      if (!event) {
+        updates.push({ id: row.id, nextCheckAt })
+        result.unchanged += 1
+        continue
+      }
+      updates.push({
+        id: row.id,
+        active: event.status === 'active' ? 1 : 0,
+        nextCheckAt,
+        eventKey: `${row.id}:${event.eventKey}`,
+        status: event.status
+      })
+    } catch {
+      result.invalid += 1
+      result.invalidIds.push(row.id)
+      if (Number(row.availability_schedule_active) !== 0) {
+        updates.push({ id: row.id, active: 0, nextCheckAt: null })
+      } else {
+        updates.push({ id: row.id, nextCheckAt: null })
+      }
+    }
+  }
+
+  if (!updates.length) {
+    return result
+  }
+
+  await client.transaction(async (tx) => {
+    for (const update of updates) {
+      if (update.eventKey && update.status) {
+        const eventChanges = await tx.execute(`
+          INSERT INTO ${apiKeyScheduleStatusTable(tx, 'api_key_schedule_status_events')} (event_key, api_key_id, status, executed_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(event_key) DO NOTHING
+        `, [update.eventKey, update.id, update.status, updatedAt])
+        if (eventChanges.changes <= 0) {
+          result.skipped += 1
+          await updateApiKeyNextCheckAtAsync(tx, update)
+          continue
+        }
+      }
+      if (update.active === undefined) {
+        await updateApiKeyNextCheckAtAsync(tx, update)
+        continue
+      }
+      const changes = await tx.execute(`
+        UPDATE ${apiKeyScheduleStatusTable(tx, 'api_keys')}
+        SET availability_schedule_active = ?, availability_schedule_next_check_at = ?, updated_at = ?
+        WHERE id = ?
+          AND availability_schedule_json IS NOT NULL
+          AND availability_schedule_active <> ?
+      `, [update.active, update.nextCheckAt, updatedAt, update.id, update.active])
+      if (changes.changes <= 0) {
+        await updateApiKeyNextCheckAtAsync(tx, update)
+        result.unchanged += 1
+        continue
+      }
+      result.changedIds.push(update.id)
+      if (update.active === 1) {
+        result.activated += 1
+      } else {
+        result.disabled += 1
+      }
+    }
+  })
+
+  return result
+}
+
 function listScheduledApiKeyStatusRows(database: ReturnType<typeof getBusinessDatabase>, dueAt: string): ScheduledApiKeyStatusRow[] {
   const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
   return database
@@ -160,4 +257,35 @@ function listScheduledApiKeyStatusRows(database: ReturnType<typeof getBusinessDa
       LIMIT ?
     `)
     .all(dueAt, availabilityScheduleStatusSyncBatchLimit) as unknown as ScheduledApiKeyStatusRow[]
+}
+
+async function listScheduledApiKeyStatusRowsAsync(client: DatabaseClient, dueAt: string): Promise<ScheduledApiKeyStatusRow[]> {
+  const selectColumns = 'id, availability_schedule_json, availability_schedule_active, availability_schedule_next_check_at'
+  return client.query<ScheduledApiKeyStatusRow>(`
+    SELECT ${selectColumns}
+    FROM ${apiKeyScheduleStatusTable(client, 'api_keys')}
+    WHERE availability_schedule_json IS NOT NULL
+      AND (
+        availability_schedule_next_check_at IS NULL
+        OR availability_schedule_next_check_at <= ?
+      )
+    ORDER BY availability_schedule_next_check_at IS NOT NULL ASC, availability_schedule_next_check_at ASC, id ASC
+    LIMIT ?
+  `, [dueAt, availabilityScheduleStatusSyncBatchLimit])
+}
+
+async function updateApiKeyNextCheckAtAsync(client: DatabaseClient, update: Pick<ScheduledApiKeyStatusUpdate, 'id' | 'nextCheckAt'>): Promise<void> {
+  await client.execute(`
+    UPDATE ${apiKeyScheduleStatusTable(client, 'api_keys')}
+    SET availability_schedule_next_check_at = ?
+    WHERE id = ?
+      AND availability_schedule_json IS NOT NULL
+      AND COALESCE(availability_schedule_next_check_at, '') <> COALESCE(?, '')
+  `, [update.nextCheckAt, update.id, update.nextCheckAt])
+}
+
+function apiKeyScheduleStatusTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }

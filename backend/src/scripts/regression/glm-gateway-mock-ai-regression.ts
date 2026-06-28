@@ -119,7 +119,7 @@ try {
     const failover = createGlmFailoverScenario(`${upstreamOrigin}/api/paas/v4/`)
 
     assertGlmCredentialCapabilities(general.groupId)
-    assertGlmImportAndExportRoundTrip(general.accountId, coding.accountId, general.groupId, coding.groupId)
+    assertGlmImportAndExportRoundTrip(general.accountId, coding.accountId, general.groupId)
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -170,9 +170,8 @@ function assertGlmSeeds(): void {
   assert(glmProvider.protocolProfiles.some((profile) => profile.id === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), 'GLM provider 应包含 Coding Anthropic Messages 档案')
 
   const defaultGroups = repositories.listGroups(access).filter((group) => group.providerCode === GLM_PROVIDER_CODE && group.isDefault)
-  assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID), '默认分组应包含 GLM 通用分组')
-  assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID), '默认分组应包含 GLM Coding 分组')
-  assert(defaultGroups.some((group) => group.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID), '默认分组应包含 GLM Coding Anthropic 分组')
+  assert.equal(defaultGroups.length, 1, '默认分组应只包含一个 GLM 供应商分组')
+  assert.equal(defaultGroups[0]?.name, '默认 GLM 分组', '默认 GLM 分组名称应按供应商归并')
 }
 
 function assertGlmModelCatalog(): void {
@@ -335,22 +334,24 @@ function assertGlmCredentialCapabilities(groupId: string): void {
     schedulable: false
   }, access), /Chat|Responses|接口能力/, 'GLM 账户不应允许 Responses endpoint mode')
 
-  assert.throws(() => repositories.createAccount({
+  const codingInSameProviderGroup = repositories.createAccount({
     providerCode: GLM_PROVIDER_CODE,
     providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
-    name: 'GLM 错误分组绑定账户',
+    name: 'GLM Coding 同供应商分组账户',
     type: 'api_key',
     credentials: {
-      api_key: 'sk-glm-wrong-profile-group',
+      api_key: 'sk-glm-same-provider-group',
       base_url: 'http://127.0.0.1:1/api/coding/paas/v4'
     },
     groupId,
     status: 'disabled',
     schedulable: false
-  }, access), /账户分组无效/, 'GLM Coding 账户不应加入通用 GLM 分组')
+  }, access)
+  assert.equal(codingInSameProviderGroup.boundGroupId, groupId, 'GLM Coding 账户应允许加入同供应商 GLM 分组')
+  assert.equal(codingInSameProviderGroup.providerProtocolProfileId, GLM_CODING_OPENAI_V1_PROFILE_ID, '账户接入类型仍应保留 GLM Coding 档案')
 }
 
-function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccountId: string, generalGroupId: string, codingGroupId: string): void {
+function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccountId: string, generalGroupId: string): void {
   const preview = accountImportService.previewAccountImport({
     type: accountImportService.accountImportProtocolType,
     version: accountImportService.accountImportProtocolVersion,
@@ -375,7 +376,7 @@ function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccou
         connectionType: GLM_CODING_CONNECTION_TYPE,
         type: 'api_key',
         status: 'disabled',
-        groupId: codingGroupId,
+        groupId: generalGroupId,
         credentials: {
           api_key: 'sk-glm-preview-coding',
           base_url: 'http://127.0.0.1:1/api/coding/paas/v4'

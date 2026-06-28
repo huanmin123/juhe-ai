@@ -27,6 +27,7 @@ export interface ApiKeyRow {
   key_suffix: string
   key_secret_encrypted?: string | null
   status: 'active' | 'disabled'
+  is_default?: number | string | boolean | null
   expires_at: string | null
   quota_limits_json: string | null
   availability_schedule_json?: string | null
@@ -95,6 +96,7 @@ function apiKeySummaryFromRow(
     keySuffix: row.key_suffix,
     key: options.includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
     status: row.status,
+    isDefault: normalizeApiKeyDefaultFlag(row.is_default),
     routeStrategyId: row.route_strategy_id,
     routeStrategyName: row.route_strategy_name ?? undefined,
     routeStrategyMode,
@@ -111,6 +113,10 @@ function apiKeySummaryFromRow(
 
 function normalizeRouteStrategyStatus(value: unknown): ApiKeySummary['routeStrategyStatus'] {
   return value === 'active' || value === 'disabled' ? value : undefined
+}
+
+function normalizeApiKeyDefaultFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === '1'
 }
 
 function decryptApiKeySecret(value: string | null | undefined): string {

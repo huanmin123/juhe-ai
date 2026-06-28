@@ -4,12 +4,12 @@ import { badRequest, ok } from '../../shared/http.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { executeAccountImportAsync, previewAccountImportAsync, type AccountImportOptions } from './account-import.service.js'
 import { accountImportRequestSchema } from './account-request.schemas.js'
 
 export function registerAccountImportRoutes(router: Router): void {
-  router.post('/import/preview', (req, res) => {
+  router.post('/import/preview', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -21,7 +21,11 @@ export function registerAccountImportRoutes(router: Router): void {
       return
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    res.json(ok(previewAccountImport(parsed.data.data, parsed.data.options, requestAccess)))
+    try {
+      res.json(ok(await previewAccountImportAsync(parsed.data.data, parsed.data.options, requestAccess)))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '账户导入预览失败'))
+    }
   })
 
   router.post('/import/confirm', mutationGuard({
@@ -32,7 +36,7 @@ export function registerAccountImportRoutes(router: Router): void {
       data: bodyField(req, 'data'),
       options: bodyField(req, 'options')
     })
-  }), (req, res) => {
+  }), async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -49,31 +53,35 @@ export function registerAccountImportRoutes(router: Router): void {
       return
     }
     const importOptions: AccountImportOptions = parsed.data.options ?? {}
-    const result = runLoggedOperation(() => {
-      const result = executeAccountImport(parsed.data.data, importOptions, requestAccess)
-      const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
-      return {
-        result,
-        log: {
-          operationScopeSystemAccountId: ownerSystemAccountId,
-          mode: operationMode(requestAccess),
-          module: 'accounts',
-          action: 'import',
-          operationKey: 'accounts.import',
-          resourceType: 'account',
-          resourceName: 'AI 账户导入',
-          summary: `导入 AI 账户：创建 ${result.summary.accounts.create} 个，跳过 ${result.summary.accounts.skip} 个，失败 ${result.summary.accounts.failed} 个`,
-          changes: [
-            safeChange('accountCreated', '创建账户数', undefined, result.summary.accounts.create),
-            safeChange('accountSkipped', '跳过账户数', undefined, result.summary.accounts.skip),
-            safeChange('accountFailed', '失败账户数', undefined, result.summary.accounts.failed),
-            safeChange('proxyCreated', '创建代理数', undefined, result.summary.proxies.create),
-            safeChange('groupCreated', '创建分组数', undefined, result.summary.groups.create)
-          ],
-          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+    try {
+      const result = await runLoggedOperationAsync(async () => {
+        const result = await executeAccountImportAsync(parsed.data.data, importOptions, requestAccess)
+        const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
+        return {
+          result,
+          log: {
+            operationScopeSystemAccountId: ownerSystemAccountId,
+            mode: operationMode(requestAccess),
+            module: 'accounts',
+            action: 'import',
+            operationKey: 'accounts.import',
+            resourceType: 'account',
+            resourceName: 'AI 账户导入',
+            summary: `导入 AI 账户：创建 ${result.summary.accounts.create} 个，跳过 ${result.summary.accounts.skip} 个，失败 ${result.summary.accounts.failed} 个`,
+            changes: [
+              safeChange('accountCreated', '创建账户数', undefined, result.summary.accounts.create),
+              safeChange('accountSkipped', '跳过账户数', undefined, result.summary.accounts.skip),
+              safeChange('accountFailed', '失败账户数', undefined, result.summary.accounts.failed),
+              safeChange('proxyCreated', '创建代理数', undefined, result.summary.proxies.create),
+              safeChange('groupCreated', '创建分组数', undefined, result.summary.groups.create)
+            ],
+            viewers: viewer(ownerSystemAccountId, 'resource_owner')
+          }
         }
-      }
-    }, req)
-    res.json(ok(result))
+      }, req)
+      res.json(ok(result))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '账户导入失败'))
+    }
   })
 }

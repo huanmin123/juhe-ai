@@ -5,6 +5,7 @@ import {
   GLM_CODING_OPENAI_V1_PROFILE_ID,
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
+  isHybridProviderCode,
   normalizeProviderToken
 } from '@/shared/providerProtocol'
 import {
@@ -90,7 +91,7 @@ export function validateAccountEndpointModes(input: {
   const hasGeminiMode = input.modes.some((mode) => geminiAccountEndpointModes.includes(mode))
   const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode))
   const protocolModeCount = [hasOpenAIMode, hasAnthropicMode, hasGeminiMode].filter(Boolean).length
-  if (protocolModeCount > 1) {
+  if (protocolModeCount > 1 && !isHybridEndpointModeContext(input.profile)) {
     return '不同协议的接口能力不能混选'
   }
   if (hasAnthropicMode && !input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
@@ -174,6 +175,10 @@ function contextProviderCode(context?: AccountEndpointModeLabelContext): string 
   if ('providerCode' in context) return context.providerCode
   if ('code' in context) return context.code
   return undefined
+}
+
+function isHybridEndpointModeContext(context?: AccountEndpointModeLabelContext): boolean {
+  return isHybridProviderCode(contextProviderCode(context))
 }
 
 function contextProfileId(context?: AccountEndpointModeLabelContext): string | undefined {

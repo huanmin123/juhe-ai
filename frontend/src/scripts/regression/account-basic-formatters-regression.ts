@@ -213,6 +213,7 @@ function providerFixture(overrides: {
     protocolVersion: overrides.protocolVersion,
     baseUrl: 'https://example.com/v1',
     defaultTestModel: '',
+    defaultSupportedModels: ['gpt-5.5'],
     accountTypes: overrides.accountTypes,
     capabilities: [],
     protocolProfiles: []

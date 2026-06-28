@@ -1,0 +1,216 @@
+import { strict as assert } from 'node:assert'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { closeRedisClients } from '../../shared/redis-client.js'
+import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import {
+  getTableStorageOverviewAsync,
+  listDatabaseStorageHistoryAsync,
+  listTableStorageHistoryAsync
+} from '../../storage/table-monitor.repository.js'
+
+assert.equal(runtimeConfig.databaseDriver, 'postgres', '表监控 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
+
+const marker = `table_monitor_pg_smoke_${Date.now()}_${Math.random().toString(16).slice(2)}`
+const startAt = '2099-01-01T00:00:00.000Z'
+const middleAt = '2099-01-01T00:05:00.000Z'
+const endAt = '2099-01-01T00:10:00.000Z'
+const targetTableName = `tm_pg_smoke_target_${marker}`
+const otherTableName = `tm_pg_smoke_other_${marker}`
+const databaseSnapshotIds = [
+  `db_${marker}_business_old`,
+  `db_${marker}_business_new`,
+  `db_${marker}_stats_new`
+]
+const tableSnapshotIds = [
+  `tbl_${marker}_target_old`,
+  `tbl_${marker}_target_new`,
+  `tbl_${marker}_other_new`
+]
+const pool = await getPostgresPool()
+
+try {
+  await insertSmokeRows()
+
+  const overview = await getTableStorageOverviewAsync({ startAt, endAt, limit: 10 })
+  const businessDatabase = overview.databases.find((row) => row.databaseRole === 'business')
+  assert(businessDatabase, 'PG 表监控 overview 应返回 business 数据库快照')
+  assert.equal(businessDatabase.sampledAt, middleAt, 'overview 应读取 business 最新数据库快照')
+  assert.equal(businessDatabase.fileBytes, 4096, 'overview 应映射数据库 file_bytes')
+  assert.equal(businessDatabase.tableCount, 12, 'overview 应映射数据库 table_count')
+
+  const targetOverview = overview.tables.find((row) => row.databaseRole === 'business' && row.tableName === targetTableName)
+  assert(targetOverview, 'PG 表监控 overview 应返回目标表最新快照')
+  assert.equal(targetOverview.sampledAt, middleAt, 'overview 应读取目标表最新采样')
+  assert.equal(targetOverview.rowCount, 123, 'overview 应映射 row_count')
+  assert.equal(targetOverview.totalBytes, 3072, 'overview 应映射 total_bytes')
+  assert.equal(targetOverview.growthRows1h, 23, 'overview 应映射 1h 行增长')
+
+  const targetHistory = await listTableStorageHistoryAsync({
+    databaseRole: 'business',
+    tableName: targetTableName,
+    startAt,
+    endAt,
+    limit: 10
+  })
+  assert.deepEqual(targetHistory.map((row) => row.sampledAt), [startAt, middleAt], 'PG 表历史应按时间正序返回')
+  assert.deepEqual(targetHistory.map((row) => row.rowCount), [100, 123], 'PG 表历史应保留各采样 row_count')
+
+  const databaseHistory = await listDatabaseStorageHistoryAsync({ startAt, endAt, limit: 10 })
+  const smokeDatabaseHistory = databaseHistory.filter((row) => row.databasePath.includes(marker))
+  assert.deepEqual(
+    smokeDatabaseHistory.map((row) => `${row.databaseRole}:${row.sampledAt}`),
+    [`business:${startAt}`, `business:${middleAt}`, `stats:${middleAt}`],
+    'PG 数据库历史应按时间正序和数据库角色排序'
+  )
+
+  await assertTableMonitorExplainPlans()
+
+  console.log(JSON.stringify({
+    message: '表监控 PG smoke 通过',
+    databases: overview.databases.length,
+    tables: overview.tables.length,
+    tableHistory: targetHistory.length,
+    databaseHistory: smokeDatabaseHistory.length,
+    explainIndexed: true
+  }))
+} finally {
+  await cleanupSmokeRows()
+  await closeRedisClients()
+  await closePostgresPool()
+}
+
+async function insertSmokeRows(): Promise<void> {
+  await pool.query(`
+    INSERT INTO juhe_stats.database_storage_snapshots (
+      id, database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes,
+      page_size, page_count, freelist_count, used_bytes, free_bytes,
+      table_count, index_count, created_at
+    ) VALUES
+      ($1, 'business', $2, $3, 2048, 128, 64, 4096, 10, 1, 1900, 148, 10, 20, $3),
+      ($4, 'business', $2, $5, 4096, 256, 64, 4096, 20, 2, 3900, 196, 12, 24, $5),
+      ($6, 'stats', $7, $5, 8192, 512, 64, 4096, 30, 3, 7900, 292, 14, 28, $5)
+  `, [
+    databaseSnapshotIds[0],
+    `pg-smoke-business-${marker}`,
+    startAt,
+    databaseSnapshotIds[1],
+    middleAt,
+    databaseSnapshotIds[2],
+    `pg-smoke-stats-${marker}`
+  ])
+
+  await pool.query(`
+    INSERT INTO juhe_stats.table_storage_snapshots (
+      id, database_role, table_name, sampled_at, row_count, table_bytes, index_bytes,
+      total_bytes, page_count, index_count, growth_bytes_1h, growth_rows_1h,
+      growth_bytes_24h, growth_rows_24h, created_at
+    ) VALUES
+      ($1, 'business', $2, $3, 100, 1024, 512, 1536, 10, 2, 0, 0, 1000, 10, $3),
+      ($4, 'business', $2, $5, 123, 2048, 1024, 3072, 20, 3, 1536, 23, 2000, 40, $5),
+      ($6, 'stats', $7, $5, 7, 512, 256, 768, 5, 1, 128, 2, 256, 4, $5)
+  `, [
+    tableSnapshotIds[0],
+    targetTableName,
+    startAt,
+    tableSnapshotIds[1],
+    middleAt,
+    tableSnapshotIds[2],
+    otherTableName
+  ])
+}
+
+async function assertTableMonitorExplainPlans(): Promise<void> {
+  await assertIndexedPlan(
+    '表监控 overview 数据库快照 PG 查询',
+    `
+      SELECT database_role
+      FROM juhe_stats.database_storage_snapshots
+      WHERE database_role = $1
+        AND sampled_at >= $2
+        AND sampled_at <= $3
+      ORDER BY sampled_at DESC, id DESC
+      LIMIT 1
+    `,
+    ['business', startAt, endAt],
+    ['idx_database_storage_snapshots_role_time_id']
+  )
+  await assertIndexedPlan(
+    '表监控 overview 表快照 PG 查询',
+    `
+      SELECT table_name
+      FROM (
+        SELECT
+          table_name,
+          ROW_NUMBER() OVER (
+            PARTITION BY database_role, table_name
+            ORDER BY sampled_at DESC, id DESC
+          ) AS rank
+        FROM juhe_stats.table_storage_snapshots
+        WHERE sampled_at >= $1
+          AND sampled_at <= $2
+      ) ranked
+      WHERE ranked.rank = 1
+    `,
+    [startAt, endAt],
+    ['idx_table_storage_snapshots_time', 'idx_table_storage_snapshots_latest_id']
+  )
+  await assertIndexedPlan(
+    '表监控单表历史 PG 查询',
+    `
+      SELECT table_name
+      FROM juhe_stats.table_storage_snapshots
+      WHERE database_role = $1
+        AND table_name = $2
+        AND sampled_at >= $3
+        AND sampled_at <= $4
+      ORDER BY sampled_at DESC
+      LIMIT 10
+    `,
+    ['business', targetTableName, startAt, endAt],
+    ['idx_table_storage_snapshots_latest', 'idx_table_storage_snapshots_latest_id', 'table_storage_snapshots_database_role_table_name_sampled_at_key']
+  )
+  await assertIndexedPlan(
+    '表监控数据库历史 PG 查询',
+    `
+      SELECT database_role
+      FROM juhe_stats.database_storage_snapshots
+      WHERE database_role = $1
+        AND sampled_at >= $2
+        AND sampled_at <= $3
+      ORDER BY sampled_at DESC, id DESC
+      LIMIT 10
+    `,
+    ['business', startAt, endAt],
+    ['idx_database_storage_snapshots_role_time_id']
+  )
+}
+
+async function assertIndexedPlan(label: string, sql: string, params: unknown[], expectedIndexes: string[]): Promise<void> {
+  const connection = await pool.connect()
+  try {
+    await connection.query('BEGIN')
+    await connection.query('SET LOCAL enable_seqscan = off')
+    const planResult = await connection.query(`EXPLAIN (COSTS OFF) ${sql}`, params)
+    await connection.query('ROLLBACK')
+    const plan = planResult.rows
+      .map((row: Record<string, unknown>) => String(row['QUERY PLAN'] ?? ''))
+      .filter(Boolean)
+      .join('\n')
+    assert(!/\bSeq Scan\b/i.test(plan), `${label} 不应退化为 Seq Scan，实际计划：${plan}`)
+    assert(
+      expectedIndexes.some((indexName) => plan.includes(indexName)),
+      `${label} 应命中索引 ${expectedIndexes.join(' / ')}，实际计划：${plan}`
+    )
+  } catch (error) {
+    await connection.query('ROLLBACK').catch(() => undefined)
+    throw error
+  } finally {
+    connection.release()
+  }
+}
+
+async function cleanupSmokeRows(): Promise<void> {
+  await pool.query('DELETE FROM juhe_stats.table_storage_snapshots WHERE id = ANY($1::text[])', [tableSnapshotIds])
+  await pool.query('DELETE FROM juhe_stats.database_storage_snapshots WHERE id = ANY($1::text[])', [databaseSnapshotIds])
+}

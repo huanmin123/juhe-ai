@@ -108,8 +108,8 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
       providerCode: 'gpt',
       description: '分组管理PG回归重复'
     }, adminAccess),
-    /同一协议档案下分组名称已存在/,
-    '异步创建分组不能重复同协议档案名称'
+    /同一供应商下分组名称已存在/,
+    '异步创建分组不能重复同供应商名称'
   )
 
   const renamed = await repositories.updateGroupAsync(created.id, {

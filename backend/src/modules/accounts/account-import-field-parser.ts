@@ -164,6 +164,10 @@ export function optionalStringArrayField(record: Record<string, unknown>, key: s
     messages.push(`${label}必须是非空字符串数组`)
     return undefined
   }
+  if (value.length === 0) {
+    messages.push(`${label}必须是非空字符串数组`)
+    return undefined
+  }
   const items: string[] = []
   for (const item of value) {
     if (typeof item !== 'string' || !item.trim()) {

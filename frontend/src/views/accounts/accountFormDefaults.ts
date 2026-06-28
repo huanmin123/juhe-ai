@@ -55,13 +55,26 @@ export function defaultAccountForm(
     priority: 0,
     clientCompatibility,
     supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile }),
-    supportedModels: [],
+    supportedModels: defaultSupportedModelsForProvider(provider),
     modelMappings: [],
     tags: [],
     proxyProfileId: undefined,
     availabilitySchedule: createAccountAvailabilityScheduleForm(),
     notes: ''
   }
+}
+
+function defaultSupportedModelsForProvider(provider: ProviderDefinition | undefined): string[] {
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const item of provider?.defaultSupportedModels ?? []) {
+    const model = item.trim()
+    const key = model.toLowerCase()
+    if (!model || seen.has(key)) continue
+    seen.add(key)
+    output.push(model)
+  }
+  return output
 }
 
 export function compactAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
