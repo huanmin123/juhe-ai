@@ -163,12 +163,12 @@ export function assertAccountModelMappingUpstreamsAllowedBySupportedModels(
   mappings: AccountModelMapping[],
   supportedModels: string[]
 ): void {
-  const supportedModelSet = new Set(supportedModels.map((model) => model.trim().toLowerCase()).filter(Boolean))
+  const supportedModelSet = new Set(supportedModels.map((model) => model.trim()).filter(Boolean))
   if (!supportedModelSet.size || !mappings.length) return
 
   const invalidUpstreamModels = mappings
     .map((mapping) => mapping.upstreamModel)
-    .filter((model) => !supportedModelSet.has(model.trim().toLowerCase()))
+    .filter((model) => !supportedModelSet.has(model.trim()))
   if (invalidUpstreamModels.length > 0) {
     throw new Error(`映射上游模型只能选择账户支持模型：${invalidUpstreamModels.slice(0, 5).join('、')}`)
   }

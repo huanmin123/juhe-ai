@@ -302,23 +302,6 @@ async function enqueuePublicApiLogToRedisStream(input: PublicApiLogInput): Promi
     await publicApiLogRedisStreamQueue().enqueue(input)
   } catch (error) {
     recordPublicApiLogDispatchFailure(error, input)
-    fallbackPublicApiLogAfterRedisStreamFailure(input)
-  }
-}
-
-function fallbackPublicApiLogAfterRedisStreamFailure(input: PublicApiLogInput): void {
-  if (runtimeConfig.processRole === 'server') {
-    if (!sendPublicApiLogsToWorker([input])) {
-      recordPublicApiLogDispatchFailure(new Error('ingest-worker IPC 不可用'), input)
-    }
-    return
-  }
-  if (runtimeConfig.processRole === 'db-service') {
-    sendPublicApiLogToParent(input)
-    return
-  }
-  if (isPublicApiLogIngestWorker()) {
-    enqueuePublicApiLogsLocal([input])
   }
 }
 

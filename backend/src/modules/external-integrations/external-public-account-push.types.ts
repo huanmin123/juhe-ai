@@ -22,7 +22,6 @@ export interface PublicAccountPushInput {
 export interface PublicAccountUpdateInput {
   accountId: string
   targetUsername?: string
-  targetDisplayName?: string
   targetGroupName?: string
   providerCode?: string
   providerProtocolProfileId?: string
@@ -217,9 +216,9 @@ export interface PublicApiKeyResponse {
 
 export interface PublicApiKeyListInput {
   targetUsername: string
+  routeStrategyId?: string
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
-  groupId?: string
   page?: number
   pageSize?: number
 }

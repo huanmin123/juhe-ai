@@ -232,7 +232,6 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       const saved = await saveCustomProviderModelAsync({
         ...parsed.data,
         providerCode: provider.code,
-        scope: 'personal',
         systemAccountId: ownerSystemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
@@ -380,9 +379,8 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
     const providerCode = option.providerCode.trim()
     const model = option.model.trim()
     if (!providerCode || !model) continue
-    const normalizedModel = model.toLowerCase()
     const normalizedProviderCode = providerCode.toLowerCase()
-    const providerModelKey = `${normalizedProviderCode}\n${normalizedModel}`
+    const providerModelKey = `${normalizedProviderCode}\n${model}`
     if (seenProviderModels.has(providerModelKey)) continue
     seenProviderModels.add(providerModelKey)
     result.push({ providerCode, model })
@@ -425,7 +423,7 @@ async function validateDefaultTestModelSelection(input: {
     includeInactive: true,
     includeUnpriced: true
   })
-  const item = catalog.find((entry) => entry.model.trim().toLowerCase() === model.toLowerCase())
+  const item = catalog.find((entry) => entry.model.trim() === model)
   if (!item) {
     return { success: false, message: `模型不在当前用户可见目录中：${model}` }
   }
@@ -462,7 +460,7 @@ function booleanQueryValue(value: unknown): boolean | undefined {
 }
 
 function canMutateCustomModel(
-  scope: 'global' | 'personal',
+  scope: 'personal',
   ownerSystemAccountId: string | undefined,
   context: { systemAccountId: string; role: string }
 ): boolean {
@@ -508,13 +506,13 @@ async function validateCustomModelPricing(input: {
   if (!pricingModel) {
     return { success: true }
   }
-  if (model && model.toLowerCase() === pricingModel.toLowerCase()) {
+  if (model && model === pricingModel) {
     return { success: false, message: 'pricingModel 不能指向当前模型自身' }
   }
   const pricingTarget = (await listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.ownerSystemAccountId
-  })).find((item) => item.model.toLowerCase() === pricingModel.toLowerCase())
+  })).find((item) => item.model === pricingModel)
   if (!pricingTarget) {
     return { success: false, message: `pricingModel 不存在：${pricingModel}` }
   }

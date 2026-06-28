@@ -369,33 +369,6 @@ async function enqueueRecordMaintenanceJobToRedisStream(job: RecordMaintenanceJo
     await recordMaintenanceRedisStreamQueue().enqueue(job)
   } catch (error) {
     recordRecordMaintenanceDispatchFailure(error, job)
-    fallbackRecordMaintenanceJobAfterRedisStreamFailure(job)
-  }
-}
-
-function fallbackRecordMaintenanceJobAfterRedisStreamFailure(job: RecordMaintenanceJob): void {
-  if (runtimeConfig.processRole === 'server') {
-    if (!sendRecordMaintenanceJobsToWorker([job])) {
-      recordRecordMaintenanceDispatchFailure(new Error('后台 worker IPC 不可用'), job)
-    }
-    return
-  }
-  if (runtimeConfig.processRole === 'db-service') {
-    if (!sendRecordMaintenanceJobToParent(job)) {
-      recordRecordMaintenanceDispatchFailure(new Error('DB service 无父进程 IPC'), job)
-    }
-    return
-  }
-  if (runtimeConfig.processRole === 'worker'
-    && runtimeConfig.workerRole !== 'ingest-worker'
-    && !canProcessRecordMaintenanceJobLocally(job)) {
-    if (!sendRecordMaintenanceJobToParent(job)) {
-      recordRecordMaintenanceDispatchFailure(new Error('非 ingest worker 无父进程 IPC'), job)
-    }
-    return
-  }
-  if (canProcessRecordMaintenanceJobLocally(job)) {
-    enqueueRecordMaintenanceJobLocal(job)
   }
 }
 

@@ -271,9 +271,8 @@ const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
   const seen = new Set<string>()
   for (const item of props.form.supportedModels) {
     const model = item.trim()
-    const key = model.toLowerCase()
-    if (!model || seen.has(key)) continue
-    seen.add(key)
+    if (!model || seen.has(model)) continue
+    seen.add(model)
     output.push({ label: model, value: model })
   }
   return output

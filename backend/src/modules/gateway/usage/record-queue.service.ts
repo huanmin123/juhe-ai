@@ -428,25 +428,6 @@ async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise
     await usageRecordRedisStreamQueue().enqueue(input)
   } catch (error) {
     recordUsageRecordDispatchFailure(error, input)
-    fallbackUsageRecordAfterRedisStreamFailure(input)
-  }
-}
-
-function fallbackUsageRecordAfterRedisStreamFailure(input: UsageRecordInput): void {
-  if (shouldDispatchUsageRecordToIngestWorker()) {
-    if (!sendUsageRecordsToWorker([input])) {
-      recordUsageRecordDispatchFailure(new Error('ingest-worker IPC 不可用'), input)
-    }
-    return
-  }
-  if (runtimeConfig.processRole === 'db-service' && !isDbServiceLocalUsageRecordWriteAllowedForTest()) {
-    if (!sendUsageRecordFromDbServiceToServer(input)) {
-      recordUsageRecordDispatchFailure(new Error('DB service 无父进程 IPC'), input)
-    }
-    return
-  }
-  if (isLocalUsageRecordWriteAllowed()) {
-    enqueueUsageRecordLocal(input)
   }
 }
 

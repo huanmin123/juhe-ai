@@ -598,7 +598,7 @@ function normalizedProviderRouteCodes(providerCodes: string[]): string[] {
 }
 
 function normalizeProviderModelRouteKey(model: string | null | undefined): string {
-  return typeof model === 'string' ? model.trim().toLowerCase() : ''
+  return typeof model === 'string' ? model.trim() : ''
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {

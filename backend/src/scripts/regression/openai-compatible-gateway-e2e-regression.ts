@@ -165,7 +165,8 @@ function registerCustomModels(): void {
     saveCustomProviderModel({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       model,
-      scope: 'global',
+      scope: 'personal',
+      systemAccountId: access.systemAccountId,
       status: 'active',
       supportedApiProtocols: ['chat_completions', 'responses'],
       inputUsdPer1M: 1,

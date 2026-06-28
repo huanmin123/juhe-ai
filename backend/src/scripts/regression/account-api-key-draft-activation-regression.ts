@@ -23,6 +23,7 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const draftChatSourceModel = 'gpt-draft-activation-chat-source'
+const draftChatCaseSourceModel = 'GPT-draft-activation-chat-source'
 const draftChatUpstreamModel = 'gpt-draft-activation-chat-upstream'
 
 const [
@@ -133,7 +134,7 @@ function apiKeyActivationRequest(input: {
     priority: 0,
     clientCompatibility: 'codex_responses' as const,
     supportedModels: [draftChatUpstreamModel],
-    modelMappings: [draftChatAliasMapping()],
+    modelMappings: [draftChatAliasMapping(), draftChatCaseAliasMapping()],
     notes: 'API Key 草稿测试成功后保存应直接启用'
   }
 }
@@ -142,7 +143,18 @@ function registerDraftModelCatalog(systemAccountId: string): void {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: draftChatSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: systemAccountId,
+    supportedApiProtocols: ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GPT_VENDOR_CODE,
+    model: draftChatCaseSourceModel,
+    scope: 'personal',
+    systemAccountId: systemAccountId,
     supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -151,7 +163,8 @@ function registerDraftModelCatalog(systemAccountId: string): void {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: draftChatUpstreamModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: systemAccountId,
     supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -162,6 +175,16 @@ function registerDraftModelCatalog(systemAccountId: string): void {
 function draftChatAliasMapping(): AccountModelMapping {
   return {
     sourceModel: draftChatSourceModel,
+    sourceEndpointFamily: 'chat_completions',
+    upstreamModel: draftChatUpstreamModel,
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }
+}
+
+function draftChatCaseAliasMapping(): AccountModelMapping {
+  return {
+    sourceModel: draftChatCaseSourceModel,
     sourceEndpointFamily: 'chat_completions',
     upstreamModel: draftChatUpstreamModel,
     upstreamEndpointFamily: 'chat_completions',

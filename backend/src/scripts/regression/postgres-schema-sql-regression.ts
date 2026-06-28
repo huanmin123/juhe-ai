@@ -23,9 +23,9 @@ assert.equal(
   'juhe_usage schema 应包含高性能模式使用记录主表'
 )
 assert.equal(
-  statements.some((statement) => statement.schemaName === 'juhe_usage' && statement.source === 'usage-records-supplemental'),
-  true,
-  'juhe_usage schema 应包含使用记录主表补列语句'
+  statements.some((statement) => /\bsupplemental\b/.test(statement.source)),
+  false,
+  'PostgreSQL schema 不应再生成补列类 supplemental 语句'
 )
 assertPostgresCreateTableOrder(statements)
 
@@ -36,7 +36,7 @@ for (const schemaName of schemaNames) {
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_records/, '应包含使用记录主表 schema')
-assert.match(sql, /ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS failure_attribution text/, '应包含使用记录失败归因补列语句')
+assert.match(sql, /usage_records[\s\S]+failure_attribution text/, '使用记录主表建表语句应直接包含失败归因字段')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Codex context schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
@@ -49,18 +49,20 @@ assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_owner_list_order\s+ON accounts\(system_account_id, priority ASC, created_at ASC, id ASC\)\s+WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL/, 'PG 自有账户列表默认排序必须有 owner/order 部分索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_lower_lookup\s+ON accounts\(system_account_id, lower\(name\), id\)\s+WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL/, 'PG 自有账户名称精确/前缀查询必须有 owner/lower(name) 部分索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_name_lower_lookup ON accounts\(lower\(name\), id\) WHERE deleted_at IS NULL/, 'PG 全局账户名称前缀搜索必须有 lower(name) 表达式索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts\(\(lower\(name\) COLLATE "C"\), id\) WHERE deleted_at IS NULL/, 'PG 全局账户名称前缀搜索必须有 C collation 表达式索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts\(system_account_id, \(lower\(name\) COLLATE "C"\), id\) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL/, 'PG 自有账户名称前缀搜索必须有 owner + C collation 表达式索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_owner_term\s+ON account_name_search_terms\(system_account_id, term, account_id\)/, 'PG AI 账户名称包含候选查询必须有 owner/term/account 覆盖索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_group_accounts_owner_group_enabled ON group_accounts\(system_account_id, group_id, enabled, account_id\)/, 'PG AI 账户分组筛选必须有 owner/group/enabled 覆盖索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_tag_owner ON account_tag_bindings\(tag_id, system_account_id, account_id\)/, 'PG AI 账户标签筛选必须有 tag/owner/account 覆盖索引')
-assert.match(sql, /DROP INDEX IF EXISTS idx_accounts_health_check_due/, 'PG 账号探测应删除旧 health due 索引，避免抢占 profile 前导索引')
-assert.match(sql, /DROP INDEX IF EXISTS idx_accounts_cooldown_retest_due/, 'PG 账号探测应删除旧 cooldown due 索引，避免抢占 profile 前导索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_account_shape\s+ON usage_records\(account_id, created_at DESC, id DESC, provider_code\)\s+WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway'[\s\S]+endpoint IS NOT NULL AND btrim\(endpoint\) <> ''/, 'PG 最近 OpenAI 请求形状账户回查必须有账号维度部分索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_group_shape\s+ON usage_records\(group_id, created_at DESC, id DESC, provider_code\)\s+WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway'[\s\S]+endpoint IS NOT NULL AND btrim\(endpoint\) <> ''/, 'PG 最近 OpenAI 请求形状分组回查必须有分组维度部分索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_trace_c_created_sort ON usage_record_shard_entries\(\(trace_id COLLATE "C"\), created_at DESC, usage_id DESC\)/, 'PG 使用记录 trace 前缀查询必须有 C collation 前缀索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort ON usage_record_shard_entries\(\(client_ip COLLATE "C"\), created_at DESC, usage_id DESC\)/, 'PG 使用记录 client IP 前缀查询必须有 C collation 前缀索引')
-assert.match(sql, /DROP INDEX IF EXISTS idx_groups_owner_provider_default_unique/, '默认分组 provider 级旧唯一索引应在 PG schema 初始化时删除')
 assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups\(system_account_id, provider_code\) WHERE is_default = 1/, '默认分组不应再按 provider_code 限制唯一')
 assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_protocol_profile_default_unique ON groups\(system_account_id, provider_protocol_profile_id\) WHERE is_default = 1/, '默认分组应按 provider protocol profile 保持唯一')
+assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique\s+ON custom_provider_models\(provider_code, system_account_id, model\)\s+WHERE scope = 'personal'/, '自定义模型唯一索引应保留模型 ID 大小写语义')
+assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique_lower[\s\S]+lower\(model\)/, '自定义模型不应再用 lower(model) 限制唯一')
+assert.doesNotMatch(sql, /idx_provider_default_test_models_model\s+ON provider_default_test_models\(provider_code, lower\(model\), system_account_id\)/, '默认测试模型索引不应再折叠模型 ID 大小写')
 assert.doesNotMatch(sql, /CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique ON route_strategies\(system_account_id\) WHERE is_default = 1/, '默认策略路由不应再限制为每个系统账户唯一')
 assert.doesNotMatch(sql, /client_profile text NOT NULL DEFAULT 'auto'/, 'api_keys 建表语句不应再包含 client_profile 字段')
 assert.doesNotMatch(sql, /explicit_hybrid_route_rules_json text/, 'api_keys 建表语句不应再包含 explicit_hybrid_route_rules_json 字段')
@@ -69,6 +71,8 @@ assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXIST
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS client_profile text NOT NULL DEFAULT 'auto'/, 'PostgreSQL schema 不应再补 client_profile')
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS explicit_hybrid_route_rules_json text/, 'PostgreSQL schema 不应再补 explicit_hybrid_route_rules_json')
 assert.doesNotMatch(sql, /ALTER TABLE openai_compatible_files ADD COLUMN container_id\b/, 'PostgreSQL schema 不应重复为 openai_compatible_files.container_id 补列')
+assert.doesNotMatch(sql, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含运行时补列语句')
+assert.doesNotMatch(sql, /\bDROP INDEX\b/i, 'PostgreSQL schema 不应包含旧索引清理语句')
 
 assert.doesNotMatch(sql, /\bPRAGMA\b/i, 'PostgreSQL SQL 不应残留 SQLite PRAGMA')
 assert.doesNotMatch(sql, /COLLATE\s+NOCASE/i, 'PostgreSQL SQL 不应残留 SQLite NOCASE collation')

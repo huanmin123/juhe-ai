@@ -176,6 +176,37 @@ const performanceDefaultResult = spawnRegression({
 
 assertRegressionSuccess(performanceDefaultResult)
 
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0'
+}), /JUHE_AI_REDIS_QUEUE_URL/, '高性能模式必须显式配置 Redis queue URL，不能自动复用 Redis state URL')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'fast',
+  JUHE_AI_DATABASE_DRIVER: 'sqlite',
+  JUHE_AI_CACHE_DRIVER: 'memory',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
+  JUHE_AI_QUEUE_DRIVER: 'memory'
+}), /JUHE_AI_RUNTIME_MODE/, '非法运行模式必须 fail-fast，不能回落 standalone')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'standalone',
+  JUHE_AI_DATABASE_DRIVER: 'sqlite',
+  JUHE_AI_CACHE_DRIVER: 'memory',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
+  JUHE_AI_QUEUE_DRIVER: 'memory',
+  JUHE_AI_PORT: '70000'
+}), /JUHE_AI_PORT/, '非法数字配置必须 fail-fast，不能截断或回默认值')
+
 const overlayDir = mkdtempSync(join(tmpdir(), 'juhe-ai-runtime-config-'))
 const overlayPath = join(overlayDir, 'performance.env')
 writeFileSync(overlayPath, [
@@ -238,6 +269,15 @@ function assertRegressionSuccess(result: ReturnType<typeof spawnSync>): void {
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
   process.exit(result.status ?? 1)
+}
+
+function assertRegressionFailure(result: ReturnType<typeof spawnSync>, pattern: RegExp, message: string): void {
+  if (result.status !== 0 && pattern.test(`${result.stdout}\n${result.stderr}`)) {
+    return
+  }
+  process.stdout.write(result.stdout)
+  process.stderr.write(result.stderr)
+  throw new Error(message)
 }
 
 function normalizePath(path: string): string {

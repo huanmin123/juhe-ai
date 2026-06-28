@@ -1,6 +1,6 @@
 # Docker 部署
 
-这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务，并默认复用 Redis state 承接 Redis Streams 队列。
+这是轻量 Docker 入口。默认单容器运行 Web、管理 API、`/v1` 网关、background worker 和 DB service，不需要额外 Nginx、Redis、PostgreSQL 或独立 worker 容器。高性能模式使用 `compose.performance.yml` 部署 PostgreSQL、PgBouncer、Redis cache、Redis state 和应用服务，并要求显式配置 Redis queue URL 承接 Redis Streams 队列；queue 可以指向 Redis state，也可以使用独立 Redis 实例。
 
 ## 文件说明
 

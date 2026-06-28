@@ -607,9 +607,8 @@ function providerDefaultSupportedModels(value: unknown): string[] {
   const seen = new Set<string>()
   for (const item of parseJsonArray(value)) {
     const model = item.trim()
-    const key = model.toLowerCase()
-    if (!model || seen.has(key)) continue
-    seen.add(key)
+    if (!model || seen.has(model)) continue
+    seen.add(model)
     output.push(model)
   }
   return output

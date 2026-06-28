@@ -32,7 +32,7 @@ const refreshSource = readFileSync(resolve('src/modules/openai-oauth/openai-oaut
 assert.match(refreshSource, /sanitizeOpenAIOAuthErrorMessage\(error instanceof Error \? error\.message : 'OpenAI OAuth 访问令牌刷新失败'\)/, 'OAuth 后台刷新失败写入账户异常前必须清洗错误消息')
 const routesSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.routes.ts'), 'utf8')
 assert.match(routesSource, /function oauthErrorMessage[\s\S]*sanitizeOpenAIOAuthErrorMessage/, 'OAuth 路由返回 502 错误前必须统一清洗错误消息')
-assert.match(routesSource, /createAccountAsync/, 'OAuth 管理端创建账户必须走 async repository，避免高性能模式回落同步写库')
+assert.match(routesSource, /createAccountAsync/, 'OAuth 管理端创建账户必须走 async repository，避免高性能模式误入同步写库')
 assert.match(routesSource, /findAccountForTestAsync/, 'OAuth 管理端读取账户必须走 async repository，避免阻塞系统 API')
 assert.match(routesSource, /findGroupSummaryAsync/, 'OAuth 管理端分组校验必须走 async repository')
 assert.match(routesSource, /listProvidersAsync/, 'OAuth 管理端供应商读取必须走 async repository')

@@ -83,9 +83,9 @@ export function buildPricingTemplateOptions(
   currentModel: string,
   category: ModelCategoryKey
 ) {
-  const normalizedCurrentModel = currentModel.trim().toLowerCase()
+  const normalizedCurrentModel = currentModel.trim()
   return models
-    .filter((item) => item.model.toLowerCase() !== normalizedCurrentModel)
+    .filter((item) => item.model.trim() !== normalizedCurrentModel)
     .filter((item) => getModelCategory(item) === category)
     .filter((item) => (item.status ?? 'active') === 'active')
     .filter((item) => !item.pricingModel && hasDirectModelPrice(item))

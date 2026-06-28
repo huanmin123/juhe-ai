@@ -536,33 +536,14 @@ async function enqueueAuditLogToRedisStream(input: AuditLogInput): Promise<void>
   try {
     await auditLogRedisStreamQueue().enqueue(input)
   } catch (error) {
-    logger.warn(errorLogFields(error, {
+    logger.error(errorLogFields(error, {
       event: 'audit_log_redis_stream_enqueue_failed',
       auditLogId: input.id,
       traceId: input.traceId,
       auditOutcome: input.auditOutcome,
       success: input.success
-    }), '审计日志写入 Redis Stream 失败，回退到原有队列路径')
-    fallbackAuditLogAfterRedisStreamFailure(input)
-  }
-}
-
-function fallbackAuditLogAfterRedisStreamFailure(input: AuditLogInput): void {
-  if (shouldDispatchAuditLogToIngestWorker()) {
-    const dispatched = sendAuditLogsToWorker([input])
-    if (!dispatched) {
-      recordAuditLogDispatchFailure(input)
-    }
-    return
-  }
-  if (runtimeConfig.processRole === 'db-service' && !isDbServiceLocalAuditLogWriteAllowedForTest()) {
-    if (!sendAuditLogFromDbServiceToServer(input)) {
-      recordAuditLogDispatchFailure(input)
-    }
-    return
-  }
-  if (isLocalAuditLogWriteAllowed()) {
-    enqueueAuditLogLocal(input)
+    }), '审计日志写入 Redis Stream 失败，未切换到 IPC 或本地队列，已丢弃本条')
+    recordAuditLogDispatchFailure(input)
   }
 }
 

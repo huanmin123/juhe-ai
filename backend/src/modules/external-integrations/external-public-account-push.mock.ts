@@ -25,6 +25,7 @@ import type {
 export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | PublicAccountUpdateInput): PublicAccountPushResponse {
   const generatedAt = new Date().toISOString()
   const username = normalizedText(input.targetUsername) || 'huanmin'
+  const targetDisplayName = 'targetDisplayName' in input ? normalizedText(input.targetDisplayName) : ''
   const groupName = normalizedText(input.targetGroupName) || '福利'
   const providerCode = normalizedText(input.providerCode) || 'gpt'
   const accountName = normalizedText(input.name) || '公益站测试账号'
@@ -34,7 +35,7 @@ export function mockPublicWelfareAccountPush(input: PublicAccountPushInput | Pub
     action: 'mock',
     target: {
       username,
-      displayName: normalizedText(input.targetDisplayName) || username,
+      displayName: targetDisplayName || username,
       systemAccountId: 'mock_system_account_huanmin',
       created: false,
       groupId: 'mock_group_welfare',
@@ -220,12 +221,12 @@ export function mockPublicApiKeyList(input: PublicApiKeyListInput): PublicApiKey
     hasMore: false,
     items: [
       {
-        id: normalizedText(input.groupId) ? 'mock_api_key_public_bound' : 'mock_api_key_public',
+        id: normalizedText(input.routeStrategyId) ? 'mock_api_key_public_bound' : 'mock_api_key_public',
         name: normalizedText(input.keyword) || '公开接口 API Key',
         keyPrefix: 'juis_mock',
         status: input.status === 'disabled' ? 'disabled' : 'active',
-        routeStrategyId: 'mock_route_strategy_public',
-        routeStrategyName: normalizedText(input.groupId) ? '公开接口分组策略路由' : '公开接口策略路由',
+        routeStrategyId: normalizedText(input.routeStrategyId) || 'mock_route_strategy_public',
+        routeStrategyName: normalizedText(input.routeStrategyId) ? '公开接口指定策略路由' : '公开接口策略路由',
         routeStrategyMode: 'normal',
         routeStrategyStatus: 'active'
       }

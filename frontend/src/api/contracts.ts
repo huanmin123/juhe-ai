@@ -175,7 +175,6 @@ export interface ApiKeyListParams extends ListParams {
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
   routeStrategyId?: string
-  groupId?: string
 }
 
 export interface UsageRecordListParams extends ListParams {

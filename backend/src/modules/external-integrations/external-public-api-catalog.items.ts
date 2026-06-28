@@ -389,16 +389,16 @@ export const externalPublicApiDocItems = [
 {
   id: 'api-key-list',
   name: 'API Key 列表',
-  summary: '分页读取指定系统用户名下的 API Key 摘要和分组绑定；不会返回 API Key 明文。',
+  summary: '分页读取指定系统用户名下的 API Key 摘要和策略路由信息；不会返回 API Key 明文。',
   status: 'mock',
   method: 'GET',
   path: '/__aipublic__/api-key/list',
   headers: [authHeader],
   query: [
     { name: 'targetUsername', type: 'string', required: true, description: '目标系统用户账号。', example: 'huanmin' },
+    { name: 'routeStrategyId', type: 'string', required: false, description: '按策略路由 ID 筛选。', example: 'rts_xxx' },
     { name: 'keyword', type: 'string', required: false, description: '按 API Key 名称精确 / 前缀筛选。', example: '公益站访问密钥' },
     { name: 'status', type: 'string', required: false, description: '状态筛选：active、disabled 或 all。', example: 'active' },
-    { name: 'groupId', type: 'string', required: false, description: '按任意绑定分组筛选。', example: 'grp_xxx' },
     { name: 'page', type: 'number', required: false, description: '分页页码，默认 1。', example: 1 },
     { name: 'pageSize', type: 'number', required: false, description: '每页数量，范围 1 到 100。', example: 20 }
   ],
@@ -637,7 +637,7 @@ export const externalPublicApiDocItems = [
 {
   id: 'api-key-update',
   name: 'API Key 修改',
-  summary: '修改指定 API Key 的名称、状态、分组绑定、额度或时间计划。',
+  summary: '修改指定 API Key 的名称、状态、策略路由绑定、额度或时间计划。',
   status: 'mock',
   method: 'POST',
   path: '/__aipublic__/api-key/update',
@@ -892,7 +892,6 @@ export const externalPublicApiDocItems = [
     fields: [
       { name: 'accountId', type: 'string', required: true, description: '账号新增或列表响应返回的账号 ID。', example: 'acc_xxx' },
       { name: 'targetUsername', type: 'string', required: false, description: '可选校验条件。提供时必须与账号归属目标用户一致。', example: 'huanmin' },
-      { name: 'targetDisplayName', type: 'string', required: false, description: '兼容字段，修改时不会自动创建或改名目标用户。', example: '欢民' },
       { name: 'targetGroupName', type: 'string', required: false, description: '可选校验条件。提供时账号必须在该目标分组内。', example: '福利' },
       { name: 'providerCode', type: 'string', required: false, description: '可选校验条件。提供时必须与账号供应商一致。', example: GPT_VENDOR_CODE },
       { name: 'providerProtocolProfileId', type: 'string', required: false, description: '可选校验条件。提供时必须与账号协议档案一致。', example: 'profile_gpt_openai_v1' },

@@ -314,40 +314,6 @@ async function enqueueOperationLogToRedisStream(input: OperationLogInput): Promi
     await operationLogRedisStreamQueue().enqueue(input)
   } catch (error) {
     recordOperationLogDispatchFailure(error, input)
-    fallbackOperationLogAfterRedisStreamFailure(input)
-  }
-}
-
-function fallbackOperationLogAfterRedisStreamFailure(input: OperationLogInput): void {
-  if (shouldDispatchOperationLogToIngestWorker()) {
-    if (!sendOperationLogsToWorker([input])) {
-      recordOperationLogDispatchFailure(new Error('ingest-worker IPC 不可用'), input)
-    }
-    return
-  }
-
-  if (runtimeConfig.processRole === 'db-service') {
-    if (process.send && process.connected !== false) {
-      try {
-        process.send({
-          type: 'background_worker_operation_logs',
-          items: [input]
-        }, (error) => {
-          if (error) {
-            recordOperationLogDispatchFailure(error, input)
-          }
-        })
-      } catch (error) {
-        recordOperationLogDispatchFailure(error, input)
-      }
-      return
-    }
-    recordOperationLogDispatchFailure(new Error('DB service 无父进程 IPC'), input)
-    return
-  }
-
-  if (isOperationLogIngestWorker()) {
-    enqueueOperationLogLocal(input)
   }
 }
 

@@ -550,7 +550,8 @@ function loadAiPerformanceAccountOptionRows(
   const accountRows = getBusinessDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
-    WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
+    WHERE accounts.deleted_at IS NULL
+      AND lower(accounts.name) >= ? AND lower(accounts.name) < ?
       ${visibleFilter.sql}
     ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
     LIMIT ?
@@ -561,7 +562,9 @@ function loadAiPerformanceAccountOptionRows(
     FROM accounts source_accounts
     INNER JOIN accounts instance_accounts
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-    WHERE lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
+    WHERE source_accounts.deleted_at IS NULL
+      AND instance_accounts.deleted_at IS NULL
+      AND lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
     ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
     LIMIT ?
@@ -587,24 +590,69 @@ async function loadAiPerformanceAccountOptionRowsAsync(
   }
 
   const keywordPrefix = normalizeAccountNamePrefix(keyword)
-  const visibleFilter = aiPerformanceVisibleAccountFilterForClient(client, scope)
-  const accountRows = await client.query<{ id: string }>(`
-    SELECT accounts.id
-    FROM ${businessTable(client, 'accounts')} accounts
-    WHERE LOWER(accounts.name) >= ? AND LOWER(accounts.name) < ? AND starts_with(LOWER(accounts.name), ?)
-      ${visibleFilter.sql}
-    ORDER BY LOWER(accounts.name) ASC, accounts.id ASC
-    LIMIT ?
-  `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...visibleFilter.params, options.limit])
+  const accountsTable = businessTable(client, 'accounts')
+  const accountRows = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID
+    ? await client.query<{ id: string }>(`
+      SELECT accounts.id
+      FROM ${accountsTable} accounts
+      WHERE accounts.deleted_at IS NULL
+        AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
+      ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+      LIMIT ?
+    `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])
+    : uniqueNonEmpty([
+      ...(await client.query<{ id: string }>(`
+        SELECT accounts.id
+        FROM ${accountsTable} accounts
+        WHERE accounts.system_account_id = ?
+          AND accounts.deleted_at IS NULL
+          AND accounts.authorization_instance_authorization_id IS NULL
+          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
+        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        LIMIT ?
+      `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
+      ...(await client.query<{ id: string }>(`
+        SELECT accounts.id
+        FROM ${accountsTable} accounts
+        WHERE accounts.system_account_id = ?
+          AND accounts.deleted_at IS NULL
+          AND accounts.authorization_instance_authorization_id IS NOT NULL
+          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
+        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        LIMIT ?
+      `, [scope.systemAccountId, keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, options.limit])).map((row) => row.id),
+      ...(await client.query<{ id: string }>(`
+        SELECT accounts.id
+        FROM ${accountsTable} accounts
+        WHERE accounts.deleted_at IS NULL
+          AND LOWER(accounts.name) COLLATE "C" >= ? AND LOWER(accounts.name) COLLATE "C" < ? AND starts_with(LOWER(accounts.name), ?)
+          AND EXISTS (
+            SELECT 1
+            FROM ${businessTable(client, 'group_accounts')} visible_group_accounts
+            INNER JOIN ${businessTable(client, 'resource_authorizations')} visible_group_authorization_rows
+              ON visible_group_authorization_rows.resource_type = 'group'
+              AND visible_group_authorization_rows.resource_id = visible_group_accounts.group_id
+              AND visible_group_authorization_rows.grantee_system_account_id = ?
+              AND visible_group_authorization_rows.status = 'active'
+              AND (visible_group_authorization_rows.expires_at IS NULL OR visible_group_authorization_rows.expires_at > ?)
+            WHERE visible_group_accounts.account_id = accounts.id
+              AND visible_group_accounts.enabled = 1
+          )
+        ORDER BY LOWER(accounts.name) COLLATE "C" ASC, accounts.id ASC
+        LIMIT ?
+      `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, scope.systemAccountId, nowIso(), options.limit])).map((row) => row.id)
+    ]).slice(0, options.limit).map((id) => ({ id }))
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
   const sourceInstanceRows = await client.query<{ id: string }>(`
     SELECT instance_accounts.id
-    FROM ${businessTable(client, 'accounts')} source_accounts
-    INNER JOIN ${businessTable(client, 'accounts')} instance_accounts
+    FROM ${accountsTable} source_accounts
+    INNER JOIN ${accountsTable} instance_accounts
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-    WHERE LOWER(source_accounts.name) >= ? AND LOWER(source_accounts.name) < ? AND starts_with(LOWER(source_accounts.name), ?)
+    WHERE source_accounts.deleted_at IS NULL
+      AND instance_accounts.deleted_at IS NULL
+      AND LOWER(source_accounts.name) COLLATE "C" >= ? AND LOWER(source_accounts.name) COLLATE "C" < ? AND starts_with(LOWER(source_accounts.name), ?)
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
-    ORDER BY LOWER(source_accounts.name) ASC, instance_accounts.id ASC
+    ORDER BY LOWER(source_accounts.name) COLLATE "C" ASC, instance_accounts.id ASC
     LIMIT ?
   `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...sourceInstanceParams, options.limit])
   const accountIds = uniqueNonEmpty([
@@ -670,6 +718,7 @@ function mergeAiPerformanceStatsWithAccounts(
     LEFT JOIN system_accounts owner_system_accounts
       ON owner_system_accounts.id = ${ownerSystemAccountExpression}
     WHERE accounts.id IN (${placeholders})
+      AND accounts.deleted_at IS NULL
       ${visibleFilter.sql}
   `).all(...accessTypeParams, ...ids, ...visibleFilter.params) as unknown as Array<{
     id: string
@@ -754,6 +803,7 @@ async function mergeAiPerformanceStatsWithAccountsAsync(
     LEFT JOIN ${systemAccountsTable} owner_system_accounts
       ON owner_system_accounts.id = ${ownerSystemAccountExpression}
     WHERE accounts.id IN (${placeholders})
+      AND accounts.deleted_at IS NULL
       ${visibleFilter.sql}
   `, [...accessTypeParams, ...ids, ...visibleFilter.params])
   const statsById = new Map(statsRows.map((row, index) => [row.id, { ...row, index }]))

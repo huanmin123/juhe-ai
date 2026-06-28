@@ -237,7 +237,7 @@ export function optionalModelMappingsField(record: Record<string, unknown>, key:
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
     }
-    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel}`
     if (seenSources.has(sourceKey)) {
       messages.push(`${label}不能重复配置同一个 sourceModel 和 sourceEndpointFamily：${sourceModel} / ${sourceEndpointFamily}`)
       return undefined

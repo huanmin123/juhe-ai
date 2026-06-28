@@ -974,12 +974,13 @@ async function runChild(): Promise<void> {
     assert.equal(publicApiKeyAdd.body.data.apiKey.availabilitySchedule?.enabled, true, '公开 API Key 新增应写入并回显时间计划')
     const publicApiKeyId = publicApiKeyAdd.body.data.apiKey.id as string
 
-    const publicApiKeyList = await requestJson(baseUrl, `/__aipublic__/api-key/list?targetUsername=public_control_user&groupId=${encodeURIComponent(publicGroupId)}`, {
+    const publicApiKeyList = await requestJson(baseUrl, `/__aipublic__/api-key/list?targetUsername=public_control_user&routeStrategyId=${encodeURIComponent(publicRouteStrategy.id)}`, {
       Authorization: `Bearer ${accountWriteToken}`
     })
     assert.equal(publicApiKeyList.status, 200)
     const listedApiKey = publicApiKeyList.body.data.items.find((item: any) => item.id === publicApiKeyId)
-    assert(listedApiKey, '公开 API Key 列表应按绑定分组返回刚新增的 Key')
+    assert(listedApiKey, '公开 API Key 列表应返回刚新增的 Key')
+    assert.equal(listedApiKey.routeStrategyId, publicRouteStrategy.id, '公开 API Key 列表应支持按当前策略路由筛选')
     assert.equal(Object.prototype.hasOwnProperty.call(listedApiKey, 'key'), false, '公开 API Key 列表不能返回明文密钥')
 
     const missingPublicApiKeyUpdate = await requestJson(baseUrl, '/__aipublic__/api-key/update', {

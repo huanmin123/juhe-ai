@@ -9,7 +9,7 @@ import {
   routeStrategyConfigJson
 } from '../domain/route-strategy.js'
 import type {
-  ApiKeyGroupBindingSummary,
+  RouteStrategyGroupBindingSummary,
   ApiKeyHybridRoutingConfig,
   RouteStrategyListResult,
   RouteStrategyMode,
@@ -596,9 +596,9 @@ export async function assertRouteStrategySelectableForApiKeyAsync(systemAccountI
   return id
 }
 
-export function loadRouteStrategyGroupBindingSummariesByRouteStrategyIds(routeStrategyIds: string[]): Map<string, ApiKeyGroupBindingSummary[]> {
+export function loadRouteStrategyGroupBindingSummariesByRouteStrategyIds(routeStrategyIds: string[]): Map<string, RouteStrategyGroupBindingSummary[]> {
   const ids = [...new Set(routeStrategyIds.filter(Boolean))]
-  const result = new Map<string, ApiKeyGroupBindingSummary[]>()
+  const result = new Map<string, RouteStrategyGroupBindingSummary[]>()
   if (!ids.length) return result
   const database = getBusinessDatabase()
   const now = nowIso()
@@ -611,9 +611,9 @@ export function loadRouteStrategyGroupBindingSummariesByRouteStrategyIds(routeSt
   return result
 }
 
-export async function loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[]): Promise<Map<string, ApiKeyGroupBindingSummary[]>> {
+export async function loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync(routeStrategyIds: string[]): Promise<Map<string, RouteStrategyGroupBindingSummary[]>> {
   const ids = [...new Set(routeStrategyIds.filter(Boolean))]
-  const result = new Map<string, ApiKeyGroupBindingSummary[]>()
+  const result = new Map<string, RouteStrategyGroupBindingSummary[]>()
   if (!ids.length) return result
   const client = await getRouteStrategyDatabaseClient()
   const now = nowIso()
@@ -641,7 +641,7 @@ async function routeStrategySummariesFromRowsAsync(rows: RouteStrategyRow[], acc
 
 function routeStrategySummaryFromRow(
   row: RouteStrategyRow,
-  groupBindings: ApiKeyGroupBindingSummary[],
+  groupBindings: RouteStrategyGroupBindingSummary[],
   includeOwner: boolean,
   accountNames: Map<string, string>
 ): RouteStrategySummary {
@@ -844,7 +844,7 @@ async function replaceRouteStrategyGroupsAsync(client: DatabaseClient, routeStra
   }
 }
 
-function routeStrategyGroupBindingWritesFromSummary(bindings: ApiKeyGroupBindingSummary[]): RouteStrategyGroupBindingWrite[] {
+function routeStrategyGroupBindingWritesFromSummary(bindings: RouteStrategyGroupBindingSummary[]): RouteStrategyGroupBindingWrite[] {
   return bindings.map((binding) => ({
     groupId: binding.groupId,
     groupName: binding.groupName,
@@ -950,12 +950,12 @@ async function loadRouteStrategyBindableGroupsAsync(groupIds: string[], systemAc
   return result
 }
 
-function appendRouteStrategyBindingRows(result: Map<string, ApiKeyGroupBindingSummary[]>, rows: RouteStrategyGroupBindingRow[]): void {
+function appendRouteStrategyBindingRows(result: Map<string, RouteStrategyGroupBindingSummary[]>, rows: RouteStrategyGroupBindingRow[]): void {
   for (const row of rows) {
     if (!Number.isInteger(row.priority) || row.priority <= 0) throw new Error(`策略路由分组绑定优先级无效：${row.id}`)
     if (row.status !== 'active' && row.status !== 'disabled') throw new Error(`策略路由分组绑定状态无效：${row.id}`)
     if (Number(row.group_enabled) !== 0 && Number(row.group_enabled) !== 1) throw new Error(`策略路由分组绑定关联分组状态无效：${row.id}`)
-    const item: ApiKeyGroupBindingSummary = {
+    const item: RouteStrategyGroupBindingSummary = {
       id: row.id,
       groupId: row.group_id,
       groupName: row.group_name ?? undefined,

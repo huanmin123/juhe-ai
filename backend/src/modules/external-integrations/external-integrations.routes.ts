@@ -139,7 +139,6 @@ const accountUpdateMutableFields = [
 const accountUpdateSchema = z.object({
   accountId: z.string().trim().min(1).max(120),
   targetUsername: z.string().trim().min(2).max(80).optional(),
-  targetDisplayName: z.string().trim().min(1).max(80).optional(),
   targetGroupName: z.string().trim().min(1).max(80).optional(),
   providerCode: providerCodeSchema.optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
@@ -261,9 +260,9 @@ const apiKeyDeleteSchema = z.object({
 }).strict()
 const apiKeyListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
+  routeStrategyId: z.string().trim().min(1).max(120).optional(),
   keyword: z.string().trim().max(120).optional(),
   status: z.enum(['active', 'disabled', 'all']).optional(),
-  groupId: z.string().trim().min(1).max(120).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional()
 }).strict()

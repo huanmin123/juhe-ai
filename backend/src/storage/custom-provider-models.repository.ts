@@ -9,7 +9,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
-export type CustomProviderModelScope = 'global' | 'personal'
+export type CustomProviderModelScope = 'personal'
 export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
 
 const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>([
@@ -71,7 +71,7 @@ export interface UpsertCustomProviderModelInput {
   id?: string
   providerCode: string
   model: string
-  scope: CustomProviderModelScope
+  scope?: CustomProviderModelScope
   systemAccountId?: string
   status?: CustomProviderModelStatus
   mode?: string | null
@@ -438,7 +438,7 @@ export function customProviderModelAccountBindingSummary(input: {
       ON accounts.id = account_supported_models.account_id
       AND accounts.deleted_at IS NULL
     WHERE account_supported_models.provider_code = ?
-      AND lower(account_supported_models.model) = lower(?)
+      AND account_supported_models.model = ?
       ${accountOwnerScope.sql}
   `
   const supportedModelParams: SQLInputValue[] = [providerCode, model, ...accountOwnerScope.params]
@@ -448,7 +448,7 @@ export function customProviderModelAccountBindingSummary(input: {
     INNER JOIN accounts
       ON accounts.id = account_model_mappings.account_id
       AND accounts.deleted_at IS NULL
-    WHERE lower(account_model_mappings.source_model) = lower(?)
+    WHERE account_model_mappings.source_model = ?
       ${accountOwnerScope.sql}
   `
   const mappingSourceParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
@@ -458,7 +458,7 @@ export function customProviderModelAccountBindingSummary(input: {
     INNER JOIN accounts
       ON accounts.id = account_model_mappings.account_id
       AND accounts.deleted_at IS NULL
-    WHERE lower(account_model_mappings.upstream_model) = lower(?)
+    WHERE account_model_mappings.upstream_model = ?
       ${accountOwnerScope.sql}
   `
   const mappingUpstreamParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
@@ -506,7 +506,7 @@ export async function customProviderModelAccountBindingSummaryAsync(input: {
       ON accounts.id = account_supported_models.account_id
       AND accounts.deleted_at IS NULL
     WHERE account_supported_models.provider_code = ?
-      AND lower(account_supported_models.model) = lower(?)
+      AND account_supported_models.model = ?
       ${accountOwnerScope.sql}
   `
   const supportedModelParams: SQLInputValue[] = [providerCode, model, ...accountOwnerScope.params]
@@ -516,7 +516,7 @@ export async function customProviderModelAccountBindingSummaryAsync(input: {
     INNER JOIN ${accountsTable} accounts
       ON accounts.id = account_model_mappings.account_id
       AND accounts.deleted_at IS NULL
-    WHERE lower(account_model_mappings.source_model) = lower(?)
+    WHERE account_model_mappings.source_model = ?
       ${accountOwnerScope.sql}
   `
   const mappingSourceParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
@@ -526,7 +526,7 @@ export async function customProviderModelAccountBindingSummaryAsync(input: {
     INNER JOIN ${accountsTable} accounts
       ON accounts.id = account_model_mappings.account_id
       AND accounts.deleted_at IS NULL
-    WHERE lower(account_model_mappings.upstream_model) = lower(?)
+    WHERE account_model_mappings.upstream_model = ?
       ${accountOwnerScope.sql}
   `
   const mappingUpstreamParams: SQLInputValue[] = [model, ...accountOwnerScope.params]
@@ -552,9 +552,6 @@ export async function customProviderModelAccountBindingSummaryAsync(input: {
 }
 
 function accountBindingOwnerScope(scope: CustomProviderModelScope, systemAccountId?: string): { sql: string; params: SQLInputValue[] } {
-  if (scope !== 'personal') {
-    return { sql: '', params: [] }
-  }
   return {
     sql: 'AND accounts.system_account_id = ?',
     params: [requiredText(systemAccountId, '个人模型必须归属系统账户')]
@@ -569,7 +566,7 @@ function findCustomProviderModelByScope(
 ): CustomProviderModelRecord | undefined {
   const row = scope === 'personal'
     ? getBusinessDatabase()
-      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND lower(model) = lower(?) LIMIT 1`)
+      .prepare(`SELECT ${customProviderModelColumns()} FROM custom_provider_models WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND model = ? LIMIT 1`)
       .get(providerCode, systemAccountId ?? '', model)
     : undefined
   return row ? customProviderModelFromRow(row as unknown as CustomProviderModelRow) : undefined
@@ -589,7 +586,7 @@ async function findCustomProviderModelByScopeAsync(
     WHERE provider_code = ?
       AND scope = 'personal'
       AND system_account_id = ?
-      AND lower(model) = lower(?)
+      AND model = ?
     LIMIT 1
   `, [providerCode, systemAccountId ?? '', model])
   return row ? customProviderModelFromRow(row) : undefined

@@ -1503,7 +1503,7 @@ function accountModelMappingsValue(value: unknown): AccountSummary['modelMapping
     const sourceEndpointFamily = accountModelMappingSourceEndpointFamilyValue(record.sourceEndpointFamily)
     const upstreamModel = normalizedOptionalText(record.upstreamModel)
     const upstreamEndpointFamily = accountModelMappingUpstreamEndpointFamilyValue(record.upstreamEndpointFamily)
-    const sourceKey = `${sourceEndpointFamily}\n${sourceModel?.toLowerCase() ?? ''}`
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel ?? ''}`
     if (!sourceModel || !sourceEndpointFamily || !upstreamModel || !upstreamEndpointFamily || (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) || seenSources.has(sourceKey)) {
       continue
     }

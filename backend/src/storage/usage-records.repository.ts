@@ -1157,7 +1157,6 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
     const location = findRegisteredUsageRecordShardLocation(shardKey)
     if (!location) continue
     const shardDatabase = getUsageRecordShardDatabase(location)
-    const optionalColumns = usageRecordOptionalColumnSelects(shardDatabase)
     for (const chunk of chunkValues(shardEntries.map((entry) => entry.usage_id), 900)) {
       const rows = shardDatabase
         .prepare(`
@@ -1172,8 +1171,8 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.account_id,
             ur.endpoint,
             ur.provider_code,
-            ${optionalColumns.providerProtocolProfileId},
-            ${optionalColumns.usageSemantic},
+            ur.provider_protocol_profile_id,
+            ur.usage_semantic,
             ur.model,
             ur.upstream_model,
             ur.pricing_model,
@@ -1182,17 +1181,17 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.stream,
             ur.status_code,
             ur.success,
-            ${optionalColumns.failureAttribution},
+            ur.failure_attribution,
             ur.first_token_ms,
             ur.duration_ms,
             ur.input_tokens,
             ur.output_tokens,
             ur.cache_read_tokens,
             ur.cache_read_cost_usd,
-            ${optionalColumns.cacheWriteTokens},
-            ${optionalColumns.cacheWrite1hTokens},
-            ${optionalColumns.cacheWriteCostUsd},
-            ${optionalColumns.thinkingTokens},
+            ur.cache_write_tokens,
+            ur.cache_write_1h_tokens,
+            ur.cache_write_cost_usd,
+            ur.thinking_tokens,
             ur.input_image_tokens,
             ur.output_image_tokens,
             ur.cost_usd,
@@ -1238,7 +1237,6 @@ function listUsageRecordRowsFromShards(
   const rows: UsageRecordRow[] = []
   for (const location of locations) {
     const shardDatabase = getUsageRecordShardDatabase(location)
-    const optionalColumns = usageRecordOptionalColumnSelects(shardDatabase)
     rows.push(...shardDatabase
       .prepare(`
         SELECT
@@ -1252,8 +1250,8 @@ function listUsageRecordRowsFromShards(
           ur.account_id,
           ur.endpoint,
           ur.provider_code,
-          ${optionalColumns.providerProtocolProfileId},
-          ${optionalColumns.usageSemantic},
+          ur.provider_protocol_profile_id,
+          ur.usage_semantic,
           ur.model,
           ur.upstream_model,
           ur.pricing_model,
@@ -1262,17 +1260,17 @@ function listUsageRecordRowsFromShards(
           ur.stream,
           ur.status_code,
           ur.success,
-          ${optionalColumns.failureAttribution},
+          ur.failure_attribution,
           ur.first_token_ms,
           ur.duration_ms,
           ur.input_tokens,
           ur.output_tokens,
           ur.cache_read_tokens,
           ur.cache_read_cost_usd,
-          ${optionalColumns.cacheWriteTokens},
-          ${optionalColumns.cacheWrite1hTokens},
-          ${optionalColumns.cacheWriteCostUsd},
-          ${optionalColumns.thinkingTokens},
+          ur.cache_write_tokens,
+          ur.cache_write_1h_tokens,
+          ur.cache_write_cost_usd,
+          ur.thinking_tokens,
           ur.input_image_tokens,
           ur.output_image_tokens,
           ur.cost_usd,
@@ -1287,40 +1285,6 @@ function listUsageRecordRowsFromShards(
       .all(...filters.params, perShardLimit) as UsageRecordRow[])
   }
   return rows.sort((left, right) => compareUsageRecordRows(left, right, listOptions)).slice(0, perShardLimit)
-}
-
-function usageRecordOptionalColumnSelects(database: ReturnType<typeof getUsageRecordShardDatabase>): {
-  providerProtocolProfileId: string
-  usageSemantic: string
-  cacheWriteTokens: string
-  cacheWrite1hTokens: string
-  cacheWriteCostUsd: string
-  thinkingTokens: string
-  failureAttribution: string
-} {
-  const columns = usageRecordColumnSet(database)
-  return {
-    providerProtocolProfileId: columns.has('provider_protocol_profile_id') ? 'ur.provider_protocol_profile_id' : 'NULL AS provider_protocol_profile_id',
-    usageSemantic: columns.has('usage_semantic') ? 'ur.usage_semantic' : 'NULL AS usage_semantic',
-    cacheWriteTokens: columns.has('cache_write_tokens') ? 'ur.cache_write_tokens' : 'NULL AS cache_write_tokens',
-    cacheWrite1hTokens: columns.has('cache_write_1h_tokens') ? 'ur.cache_write_1h_tokens' : 'NULL AS cache_write_1h_tokens',
-    cacheWriteCostUsd: columns.has('cache_write_cost_usd') ? 'ur.cache_write_cost_usd' : 'NULL AS cache_write_cost_usd',
-    thinkingTokens: columns.has('thinking_tokens') ? 'ur.thinking_tokens' : 'NULL AS thinking_tokens',
-    failureAttribution: columns.has('failure_attribution') ? 'ur.failure_attribution' : 'NULL AS failure_attribution'
-  }
-}
-
-const usageRecordColumnCache = new WeakMap<ReturnType<typeof getUsageRecordShardDatabase>, Set<string>>()
-
-function usageRecordColumnSet(database: ReturnType<typeof getUsageRecordShardDatabase>): Set<string> {
-  const cached = usageRecordColumnCache.get(database)
-  if (cached) return cached
-  const rows = database
-    .prepare('PRAGMA table_info(usage_records)')
-    .all() as Array<{ name?: string }>
-  const columns = new Set(rows.map((row) => String(row.name ?? '')))
-  usageRecordColumnCache.set(database, columns)
-  return columns
 }
 
 function usageRecordShardQueryWindowFromOptions(options?: UsageRecordListOptions): UsageRecordShardQueryWindow {

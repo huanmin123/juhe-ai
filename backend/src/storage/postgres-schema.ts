@@ -30,51 +30,6 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
-    source: 'providers-supplemental',
-    sql: "ALTER TABLE IF EXISTS providers ADD COLUMN IF NOT EXISTS default_supported_models_json text NOT NULL DEFAULT '[]'"
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'groups-supplemental',
-    sql: 'DROP INDEX IF EXISTS idx_groups_owner_provider_default_unique'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'route-strategies-supplemental',
-    sql: 'ALTER TABLE IF EXISTS route_strategies ADD COLUMN IF NOT EXISTS description text'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'route-strategies-supplemental',
-    sql: 'ALTER TABLE IF EXISTS route_strategies ADD COLUMN IF NOT EXISTS is_default integer NOT NULL DEFAULT 0'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'route-strategies-supplemental',
-    sql: 'DROP INDEX IF EXISTS idx_route_strategies_owner_default_unique'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'api-keys-supplemental',
-    sql: 'ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS is_default integer NOT NULL DEFAULT 0'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'api-keys-supplemental',
-    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'api-keys-supplemental',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_business',
-    source: 'api-keys-supplemental',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC)'
-  },
-  {
-    schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((lower(name) COLLATE "C"), id)'
   },
@@ -85,62 +40,22 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   {
     schemaName: 'juhe_business',
-    source: 'account-probe-pg-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_accounts_health_check_due'
+    source: 'accounts-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_name_c_lookup ON accounts((lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL'
   },
   {
     schemaName: 'juhe_business',
-    source: 'account-probe-pg-indexes',
-    sql: 'DROP INDEX IF EXISTS idx_accounts_cooldown_retest_due'
+    source: 'accounts-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_c_lookup ON accounts(system_account_id, (lower(name) COLLATE "C"), id) WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL'
   },
   {
     schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS usage_semantic text'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS cache_write_tokens integer'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS cache_write_1h_tokens integer'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS cache_write_cost_usd double precision'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS thinking_tokens integer'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS provider_protocol_profile_id text'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS failure_attribution text'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at)'
-  },
-  {
-    schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
+    source: 'usage-records-pg-indexes',
     sql: "CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_account_shape ON usage_records(account_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''"
   },
   {
     schemaName: 'juhe_usage',
-    source: 'usage-records-supplemental',
+    source: 'usage-records-pg-indexes',
     sql: "CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_group_shape ON usage_records(group_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''"
   },
   {

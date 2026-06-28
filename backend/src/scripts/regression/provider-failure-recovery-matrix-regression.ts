@@ -202,6 +202,7 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     type: 'api_key',
     credentials: credentialsForCase(item, upstreamOrigin, 'primary'),
     groupId: group.id,
+    supportedModels: [item.model],
     status: 'active',
     schedulable: true,
     priority: 0
@@ -213,6 +214,7 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     type: 'api_key',
     credentials: credentialsForCase(item, upstreamOrigin, 'rescue'),
     groupId: group.id,
+    supportedModels: [item.model],
     status: 'active',
     schedulable: true,
     priority: 100
@@ -233,15 +235,15 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
 }
 
 function ensureMatrixCaseModelCatalogEntry(item: MatrixCase): void {
-  if (item.providerCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) {
-    return
-  }
   customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: item.providerCode,
     model: item.model,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
     status: 'active',
-    supportedApiProtocols: ['chat_completions'],
+    supportedApiProtocols: item.protocolKind === 'anthropic' ? ['messages'] : ['chat_completions'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
     actorSystemAccountId: access.systemAccountId
   })
 }

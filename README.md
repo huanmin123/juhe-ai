@@ -167,7 +167,7 @@ docker compose up -d --build
 http://localhost:3000/__aisys__/
 ```
 
-需要改端口、公网访问地址、复用旧数据或让容器访问宿主机代理时，复制并修改 `docker/.env.example` 为 `docker/.env`。完整说明见 [Docker 部署指南](docs/deploy/Docker部署指南.md)。
+需要改端口、公网访问地址、沿用已按当前 schema 准备好的数据目录 / `.env`，或让容器访问宿主机代理时，复制并修改 `docker/.env.example` 为 `docker/.env`。旧数据如需保留，必须由用户停机离线处理并落到当前 schema；运行时代码不提供旧结构兼容。完整说明见 [Docker 部署指南](docs/deploy/Docker部署指南.md)。
 
 发布包部署：
 

@@ -843,13 +843,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON account_api_key_runtime_states(next_probe_at, status);
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_owner
       ON account_api_key_runtime_states(system_account_id, account_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique_lower
-      ON custom_provider_models(provider_code, system_account_id, lower(model))
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique
+      ON custom_provider_models(provider_code, system_account_id, model)
       WHERE scope = 'personal';
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_provider_default_test_models_model
-      ON provider_default_test_models(provider_code, lower(model), system_account_id);
+      ON provider_default_test_models(provider_code, model, system_account_id);
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, source_endpoint_family, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, upstream_endpoint_family, account_id);
@@ -940,6 +940,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_purpose_created
       ON openai_compatible_files(system_account_id, api_key_id, purpose, created_at DESC, id DESC)
       WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_container_created
+      ON openai_compatible_files(system_account_id, api_key_id, container_id, created_at DESC, id DESC)
+      WHERE deleted_at IS NULL AND container_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_openai_compatible_vector_stores_owner_created
       ON openai_compatible_vector_stores(system_account_id, api_key_id, created_at DESC, id DESC)
       WHERE deleted_at IS NULL;
@@ -981,61 +984,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
-  ensureProvidersSchema(database)
-  ensureGroupsSchema(database)
-  ensureRouteStrategiesSchema(database)
-  ensureApiKeysSchema(database)
-  ensureOpenAICompatibleFilesSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
-}
-
-function ensureGroupsSchema(database: DatabaseSync): void {
-  database.exec('DROP INDEX IF EXISTS idx_groups_owner_provider_default_unique')
-}
-
-function ensureProvidersSchema(database: DatabaseSync): void {
-  const columns = new Set(
-    (database.prepare("PRAGMA table_info('providers')").all() as Array<{ name?: string }>)
-      .map((column) => column.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0)
-  )
-  if (!columns.has('default_supported_models_json')) {
-    database.exec("ALTER TABLE providers ADD COLUMN default_supported_models_json TEXT NOT NULL DEFAULT '[]'")
-  }
-}
-
-function ensureRouteStrategiesSchema(database: DatabaseSync): void {
-  const columns = new Set(
-    (database.prepare("PRAGMA table_info('route_strategies')").all() as Array<{ name?: string }>)
-      .map((column) => column.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0)
-  )
-  if (!columns.has('is_default')) {
-    database.exec('ALTER TABLE route_strategies ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
-  }
-  database.exec('DROP INDEX IF EXISTS idx_route_strategies_owner_default_unique')
-}
-
-function ensureApiKeysSchema(database: DatabaseSync): void {
-  const columns = new Set(
-    (database.prepare("PRAGMA table_info('api_keys')").all() as Array<{ name?: string }>)
-      .map((column) => column.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0)
-  )
-  if (!columns.has('is_default')) {
-    database.exec('ALTER TABLE api_keys ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
-  }
-  database.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique
-      ON api_keys(route_strategy_id)
-      WHERE is_default = 1;
-    CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated
-      ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated
-      ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC);
-  `)
 }
 
 function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {
@@ -1050,22 +1001,6 @@ function ensureResponseInspectionPolicyIndexes(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_enabled_priority ON response_inspection_policies(enabled, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_protocol_priority ON response_inspection_policies(protocol_code, priority, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS idx_response_inspection_policies_scope_priority ON response_inspection_policies(protocol_code, scope_type, provider_code, priority, updated_at DESC, id);
-  `)
-}
-
-function ensureOpenAICompatibleFilesSchema(database: DatabaseSync): void {
-  const columns = new Set(
-    (database.prepare("PRAGMA table_info('openai_compatible_files')").all() as Array<{ name?: string }>)
-      .map((column) => column.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0)
-  )
-  if (!columns.has('container_id')) {
-    database.exec('ALTER TABLE openai_compatible_files ADD COLUMN container_id TEXT')
-  }
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_openai_compatible_files_container_created
-      ON openai_compatible_files(system_account_id, api_key_id, container_id, created_at DESC, id DESC)
-      WHERE deleted_at IS NULL AND container_id IS NOT NULL;
   `)
 }
 

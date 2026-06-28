@@ -380,7 +380,7 @@ type ApiKeyCreateOrUpdateInput = {
 列表和详情返回：
 
 ```ts
-type ApiKeyGroupBindingSummary = {
+type RouteStrategyGroupBindingSummary = {
   id: string
   groupId: string
   groupName: string
@@ -396,7 +396,7 @@ type ApiKeySummary = {
   id: string
   name: string
   groupRouteStrategy: 'priority_failover' | 'round_robin' | 'weighted_round_robin'
-  groupBindings: ApiKeyGroupBindingSummary[]
+  groupBindings: RouteStrategyGroupBindingSummary[]
 }
 ```
 
@@ -404,7 +404,7 @@ type ApiKeySummary = {
 
 - `keyword` 仍只按 API Key 名称精确 / 前缀匹配。
 - `status` 仍筛选 API Key 自身状态。
-- `groupId` 匹配任意绑定关系；返回结果中带出绑定状态，让用户能看出该组是 active 还是 disabled。
+- `routeStrategyId` 按 API Key 绑定的策略路由筛选；分组绑定关系由策略路由详情和返回摘要带出。
 
 操作日志：
 

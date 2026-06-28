@@ -216,7 +216,7 @@ async function assertAccountListIndexedPlans(
       LIMIT 20
     `,
     [systemAccountId, keyword],
-    ['idx_accounts_owner_name_lower_lookup']
+    ['idx_accounts_owner_name_lower_lookup', 'idx_accounts_system_account_name_lookup']
   )
   await assertIndexedPlan(
     'AI 账户名称包含候选 PG 查询',
@@ -257,7 +257,7 @@ async function assertAccountListIndexedPlans(
       LIMIT 50
     `,
     [systemAccountId, groupId],
-    ['idx_group_accounts_owner_group_enabled']
+    ['idx_group_accounts_owner_group_enabled', 'idx_group_accounts_group_enabled']
   )
   await assertIndexedPlan(
     'AI 账户标签筛选 PG 查询',

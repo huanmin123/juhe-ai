@@ -81,9 +81,8 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     for (const option of options) {
       const model = option.value.trim()
       if (!model) continue
-      const key = model.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
+      if (seen.has(model)) continue
+      seen.add(model)
       output.push({ label: model, value: model })
     }
     return output

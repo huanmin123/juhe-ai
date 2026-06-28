@@ -79,12 +79,14 @@ assert.match(usageQueueSource, /shouldEnqueueUsageRecordToRedisStream/, 'usage r
 assert.match(usageQueueSource, /startUsageRecordRedisStreamConsumer/, 'usage record queue should expose an ingest-worker Redis Stream consumer')
 assert.match(usageQueueSource, /queue\.ack\(messages\.map/, 'usage record Redis Stream consumer should ack only after flush')
 assert.match(usageQueueSource, /Redis Stream 使用记录落库失败，消息保持 pending 等待重投/, 'usage record Redis Stream consumer should keep failed messages pending')
+assert.doesNotMatch(usageQueueSource, /AfterRedisStreamFailure/, 'usage record Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const auditQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(auditQueueSource, /shouldEnqueueAuditLogToRedisStream/, 'audit log queue should route producers through Redis Stream in redis_stream mode')
 assert.match(auditQueueSource, /startAuditLogRedisStreamConsumer/, 'audit log queue should expose an ingest-worker Redis Stream consumer')
 assert.match(auditQueueSource, /queue\.ack\(messages\.map/, 'audit log Redis Stream consumer should ack only after flush')
 assert.match(auditQueueSource, /Redis Stream 审计日志落库失败，消息保持 pending 等待重投/, 'audit log Redis Stream consumer should keep failed messages pending')
+assert.doesNotMatch(auditQueueSource, /AfterRedisStreamFailure/, 'audit log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 assert.match(auditQueueSource, /encode: encodeAuditLogStreamPayload/, 'audit log Redis Stream queue should use custom payload encoding')
 assert.match(auditQueueSource, /decode: decodeAuditLogStreamPayload/, 'audit log Redis Stream queue should use custom payload decoding')
 assert.match(auditQueueSource, /readCount: runtimeConfig\.databaseDriver === 'postgres' \? auditLogPostgresFlushBatchSize : undefined/, 'audit log Redis Stream consumer should keep PG audit batches bounded')
@@ -100,6 +102,7 @@ assert.match(operationQueueSource, /startOperationLogRedisStreamConsumer/, 'oper
 assert.match(operationQueueSource, /queue\.ack\(messages\.map/, 'operation log Redis Stream consumer should ack only after flush')
 assert.match(operationQueueSource, /Redis Stream 操作日志落库失败，消息保持 pending 等待重投/, 'operation log Redis Stream consumer should keep failed messages pending')
 assert.match(operationQueueSource, /readCount: operationLogBatchSize/, 'operation log Redis Stream consumer should keep batches bounded')
+assert.doesNotMatch(operationQueueSource, /AfterRedisStreamFailure/, 'operation log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const publicApiQueueSource = readFileSync(new URL('../../modules/public-api-logs/public-api-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(publicApiQueueSource, /shouldEnqueuePublicApiLogToRedisStream/, 'public API log queue should route producers through Redis Stream in redis_stream mode')
@@ -107,6 +110,7 @@ assert.match(publicApiQueueSource, /startPublicApiLogRedisStreamConsumer/, 'publ
 assert.match(publicApiQueueSource, /queue\.ack\(messages\.map/, 'public API log Redis Stream consumer should ack only after flush')
 assert.match(publicApiQueueSource, /Redis Stream 公开接口日志落库失败，消息保持 pending 等待重投/, 'public API log Redis Stream consumer should keep failed messages pending')
 assert.match(publicApiQueueSource, /readCount: publicApiLogFlushBatchSize/, 'public API log Redis Stream consumer should keep batches bounded')
+assert.doesNotMatch(publicApiQueueSource, /AfterRedisStreamFailure/, 'public API log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const recordMaintenanceQueueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')
 assert.match(recordMaintenanceQueueSource, /shouldEnqueueRecordMaintenanceJobToRedisStream/, 'record maintenance queue should route non-local producers through Redis Stream in redis_stream mode')
@@ -114,6 +118,7 @@ assert.match(recordMaintenanceQueueSource, /startRecordMaintenanceRedisStreamCon
 assert.match(recordMaintenanceQueueSource, /queue\.ack\(/, 'record maintenance Redis Stream consumer should ack only after each successful job or coalesced batch')
 assert.match(recordMaintenanceQueueSource, /Redis Stream 数据维护任务执行失败，消息保持 pending 等待重投/, 'record maintenance Redis Stream consumer should keep failed messages pending')
 assert.match(recordMaintenanceQueueSource, /readCount: recordMaintenanceBatchSize/, 'record maintenance Redis Stream consumer should keep batches bounded')
+assert.doesNotMatch(recordMaintenanceQueueSource, /AfterRedisStreamFailure/, 'record maintenance Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const runtimeLogQueueSource = readFileSync(new URL('../../modules/runtime-logs/runtime-log-index-queue.service.ts', import.meta.url), 'utf8')
 assert.match(runtimeLogQueueSource, /shouldEnqueueRuntimeLogToRedisStream/, 'runtime log index queue should route non-ingest producers through Redis Stream in redis_stream mode')
@@ -122,6 +127,7 @@ assert.match(runtimeLogQueueSource, /createRuntimeLogsBatchAsync/, 'runtime log 
 assert.match(runtimeLogQueueSource, /queue\.ack\(messages\.map/, 'runtime log Redis Stream consumer should ack only after flush')
 assert.match(runtimeLogQueueSource, /Redis Stream 运行日志索引落库失败，消息保持 pending 等待重投/, 'runtime log Redis Stream consumer should keep failed messages pending')
 assert.match(runtimeLogQueueSource, /readCount: runtimeLogBatchSize/, 'runtime log Redis Stream consumer should keep batches bounded')
+assert.doesNotMatch(runtimeLogQueueSource, /AfterRedisStreamFailure/, 'runtime log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const runtimeLogsRepositorySource = readFileSync(new URL('../../storage/runtime-logs.repository.ts', import.meta.url), 'utf8')
 assert.match(runtimeLogsRepositorySource, /createRuntimeLogsBatchAsync/, 'runtime logs repository should expose async PG batch writes')

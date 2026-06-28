@@ -365,7 +365,7 @@ function hasModelShutdown(item: RawModelPricing): boolean {
 }
 
 function normalizeModel(value: string): string {
-  return value.trim().toLowerCase()
+  return value.trim()
 }
 
 function normalizePrice(value?: number): number | undefined {

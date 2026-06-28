@@ -47,7 +47,6 @@ export interface ApiKeyListOptions {
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
   routeStrategyId?: string
-  groupId?: string
 }
 
 export interface ApiKeyListResult {
@@ -1059,16 +1058,6 @@ function buildApiKeyFiltersForClient(
   if (options.routeStrategyId) {
     clauses.push('api_keys.route_strategy_id = ?')
     params.push(options.routeStrategyId)
-  }
-  if (options.groupId) {
-    clauses.push(`EXISTS (
-      SELECT 1
-      FROM ${apiKeyTable(client, 'route_strategy_groups')} route_strategy_groups
-      WHERE route_strategy_groups.route_strategy_id = api_keys.route_strategy_id
-        AND route_strategy_groups.system_account_id = api_keys.system_account_id
-        AND route_strategy_groups.group_id = ?
-    )`)
-    params.push(options.groupId)
   }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',

@@ -62,6 +62,8 @@ const sourceModel = 'gpt-mapping-regression-source'
 const crossProviderSourceModel = 'glm-mapping-regression-source'
 const crossProviderUpstreamModel = 'glm-mapping-regression-upstream'
 const upstreamModel = 'gpt-mapping-regression-upstream-personal'
+const caseSourceModel = 'gpt-mapping-regression-case-source'
+const caseSourceModelUpper = 'GPT-mapping-regression-case-source'
 const anthropicMessagesSourceModel = 'claude-mapping-regression-source'
 const geminiGenerateContentSourceModel = 'gemini-3.5-flash'
 const geminiNativeUpstreamModel = 'gemini-mapping-regression-upstream'
@@ -172,7 +174,8 @@ try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: sourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -181,7 +184,8 @@ try {
   saveCustomProviderModel({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -190,7 +194,8 @@ try {
   saveCustomProviderModel({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderUpstreamModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 5,
     outputUsdPer1M: 15,
@@ -209,7 +214,8 @@ try {
   const anthropicMessagesModel = saveCustomProviderModel({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     model: anthropicMessagesSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['messages', 'message_token_counting'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -219,7 +225,8 @@ try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: chatCompletionsUpstreamModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -228,7 +235,8 @@ try {
   saveCustomProviderModel({
     providerCode: GEMINI_PROVIDER_CODE,
     model: geminiNativeUpstreamModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['generate_content', 'stream_generate_content'],
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
@@ -237,7 +245,8 @@ try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: replacementUpstreamModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 4,
     outputUsdPer1M: 10,
@@ -246,9 +255,30 @@ try {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: unavailableSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
     status: 'draft',
     supportedApiProtocols: ['responses'],
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GPT_VENDOR_CODE,
+    model: caseSourceModel,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: ownerAccess.systemAccountId
+  })
+  saveCustomProviderModel({
+    providerCode: GPT_VENDOR_CODE,
+    model: caseSourceModelUpper,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId,
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 3,
+    outputUsdPer1M: 4,
     actorSystemAccountId: ownerAccess.systemAccountId
   })
 
@@ -302,6 +332,39 @@ try {
   assert.deepEqual(mappedBody.extra, { keep: true }, '模型映射不应丢弃未知字段')
   assert.equal(requestModel(originalRequest), sourceModel, 'requestModel 仍应保持下游请求模型')
 
+  const caseAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    name: '账号模型映射大小写回归账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-model-mapping-case-regression',
+      base_url: 'https://api.openai.com/v1'
+    },
+    status: 'active',
+    supportedModels: [upstreamModel, replacementUpstreamModel],
+    modelMappings: [
+      responsesMapping(caseSourceModel, upstreamModel),
+      responsesMapping(caseSourceModelUpper, replacementUpstreamModel)
+    ],
+    groupId: group.id
+  }, ownerAccess)
+  assert.deepEqual(caseAccount.modelMappings, [
+    responsesMapping(caseSourceModel, upstreamModel),
+    responsesMapping(caseSourceModelUpper, replacementUpstreamModel)
+  ], '仅大小写不同的下游模型应允许分别配置映射')
+  assert.equal(customProviderModelBindings({
+    providerCode: GPT_VENDOR_CODE,
+    model: caseSourceModel,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId
+  }).mappingSourceAccountCount, 1, '小写模型绑定统计不应合并大写模型映射')
+  assert.equal(customProviderModelBindings({
+    providerCode: GPT_VENDOR_CODE,
+    model: caseSourceModelUpper,
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId
+  }).mappingSourceAccountCount, 1, '大写模型绑定统计不应合并小写模型映射')
+
   assertNativeResponsesUpstreamRequiresEndpointModes()
   assertRuntimeIgnoresUnsupportedChatToResponsesMapping()
   assertRuntimeIgnoresPersistentCrossProtocolMappings()
@@ -336,7 +399,8 @@ try {
   const crossProviderUpstreamBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderUpstreamModel,
-    scope: 'global'
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId
   })
   assert.equal(crossProviderUpstreamBindings.mappingUpstreamAccountCount, 0, '被供应商边界拒绝的上游映射不应计入绑定统计')
 
@@ -348,7 +412,8 @@ try {
   const crossProviderSourceBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderSourceModel,
-    scope: 'global'
+    scope: 'personal',
+    systemAccountId: ownerAccess.systemAccountId
   })
   assert.equal(crossProviderSourceBindings.mappingSourceAccountCount, 0, '被供应商边界拒绝的下游映射不应计入 source 绑定统计')
 

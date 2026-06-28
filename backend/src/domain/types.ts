@@ -1084,7 +1084,7 @@ export interface ApiKeyExplicitHybridRouteRule {
   adapterMode: ApiKeyExplicitHybridRouteAdapterMode
 }
 
-export interface ApiKeyGroupBindingSummary {
+export interface RouteStrategyGroupBindingSummary {
   id: string
   groupId: string
   groupName?: string
@@ -1099,9 +1099,6 @@ export interface ApiKeyGroupBindingSummary {
 }
 
 export type RouteStrategyStatus = 'active' | 'disabled'
-
-export interface RouteStrategyGroupBindingSummary extends ApiKeyGroupBindingSummary {
-}
 
 export interface RouteStrategySummary {
   id: string

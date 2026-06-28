@@ -17,7 +17,6 @@ export interface RouteStrategyListParams extends ListParams {
   keyword?: string
   status?: RouteStrategyStatus | 'all'
   mode?: RouteStrategyMode | 'all'
-  groupId?: string
 }
 
 export interface RouteStrategyOptionsParams extends ListParams {

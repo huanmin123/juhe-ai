@@ -43,7 +43,7 @@ for (const [name, fileSource] of [
   assert.doesNotMatch(fileSource, /ScheduleStatusSyncCursor|updated_at > \?/, `${name} 时间计划同步不能使用滚动 updated_at 游标延迟边界切换`)
   assert.doesNotMatch(fileSource, /\.all\(\)\s+as unknown as Scheduled/, `${name} 时间计划同步不能无参数 .all() 拉取全部计划行`)
   assert.match(fileSource, /export async function sync.*AvailabilityScheduleStatusesAsync/, `${name} 时间计划同步必须提供 PostgreSQL async 入口`)
-  assert.match(fileSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+return sync.*AvailabilityScheduleStatuses\(now\)/, `${name} 时间计划 async 入口必须保留 SQLite fallback`)
+  assert.match(fileSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+return sync.*AvailabilityScheduleStatuses\(now\)/, `${name} 时间计划 async 入口必须保留 SQLite standalone 分支`)
   assert.match(fileSource, /createPostgresDatabaseClient\(await getPostgresPool\(\)\)/, `${name} 时间计划 async 入口必须使用 PostgreSQL client`)
   assert.match(fileSource, /await client\.transaction\(async \(tx\) => \{[\s\S]+ON CONFLICT\(event_key\) DO NOTHING/, `${name} 时间计划 async 状态切换必须在事务内写事件去重`)
   assert.match(fileSource, /client\.dialect\.qualifyTable\(businessSchemaName, tableName\)/, `${name} 时间计划 async SQL 必须限定 juhe_business schema`)
@@ -63,7 +63,7 @@ assert.match(
 assert.match(
   resourceAuthorizationWriteSource,
   /export async function expireDueResourceAuthorizationsAsync[\s\S]+runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+return expireDueResourceAuthorizations\(limit\)/,
-  '资源授权过期扫描必须提供 PostgreSQL async 入口，并保留 SQLite fallback'
+  '资源授权过期扫描必须提供 PostgreSQL async 入口，并保留 SQLite standalone 分支'
 )
 assert.match(
   resourceAuthorizationWriteSource,

@@ -12,7 +12,7 @@ assert(routeSource.includes('migrateServerOpenAIAccountTrafficRuntime'), '账户
 
 assert(repositoriesSource.includes('migrateAccountTrafficAsync'), 'repositories 必须导出账户流量迁移 async 入口')
 assert(mutationRepositorySource.includes('export async function migrateAccountTrafficAsync'), '账户运行态仓储必须提供流量迁移 async 入口')
-assert(mutationRepositorySource.includes("runtimeConfig.databaseDriver !== 'postgres'"), '账户流量迁移 async 入口必须保留 SQLite fallback')
+assert(mutationRepositorySource.includes("runtimeConfig.databaseDriver !== 'postgres'"), '账户流量迁移 async 入口必须保留 SQLite standalone 分支')
 assert(mutationRepositorySource.includes('accountRowForManageAsync'), 'PG 账户流量迁移必须使用 async 账号管理读取')
 assert(mutationRepositorySource.includes('accountEnabledGroupIdForClientAsync'), 'PG 账户流量迁移必须使用 async 分组绑定读取')
 assert(mutationRepositorySource.includes('migrateAuthorizedAccountBindingTrafficAsync'), 'PG 授权账户流量迁移必须使用 async 写入分支')

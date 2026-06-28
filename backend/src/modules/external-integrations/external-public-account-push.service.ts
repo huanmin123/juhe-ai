@@ -850,9 +850,9 @@ export function listPublicApiKeys(input: PublicApiKeyListInput): PublicApiKeyLis
   const page = listApiKeysPage(targetAccess(target.account.id), {
     page: input.page,
     pageSize: input.pageSize,
+    routeStrategyId: normalizedText(input.routeStrategyId),
     keyword: normalizedText(input.keyword),
-    status: input.status,
-    groupId: normalizedText(input.groupId)
+    status: input.status
   })
   return publicApiKeyListResponse(target, {
     page: page.page,
@@ -869,9 +869,9 @@ export async function listPublicApiKeysAsync(input: PublicApiKeyListInput): Prom
   const page = await listApiKeysPageAsync(targetAccess(target.account.id), {
     page: input.page,
     pageSize: input.pageSize,
+    routeStrategyId: normalizedText(input.routeStrategyId),
     keyword: normalizedText(input.keyword),
-    status: input.status,
-    groupId: normalizedText(input.groupId)
+    status: input.status
   })
   return publicApiKeyListResponse(target, {
     page: page.page,

@@ -192,7 +192,7 @@ const configuredQueueDriver = queueDriverConfig(
 const configuredPostgresUrl = optionalStringConfig('JUHE_AI_POSTGRES_URL')
 const configuredRedisCacheUrl = optionalStringConfig('JUHE_AI_REDIS_CACHE_URL')
 const configuredRedisStateUrl = optionalStringConfig('JUHE_AI_REDIS_STATE_URL')
-const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL') ?? configuredRedisStateUrl
+const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL')
 
 assertRuntimeModeDrivers({
   runtimeMode: configuredRuntimeMode,
@@ -367,41 +367,46 @@ function optionalStringConfig(name: string): string | undefined {
 }
 
 function booleanConfig(name: string, fallback: boolean): boolean {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
   if (!value) return fallback
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
-  return fallback
+  throw new Error(`${name} 只能配置为 true/false/1/0/yes/no/on/off`)
 }
 
 function runtimeModeConfig(name: string, fallback: RuntimeMode): RuntimeMode {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'standalone' || value === 'performance') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 standalone 或 performance`)
 }
 
 function databaseDriverConfig(name: string, fallback: DatabaseDriver): DatabaseDriver {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'sqlite' || value === 'postgres') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 sqlite 或 postgres`)
 }
 
 function cacheDriverConfig(name: string, fallback: CacheDriver): CacheDriver {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'memory' || value === 'redis') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 memory 或 redis`)
 }
 
 function runtimeStateDriverConfig(name: string, fallback: RuntimeStateDriver): RuntimeStateDriver {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'memory' || value === 'redis') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 memory 或 redis`)
 }
 
 function queueDriverConfig(name: string, fallback: QueueDriver): QueueDriver {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'memory' || value === 'redis_stream') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 memory 或 redis_stream`)
 }
 
 function assertRuntimeModeDrivers(config: {
@@ -440,12 +445,13 @@ function assertRuntimeModeDrivers(config: {
   if (config.runtimeStateDriver !== 'redis') {
     throw new Error('JUHE_AI_RUNTIME_MODE=performance 时 JUHE_AI_RUNTIME_STATE_DRIVER 必须为 redis')
   }
+  if (config.queueDriver !== 'redis_stream') {
+    throw new Error('JUHE_AI_RUNTIME_MODE=performance 时 JUHE_AI_QUEUE_DRIVER 必须为 redis_stream')
+  }
   assertUrlConfig('JUHE_AI_POSTGRES_URL', config.postgresUrl, ['postgres:', 'postgresql:'])
   assertUrlConfig('JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl, ['redis:', 'rediss:'])
   assertUrlConfig('JUHE_AI_REDIS_STATE_URL', config.redisStateUrl, ['redis:', 'rediss:'])
-  if (config.queueDriver === 'redis_stream') {
-    assertUrlConfig('JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl, ['redis:', 'rediss:'])
-  }
+  assertUrlConfig('JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl, ['redis:', 'rediss:'])
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {
@@ -464,32 +470,44 @@ function assertUrlConfig(name: string, value: string | undefined, protocols: str
 }
 
 function logLevelConfig(name: string, fallback: LogLevel): LogLevel {
-  const value = stringConfig(name, '').toLowerCase()
-  return isLogLevel(value) ? value : fallback
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (isLogLevel(value)) return value
+  throw new Error(`${name} 只能配置为 trace/debug/info/warn/error/fatal/silent`)
 }
 
 function processRoleConfig(name: string, fallback: ProcessRole): ProcessRole {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (value === 'server') return 'server'
   if (value === 'worker') return 'worker'
   if (value === 'db-service') return 'db-service'
-  return fallback
+  throw new Error(`${name} 只能配置为 server、worker 或 db-service`)
 }
 
 function workerRoleConfig(name: string, fallback: WorkerRuntimeRole): WorkerRuntimeRole {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (value === 'worker') return 'worker'
   if (value === 'ingest-worker') return 'ingest-worker'
   if (value === 'stats-worker') return 'stats-worker'
   if (value === 'ops-worker') return 'ops-worker'
   if (value === 'temporary-maintenance-worker') return 'temporary-maintenance-worker'
-  return fallback
+  throw new Error(`${name} 只能配置为 worker、ingest-worker、stats-worker、ops-worker 或 temporary-maintenance-worker`)
 }
 
 function numberConfig(name: string, fallback: number, min: number, max: number): number {
-  const value = Number(stringConfig(name, String(fallback)))
+  const rawValue = rawStringConfig(name)
+  if (!rawValue) return fallback
+  const value = Number(rawValue)
   if (!Number.isFinite(value)) {
-    return fallback
+    throw new Error(`${name} 必须配置为数字`)
   }
-  return Math.min(Math.max(Math.trunc(value), min), max)
+  const integerValue = Math.trunc(value)
+  if (integerValue < min || integerValue > max) {
+    throw new Error(`${name} 必须在 ${min}-${max} 范围内`)
+  }
+  return integerValue
 }
 
 function pathConfig(name: string, fallback: string): string {
@@ -582,15 +600,17 @@ function trustProxyConfig(name: string): boolean | number {
 }
 
 function hostedToolRuntimeModeConfig(name: string, fallback: HostedToolRuntimeMode): HostedToolRuntimeMode {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'guidance' || value === 'reject' || value === 'mock' || value === 'local_runtime') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 guidance、reject、mock 或 local_runtime`)
 }
 
 function imageGenerationProviderApiConfig(name: string, fallback: ImageGenerationProviderApi): ImageGenerationProviderApi {
-  const value = stringConfig(name, '').toLowerCase()
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
   if (value === 'images' || value === 'responses') return value
-  return fallback
+  throw new Error(`${name} 只能配置为 images 或 responses`)
 }
 
 function computerAdapterConfig(): RuntimeConfig['computerAdapter'] {

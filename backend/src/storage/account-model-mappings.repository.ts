@@ -51,7 +51,7 @@ export function normalizeAccountModelMappingsInput(value: unknown): AccountModel
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       continue
     }
-    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel}`
     if (seenSources.has(sourceKey)) {
       throw new Error(`同一个下游模型和协议只能配置一条映射：${sourceModel} / ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)}`)
     }

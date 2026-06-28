@@ -395,7 +395,7 @@ function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): Prov
 function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
   const merged = new Map<string, ProviderModelCatalogItem>()
   for (const item of items) {
-    const key = item.model.trim().toLowerCase()
+    const key = item.model.trim()
     if (!key) continue
     const previous = merged.get(key)
     if (!previous || catalogPriority(item) >= catalogPriority(previous)) {
@@ -426,8 +426,8 @@ function hasDirectPrice(item: ProviderModelPricing): boolean {
 }
 
 function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
-  const normalized = model.trim().toLowerCase()
-  return items.find((item) => item.model.trim().toLowerCase() === normalized)
+  const normalized = model.trim()
+  return items.find((item) => item.model.trim() === normalized)
 }
 
 function toBuiltInCatalogItem(item: ProviderModelPricing): ProviderModelCatalogItem {
@@ -531,7 +531,6 @@ function codexContextWindow(item: ProviderModelCatalogItem): number {
 
 function catalogPriority(item: ProviderModelCatalogItem): number {
   if (item.scope === 'personal') return 3
-  if (item.scope === 'global') return 2
   return 1
 }
 

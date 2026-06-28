@@ -85,7 +85,7 @@ docker compose --env-file .env.performance -f compose.performance.yml up -d --bu
 
 ## 4. 配置
 
-不复制配置文件也能启动。需要改端口、公网访问地址或复用旧数据时，再复制：
+不复制配置文件也能启动。需要改端口、公网访问地址，或沿用已按当前 schema 准备好的数据目录 / `.env` 时，再复制：
 
 ```powershell
 Copy-Item .env.example .env

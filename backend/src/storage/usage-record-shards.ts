@@ -249,6 +249,7 @@ export function applyUsageRecordShardBaseSchema(database: UsageRecordShardSchema
     CREATE INDEX IF NOT EXISTS idx_usage_records_traffic_source_created ON usage_records(traffic_source, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_client_ip_created_sort ON usage_records(client_ip, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_client_ip_created_sort ON usage_records(system_account_id, client_ip, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at);
   `)
 }
 
@@ -1116,30 +1117,5 @@ function shouldApplyUsageRecordShardSchema(): boolean {
 function applyUsageRecordShardSchema(database: DatabaseSync): void {
   applyUsageRecordShardBaseSchema(database)
 
-  ensureUsageRecordShardColumns(database)
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at);
-  `)
-
   void usageRecordShardSchemaVersion
-}
-
-function ensureUsageRecordShardColumns(database: DatabaseSync): void {
-  const rows = database
-    .prepare('PRAGMA table_info(usage_records)')
-    .all() as Array<{ name?: string }>
-  const existing = new Set(rows.map((row) => String(row.name ?? '')))
-  const columns: Array<{ name: string; definition: string }> = [
-    { name: 'usage_semantic', definition: 'TEXT' },
-    { name: 'cache_write_tokens', definition: 'INTEGER' },
-    { name: 'cache_write_1h_tokens', definition: 'INTEGER' },
-    { name: 'cache_write_cost_usd', definition: 'REAL' },
-    { name: 'thinking_tokens', definition: 'INTEGER' },
-    { name: 'provider_protocol_profile_id', definition: 'TEXT' },
-    { name: 'failure_attribution', definition: 'TEXT' }
-  ]
-  for (const column of columns) {
-    if (existing.has(column.name)) continue
-    database.exec(`ALTER TABLE usage_records ADD COLUMN ${column.name} ${column.definition}`)
-  }
 }

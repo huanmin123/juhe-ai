@@ -124,7 +124,7 @@ export async function clearProviderDefaultTestModelPreferenceIfModelAsync(input:
     DELETE FROM ${providerDefaultTestModelTable(client)}
     WHERE system_account_id = ?
       AND provider_code = ?
-      AND lower(model) = lower(?)
+      AND model = ?
   `, [systemAccountId, providerCode, model])
   return Number(result.changes ?? 0) > 0
 }

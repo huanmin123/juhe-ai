@@ -143,7 +143,8 @@ function registerCustomModels(): void {
     saveCustomProviderModel({
       providerCode,
       model: openAIChatSourceModel,
-      scope: 'global',
+      scope: 'personal',
+      systemAccountId: access.systemAccountId,
       status: 'active',
       supportedApiProtocols: ['chat_completions'],
       inputUsdPer1M: 1,
@@ -154,7 +155,8 @@ function registerCustomModels(): void {
   saveCustomProviderModel({
     providerCode: GPT_VENDOR_CODE,
     model: openAIResponsesSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
     status: 'active',
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: 1,
@@ -164,7 +166,8 @@ function registerCustomModels(): void {
   saveCustomProviderModel({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     model: anthropicMessagesSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
     status: 'active',
     supportedApiProtocols: ['messages'],
     inputUsdPer1M: 1,
@@ -174,7 +177,8 @@ function registerCustomModels(): void {
   saveCustomProviderModel({
     providerCode: GEMINI_PROVIDER_CODE,
     model: geminiGenerateContentSourceModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
     status: 'active',
     supportedApiProtocols: ['generate_content', 'stream_generate_content'],
     inputUsdPer1M: 1,
@@ -184,7 +188,8 @@ function registerCustomModels(): void {
   saveCustomProviderModel({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     model: openAIChatUpstreamModel,
-    scope: 'global',
+    scope: 'personal',
+    systemAccountId: access.systemAccountId,
     status: 'active',
     supportedApiProtocols: ['chat_completions'],
     inputUsdPer1M: 3,

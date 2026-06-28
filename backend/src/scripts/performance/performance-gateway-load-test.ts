@@ -869,7 +869,7 @@ async function samplePostgres(): Promise<PostgresSample> {
       COALESCE(max(EXTRACT(EPOCH FROM (now() - query_start))) FILTER (WHERE state = 'active' AND query_start IS NOT NULL), 0) AS max_active_query_seconds
     FROM pg_stat_activity
     WHERE datname = current_database()
-      AND application_name = 'juhe-ai-backend'
+      AND pid <> pg_backend_pid()
   `)
   const locks = await pool.query(`
     SELECT count(*) AS not_granted_locks
@@ -1426,6 +1426,7 @@ async function cleanupStaleFixtures(): Promise<void> {
 }
 
 function validateRuntime(): void {
+  assert.notEqual(process.env.NODE_ENV, 'production', '高性能网关压测禁止在 NODE_ENV=production 下运行')
   assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能网关压测需要 JUHE_AI_RUNTIME_MODE=performance')
   assert.equal(runtimeConfig.databaseDriver, 'postgres', '高性能网关压测需要 JUHE_AI_DATABASE_DRIVER=postgres')
   assert.equal(runtimeConfig.cacheDriver, 'redis', '高性能网关压测需要 JUHE_AI_CACHE_DRIVER=redis')
@@ -1435,6 +1436,9 @@ function validateRuntime(): void {
   assert.ok(runtimeConfig.redis.cacheUrl, '高性能网关压测需要 JUHE_AI_REDIS_CACHE_URL')
   assert.ok(runtimeConfig.redis.stateUrl, '高性能网关压测需要 JUHE_AI_REDIS_STATE_URL')
   assert.ok(runtimeConfig.redis.queueUrl, '高性能网关压测需要 JUHE_AI_REDIS_QUEUE_URL')
+  assert.equal(process.env.JUHE_AI_GATEWAY_LOAD_ALLOW_SETTINGS_WRITE, '1', '高性能网关压测会写入临时系统设置，必须显式设置 JUHE_AI_GATEWAY_LOAD_ALLOW_SETTINGS_WRITE=1')
+  assert.equal(process.env.JUHE_AI_GATEWAY_LOAD_ALLOW_PRIVATE_UPSTREAM, '1', '高性能网关压测使用本机 mock upstream，必须显式设置 JUHE_AI_GATEWAY_LOAD_ALLOW_PRIVATE_UPSTREAM=1')
+  runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 }
 
 function loadConfig(): GatewayLoadConfig {

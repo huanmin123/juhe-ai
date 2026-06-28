@@ -155,7 +155,7 @@ Codex Responses 上下文索引写入仍归 DB service 所有；`JUHE_AI_CODEX_C
 - `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。进入慢速恢复后仍继续自动退避复测；超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后，账户主状态保持 `temporary_unavailable` / `rate_limited`，`last_error_code` 写入 `cooldown_retest_long_term_unavailable`，并按 `cooldownAccountRetestLongTermIntervalHours` 继续低频自动复测。
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写不敏感唯一；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
-- `custom_provider_models` 保存管理员全局自定义模型和用户个人自定义模型。`scope = global` 的模型不绑定 `system_account_id`，所有系统账户可见；`scope = personal` 的模型只对对应 `system_account_id` 可见。模型路由方案落地后，`model` 需要按 `lower(trim(model))` 在全系统维度唯一，不能按供应商、scope 或用户维度放宽；内置、全局和个人模型之间出现同名都必须在写入时拒绝，已有重名数据按离线清洗处理，不在运行路径做覆盖式去重。自定义模型不再保存可见性或显示名称字段，模型 ID 同时作为页面和协议展示名；状态为 `active` 且可解析价格的模型会进入当前作用域的 `/v1/models`、账号支持模型和账号模型映射选项。`/v1/models` 对外只输出 OpenAI 标准字段，不暴露价格、scope、`pricingModel` 或备注。
+- `custom_provider_models` 保存用户个人自定义模型；管理员创建的自定义模型也只归属管理员自己的系统账户。`scope = personal` 的模型只对对应 `system_account_id` 可见。`model` 按同一供应商、同一系统账户、`trim(model)` 后原始大小写字符串保持唯一；模型 ID 同时作为页面和协议展示名，必须保留上游大小写语义，不做 lower-case 折叠。自定义模型不再保存可见性或显示名称字段；状态为 `active` 且可解析价格的模型会进入当前作用域的 `/v1/models`、账号支持模型和账号模型映射选项。`/v1/models` 对外只输出 OpenAI 标准字段，不暴露价格、scope、`pricingModel` 或备注。
 - `provider_default_test_models` 保存系统账户维度的供应商默认测试模型偏好，主键为 `system_account_id + provider_code`。写入时模型必须存在于该用户当前可见供应商模型目录中，且必须是启用的文本生成模型；读取供应商选项和账户测试兜底模型时先按当前系统账户读取该表，没有个人配置时才使用 `provider_protocol_profiles.default_test_model`。删除或停用个人自定义模型时，如果该模型正被同一用户设为默认测试模型，需要同步清理偏好，避免默认值指向不可见模型。
 - 高并发分组已使用 `groups.group_type` 和 `groups.scheduling_policy_json`：前者保存分组调度类型，默认 `personal`；后者接收最大单账户排队阈值和分组最大等待时间，快速优先、慢请求分流、亲和打破、备用启用和分组级短等待容量都使用代码内置默认开启策略。默认分组使用个人分组语义。
 - 高并发分组的单账户排队阈值只来自 `groups.scheduling_policy_json` 里的分组目标配置；账户绑定关系不再保存绑定级权重或绑定级单账户排队阈值。实际调度阈值仍不能突破账号 `concurrency_limit` 硬上限。
@@ -304,7 +304,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `route_strategy_groups(route_strategy_id, status, priority, created_at, id)`：网关按策略路由读取 active 分组候选时固定最多取 20 条窗口，并按路由优先级稳定排序，不能扫描全部绑定或临时排序。
 - `route_strategy_groups(group_id)`、`route_strategy_groups(system_account_id, route_strategy_id)`：分组删除保护、列表筛选和管理作用域校验使用。
 - `route_strategy_groups(system_account_id, group_id, route_strategy_id)`：删除分组前按系统账户和分组读取最多 101 条受影响策略路由固定窗口，超过 100 条受影响策略时拒绝一次性删除，避免主请求全量枚举绑定或开启大事务。
-- 模型路由落地后，模型目录需要增加规范化模型名唯一约束或等效写入校验，确保内置、全局和个人模型在全系统维度没有同名；模型路由索引按规范化模型名构建 `model -> provider_protocol_profile_id` 紧凑 Map，不由请求链路遍历 `custom_provider_models` 或供应商目录。
+- 模型路由索引按 `trim(model)` 后的原始大小写字符串构建 `model -> provider_protocol_profile_id` 紧凑 Map，不由请求链路遍历 `custom_provider_models` 或供应商目录；仅大小写不同的模型视为不同上游模型 ID。
 - `proxy_profiles(lower(name))`：保证代理配置名称全局唯一。
 - `proxy_profiles(updated_at, id)`、`proxy_profiles(enabled, name, updated_at, id)`：代理管理列表默认排序、启用代理选项和按名称前缀筛选都必须走固定窗口索引，不能为了列表或选项全量扫描代理表。
 - `proxy_profiles(name, id)`：代理管理列表和代理选项只按代理名称精确 / 前缀匹配；不维护代理地址、类型、用户名或说明的组合搜索索引。

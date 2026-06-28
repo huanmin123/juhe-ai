@@ -135,8 +135,8 @@ function buildCustomModelDirectPricePayload(form: CustomModelForm, category: Mod
 }
 
 function findProviderModelByName(models: ProviderModelPricing[], model: string): ProviderModelPricing | undefined {
-  const normalized = model.trim().toLowerCase()
-  return models.find((item) => item.model.trim().toLowerCase() === normalized)
+  const normalized = model.trim()
+  return models.find((item) => item.model.trim() === normalized)
 }
 
 function trimToUndefined(value: unknown): string | undefined {

@@ -28,7 +28,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
       const model = option.model.trim()
       const providerCode = option.providerCode.trim()
       if (!model || !providerCode) continue
-      const key = model.toLowerCase()
+      const key = model
       const existing = grouped.get(key) ?? { model, providerCodes: new Set<string>() }
       existing.providerCodes.add(providerCode)
       grouped.set(key, existing)
@@ -44,7 +44,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
         }
       })
   })
-  const optionValues = computed(() => new Set(selectOptions.value.map((option) => option.value.toLowerCase())))
+  const optionValues = computed(() => new Set(selectOptions.value.map((option) => option.value)))
 
   async function loadModelOptions(force = false): Promise<void> {
     const scopeKey = modelOptionsScopeKey()
@@ -96,7 +96,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   }
 
   function hasModel(model: string): boolean {
-    return optionValues.value.has(model.trim().toLowerCase())
+    return optionValues.value.has(model.trim())
   }
 }
 

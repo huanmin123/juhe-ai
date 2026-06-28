@@ -99,12 +99,12 @@ try {
   assert(wildcardIds.includes(wildcardLiteral.id), 'PG API Key 列表应把 % 当作字面量前缀处理')
   assert(!wildcardIds.includes(wildcardNeighbor.id), 'PG API Key 列表不应把用户输入的 % 当作 LIKE 通配符')
 
-  const groupResult = await listApiKeysPageAsync(access, { groupId: group.id, status: 'active', page: 1, pageSize: 50 })
-  const groupIds = groupResult.items.map((item) => item.id)
-  assert(groupIds.includes(matchedByName.id), 'PG API Key 列表按分组筛选应命中绑定策略的 active Key')
-  assert(!groupIds.includes(disabledKey.id), 'PG API Key 列表 active 状态筛选不应返回停用 Key')
+  const routeStrategyResult = await listApiKeysPageAsync(access, { routeStrategyId: routeStrategy.id, status: 'active', page: 1, pageSize: 50 })
+  const routeStrategyIds = routeStrategyResult.items.map((item) => item.id)
+  assert(routeStrategyIds.includes(matchedByName.id), 'PG API Key 列表按策略路由筛选应命中 active Key')
+  assert(!routeStrategyIds.includes(disabledKey.id), 'PG API Key 列表 active 状态筛选不应返回停用 Key')
 
-  await assertApiKeyListIndexedPlans(access.systemAccountId, group.id, keyword)
+  await assertApiKeyListIndexedPlans(access.systemAccountId, routeStrategy.id, keyword)
 
   console.log(JSON.stringify({
     message: 'API Key 列表 PG smoke 通过',
@@ -119,7 +119,7 @@ try {
   await closePostgresPool()
 }
 
-async function assertApiKeyListIndexedPlans(systemAccountId: string, groupId: string, keywordValue: string): Promise<void> {
+async function assertApiKeyListIndexedPlans(systemAccountId: string, routeStrategyId: string, keywordValue: string): Promise<void> {
   const lowerKeyword = keywordValue.toLowerCase()
   await assertIndexedPlan(
     'API Key 默认列表排序 PG 查询',
@@ -172,23 +172,17 @@ async function assertApiKeyListIndexedPlans(systemAccountId: string, groupId: st
     ['idx_api_keys_system_account_name_c_lookup']
   )
   await assertIndexedPlan(
-    'API Key 分组筛选 PG 查询',
+    'API Key 策略路由筛选 PG 查询',
     `
       SELECT api_keys.id
       FROM juhe_business.api_keys api_keys
       WHERE api_keys.system_account_id = $1
-        AND EXISTS (
-          SELECT 1
-          FROM juhe_business.route_strategy_groups route_strategy_groups
-          WHERE route_strategy_groups.route_strategy_id = api_keys.route_strategy_id
-            AND route_strategy_groups.system_account_id = api_keys.system_account_id
-            AND route_strategy_groups.group_id = $2
-        )
+        AND api_keys.route_strategy_id = $2
       ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
       LIMIT 50
     `,
-    [systemAccountId, groupId],
-    ['idx_route_strategy_groups_owner_group', 'idx_api_keys_system_account_default_updated']
+    [systemAccountId, routeStrategyId],
+    ['idx_api_keys_route_strategy', 'idx_api_keys_system_account_default_updated']
   )
 }
 

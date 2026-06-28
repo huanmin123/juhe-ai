@@ -181,8 +181,8 @@ const emit = defineEmits<{
 }>()
 
 function isDefaultTestModel(record: ProviderModelPricing): boolean {
-  const defaultModel = props.defaultTestModel?.trim().toLowerCase()
-  return Boolean(defaultModel && record.model.trim().toLowerCase() === defaultModel)
+  const defaultModel = props.defaultTestModel?.trim()
+  return Boolean(defaultModel && record.model.trim() === defaultModel)
 }
 </script>
 

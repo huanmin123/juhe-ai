@@ -114,6 +114,26 @@ try {
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-regression-case-model',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: 'sys_admin'
+  })
+  catalogService.saveCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'GPT-regression-case-model',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    inputUsdPer1M: 5,
+    outputUsdPer1M: 7,
+    actorSystemAccountId: 'sys_admin'
+  })
+  catalogService.saveCustomProviderModel({
     providerCode: 'openai',
     model: 'openai-regression-personal',
     scope: 'personal',
@@ -144,6 +164,8 @@ try {
   assert(publicModels.has('gpt-regression-personal'), '当前账号个人自定义模型应进入模型目录')
   assert(publicModels.has('gpt-regression-alias'), '带 pricingModel 的个人模型应进入个人公开模型目录')
   assert(publicModels.has('gpt-regression-upstream-target'), '自定义上游目标模型应直接进入公开模型目录')
+  assert(publicModels.has('gpt-regression-case-model'), '仅大小写不同的小写自定义模型应进入模型目录')
+  assert(publicModels.has('GPT-regression-case-model'), '仅大小写不同的大写自定义模型应进入模型目录')
   assert(publicModels.has('gpt-regression-audio'), '只有音频价格的自定义模型应进入公开模型目录')
   assert(publicModels.has('gpt-regression-image-unit'), '只有按张图片价格的自定义模型应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-draft'), false, '草稿模型不应进入公开模型目录')
@@ -163,6 +185,7 @@ try {
 
   const dedupedProviderModelOptions = dedupeProviderModelOptions([
     { providerCode: 'gpt', model: 'shared-model' },
+    { providerCode: 'gpt', model: 'Shared-Model' },
     { providerCode: 'deepseek', model: 'shared-model' },
     { providerCode: ' GPT ', model: ' shared-model ' },
     { providerCode: '', model: 'shared-model' },
@@ -170,8 +193,9 @@ try {
   ])
   assert.deepEqual(dedupedProviderModelOptions, [
     { providerCode: 'gpt', model: 'shared-model' },
+    { providerCode: 'gpt', model: 'Shared-Model' },
     { providerCode: 'deepseek', model: 'shared-model' }
-  ], '供应商模型选项必须按 providerCode + model 去重，不能吞掉跨供应商同名模型')
+  ], '供应商模型选项必须按 providerCode + 大小写敏感 model 去重，不能吞掉跨供应商同名或大小写变体模型')
 
   const deepSeekCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'deepseek',
@@ -441,6 +465,22 @@ try {
     outputTokens: 1_000_000
   })
   assert.equal(aliasCost, 12, 'pricingModel 应按目标模型直接价格计费')
+  const lowerCaseModelCost = catalogService.estimateCatalogCostUsd({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'gpt-regression-case-model',
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000
+  })
+  const upperCaseModelCost = catalogService.estimateCatalogCostUsd({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'GPT-regression-case-model',
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000
+  })
+  assert.equal(lowerCaseModelCost, 3, '大小写不同的自定义模型应按小写模型自己的价格计费')
+  assert.equal(upperCaseModelCost, 12, '大小写不同的自定义模型应按大写模型自己的价格计费')
   const overriddenAliasCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
@@ -612,6 +652,30 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       }
     )
     assert.equal(userAUpstreamTarget.model, 'gpt-http-user-a-upstream-target', '个人自定义模型应直接保存')
+
+    const userACaseLowerModel = await postEnvelope<{ id: string; model: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/openai/models',
+      userACookie,
+      {
+        model: 'gpt-http-user-a-case',
+        supportedApiProtocols: ['responses'],
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2
+      }
+    )
+    const userACaseUpperModel = await postEnvelope<{ id: string; model: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/openai/models',
+      userACookie,
+      {
+        model: 'GPT-http-user-a-case',
+        supportedApiProtocols: ['responses'],
+        inputUsdPer1M: 3,
+        outputUsdPer1M: 4
+      }
+    )
+    assert.notEqual(userACaseLowerModel.id, userACaseUpperModel.id, '同一供应商同一用户应允许创建仅大小写不同的自定义模型')
 
     const userAGptModel = await postEnvelope<{ id: string; model: string; providerCode: string }>(
       baseUrl,
@@ -830,6 +894,8 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert(userAVisible.some((item) => item.model === 'gpt-http-user-a' && item.scope === 'personal'), '用户应能看到自己的公开个人模型')
     assert(userAVisible.some((item) => item.model === 'gpt-http-user-a-upstream-target' && item.scope === 'personal'), '用户应能看到自己的个人自定义模型')
+    assert(userAVisible.some((item) => item.model === 'gpt-http-user-a-case' && item.scope === 'personal'), '用户应能看到小写大小写变体个人模型')
+    assert(userAVisible.some((item) => item.model === 'GPT-http-user-a-case' && item.scope === 'personal'), '用户应能看到大写大小写变体个人模型')
     assert(userAVisible.some((item) => item.model === 'gpt-http-user-a-gpt' && item.providerCode === 'gpt'), 'OpenAI 聚合目录应包含 GPT 目录的个人自定义模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '用户不应看到管理员个人模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '默认管理模型目录不应返回草稿模型')

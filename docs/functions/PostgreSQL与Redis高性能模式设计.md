@@ -27,7 +27,7 @@
 - 高性能模式使用 Redis 承接跨进程短 TTL 缓存、调度运行态、限流、验证码 / 登录失败窗口、缓存版本和必要的原子计数。
 - 数据访问方只依赖统一 repository / cache / runtime state 接口，不在业务代码里散落 `if sqlite / if postgres / if redis`。
 - 复用现有 typed command 和队列语义，但 PostgreSQL 模式下消费端可以并发执行，默认最大消费并发为 `100`，并受连接池、队列容量和同键顺序约束保护。
-- 不在运行时代码里做 SQLite 与 PostgreSQL 双读、双写、自动迁移或旧结构兼容；需要迁移时用停机离线脚本完成。
+- 不在代码库里做 SQLite 与 PostgreSQL 数据迁移、旧 PostgreSQL 结构迁移、双读、双写、自动迁移或旧结构兼容；历史数据处理由上线窗口在代码库外单独完成，应用只面向当前 schema。
 
 ## 不做什么
 
@@ -64,10 +64,10 @@ JUHE_AI_DATABASE_DRIVER=postgres
 JUHE_AI_CACHE_DRIVER=redis
 JUHE_AI_RUNTIME_STATE_DRIVER=redis
 JUHE_AI_QUEUE_DRIVER=redis_stream
-JUHE_AI_POSTGRES_URL=postgres://juhe_ai:***@127.0.0.1:5432/juhe_ai
-JUHE_AI_REDIS_CACHE_URL=redis://127.0.0.1:6379/0
-JUHE_AI_REDIS_STATE_URL=redis://127.0.0.1:6380/0
-JUHE_AI_REDIS_QUEUE_URL=redis://127.0.0.1:6380/0
+JUHE_AI_POSTGRES_URL=postgres://juhe_ai:<密码URL编码>@pgbouncer:5432/juhe_ai
+JUHE_AI_REDIS_CACHE_URL=redis://:<缓存密码URL编码>@redis-cache:6379/0
+JUHE_AI_REDIS_STATE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
+JUHE_AI_REDIS_QUEUE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
 JUHE_AI_REDIS_STREAM_MAXLEN=1000000
 JUHE_AI_REDIS_STREAM_READ_COUNT=1000
 JUHE_AI_REDIS_STREAM_BLOCK_MS=1000
@@ -80,10 +80,10 @@ JUHE_AI_DB_WRITE_QUEUE_MAX_ITEMS=50000
 
 规则：
 
-- `JUHE_AI_RUNTIME_MODE=performance` 时必须同时配置 PostgreSQL、Redis cache 和 Redis state；缺失时快速失败。
+- `JUHE_AI_RUNTIME_MODE=performance` 时必须同时配置 PostgreSQL、Redis cache、Redis state 和 Redis queue；缺失时快速失败。
 - `JUHE_AI_DATABASE_DRIVER=postgres` 时不读取 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_USAGE_SHARD_ROOT`。
 - `JUHE_AI_CACHE_DRIVER=redis` 只表示可丢弃缓存；需要原子并发、限流、锁或调度运行态时必须走 `JUHE_AI_RUNTIME_STATE_DRIVER`。
-- `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 未显式配置时默认复用 `JUHE_AI_REDIS_STATE_URL`，生产也可以拆到独立 Redis 队列实例。
+- `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 必须显式配置，可以与 `JUHE_AI_REDIS_STATE_URL` 填同一个 Redis，也可以拆到独立 Redis 队列实例。Redis Stream 入队失败不回退 IPC 或本地内存队列，避免掩盖队列基础设施故障。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
 
 ## 部署边界
@@ -119,7 +119,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 
 表名可以保留当前语义，代码通过 repository / dialect 选择 schema，不把 schema 名写进业务服务层。
 
-当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`<测试主机IP>` 最新 schema-only 已验证 5 个 schema、614 条 schema 语句可以成功执行。
+当前已新增 `backend/src/storage/postgres-schema.ts`，从现有 SQLite schema DDL 收集建表 / 建索引语句并映射为 PostgreSQL SQL：移除 `PRAGMA`，把 `COLLATE NOCASE` 映射为 `lower(...)` 表达式索引，把 SQLite JSON object check 映射为 `jsonb_typeof(...::jsonb)`，并按外键依赖重新排序 `CREATE TABLE`，避免 PostgreSQL 的前向外键引用失败。`postgres:init-schema` 默认执行 schema 初始化并写入默认种子数据，`postgres:init-schema-only` 只执行 DDL。`<测试主机IP>` 最新完整初始化已验证 5 个 schema、617 条 schema 语句、132 条默认种子语句可以成功执行。
 
 ### usage_records 目标形态
 
@@ -128,7 +128,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 - 分区键：`created_at` 按天或按月 range partition，首期按 usage 保留期和日请求量选择。
 - 热写入维度：保留 `shard_id` 计算列或普通列，取值为 `stable_hash(id) % 16`，用于索引、批处理分桶和后续 hash subpartition。
 - 默认索引：`created_at + id`、`system_account_id + created_at + id`、`api_key_id + created_at + id`、`account_id + created_at + id`、`trace_id`、`request_id`。
-- PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip` 等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为和 SQLite 一致。
+- PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip`、API Key 名称和 AI 性能账号选项名称等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为和 SQLite 一致。
 - 清理策略：优先 drop / detach 过期分区；不能在热表上做大批量 `DELETE`。
 - 统计游标：`stats.stats_job_state` 继续记录按分区 / shard 窗口推进的游标，统计写入和游标推进在同一 PostgreSQL 事务提交。
 
@@ -366,19 +366,11 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - 运行态原子操作使用 Lua 或事务 pipeline 收口，不把 `GET -> 本地判断 -> SET` 暴露给并发调用方。
 - 监控 `used_memory`、`evicted_keys`、`expired_keys`、`blocked_clients`、`instantaneous_ops_per_sec`、命中率和慢命令。
 
-## 离线迁移与重建
+## 数据切换边界
 
-从 SQLite 切到 PostgreSQL 只支持停机迁移：
+从 standalone 切到 performance 时，项目只提供当前 PostgreSQL schema 初始化、默认 seed 和当前运行路径回归；不提供 SQLite -> PostgreSQL 数据迁移脚本、旧 PostgreSQL 结构迁移脚本、启动期自动迁移、双读双写或旧 schema 兼容。历史数据是否保留、如何导入、如何对齐旧结构，由上线窗口在代码库外单独处理，并最终落到当前 schema。
 
-1. 停止 Web、DB service 和所有 worker。
-2. 备份 SQLite 业务库、`backend/.env`、必要的数据集目录库、usage shard、统计结果库和 Codex context 文件。
-3. 在 PostgreSQL 初始化当前 schema，不在运行时做自动建旧表迁移。
-4. 运行一次性离线迁移脚本 `pnpm --filter juhe-ai-backend run postgres:migrate-sqlite -- --confirm-offline`，把业务事实、可选审计 / usage / 统计数据按当前 schema 批量导入 PostgreSQL。
-5. 如果统计数据不迁移，清空统计缓存并从新请求开始累计；如迁移 usage 明细，导入后执行离线统计重建。
-6. 更新 `.env` 为 performance 模式，启动服务。
-7. 执行登录、管理 CRUD、网关请求、usage 写入、统计聚合、缓存失效、Redis 重启降级和备份恢复验证。
-
-迁移脚本必须显式传 `--confirm-offline`，并在日志中打印源库、表数量、导入行数、导入批次和失败明细。脚本不挂入常规启动路径，不输出 PostgreSQL 连接串。源 SQLite 文件只读打开；大表按 `rowid` 游标 + `LIMIT` 分批导入，不使用分页偏移扫描；目标表默认必须为空，除非明确传 `--allow-non-empty-target`。usage shard 通过 usage catalog 的 `usage_record_shards` 清单导入 `usage_records`，不枚举整个 shard 目录。
+切换后必须执行登录、管理 CRUD、网关请求、usage 写入、统计聚合、缓存失效、Redis 重启降级和备份恢复验证；验证不通过时按当前 schema 和当前代码修复，不在运行路径增加旧结构兼容分支。
 
 ## 验证要求
 
@@ -406,7 +398,7 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 5. 新增 PostgreSQL schema、schema 初始化脚本和 repository PG adapter。已完成 PostgreSQL pool、schema 映射初始化脚本、默认种子写入、provider 只读 repository adapter、登录 / 会话最小 repository adapter、系统账户管理读写 adapter、分组管理读写 adapter、API Key 管理读写与网关 Key 校验 adapter、授权列表 / options / usage 详情读取 adapter、公共设置读取 adapter、系统 API 限流设置读取 adapter 和系统设置管理读写 adapter；其他 repository adapter 待完成。
 6. 新增 Redis cache / runtime state driver，迁移网关运行态缓存调用点。已完成登录失败窗口、账号并发槽和网关缓存失效版本广播，其他运行态待迁移。
 7. 调整写队列 drain 策略，performance 模式启用最大并发 `100` 和连接池背压。已完成使用记录 Redis Streams 首批队列和 PG 并发 drain 骨架，其他写队列待迁移。
-8. 增加离线 SQLite -> PostgreSQL 迁移脚本和统计重建流程。已新增 `postgres:migrate-sqlite` 离线脚本和 `test:sqlite-to-postgres-migration-script` 源码门禁；真实生产数据迁移演练仍需在目标维护窗口单独执行。
+8. 明确数据切换边界：代码库不提供数据迁移或旧结构迁移实现，只保留当前 schema 初始化与当前路径验证。
 9. 完成压测、故障演练、备份恢复和部署文档。
 
 ## 风险
@@ -415,4 +407,4 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - Redis cache 与 Redis runtime state 如果混用同一实例和 LRU 淘汰，可能导致限流、并发占用或调度屏蔽被意外淘汰。生产建议拆成两个实例。
 - 并发 100 如果不经过 PgBouncer 和队列背压，可能把数据库连接耗尽，反而比 SQLite 单写者更不稳定。
 - Redis 8 授权需要生产前确认；如果业务分发方式不接受当前 Redis 授权，必须单独决策替代实现。
-- SQLite 到 PostgreSQL 的 schema 迁移会触及大量 repository；必须先建 dialect 测试矩阵，不能直接批量替换 SQL 字符串。
+- SQLite 与 PostgreSQL 的 SQL 差异会触及大量 repository；必须先建 dialect 测试矩阵，不能直接批量替换 SQL 字符串。

@@ -499,8 +499,8 @@ function canMutateModel(record: ProviderModelPricing): boolean {
 }
 
 function isActiveProviderDefaultTestModel(model: string): boolean {
-  const current = activeProviderDefaultTestModel.value.trim().toLowerCase()
-  return Boolean(current && model.trim().toLowerCase() === current)
+  const current = activeProviderDefaultTestModel.value.trim()
+  return Boolean(current && model.trim() === current)
 }
 
 function applyProviderDefaultTestModel(providerCode: string, defaultTestModel: string) {

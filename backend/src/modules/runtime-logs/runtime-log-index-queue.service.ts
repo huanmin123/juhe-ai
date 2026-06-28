@@ -481,27 +481,12 @@ function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
 }
 
-async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput, rawLine: string, options: RuntimeLogLineIndexOptions): Promise<void> {
+async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput, _rawLine: string, _options: RuntimeLogLineIndexOptions): Promise<void> {
   try {
     await runtimeLogRedisStreamQueue().enqueue(input)
   } catch (error) {
     flushLastError = error instanceof Error ? error.message : String(error)
-    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，回退到原有队列路径：${flushLastError}`)
-    fallbackRuntimeLogAfterRedisStreamFailure(rawLine, options)
-  }
-}
-
-function fallbackRuntimeLogAfterRedisStreamFailure(rawLine: string, options: RuntimeLogLineIndexOptions): void {
-  if (runtimeConfig.processRole === 'db-service') {
-    sendRuntimeLogLineFromDbServiceToServer(rawLine, options)
-    return
-  }
-  if (shouldDispatchRuntimeLogToIngestWorker()) {
-    sendRuntimeLogLineToWorker(rawLine, options)
-    return
-  }
-  if (isRuntimeLogIngestWorker()) {
-    enqueueRuntimeLogLineLocal(rawLine, options)
+    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，未切换到 IPC 或本地队列：${flushLastError}`)
   }
 }
 

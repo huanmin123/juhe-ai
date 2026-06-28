@@ -50,7 +50,7 @@ JUHE_AI_OAUTH_PROXY_URL=
 JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false
 ```
 
-新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；迁移旧数据必须沿用旧 `JUHE_AI_SECRET`，否则敏感字段无法解密。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和清理目标在数据集目录库；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。四个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false` 时仍保留审计元数据和 attempt 摘要，不保存请求 / 响应正文 payload。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；审计、操作日志、运行日志索引、模型检测和清理目标在数据集目录库；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库。四个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。`JUHE_AI_AUDIT_FULL_BODY_CAPTURE_ENABLED=false` 时仍保留审计元数据和 attempt 摘要，不保存请求 / 响应正文 payload。
 
 ## 启动与验证
 

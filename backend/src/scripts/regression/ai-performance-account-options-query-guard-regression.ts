@@ -253,6 +253,7 @@ try {
     assert(!/\bLEFT\s+JOIN\s+system_accounts\b/i.test(call.sql), 'AI 性能账号选项关键词查询不应为 owner 名称挂系统账号表')
     assert(!/\bCOALESCE\s*\(\s*system_accounts\./i.test(call.sql), 'AI 性能账号选项关键词查询不应在账号查询中扫描系统账号展示字段')
     assert(!/\blower\(accounts\.name\)\s+LIKE\s+\?/i.test(call.sql), 'AI 性能账号选项名称前缀搜索不应回退 lower(name) LIKE 扫描')
+    assert(/\baccounts\.deleted_at\s+IS\s+NULL\b/i.test(call.sql), 'AI 性能账号选项名称搜索不应返回逻辑删除账号')
   }
   assertBusinessIndexExists('idx_accounts_name_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
@@ -264,9 +265,32 @@ try {
   )
   assert.match(
     asyncAccountOptionSnippet,
-    /LOWER\(accounts\.name\) >= \? AND LOWER\(accounts\.name\) < \? AND starts_with\(LOWER\(accounts\.name\), \?\)/,
-    'PG AI 性能账号选项名称搜索必须使用 lower(name) 范围 + starts_with 条件'
+    /LOWER\(accounts\.name\) COLLATE "C" >= \? AND LOWER\(accounts\.name\) COLLATE "C" < \? AND starts_with\(LOWER\(accounts\.name\), \?\)/,
+    'PG AI 性能账号选项名称搜索必须使用 C collation lower(name) 范围 + starts_with 条件'
   )
+  assert.match(
+    asyncAccountOptionSnippet,
+    /accounts\.deleted_at IS NULL/,
+    'PG AI 性能账号选项名称搜索必须过滤逻辑删除账号'
+  )
+  assert.match(
+    asyncAccountOptionSnippet,
+    /accounts\.authorization_instance_authorization_id IS NULL/,
+    'PG AI 性能账号选项自有账号路径必须匹配 owner partial index 谓词'
+  )
+  assert.match(
+    asyncAccountOptionSnippet,
+    /source_accounts\.deleted_at IS NULL[\s\S]+instance_accounts\.deleted_at IS NULL/,
+    'PG AI 性能账号选项授权实例来源搜索必须过滤逻辑删除的来源账号和实例账号'
+  )
+  assert.match(
+    asyncAccountOptionSnippet,
+    /ORDER BY LOWER\(accounts\.name\) COLLATE "C" ASC, accounts\.id ASC/,
+    'PG AI 性能账号选项名称搜索排序必须使用 C collation，避免受默认排序规则影响'
+  )
+  const postgresSchemaSource = readFileSync(new URL('../../storage/postgres-schema.ts', import.meta.url), 'utf8')
+  assert.match(postgresSchemaSource, /idx_accounts_name_c_lookup/, 'PG AI 性能账号选项全局名称前缀查询必须有 C collation 索引')
+  assert.match(postgresSchemaSource, /idx_accounts_owner_name_c_lookup/, 'PG AI 性能账号选项租户名称前缀查询必须有 owner + C collation 索引')
   const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
   assert.match(statsRoutesSource, /getAiPerformanceOverviewAsync/, 'AI 性能概览路由应使用 async repository')
   assert.match(statsRoutesSource, /listAiPerformanceAccountOptionsAsync/, 'AI 性能账号选项路由应使用 async repository')

@@ -245,9 +245,8 @@ function normalizeSupportedModels(value: AccountFormModel['supportedModels']): s
   const seen = new Set<string>()
   for (const item of value ?? []) {
     const model = item.trim()
-    const key = model.toLowerCase()
-    if (!model || seen.has(key)) continue
-    seen.add(key)
+    if (!model || seen.has(model)) continue
+    seen.add(model)
     output.push(model)
   }
   return output
@@ -268,7 +267,7 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
     const upstreamModel = item.upstreamModel.trim()
     const sourceEndpointFamily = item.sourceEndpointFamily
     const upstreamEndpointFamily = item.upstreamEndpointFamily
-    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel}`
     if (!sourceModel || !upstreamModel || (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) || seenSources.has(sourceKey)) {
       continue
     }
@@ -291,7 +290,7 @@ function validateAccountModelMappings(
   providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]
 ): string | undefined {
   const seenSources = new Set<string>()
-  const supportedModelSet = new Set(supportedModels.map((model) => model.toLowerCase()))
+  const supportedModelSet = new Set(supportedModels.map((model) => model.trim()).filter(Boolean))
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
     const upstreamModel = item.upstreamModel.trim()
@@ -312,10 +311,10 @@ function validateAccountModelMappings(
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
-    if (!supportedModelSet.has(upstreamModel.toLowerCase())) {
+    if (!supportedModelSet.has(upstreamModel)) {
       return `模型映射的上游模型必须从支持模型中选择：${upstreamModel}`
     }
-    const sourceKey = `${sourceEndpointFamily}\n${sourceModel.toLowerCase()}`
+    const sourceKey = `${sourceEndpointFamily}\n${sourceModel}`
     if (seenSources.has(sourceKey)) {
       return `下游模型 ${sourceModel} / ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 已重复配置映射`
     }
