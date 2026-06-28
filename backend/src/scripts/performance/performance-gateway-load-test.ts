@@ -116,6 +116,22 @@ interface RedisStreamsSnapshot {
   error?: string
 }
 
+interface RedisStreamDeltaSnapshot {
+  pendingDelta: number
+  backlogDelta: number
+  positivePendingDelta: number
+  positiveBacklogDelta: number
+}
+
+interface RedisStreamsDeltaSnapshot extends RedisStreamDeltaSnapshot {
+  usageRecords: RedisStreamDeltaSnapshot
+  auditLogs: RedisStreamDeltaSnapshot
+  operationLogs: RedisStreamDeltaSnapshot
+  publicApiLogs: RedisStreamDeltaSnapshot
+  recordMaintenance: RedisStreamDeltaSnapshot
+  runtimeLogs: RedisStreamDeltaSnapshot
+}
+
 interface RedisSampleClient {
   connect(): Promise<unknown>
   sendCommand(command: string[]): Promise<unknown>
@@ -1139,6 +1155,7 @@ function buildReport(input: {
   const deadlocksDelta = Math.max(0, input.deadlocksAfter - input.deadlocksBefore)
   const usageRecordsDelta = input.storageAfter.usageRecords - input.storageBefore.usageRecords
   const auditLogsDelta = input.storageAfter.auditLogs - input.storageBefore.auditLogs
+  const redisDelta = redisStreamsDelta(input.redisBefore, input.redisAfter)
   const violations: string[] = []
 
   if (errorRate > input.input.maxAllowedErrorRate) {
@@ -1153,8 +1170,8 @@ function buildReport(input: {
   if (maxLockWaiters > input.input.maxAllowedLockWaiters || maxNotGrantedLocks > input.input.maxAllowedLockWaiters) {
     violations.push(`PostgreSQL 锁等待过高：lockWaiters=${maxLockWaiters}, notGranted=${maxNotGrantedLocks}`)
   }
-  if (input.redisAfter.backlogCount > input.input.maxAllowedRedisPending) {
-    violations.push(`Redis Stream backlog=${input.redisAfter.backlogCount} 超过阈值 ${input.input.maxAllowedRedisPending}（pending=${input.redisAfter.pendingCount}）`)
+  if (redisDelta.positiveBacklogDelta > input.input.maxAllowedRedisPending) {
+    violations.push(`本轮新增 Redis Stream backlog=${redisDelta.positiveBacklogDelta} 超过阈值 ${input.input.maxAllowedRedisPending}（新增 pending=${redisDelta.positivePendingDelta}，当前总 backlog=${input.redisAfter.backlogCount}）`)
   }
   if (input.stats.successRequests > 0 && usageRecordsDelta < Math.floor(input.stats.successRequests * 0.95)) {
     violations.push(`使用记录消化不足：usageRecordsDelta=${usageRecordsDelta}, successRequests=${input.stats.successRequests}`)
@@ -1226,7 +1243,8 @@ function buildReport(input: {
     },
     redis: {
       before: input.redisBefore,
-      after: input.redisAfter
+      after: input.redisAfter,
+      delta: redisDelta
     },
     upstream: {
       totalRequests: input.upstreamRuntime.totalRequests,
@@ -1259,6 +1277,7 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const postgres = report.postgres as Record<string, unknown>
   const redis = report.redis as Record<string, unknown>
   const redisAfter = redis.after as RedisStreamsSnapshot | undefined
+  const redisDelta = redis.delta as RedisStreamsDeltaSnapshot | undefined
   const usageStream = redisAfter?.usageRecords
   const auditStream = redisAfter?.auditLogs
   const operationStream = redisAfter?.operationLogs
@@ -1271,8 +1290,42 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   console.log(`- storage delta=${JSON.stringify((storage.delta as Record<string, unknown>) ?? {})}`)
   console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
   console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; publicApiStream length=${publicApiStream?.length ?? 0} pending=${publicApiStream?.pendingCount ?? 0} lag=${publicApiStream?.lagCount ?? 0}; recordMaintenanceStream length=${recordMaintenanceStream?.length ?? 0} pending=${recordMaintenanceStream?.pendingCount ?? 0} lag=${recordMaintenanceStream?.lagCount ?? 0}; runtimeLogStream length=${runtimeLogStream?.length ?? 0} pending=${runtimeLogStream?.pendingCount ?? 0} lag=${runtimeLogStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
+  console.log(`- redis delta positivePending=${redisDelta?.positivePendingDelta ?? 0} positiveBacklog=${redisDelta?.positiveBacklogDelta ?? 0} netBacklogDelta=${redisDelta?.backlogDelta ?? 0}`)
   if (report.violations.length > 0) {
     console.log(`- violations=${report.violations.join('；')}`)
+  }
+}
+
+function redisStreamsDelta(before: RedisStreamsSnapshot, after: RedisStreamsSnapshot): RedisStreamsDeltaSnapshot {
+  const usageRecords = redisStreamDelta(before.usageRecords, after.usageRecords)
+  const auditLogs = redisStreamDelta(before.auditLogs, after.auditLogs)
+  const operationLogs = redisStreamDelta(before.operationLogs, after.operationLogs)
+  const publicApiLogs = redisStreamDelta(before.publicApiLogs, after.publicApiLogs)
+  const recordMaintenance = redisStreamDelta(before.recordMaintenance, after.recordMaintenance)
+  const runtimeLogs = redisStreamDelta(before.runtimeLogs, after.runtimeLogs)
+  const streams = [usageRecords, auditLogs, operationLogs, publicApiLogs, recordMaintenance, runtimeLogs]
+  return {
+    pendingDelta: after.pendingCount - before.pendingCount,
+    backlogDelta: after.backlogCount - before.backlogCount,
+    positivePendingDelta: streams.reduce((total, stream) => total + stream.positivePendingDelta, 0),
+    positiveBacklogDelta: streams.reduce((total, stream) => total + stream.positiveBacklogDelta, 0),
+    usageRecords,
+    auditLogs,
+    operationLogs,
+    publicApiLogs,
+    recordMaintenance,
+    runtimeLogs
+  }
+}
+
+function redisStreamDelta(before: RedisStreamSnapshot, after: RedisStreamSnapshot): RedisStreamDeltaSnapshot {
+  const pendingDelta = after.pendingCount - before.pendingCount
+  const backlogDelta = after.backlogCount - before.backlogCount
+  return {
+    pendingDelta,
+    backlogDelta,
+    positivePendingDelta: Math.max(0, pendingDelta),
+    positiveBacklogDelta: Math.max(0, backlogDelta)
   }
 }
 

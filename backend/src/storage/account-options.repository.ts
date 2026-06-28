@@ -228,12 +228,11 @@ function buildOwnerAccountOptionFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const keywordPrefix = `${escapeAccountNameSearchLike(keyword)}%`
+    const normalizedKeywordPrefix = normalizeAccountNameSearchText(keyword)
     const keywordClauses = [
-      'lower(accounts.name) = lower(?)',
-      "lower(accounts.name) LIKE lower(?) ESCAPE '\\'"
+      '(lower(accounts.name) >= ? AND lower(accounts.name) < ?)'
     ]
-    const keywordParams: unknown[] = [keyword, keywordPrefix]
+    const keywordParams: unknown[] = [normalizedKeywordPrefix, accountOptionNamePrefixUpperBound(normalizedKeywordPrefix)]
     const containsSubquery = ownerAccountOptionNameContainsSubquery(client, keyword, ownerSystemAccountId)
     if (containsSubquery) {
       keywordClauses.push(`accounts.id IN (${containsSubquery.sql})`)
@@ -252,25 +251,42 @@ function buildOwnerAccountOptionFilters(
   }
   const groupId = options.groupId?.trim()
   if (groupId) {
-    clauses.push(`EXISTS (
-      SELECT 1
+    if (ownerSystemAccountId) {
+      clauses.push(`accounts.id IN (
+      SELECT option_group_accounts.account_id
       FROM ${accountOptionTable(client, 'group_accounts')} option_group_accounts
-      WHERE option_group_accounts.account_id = accounts.id
-        AND option_group_accounts.system_account_id = accounts.system_account_id
+      WHERE option_group_accounts.system_account_id = ?
         AND option_group_accounts.group_id = ?
         AND option_group_accounts.enabled = 1
     )`)
-    params.push(groupId)
+      params.push(ownerSystemAccountId, groupId)
+    } else {
+      clauses.push(`accounts.id IN (
+      SELECT option_group_accounts.account_id
+      FROM ${accountOptionTable(client, 'group_accounts')} option_group_accounts
+      WHERE option_group_accounts.group_id = ?
+        AND option_group_accounts.enabled = 1
+    )`)
+      params.push(groupId)
+    }
   }
   if (options.tagIds.length) {
-    clauses.push(`EXISTS (
-      SELECT 1
+    if (ownerSystemAccountId) {
+      clauses.push(`accounts.id IN (
+      SELECT option_tag_bindings.account_id
       FROM ${accountOptionTable(client, 'account_tag_bindings')} option_tag_bindings
-      WHERE option_tag_bindings.account_id = accounts.id
-        AND option_tag_bindings.system_account_id = accounts.system_account_id
+      WHERE option_tag_bindings.system_account_id = ?
         AND option_tag_bindings.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
     )`)
-    params.push(...options.tagIds)
+      params.push(ownerSystemAccountId, ...options.tagIds)
+    } else {
+      clauses.push(`accounts.id IN (
+      SELECT option_tag_bindings.account_id
+      FROM ${accountOptionTable(client, 'account_tag_bindings')} option_tag_bindings
+      WHERE option_tag_bindings.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
+    )`)
+      params.push(...options.tagIds)
+    }
   }
   if (options.type && options.type !== 'all') {
     clauses.push('accounts.type = ?')
@@ -304,22 +320,25 @@ function ownerAccountOptionNameContainsSubquery(
 ): { sql: string; params: unknown[] } | undefined {
   const terms = accountNameSearchQueryTerms(keyword)
   if (!terms.length) return undefined
-  const systemAccountClause = ownerSystemAccountId ? 'AND search.system_account_id = ?' : ''
+  const systemAccountClause = ownerSystemAccountId ? 'search.system_account_id = ? AND' : ''
   const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
   const params: unknown[] = ownerSystemAccountId
-    ? [...terms, ownerSystemAccountId, keywordContains, terms.length]
+    ? [ownerSystemAccountId, ...terms, keywordContains, terms.length]
     : [...terms, keywordContains, terms.length]
   return {
     sql: `
-      SELECT search.account_id
-      FROM ${accountOptionTable(client, 'account_name_search_terms')} search
+      WITH candidate_terms AS MATERIALIZED (
+        SELECT search.account_id, search.term
+        FROM ${accountOptionTable(client, 'account_name_search_terms')} search
+        WHERE ${systemAccountClause} search.term IN (${terms.map(() => '?').join(', ')})
+      )
+      SELECT candidate_terms.account_id
+      FROM candidate_terms
       INNER JOIN ${accountOptionTable(client, 'account_name_search_documents')} documents
-        ON documents.account_id = search.account_id
-      WHERE search.term IN (${terms.map(() => '?').join(', ')})
-        ${systemAccountClause}
-        AND documents.normalized_name LIKE ? ESCAPE '\\'
-      GROUP BY search.account_id
-      HAVING COUNT(DISTINCT search.term) = ?
+        ON documents.account_id = candidate_terms.account_id
+      WHERE documents.normalized_name LIKE ? ESCAPE '\\'
+      GROUP BY candidate_terms.account_id
+      HAVING COUNT(DISTINCT candidate_terms.term) = ?
     `,
     params
   }
@@ -812,4 +831,15 @@ function mergeOptionQuotaExpressions(
         OR (${teamGuardSql} AND ${teamQuota.sql})))`,
     params: [...directQuota.params, ...teamQuota.params]
   }
+}
+
+function accountOptionNamePrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }

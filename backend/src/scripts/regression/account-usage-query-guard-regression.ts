@@ -291,6 +291,21 @@ try {
   }
 
   assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
+  const accountUsageRepositorySource = readFileSync(resolve('src/storage/account-usage.repository.ts'), 'utf8')
+  const accountUsageAsyncKeywordSnippet = accountUsageRepositorySource.slice(
+    accountUsageRepositorySource.indexOf('async function loadAccountUsageKeywordAccountIdsAsync'),
+    accountUsageRepositorySource.indexOf('function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword')
+  )
+  assert.match(
+    accountUsageAsyncKeywordSnippet,
+    /LOWER\(accounts\.name\) >= \? AND LOWER\(accounts\.name\) < \? AND starts_with\(LOWER\(accounts\.name\), \?\)/,
+    'PG 账号用量关键词预解析账号名必须使用 lower(name) 范围 + starts_with 条件'
+  )
+  assert.doesNotMatch(
+    accountUsageAsyncKeywordSnippet,
+    /LOWER\([^)]+\)\s+LIKE\s+\?/,
+    'PG 账号用量关键词预解析不能使用 LOWER(...) LIKE 前缀扫描'
+  )
   for (const call of businessCalls) {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
     assert(!/\baccounts\.id\s*(?:=|LIKE)\s*\?/i.test(call.sql), '账号用量关键词预解析不应按账号 ID 搜索')

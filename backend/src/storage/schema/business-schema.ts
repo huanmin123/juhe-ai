@@ -774,10 +774,16 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique_lower ON accounts(system_account_id, lower(name)) WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_owner_name_lower_lookup
+      ON accounts(system_account_id, lower(name), id)
+      WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_name_lower_lookup ON accounts(lower(name), id) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_name_lookup ON accounts(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_term_owner
       ON account_name_search_terms(term, system_account_id, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_owner_term
+      ON account_name_search_terms(system_account_id, term, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_name_search_terms_account
       ON account_name_search_terms(account_id);
     CREATE INDEX IF NOT EXISTS idx_account_name_search_documents_owner
@@ -789,6 +795,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_type_lookup ON accounts(system_account_id, type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_owner_list_order
+      ON accounts(system_account_id, priority ASC, created_at ASC, id ASC)
+      WHERE deleted_at IS NULL AND authorization_instance_authorization_id IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_proxy_profile ON accounts(proxy_profile_id, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);
@@ -847,6 +856,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique_lower ON account_tags(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_account_tags_owner_name_lookup ON account_tags(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_owner_tag ON account_tag_bindings(system_account_id, tag_id, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_tag_owner ON account_tag_bindings(tag_id, system_account_id, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_tag ON account_tag_bindings(tag_id, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_request_updated ON account_test_tasks(request_system_account_id, updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_account_test_tasks_status_queued ON account_test_tasks(status, queued_at ASC, id ASC);
@@ -887,6 +897,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_authorization ON resource_authorization_sources(authorization_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_team ON resource_authorization_sources(source_team_id, status);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_account_authorization ON group_accounts(account_authorization_id);
+    CREATE INDEX IF NOT EXISTS idx_group_accounts_owner_group_enabled ON group_accounts(system_account_id, group_id, enabled, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_group_enabled ON group_accounts(group_id, enabled, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_candidate_window
       ON group_accounts(group_id, system_account_id, enabled, local_fallback_enabled ASC, local_super_priority_enabled DESC, local_priority ASC, created_at ASC, account_id ASC);

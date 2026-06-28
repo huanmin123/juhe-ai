@@ -153,17 +153,30 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
   const client = await getApiKeyDatabaseClient()
   await ensureDefaultApiKeysForAccessAsync(access, client)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
-  const filters = buildApiKeyFiltersForClient(client, scope, normalized)
+  const keywordCte = client.driver === 'postgres' && normalized.keyword
+    ? buildPostgresApiKeyKeywordCte(client, access, normalized.keyword)
+    : undefined
+  const filterOptions = keywordCte ? { ...normalized, keyword: undefined } : normalized
+  const filters = buildApiKeyFiltersForClient(client, scope, filterOptions)
+  const filterClauses: string[] = []
+  if (filters.clause) {
+    filterClauses.push(filters.clause.replace(/^WHERE\s+/i, ''))
+  }
+  if (keywordCte) {
+    filterClauses.push('api_keys.id IN (SELECT id FROM matched_api_key_ids)')
+  }
+  const whereClause = filterClauses.length ? `WHERE ${filterClauses.join(' AND ')}` : ''
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
   const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = await client.query<ApiKeyRow>(`
+    ${keywordCte?.sql ?? ''}
     SELECT ${apiKeyListColumns()}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
     ${apiKeyListJoinsForClient(client)}
-    ${filters.clause}
+    ${whereClause}
     ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
     ${limitClause}
-  `, [...filters.params, ...limitParams])
+  `, [...(keywordCte?.params ?? []), ...filters.params, ...limitParams])
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = await apiKeySummariesFromRowsAsync(pageRows.rows, access, { includeSecret: false })
   return {
@@ -172,6 +185,33 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
     hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize
+  }
+}
+
+function buildPostgresApiKeyKeywordCte(
+  client: DatabaseClient,
+  access: AccessScope | undefined,
+  keyword: string
+): { sql: string; params: string[] } {
+  const scope = buildSystemAccountWhereClause(access, 'keyword_api_keys.system_account_id')
+  const clauses: string[] = []
+  const params: string[] = []
+  if (scope.clause) {
+    clauses.push(scope.clause.replace(/^WHERE\s+/i, ''))
+    params.push(...scope.params)
+  }
+  const lowerKeyword = keyword.toLowerCase()
+  clauses.push(`lower(keyword_api_keys.name) COLLATE "C" >= ?
+    AND lower(keyword_api_keys.name) COLLATE "C" < ?
+    AND starts_with(lower(keyword_api_keys.name), ?)`)
+  params.push(lowerKeyword, apiKeyTextPrefixUpperBound(lowerKeyword), lowerKeyword)
+  return {
+    sql: `WITH matched_api_key_ids AS MATERIALIZED (
+      SELECT keyword_api_keys.id
+      FROM ${apiKeyTable(client, 'api_keys')} keyword_api_keys
+      WHERE ${clauses.join(' AND ')}
+    )`,
+    params
   }
 }
 
@@ -994,14 +1034,56 @@ function buildApiKeyFiltersForClient(
   options: ReturnType<typeof normalizeApiKeyListOptions>
 ): { clause: string; params: Array<string | number> } {
   if (client.driver === 'sqlite') return buildApiKeyFilters(scope, options)
-  const filters = buildApiKeyFilters(scope, options)
-  return {
-    clause: filters.clause
-      .replace('COLLATE NOCASE = ?', '= ?')
-      .replace('api_keys.name LIKE ?', 'api_keys.name ILIKE ?')
-      .replace('FROM route_strategy_groups', `FROM ${apiKeyTable(client, 'route_strategy_groups')}`),
-    params: filters.params
+  const clauses: string[] = []
+  const params: Array<string | number> = []
+  if (scope.clause) {
+    clauses.push(scope.clause.replace(/^ WHERE /, ''))
+    params.push(...scope.params)
   }
+  if (options.keyword) {
+    const lowerKeyword = options.keyword.toLowerCase()
+    clauses.push(`(
+      lower(api_keys.name) COLLATE "C" >= ?
+      AND lower(api_keys.name) COLLATE "C" < ?
+      AND starts_with(lower(api_keys.name), ?)
+    )`)
+    params.push(lowerKeyword, apiKeyTextPrefixUpperBound(lowerKeyword), lowerKeyword)
+  }
+  if (options.status) {
+    if (options.status === 'active') {
+      clauses.push("api_keys.status = 'active' AND api_keys.availability_schedule_active = 1")
+    } else {
+      clauses.push("(api_keys.status = 'disabled' OR api_keys.availability_schedule_active <> 1)")
+    }
+  }
+  if (options.routeStrategyId) {
+    clauses.push('api_keys.route_strategy_id = ?')
+    params.push(options.routeStrategyId)
+  }
+  if (options.groupId) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM ${apiKeyTable(client, 'route_strategy_groups')} route_strategy_groups
+      WHERE route_strategy_groups.route_strategy_id = api_keys.route_strategy_id
+        AND route_strategy_groups.system_account_id = api_keys.system_account_id
+        AND route_strategy_groups.group_id = ?
+    )`)
+    params.push(options.groupId)
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
+}
+
+function apiKeyTextPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\uffff`
 }
 
 async function apiKeySystemAccountIdAsync(apiKeyId: string): Promise<string | undefined> {

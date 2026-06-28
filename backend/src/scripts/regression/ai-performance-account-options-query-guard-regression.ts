@@ -252,9 +252,21 @@ try {
     assert(!/\baccounts\.provider_code\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'AI 性能账号选项名称搜索不应把供应商编码放进 WHERE')
     assert(!/\bLEFT\s+JOIN\s+system_accounts\b/i.test(call.sql), 'AI 性能账号选项关键词查询不应为 owner 名称挂系统账号表')
     assert(!/\bCOALESCE\s*\(\s*system_accounts\./i.test(call.sql), 'AI 性能账号选项关键词查询不应在账号查询中扫描系统账号展示字段')
+    assert(!/\blower\(accounts\.name\)\s+LIKE\s+\?/i.test(call.sql), 'AI 性能账号选项名称前缀搜索不应回退 lower(name) LIKE 扫描')
   }
   assertBusinessIndexExists('idx_accounts_name_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
+  assertBusinessIndexExists('idx_accounts_name_lower_lookup')
+  const aiPerformanceRepositorySource = readFileSync(new URL('../../storage/usage-stats-ai-performance.repository.ts', import.meta.url), 'utf8')
+  const asyncAccountOptionSnippet = aiPerformanceRepositorySource.slice(
+    aiPerformanceRepositorySource.indexOf('async function loadAiPerformanceAccountOptionRowsAsync'),
+    aiPerformanceRepositorySource.indexOf('function normalizeAccountNamePrefix')
+  )
+  assert.match(
+    asyncAccountOptionSnippet,
+    /LOWER\(accounts\.name\) >= \? AND LOWER\(accounts\.name\) < \? AND starts_with\(LOWER\(accounts\.name\), \?\)/,
+    'PG AI 性能账号选项名称搜索必须使用 lower(name) 范围 + starts_with 条件'
+  )
   const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
   assert.match(statsRoutesSource, /getAiPerformanceOverviewAsync/, 'AI 性能概览路由应使用 async repository')
   assert.match(statsRoutesSource, /listAiPerformanceAccountOptionsAsync/, 'AI 性能账号选项路由应使用 async repository')

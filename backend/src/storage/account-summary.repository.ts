@@ -27,7 +27,14 @@ import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './requ
 import type { AccountListRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes } from './usage-summary-loaders.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
+import {
+  isRequestQuotaExceeded,
+  loadRequestQuotaCostsBatch,
+  loadRequestQuotaCostsBatchAsync,
+  requestQuotaCostKey,
+  requestQuotaCostKeyAsync,
+  type RequestQuotaCostInput
+} from '../modules/gateway/quota/request-quota-checker.js'
 import { optionalString } from './value-utils.js'
 import { loadAccountApiKeyRuntimeDetailsByAccountIds, loadAccountApiKeyRuntimeSummariesByAccountIds } from './account-api-key-runtime-state.repository.js'
 
@@ -212,14 +219,15 @@ async function authorizedAccountSummaryFromRowAsync(
   const factAccountId = accountResourceFactAccountId(row)
   const includeAccountNames = includeSystemAccountFields(access)
   const displayOwnerSystemAccountId = row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames] = await Promise.all([
+  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, authorizationQuotaExceededByAuthorization] = await Promise.all([
     factAccountId ? loadSupportedModelsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map<string, string[]>()),
     factAccountId ? loadModelMappingsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map()),
     loadAccountTagsByAccountIdsAsync([row.id]),
     loadAccountSummarySystemAccountNamesAsync(client, [
       row.system_account_id,
       displayOwnerSystemAccountId
-    ])
+    ]),
+    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row])
   ])
   row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
   row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
@@ -305,7 +313,7 @@ async function authorizedAccountSummaryFromRowAsync(
     authorizationStatus: row.authorization_status ?? undefined,
     authorizationExpiresAt: row.authorization_expires_at ?? undefined,
     authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
-    authorizationQuotaExceeded: false,
+    authorizationQuotaExceeded: row.authorization_id ? authorizationQuotaExceededByAuthorization.get(row.authorization_id) ?? false : false,
     permissions: authorizedAccountPermissions(false),
     authorizationUsageAvailable: false,
     authorizationCount: 0,
@@ -523,12 +531,11 @@ function ownerAccountListFilters(
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
-    const keywordPrefix = `${escapeAccountNameSearchLike(keyword)}%`
+    const normalizedKeywordPrefix = normalizeAccountNameSearchText(keyword)
     const keywordClauses = [
-      'lower(accounts.name) = lower(?)',
-      "lower(accounts.name) LIKE lower(?) ESCAPE '\\'"
+      '(lower(accounts.name) >= ? AND lower(accounts.name) < ?)'
     ]
-    const keywordParams: unknown[] = [keyword, keywordPrefix]
+    const keywordParams: unknown[] = [normalizedKeywordPrefix, accountNamePrefixUpperBound(normalizedKeywordPrefix)]
     const containsSubquery = ownerAccountNameContainsSubquery(client, keyword, ownerSystemAccountId ?? undefined)
     if (containsSubquery) {
       keywordClauses.push(`accounts.id IN (${containsSubquery.sql})`)
@@ -546,18 +553,42 @@ function ownerAccountListFilters(
     params.push(options.providerProtocolProfileId)
   }
   if (options.groupId) {
-    clauses.push('group_bindings.group_id = ?')
-    params.push(options.groupId)
+    if (ownerSystemAccountId) {
+      clauses.push(`accounts.id IN (
+        SELECT group_filter.account_id
+        FROM ${accountSummaryTable(client, 'group_accounts')} group_filter
+        WHERE group_filter.system_account_id = ?
+          AND group_filter.group_id = ?
+          AND group_filter.enabled = 1
+      )`)
+      params.push(ownerSystemAccountId, options.groupId)
+    } else {
+      clauses.push(`accounts.id IN (
+        SELECT group_filter.account_id
+        FROM ${accountSummaryTable(client, 'group_accounts')} group_filter
+        WHERE group_filter.group_id = ?
+          AND group_filter.enabled = 1
+      )`)
+      params.push(options.groupId)
+    }
   }
   if (options.tagIds.length) {
-    clauses.push(`EXISTS (
-      SELECT 1
+    if (ownerSystemAccountId) {
+      clauses.push(`accounts.id IN (
+      SELECT tag_filter.account_id
       FROM ${accountSummaryTable(client, 'account_tag_bindings')} tag_filter
-      WHERE tag_filter.account_id = accounts.id
-        AND tag_filter.system_account_id = accounts.system_account_id
+      WHERE tag_filter.system_account_id = ?
         AND tag_filter.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
     )`)
-    params.push(...options.tagIds)
+      params.push(ownerSystemAccountId, ...options.tagIds)
+    } else {
+      clauses.push(`accounts.id IN (
+      SELECT tag_filter.account_id
+      FROM ${accountSummaryTable(client, 'account_tag_bindings')} tag_filter
+      WHERE tag_filter.tag_id IN (${options.tagIds.map(() => '?').join(', ')})
+    )`)
+      params.push(...options.tagIds)
+    }
   }
   if (options.type && options.type !== 'all') {
     clauses.push('accounts.type = ?')
@@ -591,22 +622,25 @@ function ownerAccountNameContainsSubquery(
 ): { sql: string; params: unknown[] } | undefined {
   const terms = accountNameSearchQueryTerms(keyword)
   if (!terms.length) return undefined
-  const systemAccountClause = ownerSystemAccountId ? 'AND search.system_account_id = ?' : ''
+  const systemAccountClause = ownerSystemAccountId ? 'search.system_account_id = ? AND' : ''
   const keywordContains = `%${escapeAccountNameSearchLike(normalizeAccountNameSearchText(keyword))}%`
   const params: unknown[] = ownerSystemAccountId
-    ? [...terms, ownerSystemAccountId, keywordContains, terms.length]
+    ? [ownerSystemAccountId, ...terms, keywordContains, terms.length]
     : [...terms, keywordContains, terms.length]
   return {
     sql: `
-      SELECT search.account_id
-      FROM ${accountSummaryTable(client, 'account_name_search_terms')} search
+      WITH candidate_terms AS MATERIALIZED (
+        SELECT search.account_id, search.term
+        FROM ${accountSummaryTable(client, 'account_name_search_terms')} search
+        WHERE ${systemAccountClause} search.term IN (${terms.map(() => '?').join(', ')})
+      )
+      SELECT candidate_terms.account_id
+      FROM candidate_terms
       INNER JOIN ${accountSummaryTable(client, 'account_name_search_documents')} documents
-        ON documents.account_id = search.account_id
-      WHERE search.term IN (${terms.map(() => '?').join(', ')})
-        ${systemAccountClause}
-        AND documents.normalized_name LIKE ? ESCAPE '\\'
-      GROUP BY search.account_id
-      HAVING COUNT(DISTINCT search.term) = ?
+        ON documents.account_id = candidate_terms.account_id
+      WHERE documents.normalized_name LIKE ? ESCAPE '\\'
+      GROUP BY candidate_terms.account_id
+      HAVING COUNT(DISTINCT candidate_terms.term) = ?
     `,
     params
   }
@@ -1013,6 +1047,59 @@ export function loadAuthorizationQuotaExceededByAuthorizationId(rows: AccountLis
   return output
 }
 
+async function loadAuthorizationQuotaExceededByAuthorizationIdAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<Map<string, boolean>> {
+  const now = new Date()
+  const output = new Map<string, boolean>()
+  const checks: Array<{
+    authorizationId: string
+    limits: ReturnType<typeof parseRequestQuotaLimitsJson>
+    input: RequestQuotaCostInput
+  }> = []
+  const teamGrantLimitJsonByAuthorizationId = await loadTeamAuthorizationGrantLimitJsonByAuthorizationIdAsync(client, rows)
+  for (const row of rows) {
+    if (!row.authorization_id) continue
+    output.set(row.authorization_id, false)
+    const limits = parseRequestQuotaLimitsJson(row.authorization_limits_json)
+    if (hasEnabledRequestQuotaLimit(limits)) {
+      checks.push({
+        authorizationId: row.authorization_id,
+        limits,
+        input: {
+          systemAccountId: row.system_account_id,
+          scopeType: 'account_authorization',
+          scopeId: row.authorization_id,
+          now,
+          hourlyWindowHours: limits.hourly?.hours
+        }
+      })
+    }
+    const teamId = row.authorization_effective_source_team_id
+    if (!teamId) continue
+    const teamLimits = parseRequestQuotaLimitsJson(teamGrantLimitJsonByAuthorizationId.get(row.authorization_id))
+    if (!hasEnabledRequestQuotaLimit(teamLimits)) continue
+    checks.push({
+      authorizationId: row.authorization_id,
+      limits: teamLimits,
+      input: {
+        systemAccountId: row.system_account_id,
+        scopeType: 'account_authorization_team',
+        scopeId: `${row.id}:${teamId}`,
+        now,
+        hourlyWindowHours: teamLimits.hourly?.hours
+      }
+    })
+  }
+  if (!checks.length) return output
+  const costsByKey = await loadRequestQuotaCostsBatchAsync(client, checks.map((check) => check.input))
+  for (const check of checks) {
+    const costs = costsByKey.get(await requestQuotaCostKeyAsync(check.input))
+    if (costs && isRequestQuotaExceeded(check.limits, costs)) {
+      output.set(check.authorizationId, true)
+    }
+  }
+  return output
+}
+
 function loadTeamAuthorizationGrantLimitJsonByAuthorizationId(rows: AccountListRow[]): Map<string, string | null> {
   const ids = [...new Set(rows
     .filter((row) => row.authorization_id && row.authorization_effective_source_team_id)
@@ -1037,6 +1124,38 @@ function loadTeamAuthorizationGrantLimitJsonByAuthorizationId(rows: AccountListR
         AND ra.effective_source_team_id IS NOT NULL
         AND ra.id IN (${sqlPlaceholders(chunk.length)})
     `).all(now, now, ...chunk) as unknown as Array<{ authorization_id?: string; limits_json?: string | null }>
+    for (const row of teamRows) {
+      if (row.authorization_id) {
+        output.set(row.authorization_id, row.limits_json ?? null)
+      }
+    }
+  }
+  return output
+}
+
+async function loadTeamAuthorizationGrantLimitJsonByAuthorizationIdAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<Map<string, string | null>> {
+  const ids = [...new Set(rows
+    .filter((row) => row.authorization_id && row.authorization_effective_source_team_id)
+    .map((row) => row.authorization_id as string))]
+  if (!ids.length) return new Map()
+  const output = new Map<string, string | null>()
+  const now = nowIso()
+  for (const chunk of chunkValues(ids, 900)) {
+    const teamRows = await client.query<{ authorization_id?: string; limits_json?: string | null }>(`
+      SELECT ra.id AS authorization_id, grant_rows.limits_json
+      FROM ${accountSummaryTable(client, 'resource_authorizations')} ra
+      INNER JOIN ${accountSummaryTable(client, 'resource_authorization_grants')} grant_rows
+        ON grant_rows.resource_type = ra.resource_type
+        AND grant_rows.resource_id = ra.resource_id
+        AND grant_rows.grantee_type = 'team'
+        AND grant_rows.grantee_team_id = ra.effective_source_team_id
+        AND grant_rows.status = 'active'
+        AND (grant_rows.expires_at IS NULL OR grant_rows.expires_at > ?)
+      WHERE ra.status = 'active'
+        AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+        AND ra.effective_source_team_id IS NOT NULL
+        AND ra.id IN (${sqlPlaceholders(chunk.length)})
+    `, [now, now, ...chunk])
     for (const row of teamRows) {
       if (row.authorization_id) {
         output.set(row.authorization_id, row.limits_json ?? null)
@@ -1073,6 +1192,17 @@ function accountSummaryTable(client: DatabaseClient, tableName: string): string 
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function accountNamePrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }
 
 function optionalNumber(value: unknown): number | undefined {

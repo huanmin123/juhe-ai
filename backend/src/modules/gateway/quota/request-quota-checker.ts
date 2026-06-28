@@ -4,6 +4,7 @@ export {
   loadRequestQuotaCostsBatch,
   loadRequestQuotaCostsBatchAsync,
   requestQuotaCostKey,
+  requestQuotaCostKeyAsync,
   type RequestQuotaCostInput,
   type RequestQuotaCosts
 } from '../../../storage/request-quota-checker.js'

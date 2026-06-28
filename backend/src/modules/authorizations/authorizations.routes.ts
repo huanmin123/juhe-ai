@@ -14,7 +14,7 @@ import {
 } from '../../storage/repositories.js'
 import { getBusinessDatabase } from '../../storage/database.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
-import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
@@ -140,7 +140,7 @@ authorizationsRouter.get('/usage/team-details', async (req, res, next) => {
   }
   try {
     const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
-    const range = normalizeAuthorizationUsageRange({ startDate, endDate })
+    const range = await normalizeAuthorizationUsageRangeAsync({ startDate, endDate })
     res.json(ok(await getAuthorizationTeamUsageOverviewAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
   } catch (error) {
     next(error)
@@ -155,7 +155,7 @@ authorizationsRouter.get('/usage/user-details', async (req, res, next) => {
   }
   try {
     const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
-    const range = normalizeAuthorizationUsageRange({ startDate, endDate })
+    const range = await normalizeAuthorizationUsageRangeAsync({ startDate, endDate })
     res.json(ok(await getAuthorizationUserUsageOverviewAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
   } catch (error) {
     next(error)
@@ -530,31 +530,12 @@ function authorizationGranteeName(authorization: ResourceAuthorizationSummary): 
   return authorization.granteeSystemAccountName ?? '被授权用户'
 }
 
-function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDate?: string }) {
-  const timezone = usageStatsTimezone()
-  const today = todayDateKey(timezone)
-  const startDate = input.startDate ?? input.endDate ?? today
-  const endDate = input.endDate ?? input.startDate ?? today
-  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
-}
-
 async function normalizeAuthorizationListUsageRangeAsync(input: { startDate?: string; endDate?: string }) {
   const timezone = await usageStatsTimezoneAsync()
   const today = todayDateKey(timezone)
   const startDate = input.startDate ?? input.endDate ?? today
   const endDate = input.endDate ?? input.startDate ?? today
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
-}
-
-function normalizeAuthorizationUsageRange(input: { startDate?: string; endDate?: string }) {
-  const timezone = usageStatsTimezone()
-  const today = todayDateKey(timezone)
-  const startDate = input.startDate ?? input.endDate ?? today
-  const endDate = input.endDate ?? input.startDate ?? today
-  return normalizeAccountUsageStatsRange({
-    startDate,
-    endDate
-  }, timezone)
 }
 
 async function normalizeAuthorizationUsageRangeAsync(input: { startDate?: string; endDate?: string }) {

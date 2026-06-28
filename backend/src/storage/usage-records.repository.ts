@@ -3,7 +3,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
-import { buildUsageRecordEntryFilters, buildUsageRecordEntryOrderClause, buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult } from './usage-record-list-query.js'
+import { buildUsageRecordEntryFilters, buildUsageRecordEntryOrderClause, buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult, type UsageRecordFilterSettings } from './usage-record-list-query.js'
 import { hydrateUsageRecordNames, hydrateUsageRecordNamesAsync, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
 import {
   generateUsageRecordId,
@@ -25,7 +25,7 @@ import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-p
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 import { GPT_VENDOR_CODE } from '../domain/provider-protocol.js'
-import { listOpenAIProtocolProviderCodes } from './provider.repository.js'
+import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from './provider.repository.js'
 import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
@@ -289,6 +289,18 @@ export function findRecentOpenAIRequestShapeForAccount(accountId: string, groupI
   return accountShape ?? (normalizedGroupId ? findRecentOpenAIRequestShape({ groupId: normalizedGroupId }) : undefined)
 }
 
+export async function findRecentOpenAIRequestShapeForAccountAsync(accountId: string, groupId?: string): Promise<RecentOpenAIRequestShape | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findRecentOpenAIRequestShapeForAccount(accountId, groupId)
+  }
+  const normalizedAccountId = accountId.trim()
+  const normalizedGroupId = groupId?.trim()
+  if (!normalizedAccountId) return undefined
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const accountShape = await findRecentOpenAIRequestShapeAsync(client, { accountId: normalizedAccountId, groupId: normalizedGroupId })
+  return accountShape ?? (normalizedGroupId ? await findRecentOpenAIRequestShapeAsync(client, { groupId: normalizedGroupId }) : undefined)
+}
+
 function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: string }): RecentOpenAIRequestShape | undefined {
   const clauses: string[] = []
   const params: string[] = []
@@ -335,8 +347,47 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
   return recentOpenAIRequestShapeFromRows(currentRows)
 }
 
+async function findRecentOpenAIRequestShapeAsync(
+  client: DatabaseClient,
+  input: { accountId?: string; groupId?: string }
+): Promise<RecentOpenAIRequestShape | undefined> {
+  const clauses: string[] = []
+  const params: string[] = []
+  if (input.accountId) {
+    clauses.push('account_id = ?')
+    params.push(input.accountId)
+  }
+  if (input.groupId) {
+    clauses.push('group_id = ?')
+    params.push(input.groupId)
+  }
+  if (clauses.length === 0) return undefined
+  const providerCodes = await openAIProtocolProviderCodesForRecentRequestShapeAsync()
+  if (!providerCodes.length) return undefined
+  const endpointFilter = recentOpenAIEndpointFilter()
+  const rows = await client.query<RecentOpenAIRequestShapeRow>(`
+    SELECT id, endpoint, model, stream, created_at
+    FROM ${client.dialect.qualifyTable('juhe_usage', 'usage_records')}
+    WHERE ${clauses.join(' AND ')}
+      AND api_key_id IS NOT NULL
+      AND traffic_source = 'gateway'
+      AND provider_code IN (${providerCodes.map(() => '?').join(', ')})
+      AND endpoint IS NOT NULL
+      AND TRIM(endpoint) <> ''
+      AND (${endpointFilter.clause})
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `, [...params, ...providerCodes, ...endpointFilter.params])
+  return recentOpenAIRequestShapeFromRows(rows)
+}
+
 function openAIProtocolProviderCodesForRecentRequestShape(): string[] {
   const codes = listOpenAIProtocolProviderCodes()
+  return codes.length ? codes : [GPT_VENDOR_CODE]
+}
+
+async function openAIProtocolProviderCodesForRecentRequestShapeAsync(): Promise<string[]> {
+  const codes = await listOpenAIProtocolProviderCodesAsync()
   return codes.length ? codes : [GPT_VENDOR_CODE]
 }
 
@@ -352,7 +403,7 @@ function recentOpenAIRequestShapeFromRows(rows: RecentOpenAIRequestShapeRow[]): 
   return {
     endpoint,
     model: optionalString(row?.model),
-    stream: row?.stream === 1,
+    stream: row?.stream === 1 || row?.stream === true,
     createdAt
   }
 }
@@ -361,7 +412,7 @@ interface RecentOpenAIRequestShapeRow {
   id?: string | null
   endpoint?: string | null
   model?: string | null
-  stream?: number | null
+  stream?: number | boolean | null
   created_at?: string | null
 }
 
@@ -958,9 +1009,9 @@ async function buildUsageRecordEntryFiltersAsync(
 ): Promise<UsageRecordFilterResult> {
   const accountKeyword = options?.accountKeyword?.trim()
   if (!accountKeyword) {
-    return buildUsageRecordEntryFilters(access, options)
+    return buildUsageRecordEntryFilters(access, options, usageRecordFilterSettingsForClient(client))
   }
-  const filters = buildUsageRecordEntryFilters(access, { ...options, accountKeyword: undefined })
+  const filters = buildUsageRecordEntryFilters(access, { ...options, accountKeyword: undefined }, usageRecordFilterSettingsForClient(client))
   const accountIds = await postgresAccountIdsForKeyword(client, accountKeyword, access)
   const accountClause = accountIds.length
     ? `ue.account_id IN (${sqlPlaceholders(accountIds.length)})`
@@ -971,12 +1022,19 @@ async function buildUsageRecordEntryFiltersAsync(
   }
 }
 
+function usageRecordFilterSettingsForClient(client: DatabaseClient): UsageRecordFilterSettings | undefined {
+  return client.driver === 'postgres'
+    ? { textPrefixCollation: '"C"', textPrefixUpperBoundMode: 'binary' }
+    : undefined
+}
+
 async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: string, access?: AccessScope): Promise<string[]> {
   const ownerSystemAccountId = scopedSystemAccountId(access)
-  const upperBound = usageRecordTextPrefixUpperBound(keyword)
+  const normalizedKeyword = normalizeUsageRecordAccountKeyword(keyword)
+  const upperBound = usageRecordAccountKeywordUpperBound(normalizedKeyword)
   const ids: string[] = []
-  const accountNameClause = '(accounts.name = ? OR (accounts.name >= ? AND accounts.name < ?))'
-  const sourceNameClause = '(source_accounts.name = ? OR (source_accounts.name >= ? AND source_accounts.name < ?))'
+  const accountNameClause = 'lower(accounts.name) >= ? AND lower(accounts.name) < ?'
+  const sourceNameClause = 'lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?'
   const ownerClause = ownerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
   const ownerParams = ownerSystemAccountId ? [ownerSystemAccountId] : []
 
@@ -986,9 +1044,9 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
     WHERE accounts.deleted_at IS NULL
       AND ${accountNameClause}
       ${ownerClause}
-    ORDER BY accounts.name ASC, accounts.id ASC
+    ORDER BY lower(accounts.name) ASC, accounts.id ASC
     LIMIT ?
-  `, [keyword, keyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
+  `, [normalizedKeyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
 
   appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
     SELECT instance_accounts.id
@@ -999,9 +1057,9 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
       AND instance_accounts.deleted_at IS NULL
       AND ${sourceNameClause}
       ${ownerSystemAccountId ? 'AND instance_accounts.system_account_id = ?' : ''}
-    ORDER BY source_accounts.name ASC, instance_accounts.id ASC
+    ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
     LIMIT ?
-  `, [keyword, keyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
+  `, [normalizedKeyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
 
   if (ownerSystemAccountId) {
     appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
@@ -1013,9 +1071,9 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
         AND ra.grantee_system_account_id = ?
       WHERE accounts.deleted_at IS NULL
         AND ${accountNameClause}
-      ORDER BY accounts.name ASC, accounts.id ASC
+      ORDER BY lower(accounts.name) ASC, accounts.id ASC
       LIMIT ?
-    `, [ownerSystemAccountId, keyword, keyword, upperBound, usageRecordAccountKeywordMatchLimit]))
+    `, [ownerSystemAccountId, normalizedKeyword, upperBound, usageRecordAccountKeywordMatchLimit]))
     appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
       SELECT accounts.id
       FROM juhe_business.accounts accounts
@@ -1028,9 +1086,9 @@ async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: str
         AND ra.grantee_system_account_id = ?
       WHERE accounts.deleted_at IS NULL
         AND ${accountNameClause}
-      ORDER BY accounts.name ASC, accounts.id ASC
+      ORDER BY lower(accounts.name) ASC, accounts.id ASC
       LIMIT ?
-    `, [ownerSystemAccountId, keyword, keyword, upperBound, usageRecordAccountKeywordMatchLimit]))
+    `, [ownerSystemAccountId, normalizedKeyword, upperBound, usageRecordAccountKeywordMatchLimit]))
   }
 
   return ids.slice(0, usageRecordAccountKeywordMatchLimit)
@@ -1046,13 +1104,14 @@ function appendUsageRecordAccountIds(target: string[], rows: Array<{ id?: string
 }
 
 function usageRecordTextPrefixUpperBound(value: string): string {
-  const comparable = /[.:]$/.test(value) ? value.slice(0, -1) : value
-  for (let index = comparable.length - 1; index >= 0; index -= 1) {
-    const code = comparable.charCodeAt(index)
-    if (code < 0xffff) {
-      return `${comparable.slice(0, index)}${String.fromCharCode(code + 1)}`
-    }
-  }
+  return `${value}\uffff`
+}
+
+function normalizeUsageRecordAccountKeyword(value: string): string {
+  return value.normalize('NFKC').toLowerCase().trim()
+}
+
+function usageRecordAccountKeywordUpperBound(value: string): string {
   return `${value}\uffff`
 }
 

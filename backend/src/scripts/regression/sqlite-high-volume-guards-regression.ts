@@ -9,6 +9,9 @@ const apiKeyScheduleSyncSource = source('src/storage/api-key-schedule-status-syn
 const accountScheduleSyncSource = source('src/storage/account-availability-schedule-status-sync.repository.ts')
 const resourceAuthorizationWriteSource = source('src/storage/resource-authorization-write.repository.ts')
 const dbServiceHandlersSource = source('src/modules/db-service/db-service-handlers.ts')
+const apiKeyQuotaServiceSource = source('src/modules/gateway/quota/api-key-quota.service.ts')
+const authorizationQuotaServiceSource = source('src/modules/gateway/quota/authorization-quota.service.ts')
+const requestQuotaCheckerSource = source('src/storage/request-quota-checker.ts')
 const backgroundJobsSource = source('src/modules/background/background-jobs.ts')
 const businessSchemaSource = source('src/storage/schema/business-schema.ts')
 const routeStrategyAvailabilityGuardSource = source('src/storage/route-strategy-availability-guard.ts')
@@ -77,9 +80,38 @@ assert.match(
   /case 'expire_due_resource_authorizations': \{[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+await expireDueResourceAuthorizationsAsync\(\)[\s\S]+return handleDbServiceOperationSync\(operation\)/,
   'PG 模式 DB service 必须使用 async 资源授权过期扫描，SQLite 模式才回退同步分支'
 )
+assert.match(
+  dbServiceHandlersSource,
+  /case 'check_api_key_quota':[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+checkGatewayApiKeyQuotaExactAsync/,
+  'PG 模式 DB service API Key 额度检查必须使用 exact async 入口'
+)
+assert.match(
+  dbServiceHandlersSource,
+  /case 'check_authorization_quota':[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+checkGatewayAuthorizationQuotaByIdsExactAsync/,
+  'PG 模式 DB service 授权额度检查必须使用 exact async 入口'
+)
+assert.match(
+  dbServiceHandlersSource,
+  /case 'check_authorization_quota_batch':[\s\S]+runtimeConfig\.databaseDriver === 'postgres'[\s\S]+checkGatewayAuthorizationQuotaBatchByIdsExactAsync/,
+  'PG 模式 DB service 批量授权额度检查必须使用 exact async 入口'
+)
+assert.match(
+  apiKeyQuotaServiceSource,
+  /export async function checkGatewayApiKeyQuotaExactAsync[\s\S]+loadRequestQuotaCostsBatchAsync/,
+  'API Key exact async 额度检查必须直接读取 PostgreSQL 统计窗口'
+)
+assert.match(
+  authorizationQuotaServiceSource,
+  /export async function checkGatewayAuthorizationQuotaByIdsExactAsync[\s\S]+checkGatewayAuthorizationQuotaBatchByIdsExactAsync[\s\S]+loadRequestQuotaCostsBatchAsync/,
+  '授权 exact async 额度检查必须直接读取 PostgreSQL 统计窗口'
+)
+assert.match(
+  requestQuotaCheckerSource,
+  /export async function requestQuotaCostKeyAsync[\s\S]+await usageStatsTimezoneAsync\(\)/,
+  'PG quota 成本 key 必须使用 async 时区配置，避免 Redis/PG 模式回读 SQLite 设置'
+)
 const opsWorkerScheduleSource = sourceBetween(backgroundJobsSource, "case 'ops-worker':", '    default:')
-const postgresOpsGuardIndex = opsWorkerScheduleSource.indexOf('if (isPostgresHighPerformanceMode())')
-assert.notEqual(postgresOpsGuardIndex, -1, 'ops-worker 必须保留 PostgreSQL 高性能模式调度边界')
+assert.doesNotMatch(opsWorkerScheduleSource, /if\s*\(\s*isPostgresHighPerformanceMode\(\)\s*\)/, 'ops-worker 已迁移运维任务不应再被 PG 高性能模式早退跳过')
 for (const jobName of [
   'api-key-availability-schedule-status-sync',
   'account-availability-schedule-status-sync',
@@ -88,17 +120,11 @@ for (const jobName of [
   'account-health-check',
   'cooldown-account-retest',
   'account-api-key-cooldown-retest',
-  'proxy-latency-refresh'
-] as const) {
-  const jobIndex = opsWorkerScheduleSource.indexOf(`backgroundScheduledJobName('${jobName}')`)
-  assert(jobIndex >= 0, `ops-worker 必须注册 ${jobName}`)
-  assert(jobIndex < postgresOpsGuardIndex, `${jobName} 必须在 PG 高性能 return 前注册，避免已迁 async 后台一致性任务不启动`)
-}
-for (const jobName of [
+  'proxy-latency-refresh',
   'openai-oauth-access-token-refresh'
 ] as const) {
   const jobIndex = opsWorkerScheduleSource.indexOf(`backgroundScheduledJobName('${jobName}')`)
-  assert(jobIndex > postgresOpsGuardIndex, `${jobName} 当前不能在 PG 高性能 return 前注册，避免打开未完成迁移的 ops 任务`)
+  assert(jobIndex >= 0, `ops-worker 必须注册 ${jobName}`)
 }
 assert.match(
   businessSchemaSource,

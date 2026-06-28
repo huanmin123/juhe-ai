@@ -5,12 +5,15 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { closeRedisClients } from '../../shared/redis-client.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaAsync,
   checkGatewayAuthorizationQuotaBatchAsync
 } from '../../modules/gateway/quota/authorization-quota.service.js'
+import { closeStorageDatabases } from '../../storage/database.js'
+import { closePostgresPool } from '../../storage/postgres-client.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-quota-fast-path-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -45,6 +48,9 @@ try {
 
   console.log('网关额度快速路径回归通过：无额度配置时不依赖 DB service IPC')
 } finally {
+  closeStorageDatabases()
+  await closeRedisClients()
+  await closePostgresPool()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 

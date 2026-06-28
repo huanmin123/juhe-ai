@@ -15,7 +15,14 @@ import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, loadRequestQuotaCostsBatchAsync, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
+import {
+  isRequestQuotaExceeded,
+  loadRequestQuotaCostsBatch,
+  loadRequestQuotaCostsBatchAsync,
+  requestQuotaCostKey,
+  requestQuotaCostKeyAsync,
+  type RequestQuotaCostInput
+} from '../modules/gateway/quota/request-quota-checker.js'
 
 const businessSchemaName = 'juhe_business'
 
@@ -160,12 +167,13 @@ export async function buildGatewayQuotaSnapshotAsync(now = new Date()): Promise<
     ...[...authorizationChecksById.values()].flat()
   ])
   const costsByKey = await loadRequestQuotaCostsBatchAsync(client, allCostChecks.map((check) => check.costInput))
+  const quotaCostKeysByCheckKey = await quotaCostKeysByCheckKeyAsync(allCostChecks)
   const costEntries: GatewayQuotaCostSnapshotEntry[] = apiKeyChecks.map((check) => ({
     systemAccountId: check.costInput.systemAccountId,
     scopeType: check.costInput.scopeType,
     scopeId: check.costInput.scopeId,
     hourlyWindowHours: check.costInput.hourlyWindowHours,
-    costs: costsByKey.get(requestQuotaCostKey(check.costInput)) ?? emptyRequestQuotaCosts()
+    costs: costsByKey.get(quotaCostKeysByCheckKey.get(check.key) ?? '') ?? emptyRequestQuotaCosts()
   }))
   const authorizationEntries: GatewayAuthorizationQuotaSnapshotEntry[] = []
   for (const row of authorizations) {
@@ -174,7 +182,7 @@ export async function buildGatewayQuotaSnapshotAsync(now = new Date()): Promise<
       continue
     }
     const allowed = checks.every((check) => {
-      const costs = costsByKey.get(requestQuotaCostKey(check.costInput)) ?? emptyRequestQuotaCosts()
+      const costs = costsByKey.get(quotaCostKeysByCheckKey.get(check.key) ?? '') ?? emptyRequestQuotaCosts()
       return !isRequestQuotaExceeded(check.limits, costs)
     })
     authorizationEntries.push({
@@ -474,6 +482,13 @@ function uniqueQuotaCostChecks(checks: QuotaCostCheck[]): QuotaCostCheck[] {
     output.push(check)
   }
   return output
+}
+
+async function quotaCostKeysByCheckKeyAsync(checks: QuotaCostCheck[]): Promise<Map<string, string>> {
+  return new Map(await Promise.all(checks.map(async (check) => [
+    check.key,
+    await requestQuotaCostKeyAsync(check.costInput)
+  ] as const)))
 }
 
 function emptyRequestQuotaCosts() {

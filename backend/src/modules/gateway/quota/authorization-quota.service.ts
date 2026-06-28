@@ -4,11 +4,20 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import type { RequestQuotaLimits } from '../../../domain/types.js'
 import { getBusinessDatabase, getStatsDatabase } from '../../../storage/database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from '../../../storage/database-client.js'
+import { getPostgresPool } from '../../../storage/postgres-client.js'
 import { chunkValues, sqlPlaceholders } from '../../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../../storage/request-quota-limits.js'
 import { gatewayAuthorizationQuotaSnapshotVersion, isGatewayAuthorizationSnapshotIncomplete, readGatewayAuthorizationQuotaSnapshot } from './quota-snapshot-cache.service.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
+import {
+  isRequestQuotaExceeded,
+  loadRequestQuotaCostsBatch,
+  loadRequestQuotaCostsBatchAsync,
+  requestQuotaCostKey,
+  requestQuotaCostKeyAsync,
+  type RequestQuotaCostInput
+} from './request-quota-checker.js'
 
 export const AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
 
@@ -93,7 +102,9 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     return { allowed: true }
   }
   const now = new Date()
-  const cacheKey = authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId, now)
+  const cacheKey = runtimeConfig.databaseDriver === 'postgres'
+    ? await authorizationQuotaRuntimeCacheKeyAsync(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId, now)
+    : authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, input.account?.accountAuthorizationId, now)
   const cached = authorizationQuotaCache.get(cacheKey)
   if (cached) {
     return cached
@@ -138,10 +149,15 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
     })
     return decision
   }
-  const decision = checkGatewayAuthorizationQuotaByIds({
-    groupAuthorizationId: input.groupAccess.groupAuthorizationId,
-    accountAuthorizationId: input.account?.accountAuthorizationId
-  })
+  const decision = runtimeConfig.databaseDriver === 'postgres'
+    ? await checkGatewayAuthorizationQuotaByIdsExactAsync({
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        accountAuthorizationId: input.account?.accountAuthorizationId
+      })
+    : checkGatewayAuthorizationQuotaByIds({
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        accountAuthorizationId: input.account?.accountAuthorizationId
+      })
   await setAuthorizationQuotaCacheEntryAsync(cacheKey, {
     ...decision,
     checkedAtMs: Date.now()
@@ -167,7 +183,9 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
   const missingCacheKeys = new Map<string, string>()
   const requestedMissingCacheKeys = new Set<string>()
   for (const account of accountsToCheck) {
-    const cacheKey = authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId, now)
+    const cacheKey = runtimeConfig.databaseDriver === 'postgres'
+      ? await authorizationQuotaRuntimeCacheKeyAsync(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId, now)
+      : authorizationQuotaRuntimeCacheKey(input.groupAccess.groupAuthorizationId, account.accountAuthorizationId, now)
     const cached = authorizationQuotaCache.get(cacheKey)
     if (cached) {
       cachedDecisionsByAccountId.set(account.id, cached)
@@ -299,13 +317,21 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
     })
     return output
   }
-  const decisions = checkGatewayAuthorizationQuotaBatchByIds({
-    groupAuthorizationId: input.groupAccess.groupAuthorizationId,
-    accounts: missingAccounts.map((account) => ({
-      accountId: account.id,
-      accountAuthorizationId: account.accountAuthorizationId
-    }))
-  })
+  const decisions = runtimeConfig.databaseDriver === 'postgres'
+    ? await checkGatewayAuthorizationQuotaBatchByIdsExactAsync({
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        accounts: missingAccounts.map((account) => ({
+          accountId: account.id,
+          accountAuthorizationId: account.accountAuthorizationId
+        }))
+      })
+    : checkGatewayAuthorizationQuotaBatchByIds({
+        groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+        accounts: missingAccounts.map((account) => ({
+          accountId: account.id,
+          accountAuthorizationId: account.accountAuthorizationId
+        }))
+      })
   const output = new Map<string, AuthorizationQuotaDecision>()
   for (const [accountId, decision] of cachedDecisionsByAccountId.entries()) {
     output.set(accountId, decision)
@@ -377,6 +403,55 @@ export function checkGatewayAuthorizationQuotaBatchByIds(input: {
   })
 }
 
+export async function checkGatewayAuthorizationQuotaByIdsExactAsync(input: {
+  groupAuthorizationId?: string
+  accountAuthorizationId?: string
+  now?: Date
+}): Promise<AuthorizationQuotaDecision> {
+  const decisions = await checkGatewayAuthorizationQuotaBatchByIdsExactAsync({
+    groupAuthorizationId: input.groupAuthorizationId,
+    accounts: [{
+      accountId: input.accountAuthorizationId ?? '',
+      accountAuthorizationId: input.accountAuthorizationId
+    }],
+    now: input.now
+  })
+  return decisions[0] ?? { allowed: true }
+}
+
+export async function checkGatewayAuthorizationQuotaBatchByIdsExactAsync(input: {
+  groupAuthorizationId?: string
+  accounts: Array<{
+    accountId: string
+    accountAuthorizationId?: string
+  }>
+  now?: Date
+}): Promise<AuthorizationQuotaDecision[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return checkGatewayAuthorizationQuotaBatchByIds(input)
+  }
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  const now = input.now ?? new Date()
+  const scopes = uniqueAuthorizationQuotaScopes([
+    ...(input.groupAuthorizationId ? [{ authorizationId: input.groupAuthorizationId, scopeType: 'group_authorization' as const }] : []),
+    ...input.accounts
+      .filter((account) => Boolean(account.accountAuthorizationId))
+      .map((account) => ({ authorizationId: account.accountAuthorizationId as string, scopeType: 'account_authorization' as const }))
+  ])
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const costChecksByScope = await loadAuthorizationQuotaCostChecksByScopeAsync(client, scopes, now)
+  const allCostChecks = uniqueAuthorizationQuotaCostChecks([...costChecksByScope.values()].flat())
+  const checksByCacheKey = await materializeAuthorizationQuotaCostCheckMapAsync(client, allCostChecks)
+
+  return input.accounts.map((account) => {
+    const checks = [
+      ...authorizationQuotaChecksForScope(input.groupAuthorizationId, 'group_authorization', costChecksByScope, checksByCacheKey),
+      ...authorizationQuotaChecksForScope(account.accountAuthorizationId, 'account_authorization', costChecksByScope, checksByCacheKey)
+    ]
+    return checks.length ? authorizationQuotaDecisionFromChecks(checks) : { allowed: true }
+  })
+}
+
 function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[]): AuthorizationQuotaDecision {
   const cacheKey = checks.map((check) => check.cacheKey).join('|')
   const cached = authorizationQuotaCache.get(cacheKey)
@@ -396,6 +471,11 @@ function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[])
 export function clearAuthorizationQuotaCache(): void {
   authorizationQuotaCache.clear()
   clearAuthorizationQuotaSharedCache()
+}
+
+export async function clearAuthorizationQuotaCacheAsync(): Promise<void> {
+  authorizationQuotaCache.clear()
+  await clearAuthorizationQuotaSharedCacheAsync()
 }
 
 function setAuthorizationQuotaCacheEntry(
@@ -439,11 +519,18 @@ async function setAuthorizationQuotaSharedCacheEntry(cacheKey: string, entry: Au
 
 function clearAuthorizationQuotaSharedCache(): void {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  void authorizationQuotaSharedCache.clear().catch((error) => {
+  void clearAuthorizationQuotaSharedCacheAsync()
+}
+
+async function clearAuthorizationQuotaSharedCacheAsync(): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await authorizationQuotaSharedCache.clear()
+  } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'gateway_authorization_quota_shared_cache_clear_failed'
     }), '清理授权额度 Redis 共享缓存失败')
-  })
+  }
 }
 
 function sharedQuotaCacheKey(cacheKey: string): string {
@@ -473,6 +560,24 @@ function authorizationQuotaCostChecksForAuthorizationRow(row: AuthorizationQuota
   }]
 }
 
+async function authorizationQuotaCostChecksForAuthorizationRowAsync(row: AuthorizationQuotaRow, scopeType: AuthorizationQuotaScopeType, now: Date): Promise<AuthorizationQuotaCostCheck[]> {
+  const limits = parseRequestQuotaLimitsJson(row.limits_json)
+  if (!hasEnabledRequestQuotaLimit(limits)) return []
+  const systemAccountId = authorizationQuotaStatsSystemAccountId(row, scopeType)
+  const costInput = {
+    systemAccountId,
+    scopeType,
+    scopeId: row.id,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  }
+  return [{
+    cacheKey: `authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${row.id}\u0000${await requestQuotaCostKeyAsync(costInput)}\u0000${row.limits_json ?? ''}`,
+    limits,
+    costInput
+  }]
+}
+
 function authorizationQuotaCostChecksForTeamRow(row: TeamAuthorizationQuotaRow, scopeType: AuthorizationQuotaScopeType, teamId: string, now: Date): AuthorizationQuotaCostCheck[] {
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
@@ -494,6 +599,32 @@ function authorizationQuotaCostChecksForTeamRow(row: TeamAuthorizationQuotaRow, 
   }]
 }
 
+async function authorizationQuotaCostChecksForTeamRowAsync(
+  row: TeamAuthorizationQuotaRow,
+  scopeType: AuthorizationQuotaScopeType,
+  teamId: string,
+  now: Date
+): Promise<AuthorizationQuotaCostCheck[]> {
+  const limits = parseRequestQuotaLimitsJson(row.limits_json)
+  if (!hasEnabledRequestQuotaLimit(limits)) return []
+  const systemAccountId = teamAuthorizationQuotaStatsSystemAccountId(row, scopeType)
+  const resourceId = teamAuthorizationResourceId(row, scopeType)
+  if (!resourceId) return []
+  const scopeId = `${resourceId}:${teamId}`
+  const costInput = {
+    systemAccountId,
+    scopeType: teamAuthorizationScopeType(scopeType),
+    scopeId,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  }
+  return [{
+    cacheKey: `team_authorization\u0000${systemAccountId}\u0000${scopeType}\u0000${teamId}\u0000${row.id}\u0000${await requestQuotaCostKeyAsync(costInput)}\u0000${row.limits_json ?? ''}`,
+    limits,
+    costInput
+  }]
+}
+
 function materializeAuthorizationQuotaCostChecks(costChecks: AuthorizationQuotaCostCheck[]): AuthorizationQuotaCheck[] {
   const costsByKey = loadRequestQuotaCostsBatch(getStatsDatabase(), costChecks.map((check) => check.costInput))
   return costChecks.map((check) => ({
@@ -504,6 +635,21 @@ function materializeAuthorizationQuotaCostChecks(costChecks: AuthorizationQuotaC
 
 function materializeAuthorizationQuotaCostCheckMap(costChecks: AuthorizationQuotaCostCheck[]): Map<string, AuthorizationQuotaCheck> {
   return new Map(materializeAuthorizationQuotaCostChecks(costChecks).map((check) => [check.cacheKey, check]))
+}
+
+async function materializeAuthorizationQuotaCostChecksAsync(client: DatabaseClient, costChecks: AuthorizationQuotaCostCheck[]): Promise<AuthorizationQuotaCheck[]> {
+  const costsByKey = await loadRequestQuotaCostsBatchAsync(client, costChecks.map((check) => check.costInput))
+  return await Promise.all(costChecks.map(async (check) => ({
+    cacheKey: check.cacheKey,
+    exceeded: isRequestQuotaExceeded(check.limits, costsByKey.get(await requestQuotaCostKeyAsync(check.costInput)) ?? emptyRequestQuotaCosts())
+  })))
+}
+
+async function materializeAuthorizationQuotaCostCheckMapAsync(
+  client: DatabaseClient,
+  costChecks: AuthorizationQuotaCostCheck[]
+): Promise<Map<string, AuthorizationQuotaCheck>> {
+  return new Map((await materializeAuthorizationQuotaCostChecksAsync(client, costChecks)).map((check) => [check.cacheKey, check]))
 }
 
 function loadAuthorizationQuotaCostChecksByScope(scopes: AuthorizationQuotaScopeRequest[], now: Date): Map<string, AuthorizationQuotaCostCheck[]> {
@@ -517,6 +663,28 @@ function loadAuthorizationQuotaCostChecksByScope(scopes: AuthorizationQuotaScope
       const teamRow = teamRowsByAuthorizationId.get(row.id)
       if (teamRow) {
         checks.push(...authorizationQuotaCostChecksForTeamRow(teamRow, scope.scopeType, row.effective_source_team_id, now))
+      }
+    }
+    output.set(authorizationQuotaScopeKey(scope.authorizationId, scope.scopeType), checks)
+  }
+  return output
+}
+
+async function loadAuthorizationQuotaCostChecksByScopeAsync(
+  client: DatabaseClient,
+  scopes: AuthorizationQuotaScopeRequest[],
+  now: Date
+): Promise<Map<string, AuthorizationQuotaCostCheck[]>> {
+  const rowsById = await loadAuthorizationQuotaRowsAsync(client, scopes.map((scope) => scope.authorizationId))
+  const teamRowsByAuthorizationId = await loadTeamAuthorizationQuotaRowsByAuthorizationIdAsync(client, [...rowsById.values()])
+  const output = new Map<string, AuthorizationQuotaCostCheck[]>()
+  for (const scope of scopes) {
+    const row = rowsById.get(scope.authorizationId)
+    const checks = row ? await authorizationQuotaCostChecksForAuthorizationRowAsync(row, scope.scopeType, now) : []
+    if (row?.effective_source_team_id) {
+      const teamRow = teamRowsByAuthorizationId.get(row.id)
+      if (teamRow) {
+        checks.push(...await authorizationQuotaCostChecksForTeamRowAsync(teamRow, scope.scopeType, row.effective_source_team_id, now))
       }
     }
     output.set(authorizationQuotaScopeKey(scope.authorizationId, scope.scopeType), checks)
@@ -543,6 +711,28 @@ function loadAuthorizationQuotaRows(authorizationIds: string[]): Map<string, Aut
       WHERE ra.status = 'active'
         AND ra.id IN (${sqlPlaceholders(chunk.length)})
     `).all(...chunk) as unknown as AuthorizationQuotaRow[])
+  }
+  return new Map(rows.map((row) => [row.id, row]))
+}
+
+async function loadAuthorizationQuotaRowsAsync(client: DatabaseClient, authorizationIds: string[]): Promise<Map<string, AuthorizationQuotaRow>> {
+  const ids = [...new Set(authorizationIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const rows: AuthorizationQuotaRow[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...await client.query<AuthorizationQuotaRow>(`
+      SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
+        instance_accounts.id AS instance_account_id,
+        ra.effective_source_team_id, ra.limits_json
+      FROM ${businessTableName(client, 'resource_authorizations')} ra
+      LEFT JOIN ${businessTableName(client, 'accounts')} instance_accounts
+        ON ra.resource_type = 'account'
+        AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+      WHERE ra.status = 'active'
+        AND ra.id IN (${sqlPlaceholders(chunk.length)})
+    `, chunk))
   }
   return new Map(rows.map((row) => [row.id, row]))
 }
@@ -574,6 +764,39 @@ function loadTeamAuthorizationQuotaRowsByAuthorizationId(rows: AuthorizationQuot
         AND ra.effective_source_team_id IS NOT NULL
         AND ra.id IN (${sqlPlaceholders(chunk.length)})
     `).all(...chunk) as unknown as TeamAuthorizationQuotaBatchRow[])
+  }
+  return new Map(teamRows.map((row) => [row.authorization_id, row]))
+}
+
+async function loadTeamAuthorizationQuotaRowsByAuthorizationIdAsync(
+  client: DatabaseClient,
+  rows: AuthorizationQuotaRow[]
+): Promise<Map<string, TeamAuthorizationQuotaRow>> {
+  const ids = rows.filter((row) => row.effective_source_team_id).map((row) => row.id)
+  if (!ids.length) return new Map()
+  const teamRows: TeamAuthorizationQuotaBatchRow[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    teamRows.push(...await client.query<TeamAuthorizationQuotaBatchRow>(`
+      SELECT ra.id AS authorization_id, grant_rows.id, grant_rows.resource_owner_system_account_id,
+        ra.grantee_system_account_id AS authorization_grantee_system_account_id,
+        instance_accounts.id AS authorization_instance_account_id,
+        grant_rows.resource_type, grant_rows.resource_id, grant_rows.limits_json
+      FROM ${businessTableName(client, 'resource_authorizations')} ra
+      INNER JOIN ${businessTableName(client, 'resource_authorization_grants')} grant_rows
+        ON grant_rows.resource_type = ra.resource_type
+        AND grant_rows.resource_id = ra.resource_id
+        AND grant_rows.grantee_type = 'team'
+        AND grant_rows.grantee_team_id = ra.effective_source_team_id
+        AND grant_rows.status = 'active'
+      LEFT JOIN ${businessTableName(client, 'accounts')} instance_accounts
+        ON ra.resource_type = 'account'
+        AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+      WHERE ra.status = 'active'
+        AND ra.effective_source_team_id IS NOT NULL
+        AND ra.id IN (${sqlPlaceholders(chunk.length)})
+    `, chunk))
   }
   return new Map(teamRows.map((row) => [row.authorization_id, row]))
 }
@@ -619,6 +842,15 @@ function authorizationQuotaScopeKey(authorizationId: string, scopeType: Authoriz
 
 function authorizationQuotaRuntimeCacheKey(groupAuthorizationId?: string, accountAuthorizationId?: string, now = new Date()): string {
   return `runtime_authorization_quota\u0000${groupAuthorizationId ?? ''}\u0000${accountAuthorizationId ?? ''}\u0000${requestQuotaCostKey({
+    systemAccountId: '',
+    scopeType: 'authorization_runtime',
+    scopeId: '',
+    now
+  })}\u0000${runtimeConfig.processRole === 'server' ? gatewayAuthorizationQuotaSnapshotVersion() : 0}`
+}
+
+async function authorizationQuotaRuntimeCacheKeyAsync(groupAuthorizationId?: string, accountAuthorizationId?: string, now = new Date()): Promise<string> {
+  return `runtime_authorization_quota\u0000${groupAuthorizationId ?? ''}\u0000${accountAuthorizationId ?? ''}\u0000${await requestQuotaCostKeyAsync({
     systemAccountId: '',
     scopeType: 'authorization_runtime',
     scopeId: '',
@@ -719,6 +951,10 @@ function teamAuthorizationResourceId(row: TeamAuthorizationQuotaRow, scopeType: 
     return row.authorization_instance_account_id ?? undefined
   }
   return row.resource_id
+}
+
+function businessTableName(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_business', tableName)
 }
 
 function assertLocalGatewayDatabaseAccess(operation: string): void {

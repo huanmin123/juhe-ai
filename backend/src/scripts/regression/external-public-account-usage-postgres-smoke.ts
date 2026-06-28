@@ -41,6 +41,7 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
+    supportedModels: ['gpt-4o-mini'],
     status: 'active'
   }, access)
   createdAccountIds.push(matchedAccount.id)
@@ -55,6 +56,7 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
+    supportedModels: ['gpt-4o-mini'],
     status: 'disabled'
   }, access)
   createdAccountIds.push(topAccount.id)

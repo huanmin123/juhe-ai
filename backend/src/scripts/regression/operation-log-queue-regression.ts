@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -117,6 +117,15 @@ try {
   operationLogQueue.flushAllOperationLogQueue()
   assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 0, '恢复后保留的操作日志应可继续 flush 完成')
   assert.equal(operationLogExists('retry_disabled_guard'), 1, '恢复后应写入保留的操作日志')
+
+  const operationLogWriteSource = readFileSync(new URL('../../storage/operation-log-write.repository.ts', import.meta.url), 'utf8')
+  assert.match(operationLogWriteSource, /insertPostgresOperationLogsBatch\(tx,\s*preparedLogs\)/, 'PG 操作日志批量写入应一次处理主表 rows')
+  assert.match(operationLogWriteSource, /const insertedLogIds = await insertPostgresOperationLogsBatch/, 'PG 操作日志批量写入应识别本次实际新插入的日志')
+  assert.match(operationLogWriteSource, /ON CONFLICT\(id\) DO NOTHING[\s\S]*RETURNING id/, 'PG 操作日志主表写入应支持 Redis Stream 重投幂等')
+  assert.match(operationLogWriteSource, /preparedLogs\.filter\(\(prepared\) => insertedLogIds\.has\(prepared\.id\)\)/, 'PG 操作日志子表写入应只处理本次新插入的日志，避免重投重复写子表')
+  assert.match(operationLogWriteSource, /insertPostgresOperationLogSearchTermsBatch\(tx,\s*insertedLogs\)/, 'PG 操作日志搜索词应走批量分块写入')
+  assert.match(operationLogWriteSource, /postgresOperationLogSearchTermRowsPerInsert/, 'PG 操作日志搜索词批量写入应有参数上限保护')
+  assert.doesNotMatch(operationLogWriteSource, /for\s*\(\s*const prepared of preparedLogs\s*\)\s*\{\s*await insertPreparedOperationLogPostgres/, 'PG 操作日志批量写入不能退回逐条日志写入')
 
   console.log('操作日志队列回归通过：写入边界正确，批量落库复用 prepared statements')
 } finally {

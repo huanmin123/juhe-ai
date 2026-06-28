@@ -146,12 +146,12 @@ async function assertUsageRecordExplainPlans(traceId: string, targetModel: strin
     `
       SELECT usage_id
       FROM juhe_usage.usage_record_shard_entries
-      WHERE trace_id >= $1 AND trace_id < $2
+      WHERE trace_id COLLATE "C" >= $1 AND trace_id COLLATE "C" < $2
       ORDER BY created_at DESC, usage_id DESC
       LIMIT 11
     `,
     [traceId, usageRecordTextPrefixUpperBound(traceId)],
-    ['idx_usage_record_shard_entries_trace_created_sort']
+    ['idx_usage_record_shard_entries_trace_c_created_sort']
   )
   await assertIndexedPlan(
     '使用记录 model 筛选 PG 查询',
@@ -170,12 +170,12 @@ async function assertUsageRecordExplainPlans(traceId: string, targetModel: strin
     `
       SELECT usage_id
       FROM juhe_usage.usage_record_shard_entries
-      WHERE client_ip >= $1 AND client_ip < $2
+      WHERE client_ip COLLATE "C" >= $1 AND client_ip COLLATE "C" < $2
       ORDER BY created_at DESC, usage_id DESC
       LIMIT 11
     `,
     [clientIp, usageRecordTextPrefixUpperBound(clientIp)],
-    ['idx_usage_record_shard_entries_client_ip_created_sort']
+    ['idx_usage_record_shard_entries_client_ip_c_created_sort']
   )
   await assertIndexedPlan(
     '使用记录耗时排序 PG 查询',
@@ -215,14 +215,13 @@ async function assertIndexedPlan(label: string, sql: string, params: unknown[], 
 }
 
 function usageRecordTextPrefixUpperBound(value: string): string {
-  const comparable = /[.:]$/.test(value) ? value.slice(0, -1) : value
-  for (let index = comparable.length - 1; index >= 0; index -= 1) {
-    const code = comparable.charCodeAt(index)
-    if (code < 0xffff) {
-      return `${comparable.slice(0, index)}${String.fromCharCode(code + 1)}`
-    }
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
   }
-  return `${value}\uffff`
+  return `${value}\u{10ffff}`
 }
 
 async function cleanupSmokeRows(): Promise<void> {

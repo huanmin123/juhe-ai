@@ -31,7 +31,7 @@ import {
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAuthorizationUsageRangeSummariesForScopesAsync, loadAuthorizationUsageSummariesForScopesAsync, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { optionalString } from './value-utils.js'
 
@@ -671,6 +671,9 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
 async function resourceAuthorizationGrantSummariesAsync(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationSummary[]> {
   const client = await getResourceAuthorizationReadDatabaseClient()
   const includeUsage = options.includeUsage ?? true
+  const usageRange = includeUsage
+    ? options.usageRange ?? todayDateKey(await usageStatsTimezoneAsync())
+    : undefined
   const [
     accounts,
     authorizationInstanceAccountNames,
@@ -686,7 +689,7 @@ async function resourceAuthorizationGrantSummariesAsync(rows: ResourceAuthorizat
     loadSystemAccountPrincipalMapByIdsAsync(client, rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? ''])),
     loadSystemTeamNameMapAsync(client, rows.map((row) => row.grantee_team_id ?? '')),
     includeUsage
-      ? loadResourceAuthorizationGrantUsageSummariesAsync(rows, options.usageRange ?? todayDateKey(usageStatsTimezone()))
+      ? loadResourceAuthorizationGrantUsageSummariesAsync(rows, usageRange)
       : Promise.resolve(new Map<string, AccountUsageSummary>()),
     includeUsage
       ? loadResourceAuthorizationGrantUsageSummariesAsync(rows)

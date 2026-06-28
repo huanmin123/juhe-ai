@@ -3,7 +3,7 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
-  findRecentOpenAIRequestShapeForAccount,
+  findRecentOpenAIRequestShapeForAccountAsync,
   type AccountQualityFailurePrecheckCandidate
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -77,7 +77,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     model: preferredSystemAccountTestModel(account),
     diagnostics: 'full',
     groupId,
-    requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
+    requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, groupId),
     trafficSource: 'cooldown_retest',
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,

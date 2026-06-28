@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -124,6 +124,7 @@ try {
   assertBusinessIndexMissing('idx_api_keys_system_account_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_description_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_description_lookup')
+  assertPostgresApiKeyListKeywordUsesLowerPrefixRange()
 
   console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，列表不返回完整密钥')
 } finally {
@@ -147,4 +148,22 @@ function assertBusinessIndexMissing(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, undefined, `业务库不应创建 API Key 长文本搜索索引 ${indexName}`)
+}
+
+function assertPostgresApiKeyListKeywordUsesLowerPrefixRange(): void {
+  const source = readFileSync(resolve('src/storage/api-key.repository.ts'), 'utf8')
+  const keywordSnippet = source.slice(
+    source.indexOf('function buildPostgresApiKeyKeywordCte'),
+    source.indexOf('function apiKeyListColumns')
+  )
+  const filterSnippet = source.slice(
+    source.indexOf('function buildApiKeyFiltersForClient'),
+    source.indexOf('function apiKeyTextPrefixUpperBound')
+  )
+  assert(keywordSnippet.includes('starts_with(lower(keyword_api_keys.name), ?)'), 'PG API Key 列表 keyword 应使用 lower + starts_with 固定字面前缀语义')
+  assert(keywordSnippet.includes('lower(keyword_api_keys.name) COLLATE "C" >= ?'), 'PG API Key 列表 keyword 前缀范围应使用 C collation，避免受 PG 默认排序规则影响')
+  assert(keywordSnippet.includes('WITH matched_api_key_ids AS MATERIALIZED'), 'PG API Key 列表 keyword 应先用名称索引 CTE 锁定匹配 ID')
+  assert(filterSnippet.includes('starts_with(lower(api_keys.name), ?)'), 'PG API Key 列表 filter helper 应保留 lower + starts_with 字面前缀语义')
+  assert(filterSnippet.includes('lower(api_keys.name) COLLATE "C" >= ?'), 'PG API Key 列表 filter helper 前缀范围应使用 C collation')
+  assert(!/\bILIKE\b/i.test(`${keywordSnippet}\n${filterSnippet}`), 'PG API Key 列表 keyword 不应使用 ILIKE 前缀参数')
 }

@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import type { RequestQuotaLimits } from '../domain/types.js'
 import type { DatabaseClient } from './database-client.js'
-import { dateKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
+import { dateKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
 
 const statsSchemaName = 'juhe_stats'
 
@@ -123,7 +123,7 @@ export async function loadRequestQuotaCostsBatchAsync(client: DatabaseClient, in
   if (client.driver !== 'postgres') {
     throw new Error('loadRequestQuotaCostsBatchAsync 仅支持 PostgreSQL DatabaseClient')
   }
-  const timezone = usageStatsTimezone()
+  const timezone = await usageStatsTimezoneAsync()
   const requests = uniqueRequestQuotaCostInputs(inputs, timezone)
   const output = new Map<string, RequestQuotaCosts>()
   for (const request of requests) {
@@ -172,6 +172,19 @@ export async function loadRequestQuotaCostsBatchAsync(client: DatabaseClient, in
 
 export function requestQuotaCostKey(input: RequestQuotaCostInput): string {
   const timezone = usageStatsTimezone()
+  return requestQuotaCostKeyFromParts(
+    input.systemAccountId,
+    input.scopeType,
+    input.scopeId,
+    dateKey(input.now, timezone),
+    weekKey(input.now, timezone),
+    monthKey(input.now, timezone),
+    input.hourlyWindowHours === undefined ? undefined : Math.max(1, Math.trunc(input.hourlyWindowHours))
+  )
+}
+
+export async function requestQuotaCostKeyAsync(input: RequestQuotaCostInput): Promise<string> {
+  const timezone = await usageStatsTimezoneAsync()
   return requestQuotaCostKeyFromParts(
     input.systemAccountId,
     input.scopeType,

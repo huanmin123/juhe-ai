@@ -203,6 +203,7 @@ try {
   for (const indexName of [
     'idx_accounts_name_lookup',
     'idx_accounts_system_account_name_lookup',
+    'idx_accounts_owner_list_order',
     'idx_account_name_search_terms_term_owner',
     'idx_account_name_search_terms_account',
     'idx_account_name_search_documents_owner',
@@ -292,6 +293,46 @@ function assertAccountListRouteBoundary(): void {
     !accountSummaryRepositorySource.includes('listAccountsPageWithDerivedStatusFilter')
       && !accountOptionsRepositorySource.includes('queryAccountOptionRowsForAccessWithDerivedStatusFilter'),
     '账户列表和 options 状态归类不应通过仓储层无界翻页后过滤实现'
+  )
+  assert.match(
+    accountSummaryRepositorySource,
+    /lower\(accounts\.name\) >= \?[\s\S]+lower\(accounts\.name\) < \?/,
+    'PG 自有账户列表名称前缀搜索必须使用 lower(name) 范围条件，避免 LIKE 扫描'
+  )
+  assert.match(
+    accountSummaryRepositorySource,
+    /accountNamePrefixUpperBound\(normalizedKeywordPrefix\)/,
+    'PG 自有账户列表名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
+  )
+  assert.doesNotMatch(
+    accountSummaryRepositorySource,
+    /\$\{normalizedKeywordPrefix\}\\uffff/,
+    'PG 自有账户列表名称前缀搜索不能使用固定 \\uffff 上界'
+  )
+  assert.doesNotMatch(
+    accountSummaryRepositorySource,
+    /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
+    'PG 自有账户列表名称前缀搜索不能回退 lower(name) LIKE lower(?)'
+  )
+  assert.match(
+    accountOptionsRepositorySource,
+    /lower\(accounts\.name\) >= \?[\s\S]+lower\(accounts\.name\) < \?/,
+    'PG 账户 options 名称前缀搜索必须使用 lower(name) 范围条件，避免 LIKE 扫描'
+  )
+  assert.match(
+    accountOptionsRepositorySource,
+    /accountOptionNamePrefixUpperBound\(normalizedKeywordPrefix\)/,
+    'PG 账户 options 名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
+  )
+  assert.doesNotMatch(
+    accountOptionsRepositorySource,
+    /\$\{normalizedKeywordPrefix\}\\uffff/,
+    'PG 账户 options 名称前缀搜索不能使用固定 \\uffff 上界'
+  )
+  assert.doesNotMatch(
+    accountOptionsRepositorySource,
+    /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
+    'PG 账户 options 名称前缀搜索不能回退 lower(name) LIKE lower(?)'
   )
   assert(
     accountReadRepositorySource.includes('availability_schedule_active')

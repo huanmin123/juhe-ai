@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -418,8 +418,21 @@ try {
   }
 
   assert(accountLookupCalls.length >= 2, '回归应捕获账号关键词预解析 SQL')
+  const usageRecordsRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
+  assert.match(
+    usageRecordsRepositorySource,
+    /const accountNameClause = 'lower\(accounts\.name\) >= \? AND lower\(accounts\.name\) < \?'/,
+    'PG 使用记录账号关键词预解析必须使用 lower(accounts.name) 范围条件'
+  )
+  assert.doesNotMatch(
+    usageRecordsRepositorySource,
+    /accounts\.name = \? OR \(accounts\.name >= \? AND accounts\.name < \?\)/,
+    'PG 使用记录账号关键词预解析不能回退大小写敏感的原始 name 范围条件'
+  )
   for (const call of accountLookupCalls) {
-    assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号关键词预解析应显式转义 LIKE 通配符')
+    assert(/\blower\(accounts\.name\)\s+>=\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围下界')
+    assert(/\blower\(accounts\.name\)\s+<\s+\?/i.test(call.sql), '账号关键词预解析应使用 lower(name) 范围上界')
+    assert(!/\bLIKE\s+\?/i.test(call.sql), '账号关键词预解析不应使用 LIKE 扫描账号表')
     assert(!/\bWHERE[\s\S]*\bid\s+(?:=|LIKE)\s+\?/i.test(call.sql), '账号关键词预解析不应把账号 ID 放进名称搜索 WHERE')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号关键词预解析不应传入前导通配符参数')
   }

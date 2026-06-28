@@ -14,7 +14,7 @@ import {
   getUsageStatsOverviewAsync,
   listAiPerformanceAccountOptionsAsync,
 } from '../../storage/usage-stats.repository.js'
-import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { fixedUsageStatsDateKeys } from '../../storage/usage-stats-window-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -79,7 +79,7 @@ statsRouter.get('/usage-overview', async (req, res, next) => {
     return
   }
   try {
-    res.json(ok(await getUsageStatsOverviewAsync(getRequestAccessScope(req.query.systemAccountId), normalizeStatsDateRange(parsed.data))))
+    res.json(ok(await getUsageStatsOverviewAsync(getRequestAccessScope(req.query.systemAccountId), await normalizeStatsDateRangeAsync(parsed.data))))
   } catch (error) {
     next(error)
   }
@@ -92,7 +92,7 @@ statsRouter.get('/ai-performance', async (req, res, next) => {
     return
   }
   try {
-    res.json(ok(await getAiPerformanceOverviewAsync(getRequestAccessScope(req.query.systemAccountId), normalizeStatsDateRange(parsed.data), parseAccountIds(req.query.accountIds))))
+    res.json(ok(await getAiPerformanceOverviewAsync(getRequestAccessScope(req.query.systemAccountId), await normalizeStatsDateRangeAsync(parsed.data), parseAccountIds(req.query.accountIds))))
   } catch (error) {
     next(error)
   }
@@ -124,7 +124,7 @@ statsRouter.get('/account-usage', async (req, res, next) => {
   }
 })
 
-function parseAccountUsageOptions(query: Record<string, unknown>, timezone = usageStatsTimezone()): Omit<AccountListOptions, 'type'> & { range: ReturnType<typeof normalizeAccountUsageStatsRange>; accountIds?: string[] } {
+function parseAccountUsageOptions(query: Record<string, unknown>, timezone: string): Omit<AccountListOptions, 'type'> & { range: ReturnType<typeof normalizeAccountUsageStatsRange>; accountIds?: string[] } {
   const startDate = optionalQueryText(query.startDate)
   const endDate = optionalQueryText(query.endDate)
   const range = normalizeAccountUsageStatsRange(
@@ -254,7 +254,7 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
     return
   }
   try {
-    const overview = await getSystemMetricsOverviewAsync(normalizeStatsDateRange(parsed.data))
+    const overview = await getSystemMetricsOverviewAsync(await normalizeStatsDateRangeAsync(parsed.data))
     const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
     const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
@@ -327,8 +327,8 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   }
 })
 
-function normalizeStatsDateRange(input: { startDate?: string; endDate?: string }) {
-  const timezone = usageStatsTimezone()
+async function normalizeStatsDateRangeAsync(input: { startDate?: string; endDate?: string }) {
+  const timezone = await usageStatsTimezoneAsync()
   const today = todayDateKey(timezone)
   const startDate = input.startDate ?? input.endDate ?? today
   const endDate = input.endDate ?? input.startDate ?? today

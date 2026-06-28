@@ -9,7 +9,7 @@ import {
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString, optionalServerDateTimeIso } from './value-utils.js'
 
 export type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
@@ -105,6 +105,7 @@ type PublicApiLogFilterValue = string | number
 const publicApiLogDefaultPageSize = 100
 const publicApiLogMaxPageSize = 100
 const publicApiLogMaxListWindowRows = 1001
+const publicApiLogPostgresRowsPerInsert = 1000
 
 export function createPublicApiLog(input: PublicApiLogInput): PublicApiLogSummary {
   if (runtimeConfig.databaseDriver === 'postgres') {
@@ -188,21 +189,23 @@ async function createPublicApiLogsBatchPostgres(normalizedLogs: NormalizedPublic
   if (normalizedLogs.length === 0) return
   const client = createPostgresDatabaseClient(await getPostgresPool())
   await client.transaction(async (tx) => {
-    for (const log of normalizedLogs) {
-      await insertPublicApiLogPostgres(tx, log)
+    for (const chunk of chunkValues(normalizedLogs, publicApiLogPostgresRowsPerInsert)) {
+      await insertPublicApiLogsPostgres(tx, chunk)
     }
   })
 }
 
-async function insertPublicApiLogPostgres(client: DatabaseClient, log: NormalizedPublicApiLogInput): Promise<void> {
+async function insertPublicApiLogsPostgres(client: DatabaseClient, logs: NormalizedPublicApiLogInput[]): Promise<void> {
+  if (logs.length === 0) return
   await client.execute(`
     INSERT INTO juhe_dataset.public_api_logs (
       id, trace_id, source_ref_id, source_name, token_id, token_name, token_prefix, is_test_token,
       method, path, query_string, client_ip, user_agent, status_code, success, duration_ms,
       request_size_bytes, response_size_bytes, request_capture_status, response_capture_status,
       request_data_json, response_data_json, error_code, error_message, started_at, ended_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, [
+    ) VALUES ${multiRowPlaceholders(logs.length, 27)}
+    ON CONFLICT(id) DO NOTHING
+  `, logs.flatMap((log) => [
     log.id,
     log.traceId ?? null,
     log.sourceRefId ?? null,
@@ -230,7 +233,7 @@ async function insertPublicApiLogPostgres(client: DatabaseClient, log: Normalize
     log.startedAt,
     log.endedAt,
     log.createdAt
-  ])
+  ]))
 }
 
 interface NormalizedPublicApiLogInput {
@@ -532,7 +535,7 @@ function pushPrefixFilter(clauses: string[], params: PublicApiLogFilterValue[], 
   const text = value?.trim()
   if (!text) return
   clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, `${text}\uffff`)
+  params.push(text, prefixUpperBound(text))
 }
 
 function normalizeCaptureStatus(value: unknown): PublicApiLogCaptureStatus {
@@ -587,4 +590,20 @@ function nonNegativeNumberValue(value: unknown): number {
 
 function normalizeNonNegativeInteger(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+}
+
+function multiRowPlaceholders(rowCount: number, columnCount: number): string {
+  const row = `(${Array.from({ length: columnCount }, () => '?').join(', ')})`
+  return Array.from({ length: rowCount }, () => row).join(', ')
+}
+
+function prefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index]?.codePointAt(0)
+    if (codePoint !== undefined && codePoint < 0x10ffff) {
+      return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+    }
+  }
+  return `${value}\uffff`
 }

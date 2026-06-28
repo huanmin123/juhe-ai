@@ -10,7 +10,8 @@ import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION
 import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaAsync } from '../../modules/gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchAsync,
-  clearAuthorizationQuotaCache
+  clearAuthorizationQuotaCache,
+  clearAuthorizationQuotaCacheAsync
 } from '../../modules/gateway/quota/authorization-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
@@ -25,7 +26,9 @@ import {
   replaceGatewayQuotaSnapshot
 } from '../../modules/gateway/quota/quota-snapshot-cache.service.js'
 import * as dbServiceIpc from '../../modules/db-service/db-service-ipc.js'
-import { notifyAuthorizationQuotaCacheInvalidation } from '../../shared/gateway-cache-invalidation.js'
+import { notifyAuthorizationQuotaCacheInvalidation, syncGatewayCacheInvalidationsFromRuntimeState } from '../../shared/gateway-cache-invalidation.js'
+import { closeRedisClients } from '../../shared/redis-client.js'
+import { closePostgresPool } from '../../storage/postgres-client.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-quota-passive-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -60,7 +63,9 @@ try {
   assertGatewayQuotaRequestPathUsesAsyncOnly()
   assertLocalQuotaReadersRejectServerRole()
   assertAuthorizationQuotaInvalidationSourcesConnected()
+  await clearAuthorizationQuotaCacheAsync()
   clearGatewayQuotaSnapshot()
+  await syncGatewayCacheInvalidationsFromRuntimeState()
   replaceGatewayQuotaSnapshot({
     generatedAt: new Date().toISOString(),
     costEntries: [{
@@ -328,10 +333,13 @@ try {
   console.log('网关额度被动快照回归通过：server 请求链路不主动查询 DB service，worker 有界构建额度快照，并禁止误调同步 SQLite 配额读取')
 } finally {
   clearGatewayQuotaSnapshot()
+  await clearAuthorizationQuotaCacheAsync()
   try {
     databaseModule.closeStorageDatabases()
   } catch {
   }
+  await closeRedisClients()
+  await closePostgresPool()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 

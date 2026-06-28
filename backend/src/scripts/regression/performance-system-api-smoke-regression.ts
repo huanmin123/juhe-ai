@@ -30,6 +30,7 @@ try {
   process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
   process.env.JUHE_AI_CACHE_DRIVER = 'memory'
   process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'memory'
+  process.env.JUHE_AI_QUEUE_DRIVER = 'memory'
   process.env.JUHE_AI_DATABASE_PATH = join(tempRoot, 'business.sqlite3')
   process.env.JUHE_AI_DATASET_DATABASE_PATH = join(tempRoot, 'dataset.sqlite3')
   process.env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = join(tempRoot, 'usage-catalog.sqlite3')
@@ -57,6 +58,7 @@ try {
         JUHE_AI_DATABASE_DRIVER: 'postgres',
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+        JUHE_AI_QUEUE_DRIVER: 'memory',
         JUHE_AI_POSTGRES_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_POSTGRES_URL,
         JUHE_AI_REDIS_CACHE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_CACHE_URL ?? 'redis://:unused@127.0.0.1:6379/0',
         JUHE_AI_REDIS_STATE_URL: process.env.JUHE_PERFORMANCE_SYSTEM_API_REDIS_STATE_URL ?? 'redis://:unused@127.0.0.1:6380/0'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { request as httpRequest, type Server } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Express } from 'express'
@@ -105,7 +105,7 @@ try {
     }, 'POST', {
       targetUsername: 'huanmin',
       name: '公开接口日志回归 Key',
-      groupBindings: [{ groupId: 'mock_group_public' }]
+      routeStrategyId: 'mock_route_strategy_public'
     })
     assert.equal(apiKeyAdd.status, 201)
     assert.equal(apiKeyAdd.body.data.apiKey.key, 'juis_mock_public_api_key', '测试 token 响应仍应按原业务返回一次性明文 Key')
@@ -260,6 +260,11 @@ try {
   }
   flushPublicApiLogQueueForTest()
   assert.equal(listPublicApiLogs({ traceId: 'publog_queue_retry_retained', pageSize: 10 }).items.length, 1, '公开接口日志批量写失败后应保留队首批次并可重试成功')
+
+  const publicApiLogRepositorySource = readFileSync(new URL('../../storage/public-api-logs.repository.ts', import.meta.url), 'utf8')
+  assert.match(publicApiLogRepositorySource, /insertPublicApiLogsPostgres\(tx,\s*chunk\)/, 'PG 公开接口日志应走批量写入')
+  assert.match(publicApiLogRepositorySource, /ON CONFLICT\(id\) DO NOTHING/, 'PG 公开接口日志应支持 Redis Stream 重投幂等')
+  assert.match(publicApiLogRepositorySource, /prefixUpperBound\(text\)/, '公开接口日志前缀筛选不应使用固定 \\uffff 上界')
 
   console.log('公开接口日志回归通过：公开请求记录、管理员查询、原文日志和 7 天保留清理均符合预期')
 } finally {

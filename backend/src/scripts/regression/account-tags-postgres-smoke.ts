@@ -45,6 +45,7 @@ try {
     },
     groupId: group.id,
     tags: [createdTagNames[0], createdTagNames[1], ` ${createdTagNames[0]} `],
+    supportedModels: ['gpt-4o-mini'],
     status: 'disabled'
   }, access)
   createdAccountIds.push(account.id)

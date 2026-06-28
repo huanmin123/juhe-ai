@@ -74,6 +74,26 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC)'
   },
   {
+    schemaName: 'juhe_business',
+    source: 'api-keys-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((lower(name) COLLATE "C"), id)'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'api-keys-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_c_lookup ON api_keys(system_account_id, (lower(name) COLLATE "C"), id)'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'account-probe-pg-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_accounts_health_check_due'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'account-probe-pg-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_accounts_cooldown_retest_due'
+  },
+  {
     schemaName: 'juhe_usage',
     source: 'usage-records-supplemental',
     sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS usage_semantic text'
@@ -112,6 +132,36 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     schemaName: 'juhe_usage',
     source: 'usage-records-supplemental',
     sql: 'CREATE INDEX IF NOT EXISTS idx_usage_records_provider_protocol_profile_created_at ON usage_records(provider_protocol_profile_id, created_at)'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: "CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_account_shape ON usage_records(account_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''"
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-records-supplemental',
+    sql: "CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_group_shape ON usage_records(group_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''"
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-catalog-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_trace_c_created_sort ON usage_record_shard_entries((trace_id COLLATE "C"), created_at DESC, usage_id DESC)'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-catalog-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_trace_c_created_sort ON usage_record_shard_entries(system_account_id, (trace_id COLLATE "C"), created_at DESC, usage_id DESC)'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-catalog-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_client_ip_c_created_sort ON usage_record_shard_entries((client_ip COLLATE "C"), created_at DESC, usage_id DESC)'
+  },
+  {
+    schemaName: 'juhe_usage',
+    source: 'usage-catalog-pg-prefix-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_client_ip_c_created_sort ON usage_record_shard_entries(system_account_id, (client_ip COLLATE "C"), created_at DESC, usage_id DESC)'
   }
 ]
 

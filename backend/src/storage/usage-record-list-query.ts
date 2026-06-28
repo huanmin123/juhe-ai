@@ -11,6 +11,11 @@ export interface UsageRecordFilterResult {
   params: UsageRecordFilterValue[]
 }
 
+export interface UsageRecordFilterSettings {
+  textPrefixCollation?: string
+  textPrefixUpperBoundMode?: 'append_high' | 'binary'
+}
+
 interface UsageRecordQueryColumns {
   id: string
   systemAccountId: string
@@ -98,15 +103,20 @@ function buildUsageRecordOrderClauseForColumns(options: NormalizedUsageRecordLis
   return `ORDER BY ${usageRecordSortColumns(columns)[options.sortBy]} ${direction}, ${columns.createdAt} ${direction}, ${columns.id} ${direction}`
 }
 
-export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordFilterResult {
-  return buildUsageRecordFiltersForColumns(access, options, usageRecordShardColumns)
+export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordListOptions, settings?: UsageRecordFilterSettings): UsageRecordFilterResult {
+  return buildUsageRecordFiltersForColumns(access, options, usageRecordShardColumns, settings)
 }
 
-export function buildUsageRecordEntryFilters(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordFilterResult {
-  return buildUsageRecordFiltersForColumns(access, options, usageRecordEntryColumns)
+export function buildUsageRecordEntryFilters(access?: AccessScope, options?: UsageRecordListOptions, settings?: UsageRecordFilterSettings): UsageRecordFilterResult {
+  return buildUsageRecordFiltersForColumns(access, options, usageRecordEntryColumns, settings)
 }
 
-function buildUsageRecordFiltersForColumns(access: AccessScope | undefined, options: UsageRecordListOptions | undefined, columns: UsageRecordQueryColumns): UsageRecordFilterResult {
+function buildUsageRecordFiltersForColumns(
+  access: AccessScope | undefined,
+  options: UsageRecordListOptions | undefined,
+  columns: UsageRecordQueryColumns,
+  settings?: UsageRecordFilterSettings
+): UsageRecordFilterResult {
   const clauses: string[] = []
   const params: UsageRecordFilterValue[] = []
   const scope = buildSystemAccountScopeClause(access, columns.systemAccountId)
@@ -114,7 +124,7 @@ function buildUsageRecordFiltersForColumns(access: AccessScope | undefined, opti
     clauses.push(scope.clause.replace(/^ AND /, ''))
     params.push(...scope.params)
   }
-  pushPrefixFilter(clauses, params, columns.traceId, options?.traceId)
+  pushPrefixFilter(clauses, params, columns.traceId, options?.traceId, settings)
   const accountKeyword = options?.accountKeyword?.trim()
   if (accountKeyword) {
     const matchedAccountIds = accountIdsForKeyword(accountKeyword, access)
@@ -134,7 +144,7 @@ function buildUsageRecordFiltersForColumns(access: AccessScope | undefined, opti
     clauses.push(`${columns.statusCode} = ?`)
     params.push(options.statusCode)
   }
-  pushPrefixFilter(clauses, params, columns.clientIp, options?.clientIp)
+  pushPrefixFilter(clauses, params, columns.clientIp, options?.clientIp, settings)
   const groupId = options?.groupId?.trim()
   if (groupId) {
     clauses.push(`${columns.groupId} = ?`)
@@ -179,29 +189,30 @@ function usageRecordSortColumns(columns: UsageRecordQueryColumns): Record<UsageR
 
 function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
   const database = getBusinessDatabase()
-  const pattern = `${escapeLikePrefix(keyword)}%`
+  const normalizedKeyword = normalizeAccountKeyword(keyword)
+  const upperBound = accountKeywordUpperBound(normalizedKeyword)
   const ownerSystemAccountId = scopedSystemAccountId(access)
   const ids: string[] = []
   appendAccountIds(ids, database
     .prepare(`
       SELECT accounts.id
       FROM accounts
-      WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')${accountOwnerFilterClause(ownerSystemAccountId)}
-      ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+      WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId)}
+      ORDER BY lower(accounts.name) ASC, accounts.id ASC
       LIMIT ?
     `)
-    .all(keyword, pattern, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+    .all(normalizedKeyword, upperBound, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
   appendAccountIds(ids, database
     .prepare(`
       SELECT instance_accounts.id
       FROM accounts source_accounts
       INNER JOIN accounts instance_accounts
         ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-      WHERE (source_accounts.name COLLATE NOCASE = ? OR source_accounts.name LIKE ? ESCAPE '\\')${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
-      ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
+      WHERE lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?${accountOwnerFilterClause(ownerSystemAccountId, 'instance_accounts')}
+      ORDER BY lower(source_accounts.name) ASC, instance_accounts.id ASC
       LIMIT ?
     `)
-    .all(keyword, pattern, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+    .all(normalizedKeyword, upperBound, ...accountOwnerFilterParams(ownerSystemAccountId), accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
   if (ownerSystemAccountId) {
     appendAccountIds(ids, database
       .prepare(`
@@ -211,11 +222,11 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
           ON ra.resource_type = 'account'
           AND ra.resource_id = accounts.id
           AND ra.grantee_system_account_id = ?
-        WHERE accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\'
-        ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+        WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
+        ORDER BY lower(accounts.name) ASC, accounts.id ASC
         LIMIT ?
       `)
-      .all(ownerSystemAccountId, keyword, pattern, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+      .all(ownerSystemAccountId, normalizedKeyword, upperBound, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
     appendAccountIds(ids, database
       .prepare(`
         SELECT accounts.id
@@ -227,11 +238,11 @@ function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
           ON ra.resource_type = 'group'
           AND ra.resource_id = ga.group_id
           AND ra.grantee_system_account_id = ?
-        WHERE accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\'
-        ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+        WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
+        ORDER BY lower(accounts.name) ASC, accounts.id ASC
         LIMIT ?
       `)
-      .all(ownerSystemAccountId, keyword, pattern, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
+      .all(ownerSystemAccountId, normalizedKeyword, upperBound, accountKeywordMatchLimit) as unknown as Array<{ id?: string }>)
   }
   return ids.slice(0, accountKeywordMatchLimit)
 }
@@ -253,30 +264,47 @@ function accountOwnerFilterParams(systemAccountId?: string): string[] {
   return systemAccountId ? [systemAccountId] : []
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function normalizeAccountKeyword(value: string): string {
+  return value.normalize('NFKC').toLowerCase().trim()
+}
+
+function accountKeywordUpperBound(value: string): string {
+  return `${value}\uffff`
 }
 
 function isHttpStatusCode(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
 }
 
-function pushPrefixFilter(clauses: string[], params: UsageRecordFilterValue[], column: string, value?: string): void {
+function pushPrefixFilter(
+  clauses: string[],
+  params: UsageRecordFilterValue[],
+  column: string,
+  value: string | undefined,
+  settings?: UsageRecordFilterSettings
+): void {
   const text = value?.trim()
   if (!text) return
-  clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, usageRecordTextPrefixUpperBound(text))
+  const columnExpression = settings?.textPrefixCollation ? `${column} COLLATE ${settings.textPrefixCollation}` : column
+  clauses.push(`${columnExpression} >= ? AND ${columnExpression} < ?`)
+  params.push(text, usageRecordTextPrefixUpperBound(text, settings))
 }
 
 const accountKeywordMatchLimit = 200
 
-function usageRecordTextPrefixUpperBound(value: string): string {
-  const comparable = /[.:]$/.test(value) ? value.slice(0, -1) : value
-  for (let index = comparable.length - 1; index >= 0; index -= 1) {
-    const code = comparable.charCodeAt(index)
-    if (code < 0xffff) {
-      return `${comparable.slice(0, index)}${String.fromCharCode(code + 1)}`
-    }
+function usageRecordTextPrefixUpperBound(value: string, settings?: UsageRecordFilterSettings): string {
+  if (settings?.textPrefixUpperBoundMode === 'binary') {
+    return usageRecordBinaryPrefixUpperBound(value)
   }
   return `${value}\uffff`
+}
+
+function usageRecordBinaryPrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\u{10ffff}`
 }

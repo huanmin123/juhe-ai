@@ -722,15 +722,12 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-  const keywordLower = keyword.toLowerCase()
-  const prefixKeyword = `${escapeLikePrefix(keywordLower)}%`
+  const keywordLower = normalizeAccountUsageKeyword(keyword)
+  const keywordUpperBound = accountUsageKeywordUpperBound(keywordLower)
   clauses.push(`(
-    LOWER(accounts.name) = ?
-    OR LOWER(accounts.name) LIKE ? ESCAPE '\\'
-    OR LOWER(accounts.provider_code) = ?
-    OR LOWER(accounts.provider_code) LIKE ? ESCAPE '\\'
-    OR LOWER(accounts.type) = ?
-    OR LOWER(accounts.type) LIKE ? ESCAPE '\\'
+    (LOWER(accounts.name) >= ? AND LOWER(accounts.name) < ? AND starts_with(LOWER(accounts.name), ?))
+    OR (LOWER(accounts.provider_code) >= ? AND LOWER(accounts.provider_code) < ? AND starts_with(LOWER(accounts.provider_code), ?))
+    OR (LOWER(accounts.type) >= ? AND LOWER(accounts.type) < ? AND starts_with(LOWER(accounts.type), ?))
     OR EXISTS (
       SELECT 1
       FROM ${accountUsageBusinessTable(client, 'group_accounts')} group_accounts
@@ -739,19 +736,23 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND (LOWER(groups.name) = ? OR LOWER(groups.name) LIKE ? ESCAPE '\\')
+        AND LOWER(groups.name) >= ? AND LOWER(groups.name) < ? AND starts_with(LOWER(groups.name), ?)
     )
   )`)
   params.push(
     keywordLower,
-    prefixKeyword,
+    keywordUpperBound,
     keywordLower,
-    prefixKeyword,
     keywordLower,
-    prefixKeyword,
+    keywordUpperBound,
+    keywordLower,
+    keywordLower,
+    keywordUpperBound,
+    keywordLower,
     viewerSystemAccountId,
     keywordLower,
-    prefixKeyword
+    keywordUpperBound,
+    keywordLower
   )
   if (input.type) {
     clauses.push('accounts.type = ?')
@@ -793,7 +794,7 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
   `, [...params, accountUsageSelectedAccountLimit]))
   appendAccountUsageAccountIds(ids, await loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(client, {
     keywordLower,
-    prefixKeyword,
+    keywordUpperBound,
     scopeType: input.scopeType,
     type: input.type,
     viewerSystemAccountId
@@ -801,7 +802,7 @@ async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, in
   if (input.scopeType === 'caller_account') {
     appendAccountUsageAccountIds(ids, await loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(client, {
       keywordLower,
-      prefixKeyword,
+      keywordUpperBound,
       type: input.type,
       viewerSystemAccountId
     }))
@@ -846,14 +847,14 @@ async function loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(
   client: DatabaseClient,
   input: {
     keywordLower: string
-    prefixKeyword: string
+    keywordUpperBound: string
     scopeType: AccountUsageScopeType
     type?: string
     viewerSystemAccountId: string
   }
 ): Promise<Array<{ id?: string }>> {
-  const clauses = ["LOWER(source_accounts.name) = ? OR LOWER(source_accounts.name) LIKE ? ESCAPE '\\'"]
-  const params: string[] = [input.keywordLower, input.prefixKeyword]
+  const clauses = ['LOWER(source_accounts.name) >= ? AND LOWER(source_accounts.name) < ? AND starts_with(LOWER(source_accounts.name), ?)']
+  const params: string[] = [input.keywordLower, input.keywordUpperBound, input.keywordLower]
   if (input.scopeType === 'caller_account') {
     clauses.push('instance_accounts.system_account_id = ?')
     params.push(input.viewerSystemAccountId)
@@ -912,13 +913,13 @@ async function loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(
   client: DatabaseClient,
   input: {
     keywordLower: string
-    prefixKeyword: string
+    keywordUpperBound: string
     type?: string
     viewerSystemAccountId: string
   }
 ): Promise<Array<{ id?: string }>> {
-  const clauses = ["LOWER(accounts.name) = ? OR LOWER(accounts.name) LIKE ? ESCAPE '\\'"]
-  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keywordLower, input.prefixKeyword]
+  const clauses = ['LOWER(accounts.name) >= ? AND LOWER(accounts.name) < ? AND starts_with(LOWER(accounts.name), ?)']
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keywordLower, input.keywordUpperBound, input.keywordLower]
   if (input.type) {
     clauses.push('accounts.type = ?')
     params.push(input.type)
@@ -952,6 +953,20 @@ function appendAccountUsageAccountIds(target: string[], rows: Array<{ id?: strin
 
 function escapeLikePrefix(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+}
+
+function normalizeAccountUsageKeyword(value: string): string {
+  return value.normalize('NFKC').toLowerCase().trim()
+}
+
+function accountUsageKeywordUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\uffff`
 }
 
 function buildAccountUsageScopeIdFilter(accountIds: string[]): { sql: string; params: string[] } {

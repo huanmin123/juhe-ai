@@ -129,8 +129,14 @@ import {
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../../domain/route-strategy.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../gateway/routing/api-key-group-route-selector.service.js'
-import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
-import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/quota/authorization-quota.service.js'
+import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
+import {
+  checkGatewayAuthorizationQuotaBatchByIds,
+  checkGatewayAuthorizationQuotaBatchByIdsExactAsync,
+  checkGatewayAuthorizationQuotaByIds,
+  checkGatewayAuthorizationQuotaByIdsExactAsync,
+  clearAuthorizationQuotaCache
+} from '../gateway/quota/authorization-quota.service.js'
 import { applyAccountErrorHandling, readGatewaySettingsAsync } from '../gateway/policy/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
@@ -843,17 +849,29 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         includeUnpriced: operation.includeUnpriced
       })
     case 'check_api_key_quota':
-      return checkGatewayApiKeyQuota(operation.apiKey)
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
+        : checkGatewayApiKeyQuota(operation.apiKey)
     case 'check_authorization_quota':
-      return checkGatewayAuthorizationQuotaByIds({
-        groupAuthorizationId: operation.groupAuthorizationId,
-        accountAuthorizationId: operation.accountAuthorizationId
-      })
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? checkGatewayAuthorizationQuotaByIdsExactAsync({
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accountAuthorizationId: operation.accountAuthorizationId
+          })
+        : checkGatewayAuthorizationQuotaByIds({
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accountAuthorizationId: operation.accountAuthorizationId
+          })
     case 'check_authorization_quota_batch':
-      return checkGatewayAuthorizationQuotaBatchByIds({
-        groupAuthorizationId: operation.groupAuthorizationId,
-        accounts: operation.accounts
-      })
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? checkGatewayAuthorizationQuotaBatchByIdsExactAsync({
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accounts: operation.accounts
+          })
+        : checkGatewayAuthorizationQuotaBatchByIds({
+            groupAuthorizationId: operation.groupAuthorizationId,
+            accounts: operation.accounts
+          })
     case 'update_openai_oauth_credentials': {
       const updated = updateAccount(operation.accountId, { credentials: operation.credentials }, internalDbServiceAccountAccess)
       if (updated) {

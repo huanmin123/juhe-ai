@@ -618,6 +618,7 @@ export {
   createUsageRecord,
   createUsageRecordsBatchAsync,
   createUsageRecordsBatch,
+  findRecentOpenAIRequestShapeForAccountAsync,
   findRecentOpenAIRequestShapeForAccount,
   getUsageRecordDetail,
   getUsageRecordDetailAsync,

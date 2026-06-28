@@ -5,7 +5,7 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
-  findRecentOpenAIRequestShapeForAccount,
+  findRecentOpenAIRequestShapeForAccountAsync,
   getAccountPrecheckMutationState,
   resolveProxyUrlForProfileAsync,
   runtimeOpenAIAccountCredentials,
@@ -544,7 +544,7 @@ async function runOpenAIAccountTestWithSideEffects(
       signal: input.signal,
       diagnostics: input.diagnostics,
       systemAccountId: access.systemAccountId,
-      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
+      requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId),
       onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
       findAccountForTest: loadAccountForTestViaDbService
     })
@@ -675,7 +675,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
     diagnostics: 'full',
     groupId: account.boundGroupId,
     systemAccountId: accountTestPrecheckSystemAccountId(account),
-      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId),
+      requestShape: await findRecentOpenAIRequestShapeForAccountAsync(account.id, account.boundGroupId),
       trafficSource: 'cooldown_retest',
       disableAccountStateMutation: true,
       findAccountForTest: loadAccountForTestViaDbService,

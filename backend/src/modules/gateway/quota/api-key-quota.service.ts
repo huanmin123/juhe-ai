@@ -3,9 +3,17 @@ import { registerApiKeyQuotaCacheInvalidator, syncGatewayCacheInvalidationsFromR
 import { runtimeConfig } from '../../../config/runtime.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getStatsDatabase } from '../../../storage/database.js'
+import { createPostgresDatabaseClient } from '../../../storage/database-client.js'
+import { getPostgresPool } from '../../../storage/postgres-client.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../../storage/request-quota-limits.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCosts, requestQuotaCostKey } from './request-quota-checker.js'
+import {
+  isRequestQuotaExceeded,
+  loadRequestQuotaCosts,
+  loadRequestQuotaCostsBatchAsync,
+  requestQuotaCostKey,
+  requestQuotaCostKeyAsync
+} from './request-quota-checker.js'
 import { isGatewayQuotaCostSnapshotIncomplete, readGatewayQuotaCostsSnapshot } from './quota-snapshot-cache.service.js'
 
 export const API_KEY_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
@@ -69,6 +77,49 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
   return decision
 }
 
+export async function checkGatewayApiKeyQuotaExactAsync(apiKey: GatewayApiKeyRow, now = new Date()): Promise<ApiKeyQuotaDecision> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return checkGatewayApiKeyQuota(apiKey, now)
+  }
+  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
+    return { allowed: true }
+  }
+
+  const cacheKey = await apiKeyQuotaCacheKeyAsync(apiKey, now, quotaLimits.hourly?.hours)
+  const cached = apiKeyQuotaCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+  const sharedCached = await getApiKeyQuotaSharedCacheEntry(cacheKey)
+  if (sharedCached) {
+    setApiKeyQuotaCacheEntry(apiKey.id, cacheKey, sharedCached, { skipSharedCache: true })
+    return sharedCached
+  }
+
+  const costInput = {
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours: quotaLimits.hourly?.hours
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const costsByKey = await loadRequestQuotaCostsBatchAsync(client, [costInput])
+  const allowed = !isRequestQuotaExceeded(
+    quotaLimits,
+    costsByKey.get(await requestQuotaCostKeyAsync(costInput)) ?? emptyRequestQuotaCosts()
+  )
+  const decision: ApiKeyQuotaCacheEntry = {
+    allowed,
+    message: allowed ? undefined : API_KEY_QUOTA_EXCEEDED_MESSAGE,
+    checkedAtMs: Date.now()
+  }
+  await setApiKeyQuotaCacheEntryAsync(apiKey.id, cacheKey, decision)
+  return decision
+}
+
 export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Promise<ApiKeyQuotaDecision> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
   const now = new Date()
@@ -76,7 +127,9 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
   if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
     return { allowed: true }
   }
-  const cacheKey = apiKeyQuotaCacheKey(apiKey, now, quotaLimits.hourly?.hours)
+  const cacheKey = runtimeConfig.databaseDriver === 'postgres'
+    ? await apiKeyQuotaCacheKeyAsync(apiKey, now, quotaLimits.hourly?.hours)
+    : apiKeyQuotaCacheKey(apiKey, now, quotaLimits.hourly?.hours)
   const cached = apiKeyQuotaCache.get(cacheKey)
   if (cached) {
     return cached
@@ -120,7 +173,9 @@ export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Pr
     await setApiKeyQuotaCacheEntryAsync(apiKey.id, cacheKey, passiveDecision)
     return passiveDecision
   }
-  const decision = checkGatewayApiKeyQuota(apiKey, now)
+  const decision = runtimeConfig.databaseDriver === 'postgres'
+    ? await checkGatewayApiKeyQuotaExactAsync(apiKey, now)
+    : checkGatewayApiKeyQuota(apiKey, now)
   await setApiKeyQuotaCacheEntryAsync(apiKey.id, cacheKey, {
     ...decision,
     checkedAtMs: Date.now()
@@ -151,6 +206,17 @@ function assertLocalGatewayDatabaseAccess(operation: string): void {
 
 function apiKeyQuotaCacheKey(apiKey: GatewayApiKeyRow, now: Date, hourlyWindowHours?: number): string {
   const windowKey = requestQuotaCostKey({
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours
+  })
+  return `${apiKey.system_account_id}\u0000${apiKey.id}\u0000${windowKey}\u0000${apiKey.quota_limits_json ?? ''}`
+}
+
+async function apiKeyQuotaCacheKeyAsync(apiKey: GatewayApiKeyRow, now: Date, hourlyWindowHours?: number): Promise<string> {
+  const windowKey = await requestQuotaCostKeyAsync({
     systemAccountId: apiKey.system_account_id,
     scopeType: 'api_key',
     scopeId: apiKey.id,
@@ -238,4 +304,8 @@ function clearApiKeyQuotaSharedCache(): void {
 
 function sharedQuotaCacheKey(cacheKey: string): string {
   return Buffer.from(cacheKey).toString('base64url')
+}
+
+function emptyRequestQuotaCosts() {
+  return { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 }
 }

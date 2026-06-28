@@ -545,27 +545,27 @@ function loadAiPerformanceAccountOptionRows(
     return loadDefaultAiPerformanceAccounts(database, scope, options.limit)
   }
 
-  const keywordPrefix = `${escapeLikePrefix(keyword)}%`
+  const keywordPrefix = normalizeAccountNamePrefix(keyword)
   const visibleFilter = aiPerformanceVisibleAccountFilter(scope)
   const accountRows = getBusinessDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
-    WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')
+    WHERE lower(accounts.name) >= ? AND lower(accounts.name) < ?
       ${visibleFilter.sql}
     ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
     LIMIT ?
-  `).all(keyword, keywordPrefix, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
+  `).all(keywordPrefix.start, keywordPrefix.end, ...visibleFilter.params, options.limit) as unknown as Array<{ id: string }>
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
   const sourceInstanceRows = getBusinessDatabase().prepare(`
     SELECT instance_accounts.id
     FROM accounts source_accounts
     INNER JOIN accounts instance_accounts
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-    WHERE (source_accounts.name COLLATE NOCASE = ? OR source_accounts.name LIKE ? ESCAPE '\\')
+    WHERE lower(source_accounts.name) >= ? AND lower(source_accounts.name) < ?
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
     ORDER BY source_accounts.name COLLATE NOCASE ASC, instance_accounts.id ASC
     LIMIT ?
-  `).all(keyword, keywordPrefix, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
+  `).all(keywordPrefix.start, keywordPrefix.end, ...sourceInstanceParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = uniqueNonEmpty([
     ...accountRows.map((row) => row.id),
     ...sourceInstanceRows.map((row) => row.id)
@@ -586,27 +586,27 @@ async function loadAiPerformanceAccountOptionRowsAsync(
     return loadDefaultAiPerformanceAccountsAsync(client, scope, options.limit)
   }
 
-  const keywordPrefix = `${escapeLikePrefix(keyword)}%`
+  const keywordPrefix = normalizeAccountNamePrefix(keyword)
   const visibleFilter = aiPerformanceVisibleAccountFilterForClient(client, scope)
   const accountRows = await client.query<{ id: string }>(`
     SELECT accounts.id
     FROM ${businessTable(client, 'accounts')} accounts
-    WHERE (LOWER(accounts.name) = LOWER(?) OR accounts.name LIKE ? ESCAPE '\\')
+    WHERE LOWER(accounts.name) >= ? AND LOWER(accounts.name) < ? AND starts_with(LOWER(accounts.name), ?)
       ${visibleFilter.sql}
     ORDER BY LOWER(accounts.name) ASC, accounts.id ASC
     LIMIT ?
-  `, [keyword, keywordPrefix, ...visibleFilter.params, options.limit])
+  `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...visibleFilter.params, options.limit])
   const sourceInstanceParams = scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [scope.systemAccountId]
   const sourceInstanceRows = await client.query<{ id: string }>(`
     SELECT instance_accounts.id
     FROM ${businessTable(client, 'accounts')} source_accounts
     INNER JOIN ${businessTable(client, 'accounts')} instance_accounts
       ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-    WHERE (LOWER(source_accounts.name) = LOWER(?) OR source_accounts.name LIKE ? ESCAPE '\\')
+    WHERE LOWER(source_accounts.name) >= ? AND LOWER(source_accounts.name) < ? AND starts_with(LOWER(source_accounts.name), ?)
       ${scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND instance_accounts.system_account_id = ?'}
     ORDER BY LOWER(source_accounts.name) ASC, instance_accounts.id ASC
     LIMIT ?
-  `, [keyword, keywordPrefix, ...sourceInstanceParams, options.limit])
+  `, [keywordPrefix.start, keywordPrefix.end, keywordPrefix.start, ...sourceInstanceParams, options.limit])
   const accountIds = uniqueNonEmpty([
     ...accountRows.map((row) => row.id),
     ...sourceInstanceRows.map((row) => row.id)
@@ -616,8 +616,19 @@ async function loadAiPerformanceAccountOptionRowsAsync(
     : []
 }
 
-function escapeLikePrefix(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+function normalizeAccountNamePrefix(value: string): { start: string; end: string } {
+  const start = value.normalize('NFKC').toLowerCase().trim()
+  return { start, end: accountNamePrefixUpperBound(start) }
+}
+
+function accountNamePrefixUpperBound(value: string): string {
+  const chars = [...value]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
+  }
+  return `${value}\uffff`
 }
 
 function mergeAiPerformanceStatsWithAccounts(

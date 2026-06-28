@@ -3,7 +3,7 @@ import { Router } from 'express'
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
-import { dateKey, startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
+import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildCatalogCostBreakdown } from '../model-pricing/model-catalog.service.js'
 
@@ -11,7 +11,7 @@ export const usageRecordsRouter = Router()
 
 usageRecordsRouter.get('/', async (req, res, next) => {
   try {
-    const result = await listUsageRecordsAsync(getRequestAccessScope(req.query.systemAccountId), parseListOptions(req.query))
+    const result = await listUsageRecordsAsync(getRequestAccessScope(req.query.systemAccountId), await parseListOptionsAsync(req.query))
     res.json(ok({
       ...result,
       items: result.items.map(withCostBreakdown)
@@ -66,11 +66,12 @@ function requiredUsageRecordProviderCode(record: UsageRecordSummary): string {
   return record.providerCode
 }
 
-function parseListOptions(query: Record<string, unknown>): UsageRecordListOptions {
+async function parseListOptionsAsync(query: Record<string, unknown>): Promise<UsageRecordListOptions> {
+  const timezone = await usageStatsTimezoneAsync()
   const rawPage = finiteNumberQueryValue(query.page)
   const rawPageSize = finiteNumberQueryValue(query.pageSize)
   const rawStatusCode = finiteNumberQueryValue(query.statusCode)
-  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate)
+  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate, timezone)
   const sortBy = typeof query.sortBy === 'string' && usageRecordSortFields.has(query.sortBy as UsageRecordSortField)
     ? query.sortBy as UsageRecordSortField
     : undefined
@@ -106,13 +107,13 @@ function usageRecordTrafficSourceQueryValue(value: unknown): UsageRecordTrafficS
     : undefined
 }
 
-function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {
+function dateRangeQueryValue(startValue: unknown, endValue: unknown, timezone: string): { startAt?: string; endAt?: string } {
   const startDate = dateQueryValue(startValue)
   const endDate = dateQueryValue(endValue)
   if (!startDate && !endDate) {
     return optionalQueryText(startValue) || optionalQueryText(endValue)
       ? {}
-      : defaultUsageRecordDateRange()
+      : defaultUsageRecordDateRange(timezone)
   }
   const start = startDate ?? endDate
   const end = endDate ?? startDate
@@ -122,19 +123,18 @@ function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?
   const rangeStart = start <= end ? start : end
   const rangeEnd = start <= end ? end : start
   return {
-    startAt: startOfDateKeyIso(rangeStart),
-    endAt: startOfDateKeyIso(nextDateKey(rangeEnd))
+    startAt: startOfDateKeyIso(rangeStart, timezone),
+    endAt: startOfDateKeyIso(nextDateKey(rangeEnd), timezone)
   }
 }
 
-function defaultUsageRecordDateRange(): { startAt?: string; endAt?: string } {
-  const timezone = usageStatsTimezone()
+function defaultUsageRecordDateRange(timezone: string): { startAt?: string; endAt?: string } {
   const today = new Date()
   const startDate = dateKey(new Date(today.getTime() - (usageRecordDefaultLookbackDays - 1) * dayMs), timezone)
   const endDate = dateKey(today, timezone)
   return {
-    startAt: startOfDateKeyIso(startDate),
-    endAt: startOfDateKeyIso(nextDateKey(endDate))
+    startAt: startOfDateKeyIso(startDate, timezone),
+    endAt: startOfDateKeyIso(nextDateKey(endDate), timezone)
   }
 }
 
@@ -148,8 +148,8 @@ function dateQueryValue(value: unknown): string | undefined {
   return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? text : undefined
 }
 
-function startOfDateKeyIso(dateKey: string): string | undefined {
-  return startOfZonedDateKeyIso(dateKey, usageStatsTimezone())
+function startOfDateKeyIso(dateKey: string, timezone: string): string | undefined {
+  return startOfZonedDateKeyIso(dateKey, timezone)
 }
 
 function nextDateKey(dateKey: string): string {
