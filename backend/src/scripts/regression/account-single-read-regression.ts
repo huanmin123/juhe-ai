@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -21,6 +21,12 @@ const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
+
+const accountGroupBindingRoutesSource = readFileSync(resolve('src/modules/accounts/account-group-binding.routes.ts'), 'utf8')
+assert.match(accountGroupBindingRoutesSource, /findAccountForTestAsync/, '账户单独绑定分组路由必须使用 async 账户读取')
+assert.match(accountGroupBindingRoutesSource, /setAccountGroupAsync/, '账户单独绑定分组路由必须使用 async 分组绑定写入')
+assert.match(accountGroupBindingRoutesSource, /runLoggedOperationAsync/, '账户单独绑定分组路由必须使用 async 操作日志包裹')
+assert.doesNotMatch(accountGroupBindingRoutesSource, /import \{[^}]*\bsetAccountGroup\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, '账户单独绑定分组路由不能重新导入同步 setAccountGroup')
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 

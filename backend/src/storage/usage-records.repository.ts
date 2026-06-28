@@ -1,10 +1,10 @@
-import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
+import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
 import { buildUsageRecordEntryFilters, buildUsageRecordEntryOrderClause, buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult } from './usage-record-list-query.js'
-import { hydrateUsageRecordNames, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
+import { hydrateUsageRecordNames, hydrateUsageRecordNamesAsync, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
 import {
   generateUsageRecordId,
   getUsageRecordShardDatabase,
@@ -171,7 +171,12 @@ export interface UsageRecordInput {
   createdAt?: string
 }
 
+const usageRecordAccountKeywordMatchLimit = 200
+
 export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordListResult {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('JUHE_AI_DATABASE_DRIVER=postgres 时请使用 listUsageRecordsAsync 读取使用记录')
+  }
   const listOptions = normalizeUsageRecordListOptions(options)
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
@@ -199,7 +204,41 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   }
 }
 
+export async function listUsageRecordsAsync(access?: AccessScope, options?: UsageRecordListOptions): Promise<UsageRecordListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listUsageRecords(access, options)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const listOptions = normalizeUsageRecordListOptions(options)
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const offset = (listOptions.page - 1) * listOptions.pageSize
+  const filters = await buildUsageRecordEntryFiltersAsync(client, access, options)
+  const entryRows = await listUsageRecordEntriesAsync(
+    client,
+    filters,
+    buildUsageRecordEntryOrderClause(listOptions),
+    offset + listOptions.pageSize + 1
+  )
+  const pageEntryRows = takePageRows(entryRows.slice(offset), listOptions.pageSize)
+  const rows = await loadUsageRecordRowsByEntriesAsync(client, pageEntryRows.rows)
+  const rowsWithNames = await hydrateUsageRecordNamesAsync(client, rows)
+  const accountNames = shouldIncludeSystemAccountFields
+    ? await loadSystemAccountNameMapByIdsAsync(client, rowsWithNames.map((row) => optionalString(row.system_account_id)))
+    : new Map<string, string>()
+  const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+  return {
+    items,
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageEntryRows.hasMore),
+    hasMore: pageEntryRows.hasMore,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
 export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRecordSummary | undefined {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    throw new Error('JUHE_AI_DATABASE_DRIVER=postgres 时请使用 getUsageRecordDetailAsync 读取使用记录详情')
+  }
   const recordId = id.trim()
   if (!recordId) return undefined
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
@@ -215,6 +254,29 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   const namedRow = row ? hydrateUsageRecordNames([row])[0] : undefined
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
+    : new Map<string, string>()
+  return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
+}
+
+export async function getUsageRecordDetailAsync(id: string, access?: AccessScope): Promise<UsageRecordSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getUsageRecordDetail(id, access)
+  }
+  const recordId = id.trim()
+  if (!recordId) return undefined
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const row = await client.one<UsageRecordRow>(`
+    SELECT ur.*
+    FROM juhe_usage.usage_records ur
+    WHERE ur.id = ?
+    ${scope.clause}
+    LIMIT 1
+  `, [recordId, ...scope.params])
+  const namedRow = row ? (await hydrateUsageRecordNamesAsync(client, [row]))[0] : undefined
+  const accountNames = shouldIncludeSystemAccountFields
+    ? await loadSystemAccountNameMapByIdsAsync(client, [optionalString(namedRow?.system_account_id)])
     : new Map<string, string>()
   return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
 }
@@ -889,6 +951,111 @@ interface UsageRecordEntryRow {
   created_at: string
 }
 
+async function buildUsageRecordEntryFiltersAsync(
+  client: DatabaseClient,
+  access: AccessScope | undefined,
+  options?: UsageRecordListOptions
+): Promise<UsageRecordFilterResult> {
+  const accountKeyword = options?.accountKeyword?.trim()
+  if (!accountKeyword) {
+    return buildUsageRecordEntryFilters(access, options)
+  }
+  const filters = buildUsageRecordEntryFilters(access, { ...options, accountKeyword: undefined })
+  const accountIds = await postgresAccountIdsForKeyword(client, accountKeyword, access)
+  const accountClause = accountIds.length
+    ? `ue.account_id IN (${sqlPlaceholders(accountIds.length)})`
+    : '1 = 0'
+  return {
+    clause: filters.clause ? `${filters.clause} AND ${accountClause}` : `WHERE ${accountClause}`,
+    params: [...filters.params, ...accountIds]
+  }
+}
+
+async function postgresAccountIdsForKeyword(client: DatabaseClient, keyword: string, access?: AccessScope): Promise<string[]> {
+  const ownerSystemAccountId = scopedSystemAccountId(access)
+  const upperBound = usageRecordTextPrefixUpperBound(keyword)
+  const ids: string[] = []
+  const accountNameClause = '(accounts.name = ? OR (accounts.name >= ? AND accounts.name < ?))'
+  const sourceNameClause = '(source_accounts.name = ? OR (source_accounts.name >= ? AND source_accounts.name < ?))'
+  const ownerClause = ownerSystemAccountId ? 'AND accounts.system_account_id = ?' : ''
+  const ownerParams = ownerSystemAccountId ? [ownerSystemAccountId] : []
+
+  appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
+    SELECT accounts.id
+    FROM juhe_business.accounts accounts
+    WHERE accounts.deleted_at IS NULL
+      AND ${accountNameClause}
+      ${ownerClause}
+    ORDER BY accounts.name ASC, accounts.id ASC
+    LIMIT ?
+  `, [keyword, keyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
+
+  appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
+    SELECT instance_accounts.id
+    FROM juhe_business.accounts source_accounts
+    INNER JOIN juhe_business.accounts instance_accounts
+      ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+    WHERE source_accounts.deleted_at IS NULL
+      AND instance_accounts.deleted_at IS NULL
+      AND ${sourceNameClause}
+      ${ownerSystemAccountId ? 'AND instance_accounts.system_account_id = ?' : ''}
+    ORDER BY source_accounts.name ASC, instance_accounts.id ASC
+    LIMIT ?
+  `, [keyword, keyword, upperBound, ...ownerParams, usageRecordAccountKeywordMatchLimit]))
+
+  if (ownerSystemAccountId) {
+    appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
+      SELECT accounts.id
+      FROM juhe_business.accounts accounts
+      INNER JOIN juhe_business.resource_authorizations ra
+        ON ra.resource_type = 'account'
+        AND ra.resource_id = accounts.id
+        AND ra.grantee_system_account_id = ?
+      WHERE accounts.deleted_at IS NULL
+        AND ${accountNameClause}
+      ORDER BY accounts.name ASC, accounts.id ASC
+      LIMIT ?
+    `, [ownerSystemAccountId, keyword, keyword, upperBound, usageRecordAccountKeywordMatchLimit]))
+    appendUsageRecordAccountIds(ids, await client.query<{ id?: string }>(`
+      SELECT accounts.id
+      FROM juhe_business.accounts accounts
+      INNER JOIN juhe_business.group_accounts ga
+        ON ga.account_id = accounts.id
+        AND ga.enabled = 1
+      INNER JOIN juhe_business.resource_authorizations ra
+        ON ra.resource_type = 'group'
+        AND ra.resource_id = ga.group_id
+        AND ra.grantee_system_account_id = ?
+      WHERE accounts.deleted_at IS NULL
+        AND ${accountNameClause}
+      ORDER BY accounts.name ASC, accounts.id ASC
+      LIMIT ?
+    `, [ownerSystemAccountId, keyword, keyword, upperBound, usageRecordAccountKeywordMatchLimit]))
+  }
+
+  return ids.slice(0, usageRecordAccountKeywordMatchLimit)
+}
+
+function appendUsageRecordAccountIds(target: string[], rows: Array<{ id?: string }>): void {
+  const seen = new Set(target)
+  for (const row of rows) {
+    if (!row.id || seen.has(row.id) || target.length >= usageRecordAccountKeywordMatchLimit) continue
+    target.push(row.id)
+    seen.add(row.id)
+  }
+}
+
+function usageRecordTextPrefixUpperBound(value: string): string {
+  const comparable = /[.:]$/.test(value) ? value.slice(0, -1) : value
+  for (let index = comparable.length - 1; index >= 0; index -= 1) {
+    const code = comparable.charCodeAt(index)
+    if (code < 0xffff) {
+      return `${comparable.slice(0, index)}${String.fromCharCode(code + 1)}`
+    }
+  }
+  return `${value}\uffff`
+}
+
 function listUsageRecordEntries(
   filters: UsageRecordFilterResult,
   orderClause: string,
@@ -903,6 +1070,21 @@ function listUsageRecordEntries(
       LIMIT ?
     `)
     .all(...filters.params, Math.max(1, Math.trunc(limit))) as unknown as UsageRecordEntryRow[]
+}
+
+async function listUsageRecordEntriesAsync(
+  client: DatabaseClient,
+  filters: UsageRecordFilterResult,
+  orderClause: string,
+  limit: number
+): Promise<UsageRecordEntryRow[]> {
+  return await client.query<UsageRecordEntryRow>(`
+    SELECT usage_id, shard_key, created_at
+    FROM juhe_usage.usage_record_shard_entries ue
+    ${filters.clause}
+    ${orderClause}
+    LIMIT ?
+  `, [...filters.params, Math.max(1, Math.trunc(limit))])
 }
 
 function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageRecordRow[] {
@@ -965,6 +1147,22 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
       for (const row of rows) {
         rowsById.set(String(row.id), row)
       }
+    }
+  }
+  return entries.map((entry) => rowsById.get(entry.usage_id)).filter((row): row is UsageRecordRow => Boolean(row))
+}
+
+async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries: UsageRecordEntryRow[]): Promise<UsageRecordRow[]> {
+  if (entries.length === 0) return []
+  const rowsById = new Map<string, UsageRecordRow>()
+  for (const chunk of chunkValues(entries.map((entry) => entry.usage_id), 900)) {
+    const rows = await client.query<UsageRecordRow>(`
+      SELECT ur.*
+      FROM juhe_usage.usage_records ur
+      WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
+    `, chunk)
+    for (const row of rows) {
+      rowsById.set(String(row.id), row)
     }
   }
   return entries.map((entry) => rowsById.get(entry.usage_id)).filter((row): row is UsageRecordRow => Boolean(row))

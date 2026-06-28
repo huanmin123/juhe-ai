@@ -1,6 +1,6 @@
 <template>
   <section class="account-entry-section">
-    <div class="account-entry-head">
+    <div v-if="showAccountTypePicker" class="account-entry-head">
       <span class="entry-label">账户类型</span>
       <a-segmented
         :value="selectedAccountTypeChoiceValue"
@@ -29,6 +29,7 @@
 import { computed } from 'vue'
 import type { MenuProps } from 'ant-design-vue'
 import type { AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 
 const props = defineProps<{
@@ -59,6 +60,7 @@ const selectedAccountTypeChoiceValue = computed(() => {
     ?? props.accountTypeChoices.find((item) => item.type === props.accountType)?.value
     ?? ''
 })
+const showAccountTypePicker = computed(() => !isHybridProviderCode(props.providerCode) && props.accountTypeChoices.length > 1)
 
 function handleTypeChange(value: string | number): void {
   emit('select-type-choice', String(value))
@@ -69,6 +71,7 @@ const handleProviderMenuClick: MenuProps['onClick'] = ({ key }) => {
 }
 
 function providerAccountTypeCount(provider: ProviderDefinition): number {
+  if (isHybridProviderCode(provider.code)) return 1
   const accountTypes = provider.protocolProfiles.length
     ? provider.protocolProfiles.flatMap((profile) => profile.accountTypes.map((type) => `${profile.id}:${type}`))
     : provider.accountTypes

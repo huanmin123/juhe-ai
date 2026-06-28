@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -255,6 +255,11 @@ try {
   }
   assertBusinessIndexExists('idx_accounts_name_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
+  const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+  assert.match(statsRoutesSource, /getAiPerformanceOverviewAsync/, 'AI 性能概览路由应使用 async repository')
+  assert.match(statsRoutesSource, /listAiPerformanceAccountOptionsAsync/, 'AI 性能账号选项路由应使用 async repository')
+  assert.doesNotMatch(statsRoutesSource, /\bgetAiPerformanceOverview\(/, 'AI 性能概览路由不应直接调用同步 repository')
+  assert.doesNotMatch(statsRoutesSource, /\blistAiPerformanceAccountOptions\(/, 'AI 性能账号选项路由不应直接调用同步 repository')
 
   console.log('AI 性能账号选项查询防护回归通过：关键词仅按账号名称精确/前缀匹配，显式账号 ID 仅用于已选项回填')
 } finally {

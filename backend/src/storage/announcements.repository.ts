@@ -1,7 +1,11 @@
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { loadSystemAccountPrincipalMapByIds } from './repository-lookups.js'
+import { loadSystemAccountPrincipalMapByIds, loadSystemAccountPrincipalMapByIdsAsync } from './repository-lookups.js'
 import type { AnnouncementRow } from './repository-row-types.js'
 
 const announcementLevels: readonly AnnouncementLevel[] = ['critical', 'warning', 'info', 'normal']
@@ -58,6 +62,28 @@ export function listPublicAnnouncements(systemAccountId: string, limit = publicA
   return announcementSummaries(rows, false)
 }
 
+export async function listPublicAnnouncementsAsync(systemAccountId: string, limit = publicAnnouncementLimit): Promise<AnnouncementSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listPublicAnnouncements(systemAccountId, limit)
+  }
+  const safeLimit = normalizePublicLimit(limit)
+  const client = await announcementDatabaseClient()
+  const rows = await client.query<PublicAnnouncementRow>(`
+    SELECT
+      announcements.*,
+      announcement_reads.read_at
+    FROM ${announcementTable(client, 'announcements')} announcements
+    LEFT JOIN ${announcementTable(client, 'announcement_reads')} announcement_reads
+      ON announcement_reads.announcement_id = announcements.id
+      AND announcement_reads.system_account_id = ?
+    WHERE announcements.status = 'published'
+      AND announcements.published_at IS NOT NULL
+    ORDER BY announcements.published_at DESC, announcements.created_at DESC, announcements.id DESC
+    LIMIT ?
+  `, [systemAccountId, safeLimit])
+  return announcementSummaries(rows, false)
+}
+
 export function markPublicAnnouncementsRead(systemAccountId: string, announcementIds: string[]): AnnouncementReadResult {
   const ids = [...new Set(announcementIds.map((id) => id.trim()).filter(Boolean))].slice(0, publicAnnouncementLimit)
   const readAt = nowIso()
@@ -99,8 +125,44 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
   return { readAt, count: publishedRows.length }
 }
 
+export async function markPublicAnnouncementsReadAsync(systemAccountId: string, announcementIds: string[]): Promise<AnnouncementReadResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markPublicAnnouncementsRead(systemAccountId, announcementIds)
+  }
+  const ids = normalizedAnnouncementReadIds(announcementIds)
+  const readAt = nowIso()
+  if (!ids.length) return { readAt, count: 0 }
+
+  const client = await announcementDatabaseClient()
+  const publishedRows = await client.query<{ id: string }>(`
+    SELECT id
+    FROM ${announcementTable(client, 'announcements')}
+    WHERE id IN (${ids.map(() => '?').join(', ')})
+      AND status = 'published'
+      AND published_at IS NOT NULL
+  `, ids)
+
+  if (!publishedRows.length) return { readAt, count: 0 }
+
+  await client.transaction(async (tx) => {
+    for (const row of publishedRows) {
+      await tx.execute(`
+        INSERT INTO ${announcementTable(tx, 'announcement_reads')} (announcement_id, system_account_id, read_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(announcement_id, system_account_id)
+        DO UPDATE SET read_at = excluded.read_at
+      `, [row.id, systemAccountId, readAt])
+    }
+  })
+  return { readAt, count: publishedRows.length }
+}
+
 export function listAnnouncements(): AnnouncementSummary[] {
   return listAnnouncementsPage({ page: 1, pageSize: maxAnnouncementPageSize }).items
+}
+
+export async function listAnnouncementsAsync(): Promise<AnnouncementSummary[]> {
+  return (await listAnnouncementsPageAsync({ page: 1, pageSize: maxAnnouncementPageSize })).items
 }
 
 export function listAnnouncementsPage(options: AnnouncementListOptions = {}): AnnouncementListResult {
@@ -124,9 +186,41 @@ export function listAnnouncementsPage(options: AnnouncementListOptions = {}): An
   }
 }
 
+export async function listAnnouncementsPageAsync(options: AnnouncementListOptions = {}): Promise<AnnouncementListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listAnnouncementsPage(options)
+  }
+  const normalized = normalizeAnnouncementListOptions(options)
+  const client = await announcementDatabaseClient()
+  const rows = await client.query<AnnouncementRow>(`
+    SELECT ${announcementListSelectColumns()}
+    FROM ${announcementTable(client, 'announcements')} announcements
+    ORDER BY updated_at DESC, created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `, [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
+  const pageRows = takePageRows(rows, normalized.pageSize)
+  const items = await announcementSummariesAsync(pageRows.rows, true, client)
+  return {
+    items,
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
 export function findAnnouncement(id: string): AnnouncementSummary | undefined {
   const row = getAnnouncementRow(id)
   return row ? announcementSummaries([row], true)[0] : undefined
+}
+
+export async function findAnnouncementAsync(id: string): Promise<AnnouncementSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findAnnouncement(id)
+  }
+  const client = await announcementDatabaseClient()
+  const row = await getAnnouncementRowAsync(id, client)
+  return row ? (await announcementSummariesAsync([row], true, client))[0] : undefined
 }
 
 export function createAnnouncement(input: AnnouncementInput, actorSystemAccountId: string): AnnouncementSummary {
@@ -153,6 +247,34 @@ export function createAnnouncement(input: AnnouncementInput, actorSystemAccountI
       now
     )
   return getAnnouncementOrThrow(id)
+}
+
+export async function createAnnouncementAsync(input: AnnouncementInput, actorSystemAccountId: string): Promise<AnnouncementSummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createAnnouncement(input, actorSystemAccountId)
+  }
+  assertKnownInputKeys(input, announcementInputKeys, '公告')
+  const now = nowIso()
+  const status = normalizeStatus(input.status, 'draft')
+  const id = newId('ann')
+  const client = await announcementDatabaseClient()
+  await client.execute(`
+    INSERT INTO ${announcementTable(client, 'announcements')} (
+      id, title, content, level, status, created_by, updated_by, published_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    id,
+    normalizeRequiredText(input.title),
+    normalizeRequiredText(input.content),
+    normalizeLevel(input.level, 'info'),
+    status,
+    actorSystemAccountId,
+    actorSystemAccountId,
+    status === 'published' ? now : null,
+    now,
+    now
+  ])
+  return await getAnnouncementOrThrowAsync(id, client)
 }
 
 export function updateAnnouncement(id: string, input: Partial<AnnouncementInput>, actorSystemAccountId: string): AnnouncementSummary | undefined {
@@ -194,6 +316,48 @@ export function updateAnnouncement(id: string, input: Partial<AnnouncementInput>
   return getAnnouncementOrThrow(id)
 }
 
+export async function updateAnnouncementAsync(id: string, input: Partial<AnnouncementInput>, actorSystemAccountId: string): Promise<AnnouncementSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateAnnouncement(id, input, actorSystemAccountId)
+  }
+  assertKnownInputKeys(input, announcementInputKeys, '公告')
+  const client = await announcementDatabaseClient()
+  const current = await getAnnouncementRowAsync(id, client)
+  if (!current) return undefined
+
+  const now = nowIso()
+  const nextStatus = input.status ? normalizeStatus(input.status, current.status) : current.status
+  const shouldResetReadState = nextStatus === 'published' && current.status !== 'published'
+  const nextPublishedAt = shouldResetReadState ? now : current.published_at
+
+  return await client.transaction(async (tx) => {
+    await tx.execute(`
+      UPDATE ${announcementTable(tx, 'announcements')}
+      SET title = ?,
+          content = ?,
+          level = ?,
+          status = ?,
+          updated_by = ?,
+          published_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `, [
+      input.title === undefined ? current.title : normalizeRequiredText(input.title),
+      input.content === undefined ? current.content : normalizeRequiredText(input.content),
+      input.level === undefined ? current.level : normalizeLevel(input.level, current.level),
+      nextStatus,
+      actorSystemAccountId,
+      nextPublishedAt,
+      now,
+      id
+    ])
+    if (shouldResetReadState) {
+      await tx.execute(`DELETE FROM ${announcementTable(tx, 'announcement_reads')} WHERE announcement_id = ?`, [id])
+    }
+    return await getAnnouncementOrThrowAsync(id, tx)
+  })
+}
+
 export function publishAnnouncement(id: string, actorSystemAccountId: string): AnnouncementSummary | undefined {
   const current = getAnnouncementRow(id)
   if (!current) return undefined
@@ -213,6 +377,28 @@ export function publishAnnouncement(id: string, actorSystemAccountId: string): A
   return getAnnouncementOrThrow(id)
 }
 
+export async function publishAnnouncementAsync(id: string, actorSystemAccountId: string): Promise<AnnouncementSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return publishAnnouncement(id, actorSystemAccountId)
+  }
+  const client = await announcementDatabaseClient()
+  const current = await getAnnouncementRowAsync(id, client)
+  if (!current) return undefined
+  const now = nowIso()
+  return await client.transaction(async (tx) => {
+    await tx.execute(`
+      UPDATE ${announcementTable(tx, 'announcements')}
+      SET status = 'published',
+          updated_by = ?,
+          published_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `, [actorSystemAccountId, now, now, id])
+    await tx.execute(`DELETE FROM ${announcementTable(tx, 'announcement_reads')} WHERE announcement_id = ?`, [id])
+    return await getAnnouncementOrThrowAsync(id, tx)
+  })
+}
+
 export function unpublishAnnouncement(id: string, actorSystemAccountId: string): AnnouncementSummary | undefined {
   const current = getAnnouncementRow(id)
   if (!current) return undefined
@@ -229,9 +415,40 @@ export function unpublishAnnouncement(id: string, actorSystemAccountId: string):
   return getAnnouncementOrThrow(id)
 }
 
+export async function unpublishAnnouncementAsync(id: string, actorSystemAccountId: string): Promise<AnnouncementSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return unpublishAnnouncement(id, actorSystemAccountId)
+  }
+  const client = await announcementDatabaseClient()
+  const current = await getAnnouncementRowAsync(id, client)
+  if (!current) return undefined
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${announcementTable(client, 'announcements')}
+    SET status = 'archived',
+        updated_by = ?,
+        updated_at = ?
+    WHERE id = ?
+  `, [actorSystemAccountId, now, id])
+  return await getAnnouncementOrThrowAsync(id, client)
+}
+
 export function deleteAnnouncement(id: string): boolean {
   const result = getBusinessDatabase().prepare('DELETE FROM announcements WHERE id = ?').run(id)
   return Number(result.changes ?? 0) > 0
+}
+
+export async function deleteAnnouncementAsync(id: string): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deleteAnnouncement(id)
+  }
+  const client = await announcementDatabaseClient()
+  const result = await client.execute(`DELETE FROM ${announcementTable(client, 'announcements')} WHERE id = ?`, [id])
+  return result.changes > 0
+}
+
+function normalizedAnnouncementReadIds(announcementIds: string[]): string[] {
+  return [...new Set(announcementIds.map((id) => id.trim()).filter(Boolean))].slice(0, publicAnnouncementLimit)
 }
 
 function normalizePublicLimit(limit: unknown): number {
@@ -279,6 +496,10 @@ function getAnnouncementRow(id: string): AnnouncementRow | undefined {
   return getBusinessDatabase().prepare('SELECT * FROM announcements WHERE id = ?').get(id) as unknown as AnnouncementRow | undefined
 }
 
+async function getAnnouncementRowAsync(id: string, client: DatabaseClient): Promise<AnnouncementRow | undefined> {
+  return await client.one<AnnouncementRow>(`SELECT * FROM ${announcementTable(client, 'announcements')} WHERE id = ?`, [id])
+}
+
 function announcementListSelectColumns(): string {
   return [
     'id',
@@ -298,6 +519,12 @@ function getAnnouncementOrThrow(id: string): AnnouncementSummary {
   const row = getAnnouncementRow(id)
   if (!row) throw new Error('公告不存在')
   return announcementSummaries([row], true)[0]
+}
+
+async function getAnnouncementOrThrowAsync(id: string, client: DatabaseClient): Promise<AnnouncementSummary> {
+  const row = await getAnnouncementRowAsync(id, client)
+  if (!row) throw new Error('公告不存在')
+  return (await announcementSummariesAsync([row], true, client))[0]
 }
 
 function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementRow>, includeActors: boolean): AnnouncementSummary[] {
@@ -328,9 +555,47 @@ function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementR
   })
 }
 
+async function announcementSummariesAsync(rows: Array<AnnouncementRow | PublicAnnouncementRow>, includeActors: boolean, client: DatabaseClient): Promise<AnnouncementSummary[]> {
+  const accountMap = includeActors
+    ? await loadSystemAccountPrincipalMapByIdsAsync(client, rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
+    : new Map()
+  return rows.map((row) => {
+    const createdBy = accountMap.get(row.created_by)
+    const updatedBy = row.updated_by ? accountMap.get(row.updated_by) : undefined
+    const summary: AnnouncementSummary = {
+      id: row.id,
+      title: row.title,
+      content: row.content,
+      level: row.level,
+      status: row.status,
+      publishedAt: row.published_at ?? undefined,
+      readAt: 'read_at' in row ? row.read_at ?? undefined : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }
+    if (includeActors) {
+      summary.createdBy = row.created_by
+      summary.createdByName = createdBy?.displayName
+      summary.updatedBy = row.updated_by ?? undefined
+      summary.updatedByName = updatedBy?.displayName
+    }
+    return summary
+  })
+}
+
 function assertKnownInputKeys(input: object, allowedKeys: ReadonlySet<string>, label: string): void {
   const unknownKeys = Object.keys(input as Record<string, unknown>).filter((key) => !allowedKeys.has(key))
   if (unknownKeys.length) {
     throw new Error(`${label}包含未知字段：${unknownKeys.join('、')}`)
   }
+}
+
+async function announcementDatabaseClient(): Promise<DatabaseClient> {
+  return createPostgresDatabaseClient(await getPostgresPool())
+}
+
+function announcementTable(client: DatabaseClient, tableName: 'announcements' | 'announcement_reads'): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }

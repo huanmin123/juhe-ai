@@ -114,8 +114,7 @@ try {
         api_key: `sk-batch-${index + 1}`,
         base_url: mockBaseUrl
       },
-      groupId: group.id,
-      clientCompatibility: 'codex_responses'
+      groupId: group.id
     })
     assert.equal(account.status, 'pending_test', '未携带激活测试任务创建的账号应先进入待测试状态')
     accounts.push(account)

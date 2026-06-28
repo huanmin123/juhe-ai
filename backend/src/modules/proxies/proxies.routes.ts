@@ -3,13 +3,13 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { createProxy, deleteProxy, findProxy, listProxiesPage, listProxyOptions, ProxyInUseError, updateProxy } from '../../storage/repositories.js'
+import { createProxyAsync, deleteProxyAsync, findProxyAsync, listProxiesPageAsync, listProxyOptionsAsync, ProxyInUseError, updateProxyAsync } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
-import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, runLoggedOperationAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { manualProxyTestDeadlineMs, testProxyById } from './proxy-test.service.js'
 
 export const proxiesRouter = Router()
@@ -27,12 +27,12 @@ const proxySchema = z.object({
 
 const proxyUpdateSchema = proxySchema.partial().strict()
 
-proxiesRouter.get('/options', (req, res) => {
-  res.json(ok(listProxyOptions(parseProxyOptionListOptions(req.query))))
+proxiesRouter.get('/options', async (req, res) => {
+  res.json(ok(await listProxyOptionsAsync(parseProxyOptionListOptions(req.query))))
 })
 
-proxiesRouter.get('/', requireAdmin, (req, res) => {
-  res.json(ok(listProxiesPage(parseProxyListOptions(req.query))))
+proxiesRouter.get('/', requireAdmin, async (req, res) => {
+  res.json(ok(await listProxiesPageAsync(parseProxyListOptions(req.query))))
 })
 
 function parseProxyListOptions(query: Record<string, unknown>) {
@@ -64,7 +64,7 @@ proxiesRouter.post('/', requireAdmin, mutationGuard({
     username: normalizedText(bodyField(req, 'username')),
     password: sensitiveFingerprint(bodyField(req, 'password'))
   })
-}), (req, res) => {
+}), async (req, res) => {
   const parsed = proxySchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('代理参数无效'))
@@ -76,8 +76,8 @@ proxiesRouter.post('/', requireAdmin, mutationGuard({
       res.status(401).json(badRequest('缺少系统账户上下文'))
       return
     }
-    const proxy = runLoggedOperation(() => {
-      const proxy = createProxy(parsed.data, requestAccess)
+    const proxy = await runLoggedOperationAsync(async () => {
+      const proxy = await createProxyAsync(parsed.data, requestAccess)
       return {
         result: proxy,
         log: {
@@ -109,7 +109,7 @@ proxiesRouter.post('/', requireAdmin, mutationGuard({
   }
 })
 
-proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
+proxiesRouter.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const parsed = proxyUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -117,9 +117,9 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
       return
     }
     const body = parsed.data as Record<string, unknown>
-    const proxy = runLoggedOperation(() => {
-      const before = findProxy(req.params.id)
-      const proxy = updateProxy(req.params.id, body)
+    const proxy = await runLoggedOperationAsync(async () => {
+      const before = await findProxyAsync(req.params.id)
+      const proxy = await updateProxyAsync(req.params.id, body)
       if (!proxy) {
         throw new Error('代理不存在')
       }
@@ -164,7 +164,7 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
 })
 
 proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
-  const before = findProxy(req.params.id)
+  const before = await findProxyAsync(req.params.id)
   if (!before) {
     res.status(404).json({ message: '代理不存在' })
     return
@@ -196,7 +196,7 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
     if (!after.updated) {
       throw new Error('代理不存在')
     }
-    runLoggedOperation(() => {
+    await runLoggedOperationAsync(async () => {
       return {
         result: report,
         log: {
@@ -240,11 +240,11 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
   }
 })
 
-proxiesRouter.delete('/:id', requireAdmin, (req, res) => {
+proxiesRouter.delete('/:id', requireAdmin, async (req, res) => {
   try {
-    runLoggedOperation(() => {
-      const before = findProxy(req.params.id)
-      if (!deleteProxy(req.params.id)) {
+    await runLoggedOperationAsync(async () => {
+      const before = await findProxyAsync(req.params.id)
+      if (!await deleteProxyAsync(req.params.id)) {
         throw new Error('代理不存在')
       }
       return {

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
-import { getAuthorizationTeamUsageOverview, getAuthorizationUserUsageOverview } from '../../storage/authorization-usage.repository.js'
+import { getAuthorizationTeamUsageOverviewAsync, getAuthorizationUserUsageOverviewAsync } from '../../storage/authorization-usage.repository.js'
 import {
   createResourceAuthorizationAsync,
   findResourceAuthorizationAsync,
@@ -132,26 +132,34 @@ authorizationsRouter.get('/', async (req, res, next) => {
   }
 })
 
-authorizationsRouter.get('/usage/team-details', (req, res) => {
+authorizationsRouter.get('/usage/team-details', async (req, res, next) => {
   const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
-  const range = normalizeAuthorizationUsageRange({ startDate, endDate })
-  res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
+  try {
+    const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
+    const range = normalizeAuthorizationUsageRange({ startDate, endDate })
+    res.json(ok(await getAuthorizationTeamUsageOverviewAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
+  } catch (error) {
+    next(error)
+  }
 })
 
-authorizationsRouter.get('/usage/user-details', (req, res) => {
+authorizationsRouter.get('/usage/user-details', async (req, res, next) => {
   const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
-  const range = normalizeAuthorizationUsageRange({ startDate, endDate })
-  res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
+  try {
+    const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
+    const range = normalizeAuthorizationUsageRange({ startDate, endDate })
+    res.json(ok(await getAuthorizationUserUsageOverviewAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
+  } catch (error) {
+    next(error)
+  }
 })
 
 authorizationsRouter.post('/', mutationGuard({

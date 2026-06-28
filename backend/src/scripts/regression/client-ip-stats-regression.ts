@@ -641,9 +641,12 @@ function assertClientIpPolicyLookupQueryPlan(ipHash: string): void {
 
 function assertGatewayPolicyLookupDoesNotRideRuntimeSnapshot(): void {
   const handlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
+  const routeSource = readFileSync(new URL('../../modules/ip-stats/ip-stats.routes.ts', import.meta.url), 'utf8')
   const readRuntimeBody = sourceFunctionBlock(handlersSource, 'function readGatewayRuntime')
   assert(!readRuntimeBody.includes('listActiveClientIpPolicies'), '网关 runtime 读取不能携带全量 active IP 封禁策略')
   assert(!readRuntimeBody.includes('clientIpPolicies'), '网关 runtime 响应不能携带全量 IP 封禁策略数组')
+  assert(routeSource.includes('recordOperationLogAsync'), '客户端 IP 封禁 / 解封操作日志必须走 async 设置读取入口')
+  assert(!routeSource.includes('recordOperationLog({'), '客户端 IP 统计路由不得重新调用同步操作日志入口')
   const cacheSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-policy-cache.service.ts', import.meta.url), 'utf8')
   const inspectSource = sourceBetween(
     cacheSource,

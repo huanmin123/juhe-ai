@@ -34,6 +34,16 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'ALTER TABLE IF EXISTS route_strategies ADD COLUMN IF NOT EXISTS description text'
   },
   {
+    schemaName: 'juhe_business',
+    source: 'route-strategies-supplemental',
+    sql: 'ALTER TABLE IF EXISTS route_strategies ADD COLUMN IF NOT EXISTS is_default integer NOT NULL DEFAULT 0'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'route-strategies-supplemental',
+    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique ON route_strategies(system_account_id) WHERE is_default = 1'
+  },
+  {
     schemaName: 'juhe_usage',
     source: 'usage-records-supplemental',
     sql: 'ALTER TABLE IF EXISTS usage_records ADD COLUMN IF NOT EXISTS usage_semantic text'

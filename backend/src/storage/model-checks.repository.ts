@@ -9,10 +9,14 @@ import type {
   ModelCheckRunSummary,
   ModelCheckTargetType
 } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { getDatasetDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
-import { loadAccountNameMap } from './repository-lookups.js'
+import { loadAccountNameMap, loadAccountNameMapAsync } from './repository-lookups.js'
 
 const defaultModelCheckPageSize = 20
 const maxModelCheckPageSize = 100
@@ -228,6 +232,89 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
   return modelCheckRunFromRow(run, includeSystemAccountFields())
 }
 
+export async function createModelCheckRunAsync(input: ModelCheckRunCreateInput): Promise<ModelCheckRunSummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createModelCheckRun(input)
+  }
+  const client = await modelCheckDatabaseClient()
+  const now = input.startedAt ?? nowIso()
+  const run: ModelCheckRunRow = {
+    id: input.id ?? newId('mcr'),
+    system_account_id: input.systemAccountId,
+    actor_system_account_id: input.actorSystemAccountId,
+    provider_code: input.providerCode,
+    target_type: input.targetType,
+    target_id: input.targetId,
+    target_name: input.targetName ?? null,
+    target_owner_system_account_id: input.targetOwnerSystemAccountId ?? null,
+    account_id: input.accountId ?? null,
+    group_id: input.groupId ?? null,
+    api_key_id: input.apiKeyId ?? null,
+    model: input.model,
+    profile: input.profile ?? 'full',
+    trusted_comparison_enabled: input.trustedComparison ? 1 : 0,
+    trusted_comparison_available: input.trustedComparisonAvailable ? 1 : 0,
+    level: 'unavailable',
+    score: 0,
+    max_score: 100,
+    status: 'running',
+    message: '模型检测运行中',
+    trace_id: input.traceId ?? null,
+    probe_set_version: input.probeSetVersion,
+    started_at: now,
+    finished_at: null,
+    duration_ms: null,
+    request_summary_json: safeJson(input.requestSummary ?? {}),
+    result_summary_json: '{}',
+    error_code: null,
+    error_message: null,
+    created_at: now,
+    updated_at: now
+  }
+  await client.execute(`
+    INSERT INTO ${modelCheckTable(client, 'model_check_runs')} (
+      id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, target_name,
+      target_owner_system_account_id, account_id, group_id, api_key_id, model, profile,
+      trusted_comparison_enabled, trusted_comparison_available, level, score, max_score, status, message,
+      trace_id, probe_set_version, started_at, finished_at, duration_ms, request_summary_json,
+      result_summary_json, error_code, error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    run.id,
+    run.system_account_id,
+    run.actor_system_account_id,
+    run.provider_code,
+    run.target_type,
+    run.target_id,
+    run.target_name,
+    run.target_owner_system_account_id,
+    run.account_id,
+    run.group_id,
+    run.api_key_id,
+    run.model,
+    run.profile,
+    run.trusted_comparison_enabled,
+    run.trusted_comparison_available,
+    run.level,
+    run.score,
+    run.max_score,
+    run.status,
+    run.message,
+    run.trace_id,
+    run.probe_set_version,
+    run.started_at,
+    run.finished_at,
+    run.duration_ms,
+    run.request_summary_json,
+    run.result_summary_json,
+    run.error_code,
+    run.error_message,
+    run.created_at,
+    run.updated_at
+  ])
+  return modelCheckRunFromRow(run, includeSystemAccountFields())
+}
+
 export function createModelCheckItems(runId: string, items: ModelCheckItemCreateInput[]): ModelCheckItemSummary[] {
   if (!items.length) return []
   const database = getDatasetDatabase()
@@ -279,6 +366,59 @@ export function createModelCheckItems(runId: string, items: ModelCheckItemCreate
   return rows.map(modelCheckItemFromRow)
 }
 
+export async function createModelCheckItemsAsync(runId: string, items: ModelCheckItemCreateInput[]): Promise<ModelCheckItemSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createModelCheckItems(runId, items)
+  }
+  if (!items.length) return []
+  const client = await modelCheckDatabaseClient()
+  const rows = items.map((item) => {
+    const now = item.createdAt ?? nowIso()
+    return {
+      id: item.id ?? newId('mci'),
+      run_id: runId,
+      item_key: item.itemKey,
+      item_type: item.itemType,
+      status: item.status,
+      score: Math.max(0, Math.trunc(item.score)),
+      max_score: Math.max(0, Math.trunc(item.maxScore)),
+      duration_ms: typeof item.durationMs === 'number' ? Math.max(0, Math.trunc(item.durationMs)) : null,
+      trace_id: item.traceId ?? null,
+      evidence_summary_json: safeJson(item.evidenceSummary ?? {}),
+      error_code: item.errorCode ?? null,
+      error_message: sanitizeSummaryString(item.errorMessage ?? '') ?? null,
+      created_at: now,
+      updated_at: now
+    } satisfies ModelCheckItemRow
+  })
+  await client.transaction(async (tx) => {
+    for (const row of rows) {
+      await tx.execute(`
+        INSERT INTO ${modelCheckTable(tx, 'model_check_items')} (
+          id, run_id, item_key, item_type, status, score, max_score, duration_ms, trace_id,
+          evidence_summary_json, error_code, error_message, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        row.id,
+        row.run_id,
+        row.item_key,
+        row.item_type,
+        row.status,
+        row.score,
+        row.max_score,
+        row.duration_ms,
+        row.trace_id,
+        row.evidence_summary_json,
+        row.error_code,
+        row.error_message,
+        row.created_at,
+        row.updated_at
+      ])
+    }
+  })
+  return rows.map(modelCheckItemFromRow)
+}
+
 export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInput): ModelCheckRunSummary | undefined {
   const finishedAt = input.finishedAt ?? nowIso()
   const updatedAt = nowIso()
@@ -304,6 +444,35 @@ export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInp
       runId
     )
   return result.changes > 0 ? findModelCheckRun(runId) : undefined
+}
+
+export async function finishModelCheckRunAsync(runId: string, input: ModelCheckRunFinishInput): Promise<ModelCheckRunSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return finishModelCheckRun(runId, input)
+  }
+  const client = await modelCheckDatabaseClient()
+  const finishedAt = input.finishedAt ?? nowIso()
+  const updatedAt = nowIso()
+  const result = await client.execute(`
+    UPDATE ${modelCheckTable(client, 'model_check_runs')}
+    SET level = ?, score = ?, max_score = ?, status = ?, message = ?, finished_at = ?,
+      duration_ms = ?, result_summary_json = ?, error_code = ?, error_message = ?, updated_at = ?
+    WHERE id = ?
+  `, [
+    input.level,
+    Math.max(0, Math.trunc(input.score)),
+    Math.max(0, Math.trunc(input.maxScore ?? 100)),
+    input.status,
+    sanitizeSummaryString(input.message) ?? '',
+    finishedAt,
+    typeof input.durationMs === 'number' ? Math.max(0, Math.trunc(input.durationMs)) : null,
+    safeJson(input.resultSummary ?? {}),
+    input.errorCode ?? null,
+    sanitizeSummaryString(input.errorMessage ?? '') ?? null,
+    updatedAt,
+    runId
+  ])
+  return result.changes > 0 ? findModelCheckRunAsync(runId) : undefined
 }
 
 export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunListOptions = {}): ModelCheckRunListResult {
@@ -357,11 +526,75 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
   }
 }
 
+export async function getModelCheckRunDetailAsync(runId: string, access?: AccessScope): Promise<ModelCheckRunDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getModelCheckRunDetail(runId, access)
+  }
+  const client = await modelCheckDatabaseClient()
+  const scope = buildSystemAccountScopeClause(access, 'mcr.system_account_id')
+  const row = await client.one<ModelCheckRunRow>(`
+    SELECT *
+    FROM ${modelCheckTable(client, 'model_check_runs')} mcr
+    WHERE mcr.id = ?
+    ${scope.clause}
+    LIMIT 1
+  `, [runId, ...scope.params])
+  if (!row) return undefined
+  const accountNames = await loadModelCheckTargetNameMapAsync(client, [row])
+  const checks = await client.query<ModelCheckItemRow>(`
+    SELECT *
+    FROM ${modelCheckTable(client, 'model_check_items')}
+    WHERE run_id = ?
+    ORDER BY created_at ASC, id ASC
+  `, [runId])
+  return {
+    ...modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames),
+    checks: checks.map(modelCheckItemFromRow)
+  }
+}
+
+export async function listModelCheckRunsAsync(access?: AccessScope, options: ModelCheckRunListOptions = {}): Promise<ModelCheckRunListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listModelCheckRuns(access, options)
+  }
+  const client = await modelCheckDatabaseClient()
+  const normalized = normalizeListOptions(options)
+  const filters = buildModelCheckRunFilters(access, normalized)
+  const rows = await client.query<ModelCheckRunRow>(`
+    SELECT *
+    FROM ${modelCheckTable(client, 'model_check_runs')} mcr
+    ${filters.clause}
+    ORDER BY mcr.created_at DESC, mcr.id DESC
+    LIMIT ? OFFSET ?
+  `, [...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
+  const pageRows = takePageRows(rows, normalized.pageSize)
+  const accountNames = await loadModelCheckTargetNameMapAsync(client, pageRows.rows)
+  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames))
+  return {
+    items,
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
 function findModelCheckRun(runId: string): ModelCheckRunSummary | undefined {
   const row = getDatasetDatabase()
     .prepare('SELECT * FROM model_check_runs WHERE id = ? LIMIT 1')
     .get(runId) as unknown as ModelCheckRunRow | undefined
   return row ? modelCheckRunFromRow(row, includeSystemAccountFields(), loadModelCheckTargetNameMap([row])) : undefined
+}
+
+async function findModelCheckRunAsync(runId: string): Promise<ModelCheckRunSummary | undefined> {
+  const client = await modelCheckDatabaseClient()
+  const row = await client.one<ModelCheckRunRow>(`
+    SELECT *
+    FROM ${modelCheckTable(client, 'model_check_runs')}
+    WHERE id = ?
+    LIMIT 1
+  `, [runId])
+  return row ? modelCheckRunFromRow(row, includeSystemAccountFields(), await loadModelCheckTargetNameMapAsync(client, [row])) : undefined
 }
 
 function buildModelCheckRunFilters(access: AccessScope | undefined, options: NormalizedModelCheckRunListOptions): { clause: string; params: Array<string | number | null> } {
@@ -424,6 +657,20 @@ function normalizeListOptions(options: ModelCheckRunListOptions): NormalizedMode
 
 function loadModelCheckTargetNameMap(rows: ModelCheckRunRow[]): Map<string, string> {
   return loadAccountNameMap(rows.map((row) => row.account_id ?? row.target_id))
+}
+
+async function loadModelCheckTargetNameMapAsync(client: DatabaseClient, rows: ModelCheckRunRow[]): Promise<Map<string, string>> {
+  return loadAccountNameMapAsync(client, rows.map((row) => row.account_id ?? row.target_id))
+}
+
+async function modelCheckDatabaseClient(): Promise<DatabaseClient> {
+  return createPostgresDatabaseClient(await getPostgresPool())
+}
+
+function modelCheckTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_dataset', tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: boolean, accountNames: Map<string, string> = new Map()): ModelCheckRunSummary {

@@ -117,7 +117,7 @@ type AnthropicAccountType = 'api_key'
 
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认测试模型 |
 | --- | --- | --- | --- | --- |
-| Anthropic API Key | `api_key` | `profile_anthropic_anthropic_v1` | `api_key`、`base_url`、`supported_endpoint_modes` | `claude-fable-5` |
+| Anthropic API Key | `api_key` | `profile_anthropic_anthropic_v1` | `api_key`、`base_url`、`supported_endpoint_modes` | `claude-opus-4-8` |
 
 保存规则：
 
@@ -245,7 +245,7 @@ Anthropic 返回侧必须新增协议适配器，不能复用 OpenAI v1 的 `cho
   "id": "msg_...",
   "type": "message",
   "role": "assistant",
-  "model": "claude-fable-5",
+  "model": "claude-opus-4-8",
   "content": [
     { "type": "text", "text": "..." }
   ],
@@ -443,7 +443,7 @@ Anthropic 账户测试必须复用真实网关链路。
 
 ```json
 {
-  "model": "claude-fable-5",
+  "model": "claude-opus-4-8",
   "max_tokens": 16,
   "messages": [
     { "role": "user", "content": "请回复 OK" }
@@ -454,7 +454,7 @@ Anthropic 账户测试必须复用真实网关链路。
 测试要求：
 
 - 测试路径使用 `/v1/messages`。
-- 默认测试模型优先使用本地 Anthropic 目录中最新官方可用模型；如果目录不可用，则使用供应商 `default_test_model`。目录落库以官方 Models API 返回值为准。
+- 默认测试模型使用供应商 `default_test_model`，并把本地 Anthropic 目录作为可选模型列表；目录落库以官方 Models API 返回值为准。
 - 测试请求必须带 `anthropic-version: 2023-06-01`。
 - 测试成功后记录 `last_successful_test_model`。
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。

@@ -9,6 +9,7 @@ import express from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
+import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-test-local-restore-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-test-local-restore.sqlite3')
@@ -22,6 +23,8 @@ runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [
   { accountsRouter },
@@ -333,6 +336,7 @@ try {
     databaseModule.closeStorageDatabases()
   } catch {
   }
+  restoreWorkerParentIpc()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 

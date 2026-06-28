@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, rollbackDatabaseTransaction } from './database.js'
+import type { DatabaseClient } from './database-client.js'
 import { dateKey } from './usage-stats-helpers.js'
 import { fixedUsageStatsDateKeys } from './usage-stats-window-helpers.js'
 
@@ -66,6 +67,72 @@ export function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, up
       const startDate = dates[startIndex]
       const rangeEndDate = dates[endIndex]
       insert.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+    }
+  }
+}
+
+export async function refreshUsageScopeRangeWindowSnapshotsAsync(client: DatabaseClient, updatedAt: string, timezone: string, yieldToEventLoop?: () => Promise<void>): Promise<void> {
+  const todayKey = dateKey(new Date(), timezone)
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  if (!dates.length) return
+  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
+    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+      const startDate = dates[startIndex]
+      const rangeEndDate = dates[endIndex]
+      await client.transaction(async (tx) => {
+        await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [rangeEndDate, startDate])
+        await tx.execute(`
+          INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
+            system_account_id, scope_type, scope_id, start_date, end_date,
+            request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+            cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+            first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
+            last_used_at, last_error_at, updated_at
+          )
+          SELECT
+            system_account_id,
+            scope_type,
+            scope_id,
+            ?,
+            ?,
+            COALESCE(SUM(request_count), 0),
+            COALESCE(SUM(success_count), 0),
+            COALESCE(SUM(error_count), 0),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_tokens), 0),
+            COALESCE(SUM(cache_read_cost_usd), 0),
+            COALESCE(SUM(total_cost_usd), 0),
+            COALESCE(SUM(duration_ms_sum), 0),
+            COALESCE(SUM(duration_ms_count), 0),
+            COALESCE(MAX(duration_ms_max), 0),
+            COALESCE(SUM(first_token_ms_sum), 0),
+            COALESCE(SUM(first_token_ms_count), 0),
+            COALESCE(MAX(first_token_ms_max), 0),
+            COUNT(CASE
+              WHEN request_count > 0
+                OR input_tokens > 0
+                OR output_tokens > 0
+                OR cache_read_tokens > 0
+                OR total_cost_usd > 0
+              THEN 1
+            END),
+            MAX(last_used_at),
+            MAX(last_error_at),
+            ?
+          FROM ${statsTable(tx, 'usage_stats_daily')}
+          WHERE stat_date >= ?
+            AND stat_date <= ?
+          GROUP BY system_account_id, scope_type, scope_id
+          HAVING COALESCE(SUM(request_count), 0) > 0
+            OR COALESCE(SUM(input_tokens), 0) > 0
+            OR COALESCE(SUM(output_tokens), 0) > 0
+            OR COALESCE(SUM(cache_read_tokens), 0) > 0
+            OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+            OR COALESCE(SUM(total_cost_usd), 0) > 0
+        `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
+      })
+      await yieldToEventLoop?.()
     }
   }
 }
@@ -146,6 +213,86 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
       const rangeEndDate = dates[endIndex]
       insertTeamRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
       insertUserRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+    }
+  }
+}
+
+export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client: DatabaseClient, updatedAt: string, timezone: string, yieldToEventLoop?: () => Promise<void>): Promise<void> {
+  const todayKey = dateKey(new Date(), timezone)
+  const dates = fixedUsageStatsDateKeys(timezone, todayKey)
+  if (!dates.length) return
+  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
+    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+      const startDate = dates[startIndex]
+      const rangeEndDate = dates[endIndex]
+      await client.transaction(async (tx) => {
+        await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_team_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [rangeEndDate, startDate])
+        await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_user_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [rangeEndDate, startDate])
+        await tx.execute(`
+          INSERT INTO ${statsTable(tx, 'authorization_team_usage_range_windows')} (
+            system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+            request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+          )
+          SELECT
+            system_account_id,
+            ?,
+            ?,
+            team_filter_id,
+            resource_filter_type,
+            resource_filter_id,
+            COALESCE(SUM(request_count), 0),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_tokens), 0),
+            COALESCE(SUM(cache_read_cost_usd), 0),
+            COALESCE(SUM(total_cost_usd), 0),
+            MAX(last_used_at),
+            ?
+          FROM ${statsTable(tx, 'authorization_team_usage_summary_daily')}
+          WHERE stat_date >= ?
+            AND stat_date <= ?
+          GROUP BY system_account_id, team_filter_id, resource_filter_type, resource_filter_id
+          HAVING COALESCE(SUM(request_count), 0) > 0
+            OR COALESCE(SUM(input_tokens), 0) > 0
+            OR COALESCE(SUM(output_tokens), 0) > 0
+            OR COALESCE(SUM(cache_read_tokens), 0) > 0
+            OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+            OR COALESCE(SUM(total_cost_usd), 0) > 0
+        `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
+        await tx.execute(`
+          INSERT INTO ${statsTable(tx, 'authorization_user_usage_range_windows')} (
+            system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
+            request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+          )
+          SELECT
+            system_account_id,
+            ?,
+            ?,
+            team_filter_id,
+            grantee_filter_system_account_id,
+            resource_filter_type,
+            resource_filter_id,
+            COALESCE(SUM(request_count), 0),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(output_tokens), 0),
+            COALESCE(SUM(cache_read_tokens), 0),
+            COALESCE(SUM(cache_read_cost_usd), 0),
+            COALESCE(SUM(total_cost_usd), 0),
+            MAX(last_used_at),
+            ?
+          FROM ${statsTable(tx, 'authorization_user_usage_summary_daily')}
+          WHERE stat_date >= ?
+            AND stat_date <= ?
+          GROUP BY system_account_id, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id
+          HAVING COALESCE(SUM(request_count), 0) > 0
+            OR COALESCE(SUM(input_tokens), 0) > 0
+            OR COALESCE(SUM(output_tokens), 0) > 0
+            OR COALESCE(SUM(cache_read_tokens), 0) > 0
+            OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
+            OR COALESCE(SUM(total_cost_usd), 0) > 0
+        `, [startDate, rangeEndDate, updatedAt, startDate, rangeEndDate])
+      })
+      await yieldToEventLoop?.()
     }
   }
 }
@@ -582,4 +729,8 @@ function clearTemporaryRangeWindowTable(database: DatabaseSync, tableName: strin
     database.prepare(`DELETE FROM ${tableName}`).run()
   } catch {
   }
+}
+
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
 }

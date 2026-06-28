@@ -89,6 +89,12 @@ async function assertSystemAccountManagementAsync(repositories: typeof import('.
 
   const defaultGroupCount = await defaultGroupCountForSystemAccount(created.id)
   assert.equal(defaultGroupCount, DEFAULT_BUILT_IN_GROUPS.length, '异步创建系统账户应同步创建全部默认内置分组')
+  const defaultRouteStrategyCount = await defaultRouteStrategyCountForSystemAccount(created.id)
+  assert.equal(defaultRouteStrategyCount, 1, '异步创建系统账户应同步创建唯一默认策略路由')
+
+  const routeStrategyOptions = await repositories.listRouteStrategyOptionsAsync({ systemAccountId: created.id, role: 'user' }, { limit: 10 })
+  assert.equal(routeStrategyOptions[0]?.isDefault, true, '策略路由选项应优先返回默认策略路由')
+  assert.equal(routeStrategyOptions[0]?.mode, 'normal', '默认策略路由应为普通路由')
 
   const page = await repositories.listSystemAccountsPageAsync({ keyword: username, page: 1, pageSize: 20 })
   assert.ok(page.items.some((item) => item.id === created.id), '异步系统账户列表应能按用户名查到新账户')
@@ -135,6 +141,26 @@ async function defaultGroupCountForSystemAccount(systemAccountId: string): Promi
   const { getBusinessDatabase } = await import('../../storage/database.js')
   const row = getBusinessDatabase()
     .prepare('SELECT COUNT(*) AS count FROM groups WHERE system_account_id = ? AND is_default = 1')
+    .get(systemAccountId) as { count?: number } | undefined
+  return Number(row?.count ?? 0)
+}
+
+async function defaultRouteStrategyCountForSystemAccount(systemAccountId: string): Promise<number> {
+  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+    const [{ createPostgresDatabaseClient }, { getPostgresPool }] = await Promise.all([
+      import('../../storage/database-client.js'),
+      import('../../storage/postgres-client.js')
+    ])
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const row = await client.one<{ count?: string | number }>(
+      'SELECT COUNT(*) AS count FROM "juhe_business"."route_strategies" WHERE system_account_id = ? AND is_default = 1',
+      [systemAccountId]
+    )
+    return Number(row?.count ?? 0)
+  }
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const row = getBusinessDatabase()
+    .prepare('SELECT COUNT(*) AS count FROM route_strategies WHERE system_account_id = ? AND is_default = 1')
     .get(systemAccountId) as { count?: number } | undefined
   return Number(row?.count ?? 0)
 }

@@ -113,7 +113,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
-  defaultTestModel: 'claude-fable-5',
+  defaultTestModel: 'claude-opus-4-8',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   protocolProfiles: [
@@ -125,7 +125,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
       protocolCode: ANTHROPIC_PROTOCOL_CODE,
       protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
       baseUrl: 'https://api.anthropic.com/v1',
-      defaultTestModel: 'claude-fable-5',
+      defaultTestModel: 'claude-opus-4-8',
       accountTypes: ['api_key'],
       capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
       endpointFamilies: [
@@ -194,53 +194,25 @@ export const HYBRID_PROVIDER: ProviderDefinition = {
   defaultProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
-  baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: 'gpt-5.5',
+  baseUrl: '',
+  defaultTestModel: '',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
   protocolProfiles: [
     {
       id: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
       providerCode: HYBRID_PROVIDER_CODE,
-      name: '混合供应商 / OpenAI Chat',
+      name: '混合供应商',
       enabled: true,
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
-      baseUrl: 'https://api.openai.com/v1',
-      defaultTestModel: 'gpt-5.5',
+      baseUrl: '',
+      defaultTestModel: '',
       accountTypes: ['api_key'],
-      capabilities: ['chat', 'bridge'],
+      capabilities: ['chat', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
       endpointFamilies: [
-        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' }
-      ]
-    },
-    {
-      id: HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
-      providerCode: HYBRID_PROVIDER_CODE,
-      name: '混合供应商 / Anthropic Messages',
-      enabled: true,
-      protocolCode: ANTHROPIC_PROTOCOL_CODE,
-      protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
-      baseUrl: 'https://api.anthropic.com/v1',
-      defaultTestModel: 'claude-fable-5',
-      accountTypes: ['api_key'],
-      capabilities: ['messages', 'bridge'],
-      endpointFamilies: [
-        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' }
-      ]
-    },
-    {
-      id: HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
-      providerCode: HYBRID_PROVIDER_CODE,
-      name: '混合供应商 / Gemini native',
-      enabled: true,
-      protocolCode: GEMINI_PROTOCOL_CODE,
-      protocolVersion: GEMINI_PROTOCOL_VERSION,
-      baseUrl: 'https://generativelanguage.googleapis.com',
-      defaultTestModel: 'gemini-3.5-flash',
-      accountTypes: ['api_key'],
-      capabilities: ['generate_content', 'stream_generate_content', 'bridge'],
-      endpointFamilies: [
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
+        { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' },
         { code: GEMINI_GENERATE_CONTENT_FAMILY, name: 'Generate Content' },
         { code: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, name: 'Stream Generate Content' }
       ]

@@ -11,8 +11,12 @@ import type {
 } from '../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
+import type { DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import type { AccessScope } from './access-scope.js'
 
 export type AccountTestTaskDiagnostics = 'full' | 'limited'
@@ -536,6 +540,630 @@ export function cleanupExpiredAccountTestTasks(): void {
       LIMIT ?
     )
   `).run(cutoff, accountTestCleanupBatchSize)
+}
+
+export async function createAccountTestSessionAsync(access: AccessScope): Promise<AccountTestSession> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createAccountTestSession(access)
+  }
+  if (!access) {
+    throw new Error('缺少系统账户上下文')
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  const id = newId('acctsess')
+  await client.execute(`
+    INSERT INTO ${accountTestTable(client, 'account_test_sessions')} (
+      id, request_system_account_id, request_role, request_system_account_filter_id,
+      status, last_heartbeat_at, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, 'running', ?, ?, ?)
+  `, [
+    id,
+    access.systemAccountId,
+    access.role,
+    access.systemAccountFilterId ?? null,
+    now,
+    now,
+    now
+  ])
+  const session = await getAccountTestSessionAsync(id, access)
+  if (!session) {
+    throw new Error('账户测试会话创建失败')
+  }
+  return session
+}
+
+export async function getAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountTestSession(id, access)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestSessionRowAsync(client, id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  return accountTestSessionFromRow(row)
+}
+
+export async function heartbeatAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return heartbeatAccountTestSession(id, access)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestSessionRowAsync(client, id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  if (row.status !== 'running') {
+    return accountTestSessionFromRow(row)
+  }
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_sessions')}
+    SET last_heartbeat_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+  `, [now, now, row.id])
+  return getAccountTestSessionAsync(row.id, access)
+}
+
+export async function cancelAccountTestSessionAsync(id: string, access?: AccessScope, message = '已停止测试'): Promise<{ session: AccountTestSession; taskIds: string[] } | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cancelAccountTestSession(id, access, message)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestSessionRowAsync(client, id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    return undefined
+  }
+  const taskIds = await cancelAccountTestSessionByRowAsync(client, row, message, 'canceled')
+  const session = await getAccountTestSessionAsync(row.id, access)
+  return session ? { session, taskIds } : undefined
+}
+
+export async function cancelExpiredAccountTestSessionsAsync(limit = 200): Promise<string[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cancelExpiredAccountTestSessions(limit)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const cutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
+  const rows = await client.query<AccountTestSessionRow>(`
+    SELECT *
+    FROM ${accountTestTable(client, 'account_test_sessions')}
+    WHERE status = 'running'
+      AND last_heartbeat_at < ?
+    ORDER BY last_heartbeat_at ASC, id ASC
+    LIMIT ?
+  `, [cutoff, Math.max(1, Math.trunc(limit))])
+  const taskIds: string[] = []
+  for (const row of rows) {
+    taskIds.push(...await cancelAccountTestSessionByRowAsync(client, row, '前端测试窗口已关闭，任务已取消', 'expired'))
+  }
+  return taskIds
+}
+
+export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInput): Promise<AccountTestTask> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createAccountTestTask(input)
+  }
+  await cleanupExpiredAccountTestTasksAsync()
+
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  const id = newId('accttest')
+  const sessionId = normalizedOptionalText(input.sessionId)
+  const clientCompatibility = normalizeAccountTestTaskClientCompatibility(input.account, input.clientCompatibility)
+  await client.transaction(async (tx) => {
+    if (sessionId) {
+      await assertUsableAccountTestSessionAsync(tx, sessionId, input.access)
+    }
+    await tx.execute(`
+      INSERT INTO ${accountTestTable(tx, 'account_test_tasks')} (
+        id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+        request_system_account_id, request_role, request_system_account_filter_id,
+        diagnostics, model, client_compatibility, draft_account_encrypted, status, status_message,
+        cancel_requested, queued_at, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
+    `, [
+      id,
+      input.account.id,
+      input.account.name,
+      input.account.providerCode,
+      input.account.providerProtocolProfileId ?? '',
+      input.account.protocolCode ?? '',
+      input.account.protocolVersion ?? '',
+      input.account.type,
+      input.access.systemAccountId,
+      input.access.role,
+      input.access.systemAccountFilterId ?? null,
+      input.diagnostics,
+      normalizedOptionalText(input.model) ?? null,
+      clientCompatibility ?? null,
+      encryptedDraftAccount(input.draftAccount),
+      now,
+      now,
+      now
+    ])
+    if (sessionId) {
+      await tx.execute(`
+        INSERT INTO ${accountTestTable(tx, 'account_test_session_tasks')} (session_id, task_id, created_at)
+        VALUES (?, ?, ?)
+      `, [sessionId, id, now])
+    }
+  })
+
+  const task = await getAccountTestTaskAsync(id)
+  if (!task) {
+    throw new Error('账户测试任务创建失败')
+  }
+  return task
+}
+
+export async function getAccountTestTaskAsync(id: string, access?: AccessScope): Promise<AccountTestTask | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountTestTask(id, access)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestTaskRowAsync(client, id)
+  if (!row || !canReadAccountTestTask(row, access)) {
+    return undefined
+  }
+  return accountTestTaskFromRow(row)
+}
+
+export async function listAccountTestTasksAsync(ids: string[], access?: AccessScope): Promise<AccountTestTask[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listAccountTestTasks(ids, access)
+  }
+  const normalizedIds = [...new Set(ids.map(normalizedOptionalText).filter((id): id is string => Boolean(id)))].slice(0, 200)
+  if (normalizedIds.length === 0) {
+    return []
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const placeholders = client.dialect.bindPlaceholders(normalizedIds.length)
+  const rows = await client.query<AccountTestTaskRow>(`
+    SELECT t.*, st.session_id
+    FROM ${accountTestTable(client, 'account_test_tasks')} t
+    LEFT JOIN ${accountTestTable(client, 'account_test_session_tasks')} st ON st.task_id = t.id
+    WHERE t.id IN (${placeholders})
+  `, normalizedIds)
+  const tasksById = new Map(rows
+    .filter((row) => canReadAccountTestTask(row, access))
+    .map((row) => [row.id, accountTestTaskFromRow(row)]))
+  return normalizedIds.map((taskId) => tasksById.get(taskId)).filter((task): task is AccountTestTask => Boolean(task))
+}
+
+export async function getAccountTestTaskRecordAsync(id: string): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountTestTaskRecord(id)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestTaskRowAsync(client, id)
+  return row ? accountTestTaskRecordFromRow(row) : undefined
+}
+
+export async function listRunnableAccountTestTaskIdsAsync(limit = 100): Promise<string[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listRunnableAccountTestTaskIds(limit)
+  }
+  await cancelExpiredAccountTestSessionsAsync()
+  const client = await accountTestTaskDatabaseClient()
+  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
+  const rows = await client.query<{ id: string }>(`
+    SELECT t.id
+    FROM ${accountTestTable(client, 'account_test_tasks')} t
+    LEFT JOIN ${accountTestTable(client, 'account_test_session_tasks')} st ON st.task_id = t.id
+    LEFT JOIN ${accountTestTable(client, 'account_test_sessions')} s ON s.id = st.session_id
+    WHERE t.status = 'queued'
+      AND (
+        st.session_id IS NULL
+        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+      )
+    ORDER BY t.queued_at ASC, t.id ASC
+    LIMIT ?
+  `, [heartbeatCutoff, Math.max(1, Math.trunc(limit))])
+  return rows.map((row) => row.id)
+}
+
+export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number, limit = 200): Promise<string[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return failExpiredQueuedAccountTestTasks(maxQueuedMs, limit)
+  }
+  await cancelExpiredAccountTestSessionsAsync()
+  const client = await accountTestTaskDatabaseClient()
+  const safeMaxQueuedMs = Math.max(1, Math.trunc(maxQueuedMs))
+  const safeLimit = Math.max(1, Math.trunc(limit))
+  const queuedCutoff = new Date(Date.now() - safeMaxQueuedMs).toISOString()
+  const heartbeatCutoff = new Date(Date.now() - accountTestSessionStaleMs).toISOString()
+  const rows = await client.query<{ id: string }>(`
+    SELECT t.id
+    FROM ${accountTestTable(client, 'account_test_tasks')} t
+    LEFT JOIN ${accountTestTable(client, 'account_test_session_tasks')} st ON st.task_id = t.id
+    LEFT JOIN ${accountTestTable(client, 'account_test_sessions')} s ON s.id = st.session_id
+    WHERE t.status = 'queued'
+      AND t.cancel_requested = 0
+      AND t.queued_at < ?
+      AND (
+        st.session_id IS NULL
+        OR (s.status = 'running' AND s.last_heartbeat_at >= ?)
+      )
+    ORDER BY t.queued_at ASC, t.id ASC
+    LIMIT ?
+  `, [queuedCutoff, heartbeatCutoff, safeLimit])
+  const taskIds = rows.map((row) => row.id)
+  if (taskIds.length === 0) {
+    return []
+  }
+
+  const placeholders = client.dialect.bindPlaceholders(taskIds.length)
+  const now = nowIso()
+  const message = accountTestQueuedWaitExpiredMessage(safeMaxQueuedMs)
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'failed',
+        status_message = ?,
+        error_message = ?,
+        finished_at = ?,
+        updated_at = ?
+    WHERE id IN (${placeholders})
+      AND status = 'queued'
+      AND cancel_requested = 0
+  `, [message, message, now, now, ...taskIds])
+  return taskIds
+}
+
+export async function requeueInterruptedAccountTestTasksAsync(): Promise<string[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return requeueInterruptedAccountTestTasks()
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'canceled',
+        status_message = '已停止测试',
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE status = 'running'
+      AND cancel_requested = 1
+  `, [now, now])
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'queued',
+        status_message = '后台 worker 重启后重新排队',
+        started_at = NULL,
+        cancel_requested = 0,
+        updated_at = ?
+    WHERE status = 'running'
+      AND cancel_requested = 0
+  `, [now])
+  await cleanupExpiredAccountTestTasksAsync()
+  return listRunnableAccountTestTaskIdsAsync()
+}
+
+export async function markAccountTestTaskRunningAsync(id: string): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markAccountTestTaskRunning(id)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const cancelReason = await accountTestTaskSessionCancelReasonAsync(client, id)
+  if (cancelReason) {
+    await markAccountTestTaskCanceledAsync(id, cancelReason)
+    return undefined
+  }
+  const now = nowIso()
+  const result = await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'running',
+        status_message = '后台测试中',
+        started_at = COALESCE(started_at, ?),
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'queued'
+      AND cancel_requested = 0
+  `, [now, now, id])
+  if (Number(result.changes ?? 0) === 0) {
+    const current = await getAccountTestTaskRecordAsync(id)
+    if (current?.status === 'queued' && current.cancelRequested) {
+      await markAccountTestTaskCanceledAsync(id, '已停止测试')
+    }
+    return undefined
+  }
+  return getAccountTestTaskRecordAsync(id)
+}
+
+export async function updateAccountTestTaskMessageAsync(id: string, message: string): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateAccountTestTaskMessage(id, message)
+  }
+  const normalizedMessage = normalizedOptionalText(message)
+  if (!normalizedMessage) return getAccountTestTaskRecordAsync(id)
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status_message = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+      AND cancel_requested = 0
+  `, [normalizedMessage, now, id])
+  return getAccountTestTaskRecordAsync(id)
+}
+
+export async function completeAccountTestTaskAsync(id: string, result: AccountTestResult): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return completeAccountTestTask(id, result)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  const status: AccountTestTaskStatus = result.success ? 'success' : 'failed'
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = ?,
+        status_message = ?,
+        result_json = ?,
+        error_message = ?,
+        finished_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+  `, [
+    status,
+    result.message,
+    JSON.stringify(result),
+    result.success ? null : result.message,
+    now,
+    now,
+    id
+  ])
+  return getAccountTestTaskRecordAsync(id)
+}
+
+export async function failAccountTestTaskAsync(id: string, message: string, result?: AccountTestResult): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return failAccountTestTask(id, message, result)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'failed',
+        status_message = ?,
+        result_json = ?,
+        error_message = ?,
+        finished_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status IN ('queued', 'running')
+  `, [message, result ? JSON.stringify(result) : null, message, now, now, id])
+  return getAccountTestTaskRecordAsync(id)
+}
+
+export async function cancelAccountTestTaskAsync(id: string, access?: AccessScope): Promise<AccountTestTask | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return cancelAccountTestTask(id, access)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await getAccountTestTaskRowAsync(client, id)
+  if (!row || !canReadAccountTestTask(row, access)) {
+    return undefined
+  }
+  if (row.status === 'queued') {
+    await markAccountTestTaskCanceledAsync(id, '已停止测试')
+  } else if (row.status === 'running') {
+    const now = nowIso()
+    await client.execute(`
+      UPDATE ${accountTestTable(client, 'account_test_tasks')}
+      SET cancel_requested = 1,
+          status_message = '正在停止测试',
+          updated_at = ?
+      WHERE id = ?
+        AND status = 'running'
+    `, [now, id])
+  }
+  return getAccountTestTaskAsync(id, access)
+}
+
+export async function markAccountTestTaskCanceledAsync(id: string, message: string): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markAccountTestTaskCanceled(id, message)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const now = nowIso()
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'canceled',
+        status_message = ?,
+        cancel_requested = 1,
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE id = ?
+      AND status IN ('queued', 'running')
+  `, [message, now, now, id])
+  return getAccountTestTaskRecordAsync(id)
+}
+
+export async function isAccountTestTaskCancelRequestedAsync(id: string): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return isAccountTestTaskCancelRequested(id)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const row = await client.one<{ cancel_requested?: number }>(`
+    SELECT t.cancel_requested
+    FROM ${accountTestTable(client, 'account_test_tasks')} t
+    WHERE t.id = ?
+    LIMIT 1
+  `, [id])
+  return Number(row?.cancel_requested ?? 0) === 1 || Boolean(await accountTestTaskSessionCancelReasonAsync(client, id))
+}
+
+export async function accountTestTaskCancelMessageAsync(id: string): Promise<string> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return accountTestTaskCancelMessage(id)
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const sessionReason = await accountTestTaskSessionCancelReasonAsync(client, id)
+  if (sessionReason) return sessionReason
+  const row = await client.one<{ status_message?: string | null; cancel_requested?: number }>(`
+    SELECT status_message, cancel_requested
+    FROM ${accountTestTable(client, 'account_test_tasks')}
+    WHERE id = ?
+    LIMIT 1
+  `, [id])
+  if (Number(row?.cancel_requested ?? 0) === 1) {
+    return normalizedOptionalText(row?.status_message) ?? '已停止测试'
+  }
+  return '已停止测试'
+}
+
+export async function cleanupExpiredAccountTestTasksAsync(): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    cleanupExpiredAccountTestTasks()
+    return
+  }
+  const client = await accountTestTaskDatabaseClient()
+  const cutoff = new Date(Date.now() - accountTestTaskRetentionHours * 60 * 60 * 1000).toISOString()
+  await client.execute(`
+    DELETE FROM ${accountTestTable(client, 'account_test_tasks')}
+    WHERE id IN (
+      SELECT id
+      FROM ${accountTestTable(client, 'account_test_tasks')}
+      WHERE finished_at IS NOT NULL
+        AND finished_at < ?
+      ORDER BY finished_at ASC, id ASC
+      LIMIT ?
+    )
+  `, [cutoff, accountTestCleanupBatchSize])
+  await client.execute(`
+    DELETE FROM ${accountTestTable(client, 'account_test_sessions')}
+    WHERE id IN (
+      SELECT s.id
+      FROM ${accountTestTable(client, 'account_test_sessions')} s
+      WHERE s.updated_at < ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${accountTestTable(client, 'account_test_session_tasks')} st
+          JOIN ${accountTestTable(client, 'account_test_tasks')} t ON t.id = st.task_id
+          WHERE st.session_id = s.id
+            AND t.status IN ('queued', 'running')
+        )
+      ORDER BY s.updated_at ASC, s.id ASC
+      LIMIT ?
+    )
+  `, [cutoff, accountTestCleanupBatchSize])
+}
+
+async function accountTestTaskDatabaseClient(): Promise<DatabaseClient> {
+  return createPostgresDatabaseClient(await getPostgresPool())
+}
+
+function accountTestTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
+async function getAccountTestTaskRowAsync(client: DatabaseClient, id: string): Promise<AccountTestTaskRow | undefined> {
+  const normalizedId = normalizedOptionalText(id)
+  if (!normalizedId) return undefined
+  return await client.one<AccountTestTaskRow>(`
+    SELECT t.*, st.session_id
+    FROM ${accountTestTable(client, 'account_test_tasks')} t
+    LEFT JOIN ${accountTestTable(client, 'account_test_session_tasks')} st ON st.task_id = t.id
+    WHERE t.id = ?
+    LIMIT 1
+  `, [normalizedId])
+}
+
+async function getAccountTestSessionRowAsync(client: DatabaseClient, id: string): Promise<AccountTestSessionRow | undefined> {
+  const normalizedId = normalizedOptionalText(id)
+  if (!normalizedId) return undefined
+  return await client.one<AccountTestSessionRow>(`
+    SELECT *
+    FROM ${accountTestTable(client, 'account_test_sessions')}
+    WHERE id = ?
+    LIMIT 1
+  `, [normalizedId])
+}
+
+async function assertUsableAccountTestSessionAsync(client: DatabaseClient, id: string, access: AccessScope): Promise<void> {
+  const row = await getAccountTestSessionRowAsync(client, id)
+  if (!row || !canReadAccountTestSession(row, access)) {
+    throw new Error('账户测试会话不存在')
+  }
+  const cancelReason = accountTestSessionCancelReason(row)
+  if (cancelReason) {
+    await cancelAccountTestSessionByRowAsync(client, row, cancelReason, row.status === 'running' ? 'expired' : accountTestSessionStatus(row.status))
+    throw new Error(cancelReason)
+  }
+}
+
+async function cancelAccountTestSessionByRowAsync(client: DatabaseClient, row: AccountTestSessionRow, message: string, status: AccountTestSessionStatus): Promise<string[]> {
+  const now = nowIso()
+  const taskRows = await client.query<{ id: string; status: string }>(`
+    SELECT t.id, t.status
+    FROM ${accountTestTable(client, 'account_test_session_tasks')} st
+    JOIN ${accountTestTable(client, 'account_test_tasks')} t ON t.id = st.task_id
+    WHERE st.session_id = ?
+      AND t.status IN ('queued', 'running')
+    ORDER BY t.queued_at ASC, t.id ASC
+  `, [row.id])
+
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_sessions')}
+    SET status = ?,
+        cancel_reason = ?,
+        cancel_requested_at = COALESCE(cancel_requested_at, ?),
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE id = ?
+      AND status = 'running'
+  `, [status, message, now, now, now, row.id])
+
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET status = 'canceled',
+        status_message = ?,
+        cancel_requested = 1,
+        finished_at = COALESCE(finished_at, ?),
+        updated_at = ?
+    WHERE id IN (
+      SELECT task_id
+      FROM ${accountTestTable(client, 'account_test_session_tasks')}
+      WHERE session_id = ?
+    )
+      AND status = 'queued'
+  `, [message, now, now, row.id])
+
+  await client.execute(`
+    UPDATE ${accountTestTable(client, 'account_test_tasks')}
+    SET cancel_requested = 1,
+        status_message = ?,
+        updated_at = ?
+    WHERE id IN (
+      SELECT task_id
+      FROM ${accountTestTable(client, 'account_test_session_tasks')}
+      WHERE session_id = ?
+    )
+      AND status = 'running'
+  `, [message, now, row.id])
+
+  return taskRows.map((taskRow) => taskRow.id)
+}
+
+async function accountTestTaskSessionCancelReasonAsync(client: DatabaseClient, taskId: string): Promise<string | undefined> {
+  const row = await client.one<AccountTestSessionRow>(`
+    SELECT s.*
+    FROM ${accountTestTable(client, 'account_test_session_tasks')} st
+    JOIN ${accountTestTable(client, 'account_test_sessions')} s ON s.id = st.session_id
+    WHERE st.task_id = ?
+    LIMIT 1
+  `, [taskId])
+  return row ? accountTestSessionCancelReason(row) : undefined
 }
 
 function getAccountTestTaskRow(id: string): AccountTestTaskRow | undefined {

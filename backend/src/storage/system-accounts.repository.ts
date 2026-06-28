@@ -7,6 +7,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
+import { ensureDefaultRouteStrategyForSystemAccount, ensureDefaultRouteStrategyForSystemAccountAsync } from './route-strategy.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
@@ -451,6 +452,7 @@ export function createSystemAccountWithPasswordHash(input: {
       `)
       .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now)
     ensureDefaultBuiltInGroupsForSystemAccount(summary.id, now)
+    ensureDefaultRouteStrategyForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -501,6 +503,7 @@ export async function createSystemAccountWithPasswordHashAsync(input: {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, passwordHash, summary.mustChangePassword ? 1 : 0, summary.imageGenerationEnabled ? 1 : 0, now, now])
     await ensureDefaultBuiltInGroupsForSystemAccountAsync(tx, summary.id, now)
+    await ensureDefaultRouteStrategyForSystemAccountAsync(tx, summary.id, now)
   })
   invalidateSystemAccountLookupCache(summary.id)
   return summary

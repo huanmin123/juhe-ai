@@ -1,8 +1,11 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import {
   createModelCheckItems,
+  createModelCheckItemsAsync,
   createModelCheckRun,
+  createModelCheckRunAsync,
   finishModelCheckRun,
+  finishModelCheckRunAsync,
   type ModelCheckItemCreateInput,
   type ModelCheckRunCreateInput,
   type ModelCheckRunFinishInput
@@ -38,7 +41,7 @@ export async function requestDatasetWriter<T extends BackgroundDatasetWriteOpera
   timeoutMs = 30_000
 ): Promise<BackgroundDatasetWriteOperationResult<T>> {
   if (currentProcessOwnsDatasetWriter()) {
-    return handleDatasetWriteOperation(operation) as BackgroundDatasetWriteOperationResult<T>
+    return await handleDatasetWriteOperation(operation) as BackgroundDatasetWriteOperationResult<T>
   }
   const result = await requestBackgroundWorkerDatasetWrite(operation, timeoutMs)
   if (result === undefined) {
@@ -47,14 +50,20 @@ export async function requestDatasetWriter<T extends BackgroundDatasetWriteOpera
   return result as BackgroundDatasetWriteOperationResult<T>
 }
 
-export function handleDatasetWriteOperation(operation: BackgroundDatasetWriteOperation): unknown {
+export async function handleDatasetWriteOperation(operation: BackgroundDatasetWriteOperation): Promise<unknown> {
   switch (operation.type) {
     case 'create_model_check_run':
-      return createModelCheckRun(operation.input)
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await createModelCheckRunAsync(operation.input)
+        : createModelCheckRun(operation.input)
     case 'create_model_check_items':
-      return createModelCheckItems(operation.runId, operation.items)
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await createModelCheckItemsAsync(operation.runId, operation.items)
+        : createModelCheckItems(operation.runId, operation.items)
     case 'finish_model_check_run':
-      return finishModelCheckRun(operation.runId, operation.input)
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await finishModelCheckRunAsync(operation.runId, operation.input)
+        : finishModelCheckRun(operation.runId, operation.input)
     default:
       return assertNever(operation)
   }

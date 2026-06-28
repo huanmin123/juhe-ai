@@ -2,28 +2,36 @@ import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
+import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildCatalogCostBreakdown } from '../model-pricing/model-catalog.service.js'
 
 export const usageRecordsRouter = Router()
 
-usageRecordsRouter.get('/', (req, res) => {
-  const result = listUsageRecords(getRequestAccessScope(req.query.systemAccountId), parseListOptions(req.query))
-  res.json(ok({
-    ...result,
-    items: result.items.map(withCostBreakdown)
-  }))
+usageRecordsRouter.get('/', async (req, res, next) => {
+  try {
+    const result = await listUsageRecordsAsync(getRequestAccessScope(req.query.systemAccountId), parseListOptions(req.query))
+    res.json(ok({
+      ...result,
+      items: result.items.map(withCostBreakdown)
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
-usageRecordsRouter.get('/:id', (req, res) => {
-  const record = getUsageRecordDetail(req.params.id, getRequestAccessScope(req.query.systemAccountId))
-  if (!record) {
-    sendNotFound(res, '使用记录不存在')
-    return
+usageRecordsRouter.get('/:id', async (req, res, next) => {
+  try {
+    const record = await getUsageRecordDetailAsync(req.params.id, getRequestAccessScope(req.query.systemAccountId))
+    if (!record) {
+      sendNotFound(res, '使用记录不存在')
+      return
+    }
+    res.json(ok(withCostBreakdown(record)))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(withCostBreakdown(record)))
 })
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])

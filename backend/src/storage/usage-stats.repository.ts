@@ -11,23 +11,37 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
-import { refreshSystemMetricsTrendWindowSnapshotsStage } from './system-metrics.repository.js'
+import {
+  refreshSystemMetricsTrendWindowSnapshotsStage,
+  refreshSystemMetricsTrendWindowSnapshotsStageAsync
+} from './system-metrics.repository.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, usageSummaryWithMath } from './usage-stats-mappers.js'
-import { refreshUsageOverviewWindowSnapshots, usageOverviewSnapshotScopes } from './usage-overview-windows.repository.js'
+import {
+  refreshUsageOverviewWindowSnapshots,
+  refreshUsageOverviewWindowSnapshotsAsync,
+  usageOverviewSnapshotScopes,
+  usageOverviewSnapshotScopesAsync
+} from './usage-overview-windows.repository.js'
 import {
   refreshAuthorizationUsageRangeWindowSnapshots,
+  refreshAuthorizationUsageRangeWindowSnapshotsAsync,
   refreshAuthorizationUsageRangeWindowSnapshotsInStages,
+  refreshUsageScopeRangeWindowSnapshotsAsync,
   refreshUsageScopeRangeWindowSnapshots,
   refreshUsageScopeRangeWindowSnapshotsInStages
 } from './usage-range-windows.repository.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import {
   refreshAccountLast7dRequestRankSnapshot,
+  refreshAccountLast7dRequestRankSnapshotAsync,
   refreshApiKeyCurrentMonthCostRankSnapshot,
+  refreshApiKeyCurrentMonthCostRankSnapshotAsync,
   refreshAuthorizationCurrentMonthCostRankSnapshot,
+  refreshAuthorizationCurrentMonthCostRankSnapshotAsync,
   refreshCallerAccountLast7dRequestRankSnapshot,
+  refreshCallerAccountLast7dRequestRankSnapshotAsync,
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
 import { aggregateUsageStatsRecords, createUsageStatsAggregationContext, extendUsageStatsAggregationContext } from './usage-stats-writers.js'
@@ -60,8 +74,20 @@ import {
 import { statsParamsTail } from './usage-stats-writer-params.js'
 
 export type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
-export { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usage-stats-ai-performance.repository.js'
-export { getSystemMetricsOverview, insertProcessEventLoopSample, insertSystemMetricsSample } from './system-metrics.repository.js'
+export {
+  getAiPerformanceOverview,
+  getAiPerformanceOverviewAsync,
+  listAiPerformanceAccountOptions,
+  listAiPerformanceAccountOptionsAsync
+} from './usage-stats-ai-performance.repository.js'
+export {
+  getSystemMetricsOverview,
+  getSystemMetricsOverviewAsync,
+  insertProcessEventLoopSample,
+  insertProcessEventLoopSampleAsync,
+  insertSystemMetricsSample,
+  insertSystemMetricsSampleAsync
+} from './system-metrics.repository.js'
 export {
   GROUP_ACCOUNT_STATS_DIRTY_ALL,
   markAllGroupAccountStatsDirty,
@@ -1149,6 +1175,9 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(): Promise<void> 
 }
 
 export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRankSnapshotsInStagesOptions = {}): Promise<UsageRankSnapshotRefreshResult> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return refreshUsageRankSnapshotsInStagesPostgres(options)
+  }
   const database = getStatsDatabase()
   const context = createUsageRankSnapshotContext(database)
   const stages = selectUsageRankSnapshotStages(options.stageNames)
@@ -1203,6 +1232,123 @@ export async function refreshUsageRankSnapshotsInStages(options: RefreshUsageRan
   }
 }
 
+async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRankSnapshotsInStagesOptions = {}): Promise<UsageRankSnapshotRefreshResult> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const stages = selectUsageRankSnapshotStages(options.stageNames)
+  const supportedPostgresStages = new Set<UsageRankSnapshotStageName>([
+    'account_last7d_request_rank',
+    'caller_account_last7d_request_rank',
+    'api_key_current_month_cost_rank',
+    'account_authorization_current_month_cost_rank',
+    'group_authorization_current_month_cost_rank',
+    'usage_overview_windows',
+    'system_metrics_trend_windows',
+    'usage_scope_range_windows',
+    'authorization_usage_range_windows'
+  ])
+  const unsupportedStages = stages.filter((stage) => !supportedPostgresStages.has(stage.name))
+  if (unsupportedStages.length > 0) {
+    throw new Error(`PostgreSQL 模式暂不支持刷新用量排行阶段: ${unsupportedStages.map((stage) => stage.name).join(', ')}`)
+  }
+  const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
+  const jobName = options.jobName ?? usageRankSnapshotDefaultJobName(stages)
+  const startedAt = Date.now()
+  const sourceWatermark = options.skipIfUnchanged ? await usageRankSnapshotSourceWatermarkAsync(client, stages) : undefined
+  const previousState = options.skipIfUnchanged && sourceWatermark !== undefined
+    ? await usageRankSnapshotRefreshJobStateAsync(client, jobName)
+    : undefined
+  const context = await createUsageRankSnapshotContextAsync(client)
+
+  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+    return {
+      durationMs: Date.now() - startedAt,
+      stages: [],
+      skipped: true,
+      skipReason: 'source_watermark_unchanged',
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      jobName
+    }
+  }
+  if (stages.length === 1 && previousState?.cursor_id === context.todayKey && previousState.cursor_created_at) {
+    context.sourceWatermark = sourceWatermark
+    context.previousSourceWatermark = previousState.cursor_created_at
+  }
+
+  const stageRuntimes: UsageRankSnapshotStageRuntime[] = []
+  for (let index = 0; index < stages.length; index += 1) {
+    const stage = stages[index]
+    const stageStartedAt = Date.now()
+    switch (stage.name) {
+      case 'account_last7d_request_rank':
+        await client.transaction(async (tx) => {
+          await refreshAccountLast7dRequestRankSnapshotAsync(tx, context.snapshotAt, context.updatedAt, context.timezone)
+        })
+        break
+      case 'caller_account_last7d_request_rank':
+        await client.transaction(async (tx) => {
+          await refreshCallerAccountLast7dRequestRankSnapshotAsync(tx, context.snapshotAt, context.updatedAt, context.timezone)
+        })
+        break
+      case 'api_key_current_month_cost_rank':
+        await client.transaction(async (tx) => {
+          await refreshApiKeyCurrentMonthCostRankSnapshotAsync(tx, context.snapshotAt, context.updatedAt, context.timezone)
+        })
+        break
+      case 'account_authorization_current_month_cost_rank':
+        await client.transaction(async (tx) => {
+          await refreshAuthorizationCurrentMonthCostRankSnapshotAsync(tx, 'account_authorization', context.snapshotAt, context.updatedAt, context.timezone)
+        })
+        break
+      case 'group_authorization_current_month_cost_rank':
+        await client.transaction(async (tx) => {
+          await refreshAuthorizationCurrentMonthCostRankSnapshotAsync(tx, 'group_authorization', context.snapshotAt, context.updatedAt, context.timezone)
+        })
+        break
+      case 'usage_overview_windows':
+        await client.transaction(async (tx) => {
+          await refreshUsageOverviewWindowSnapshotsAsync(tx, context)
+        })
+        break
+      case 'system_metrics_trend_windows':
+        await client.transaction(async (tx) => {
+          await refreshSystemMetricsTrendWindowSnapshotsStageAsync(tx, context)
+        })
+        break
+      case 'usage_scope_range_windows':
+        await refreshUsageScopeRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
+        break
+      case 'authorization_usage_range_windows':
+        await refreshAuthorizationUsageRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
+        break
+      default:
+        throw new Error(`PostgreSQL 模式暂不支持刷新用量排行阶段: ${stage.name}`)
+    }
+    stageRuntimes.push({
+      name: stage.name,
+      durationMs: Date.now() - stageStartedAt
+    })
+    if (index < stages.length - 1) {
+      await yieldToEventLoop()
+    }
+  }
+  if (options.skipIfUnchanged && sourceWatermark !== undefined) {
+    await updateUsageRankSnapshotRefreshJobStateAsync(client, jobName, {
+      sourceWatermark,
+      refreshDate: context.todayKey,
+      lastSuccessAt: nowIso()
+    })
+  }
+  return {
+    durationMs: Date.now() - startedAt,
+    stages: stageRuntimes,
+    skipped: false,
+    sourceWatermark,
+    refreshDate: context.todayKey,
+    jobName
+  }
+}
+
 function selectUsageRankSnapshotStages(stageNames?: readonly UsageRankSnapshotStageName[]): UsageRankSnapshotStage[] {
   const stages = usageRankSnapshotStages()
   if (!stageNames) return stages
@@ -1239,10 +1385,30 @@ function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageR
   return watermark
 }
 
+async function usageRankSnapshotSourceWatermarkAsync(client: DatabaseClient, stages: UsageRankSnapshotStage[]): Promise<string> {
+  const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
+  let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
+  for (const table of sourceTables) {
+    const row = await client.one<{ updated_at?: string | null }>(`SELECT MAX(updated_at) AS updated_at FROM juhe_stats.${table}`)
+    const updatedAt = row?.updated_at
+    if (typeof updatedAt === 'string' && updatedAt > watermark) {
+      watermark = updatedAt
+    }
+  }
+  return watermark
+}
+
 function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
   return database
     .prepare('SELECT cursor_created_at, cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?')
     .get(USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName) as unknown as StatsJobStateRow | undefined
+}
+
+async function usageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string): Promise<StatsJobStateRow | undefined> {
+  return client.one<StatsJobStateRow>(
+    'SELECT cursor_created_at, cursor_id, lag_seconds FROM juhe_stats.stats_job_state WHERE scope_type = ? AND scope_id = ? AND job_name = ?',
+    [USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE, USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID, jobName]
+  )
 }
 
 function updateUsageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string, input: { sourceWatermark: string; refreshDate: string; lastSuccessAt: string }): void {
@@ -1265,6 +1431,28 @@ function updateUsageRankSnapshotRefreshJobState(database: DatabaseSync, jobName:
     input.lastSuccessAt,
     nowIso()
   )
+}
+
+async function updateUsageRankSnapshotRefreshJobStateAsync(client: DatabaseClient, jobName: string, input: { sourceWatermark: string; refreshDate: string; lastSuccessAt: string }): Promise<void> {
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      last_error_message = NULL,
+      lag_seconds = NULL,
+      updated_at = excluded.updated_at
+  `, [
+    USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE,
+    USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID,
+    jobName,
+    input.sourceWatermark,
+    input.refreshDate,
+    input.lastSuccessAt,
+    nowIso()
+  ])
 }
 
 async function runUsageRankSnapshotStageInBackground(
@@ -1295,6 +1483,26 @@ function createUsageRankSnapshotContext(database: DatabaseSync): UsageRankSnapsh
   const ranges = fixedUsageStatsRanges(timezone, todayKey)
   const earliestDate = ranges[0]?.startDate ?? todayKey
   const overviewScopes = usageOverviewSnapshotScopes(database)
+  const uniqueSystemAccountIds = [...new Set(overviewScopes.map((scope) => scope.systemAccountId).filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID))]
+  return {
+    timezone,
+    updatedAt,
+    snapshotAt: updatedAt,
+    ranges,
+    todayKey,
+    earliestDate,
+    overviewScopes,
+    uniqueSystemAccountIds
+  }
+}
+
+async function createUsageRankSnapshotContextAsync(client: DatabaseClient): Promise<UsageRankSnapshotContext> {
+  const timezone = await usageStatsTimezoneAsync()
+  const updatedAt = nowIso()
+  const todayKey = dateKey(new Date(), timezone)
+  const ranges = fixedUsageStatsRanges(timezone, todayKey)
+  const earliestDate = ranges[0]?.startDate ?? todayKey
+  const overviewScopes = await usageOverviewSnapshotScopesAsync(client)
   const uniqueSystemAccountIds = [...new Set(overviewScopes.map((scope) => scope.systemAccountId).filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID))]
   return {
     timezone,
@@ -1543,6 +1751,75 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
   }
 }
 
+export async function getUsageStatsOverviewAsync(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): Promise<UsageStatsOverview> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getUsageStatsOverview(access, range)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const statsScope = usageOverviewStatsScope(access)
+  const windowKey = rangeWindowKey(range)
+
+  const summaryRow = await client.one<AccountUsageAggregateRow & StatsAggregateMathRow>(`
+    SELECT ? AS account_id, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost,
+      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
+    FROM juhe_stats.usage_overview_summary_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+  `, [statsScope.scopeId, statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
+
+  const hourlyRows = await client.query<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>(`
+    SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
+    FROM juhe_stats.usage_overview_trend_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC
+  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
+
+  const modelRows = await client.query<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>(`
+    SELECT provider_code, model,
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost
+    FROM juhe_stats.usage_model_rank_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY rank ASC
+  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
+
+  const errorRows = await client.query<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>(`
+    SELECT provider_code, error_code, status_code, error_message, error_count
+    FROM juhe_stats.usage_error_rank_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY rank ASC
+  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
+
+  return {
+    range,
+    summary: usageSummaryWithMath(summaryRow ?? emptyStatsAggregateMathRow()),
+    hourlyTrend: mapUsageTrendRows(hourlyRows),
+    modelDistribution: modelRows.map((row) => ({
+      providerCode: row.provider_code,
+      model: row.model,
+      requestCount: Number(row.request_count ?? 0),
+      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
+      totalCost: Number(row.total_cost ?? 0)
+    })),
+    errors: errorRows.map((row) => ({
+      providerCode: row.provider_code,
+      errorCode: row.error_code,
+      statusCode: row.status_code || undefined,
+      errorMessage: row.error_message ?? undefined,
+      errorCount: Number(row.error_count ?? 0)
+    })),
+    statsLagSeconds: await latestUsageStatsLagSecondsFromClientAsync(client)
+  }
+}
+
+export async function latestUsageStatsLagSecondsForRuntime(): Promise<number | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return latestUsageStatsLagSeconds()
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return latestUsageStatsLagSecondsFromClientAsync(client)
+}
+
 function mapUsageTrendRows(
   rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>,
 ): UsageStatsOverview['hourlyTrend'] {
@@ -1566,6 +1843,29 @@ function usageOverviewStatsScope(access?: AccessScope): { systemAccountId: strin
   }
   const systemAccountId = currentSystemAccountId(access)
   return { systemAccountId, scopeId: systemAccountId }
+}
+
+async function latestUsageStatsLagSecondsFromClientAsync(client: DatabaseClient): Promise<number | undefined> {
+  const shardRow = await client.one<{ lag_seconds?: number | string | null }>(`
+    SELECT MAX(lag_seconds) AS lag_seconds
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'usage_shard' AND job_name = 'usage_stats_aggregation'
+  `)
+  const shardLag = numberOrUndefined(shardRow?.lag_seconds)
+  if (shardLag !== undefined) {
+    return shardLag
+  }
+  const row = await client.one<{ lag_seconds?: number | string | null }>(`
+    SELECT lag_seconds
+    FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'
+  `)
+  return numberOrUndefined(row?.lag_seconds)
+}
+
+function numberOrUndefined(value: number | string | null | undefined): number | undefined {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
 }
 
 function usageStatsShardJobState(database: DatabaseSync, shardKey: string): { cursorCreatedAt: string; cursorId: string } {

@@ -3,16 +3,16 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
-  createClientIpPolicy,
-  disableClientIpPolicies,
-  getClientIpStatsDetail,
-  listClientIpStats,
+  createClientIpPolicyAsync,
+  disableClientIpPoliciesAsync,
+  getClientIpStatsDetailAsync,
+  listClientIpStatsAsync,
   type ClientIpStatsSortField
 } from '../../storage/client-ip-stats.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { notifyClientIpPolicyCacheInvalidated } from '../db-service/db-service-ipc.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
-import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const ipStatsRouter = Router()
 
@@ -48,20 +48,24 @@ const policyBodySchema = z.object({
   durationDays: z.number().int().min(1, '封禁天数不能小于 1').max(3650, '封禁天数不能超过 3650').optional()
 }).strict('IP 策略参数包含未知字段')
 
-ipStatsRouter.get('/', (req, res) => {
+ipStatsRouter.get('/', async (req, res, next) => {
   const parsed = listQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 统计参数无效')))
     return
   }
-  res.json(ok(listClientIpStats({
-    ...parsed.data,
-    lastUsedSortScope: 'global',
-    sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
-  })))
+  try {
+    res.json(ok(await listClientIpStatsAsync({
+      ...parsed.data,
+      lastUsedSortScope: 'global',
+      sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
+    })))
+  } catch (error) {
+    next(error)
+  }
 })
 
-ipStatsRouter.get('/:ipHash/detail', (req, res) => {
+ipStatsRouter.get('/:ipHash/detail', async (req, res, next) => {
   const params = ipHashParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
@@ -72,16 +76,20 @@ ipStatsRouter.get('/:ipHash/detail', (req, res) => {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 详情参数无效')))
     return
   }
-  const detail = getClientIpStatsDetail({
-    ipHash: params.data.ipHash,
-    ...parsed.data,
-    sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
-  })
-  if (!detail) {
-    res.status(404).json({ message: 'IP 不存在' })
-    return
+  try {
+    const detail = await getClientIpStatsDetailAsync({
+      ipHash: params.data.ipHash,
+      ...parsed.data,
+      sortField: parsed.data.sortField as ClientIpStatsSortField | undefined
+    })
+    if (!detail) {
+      res.status(404).json({ message: 'IP 不存在' })
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(detail))
 })
 
 ipStatsRouter.post('/:ipHash/blacklist', mutationGuard({
@@ -92,8 +100,12 @@ ipStatsRouter.post('/:ipHash/blacklist', mutationGuard({
     durationMinutes: bodyField(req, 'durationMinutes'),
     durationDays: bodyField(req, 'durationDays')
   })
-}), (req, res) => {
-  handleCreatePolicy(req, res)
+}), async (req, res, next) => {
+  try {
+    await handleCreatePolicy(req, res)
+  } catch (error) {
+    next(error)
+  }
 })
 
 ipStatsRouter.post('/:ipHash/unblock', mutationGuard({
@@ -102,7 +114,7 @@ ipStatsRouter.post('/:ipHash/unblock', mutationGuard({
     ipHash: req.params.ipHash,
     reason: bodyField(req, 'reason')
   })
-}), (req, res) => {
+}), async (req, res, next) => {
   const params = ipHashParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
@@ -118,36 +130,40 @@ ipStatsRouter.post('/:ipHash/unblock', mutationGuard({
     res.status(401).json({ message: '请先登录' })
     return
   }
-  const result = disableClientIpPolicies({
-    ipHash: params.data.ipHash,
-    reason: body.data.reason,
-    actorSystemAccountId: actor
-  })
-  notifyClientIpPolicyCacheInvalidated()
-  recordOperationLog({
-    module: 'client_ip_stats',
-    action: 'unblock',
-    operationKey: 'client_ip_stats.unblock',
-    resourceType: 'client_ip',
-    resourceId: params.data.ipHash,
-    resourceName: params.data.ipHash.slice(0, 12),
-    summary: `解除 IP 封禁：${params.data.ipHash.slice(0, 12)}`,
-    detailLevel: 'full',
-    visibilityScope: 'admin_only',
-    changes: [
-      safeChange('disabledCount', '解除策略数', undefined, result.disabledCount),
-      safeChange('reason', '原因', undefined, body.data.reason)
-    ],
-    metadata: {
+  try {
+    const result = await disableClientIpPoliciesAsync({
       ipHash: params.data.ipHash,
-      disabledCount: result.disabledCount,
-      reason: body.data.reason
-    }
-  }, req)
-  res.json(ok(result))
+      reason: body.data.reason,
+      actorSystemAccountId: actor
+    })
+    notifyClientIpPolicyCacheInvalidated()
+    await recordOperationLogAsync({
+      module: 'client_ip_stats',
+      action: 'unblock',
+      operationKey: 'client_ip_stats.unblock',
+      resourceType: 'client_ip',
+      resourceId: params.data.ipHash,
+      resourceName: params.data.ipHash.slice(0, 12),
+      summary: `解除 IP 封禁：${params.data.ipHash.slice(0, 12)}`,
+      detailLevel: 'full',
+      visibilityScope: 'admin_only',
+      changes: [
+        safeChange('disabledCount', '解除策略数', undefined, result.disabledCount),
+        safeChange('reason', '原因', undefined, body.data.reason)
+      ],
+      metadata: {
+        ipHash: params.data.ipHash,
+        disabledCount: result.disabledCount,
+        reason: body.data.reason
+      }
+    }, req)
+    res.json(ok(result))
+  } catch (error) {
+    next(error)
+  }
 })
 
-function handleCreatePolicy(req: Request, res: Response): void {
+async function handleCreatePolicy(req: Request, res: Response): Promise<void> {
   const params = ipHashParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, 'IP 标识无效')))
@@ -169,14 +185,14 @@ function handleCreatePolicy(req: Request, res: Response): void {
     return
   }
   try {
-    const policy = createClientIpPolicy({
+    const policy = await createClientIpPolicyAsync({
       ipHash: params.data.ipHash,
       reason: body.data.reason,
       expiresAt: duration.expiresAt,
       actorSystemAccountId: actor
     })
     notifyClientIpPolicyCacheInvalidated()
-    recordOperationLog({
+    await recordOperationLogAsync({
       module: 'client_ip_stats',
       action: 'blacklist',
       operationKey: 'client_ip_stats.blacklist',

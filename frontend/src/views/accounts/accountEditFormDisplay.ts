@@ -8,6 +8,7 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  isHybridProviderCode,
   isDeepSeekProviderCode,
   isGeminiProviderCode,
   isGlmProviderCode
@@ -96,6 +97,20 @@ export function accountTypeChoicesForProvider(
   providers: ProviderDisplaySource[]
 ): AccountTypeChoice[] {
   if (!provider) return []
+  if (isHybridProviderCode(provider.code)) {
+    const profile = provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
+      ?? provider.protocolProfiles.find((item) => item.enabled)
+      ?? provider.protocolProfiles[0]
+    return [{
+      value: accountTypeChoiceValue(profile?.id ?? provider.defaultProtocolProfileId ?? '', 'api_key'),
+      type: 'api_key',
+      providerCode: provider.code,
+      providerProtocolProfileId: profile?.id ?? provider.defaultProtocolProfileId ?? '',
+      label: '混合供应商',
+      description: '混合供应商账户保存自己的真实上游凭据和 Base URL，跨协议入口通过账号模型映射配置。',
+      tag: '混合供应商'
+    }]
+  }
   const profiles = provider.protocolProfiles.length
     ? provider.protocolProfiles.filter((profile) => profile.enabled)
     : []
@@ -149,6 +164,9 @@ export function accountEditModalTitle(options: AccountEditModalTitleOptions): st
   }
   if (!options.type) {
     return accountEditCreateModalTitle(`添加 ${accountEditProviderName(options.providerCode, options.providers)} 账户`, options.targetSystemAccountLabel)
+  }
+  if (isHybridProviderCode(options.providerCode)) {
+    return accountEditCreateModalTitle('添加 混合供应商账户', options.targetSystemAccountLabel)
   }
   return accountEditCreateModalTitle(
     `添加 ${options.typeTitle || accountEditAccountTypeTitle(options.providerCode, options.type, options.providers)} 账户`,

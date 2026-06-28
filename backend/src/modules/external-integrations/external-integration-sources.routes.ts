@@ -8,19 +8,19 @@ import {
 } from '../../storage/external-integration-source-constants.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import {
-  createExternalIntegrationSourceAuthorization,
-  createExternalIntegrationSourceToken,
-  deleteExternalIntegrationSource,
-  findExternalIntegrationSource,
-  findExternalIntegrationSourceTokenSecret,
-  listExternalIntegrationSources,
-  resetBuiltInExternalIntegrationTestToken,
-  updateExternalIntegrationSource,
-  updateExternalIntegrationSourceToken
+  createExternalIntegrationSourceAuthorizationAsync,
+  createExternalIntegrationSourceTokenAsync,
+  deleteExternalIntegrationSourceAsync,
+  findExternalIntegrationSourceAsync,
+  findExternalIntegrationSourceTokenSecretAsync,
+  listExternalIntegrationSourcesAsync,
+  resetBuiltInExternalIntegrationTestTokenAsync,
+  updateExternalIntegrationSourceAsync,
+  updateExternalIntegrationSourceTokenAsync
 } from '../../storage/external-integration-source.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
-import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { getExternalPublicApiCatalog } from './external-public-api-catalog.js'
 
 export const externalIntegrationSourcesRouter = Router()
@@ -79,13 +79,17 @@ externalIntegrationSourcesRouter.get('/api-docs', (_req, res) => {
   res.json(ok(getExternalPublicApiCatalog()))
 })
 
-externalIntegrationSourcesRouter.get('/', (req, res) => {
+externalIntegrationSourcesRouter.get('/', async (req, res, next) => {
   const parsed = listQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '来源系统列表参数无效')))
     return
   }
-  res.json(ok(listExternalIntegrationSources(parsed.data)))
+  try {
+    res.json(ok(await listExternalIntegrationSourcesAsync(parsed.data)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuard({
@@ -93,11 +97,11 @@ externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuar
   fingerprint: () => ({
     target: 'built_in_test_token'
   })
-}), (req, res) => {
+}), async (req, res) => {
   try {
-    const token = resetBuiltInExternalIntegrationTestToken()
-    const source = findExternalIntegrationSource(builtInExternalIntegrationTestSourceId)
-    recordSourceOperation(req, {
+    const token = await resetBuiltInExternalIntegrationTestTokenAsync()
+    const source = await findExternalIntegrationSourceAsync(builtInExternalIntegrationTestSourceId)
+    await recordSourceOperation(req, {
       action: 'reset_builtin_test_token',
       operationKey: 'external_integration_sources.reset_builtin_test_token',
       sourceRefId: source?.id ?? 'built_in_test_token',
@@ -121,16 +125,16 @@ externalIntegrationSourcesRouter.post('/', mutationGuard({
   fingerprint: (req) => ({
     name: bodyField(req, 'name')
   })
-}), (req, res) => {
+}), async (req, res) => {
   const parsed = sourceBodySchema.safeParse(req.body ?? {})
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '来源系统参数无效')))
     return
   }
   try {
-    const created = createExternalIntegrationSourceAuthorization(parsed.data)
+    const created = await createExternalIntegrationSourceAuthorizationAsync(parsed.data)
     const source = created.source
-    recordSourceOperation(req, {
+    await recordSourceOperation(req, {
       action: 'create',
       operationKey: 'external_integration_sources.create',
       sourceRefId: source.id,
@@ -158,7 +162,7 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     expiresAt: bodyField(req, 'expiresAt'),
     rateLimits: bodyField(req, 'rateLimits')
   })
-}), (req, res) => {
+}), async (req, res) => {
   const params = idParamSchema.safeParse(req.params)
   const body = sourceUpdateBodySchema.safeParse(req.body ?? {})
   if (!params.success) {
@@ -169,10 +173,10 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(body.error, '来源系统参数无效')))
     return
   }
-  const before = findExternalIntegrationSource(params.data.id)
-  let source: ReturnType<typeof updateExternalIntegrationSource>
+  const before = await findExternalIntegrationSourceAsync(params.data.id)
+  let source: Awaited<ReturnType<typeof updateExternalIntegrationSourceAsync>>
   try {
-    source = updateExternalIntegrationSource(params.data.id, body.data)
+    source = await updateExternalIntegrationSourceAsync(params.data.id, body.data)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统更新失败'))
     return
@@ -181,7 +185,7 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     res.status(404).json({ message: '来源系统不存在' })
     return
   }
-  recordSourceOperation(req, {
+  await recordSourceOperation(req, {
     action: 'update',
     operationKey: 'external_integration_sources.update',
     sourceRefId: source.id,
@@ -202,15 +206,15 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
   fingerprint: (req) => ({
     id: req.params.id
   })
-}), (req, res) => {
+}), async (req, res) => {
   const params = idParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
     return
   }
-  const before = findExternalIntegrationSource(params.data.id)
+  const before = await findExternalIntegrationSourceAsync(params.data.id)
   try {
-    if (!deleteExternalIntegrationSource(params.data.id)) {
+    if (!await deleteExternalIntegrationSourceAsync(params.data.id)) {
       res.status(404).json({ message: '来源系统不存在' })
       return
     }
@@ -218,7 +222,7 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
     res.status(400).json(badRequest(error instanceof Error ? error.message : '删除来源授权失败'))
     return
   }
-  recordSourceOperation(req, {
+  await recordSourceOperation(req, {
     action: 'delete',
     operationKey: 'external_integration_sources.delete',
     sourceRefId: params.data.id,
@@ -239,7 +243,7 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
     name: bodyField(req, 'name'),
     expiresAt: bodyField(req, 'expiresAt')
   })
-}), (req, res) => {
+}), async (req, res) => {
   const params = idParamSchema.safeParse(req.params)
   const body = tokenBodySchema.safeParse(req.body ?? {})
   if (!params.success) {
@@ -251,12 +255,12 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
     return
   }
   try {
-    const token = createExternalIntegrationSourceToken({
+    const token = await createExternalIntegrationSourceTokenAsync({
       sourceRefId: params.data.id,
       ...body.data
     })
-    const source = findExternalIntegrationSource(params.data.id)
-    recordSourceOperation(req, {
+    const source = await findExternalIntegrationSourceAsync(params.data.id)
+    await recordSourceOperation(req, {
       action: 'create_token',
       operationKey: 'external_integration_sources.create_token',
       sourceRefId: params.data.id,
@@ -277,14 +281,14 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
   }
 })
 
-externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', (req, res) => {
+externalIntegrationSourcesRouter.get('/:id/tokens/:tokenId/secret', async (req, res) => {
   const params = tokenParamSchema.safeParse(req.params)
   if (!params.success) {
     res.status(400).json(badRequest(firstIssueMessage(params.error, 'Token 不存在')))
     return
   }
   try {
-    const token = findExternalIntegrationSourceTokenSecret(params.data.id, params.data.tokenId)
+    const token = await findExternalIntegrationSourceTokenSecretAsync(params.data.id, params.data.tokenId)
     if (!token) {
       res.status(404).json({ message: 'Token 不存在' })
       return
@@ -304,7 +308,7 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     status: bodyField(req, 'status'),
     expiresAt: bodyField(req, 'expiresAt')
   })
-}), (req, res) => {
+}), async (req, res) => {
   const params = tokenParamSchema.safeParse(req.params)
   const body = tokenUpdateBodySchema.safeParse(req.body ?? {})
   if (!params.success) {
@@ -315,9 +319,9 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(body.error, 'Token 参数无效')))
     return
   }
-  let token: ReturnType<typeof updateExternalIntegrationSourceToken>
+  let token: Awaited<ReturnType<typeof updateExternalIntegrationSourceTokenAsync>>
   try {
-    token = updateExternalIntegrationSourceToken(params.data.id, params.data.tokenId, body.data)
+    token = await updateExternalIntegrationSourceTokenAsync(params.data.id, params.data.tokenId, body.data)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 更新失败'))
     return
@@ -326,8 +330,8 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     res.status(404).json({ message: 'Token 不存在' })
     return
   }
-  const source = findExternalIntegrationSource(params.data.id)
-  recordSourceOperation(req, {
+  const source = await findExternalIntegrationSourceAsync(params.data.id)
+  await recordSourceOperation(req, {
     action: 'update_token',
     operationKey: 'external_integration_sources.update_token',
     sourceRefId: params.data.id,
@@ -342,19 +346,19 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
   res.json(ok(token))
 })
 
-function recordSourceOperation(req: Request, input: {
+async function recordSourceOperation(req: Request, input: {
   action: string
   operationKey: string
   sourceRefId: string
   sourceName: string
   summary: string
   changes: ReturnType<typeof safeChange>[]
-}): void {
+}): Promise<void> {
   const actor = getRequestAuthContext()?.systemAccountId
   if (!actor) {
     return
   }
-  recordOperationLog({
+  await recordOperationLogAsync({
     module: 'external_integration_sources',
     action: input.action,
     operationKey: input.operationKey,

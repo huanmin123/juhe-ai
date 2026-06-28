@@ -1,8 +1,11 @@
 import type { SystemTeamListResult, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows, chunkValues } from './query-utils.js'
 import {
   invalidateSystemAccountTeamMembershipLookupCache,
@@ -15,6 +18,12 @@ import {
   revokeAllTeamSources,
   revokeTeamSourcesForMember
 } from './resource-authorization-write-state.repository.js'
+import {
+  applyActiveTeamGrantsToMemberAsync,
+  reactivateTeamGrantSourcesAsync,
+  revokeAllTeamSourcesAsync,
+  revokeTeamSourcesForMemberAsync
+} from './resource-authorization-write.repository.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { maxSystemTeamListPageSize, maxSystemTeamMemberBatchSize, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
@@ -34,6 +43,7 @@ interface NormalizedSystemTeamListOptions {
 
 const systemTeamInputKeys = new Set(['name', 'description', 'status'])
 const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
+const businessSchemaName = 'juhe_business'
 
 export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
   const rows = querySystemTeamRows(access, undefined, normalizeSystemTeamListOptions()).rows
@@ -49,6 +59,38 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
   }, listOptions).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
   const members = listSystemTeamMembersForTeamIds(pageRows.rows.map((row) => row.id), true)
+  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+  return {
+    items,
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
+export async function listSystemTeamsAsync(access?: AccessScope): Promise<SystemTeamSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listSystemTeams(access)
+  }
+  const client = await getSystemTeamDatabaseClient()
+  const rows = (await querySystemTeamRowsAsync(client, access, undefined, normalizeSystemTeamListOptions())).rows
+  const members = await listSystemTeamMembersForTeamIdsAsync(client, rows.map((row) => row.id), true)
+  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
+}
+
+export async function listSystemTeamsPageAsync(access?: AccessScope, options: SystemTeamListOptions = {}): Promise<SystemTeamListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listSystemTeamsPage(access, options)
+  }
+  const client = await getSystemTeamDatabaseClient()
+  const listOptions = normalizeSystemTeamListOptions(options)
+  const rows = (await querySystemTeamRowsAsync(client, access, {
+    limit: listOptions.pageSize + 1,
+    offset: (listOptions.page - 1) * listOptions.pageSize
+  }, listOptions)).rows
+  const pageRows = takePageRows(rows, listOptions.pageSize)
+  const members = await listSystemTeamMembersForTeamIdsAsync(client, pageRows.rows.map((row) => row.id), true)
   const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? []))
   return {
     items,
@@ -79,6 +121,17 @@ export function findSystemTeamSummary(id: string, access?: AccessScope): SystemT
   return systemTeamSummaryFromRow(row, members.get(row.id) ?? [])
 }
 
+export async function findSystemTeamSummaryAsync(id: string, access?: AccessScope): Promise<SystemTeamSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findSystemTeamSummary(id, access)
+  }
+  const client = await getSystemTeamDatabaseClient()
+  const row = await findSystemTeamRowForAccessAsync(client, id, access)
+  if (!row) return undefined
+  const members = await listSystemTeamMembersForTeamIdsAsync(client, [row.id], true)
+  return systemTeamSummaryFromRow(row, members.get(row.id) ?? [])
+}
+
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
   assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
   const name = normalizeSystemTeamName(input.name)
@@ -90,6 +143,37 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
     .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(id, name, normalizeSystemTeamDescription(input.description), normalizeSystemTeamStatus(input.status, 'active'), currentSystemAccountId(access), now, now)
   const created = findSystemTeamSummary(id, access)
+  if (!created) throw new Error('创建团队失败')
+  invalidateSystemTeamLookupCache(id)
+  return created
+}
+
+export async function createSystemTeamAsync(input: Record<string, unknown>, access?: AccessScope): Promise<SystemTeamSummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createSystemTeam(input, access)
+  }
+  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+  const name = normalizeSystemTeamName(input.name)
+  const client = await getSystemTeamDatabaseClient()
+  const now = nowIso()
+  const id = newId('team')
+  await client.transaction(async (tx) => {
+    await ensureSystemTeamNameUniqueAsync(tx, name)
+    await tx.execute(`
+      INSERT INTO ${systemTeamTable(tx, 'system_teams')} (
+        id, name, description, status, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [
+      id,
+      name,
+      normalizeSystemTeamDescription(input.description),
+      normalizeSystemTeamStatus(input.status, 'active'),
+      currentSystemAccountId(access),
+      now,
+      now
+    ])
+  })
+  const created = await findSystemTeamSummaryAsync(id, access)
   if (!created) throw new Error('创建团队失败')
   invalidateSystemTeamLookupCache(id)
   return created
@@ -131,6 +215,53 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   invalidateSystemAccountTeamMembershipLookupCache()
   clearResourceAuthorizationLookupCaches()
   return findSystemTeamSummary(id, access)
+}
+
+export async function updateSystemTeamAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<SystemTeamSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateSystemTeam(id, input, access)
+  }
+  assertKnownInputKeys(input, systemTeamInputKeys, '系统团队')
+  const client = await getSystemTeamDatabaseClient()
+  let authorizationChanged = false
+  await client.transaction(async (tx) => {
+    const row = await findSystemTeamRowForAccessAsync(tx, id, access)
+    if (!row) return
+    const name = input.name === undefined ? row.name : normalizeSystemTeamName(input.name)
+    await ensureSystemTeamNameUniqueAsync(tx, name, id)
+    const status = normalizeSystemTeamStatus(input.status, row.status)
+    const now = nowIso()
+    await tx.execute(`
+      UPDATE ${systemTeamTable(tx, 'system_teams')}
+      SET name = ?,
+          description = ?,
+          status = ?,
+          updated_at = ?
+      WHERE id = ?
+    `, [
+      name,
+      input.description === undefined ? row.description : normalizeSystemTeamDescription(input.description),
+      status,
+      now,
+      id
+    ])
+    if (row.status !== 'disabled' && status === 'disabled') {
+      await revokeAllTeamSourcesAsync(id, currentSystemAccountId(access), tx, now, 'team_disabled')
+      authorizationChanged = true
+    }
+    if (row.status === 'disabled' && status === 'active') {
+      await reactivateTeamGrantSourcesAsync(id, access, tx, now)
+      authorizationChanged = true
+    }
+  })
+  if (authorizationChanged) {
+    refreshGroupAccountStatsAfterWrite('team_authorization_changed')
+    invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
+  }
+  invalidateSystemTeamLookupCache(id)
+  invalidateSystemAccountTeamMembershipLookupCache()
+  clearResourceAuthorizationLookupCaches()
+  return findSystemTeamSummaryAsync(id, access)
 }
 
 export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {

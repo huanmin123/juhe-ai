@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountUsageStatsRange } from '../domain/types.js'
+import type { DatabaseClient } from './database-client.js'
+import { chunkValues } from './query-utils.js'
 import {
   aggregateUsageErrorRows,
   aggregateUsageModelRows,
@@ -57,6 +59,30 @@ export function usageOverviewSnapshotScopes(database: DatabaseSync): Array<{ sys
   return scopes
 }
 
+export async function usageOverviewSnapshotScopesAsync(client: DatabaseClient): Promise<Array<{ systemAccountId: string; scopeId: string }>> {
+  const rows = await client.query<{ system_account_id?: string | null; scope_id?: string | null }>(`
+    SELECT system_account_id, scope_id
+    FROM ${statsTable(client, 'usage_stats_totals')}
+    WHERE scope_type = 'system_account'
+    ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC
+    LIMIT ?
+  `, [maxUsageOverviewSnapshotScopes])
+  const scopes = rows
+    .map((row) => ({ systemAccountId: row.system_account_id ?? '', scopeId: row.scope_id ?? '' }))
+    .filter((row) => row.systemAccountId && row.scopeId)
+  if (!scopes.some((scope) => scope.systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID && scope.scopeId === GLOBAL_STATS_SCOPE_ID)) {
+    scopes.push({ systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeId: GLOBAL_STATS_SCOPE_ID })
+  }
+  return scopes
+}
+
+export async function refreshUsageOverviewWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
+  await refreshUsageOverviewSummaryWindowSnapshotsAsync(client, context)
+  await refreshUsageOverviewTrendWindowSnapshotsAsync(client, context)
+  await refreshUsageModelRankWindowSnapshotsAsync(client, context)
+  await refreshUsageErrorRankWindowSnapshotsAsync(client, context)
+}
+
 function refreshUsageOverviewSummaryWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
   database.prepare('DELETE FROM usage_overview_summary_windows').run()
   for (const scope of context.overviewScopes) {
@@ -83,6 +109,180 @@ function refreshUsageErrorRankWindowSnapshots(database: DatabaseSync, context: U
   for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     refreshUsageErrorRankWindows(database, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
+}
+
+async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
+  await client.execute(`DELETE FROM ${statsTable(client, 'usage_overview_summary_windows')}`)
+  const insertRows: unknown[][] = []
+  for (const scope of context.overviewScopes) {
+    const rows = await client.query<UsageStatsDailyWindowRow>(`
+      SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+        first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
+      FROM ${statsTable(client, 'usage_stats_daily')}
+      WHERE system_account_id = ?
+        AND scope_type = 'system_account'
+        AND scope_id = ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      ORDER BY stat_date ASC
+    `, [scope.systemAccountId, scope.scopeId, context.earliestDate, context.todayKey])
+    const rowsByDate = rowsByStatDate(rows)
+    for (const range of context.ranges) {
+      const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
+      insertRows.push([
+        scope.systemAccountId,
+        rangeWindowKey(range),
+        range.startDate,
+        range.endDate,
+        aggregate.requestCount,
+        aggregate.successCount,
+        aggregate.errorCount,
+        aggregate.inputTokens,
+        aggregate.outputTokens,
+        aggregate.cacheReadTokens,
+        aggregate.cacheReadCostUsd,
+        aggregate.totalCostUsd,
+        aggregate.durationMsSum,
+        aggregate.durationMsCount,
+        aggregate.firstTokenMsSum,
+        aggregate.firstTokenMsCount,
+        aggregate.lastUsedAt ?? null,
+        context.updatedAt
+      ])
+    }
+  }
+  await insertRowsAsync(client, 'usage_overview_summary_windows', [
+    'system_account_id', 'window_key', 'start_date', 'end_date', 'request_count', 'success_count', 'error_count',
+    'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd',
+    'duration_ms_sum', 'duration_ms_count', 'first_token_ms_sum', 'first_token_ms_count',
+    'last_used_at', 'updated_at'
+  ], insertRows)
+}
+
+async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
+  await client.execute(`DELETE FROM ${statsTable(client, 'usage_overview_trend_windows')}`)
+  const insertRows: unknown[][] = []
+  for (const scope of context.overviewScopes) {
+    const rows = await client.query<UsageOverviewHourlyWindowRow>(`
+      SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+        cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count
+      FROM ${statsTable(client, 'usage_stats_hourly')}
+      WHERE system_account_id = ?
+        AND scope_type = 'system_account'
+        AND scope_id = ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+      ORDER BY stat_hour ASC
+    `, [scope.systemAccountId, scope.scopeId, `${context.earliestDate}T00`, `${context.todayKey}T23`])
+    const rowsByDate = rowsByStatHourDate(rows)
+    for (const range of context.ranges) {
+      const buckets = aggregateUsageTrendBuckets(rowsByDate, range)
+      for (const [bucketKey, bucket] of sortedMapEntries(buckets)) {
+        insertRows.push([
+          scope.systemAccountId,
+          rangeWindowKey(range),
+          range.startDate,
+          range.endDate,
+          bucketKey,
+          bucket.requestCount,
+          bucket.errorCount,
+          bucket.inputTokens,
+          bucket.outputTokens,
+          bucket.cacheReadTokens,
+          bucket.cacheReadCostUsd,
+          bucket.totalCostUsd,
+          bucket.durationMsSum,
+          bucket.durationMsCount,
+          context.updatedAt
+        ])
+      }
+    }
+  }
+  await insertRowsAsync(client, 'usage_overview_trend_windows', [
+    'system_account_id', 'window_key', 'start_date', 'end_date', 'bucket_key', 'request_count', 'error_count',
+    'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd',
+    'duration_ms_sum', 'duration_ms_count', 'updated_at'
+  ], insertRows)
+}
+
+async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
+  await client.execute(`DELETE FROM ${statsTable(client, 'usage_model_rank_windows')}`)
+  const insertRows: unknown[][] = []
+  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    const rows = await client.query<UsageModelWindowRow>(`
+      SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
+      FROM ${statsTable(client, 'usage_model_daily')}
+      WHERE system_account_id = ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      ORDER BY stat_date ASC
+    `, [systemAccountId, context.earliestDate, context.todayKey])
+    const rowsByDate = rowsByStatDate(rows)
+    for (const range of context.ranges) {
+      const rankedRows = aggregateUsageModelRows(rowsByDate, range)
+      rankedRows.slice(0, 10).forEach((row, index) => {
+        insertRows.push([
+          systemAccountId,
+          rangeWindowKey(range),
+          range.startDate,
+          range.endDate,
+          index + 1,
+          row.providerCode,
+          row.model,
+          row.requestCount,
+          row.inputTokens,
+          row.outputTokens,
+          row.cacheReadTokens,
+          row.cacheReadCostUsd,
+          row.totalCostUsd,
+          context.updatedAt
+        ])
+      })
+    }
+  }
+  await insertRowsAsync(client, 'usage_model_rank_windows', [
+    'system_account_id', 'window_key', 'start_date', 'end_date', 'rank', 'provider_code', 'model',
+    'request_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd', 'updated_at'
+  ], insertRows)
+}
+
+async function refreshUsageErrorRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext): Promise<void> {
+  await client.execute(`DELETE FROM ${statsTable(client, 'usage_error_rank_windows')}`)
+  const insertRows: unknown[][] = []
+  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    const rows = await client.query<UsageErrorWindowRow>(`
+      SELECT stat_date, error_group, provider_code, error_code, status_code, error_message, error_count
+      FROM ${statsTable(client, 'usage_error_daily')}
+      WHERE system_account_id = ?
+        AND stat_date >= ?
+        AND stat_date <= ?
+      ORDER BY stat_date ASC
+    `, [systemAccountId, context.earliestDate, context.todayKey])
+    const rowsByDate = rowsByStatDate(rows)
+    for (const range of context.ranges) {
+      const rankedRows = aggregateUsageErrorRows(rowsByDate, range)
+      rankedRows.slice(0, 10).forEach((row, index) => {
+        insertRows.push([
+          systemAccountId,
+          rangeWindowKey(range),
+          range.startDate,
+          range.endDate,
+          index + 1,
+          row.providerCode,
+          row.errorCode,
+          row.statusCode,
+          row.errorMessage ?? null,
+          row.errorCount,
+          context.updatedAt
+        ])
+      })
+    }
+  }
+  await insertRowsAsync(client, 'usage_error_rank_windows', [
+    'system_account_id', 'window_key', 'start_date', 'end_date', 'rank', 'provider_code', 'error_code',
+    'status_code', 'error_message', 'error_count', 'updated_at'
+  ], insertRows)
 }
 
 function refreshUsageOverviewSummaryWindows(
@@ -277,4 +477,22 @@ function refreshUsageErrorRankWindows(
       )
     })
   }
+}
+
+async function insertRowsAsync(client: DatabaseClient, tableName: string, columns: string[], rows: unknown[][]): Promise<void> {
+  const columnList = columns.map((column) => client.dialect.quoteIdentifier(column)).join(', ')
+  for (const chunk of chunkValues(rows, 250)) {
+    if (chunk.length === 0) continue
+    const placeholders = chunk
+      .map((row) => `(${row.map(() => '?').join(', ')})`)
+      .join(', ')
+    await client.execute(`
+      INSERT INTO ${statsTable(client, tableName)} (${columnList})
+      VALUES ${placeholders}
+    `, chunk.flat())
+  }
+}
+
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
 }

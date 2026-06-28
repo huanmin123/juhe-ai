@@ -1,7 +1,13 @@
 import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import { connectionTypeForProviderProtocolProfile } from '../../domain/provider-connection-type.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { getProxyTestConfig, listAccounts, type ProxyProfileTestConfig } from '../../storage/repositories.js'
+import {
+  findAccountSummaryAsync,
+  getProxyTestConfig,
+  getProxyTestConfigAsync,
+  listAccounts,
+  type ProxyProfileTestConfig
+} from '../../storage/repositories.js'
 import {
   accountImportMaxAccounts,
   accountImportProtocolType,
@@ -134,6 +140,41 @@ export function exportAccountsAsImportDocument(options: AccountExportOptions, ac
   }
 }
 
+export async function exportAccountsAsImportDocumentAsync(options: AccountExportOptions, access: AccessScope): Promise<AccountExportResult> {
+  const accountIds = normalizeExportAccountIds(options.accountIds)
+  const loadedAccounts = await Promise.all(accountIds.map((id) => findAccountSummaryAsync(id, access)))
+  const accountsById = new Map(
+    loadedAccounts
+      .filter((account): account is AccountSummary => Boolean(account))
+      .filter(isExportableOwnerAccount)
+      .map((account) => [account.id, account])
+  )
+  const accounts = accountIds.map((id) => accountsById.get(id)).filter((account): account is AccountSummary => Boolean(account))
+  if (!accounts.length) {
+    throw new Error('没有可导出的自有 AI 账户')
+  }
+
+  const proxies: AccountExportProxy[] = []
+  const proxyRefsById = new Map<string, string>()
+  const exportedAccounts = await Promise.all(accounts.map((account) => exportAccountAsync(account, proxyRefsById, proxies)))
+  const document: AccountExportDocument = {
+    type: accountImportProtocolType,
+    version: accountImportProtocolVersion,
+    ...(proxies.length ? { proxies } : {}),
+    accounts: exportedAccounts
+  }
+  return {
+    document,
+    summary: {
+      accounts: exportedAccounts.length,
+      proxies: proxies.length,
+      skippedAccounts: Math.max(0, accountIds.length - exportedAccounts.length),
+      ...(typeof options.matchedAccounts === 'number' ? { matchedAccounts: options.matchedAccounts } : {}),
+      ...(typeof options.truncated === 'boolean' ? { truncated: options.truncated } : {})
+    }
+  }
+}
+
 function normalizeExportAccountIds(values: string[]): string[] {
   const ids = [...new Set(values.map((value) => typeof value === 'string' ? value.trim() : '').filter(Boolean))]
   if (!ids.length) {
@@ -152,8 +193,15 @@ function isExportableOwnerAccount(account: AccountSummary): boolean {
 }
 
 function exportAccount(account: AccountSummary, proxyRefsById: Map<string, string>, proxies: AccountExportProxy[]): AccountExportAccount {
+  return buildExportAccount(account, exportProxyRef(account.proxyProfileId, proxyRefsById, proxies))
+}
+
+async function exportAccountAsync(account: AccountSummary, proxyRefsById: Map<string, string>, proxies: AccountExportProxy[]): Promise<AccountExportAccount> {
+  return buildExportAccount(account, await exportProxyRefAsync(account.proxyProfileId, proxyRefsById, proxies))
+}
+
+function buildExportAccount(account: AccountSummary, proxyRef: string | undefined): AccountExportAccount {
   const status = exportAccountStatus(account)
-  const proxyRef = exportProxyRef(account.proxyProfileId, proxyRefsById, proxies)
   const output: AccountExportAccount = {
     ref: account.id,
     name: account.name,
@@ -227,6 +275,27 @@ function exportProxyRef(proxyProfileId: string | undefined, proxyRefsById: Map<s
 function exportableProxy(proxyProfileId: string): ProxyProfileTestConfig | undefined {
   try {
     const proxy = getProxyTestConfig(proxyProfileId)
+    return proxy?.enabled ? proxy : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function exportProxyRefAsync(proxyProfileId: string | undefined, proxyRefsById: Map<string, string>, proxies: AccountExportProxy[]): Promise<string | undefined> {
+  if (!proxyProfileId) return undefined
+  const existingRef = proxyRefsById.get(proxyProfileId)
+  if (existingRef) return existingRef
+  const proxy = await exportableProxyAsync(proxyProfileId)
+  if (!proxy) return undefined
+  const ref = `proxy-${proxyProfileId}`
+  proxyRefsById.set(proxyProfileId, ref)
+  proxies.push(exportProxy(proxy, ref))
+  return ref
+}
+
+async function exportableProxyAsync(proxyProfileId: string): Promise<ProxyProfileTestConfig | undefined> {
+  try {
+    const proxy = await getProxyTestConfigAsync(proxyProfileId)
     return proxy?.enabled ? proxy : undefined
   } catch {
     return undefined

@@ -2,35 +2,35 @@ import type { Router } from 'express'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { AccountTagInUseError, deleteAccountTag, findAccountSummary, listAccountTags, updateAccountTags } from '../../storage/repositories.js'
+import { AccountTagInUseError, deleteAccountTagAsync, findAccountSummaryAsync, listAccountTagsAsync, updateAccountTagsAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { accountTagsUpdateSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountTagsRoutes(router: Router): void {
-  router.get('/tags', (req, res) => {
+  router.get('/tags', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     try {
-      res.json(ok(listAccountTags(getRequestAccessScope(scopeQuery.data.systemAccountId))))
+      res.json(ok(await listAccountTagsAsync(getRequestAccessScope(scopeQuery.data.systemAccountId))))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '加载账户标签失败'))
     }
   })
 
-  router.delete('/tags/:tagId', (req, res) => {
+  router.delete('/tags/:tagId', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     try {
-      if (!deleteAccountTag(req.params.tagId, getRequestAccessScope(scopeQuery.data.systemAccountId))) {
+      if (!(await deleteAccountTagAsync(req.params.tagId, getRequestAccessScope(scopeQuery.data.systemAccountId)))) {
         res.status(404).json({ message: '标签不存在' })
         return
       }
@@ -44,7 +44,7 @@ export function registerAccountTagsRoutes(router: Router): void {
     }
   })
 
-  router.patch('/:id/tags', (req, res) => {
+  router.patch('/:id/tags', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -56,18 +56,18 @@ export function registerAccountTagsRoutes(router: Router): void {
       res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户标签参数无效'))
       return
     }
-    const before = findAccountSummary(req.params.id, requestAccess)
+    const before = await findAccountSummaryAsync(req.params.id, requestAccess)
     if (!before) {
       res.status(404).json({ message: '账户不存在' })
       return
     }
     try {
-      const account = runLoggedOperation(() => {
-        const tags = updateAccountTags(req.params.id, parsed.data.tags, requestAccess)
+      const account = await runLoggedOperationAsync(async () => {
+        const tags = await updateAccountTagsAsync(req.params.id, parsed.data.tags, requestAccess)
         if (!tags) {
           throw new Error('账户不存在')
         }
-        const account = findAccountSummary(req.params.id, requestAccess)
+        const account = await findAccountSummaryAsync(req.params.id, requestAccess)
         if (!account) {
           throw new Error('账户不存在')
         }

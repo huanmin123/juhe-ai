@@ -3,20 +3,20 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import {
-  createAnnouncement,
-  deleteAnnouncement,
-  findAnnouncement,
-  listAnnouncementsPage,
-  listPublicAnnouncements,
-  markPublicAnnouncementsRead,
-  publishAnnouncement,
-  unpublishAnnouncement,
-  updateAnnouncement
+  createAnnouncementAsync,
+  deleteAnnouncementAsync,
+  findAnnouncementAsync,
+  listAnnouncementsPageAsync,
+  listPublicAnnouncementsAsync,
+  markPublicAnnouncementsReadAsync,
+  publishAnnouncementAsync,
+  unpublishAnnouncementAsync,
+  updateAnnouncementAsync
 } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
+import { diffSafeFields, runLoggedOperationAsync, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const announcementsRouter = Router()
 
@@ -47,35 +47,35 @@ const updateAnnouncementSchema = z.object({
   status: z.enum(['draft', 'published', 'archived']).optional()
 }).strict()
 
-announcementsRouter.get('/public', (req, res) => {
+announcementsRouter.get('/public', async (req, res) => {
   const parsed = publicListQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest('公告查询参数无效'))
     return
   }
-  res.json(ok(listPublicAnnouncements(requireActor(), parsed.data.limit)))
+  res.json(ok(await listPublicAnnouncementsAsync(requireActor(), parsed.data.limit)))
 })
 
-announcementsRouter.post('/public/read', (req, res) => {
+announcementsRouter.post('/public/read', async (req, res) => {
   const parsed = readAnnouncementsSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('公告已读参数无效'))
     return
   }
-  res.json(ok(markPublicAnnouncementsRead(requireActor(), parsed.data.announcementIds)))
+  res.json(ok(await markPublicAnnouncementsReadAsync(requireActor(), parsed.data.announcementIds)))
 })
 
-announcementsRouter.get('/', requireAdmin, (req, res) => {
+announcementsRouter.get('/', requireAdmin, async (req, res) => {
   const parsed = adminListQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest('公告查询参数无效'))
     return
   }
-  res.json(ok(listAnnouncementsPage(parsed.data)))
+  res.json(ok(await listAnnouncementsPageAsync(parsed.data)))
 })
 
-announcementsRouter.get('/:id', requireAdmin, (req, res) => {
-  const announcement = findAnnouncement(req.params.id)
+announcementsRouter.get('/:id', requireAdmin, async (req, res) => {
+  const announcement = await findAnnouncementAsync(req.params.id)
   if (!announcement) {
     res.status(404).json({ message: '公告不存在' })
     return
@@ -91,14 +91,14 @@ announcementsRouter.post('/', requireAdmin, mutationGuard({
     level: textValue(bodyField(req, 'level')),
     status: textValue(bodyField(req, 'status'))
   })
-}), (req, res) => {
+}), async (req, res) => {
   const parsed = createAnnouncementSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('公告参数无效'))
     return
   }
-  const announcement = runLoggedOperation(() => {
-    const announcement = createAnnouncement(parsed.data, requireActor())
+  const announcement = await runLoggedOperationAsync(async () => {
+    const announcement = await createAnnouncementAsync(parsed.data, requireActor())
     return {
       result: announcement,
       log: {
@@ -123,19 +123,19 @@ announcementsRouter.post('/', requireAdmin, mutationGuard({
   res.status(201).json(ok(announcement))
 })
 
-announcementsRouter.patch('/:id', requireAdmin, (req, res) => {
+announcementsRouter.patch('/:id', requireAdmin, async (req, res) => {
   const parsed = updateAnnouncementSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('公告参数无效'))
     return
   }
-  const before = findAnnouncement(req.params.id)
+  const before = await findAnnouncementAsync(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
-  const announcement = runLoggedOperation(() => {
-    const announcement = updateAnnouncement(req.params.id, parsed.data, requireActor())
+  const announcement = await runLoggedOperationAsync(async () => {
+    const announcement = await updateAnnouncementAsync(req.params.id, parsed.data, requireActor())
     if (!announcement) {
       throw new Error('公告不存在')
     }
@@ -164,14 +164,14 @@ announcementsRouter.patch('/:id', requireAdmin, (req, res) => {
   res.json(ok(announcement))
 })
 
-announcementsRouter.post('/:id/publish', requireAdmin, (req, res) => {
-  const before = findAnnouncement(req.params.id)
+announcementsRouter.post('/:id/publish', requireAdmin, async (req, res) => {
+  const before = await findAnnouncementAsync(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
-  const announcement = runLoggedOperation(() => {
-    const announcement = publishAnnouncement(req.params.id, requireActor())
+  const announcement = await runLoggedOperationAsync(async () => {
+    const announcement = await publishAnnouncementAsync(req.params.id, requireActor())
     if (!announcement) {
       throw new Error('公告不存在')
     }
@@ -198,14 +198,14 @@ announcementsRouter.post('/:id/publish', requireAdmin, (req, res) => {
   res.json(ok(announcement))
 })
 
-announcementsRouter.post('/:id/unpublish', requireAdmin, (req, res) => {
-  const before = findAnnouncement(req.params.id)
+announcementsRouter.post('/:id/unpublish', requireAdmin, async (req, res) => {
+  const before = await findAnnouncementAsync(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
-  const announcement = runLoggedOperation(() => {
-    const announcement = unpublishAnnouncement(req.params.id, requireActor())
+  const announcement = await runLoggedOperationAsync(async () => {
+    const announcement = await unpublishAnnouncementAsync(req.params.id, requireActor())
     if (!announcement) {
       throw new Error('公告不存在')
     }
@@ -231,14 +231,14 @@ announcementsRouter.post('/:id/unpublish', requireAdmin, (req, res) => {
   res.json(ok(announcement))
 })
 
-announcementsRouter.delete('/:id', requireAdmin, (req, res) => {
-  const before = findAnnouncement(req.params.id)
+announcementsRouter.delete('/:id', requireAdmin, async (req, res) => {
+  const before = await findAnnouncementAsync(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
-  runLoggedOperation(() => {
-    if (!deleteAnnouncement(req.params.id)) {
+  await runLoggedOperationAsync(async () => {
+    if (!await deleteAnnouncementAsync(req.params.id)) {
       throw new Error('公告不存在')
     }
     return {

@@ -1,0 +1,104 @@
+import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
+
+const routesSource = readFileSync(new URL('../../modules/external-integrations/external-integrations.routes.ts', import.meta.url), 'utf8')
+const serviceSource = readFileSync(new URL('../../modules/external-integrations/external-public-account-push.service.ts', import.meta.url), 'utf8')
+const targetSource = readFileSync(new URL('../../modules/external-integrations/external-public-account-push.target.ts', import.meta.url), 'utf8')
+const apiKeyCleanupSource = readFileSync(new URL('../../modules/api-keys/api-key-cleanup.service.ts', import.meta.url), 'utf8')
+
+const requiredRouteTokens = [
+  'createOperationLogAsync',
+  'listPublicGroupsAsync',
+  'listPublicApiKeysAsync',
+  'listPublicWelfareAccountsAsync',
+  'addPublicApiKeyAsync',
+  'updatePublicApiKeyAsync',
+  'deletePublicApiKeyAsync',
+  'updatePublicGroupAsync',
+  'deletePublicGroupAsync',
+  'updatePublicWelfareAccountAsync',
+  'deletePublicWelfareAccountAsync',
+  'await recordPublicWelfareAccountWriteOperation',
+  'await recordPublicWelfareAccountDeleteOperation'
+]
+
+for (const token of requiredRouteTokens) {
+  assert(routesSource.includes(token), `公开推送路由必须使用 async 边界：${token}`)
+}
+
+for (const token of [
+  'listPublicGroups',
+  'listPublicApiKeys',
+  'listPublicWelfareAccounts',
+  'addPublicApiKey',
+  'updatePublicApiKey',
+  'deletePublicApiKey',
+  'updatePublicGroup',
+  'deletePublicGroup',
+  'updatePublicWelfareAccount',
+  'deletePublicWelfareAccount'
+]) {
+  assert.doesNotMatch(routesSource, new RegExp(`\\b${token}\\(`), `公开推送路由不能直接调用同步服务：${token}`)
+}
+assert.doesNotMatch(routesSource, /\bcreateOperationLog\(/, '公开推送操作日志不能回退同步写入')
+
+const requiredServiceTokens = [
+  'export async function addPublicGroup',
+  'export async function updatePublicGroupAsync',
+  'export async function deletePublicGroupAsync',
+  'export async function listPublicGroupsAsync',
+  'export async function addPublicApiKeyAsync',
+  'export async function updatePublicApiKeyAsync',
+  'export async function deletePublicApiKeyAsync',
+  'export async function listPublicApiKeysAsync',
+  'export async function deletePublicWelfareAccountAsync',
+  'export async function listPublicWelfareAccountsAsync',
+  'createAccountAsync',
+  'createApiKeyRecordAsync',
+  'createGroupAsync',
+  'deleteAccountWithRelatedCleanupAsync',
+  'deleteApiKeyWithRelatedCleanupAsync',
+  'deleteGroupAsync',
+  'findAccountSummaryAsync',
+  'findApiKeySummaryAsync',
+  'findGroupSummaryAsync',
+  'listAccountsPageAsync',
+  'listApiKeysPageAsync',
+  'listGroupsPageAsync',
+  'listProvidersAsync',
+  'updateAccountAsync',
+  'updateApiKeyAsync',
+  'updateGroupAsync',
+  'findPublicAccountOwnerByIdAsync',
+  'findPublicGroupOwnerByIdAsync',
+  'findPublicApiKeyOwnerByIdAsync',
+  'findTargetAccountByIdAsync',
+  'findTargetAccountAsync',
+  'resolvePublicAccountGroupFilterAsync',
+  'juhe_business.accounts',
+  'juhe_business.groups',
+  'juhe_business.api_keys',
+  'juhe_business.group_accounts'
+]
+
+for (const token of requiredServiceTokens) {
+  assert(serviceSource.includes(token), `公开推送服务必须固定 async/PG 路径：${token}`)
+}
+
+for (const token of [
+  'ensureTargetSystemAccountAsync',
+  'ensureTargetGroupAsync',
+  'findPublicTargetAsync',
+  'requirePublicTargetAsync',
+  'resolvePublicOwnedResourceTargetAsync',
+  'resolvePublicGroupAsync',
+  'resolveAccountListGroupIdAsync',
+  'findExistingTargetGroupAsync'
+]) {
+  assert(targetSource.includes(token), `公开推送目标解析必须提供 async helper：${token}`)
+}
+
+assert(apiKeyCleanupSource.includes("runtimeConfig.databaseDriver === 'postgres'"), 'PG 模式 API Key 删除不能尝试登记本地 dataset 清理目标')
+assert(apiKeyCleanupSource.includes('postgres_record_cleanup_not_supported'), 'PG 模式 API Key 删除应返回固定清理跳过原因')
+
+console.log('公开账号推送 async 边界回归通过：公开账号、分组、API Key 与操作日志均固定 async/PG 路径')

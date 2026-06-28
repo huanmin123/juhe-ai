@@ -3,17 +3,29 @@ import { performance } from 'node:perf_hooks'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
   accountTestTaskCancelMessage,
+  accountTestTaskCancelMessageAsync,
   cancelExpiredAccountTestSessions,
+  cancelExpiredAccountTestSessionsAsync,
   cleanupExpiredAccountTestTasks,
+  cleanupExpiredAccountTestTasksAsync,
   completeAccountTestTask,
+  completeAccountTestTaskAsync,
   failAccountTestTask,
+  failAccountTestTaskAsync,
   failExpiredQueuedAccountTestTasks,
+  failExpiredQueuedAccountTestTasksAsync,
   isAccountTestTaskCancelRequested,
+  isAccountTestTaskCancelRequestedAsync,
   listRunnableAccountTestTaskIds,
+  listRunnableAccountTestTaskIdsAsync,
   markAccountTestTaskCanceled,
+  markAccountTestTaskCanceledAsync,
   markAccountTestTaskRunning,
+  markAccountTestTaskRunningAsync,
   requeueInterruptedAccountTestTasks,
-  updateAccountTestTaskMessage
+  requeueInterruptedAccountTestTasksAsync,
+  updateAccountTestTaskMessage,
+  updateAccountTestTaskMessageAsync
 } from '../../storage/account-test-tasks.repository.js'
 import {
   clearGatewayApiKeyValidationCache,
@@ -23,6 +35,7 @@ import {
   clearAccountStreamFailureState,
   clearAuthorizedAccountBindingStreamFailureState,
   findAccountForTest,
+  findAccountForTestAsync,
   findAccountForCooldownRetest,
   findAccountForHealthCheck,
   getAccountPrecheckMutationState,
@@ -38,6 +51,7 @@ import {
   markAccountCooldown,
   markAccountDisabledByFailure,
   markAccountTestTemporaryUnavailable,
+  markAccountTestTemporaryUnavailableAsync,
   markAccountTemporaryUnavailable,
   markAuthorizedAccountBindingCooldownByContext,
   markAuthorizedAccountBindingDisabledByFailure,
@@ -47,15 +61,19 @@ import {
   recordAccountHealthCheckSuccess,
   recordCooldownAccountRetestFailure,
   recordAccountSuccessfulTestModel,
+  recordAccountSuccessfulTestModelAsync,
   recordAuthorizedAccountBindingStreamFailure,
   resolveGroupUsageAccessMetadata,
   resolveGroupUsageAccessMetadataAsync,
   resolveProxyUrlForProfile,
+  resolveProxyUrlForProfileAsync,
   syncAccountAvailabilityScheduleStatuses,
   syncApiKeyAvailabilityScheduleStatuses,
   type OpenAIAccountSecret,
   updateAccount,
+  updateAccountAsync,
   updateProxyTestState,
+  updateProxyTestStateAsync,
   validateGatewayApiKey,
   validateGatewayApiKeyAsync
 } from '../../storage/repositories.js'
@@ -67,6 +85,7 @@ import {
 } from '../../storage/runtime-logs.repository.js'
 import {
   listActiveClientIpPolicies,
+  listActiveClientIpPoliciesAsync,
 } from '../../storage/client-ip-stats.repository.js'
 import { listActiveResponseInspectionPoliciesForGateway, listActiveResponseInspectionPoliciesForGatewayAsync } from '../../storage/response-inspection-policy.repository.js'
 import { cleanupExpiredSystemSessions } from '../../storage/data-retention.repository.js'
@@ -104,7 +123,9 @@ import { persistOpenAICodexUsageHeaders } from '../gateway/adapters/gpt-codex/us
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
   recordAccountApiKeyRuntimeFailure,
-  recordAccountApiKeyRuntimeSuccess
+  recordAccountApiKeyRuntimeFailureAsync,
+  recordAccountApiKeyRuntimeSuccess,
+  recordAccountApiKeyRuntimeSuccessAsync
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import {
   createOpenAICompatibleFile,
@@ -355,6 +376,127 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         })
       }
       return handleDbServiceOperationSync(operation)
+    case 'find_account_for_test':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findAccountForTestAsync(operation.accountId, operation.access)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'mark_account_test_temporary_unavailable': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const account = await findAccountForTestAsync(operation.accountId, operation.access ?? internalDbServiceAccountAccess)
+        const updated = account
+          ? await markAccountTestTemporaryUnavailableAsync(account, operation.reason, operation.access ?? internalDbServiceAccountAccess)
+          : undefined
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated), accountStatus: updated?.status }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'account_test_task_maintenance':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await handleAccountTestTaskMaintenanceAsync(operation)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'mark_account_test_task_running':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await markAccountTestTaskRunningAsync(operation.taskId)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'mark_account_test_task_canceled':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await markAccountTestTaskCanceledAsync(operation.taskId, operation.message)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'complete_account_test_task':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await completeAccountTestTaskAsync(operation.taskId, operation.result)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'fail_account_test_task':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await failAccountTestTaskAsync(operation.taskId, operation.message, operation.result)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'update_account_test_task_message':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await updateAccountTestTaskMessageAsync(operation.taskId, operation.message)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'is_account_test_task_cancel_requested':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return { canceled: await isAccountTestTaskCancelRequestedAsync(operation.taskId) }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'read_account_test_task_cancel_message':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return { message: await accountTestTaskCancelMessageAsync(operation.taskId) }
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'record_account_successful_test_model': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const updated = await recordAccountSuccessfulTestModelAsync(operation.accountId, operation.model, operation.access ?? internalDbServiceAccountAccess)
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated), accountStatus: updated?.status }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'record_account_api_key_failure': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await recordAccountApiKeyRuntimeFailureAsync({
+          account: operation.account,
+          ...operation.input
+        })
+        if (result.changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'record_account_api_key_success': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account)
+        if (result.changed) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'update_proxy_test_state': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const updated = await updateProxyTestStateAsync(operation.proxyId, operation.input)
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated), proxyStatus: updated?.testStatus }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'update_openai_oauth_credentials': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const updated = await updateAccountAsync(operation.accountId, { credentials: operation.credentials }, internalDbServiceAccountAccess)
+        if (updated) {
+          clearGatewayRuntimeCacheLocal()
+        }
+        return { updated: Boolean(updated) }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'find_openai_oauth_account_for_refresh':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await findOpenAIOAuthAccountForRefreshAsync(operation.accountId)
+      }
+      return handleDbServiceOperationSync(operation)
+    case 'list_active_client_ip_policies':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listActiveClientIpPoliciesAsync()
+      }
+      return handleDbServiceOperationSync(operation)
     case 'save_codex_context_response_state':
       return await saveCodexContextResponseStateIndexWithWriterPool(operation.input)
     case 'save_codex_context_compact_state':
@@ -382,6 +524,22 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     default:
       return handleDbServiceOperationSync(operation)
   }
+}
+
+async function handleAccountTestTaskMaintenanceAsync(
+  operation: Extract<DbServiceOperation, { type: 'account_test_task_maintenance' }>
+): Promise<{ taskIds: string[]; canceledTaskIds: string[]; expiredQueuedTaskIds: string[] }> {
+  await cleanupExpiredAccountTestTasksAsync()
+  const canceledTaskIds = operation.action === 'start' || operation.action === 'sweep'
+    ? await cancelExpiredAccountTestSessionsAsync()
+    : []
+  const expiredQueuedTaskIds = operation.action === 'sweep'
+    ? await failExpiredQueuedAccountTestTasksAsync(operation.maxQueuedMs ?? 10 * 60_000, operation.sweepLimit ?? 500)
+    : []
+  const taskIds = operation.action === 'start'
+    ? await requeueInterruptedAccountTestTasksAsync()
+    : await listRunnableAccountTestTaskIdsAsync(operation.refillLimit ?? 100)
+  return { taskIds, canceledTaskIds, expiredQueuedTaskIds }
 }
 
 export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRuntimeSnapshot {
@@ -970,6 +1128,17 @@ function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
   return {
     ...account,
     proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
+  }
+}
+
+async function findOpenAIOAuthAccountForRefreshAsync(accountId: string): Promise<unknown> {
+  const account = await findAccountForTestAsync(accountId)
+  if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
+    return undefined
+  }
+  return {
+    ...account,
+    proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
   }
 }
 

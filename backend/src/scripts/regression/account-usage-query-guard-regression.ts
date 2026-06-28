@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -23,6 +23,12 @@ const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
+
+const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+const repositoriesSource = readFileSync(new URL('../../storage/repositories.ts', import.meta.url), 'utf8')
+assert(statsRoutesSource.includes('getAccountUsageStatsOverviewPageAsync'), '账号用量统计接口必须调用 async repository，避免 PG 模式下阻塞系统 API')
+assert(!/ok\(getAccountUsageStatsOverviewPage\(/.test(statsRoutesSource), '账号用量统计接口不应直接调用同步 repository')
+assert(repositoriesSource.includes('buildAccountUsageStatsOverviewPageFromWindowsAsync'), '账号用量统计 repository 必须暴露 PG 异步窗口表读取路径')
 
 const range = {
   startDate: '2026-02-01',

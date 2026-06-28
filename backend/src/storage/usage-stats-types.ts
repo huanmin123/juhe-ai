@@ -144,6 +144,7 @@ export interface StatsAggregateMathRow {
 }
 
 export interface SystemMetricsSampleInput {
+  sampledAt?: string
   cpuPercent?: number
   memoryUsedPercent?: number
   memoryTotalBytes?: number

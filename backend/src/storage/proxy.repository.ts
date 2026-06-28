@@ -105,12 +105,35 @@ export function listProxies(): ProxyProfileSummary[] {
   return queryProxies().items
 }
 
+export async function listProxiesAsync(): Promise<ProxyProfileSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listProxies()
+  }
+  return (await queryProxiesAsync()).items
+}
+
 export function listProxiesPage(options: ProxyProfileListOptions = {}): ProxyProfileListResult {
   return queryProxies(options, true)
 }
 
+export async function listProxiesPageAsync(options: ProxyProfileListOptions = {}): Promise<ProxyProfileListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listProxiesPage(options)
+  }
+  return await queryProxiesAsync(options, true)
+}
+
 export function findProxy(id: string): ProxyProfileSummary | undefined {
   const row = getBusinessDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
+  return row ? proxySummaryFromRow(row) : undefined
+}
+
+export async function findProxyAsync(id: string): Promise<ProxyProfileSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findProxy(id)
+  }
+  const client = await getProxyDatabaseClient()
+  const row = await client.one<ProxyRow>(`SELECT ${proxySummarySelectColumns()} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
   return row ? proxySummaryFromRow(row) : undefined
 }
 
@@ -130,6 +153,31 @@ export function listProxyOptions(options: ProxyProfileOptionListOptions = {}): P
   }))
 }
 
+export async function listProxyOptionsAsync(options: ProxyProfileOptionListOptions = {}): Promise<ProxyProfileOptionSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listProxyOptions(options)
+  }
+  const client = await getProxyDatabaseClient()
+  const keywordFilter = buildProxyKeywordFilterAsync(options.keyword)
+  const safeLimit = typeof options.limit === 'number' && Number.isInteger(options.limit)
+    ? Math.min(50, Math.max(1, options.limit))
+    : 50
+  const rows = await client.query<Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>[number]>(
+    `SELECT id, name, type, enabled
+     FROM ${proxyProfilesTable(client)}
+     WHERE enabled = 1${keywordFilter.clause ? ` AND ${keywordFilter.clause}` : ''}
+     ORDER BY name ASC, updated_at DESC, id ASC
+     LIMIT ?`,
+    [...keywordFilter.params, safeLimit]
+  )
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    enabled: row.enabled === 1
+  }))
+}
+
 function queryProxies(options: ProxyProfileListOptions = {}, paged = false): ProxyProfileListResult {
   const normalized = normalizeProxyListOptions(options)
   const keywordFilter = buildProxyKeywordFilter(normalized.keyword)
@@ -139,6 +187,31 @@ function queryProxies(options: ProxyProfileListOptions = {}, paged = false): Pro
   const rows = getBusinessDatabase()
     .prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ${whereClause} ORDER BY updated_at DESC, id DESC${pageClause}`)
     .all(...keywordFilter.params, ...pageParams) as unknown as ProxyRow[]
+  const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
+  const items = pageRows.rows.map(proxySummaryFromRow)
+  return {
+    items,
+    total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
+async function queryProxiesAsync(options: ProxyProfileListOptions = {}, paged = false): Promise<ProxyProfileListResult> {
+  const normalized = normalizeProxyListOptions(options)
+  const keywordFilter = buildProxyKeywordFilterAsync(normalized.keyword)
+  const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
+  const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
+  const client = await getProxyDatabaseClient()
+  const rows = await client.query<ProxyRow>(
+    `SELECT ${proxySummarySelectColumns()}
+     FROM ${proxyProfilesTable(client)}
+     ${whereClause}
+     ORDER BY updated_at DESC, id DESC${pageClause}`,
+    [...keywordFilter.params, ...pageParams]
+  )
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = pageRows.rows.map(proxySummaryFromRow)
   return {
@@ -171,6 +244,19 @@ function buildProxyKeywordFilter(keyword?: string): { clause: string; params: st
     clause: `(
       name COLLATE NOCASE = ?
       OR name LIKE ? ESCAPE '\\'
+    )`,
+    params: [text, prefix]
+  }
+}
+
+function buildProxyKeywordFilterAsync(keyword?: string): { clause: string; params: string[] } {
+  const text = optionalString(keyword)
+  if (!text) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(text)}%`
+  return {
+    clause: `(
+      lower(name) = lower(?)
+      OR lower(name) LIKE lower(?) ESCAPE '\\'
     )`,
     params: [text, prefix]
   }
@@ -277,6 +363,47 @@ export function createProxy(input: Record<string, unknown>, access: AccessScope)
   return proxy
 }
 
+export async function createProxyAsync(input: Record<string, unknown>, access: AccessScope): Promise<ProxyProfileSummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createProxy(input, access)
+  }
+  assertKnownInputKeys(input, proxyInputKeys, '代理')
+  const now = nowIso()
+  const systemAccountId = currentSystemAccountId(access)
+  const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
+  const password = normalizeProxyPassword(input.password, hasPasswordInput)
+  const proxy: ProxyProfileSummary = {
+    id: newId('proxy'),
+    name: normalizedRequiredProxyName(input.name),
+    description: normalizeOptionalText(input.description, '代理描述'),
+    type: normalizedProxyType(input.type),
+    host: normalizedRequiredProxyHost(input.host),
+    port: normalizedProxyPort(input.port),
+    username: normalizeOptionalText(input.username, '代理用户名'),
+    enabled: normalizeOptionalBoolean(input.enabled, true, '代理启用状态'),
+    testStatus: 'unknown',
+    latencyMs: undefined,
+    outboundIp: undefined,
+    outboundRegion: undefined,
+    lastTestMessage: undefined
+  }
+  await assertProxyNameAvailableAsync(proxy.name)
+  const client = await getProxyDatabaseClient()
+  try {
+    await client.execute(`
+      INSERT INTO ${proxyProfilesTable(client)} (id, system_account_id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [proxy.id, systemAccountId, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, password ? encryptJson({ password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now])
+  } catch (error) {
+    if (isDuplicateProxyNameError(error)) {
+      throw new Error(`代理名称已存在：${proxy.name}`)
+    }
+    throw error
+  }
+  notifyGatewayRuntimeCacheInvalidation('proxy_created')
+  return proxy
+}
+
 export function updateProxy(id: string, input: Record<string, unknown>): ProxyProfileSummary | undefined {
   assertKnownInputKeys(input, proxyInputKeys, '代理')
   const current = findProxy(id)
@@ -345,8 +472,85 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   return findProxy(id) ?? next
 }
 
+export async function updateProxyAsync(id: string, input: Record<string, unknown>): Promise<ProxyProfileSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateProxy(id, input)
+  }
+  assertKnownInputKeys(input, proxyInputKeys, '代理')
+  const current = await findProxyAsync(id)
+  if (!current) {
+    return undefined
+  }
+  const client = await getProxyDatabaseClient()
+  const currentSecret = await client.one<{ password_encrypted?: string | null }>(`SELECT password_encrypted FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
+  const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
+  const nextPassword = normalizeProxyPassword(input.password, hasPasswordInput)
+  const shouldUpdatePassword = hasPasswordInput
+  const hasUsernameInput = Object.prototype.hasOwnProperty.call(input, 'username')
+  const next: ProxyProfileSummary = {
+    ...current,
+    name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedRequiredProxyName(input.name) : current.name,
+    description: input.description === undefined ? current.description : normalizeOptionalText(input.description, '代理描述'),
+    type: Object.prototype.hasOwnProperty.call(input, 'type') ? normalizedProxyType(input.type) : current.type,
+    host: Object.prototype.hasOwnProperty.call(input, 'host') ? normalizedRequiredProxyHost(input.host) : current.host,
+    port: Object.prototype.hasOwnProperty.call(input, 'port') ? normalizedProxyPort(input.port) : current.port,
+    username: hasUsernameInput ? normalizeOptionalText(input.username, '代理用户名') : current.username,
+    enabled: input.enabled === undefined ? current.enabled : normalizeOptionalBoolean(input.enabled, true, '代理启用状态')
+  }
+  const shouldResetTestState = next.type !== current.type ||
+    next.host !== current.host ||
+    next.port !== current.port ||
+    next.username !== current.username ||
+    shouldUpdatePassword
+  const nextPasswordEncrypted = shouldUpdatePassword
+    ? encryptJson({ password: nextPassword })
+    : currentSecret?.password_encrypted ?? null
+  await assertProxyNameAvailableAsync(next.name, id)
+  try {
+    await client.execute(`
+      UPDATE ${proxyProfilesTable(client)}
+      SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
+        test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?, updated_at = ?
+      WHERE id = ?
+    `, [
+      next.name,
+      next.description ?? null,
+      next.type,
+      next.host,
+      next.port,
+      next.username ?? null,
+      nextPasswordEncrypted,
+      next.enabled ? 1 : 0,
+      shouldResetTestState ? 'unknown' : next.testStatus,
+      shouldResetTestState ? null : next.latencyMs ?? null,
+      shouldResetTestState ? null : next.outboundIp ?? null,
+      shouldResetTestState ? null : next.outboundRegion ?? null,
+      shouldResetTestState ? null : next.lastTestMessage ?? null,
+      shouldResetTestState ? null : next.lastTestedAt ?? null,
+      nowIso(),
+      id
+    ])
+  } catch (error) {
+    if (isDuplicateProxyNameError(error)) {
+      throw new Error(`代理名称已存在：${next.name}`)
+    }
+    throw error
+  }
+  notifyGatewayRuntimeCacheInvalidation('proxy_updated')
+  return await findProxyAsync(id) ?? next
+}
+
 export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
   const row = getBusinessDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
+  return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
+}
+
+export async function getProxyTestConfigAsync(id: string): Promise<ProxyProfileTestConfig | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getProxyTestConfig(id)
+  }
+  const client = await getProxyDatabaseClient()
+  const row = await client.one<ProxyRow>(`SELECT ${proxyTestConfigSelectColumns()} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
   return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
 }
 
@@ -360,6 +564,21 @@ export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[
       LIMIT ?
     `)
     .all(Math.max(1, Math.trunc(limit))) as unknown as ProxyRow[]
+  return rows.map((row) => ({ ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) }))
+}
+
+export async function listEnabledProxyTestConfigsAsync(limit = 20): Promise<ProxyProfileTestConfig[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listEnabledProxyTestConfigs(limit)
+  }
+  const client = await getProxyDatabaseClient()
+  const rows = await client.query<ProxyRow>(`
+    SELECT ${proxyTestConfigSelectColumns()}
+    FROM ${proxyProfilesTable(client)}
+    WHERE enabled = 1
+    ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC, id ASC
+    LIMIT ?
+  `, [Math.max(1, Math.trunc(limit))])
   return rows.map((row) => ({ ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) }))
 }
 
@@ -398,12 +617,65 @@ export function updateProxyTestState(
   return findProxy(id)
 }
 
+export async function updateProxyTestStateAsync(
+  id: string,
+  input: { testStatus: string; latencyMs?: number | null; outboundIp?: string | null; outboundRegion?: string | null; lastTestMessage?: string | null; lastTestedAt?: string }
+): Promise<ProxyProfileSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateProxyTestState(id, input)
+  }
+  const testedAt = input.lastTestedAt ?? nowIso()
+  const testStatus = normalizeProxyTestStatus(input.testStatus)
+  const latencyMs = normalizeProxyTestLatencyMs(input.latencyMs)
+  const outboundIp = input.outboundIp === undefined ? undefined : normalizeProxyTestText(input.outboundIp, '代理出口 IP')
+  const outboundRegion = input.outboundRegion === undefined ? undefined : normalizeProxyTestText(input.outboundRegion, '代理出口地区')
+  const outboundUpdateSql = [
+    outboundIp !== undefined ? 'outbound_ip = ?' : '',
+    outboundRegion !== undefined ? 'outbound_region = ?' : ''
+  ].filter(Boolean).join(', ')
+  const client = await getProxyDatabaseClient()
+  const sql = `
+    UPDATE ${proxyProfilesTable(client)}
+    SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?, updated_at = ?
+    WHERE id = ?
+  `
+  const params = [
+    testStatus,
+    latencyMs,
+    ...(outboundIp !== undefined ? [outboundIp] : []),
+    ...(outboundRegion !== undefined ? [outboundRegion] : []),
+    normalizeProxyTestText(input.lastTestMessage, '代理检测消息'),
+    testedAt,
+    nowIso(),
+    id
+  ]
+  await client.execute(sql, params)
+  notifyGatewayRuntimeCacheInvalidation('proxy_test_state_updated')
+  return await findProxyAsync(id)
+}
+
 export function deleteProxy(id: string): boolean {
   const usage = proxyUsageSummary(id)
   if (usage.accountCount > 0) {
     throw new ProxyInUseError(usage.accountCount, usage.accountNames, usage.accountCountIsLowerBound)
   }
   const result = getBusinessDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
+  if (Number(result.changes ?? 0) > 0) {
+    notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
+  }
+  return result.changes > 0
+}
+
+export async function deleteProxyAsync(id: string): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deleteProxy(id)
+  }
+  const usage = await proxyUsageSummaryAsync(id)
+  if (usage.accountCount > 0) {
+    throw new ProxyInUseError(usage.accountCount, usage.accountNames, usage.accountCountIsLowerBound)
+  }
+  const client = await getProxyDatabaseClient()
+  const result = await client.execute(`DELETE FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
   if (Number(result.changes ?? 0) > 0) {
     notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
   }
@@ -426,12 +698,45 @@ function proxyUsageSummary(id: string): { accountCount: number; accountCountIsLo
   }
 }
 
+async function proxyUsageSummaryAsync(id: string): Promise<{ accountCount: number; accountCountIsLowerBound: boolean; accountNames: string[] }> {
+  const client = await getProxyDatabaseClient()
+  const rows = await client.query<Array<{ id?: string; name?: string }>[number]>(
+    `SELECT id, name
+     FROM ${client.dialect.qualifyTable(businessSchemaName, 'accounts')}
+     WHERE proxy_profile_id = ? AND deleted_at IS NULL
+     ORDER BY id ASC
+     LIMIT ?`,
+    [id, proxyUsageWindowLimit]
+  )
+  const accountCountIsLowerBound = rows.length >= proxyUsageWindowLimit
+  const accountCount = rows.length
+  return {
+    accountCount,
+    accountCountIsLowerBound,
+    accountNames: rows
+      .slice(0, proxyUsagePreviewLimit)
+      .map((item) => item.name)
+      .filter((name): name is string => Boolean(name))
+  }
+}
+
 export function resolveProxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
   return proxyUrlForProfile(proxyProfileId)
 }
 
+export async function resolveProxyUrlForProfileAsync(proxyProfileId?: string | null): Promise<string | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return resolveProxyUrlForProfile(proxyProfileId)
+  }
+  return await proxyUrlForProfileAsync(proxyProfileId)
+}
+
 export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string | undefined | null, _systemAccountId: string): string | undefined {
   return proxyUrlForProfile(proxyProfileId)
+}
+
+export async function resolveProxyUrlForProfileForSystemAccountAsync(proxyProfileId: string | undefined | null, _systemAccountId: string): Promise<string | undefined> {
+  return await resolveProxyUrlForProfileAsync(proxyProfileId)
 }
 
 export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<string, ProxyProfileUrlResolution> {
@@ -506,11 +811,38 @@ export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): st
   return row.id
 }
 
+export async function resolveEnabledProxyProfileIdAsync(proxyProfileId?: string | null): Promise<string | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return resolveEnabledProxyProfileId(proxyProfileId)
+  }
+  if (!proxyProfileId) return undefined
+  const client = await getProxyDatabaseClient()
+  const row = await client.one<Pick<ProxyRow, 'id' | 'enabled'>>(`SELECT id, enabled FROM ${proxyProfilesTable(client)} WHERE id = ?`, [proxyProfileId])
+  if (!row || row.enabled !== 1) {
+    throw new ProxyProfileUnavailableError(proxyProfileId)
+  }
+  return row.id
+}
+
 function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
   const row = getBusinessDatabase()
     .prepare('SELECT type, host, port, username, password_encrypted, enabled FROM proxy_profiles WHERE id = ?')
     .get(proxyProfileId) as unknown as ProxyRow | undefined
+  if (!row || row.enabled !== 1) {
+    throw new ProxyProfileUnavailableError(proxyProfileId)
+  }
+  return proxyUrlFromRow(row)
+}
+
+async function proxyUrlForProfileAsync(proxyProfileId?: string | null): Promise<string | undefined> {
+  if (!proxyProfileId) return undefined
+  const client = await getProxyDatabaseClient()
+  const row = await client.one<ProxyRow>(`
+    SELECT type, host, port, username, password_encrypted, enabled
+    FROM ${proxyProfilesTable(client)}
+    WHERE id = ?
+  `, [proxyProfileId])
   if (!row || row.enabled !== 1) {
     throw new ProxyProfileUnavailableError(proxyProfileId)
   }
@@ -644,6 +976,22 @@ function assertProxyNameAvailable(name: string, excludeId?: string): void {
   const row = getBusinessDatabase()
     .prepare(`SELECT id FROM proxy_profiles WHERE lower(name) = lower(?)${excludeClause} LIMIT 1`)
     .get(...params) as { id?: string } | undefined
+  if (row?.id) {
+    throw new Error(`代理名称已存在：${name}`)
+  }
+}
+
+async function assertProxyNameAvailableAsync(name: string, excludeId?: string): Promise<void> {
+  const params: string[] = [name]
+  const excludeClause = excludeId ? ' AND id <> ?' : ''
+  if (excludeId) {
+    params.push(excludeId)
+  }
+  const client = await getProxyDatabaseClient()
+  const row = await client.one<{ id?: string }>(
+    `SELECT id FROM ${proxyProfilesTable(client)} WHERE lower(name) = lower(?)${excludeClause} LIMIT 1`,
+    params
+  )
   if (row?.id) {
     throw new Error(`代理名称已存在：${name}`)
   }

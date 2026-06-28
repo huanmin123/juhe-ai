@@ -1,5 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { listAccountApiKeyRuntimeStatesDueForProbe } from '../../storage/account-api-key-runtime-state.repository.js'
+import { listAccountApiKeyRuntimeStatesDueForProbeAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -170,7 +170,7 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
   const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
   setAccountApiKeyCooldownRetestQueueConcurrency(queueConcurrency)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
-  const candidates = listAccountApiKeyRuntimeStatesDueForProbe(batchSize)
+  const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(batchSize)
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0

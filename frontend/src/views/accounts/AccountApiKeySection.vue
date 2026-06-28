@@ -80,7 +80,7 @@
         </div>
       </div>
     </a-form-item>
-    <a-form-item label="Base URL" required tooltip="填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1 或 https://api.anthropic.com/v1；不要填写 /responses、/messages 等具体接口路径。">
+    <a-form-item label="Base URL" required :tooltip="baseUrlTooltip">
       <a-input
         v-model:value="form.baseUrl"
         autocomplete="off"
@@ -98,6 +98,7 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { computed, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
+import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { normalizedAccountApiKeys } from './accountCredentials'
@@ -119,6 +120,11 @@ const apiKeyRuntimeDetailRows = computed<AccountApiKeyRuntimeDetail[]>(() => {
   if (!showApiKeyRuntimeDetails.value) return []
   return [...(props.apiKeyRuntimeDetails ?? [])].sort((left, right) => left.keyIndex - right.keyIndex)
 })
+const baseUrlTooltip = computed(() => (
+  isHybridProviderCode(props.form.providerCode)
+    ? '填写真实上游服务根地址，不要填写具体接口路径。例如 OpenAI-compatible 可填 https://api.openai.com/v1，Anthropic 可填 https://api.anthropic.com/v1，Gemini native 可填 https://generativelanguage.googleapis.com。'
+    : '填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1 或 https://api.anthropic.com/v1；不要填写 /responses、/messages 等具体接口路径。'
+))
 
 watch(
   [() => props.form.apiKeys.length, () => props.form.apiKeyStrategy],

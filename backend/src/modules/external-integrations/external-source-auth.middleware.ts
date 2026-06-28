@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express'
 
-import { validateExternalIntegrationSourceToken } from '../../storage/external-integration-source-auth.repository.js'
+import { validateExternalIntegrationSourceTokenAsync } from '../../storage/external-integration-source-auth.repository.js'
 import {
   type ExternalIntegrationSourceAuthContext,
   type ExternalIntegrationRateLimitRule
@@ -12,46 +12,50 @@ const rateLimitCleanupScanLimit = 256
 const rateLimitStateMaxAgeMs = 86_400_000
 
 export function requireExternalIntegrationSource(requiredScope?: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const token = parseBearerToken(req.header('Authorization'))
-    if (!token) {
-      res.status(401).json({
-        message: '缺少来源系统 token',
-        code: 'external_source_token_missing'
-      })
-      return
-    }
-
-    const result = validateExternalIntegrationSourceToken({ token, requiredScope })
-    if (!result.ok) {
-      if (result.context) {
-        res.locals.externalIntegrationSource = result.context
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const token = parseBearerToken(req.header('Authorization'))
+      if (!token) {
+        res.status(401).json({
+          message: '缺少来源系统 token',
+          code: 'external_source_token_missing'
+        })
+        return
       }
-      res.status(result.statusCode).json({
-        message: result.message,
-        code: result.code
-      })
-      return
-    }
 
-    const rateLimit = consumeExternalSourceRateLimit(result.context)
-    if (!rateLimit.allowed) {
-      res.locals.externalIntegrationSource = result.context
-      res.setHeader('Retry-After', String(rateLimit.retryAfterSeconds))
-      res.status(429).json({
-        message: '来源系统调用过于频繁，请稍后重试',
-        code: 'external_source_rate_limited',
-        details: {
-          windowSeconds: rateLimit.rule.windowSeconds,
-          maxRequests: rateLimit.rule.maxRequests,
-          retryAfterSeconds: rateLimit.retryAfterSeconds
+      const result = await validateExternalIntegrationSourceTokenAsync({ token, requiredScope })
+      if (!result.ok) {
+        if (result.context) {
+          res.locals.externalIntegrationSource = result.context
         }
-      })
-      return
-    }
+        res.status(result.statusCode).json({
+          message: result.message,
+          code: result.code
+        })
+        return
+      }
 
-    res.locals.externalIntegrationSource = result.context
-    next()
+      const rateLimit = consumeExternalSourceRateLimit(result.context)
+      if (!rateLimit.allowed) {
+        res.locals.externalIntegrationSource = result.context
+        res.setHeader('Retry-After', String(rateLimit.retryAfterSeconds))
+        res.status(429).json({
+          message: '来源系统调用过于频繁，请稍后重试',
+          code: 'external_source_rate_limited',
+          details: {
+            windowSeconds: rateLimit.rule.windowSeconds,
+            maxRequests: rateLimit.rule.maxRequests,
+            retryAfterSeconds: rateLimit.retryAfterSeconds
+          }
+        })
+        return
+      }
+
+      res.locals.externalIntegrationSource = result.context
+      next()
+    } catch (error) {
+      next(error)
+    }
   }
 }
 

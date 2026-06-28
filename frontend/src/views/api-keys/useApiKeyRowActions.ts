@@ -7,7 +7,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ApiKeySummary } from '@/types/domain'
 import { isApiKeyScheduleActive, isApiKeyScheduleInactive } from './apiKeyFormatters'
-import type { ApiKeyScopeParams } from './useApiKeyGroupOptions'
+import type { ApiKeyScopeParams } from './apiKeyScope'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
 

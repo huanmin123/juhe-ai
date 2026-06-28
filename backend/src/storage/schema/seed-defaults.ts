@@ -14,35 +14,14 @@ import {
 } from '../external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from '../request-quota-limits.js'
 import {
-  ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
-  ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
-  ANTHROPIC_PROTOCOL_SEED,
-  ANTHROPIC_PROVIDER_SEED,
-  GEMINI_NATIVE_V1BETA_PROFILE_SEED,
-  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED,
-  GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
-  GEMINI_PROTOCOL_SEED,
-  GEMINI_PROVIDER_SEED,
-  DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
-  DEEPSEEK_OPENAI_V1_PROFILE_SEED,
-  DEEPSEEK_PROVIDER_SEED,
   DEFAULT_BUILT_IN_GROUPS,
   DEFAULT_GLOBAL_SETTINGS,
+  DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS,
+  DEFAULT_PROVIDER_SEEDS,
+  DEFAULT_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
+  DEFAULT_PROTOCOL_SEEDS,
   DEFAULT_SYSTEM_SETTINGS,
-  GLM_CODING_ANTHROPIC_V1_PROFILE_SEED,
-  GLM_CODING_OPENAI_V1_PROFILE_SEED,
-  GLM_GENERAL_OPENAI_V1_PROFILE_SEED,
-  GLM_PROVIDER_SEED,
-  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_SEED,
-  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_SEED,
-  HYBRID_OPENAI_CHAT_V1_PROFILE_SEED,
-  HYBRID_PROVIDER_SEED,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
-  OPENAI_COMPATIBLE_PROVIDER_SEED,
-  GPT_OPENAI_V1_PROFILE_SEED,
-  GPT_PROVIDER_SEED,
-  OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
-  OPENAI_PROTOCOL_SEED
+  GPT_OPENAI_V1_PROFILE_SEED
 } from '../schema-defaults.js'
 
 export function seedDefaults(database: DatabaseSync): void {
@@ -89,7 +68,7 @@ export function seedDefaults(database: DatabaseSync): void {
       id, code, name, description, parent_code, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, DEEPSEEK_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED, GEMINI_PROVIDER_SEED, GLM_PROVIDER_SEED, HYBRID_PROVIDER_SEED]) {
+  for (const provider of DEFAULT_PROVIDER_SEEDS) {
     providerStatement.run(
       provider.id,
       provider.code,
@@ -107,7 +86,7 @@ export function seedDefaults(database: DatabaseSync): void {
         id, code, version, name, description, enabled, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const protocol of [OPENAI_PROTOCOL_SEED, ANTHROPIC_PROTOCOL_SEED, GEMINI_PROTOCOL_SEED]) {
+  for (const protocol of DEFAULT_PROTOCOL_SEEDS) {
     protocolStatement.run(
       protocol.id,
       protocol.code,
@@ -125,7 +104,7 @@ export function seedDefaults(database: DatabaseSync): void {
       id, protocol_code, protocol_version, family_code, name, description, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const family of [...OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS]) {
+  for (const family of DEFAULT_PROTOCOL_ENDPOINT_FAMILY_SEEDS) {
     endpointFamilyStatement.run(
       family.id,
       family.protocolCode,
@@ -145,21 +124,7 @@ export function seedDefaults(database: DatabaseSync): void {
       base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  const profileSeeds = [
-    OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
-    GPT_OPENAI_V1_PROFILE_SEED,
-    DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
-    DEEPSEEK_OPENAI_V1_PROFILE_SEED,
-    ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
-    GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED,
-    GEMINI_NATIVE_V1BETA_PROFILE_SEED,
-    GLM_CODING_OPENAI_V1_PROFILE_SEED,
-    GLM_CODING_ANTHROPIC_V1_PROFILE_SEED,
-    GLM_GENERAL_OPENAI_V1_PROFILE_SEED,
-    HYBRID_OPENAI_CHAT_V1_PROFILE_SEED,
-    HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_SEED,
-    HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_SEED
-  ]
+  const profileSeeds = DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS
   const profileSeedBaseTime = Date.parse(now)
   for (const [index, profile] of profileSeeds.entries()) {
     const profileUpdatedAt = Number.isFinite(profileSeedBaseTime)
@@ -194,6 +159,7 @@ export function seedDefaults(database: DatabaseSync): void {
   }
 
   seedAdminDefaultBuiltInGroups(database, now)
+  seedAdminDefaultRouteStrategy(database, now)
   seedBuiltInExternalIntegrationTestToken(database, now)
 
   const statement = database.prepare(`
@@ -204,6 +170,31 @@ export function seedDefaults(database: DatabaseSync): void {
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
   }
+}
+
+function seedAdminDefaultRouteStrategy(database: DatabaseSync, timestamp: string): void {
+  const defaultGptGroup = DEFAULT_BUILT_IN_GROUPS.find((group) => group.systemAccountId === 'sys_admin' && group.providerProtocolProfileId === GPT_OPENAI_V1_PROFILE_SEED.id)
+  if (!defaultGptGroup) return
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO route_strategies (
+        id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
+      )
+      VALUES (?, 'sys_admin', '默认路由', '系统默认普通路由，绑定默认 GPT 分组。', 'normal', 'active', 1, NULL, ?, ?)
+    `)
+    .run('route_strategy_sys_admin_default', timestamp, timestamp)
+  const routeStrategy = database
+    .prepare('SELECT id FROM route_strategies WHERE id = ?')
+    .get('route_strategy_sys_admin_default') as { id?: string } | undefined
+  if (!routeStrategy?.id) return
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO route_strategy_groups (
+        id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
+      )
+      VALUES (?, ?, 'sys_admin', ?, 1, 1, 'active', ?, ?)
+    `)
+    .run('rsg_sys_admin_default', 'route_strategy_sys_admin_default', defaultGptGroup.id, timestamp, timestamp)
 }
 
 function seedAdminDefaultBuiltInGroups(database: DatabaseSync, timestamp: string): void {

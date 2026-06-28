@@ -62,6 +62,15 @@ const basicCases: HybridMockCase[] = [
 ]
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-hybrid-gateway-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const hybridScoringRedisSharedCacheRegression = process.env.JUHE_HYBRID_SCORING_REDIS_REGRESSION === '1'
+const hybridScoringRedisSharedCacheUrl = optionalEnv('JUHE_HYBRID_SCORING_SHARED_CACHE_REDIS_URL') ?? optionalEnv('JUHE_AI_REDIS_CACHE_URL')
+if (hybridScoringRedisSharedCacheRegression) {
+  if (!hybridScoringRedisSharedCacheUrl) {
+    throw new Error('混合路由评分 Redis shared cache 回归需要配置 JUHE_AI_REDIS_CACHE_URL 或 JUHE_HYBRID_SCORING_SHARED_CACHE_REDIS_URL')
+  }
+  runtimeConfig.cacheDriver = 'redis'
+  runtimeConfig.redis.cacheUrl = hybridScoringRedisSharedCacheUrl
+}
 runtimeConfig.databasePath = join(tempRoot, 'hybrid-gateway-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
@@ -85,7 +94,8 @@ const [
   usageRecordQueue,
   auditLogQueue,
   hybridAffinity,
-  hybridScoring
+  hybridScoring,
+  redisClientModule
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -96,7 +106,8 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/hybrid/affinity.service.js'),
-  import('../../modules/gateway/hybrid/scoring.service.js')
+  import('../../modules/gateway/hybrid/scoring.service.js'),
+  import('../../shared/redis-client.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -116,7 +127,10 @@ try {
   })
   gatewayCache.clearGatewayRuntimeCache()
   hybridAffinity.clearHybridRouteAffinityForTest()
-  hybridScoring.clearHybridScoringCacheForTest()
+  hybridScoring.clearHybridScoringCacheForTest({ clearShared: false })
+  if (hybridScoringRedisSharedCacheRegression) {
+    await hybridScoring.clearHybridScoringSharedCacheForTest()
+  }
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
@@ -391,6 +405,7 @@ try {
     const expectedScoringUsageCount = expectedRequests - 1
     assert(scoringUsageCount >= expectedScoringUsageCount, `评分使用记录数量不足，期望至少 ${expectedScoringUsageCount}，实际 ${scoringUsageCount}`)
     assertHybridScoringLargeBodyGuard()
+    assertHybridScoringCacheGuards()
     await assertHybridQualityRepairRequest({
       baseUrl,
       localApiKey: qualityApiKey.key,
@@ -439,13 +454,17 @@ try {
   }
 } finally {
   hybridAffinity.clearHybridRouteAffinityForTest()
-  hybridScoring.clearHybridScoringCacheForTest()
+  hybridScoring.clearHybridScoringCacheForTest({ clearShared: false })
+  if (hybridScoringRedisSharedCacheRegression) {
+    await hybridScoring.clearHybridScoringSharedCacheForTest().catch(() => undefined)
+  }
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   databaseModule.closeStorageDatabases()
+  await redisClientModule.closeRedisClients()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
@@ -478,6 +497,15 @@ function assertHybridScoringLargeBodyGuard(): void {
   assert.match(source, /request\.rawBody\.length > hybridScoringRawBodyParseMaxBytes[\s\S]*?return undefined/, '混合评分不应为了评分上下文完整解析超限 raw body')
   assert.match(source, /getGatewayRequestBodyState\(req\)/, '混合评分跳过大 body 解析后应使用网关请求体元数据')
   assert.match(source, /raw_body_exceeds_hybrid_scoring_parse_limit/, '混合评分上下文应标记大 body 省略原因')
+}
+
+function assertHybridScoringCacheGuards(): void {
+  const source = readFileSync(resolve('src/modules/gateway/hybrid/scoring.service.ts'), 'utf8')
+  assert.match(source, /createSharedJsonCache<HybridScoringCacheEntry>/, '混合路由评分结果应声明 Redis JSON 共享缓存')
+  assert.match(source, /await getHybridScoringSharedCacheEntry\(cacheKey\)/, '混合路由评分本地缓存 miss 后应读取 Redis shared cache')
+  assert.match(source, /await setHybridScoringSharedCacheEntry\(key,[\s\S]*?ttlMs\)/, '混合路由评分成功后应写入 Redis shared cache')
+  assert.match(source, /runtimeConfig\.cacheDriver !== 'redis'/, '混合路由评分 shared cache 只应在 Redis cache driver 下启用')
+  assert.doesNotMatch(source, /setHybridScoringSharedCacheEntry\(key,\s*entry/, '混合路由评分 Redis shared cache 不应直接写入包含自由文本 reason 的本地缓存实体')
 }
 
 function createHybridGroupAccount(input: {
@@ -748,6 +776,9 @@ async function assertHybridScoringCacheRequest(input: {
     assert.equal(response.status, 200, `评分缓存混合请求应成功，实际 HTTP ${response.status}: ${text}`)
     const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> }
     assert.equal(body.choices?.[0]?.message?.content, `target:${input.expectedModel}:${input.marker}`)
+    if (index === 0 && hybridScoringRedisSharedCacheRegression) {
+      hybridScoring.clearHybridScoringCacheForTest({ clearShared: false })
+    }
   }
   const hits = upstreamHits.slice(start)
   const routeScoringHits = hits.filter(isRouteScoringHit)
@@ -767,6 +798,11 @@ function isQualityScoringHit(hit: HybridMockHit): boolean {
 
 function isTargetHit(hit: HybridMockHit): boolean {
   return !isRouteScoringHit(hit) && !isQualityScoringHit(hit)
+}
+
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim()
+  return value ? value : undefined
 }
 
 function scoringUsageRecordCount(): number {

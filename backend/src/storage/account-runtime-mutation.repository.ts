@@ -607,6 +607,15 @@ export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
   })
 }
 
+async function markAuthorizedAccountBindingTemporaryUnavailableByContextAsync(
+  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+): Promise<AccountSummary | undefined> {
+  return markAuthorizedAccountBindingCooldownByContextAsync({
+    ...input,
+    status: 'temporary_unavailable'
+  })
+}
+
 export function markAuthorizedAccountBindingCooldownByContext(
   input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil?: string; reason: string; status?: AccountStatus }
 ): AccountSummary | undefined {
@@ -663,6 +672,63 @@ export function markAuthorizedAccountBindingCooldownByContext(
   invalidateAccountLookupCache(target.accountId)
   invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_cooldown')
   return findAccountSummary(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
+}
+
+async function markAuthorizedAccountBindingCooldownByContextAsync(
+  input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil?: string; reason: string; status?: AccountStatus }
+): Promise<AccountSummary | undefined> {
+  const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
+  if (!target) {
+    return undefined
+  }
+  const cooldownStatus: AccountStatus = input.status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
+  const cooldownNowMs = Date.now()
+  const temporaryState = cooldownStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState(cooldownNowMs)
+    : undefined
+  const cooldownUntil = cooldownStatus === 'temporary_unavailable'
+    ? temporaryState!.cooldownUntil
+    : input.cooldownUntil ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  const observationStartedAt = temporaryState?.observationStartedAt
+    ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+  const now = nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')} AS accounts
+    SET status = ?,
+        schedulable = 1,
+        cooldown_until = ?,
+        last_error_code = NULL,
+        last_error_message = ?,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = ?,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND authorization_instance_authorization_id = ?
+      AND deleted_at IS NULL
+      AND status NOT IN ('disabled', 'error')
+      AND EXISTS (
+        SELECT 1
+        FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+      )
+  `, [cooldownStatus, cooldownUntil, input.reason || null, observationStartedAt ?? null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId])
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_cooldown' })
+  invalidateAccountLookupCache(target.accountId)
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_account_cooldown')
+  return findAccountSummaryAsync(target.accountId, { systemAccountId: target.systemAccountId, role: 'user' })
 }
 
 export function markAuthorizedAccountBindingDisabledByFailure(
@@ -814,6 +880,37 @@ export function markAccountTestTemporaryUnavailable(
   return markAccountTemporaryUnavailable(current.id, message)
 }
 
+export async function markAccountTestTemporaryUnavailableAsync(
+  account: AccountSummary,
+  reason: string,
+  access?: AccessScope
+): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markAccountTestTemporaryUnavailable(account, reason, access)
+  }
+  const current = await findAccountSummaryAsync(account.id, access)
+  if (!current || (current.status !== 'active' && !isCoolingAccountStatus(current.status))) {
+    return undefined
+  }
+  if (current.status === 'active' && !current.schedulable) {
+    return undefined
+  }
+  const message = reason.slice(0, 1000)
+  if (current.accessType === 'authorized') {
+    if (!current.boundGroupId || !current.accountAuthorizationId) {
+      return undefined
+    }
+    return markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({
+      accountId: current.id,
+      systemAccountId: authorizedBindingSystemAccountId(access),
+      groupId: current.boundGroupId,
+      accountAuthorizationId: current.accountAuthorizationId,
+      reason: message
+    })
+  }
+  return markAccountTemporaryUnavailableAsync(current.id, message)
+}
+
 function markAuthorizedAccountBindingTemporaryUnavailable(
   account: AccountSummary,
   reason: string,
@@ -834,6 +931,10 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
 
 export function markAccountTemporaryUnavailable(id: string, reason: string): AccountSummary | undefined {
   return markAccountCooldown(id, undefined, reason, 'temporary_unavailable')
+}
+
+async function markAccountTemporaryUnavailableAsync(id: string, reason: string): Promise<AccountSummary | undefined> {
+  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable')
 }
 
 export function markAccountCooldown(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
@@ -912,6 +1013,81 @@ export function markAccountCooldown(id: string, until: string | undefined, reaso
   }
 
   return findInternalAccountSummary(id)
+}
+
+async function markAccountCooldownAsync(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): Promise<AccountSummary | undefined> {
+  const current = await findAccountSummaryAsync(id, internalAccountReadAccess)
+  if (!current) {
+    return undefined
+  }
+  if (isHardUnavailableAccountStatus(current.status)) {
+    return undefined
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const expiredByPackage = isAccountExpired(current.accountExpiresAt)
+  if (expiredByPackage) {
+    const result = await client.execute(`
+      UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+      SET status = 'disabled',
+          schedulable = 0,
+          cooldown_until = NULL,
+          last_error_code = 'account_expired',
+          last_error_message = ?,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `, ['账户套餐已过期，已自动停用', nowIso(), id])
+    if (Number(result.changes ?? 0) > 0) {
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
+    }
+    return findAccountSummaryAsync(id, internalAccountReadAccess)
+  }
+
+  const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
+  const cooldownNowMs = Date.now()
+  const cooldownNow = new Date(cooldownNowMs).toISOString()
+  const temporaryState = cooldownStatus === 'temporary_unavailable'
+    ? temporaryUnavailableRuntimeState(cooldownNowMs)
+    : undefined
+  const cooldownUntil = cooldownStatus === 'temporary_unavailable'
+    ? temporaryState!.cooldownUntil
+    : until ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  const cooldownObservationStartedAt = temporaryState?.observationStartedAt
+    ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+
+  const result = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET status = ?,
+        schedulable = 1,
+        cooldown_until = ?,
+        last_error_code = NULL,
+        last_error_message = ?,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = ?,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+  `, [cooldownStatus, cooldownUntil, reason || null, cooldownObservationStartedAt ?? null, cooldownNow, id])
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
+  }
+
+  return findAccountSummaryAsync(id, internalAccountReadAccess)
 }
 
 export function migrateAccountTraffic(input: {

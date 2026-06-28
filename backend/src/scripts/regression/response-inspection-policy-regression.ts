@@ -40,8 +40,12 @@ import { ANTHROPIC_PROVIDER_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE,
 import { closeStorageDatabases, getBusinessDatabase } from '../../storage/database.js'
 import {
   createResponseInspectionPolicy,
+  createResponseInspectionPolicyAsync,
+  deleteResponseInspectionPolicyAsync,
   listResponseInspectionPolicyDefaultRules,
-  updateResponseInspectionPolicy
+  listResponseInspectionPoliciesAsync,
+  updateResponseInspectionPolicy,
+  updateResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
 
 const settings: GatewaySettings = {
@@ -1304,6 +1308,11 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   const gatewayPreflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
   const fallbackCandidateSource = readFileSync(new URL('../../modules/gateway/dispatch/api-key-group-fallback-candidate.ts', import.meta.url), 'utf8')
   assert(repositorySource.includes('maxManagementResponseInspectionPolicies'), '管理端响应检查策略必须有固定数量上限')
+  assert(repositorySource.includes('listResponseInspectionPoliciesAsync'), '管理端响应检查策略列表必须提供 async PG 入口')
+  assert(repositorySource.includes('createResponseInspectionPolicyAsync'), '管理端响应检查策略创建必须提供 async PG 入口')
+  assert(repositorySource.includes('updateResponseInspectionPolicyAsync'), '管理端响应检查策略更新必须提供 async PG 入口')
+  assert(repositorySource.includes('deleteResponseInspectionPolicyAsync'), '管理端响应检查策略删除必须提供 async PG 入口')
+  assert(repositorySource.includes('isProtocolProviderCodeAsync'), '响应检查策略 PG 写入校验供应商协议时不能回退同步 provider lookup')
   assert(repositorySource.includes('SELECT id FROM response_inspection_policies LIMIT ?'), '创建管理端响应检查策略容量预检必须使用固定窗口')
   assert(!repositorySource.includes('COUNT(*) AS total FROM response_inspection_policies'), '创建管理端响应检查策略不能用 COUNT(*) 容量预检')
   assert(repositorySource.includes('positiveMatchKeys'), '排除条件不能作为独立正向 matcher 使用')
@@ -1311,6 +1320,12 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(responseFinalizationSource.includes('pipeNonStreamUpstreamResponseForInspection'), '非流式 JSON 必须先经过写前检查管道')
   assert(routeSource.includes("responseInspectionPoliciesRouter.put('/:id'"), '响应检查策略更新接口必须使用 PUT 全量替换，不保留 PATCH partial 语义')
   assert(!routeSource.includes("responseInspectionPoliciesRouter.patch('/:id'"), '响应检查策略更新接口不应继续暴露 PATCH partial 入口')
+  assert(routeSource.includes('await listResponseInspectionPoliciesAsync()'), '响应检查策略管理端列表路由必须走 async 仓储入口')
+  assert(routeSource.includes('await createResponseInspectionPolicyAsync(parsed.data)'), '响应检查策略管理端创建路由必须走 async 仓储入口')
+  assert(routeSource.includes('await updateResponseInspectionPolicyAsync(req.params.id, parsed.data)'), '响应检查策略管理端更新路由必须走 async 仓储入口')
+  assert(routeSource.includes('await deleteResponseInspectionPolicyAsync(req.params.id)'), '响应检查策略管理端删除路由必须走 async 仓储入口')
+  assert(routeSource.includes('recordOperationLogAsync'), '响应检查策略管理端操作日志必须走 async 设置读取入口')
+  assert(!routeSource.includes('recordOperationLog({'), '响应检查策略管理端不得重新调用同步操作日志入口')
   assert(schemaSource.includes("CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'))"), '响应检查策略动作必须有数据库 CHECK 约束')
   assert(schemaSource.includes('json_valid(match_json)'), '响应检查策略 match_json 必须有 JSON 有效性约束')
   assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesAsync'), 'API Key 分组 fallback 候选必须按目标分组协议和供应商加载响应检查策略')
@@ -1370,6 +1385,33 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
     assert.equal(row?.notes, null, '数据库中的旧备注必须被清空')
     assert.equal(row?.action, 'retry_no_avoidance', '数据库中的 action 必须按全量替换更新')
     assert.equal(row?.priority, 12, '数据库中的 priority 必须按全量替换更新')
+
+    const asyncListed = await listResponseInspectionPoliciesAsync()
+    assert(asyncListed.policies.some((policy) => policy.id === created.id), 'async 列表 fallback 应读取同步创建的管理端策略')
+    const asyncCreated = await createResponseInspectionPolicyAsync({
+      name: 'async fallback 策略',
+      enabled: true,
+      priority: 13,
+      scopeType: 'protocol',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      match: { errorCodes: ['async_fallback_error'] },
+      action: 'observe',
+      notes: '等待 async 更新清空'
+    })
+    const asyncUpdated = await updateResponseInspectionPolicyAsync(asyncCreated.id, {
+      name: 'async fallback 策略更新',
+      enabled: false,
+      priority: 14,
+      scopeType: 'protocol',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      match: { errorMessageIncludes: ['async fallback'] },
+      action: 'retry_no_avoidance'
+    })
+    assert.equal(asyncUpdated?.notes, undefined, 'async PUT fallback 也应清空旧备注')
+    assert.equal(asyncUpdated?.enabled, false, 'async PUT fallback 应按提交值更新启用状态')
+    assert.equal(await deleteResponseInspectionPolicyAsync(asyncCreated.id), true, 'async 删除 fallback 应返回 true')
+    const asyncListedAfterDelete = await listResponseInspectionPoliciesAsync()
+    assert.equal(asyncListedAfterDelete.policies.some((policy) => policy.id === asyncCreated.id), false, 'async 删除 fallback 后列表不应再包含策略')
 
     const now = new Date().toISOString()
     assert.throws(() => database.prepare(`

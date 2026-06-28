@@ -174,6 +174,7 @@ export interface ApiKeyListParams extends ListParams {
   pageSize?: number
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
+  routeStrategyId?: string
   groupId?: string
 }
 

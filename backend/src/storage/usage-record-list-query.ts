@@ -265,7 +265,18 @@ function pushPrefixFilter(clauses: string[], params: UsageRecordFilterValue[], c
   const text = value?.trim()
   if (!text) return
   clauses.push(`${column} >= ? AND ${column} < ?`)
-  params.push(text, `${text}\uffff`)
+  params.push(text, usageRecordTextPrefixUpperBound(text))
 }
 
 const accountKeywordMatchLimit = 200
+
+function usageRecordTextPrefixUpperBound(value: string): string {
+  const comparable = /[.:]$/.test(value) ? value.slice(0, -1) : value
+  for (let index = comparable.length - 1; index >= 0; index -= 1) {
+    const code = comparable.charCodeAt(index)
+    if (code < 0xffff) {
+      return `${comparable.slice(0, index)}${String.fromCharCode(code + 1)}`
+    }
+  }
+  return `${value}\uffff`
+}

@@ -582,6 +582,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       description TEXT,
       mode TEXT NOT NULL DEFAULT 'normal',
       status TEXT NOT NULL DEFAULT 'active',
+      is_default INTEGER NOT NULL DEFAULT 0,
       config_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -883,6 +884,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_owner_mode ON route_strategies(system_account_id, mode, status, updated_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique_lower ON route_strategies(system_account_id, lower(name));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique ON route_strategies(system_account_id) WHERE is_default = 1;
+    CREATE INDEX IF NOT EXISTS idx_route_strategies_name_lookup ON route_strategies(name COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_route_strategies_system_account_name_lookup ON route_strategies(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_strategy_priority ON route_strategy_groups(route_strategy_id, status, priority ASC, created_at ASC, id ASC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategy_groups_unique ON route_strategy_groups(route_strategy_id, group_id);
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_group_strategy ON route_strategy_groups(group_id, route_strategy_id);
@@ -934,10 +938,27 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureRouteStrategiesSchema(database)
   ensureOpenAICompatibleFilesSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureRouteStrategiesSchema(database: DatabaseSync): void {
+  const columns = new Set(
+    (database.prepare("PRAGMA table_info('route_strategies')").all() as Array<{ name?: string }>)
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0)
+  )
+  if (!columns.has('is_default')) {
+    database.exec('ALTER TABLE route_strategies ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+  }
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_default_unique
+      ON route_strategies(system_account_id)
+      WHERE is_default = 1;
+  `)
 }
 
 function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {

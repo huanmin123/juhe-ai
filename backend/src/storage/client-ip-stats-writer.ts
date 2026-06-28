@@ -1,14 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import type { DatabaseClient } from './database-client.js'
 import {
   clientIpRegistryBucketCount,
   normalizeClientIpForStats,
   type NormalizedClientIp
 } from './client-ip-normalization.js'
 import {
+  markClientIpRangeWindowsDirtyAsync,
   markClientIpRangeWindowsDirty,
+  markCurrentClientIpUsageRangeWindowsStaleAsync,
   markCurrentClientIpUsageRangeWindowsStale
 } from './client-ip-usage-range-windows.repository.js'
+import { chunkValues } from './query-utils.js'
 import { usageStatsAccumulatorFromRecord } from './usage-stats-aggregation.js'
 import { dateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import type {
@@ -54,18 +58,34 @@ interface ClientIpAggregateBuildResult {
   accountAggregates: ClientIpAggregate[]
 }
 
+interface ClientIpRegistryAggregate {
+  normalized: NormalizedClientIp
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
 export function writeClientIpStatsAggregatesFromUsageRows(database: DatabaseSync, rows: UsageStatsRecordRow[], updatedAt: string): void {
   const aggregates = buildClientIpAggregates(rows)
   writeClientIpAggregates(database, aggregates.ipAggregates, aggregates.accountAggregates, updatedAt)
 }
 
-function buildClientIpAggregates(rows: UsageStatsRecordRow[]): ClientIpAggregateBuildResult {
+export async function writeClientIpStatsAggregatesFromUsageRowsAsync(
+  client: DatabaseClient,
+  rows: UsageStatsRecordRow[],
+  updatedAt: string,
+  timezone: string
+): Promise<void> {
+  const aggregates = buildClientIpAggregates(rows, timezone)
+  await writeClientIpAggregatesAsync(client, aggregates.ipAggregates, aggregates.accountAggregates, updatedAt)
+}
+
+function buildClientIpAggregates(rows: UsageStatsRecordRow[], timezone = usageStatsTimezone()): ClientIpAggregateBuildResult {
   const ipAggregates = new Map<string, ClientIpAggregate>()
   const accountAggregates = new Map<string, ClientIpAggregate>()
   for (const row of rows) {
     const normalized = normalizeClientIpForStats(row.client_ip)
     if (!normalized) continue
-    const statDate = dateKey(new Date(row.created_at), usageStatsTimezone())
+    const statDate = dateKey(new Date(row.created_at), timezone)
     const key = `${normalized.ipHash}:${statDate}`
     const accumulator = usageStatsAccumulatorFromRecord(row)
     const current = ipAggregates.get(key)
@@ -144,6 +164,27 @@ function writeClientIpAggregates(database: DatabaseSync, aggregates: ClientIpAgg
   }
   markCurrentClientIpUsageRangeWindowsStale(database)
   markClientIpRangeWindowsDirty(database, dirtyIpHashes, updatedAt)
+}
+
+async function writeClientIpAggregatesAsync(
+  client: DatabaseClient,
+  aggregates: ClientIpAggregate[],
+  accountAggregates: ClientIpAggregate[],
+  updatedAt: string
+): Promise<void> {
+  if (!aggregates.length && !accountAggregates.length) return
+  const dirtyIpHashes = new Set<string>()
+  for (const aggregate of aggregates) {
+    dirtyIpHashes.add(aggregate.normalized.ipHash)
+  }
+  for (const aggregate of accountAggregates) {
+    dirtyIpHashes.add(aggregate.normalized.ipHash)
+  }
+  await upsertClientIpRegistryAsync(client, registryAggregatesFromIpAggregates(aggregates), updatedAt)
+  await upsertClientIpDailyAsync(client, aggregates, updatedAt)
+  await upsertClientIpAccountDailyAsync(client, accountAggregates, updatedAt)
+  await markCurrentClientIpUsageRangeWindowsStaleAsync(client, updatedAt)
+  await markClientIpRangeWindowsDirtyAsync(client, dirtyIpHashes, updatedAt)
 }
 
 function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAggregateStatements {
@@ -296,6 +337,209 @@ function upsertClientIpAccountDaily(statements: ClientIpAggregateStatements, agg
   )
 }
 
+async function upsertClientIpRegistryAsync(client: DatabaseClient, entries: ClientIpRegistryAggregate[], updatedAt: string): Promise<void> {
+  if (!entries.length) return
+  const columns = [
+    'ip_hash',
+    'bucket_no',
+    'aggregate_ip_key',
+    'client_ip',
+    'ip_version',
+    'first_seen_at',
+    'last_seen_at',
+    'created_at',
+    'updated_at'
+  ]
+  for (const chunk of chunkValues(entries, 500)) {
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'client_ip_registry')} (${columns.join(', ')})
+      VALUES ${multiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(ip_hash) DO UPDATE SET
+        bucket_no = EXCLUDED.bucket_no,
+        aggregate_ip_key = EXCLUDED.aggregate_ip_key,
+        client_ip = EXCLUDED.client_ip,
+        ip_version = EXCLUDED.ip_version,
+        first_seen_at = CASE WHEN client_ip_registry.first_seen_at > EXCLUDED.first_seen_at THEN EXCLUDED.first_seen_at ELSE client_ip_registry.first_seen_at END,
+        last_seen_at = CASE WHEN client_ip_registry.last_seen_at < EXCLUDED.last_seen_at THEN EXCLUDED.last_seen_at ELSE client_ip_registry.last_seen_at END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((entry) => [
+      entry.normalized.ipHash,
+      entry.normalized.bucketNo,
+      entry.normalized.aggregateIpKey,
+      entry.normalized.clientIp,
+      entry.normalized.ipVersion,
+      entry.firstSeenAt,
+      entry.lastSeenAt,
+      updatedAt,
+      updatedAt
+    ]))
+  }
+}
+
+async function upsertClientIpDailyAsync(client: DatabaseClient, aggregates: ClientIpAggregate[], updatedAt: string): Promise<void> {
+  if (!aggregates.length) return
+  const columns = [
+    'ip_hash',
+    'stat_date',
+    'request_count',
+    'success_count',
+    'error_count',
+    'input_tokens',
+    'output_tokens',
+    'cache_read_tokens',
+    'cache_read_cost_usd',
+    'total_cost_usd',
+    'duration_ms_sum',
+    'duration_ms_count',
+    'duration_ms_max',
+    'first_token_ms_sum',
+    'first_token_ms_count',
+    'last_used_at',
+    'last_error_at',
+    'updated_at'
+  ]
+  for (const chunk of chunkValues(aggregates, 500)) {
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'client_ip_stats_daily')} (${columns.join(', ')})
+      VALUES ${multiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(ip_hash, stat_date) DO UPDATE SET
+        request_count = client_ip_stats_daily.request_count + EXCLUDED.request_count,
+        success_count = client_ip_stats_daily.success_count + EXCLUDED.success_count,
+        error_count = client_ip_stats_daily.error_count + EXCLUDED.error_count,
+        input_tokens = client_ip_stats_daily.input_tokens + EXCLUDED.input_tokens,
+        output_tokens = client_ip_stats_daily.output_tokens + EXCLUDED.output_tokens,
+        cache_read_tokens = client_ip_stats_daily.cache_read_tokens + EXCLUDED.cache_read_tokens,
+        cache_read_cost_usd = client_ip_stats_daily.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        total_cost_usd = client_ip_stats_daily.total_cost_usd + EXCLUDED.total_cost_usd,
+        duration_ms_sum = client_ip_stats_daily.duration_ms_sum + EXCLUDED.duration_ms_sum,
+        duration_ms_count = client_ip_stats_daily.duration_ms_count + EXCLUDED.duration_ms_count,
+        duration_ms_max = GREATEST(client_ip_stats_daily.duration_ms_max, EXCLUDED.duration_ms_max),
+        first_token_ms_sum = client_ip_stats_daily.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+        first_token_ms_count = client_ip_stats_daily.first_token_ms_count + EXCLUDED.first_token_ms_count,
+        last_used_at = CASE WHEN client_ip_stats_daily.last_used_at IS NULL OR EXCLUDED.last_used_at > client_ip_stats_daily.last_used_at THEN EXCLUDED.last_used_at ELSE client_ip_stats_daily.last_used_at END,
+        last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN client_ip_stats_daily.last_error_at WHEN client_ip_stats_daily.last_error_at IS NULL OR EXCLUDED.last_error_at > client_ip_stats_daily.last_error_at THEN EXCLUDED.last_error_at ELSE client_ip_stats_daily.last_error_at END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((aggregate) => clientIpDailyParams(aggregate, updatedAt)))
+  }
+}
+
+async function upsertClientIpAccountDailyAsync(client: DatabaseClient, aggregates: ClientIpAggregate[], updatedAt: string): Promise<void> {
+  if (!aggregates.length) return
+  const columns = [
+    'ip_hash',
+    'account_id',
+    'stat_date',
+    'request_count',
+    'success_count',
+    'error_count',
+    'input_tokens',
+    'output_tokens',
+    'cache_read_tokens',
+    'cache_read_cost_usd',
+    'total_cost_usd',
+    'duration_ms_sum',
+    'duration_ms_count',
+    'duration_ms_max',
+    'first_token_ms_sum',
+    'first_token_ms_count',
+    'last_used_at',
+    'last_error_at',
+    'updated_at'
+  ]
+  for (const chunk of chunkValues(aggregates, 500)) {
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'client_ip_account_stats_daily')} (${columns.join(', ')})
+      VALUES ${multiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(ip_hash, account_id, stat_date) DO UPDATE SET
+        request_count = client_ip_account_stats_daily.request_count + EXCLUDED.request_count,
+        success_count = client_ip_account_stats_daily.success_count + EXCLUDED.success_count,
+        error_count = client_ip_account_stats_daily.error_count + EXCLUDED.error_count,
+        input_tokens = client_ip_account_stats_daily.input_tokens + EXCLUDED.input_tokens,
+        output_tokens = client_ip_account_stats_daily.output_tokens + EXCLUDED.output_tokens,
+        cache_read_tokens = client_ip_account_stats_daily.cache_read_tokens + EXCLUDED.cache_read_tokens,
+        cache_read_cost_usd = client_ip_account_stats_daily.cache_read_cost_usd + EXCLUDED.cache_read_cost_usd,
+        total_cost_usd = client_ip_account_stats_daily.total_cost_usd + EXCLUDED.total_cost_usd,
+        duration_ms_sum = client_ip_account_stats_daily.duration_ms_sum + EXCLUDED.duration_ms_sum,
+        duration_ms_count = client_ip_account_stats_daily.duration_ms_count + EXCLUDED.duration_ms_count,
+        duration_ms_max = GREATEST(client_ip_account_stats_daily.duration_ms_max, EXCLUDED.duration_ms_max),
+        first_token_ms_sum = client_ip_account_stats_daily.first_token_ms_sum + EXCLUDED.first_token_ms_sum,
+        first_token_ms_count = client_ip_account_stats_daily.first_token_ms_count + EXCLUDED.first_token_ms_count,
+        last_used_at = CASE WHEN client_ip_account_stats_daily.last_used_at IS NULL OR EXCLUDED.last_used_at > client_ip_account_stats_daily.last_used_at THEN EXCLUDED.last_used_at ELSE client_ip_account_stats_daily.last_used_at END,
+        last_error_at = CASE WHEN EXCLUDED.last_error_at IS NULL THEN client_ip_account_stats_daily.last_error_at WHEN client_ip_account_stats_daily.last_error_at IS NULL OR EXCLUDED.last_error_at > client_ip_account_stats_daily.last_error_at THEN EXCLUDED.last_error_at ELSE client_ip_account_stats_daily.last_error_at END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((aggregate) => clientIpAccountDailyParams(aggregate, updatedAt)))
+  }
+}
+
+function registryAggregatesFromIpAggregates(aggregates: ClientIpAggregate[]): ClientIpRegistryAggregate[] {
+  const entries = new Map<string, ClientIpRegistryAggregate>()
+  for (const aggregate of aggregates) {
+    const current = entries.get(aggregate.normalized.ipHash)
+    if (!current) {
+      entries.set(aggregate.normalized.ipHash, {
+        normalized: aggregate.normalized,
+        firstSeenAt: aggregate.firstSeenAt,
+        lastSeenAt: aggregate.lastUsedAt
+      })
+      continue
+    }
+    if (aggregate.firstSeenAt < current.firstSeenAt) {
+      current.firstSeenAt = aggregate.firstSeenAt
+    }
+    if (aggregate.lastUsedAt > current.lastSeenAt) {
+      current.lastSeenAt = aggregate.lastUsedAt
+    }
+  }
+  return [...entries.values()]
+}
+
+function clientIpDailyParams(aggregate: ClientIpAggregate, updatedAt: string): unknown[] {
+  return [
+    aggregate.normalized.ipHash,
+    aggregate.statDate,
+    aggregate.requestCount,
+    aggregate.successCount,
+    aggregate.errorCount,
+    aggregate.inputTokens,
+    aggregate.outputTokens,
+    aggregate.cacheReadTokens,
+    aggregate.cacheReadCostUsd,
+    aggregate.totalCostUsd,
+    aggregate.durationMsSum,
+    aggregate.durationMsCount,
+    aggregate.durationMsMax,
+    aggregate.firstTokenMsSum,
+    aggregate.firstTokenMsCount,
+    aggregate.lastUsedAt,
+    aggregate.lastErrorAt ?? null,
+    updatedAt
+  ]
+}
+
+function clientIpAccountDailyParams(aggregate: ClientIpAggregate, updatedAt: string): unknown[] {
+  return [
+    aggregate.normalized.ipHash,
+    aggregate.accountId,
+    aggregate.statDate,
+    aggregate.requestCount,
+    aggregate.successCount,
+    aggregate.errorCount,
+    aggregate.inputTokens,
+    aggregate.outputTokens,
+    aggregate.cacheReadTokens,
+    aggregate.cacheReadCostUsd,
+    aggregate.totalCostUsd,
+    aggregate.durationMsSum,
+    aggregate.durationMsCount,
+    aggregate.durationMsMax,
+    aggregate.firstTokenMsSum,
+    aggregate.firstTokenMsCount,
+    aggregate.lastUsedAt,
+    aggregate.lastErrorAt ?? null,
+    updatedAt
+  ]
+}
+
 function registryBucket(bucketNo: number): Set<string> {
   const normalizedBucket = Number.isInteger(bucketNo) ? Math.max(0, Math.min(clientIpRegistryBucketCount - 1, bucketNo)) : 0
   const current = ipRegistryBuckets.get(normalizedBucket)
@@ -303,6 +547,15 @@ function registryBucket(bucketNo: number): Set<string> {
   const bucket = new Set<string>()
   ipRegistryBuckets.set(normalizedBucket, bucket)
   return bucket
+}
+
+function multiRowPlaceholders(rowCount: number, columnCount: number): string {
+  const row = `(${Array.from({ length: columnCount }, () => '?').join(', ')})`
+  return Array.from({ length: rowCount }, () => row).join(', ')
+}
+
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
 }
 
 function addAccumulatorToClientIpAggregate(target: ClientIpAggregate, accumulator: UsageStatsAccumulator, createdAt: string): void {

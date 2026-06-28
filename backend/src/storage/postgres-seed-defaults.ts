@@ -13,31 +13,13 @@ import {
 } from './external-integration-source-constants.js'
 import { defaultRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import {
-  ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
-  ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
-  ANTHROPIC_PROTOCOL_SEED,
-  ANTHROPIC_PROVIDER_SEED,
-  DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
-  DEEPSEEK_OPENAI_V1_PROFILE_SEED,
-  DEEPSEEK_PROVIDER_SEED,
   DEFAULT_BUILT_IN_GROUPS,
   DEFAULT_GLOBAL_SETTINGS,
-  DEFAULT_SYSTEM_SETTINGS,
-  GEMINI_NATIVE_V1BETA_PROFILE_SEED,
-  GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED,
-  GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
-  GEMINI_PROTOCOL_SEED,
-  GEMINI_PROVIDER_SEED,
-  GLM_CODING_ANTHROPIC_V1_PROFILE_SEED,
-  GLM_CODING_OPENAI_V1_PROFILE_SEED,
-  GLM_GENERAL_OPENAI_V1_PROFILE_SEED,
-  GLM_PROVIDER_SEED,
-  GPT_OPENAI_V1_PROFILE_SEED,
-  GPT_PROVIDER_SEED,
-  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
-  OPENAI_COMPATIBLE_PROVIDER_SEED,
-  OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
-  OPENAI_PROTOCOL_SEED
+  DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS,
+  DEFAULT_PROVIDER_SEEDS,
+  DEFAULT_PROTOCOL_ENDPOINT_FAMILY_SEEDS,
+  DEFAULT_PROTOCOL_SEEDS,
+  DEFAULT_SYSTEM_SETTINGS
 } from './schema-defaults.js'
 
 const businessSchemaName = 'juhe_business'
@@ -95,7 +77,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
-  for (const provider of [OPENAI_COMPATIBLE_PROVIDER_SEED, GPT_PROVIDER_SEED, DEEPSEEK_PROVIDER_SEED, ANTHROPIC_PROVIDER_SEED, GEMINI_PROVIDER_SEED, GLM_PROVIDER_SEED]) {
+  for (const provider of DEFAULT_PROVIDER_SEEDS) {
     await query(
       `
         INSERT INTO ${businessTable('providers')} (
@@ -116,7 +98,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
-  for (const protocol of [OPENAI_PROTOCOL_SEED, ANTHROPIC_PROTOCOL_SEED, GEMINI_PROTOCOL_SEED]) {
+  for (const protocol of DEFAULT_PROTOCOL_SEEDS) {
     await query(
       `
         INSERT INTO ${businessTable('protocols')} (
@@ -137,7 +119,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
-  for (const family of [...OPENAI_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...ANTHROPIC_PROTOCOL_ENDPOINT_FAMILY_SEEDS, ...GEMINI_PROTOCOL_ENDPOINT_FAMILY_SEEDS]) {
+  for (const family of DEFAULT_PROTOCOL_ENDPOINT_FAMILY_SEEDS) {
     await query(
       `
         INSERT INTO ${businessTable('protocol_endpoint_families')} (
@@ -159,18 +141,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
-  const profileSeeds = [
-    OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
-    GPT_OPENAI_V1_PROFILE_SEED,
-    DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
-    DEEPSEEK_OPENAI_V1_PROFILE_SEED,
-    ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,
-    GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED,
-    GEMINI_NATIVE_V1BETA_PROFILE_SEED,
-    GLM_CODING_OPENAI_V1_PROFILE_SEED,
-    GLM_CODING_ANTHROPIC_V1_PROFILE_SEED,
-    GLM_GENERAL_OPENAI_V1_PROFILE_SEED
-  ]
+  const profileSeeds = DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS
   const profileSeedBaseTime = Date.parse(now)
   for (const [index, profile] of profileSeeds.entries()) {
     const profileUpdatedAt = Number.isFinite(profileSeedBaseTime)

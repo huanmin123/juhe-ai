@@ -5,7 +5,7 @@ import { getBusinessDatabase, newId, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { isProtocolProviderCode } from './provider.repository.js'
+import { isProtocolProviderCode, isProtocolProviderCodeAsync } from './provider.repository.js'
 import {
   ACCOUNT_CLIENT_COMPATIBILITIES,
   type AccountClientCompatibility
@@ -302,6 +302,16 @@ export function listResponseInspectionPolicies(): ResponseInspectionPolicyListRe
   }
 }
 
+export async function listResponseInspectionPoliciesAsync(): Promise<ResponseInspectionPolicyListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listResponseInspectionPolicies()
+  }
+  return {
+    defaultRules: listResponseInspectionPolicyDefaultRules(),
+    policies: (await listResponseInspectionPolicyRowsAsync()).map(policyFromRow)
+  }
+}
+
 export function listActiveResponseInspectionPoliciesForGateway(input: {
   protocolCode: string
   providerCode?: string
@@ -415,6 +425,42 @@ export function createResponseInspectionPolicy(input: ResponseInspectionPolicyIn
   return policy
 }
 
+export async function createResponseInspectionPolicyAsync(input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicySummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createResponseInspectionPolicy(input)
+  }
+  assertKnownInputKeys(input, inputKeys, '响应检查策略')
+  await assertManagementPolicyCapacityAsync()
+  const now = nowIso()
+  const policy = await normalizePolicyInputAsync(input, {
+    id: newId('rip'),
+    createdAt: now,
+    updatedAt: now
+  })
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  await client.execute(`
+    INSERT INTO ${responseInspectionPoliciesTable(client)} (
+      id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json,
+      action, notes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    policy.id,
+    policy.name,
+    policy.enabled ? 1 : 0,
+    policy.priority,
+    policy.scopeType,
+    policy.protocolCode,
+    policy.providerCode ?? null,
+    JSON.stringify(policy.match),
+    policy.action,
+    policy.notes ?? null,
+    policy.createdAt ?? now,
+    policy.updatedAt ?? now
+  ])
+  notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_created')
+  return policy
+}
+
 export function updateResponseInspectionPolicy(id: string, input: ResponseInspectionPolicyInput): ResponseInspectionPolicySummary | undefined {
   assertKnownInputKeys(input, inputKeys, '响应检查策略')
   const current = findResponseInspectionPolicyRow(id)
@@ -448,8 +494,56 @@ export function updateResponseInspectionPolicy(id: string, input: ResponseInspec
   return policy
 }
 
+export async function updateResponseInspectionPolicyAsync(id: string, input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicySummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateResponseInspectionPolicy(id, input)
+  }
+  assertKnownInputKeys(input, inputKeys, '响应检查策略')
+  const current = await findResponseInspectionPolicyRowAsync(id)
+  if (!current) return undefined
+  const policy = await normalizePolicyInputAsync(input, {
+    id,
+    createdAt: current.created_at,
+    updatedAt: nowIso()
+  })
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  await client.execute(`
+    UPDATE ${responseInspectionPoliciesTable(client)}
+    SET name = ?, enabled = ?, priority = ?, scope_type = ?, protocol_code = ?,
+        provider_code = ?, match_json = ?, action = ?, notes = ?, updated_at = ?
+    WHERE id = ?
+  `, [
+    policy.name,
+    policy.enabled ? 1 : 0,
+    policy.priority,
+    policy.scopeType,
+    policy.protocolCode,
+    policy.providerCode ?? null,
+    JSON.stringify(policy.match),
+    policy.action,
+    policy.notes ?? null,
+    policy.updatedAt ?? nowIso(),
+    id
+  ])
+  notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_updated')
+  return policy
+}
+
 export function deleteResponseInspectionPolicy(id: string): boolean {
   const result = getBusinessDatabase().prepare('DELETE FROM response_inspection_policies WHERE id = ?').run(id)
+  const deleted = result.changes > 0
+  if (deleted) {
+    notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_deleted')
+  }
+  return deleted
+}
+
+export async function deleteResponseInspectionPolicyAsync(id: string): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deleteResponseInspectionPolicy(id)
+  }
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  const result = await client.execute(`DELETE FROM ${responseInspectionPoliciesTable(client)} WHERE id = ?`, [id])
   const deleted = result.changes > 0
   if (deleted) {
     notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_deleted')
@@ -491,16 +585,39 @@ function listResponseInspectionPolicyRows(): ResponseInspectionPolicyRow[] {
     .all(maxManagementResponseInspectionPolicies) as unknown as ResponseInspectionPolicyRow[]
 }
 
+async function listResponseInspectionPolicyRowsAsync(): Promise<ResponseInspectionPolicyRow[]> {
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  return await client.query<ResponseInspectionPolicyRow>(`
+    SELECT *
+    FROM ${responseInspectionPoliciesTable(client)}
+    ORDER BY priority ASC, updated_at DESC, id ASC
+    LIMIT ?
+  `, [maxManagementResponseInspectionPolicies])
+}
+
 function findResponseInspectionPolicyRow(id: string): ResponseInspectionPolicyRow | undefined {
   return getBusinessDatabase()
     .prepare('SELECT * FROM response_inspection_policies WHERE id = ?')
     .get(id) as unknown as ResponseInspectionPolicyRow | undefined
 }
 
+async function findResponseInspectionPolicyRowAsync(id: string): Promise<ResponseInspectionPolicyRow | undefined> {
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  return await client.one<ResponseInspectionPolicyRow>(`SELECT * FROM ${responseInspectionPoliciesTable(client)} WHERE id = ?`, [id])
+}
+
 function assertManagementPolicyCapacity(): void {
   const rows = getBusinessDatabase()
     .prepare('SELECT id FROM response_inspection_policies LIMIT ?')
     .all(maxManagementResponseInspectionPolicies + 1)
+  if (rows.length >= maxManagementResponseInspectionPolicies) {
+    throw new Error(`响应检查策略最多允许 ${maxManagementResponseInspectionPolicies} 条`)
+  }
+}
+
+async function assertManagementPolicyCapacityAsync(): Promise<void> {
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  const rows = await client.query(`SELECT id FROM ${responseInspectionPoliciesTable(client)} LIMIT ?`, [maxManagementResponseInspectionPolicies + 1])
   if (rows.length >= maxManagementResponseInspectionPolicies) {
     throw new Error(`响应检查策略最多允许 ${maxManagementResponseInspectionPolicies} 条`)
   }
@@ -520,6 +637,43 @@ function normalizePolicyInput(
     ? normalizeProviderCode(input.providerCode)
     : undefined
   if (scopeType === 'provider' && (providerCode === undefined || !isProtocolProviderCode(providerCode, protocolCode))) {
+    throw new Error('响应检查策略供应商必须使用同协议启用档案')
+  }
+  if (scopeType === 'protocol' && input.providerCode) {
+    throw new Error('协议层响应检查策略不能绑定供应商')
+  }
+  return {
+    id: options.id,
+    defaultRule: false,
+    editable: true,
+    name: requiredText(input.name, '规则名称', 100),
+    enabled: input.enabled ?? true,
+    priority: positiveInt(input.priority ?? 100, '优先级', 9999),
+    scopeType,
+    protocolCode,
+    providerCode,
+    match: normalizeMatch(input.match ?? {}),
+    action: normalizeAction(input.action),
+    notes: optionalText(input.notes, '备注', 1000),
+    createdAt: options.createdAt,
+    updatedAt: options.updatedAt
+  }
+}
+
+async function normalizePolicyInputAsync(
+  input: ResponseInspectionPolicyInput,
+  options: {
+    id: string
+    createdAt: string
+    updatedAt: string
+  }
+): Promise<ResponseInspectionPolicySummary> {
+  const scopeType = normalizeScopeType(input.scopeType)
+  const protocolCode = normalizeProtocolCode(input.protocolCode)
+  const providerCode = scopeType === 'provider'
+    ? normalizeProviderCode(input.providerCode)
+    : undefined
+  if (scopeType === 'provider' && (providerCode === undefined || !(await isProtocolProviderCodeAsync(providerCode, protocolCode)))) {
     throw new Error('响应检查策略供应商必须使用同协议启用档案')
   }
   if (scopeType === 'protocol' && input.providerCode) {

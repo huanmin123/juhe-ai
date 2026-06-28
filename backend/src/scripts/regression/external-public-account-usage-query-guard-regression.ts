@@ -142,6 +142,7 @@ try {
   }
 
   assertPublicUsageRoutesBoundKeywordLength()
+  assertPublicAccountUsageRoutesUseAsyncService()
 
   console.log('公开账号用量查询防护回归通过：请求链路只读范围窗口表，各排序入口不再扫描日表或创建临时排序树')
 } finally {
@@ -227,6 +228,19 @@ function assertPublicUsageRoutesBoundKeywordLength(): void {
   assert.match(source, /const publicUsageKeywordSchema = z\.string\(\)\.trim\(\)\.max\(120, '关键词不能超过 120 个字符'\)\.optional\(\)/, '公开 usage 查询 keyword 必须有 120 字符上限和中文错误消息')
   assert.match(source, /const ipUsageQuerySchema[\s\S]*keyword: publicUsageKeywordSchema[\s\S]*const accountUsageQuerySchema/, 'IP usage 查询必须复用公开 usage keyword 上限')
   assert.match(source, /const accountUsageQuerySchema[\s\S]*keyword: publicUsageKeywordSchema[\s\S]*const consumptionRankingQuerySchema/, '账号 usage 查询必须复用公开 usage keyword 上限')
+}
+
+function assertPublicAccountUsageRoutesUseAsyncService(): void {
+  const routeSource = readFileSync('src/modules/external-integrations/external-integrations.routes.ts', 'utf8')
+  assert.match(routeSource, /getPublicAccountUsageAsync/, '公开账号 usage 路由必须导入 async 服务')
+  assert.doesNotMatch(routeSource, /res\.json\(ok\(getPublicAccountUsage\(/, '公开账号 usage 路由不能直接调用同步服务')
+
+  const serviceSource = readFileSync('src/modules/external-integrations/external-public-welfare.service.ts', 'utf8')
+  assert.match(serviceSource, /export async function getPublicAccountUsageAsync/, '公开账号 usage 服务必须提供 async PG 入口')
+  assert.match(serviceSource, /usageStatsTimezoneAsync\(\)/, '公开 usage async 路径必须使用 async 时区配置')
+  assert.match(serviceSource, /latestUsageStatsLagSecondsForRuntime\(\)/, '公开账号 usage async 路径必须使用运行时统计延迟读取')
+  assert.match(serviceSource, /juhe_stats/, '公开账号 usage PG 查询必须显式读取 stats schema')
+  assert.match(serviceSource, /juhe_business/, '公开账号 usage PG 查询必须显式读取 business schema 元数据')
 }
 
 function assertPublicAccountUsageItemsDoNotExposeOwner(items: ReadonlyArray<object>): void {

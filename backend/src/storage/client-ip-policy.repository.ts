@@ -1,5 +1,6 @@
 import type { SQLInputValue } from 'node:sqlite'
 
+import { runtimeConfig } from '../config/runtime.js'
 import {
   beginDatabaseTransaction,
   commitDatabaseTransaction,
@@ -8,7 +9,10 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
-import { dateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
+import { chunkValues } from './query-utils.js'
+import { dateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { normalizeIpHash } from './client-ip-normalization.js'
 
 export type ClientIpPolicyStatus = 'active' | 'disabled'
@@ -56,6 +60,8 @@ export interface ClientIpPolicyHitInput {
   hitAt?: string
 }
 
+const statsSchemaName = 'juhe_stats'
+
 export function createClientIpPolicy(input: ClientIpPolicyMutationInput): ClientIpPolicySummary {
   const ipHash = normalizeIpHash(input.ipHash)
   if (!ipHash) {
@@ -102,6 +108,59 @@ export function createClientIpPolicy(input: ClientIpPolicyMutationInput): Client
   return mapClientIpPolicyRow(database.prepare('SELECT * FROM client_ip_policies WHERE id = ?').get(id) as unknown as ClientIpPolicyRow)
 }
 
+export async function createClientIpPolicyAsync(input: ClientIpPolicyMutationInput): Promise<ClientIpPolicySummary> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return createClientIpPolicy(input)
+  }
+  const ipHash = normalizeIpHash(input.ipHash)
+  if (!ipHash) {
+    throw new Error('IP 标识无效')
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const registry = await client.one<{ ip_hash?: string }>(`
+    SELECT ip_hash
+    FROM ${statsTable(client, 'client_ip_registry')}
+    WHERE ip_hash = ?
+    LIMIT 1
+  `, [ipHash])
+  if (!registry) {
+    throw new Error('IP 不存在')
+  }
+  const id = newId('ip_policy')
+  const now = nowIso()
+  await client.transaction(async (tx) => {
+    await tx.execute(`
+      UPDATE ${statsTable(tx, 'client_ip_policies')}
+      SET status = 'disabled',
+        disabled_at = ?,
+        disabled_by_system_account_id = ?,
+        disabled_reason = ?,
+        updated_at = ?
+      WHERE ip_hash = ?
+        AND status = 'active'
+    `, [now, input.actorSystemAccountId, '被新的封禁策略替换', now, ipHash])
+    await tx.execute(`
+      INSERT INTO ${statsTable(tx, 'client_ip_policies')} (
+        id, ip_hash, status, reason, expires_at,
+        created_by_system_account_id, created_at, updated_at
+      ) VALUES (?, ?, 'active', ?, ?, ?, ?, ?)
+    `, [
+      id,
+      ipHash,
+      normalizeOptionalText(input.reason) ?? null,
+      normalizeOptionalIso(input.expiresAt) ?? null,
+      input.actorSystemAccountId,
+      now,
+      now
+    ])
+  })
+  const row = await client.one<ClientIpPolicyRow>(`SELECT * FROM ${statsTable(client, 'client_ip_policies')} WHERE id = ?`, [id])
+  if (!row) {
+    throw new Error('IP 策略保存失败')
+  }
+  return mapClientIpPolicyRow(row)
+}
+
 export function disableClientIpPolicies(input: ClientIpPolicyDisableInput): { disabledCount: number } {
   const ipHash = normalizeIpHash(input.ipHash)
   if (!ipHash) {
@@ -128,6 +187,35 @@ export function disableClientIpPolicies(input: ClientIpPolicyDisableInput): { di
   return { disabledCount: Number(result.changes ?? 0) }
 }
 
+export async function disableClientIpPoliciesAsync(input: ClientIpPolicyDisableInput): Promise<{ disabledCount: number }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return disableClientIpPolicies(input)
+  }
+  const ipHash = normalizeIpHash(input.ipHash)
+  if (!ipHash) {
+    throw new Error('IP 标识无效')
+  }
+  const now = nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${statsTable(client, 'client_ip_policies')}
+    SET status = 'disabled',
+      disabled_at = ?,
+      disabled_by_system_account_id = ?,
+      disabled_reason = ?,
+      updated_at = ?
+    WHERE ip_hash = ?
+      AND status = 'active'
+  `, [
+    now,
+    input.actorSystemAccountId,
+    normalizeOptionalText(input.reason) ?? '管理员解除策略',
+    now,
+    ipHash
+  ])
+  return { disabledCount: Number(result.changes ?? 0) }
+}
+
 export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
   const now = nowIso()
   const params: SQLInputValue[] = [now]
@@ -147,6 +235,24 @@ export function listActiveClientIpPolicies(): ActiveClientIpPolicy[] {
     aggregate_ip_key: string
     client_ip: string
   }>
+  return rows.map(mapActiveClientIpPolicyRow)
+}
+
+export async function listActiveClientIpPoliciesAsync(): Promise<ActiveClientIpPolicy[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listActiveClientIpPolicies()
+  }
+  const now = nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<ActiveClientIpPolicyRow>(`
+    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+      registry.aggregate_ip_key, registry.client_ip
+    FROM ${statsTable(client, 'client_ip_policies')} policies
+    INNER JOIN ${statsTable(client, 'client_ip_registry')} registry ON registry.ip_hash = policies.ip_hash
+    WHERE policies.status = 'active'
+      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
+    ORDER BY policies.created_at DESC, policies.id DESC
+  `, [now])
   return rows.map(mapActiveClientIpPolicyRow)
 }
 
@@ -174,6 +280,30 @@ export function findActiveClientIpPolicyByHash(inputIpHash: string): ActiveClien
     aggregate_ip_key: string
     client_ip: string
   } | undefined
+  return row ? mapActiveClientIpPolicyRow(row) : undefined
+}
+
+export async function findActiveClientIpPolicyByHashAsync(inputIpHash: string): Promise<ActiveClientIpPolicy | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findActiveClientIpPolicyByHash(inputIpHash)
+  }
+  const ipHash = normalizeIpHash(inputIpHash)
+  if (!ipHash) {
+    return undefined
+  }
+  const now = nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<ActiveClientIpPolicyRow>(`
+    SELECT policies.id, policies.ip_hash, policies.reason, policies.expires_at,
+      registry.aggregate_ip_key, registry.client_ip
+    FROM ${statsTable(client, 'client_ip_policies')} policies
+    INNER JOIN ${statsTable(client, 'client_ip_registry')} registry ON registry.ip_hash = policies.ip_hash
+    WHERE policies.ip_hash = ?
+      AND policies.status = 'active'
+      AND (policies.expires_at IS NULL OR policies.expires_at > ?)
+    ORDER BY policies.created_at DESC, policies.id DESC
+    LIMIT 1
+  `, [ipHash, now])
   return row ? mapActiveClientIpPolicyRow(row) : undefined
 }
 
@@ -219,6 +349,62 @@ export function recordClientIpPolicyHits(hits: ClientIpPolicyHitInput[]): { reco
   return { recorded }
 }
 
+export async function recordClientIpPolicyHitsAsync(hits: ClientIpPolicyHitInput[]): Promise<{ recorded: number }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordClientIpPolicyHits(hits)
+  }
+  if (!hits.length) return { recorded: 0 }
+  const updatedAt = nowIso()
+  const timezone = await usageStatsTimezoneAsync()
+  const entries = normalizeClientIpPolicyHitEntries(hits, updatedAt, timezone)
+  if (!entries.length) return { recorded: 0 }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  for (const chunk of chunkValues(entries, 500)) {
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'client_ip_policy_hits')} (
+        ip_hash, stat_date, policy_id, hit_count, last_hit_at, updated_at
+      ) VALUES ${multiRowPlaceholders(chunk.length, 6)}
+      ON CONFLICT(ip_hash, stat_date, policy_id) DO UPDATE SET
+        hit_count = client_ip_policy_hits.hit_count + EXCLUDED.hit_count,
+        last_hit_at = CASE
+          WHEN client_ip_policy_hits.last_hit_at IS NULL OR EXCLUDED.last_hit_at > client_ip_policy_hits.last_hit_at THEN EXCLUDED.last_hit_at
+          ELSE client_ip_policy_hits.last_hit_at
+        END,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((entry) => [
+      entry.ipHash,
+      entry.statDate,
+      entry.policyId,
+      entry.hitCount,
+      entry.hitAt,
+      updatedAt
+    ]))
+  }
+  return { recorded: entries.length }
+}
+
+function normalizeClientIpPolicyHitEntries(
+  hits: ClientIpPolicyHitInput[],
+  updatedAt: string,
+  timezone: string
+): Array<{ ipHash: string; statDate: string; policyId: string; hitCount: number; hitAt: string }> {
+  const entries: Array<{ ipHash: string; statDate: string; policyId: string; hitCount: number; hitAt: string }> = []
+  for (const hit of hits) {
+    const ipHash = normalizeIpHash(hit.ipHash)
+    const policyId = normalizeOptionalText(hit.policyId)
+    if (!ipHash || !policyId) continue
+    const hitAt = normalizeOptionalIso(hit.hitAt) ?? updatedAt
+    entries.push({
+      ipHash,
+      statDate: dateKey(new Date(hitAt), timezone),
+      policyId,
+      hitCount: Math.max(1, Math.trunc(Number(hit.hitCount ?? 1))),
+      hitAt
+    })
+  }
+  return entries
+}
+
 function mapActiveClientIpPolicyRow(row: {
   id: string
   ip_hash: string
@@ -235,6 +421,24 @@ function mapActiveClientIpPolicyRow(row: {
     reason: row.reason ?? undefined,
     expiresAt: row.expires_at ?? undefined
   }
+}
+
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable(statsSchemaName, tableName)
+}
+
+function multiRowPlaceholders(rowCount: number, columnCount: number): string {
+  const row = `(${Array.from({ length: columnCount }, () => '?').join(', ')})`
+  return Array.from({ length: rowCount }, () => row).join(', ')
+}
+
+interface ActiveClientIpPolicyRow {
+  id: string
+  ip_hash: string
+  reason: string | null
+  expires_at: string | null
+  aggregate_ip_key: string
+  client_ip: string
 }
 
 function mapClientIpPolicyRow(row: ClientIpPolicyRow): ClientIpPolicySummary {

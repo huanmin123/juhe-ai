@@ -4,15 +4,15 @@ import { z } from 'zod'
 import { ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-protocol.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
-  createResponseInspectionPolicy,
-  deleteResponseInspectionPolicy,
-  listResponseInspectionPolicies,
-  updateResponseInspectionPolicy,
+  createResponseInspectionPolicyAsync,
+  deleteResponseInspectionPolicyAsync,
+  listResponseInspectionPoliciesAsync,
+  updateResponseInspectionPolicyAsync,
   type ResponseInspectionPolicySummary
 } from '../../storage/response-inspection-policy.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
-import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const responseInspectionPoliciesRouter = Router()
 
@@ -90,8 +90,8 @@ const policyBodySchema = z.object({
   }
 })
 
-responseInspectionPoliciesRouter.get('/', (_req, res) => {
-  const result = listResponseInspectionPolicies()
+responseInspectionPoliciesRouter.get('/', async (_req, res) => {
+  const result = await listResponseInspectionPoliciesAsync()
   res.json(ok({
     defaultRules: result.defaultRules.map(publicPolicySummary),
     policies: result.policies.map(publicPolicySummary)
@@ -107,7 +107,7 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
     providerCode: normalizedText(bodyField(req, 'providerCode')),
     priority: bodyField(req, 'priority')
   })
-}), (req, res) => {
+}), async (req, res) => {
   const parsed = policyBodySchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
@@ -115,12 +115,12 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
   }
   let policy: ResponseInspectionPolicySummary
   try {
-    policy = createResponseInspectionPolicy(parsed.data)
+    policy = await createResponseInspectionPolicyAsync(parsed.data)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略创建失败'))
     return
   }
-  recordPolicyOperation(req, 'create', policy.id, policy.name, [
+  await recordPolicyOperation(req, 'create', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
     safeChange('protocolCode', '协议', undefined, policy.protocolCode),
     safeChange('scopeType', '作用层级', undefined, policy.scopeType),
@@ -143,7 +143,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
     priority: bodyField(req, 'priority'),
     updatedAt: Date.now()
   })
-}), (req, res) => {
+}), async (req, res) => {
   const parsed = policyBodySchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
@@ -151,7 +151,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
   }
   let policy: ResponseInspectionPolicySummary | undefined
   try {
-    policy = updateResponseInspectionPolicy(req.params.id, parsed.data)
+    policy = await updateResponseInspectionPolicyAsync(req.params.id, parsed.data)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略更新失败'))
     return
@@ -160,7 +160,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
     res.status(404).json({ message: '响应检查策略不存在' })
     return
   }
-  recordPolicyOperation(req, 'update', policy.id, policy.name, [
+  await recordPolicyOperation(req, 'update', policy.id, policy.name, [
     safeChange('name', '规则名称', undefined, policy.name),
     safeChange('protocolCode', '协议', undefined, policy.protocolCode),
     safeChange('scopeType', '作用层级', undefined, policy.scopeType),
@@ -174,27 +174,27 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
 responseInspectionPoliciesRouter.delete('/:id', mutationGuard({
   operationKey: 'response_inspection_policies.delete',
   fingerprint: (req) => ({ id: req.params.id })
-}), (req, res) => {
-  const deleted = deleteResponseInspectionPolicy(req.params.id)
+}), async (req, res) => {
+  const deleted = await deleteResponseInspectionPolicyAsync(req.params.id)
   if (!deleted) {
     res.status(404).json({ message: '响应检查策略不存在' })
     return
   }
-  recordPolicyOperation(req, 'delete', req.params.id, req.params.id, [
+  await recordPolicyOperation(req, 'delete', req.params.id, req.params.id, [
     safeChange('deleted', '删除', undefined, true)
   ])
   res.json(ok({ deleted }))
 })
 
 function recordPolicyOperation(
-  req: Parameters<typeof recordOperationLog>[1],
+  req: Parameters<typeof recordOperationLogAsync>[1],
   action: 'create' | 'update' | 'delete',
   policyId: string,
   policyName: string,
-  changes: NonNullable<Parameters<typeof recordOperationLog>[0]['changes']>
-): void {
+  changes: NonNullable<Parameters<typeof recordOperationLogAsync>[0]['changes']>
+): Promise<void> {
   const actor = getRequestAuthContext()?.systemAccountId
-  recordOperationLog({
+  return recordOperationLogAsync({
     module: 'response_inspection_policies',
     action,
     operationKey: `response_inspection_policies.${action}`,

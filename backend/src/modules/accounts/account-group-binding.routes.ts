@@ -2,15 +2,15 @@ import type { Router } from 'express'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { findAccountForTest, setAccountGroup } from '../../storage/repositories.js'
+import { findAccountForTestAsync, setAccountGroupAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { accountGroupSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountGroupBindingRoutes(router: Router): void {
-  router.post('/:id/group', (req, res) => {
+  router.post('/:id/group', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -23,10 +23,10 @@ export function registerAccountGroupBindingRoutes(router: Router): void {
       return
     }
 
-    const before = findAccountForTest(req.params.id, requestAccess)
+    const before = await findAccountForTestAsync(req.params.id, requestAccess)
     try {
-      const account = runLoggedOperation(() => {
-        const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess)
+      const account = await runLoggedOperationAsync(async () => {
+        const account = await setAccountGroupAsync(req.params.id, parsed.data.groupId, requestAccess)
         if (!account) {
           throw new Error('账户不存在、授权已失效或分组不可用')
         }

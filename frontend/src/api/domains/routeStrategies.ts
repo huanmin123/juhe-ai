@@ -24,6 +24,7 @@ export interface RouteStrategyOptionsParams extends ListParams {
   keyword?: string
   ids?: string[]
   limit?: number
+  activeOnly?: boolean
 }
 
 export interface RouteStrategyMutationPayload {

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -111,8 +111,39 @@ try {
     '非法代理密码更新不应覆盖旧密码'
   )
 
-  assert.equal(repositories.deleteProxy(targetId), true, '删除代理应成功')
-  assert.equal(repositories.findProxy(targetId), undefined, '删除后按 ID 单条读取应找不到代理')
+  const asyncListed = await repositories.listProxiesPageAsync({ page: 1, pageSize: 20, keyword: '代理单条读取回归-000' })
+  assert.equal(asyncListed.items.some((proxy) => proxy.id === targetId), true, 'async 列表 fallback 应能读取代理')
+  assert.equal((await repositories.findProxyAsync(targetId))?.id, targetId, 'async 单条读取 fallback 应能按 ID 找到代理')
+  assert.equal((await repositories.listProxyOptionsAsync({ keyword: '代理单条读取回归-000' })).some((proxy) => proxy.id === targetId), true, 'async options fallback 应能读取启用代理')
+  const asyncUpdated = await repositories.updateProxyAsync(targetId, { description: 'async fallback 更新' })
+  assert.equal(asyncUpdated?.description, 'async fallback 更新', 'async 更新 fallback 应返回更新后的代理')
+  const asyncTested = await repositories.updateProxyTestStateAsync(targetId, {
+    testStatus: 'passed',
+    latencyMs: 8,
+    lastTestMessage: 'async fallback 检测通过'
+  })
+  assert.equal(asyncTested?.latencyMs, 8, 'async 检测状态 fallback 应更新延迟')
+  assert.equal((await repositories.getProxyTestConfigAsync(targetId))?.proxyUrl, 'http://proxy-user:%20p%40ss%20@127.0.0.1:10000', 'async 检测配置 fallback 应保留代理 URL')
+  assert.equal((await repositories.resolveProxyUrlForProfileAsync(targetId)), 'http://proxy-user:%20p%40ss%20@127.0.0.1:10000', 'async 代理 URL fallback 应解析凭据')
+
+  const proxyRepositorySource = readFileSync(new URL('../../storage/proxy.repository.ts', import.meta.url), 'utf8')
+  const proxyRoutesSource = readFileSync(new URL('../../modules/proxies/proxies.routes.ts', import.meta.url), 'utf8')
+  const proxyTestSource = readFileSync(new URL('../../modules/proxies/proxy-test.service.ts', import.meta.url), 'utf8')
+  const dbServiceHandlersSource = readFileSync(new URL('../../modules/db-service/db-service-handlers.ts', import.meta.url), 'utf8')
+  assert(proxyRepositorySource.includes('listProxiesPageAsync'), '代理仓储必须提供 async 分页读取')
+  assert(proxyRepositorySource.includes('createProxyAsync'), '代理仓储必须提供 async 创建')
+  assert(proxyRepositorySource.includes('updateProxyAsync'), '代理仓储必须提供 async 更新')
+  assert(proxyRepositorySource.includes('deleteProxyAsync'), '代理仓储必须提供 async 删除')
+  assert(proxyRoutesSource.includes('await listProxiesPageAsync'), '代理管理列表路由必须走 async 仓储')
+  assert(proxyRoutesSource.includes('await createProxyAsync'), '代理创建路由必须走 async 仓储')
+  assert(proxyRoutesSource.includes('await updateProxyAsync'), '代理更新路由必须走 async 仓储')
+  assert(proxyRoutesSource.includes('await deleteProxyAsync'), '代理删除路由必须走 async 仓储')
+  assert(proxyTestSource.includes('await getProxyTestConfigAsync'), '代理测试按 ID 读取必须走 async 仓储')
+  assert(proxyTestSource.includes('await listEnabledProxyTestConfigsAsync'), '代理批量检测候选必须走 async 仓储')
+  assert(dbServiceHandlersSource.includes('await updateProxyTestStateAsync'), 'DB service 代理检测状态写回必须在 PG 模式走 async 仓储')
+
+  assert.equal(await repositories.deleteProxyAsync(targetId), true, 'async 删除代理 fallback 应成功')
+  assert.equal(await repositories.findProxyAsync(targetId), undefined, 'async 删除后按 ID 单条读取应找不到代理')
 
   console.log('代理单条读取回归通过：更新、检测状态和删除日志 before 不再依赖全量代理列表')
 } finally {

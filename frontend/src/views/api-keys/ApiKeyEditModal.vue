@@ -39,10 +39,10 @@
       <a-form-item label="说明">
         <a-textarea v-model:value="form.description" :rows="2" placeholder="可选" />
       </a-form-item>
-      <a-divider orientation="left">美元额度</a-divider>
+      <div class="modal-section-title">美元额度</div>
       <RequestQuotaFields :model="form.quotaLimits" />
-      <a-divider orientation="left">时间计划</a-divider>
-      <TimeScheduleSection :form="{ availabilitySchedule: form.availabilitySchedule }" label="API Key 时间计划" />
+      <div class="modal-section-title">时间计划</div>
+      <TimeScheduleSection :form="{ availabilitySchedule: form.availabilitySchedule }" label="API Key 时间计划" :bordered="false" />
     </a-form>
   </a-modal>
 </template>
@@ -68,8 +68,8 @@ import {
   createApiKeyTimeScheduleForm,
   type ApiKeyAvailabilityScheduleForm
 } from './apiKeyFormModel'
+import type { ApiKeyScopeParams } from './apiKeyScope'
 import { apiKeyStatusOptions as statusOptions } from './apiKeyTableConfig'
-import type { ApiKeyScopeParams } from './useApiKeyGroupOptions'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
 type ScopedRouteStrategiesApi = ReturnType<typeof useScopedRouteStrategiesApi>
@@ -113,7 +113,7 @@ const form = reactive({
 })
 
 const routeStrategyOptions = computed(() => routeStrategyOptionsRaw.value.map((strategy) => ({
-  label: `${strategy.name}（${routeStrategyModeText(strategy.mode)}）`,
+  label: `${strategy.name}${strategy.isDefault ? '（默认）' : `（${routeStrategyModeText(strategy.mode)}）`}`,
   value: strategy.id,
   disabled: strategy.status !== 'active'
 })))
@@ -135,7 +135,10 @@ async function openCreate() {
     availabilitySchedule: createApiKeyTimeScheduleForm()
   })
   await loadRouteStrategyOptions()
-  if (routeStrategyOptionsRaw.value.length === 1) {
+  const defaultStrategy = routeStrategyOptionsRaw.value.find((strategy) => strategy.isDefault && strategy.status === 'active')
+  if (defaultStrategy) {
+    form.routeStrategyId = defaultStrategy.id
+  } else if (routeStrategyOptionsRaw.value.length === 1) {
     form.routeStrategyId = routeStrategyOptionsRaw.value[0].id
   }
   modalOpen.value = true
@@ -280,7 +283,15 @@ defineExpose({ openCreate, openEdit })
 .modal-form {
   max-height: 72vh;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
+}
+
+.modal-section-title {
+  margin: 18px 0 10px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .full-width-control {

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  ANTHROPIC_PROVIDER_CODE,
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
   GEMINI_PROVIDER_CODE,
@@ -118,6 +119,7 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
 
   const defaultModel = await repository.findProviderDefaultTestModelAsync(GPT_VENDOR_CODE)
   assert.ok(defaultModel, '应能读取供应商默认测试模型')
+  assert.equal(await repository.findProviderDefaultTestModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-4-8', 'Anthropic 默认测试模型应使用 Opus 4.8')
 
   const defaultProfile = await repository.defaultProviderProtocolProfileAsync(GPT_VENDOR_CODE)
   assert.ok(defaultProfile, '应能读取默认协议档案')

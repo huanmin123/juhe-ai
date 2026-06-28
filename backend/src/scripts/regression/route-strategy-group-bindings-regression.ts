@@ -26,6 +26,12 @@ const [databaseModule, repositories] = await Promise.all([
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
+  const defaultStrategy = repositories.listRouteStrategyOptions(access, { limit: 20 }).find((strategy) => strategy.isDefault)
+  assert(defaultStrategy, '系统账户应具备默认策略路由')
+  assert.throws(() => {
+    repositories.deleteRouteStrategy(defaultStrategy.id, access)
+  }, /默认策略路由不允许删除/, '默认策略路由不能删除')
+
   const primaryGroup = repositories.createGroup({
     name: '策略路由回归主分组',
     providerCode: 'gpt',

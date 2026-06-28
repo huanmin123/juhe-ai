@@ -83,6 +83,7 @@ export {
 } from './account-summary.repository.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
+  getAccountUsageStatsOverviewPageFromWindowsAsync as buildAccountUsageStatsOverviewPageFromWindowsAsync,
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
 } from './account-usage.repository.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
@@ -200,7 +201,7 @@ export {
 } from './account-health-check.repository.js'
 import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
-import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
@@ -338,15 +339,25 @@ export {
 export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 export {
   createAnnouncement,
+  createAnnouncementAsync,
   deleteAnnouncement,
+  deleteAnnouncementAsync,
   findAnnouncement,
+  findAnnouncementAsync,
   listAnnouncements,
+  listAnnouncementsAsync,
   listAnnouncementsPage,
+  listAnnouncementsPageAsync,
   listPublicAnnouncements,
+  listPublicAnnouncementsAsync,
   markPublicAnnouncementsRead,
+  markPublicAnnouncementsReadAsync,
   publishAnnouncement,
+  publishAnnouncementAsync,
   unpublishAnnouncement,
+  unpublishAnnouncementAsync,
   updateAnnouncement,
+  updateAnnouncementAsync,
   type AnnouncementReadResult,
   type AnnouncementInput,
   type AnnouncementListResult
@@ -368,8 +379,11 @@ export { listAccountOptions, listAccountOptionsAsync } from './account-options.r
 export {
   AccountTagInUseError,
   deleteAccountTag,
+  deleteAccountTagAsync,
   listAccountTags,
+  listAccountTagsAsync,
   updateAccountTags,
+  updateAccountTagsAsync,
   type AccountTagSummary
 } from './account-tags.repository.js'
 export {
@@ -413,6 +427,8 @@ export {
   createRouteStrategyAsync,
   deleteRouteStrategy,
   deleteRouteStrategyAsync,
+  ensureDefaultRouteStrategyForSystemAccount,
+  ensureDefaultRouteStrategyForSystemAccountAsync,
   findRouteStrategySummary,
   findRouteStrategySummaryAsync,
   listRouteStrategiesPage,
@@ -494,21 +510,34 @@ export {
 } from './system-accounts.repository.js'
 export {
   createProxy,
+  createProxyAsync,
   deleteProxy,
+  deleteProxyAsync,
   findProxy,
+  findProxyAsync,
   getProxyTestConfig,
+  getProxyTestConfigAsync,
   listEnabledProxyTestConfigs,
+  listEnabledProxyTestConfigsAsync,
   listProxyOptions,
+  listProxyOptionsAsync,
   listProxies,
+  listProxiesAsync,
   listProxiesPage,
+  listProxiesPageAsync,
   ProxyInUseError,
   ProxyProfileUnavailableError,
   resolveEnabledProxyProfileId,
+  resolveEnabledProxyProfileIdAsync,
   resolveProxyUrlsForProfiles,
   resolveProxyUrlForProfile,
+  resolveProxyUrlForProfileAsync,
   resolveProxyUrlForProfileForSystemAccount,
+  resolveProxyUrlForProfileForSystemAccountAsync,
   updateProxyTestState,
+  updateProxyTestStateAsync,
   updateProxy,
+  updateProxyAsync,
   type ProxyProfileUrlResolution,
   type ProxyProfileOptionSummary,
   type ProxyProfileListOptions,
@@ -558,7 +587,9 @@ export {
   createUsageRecordsBatch,
   findRecentOpenAIRequestShapeForAccount,
   getUsageRecordDetail,
+  getUsageRecordDetailAsync,
   listUsageRecords,
+  listUsageRecordsAsync,
   type RecentOpenAIRequestShape,
   type UsageRecordInput,
   type UsageFailureAttribution,
@@ -722,10 +753,15 @@ export {
 
 export {
   createModelCheckItems,
+  createModelCheckItemsAsync,
   createModelCheckRun,
+  createModelCheckRunAsync,
   finishModelCheckRun,
+  finishModelCheckRunAsync,
   getModelCheckRunDetail,
+  getModelCheckRunDetailAsync,
   listModelCheckRuns,
+  listModelCheckRunsAsync,
   type ModelCheckItemCreateInput,
   type ModelCheckRunCreateInput,
   type ModelCheckRunFinishInput,
@@ -966,6 +1002,28 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
   return withAllAccountsDefaultTrendIds(access, overview)
 }
 
+export async function getAccountUsageStatsOverviewPageAsync(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): Promise<AccountUsageStatsOverview> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountUsageStatsOverviewPage(access, options)
+  }
+  const listOptions = normalizeAccountListOptions(options)
+  const [defaultTrendAccountIds, timezone] = await Promise.all([
+    loadAccountUsageDefaultTrendAccountIdsAsync(access),
+    options?.range ? Promise.resolve(undefined) : usageStatsTimezoneAsync()
+  ])
+  const range = options?.range ?? normalizeAccountUsageStatsRange({}, timezone)
+  const overview = await buildAccountUsageStatsOverviewPageFromWindowsAsync({
+    access,
+    range,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize,
+    keyword: listOptions.keyword,
+    accountIds: options?.accountIds,
+    defaultTrendAccountIds,
+  })
+  return withAllAccountsDefaultTrendIds(access, overview)
+}
+
 function withAllAccountsDefaultTrendIds(access: AccessScope | undefined, overview: AccountUsageStatsOverview): AccountUsageStatsOverview {
   if (overview.defaultTrendAccountIds.length > 0) return overview
   const defaultTrendAccountIds = allAccountsDefaultTrendAccountIds(access, overview.rows)
@@ -1007,6 +1065,36 @@ function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] 
   return rows.map((row) => row.scope_id).filter((id): id is string => Boolean(id))
 }
 
+async function loadAccountUsageDefaultTrendAccountIdsAsync(access?: AccessScope): Promise<string[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadAccountUsageDefaultTrendAccountIds(access)
+  }
+  const scopedId = scopedSystemAccountId(access)
+  const systemAccountId = scopedId ?? (canAccessAll(access) ? GLOBAL_STATS_SYSTEM_ACCOUNT_ID : undefined)
+  if (!systemAccountId) return []
+  const scopeType = scopedId ? 'caller_account' : 'account'
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<{ scope_id?: string }>(`
+    SELECT scope_id
+    FROM juhe_stats.usage_rank_snapshots
+    WHERE system_account_id = ?
+      AND scope_type = ?
+      AND window_key = 'last7d'
+      AND metric = 'request_count'
+      AND snapshot_at = (
+        SELECT MAX(snapshot_at)
+        FROM juhe_stats.usage_rank_snapshots
+        WHERE system_account_id = ?
+          AND scope_type = ?
+          AND window_key = 'last7d'
+          AND metric = 'request_count'
+      )
+    ORDER BY rank ASC
+    LIMIT 10
+  `, [systemAccountId, scopeType, systemAccountId, scopeType])
+  return rows.map((row) => row.scope_id).filter((id): id is string => Boolean(id))
+}
+
 export function findAccountForTest(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const accountAccess = access ?? internalAccountReadAccess
   const visibleAccount = findAccountSummary(accountId, accountAccess)
@@ -1040,7 +1128,33 @@ export async function findAccountForTestAsync(accountId: string, access?: Access
   if (!visibleAccount?.permissions?.canUse) {
     return undefined
   }
-  return visibleAccount
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<Pick<AccountRow, 'authorization_instance_authorization_id' | 'authorization_instance_source_account_id' | 'credentials_encrypted' | 'proxy_profile_id'>>(`
+    SELECT authorization_instance_authorization_id, authorization_instance_source_account_id, credentials_encrypted, proxy_profile_id
+    FROM ${accountWriteTable(client, 'accounts')}
+    WHERE id = ?
+      AND deleted_at IS NULL
+  `, [accountId])
+  if (!row) {
+    return undefined
+  }
+  const resourceRow = row.authorization_instance_source_account_id
+    ? await client.one<Pick<AccountRow, 'credentials_encrypted' | 'proxy_profile_id'>>(`
+      SELECT credentials_encrypted, proxy_profile_id
+      FROM ${accountWriteTable(client, 'accounts')}
+      WHERE id = ?
+        AND deleted_at IS NULL
+    `, [row.authorization_instance_source_account_id])
+    : undefined
+  if (row.authorization_instance_authorization_id && !resourceRow) {
+    return undefined
+  }
+  const credentialsRow = resourceRow ?? row
+  return {
+    ...visibleAccount,
+    credentials: decryptJson<Record<string, unknown>>(credentialsRow.credentials_encrypted),
+    proxyProfileId: credentialsRow.proxy_profile_id ?? undefined
+  }
 }
 
 export function recordAccountSuccessfulTestModel(accountId: string, model: string, access?: AccessScope): AccountSummary | undefined {
@@ -1066,6 +1180,33 @@ export function recordAccountSuccessfulTestModel(accountId: string, model: strin
     invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
   }
   return findAccountSummary(accountId, access)
+}
+
+export async function recordAccountSuccessfulTestModelAsync(accountId: string, model: string, access?: AccessScope): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordAccountSuccessfulTestModel(accountId, model, access)
+  }
+  const normalizedModel = optionalString(model)?.trim()
+  const current = await findAccountSummaryAsync(accountId, access)
+  if (!current?.permissions?.canUse) {
+    return undefined
+  }
+  if (!normalizedModel) {
+    return current
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountWriteTable(client, 'accounts')}
+    SET last_successful_test_model = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+  `, [normalizedModel, nowIso(), accountId])
+  if (Number(result.changes ?? 0) > 0) {
+    invalidateAccountLookupCache(accountId)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_test_model_updated')
+  }
+  return findAccountSummaryAsync(accountId, access)
 }
 
 export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
@@ -2346,6 +2487,7 @@ export {
   markAccountException,
   markAccountTemporaryUnavailable,
   markAccountTestTemporaryUnavailable,
+  markAccountTestTemporaryUnavailableAsync,
   markAuthorizedAccountBindingCooldownByContext,
   markAuthorizedAccountBindingDisabledByFailure,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,

@@ -52,6 +52,8 @@ function assertAccountTagsRouteBoundary(): void {
   const mainRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'accounts.routes.ts'), 'utf8')
   const tagsRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-tags.routes.ts'), 'utf8')
   const exportRouteSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-export.routes.ts'), 'utf8')
+  const exportRequestSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-export-request.ts'), 'utf8')
+  const exportServiceSource = readFileSync(resolve('src', 'modules', 'accounts', 'account-export.service.ts'), 'utf8')
 
   assert(
     mainRouteSource.includes('registerAccountTagsRoutes(accountsRouter)'),
@@ -74,9 +76,23 @@ function assertAccountTagsRouteBoundary(): void {
   assert(tagsRouteSource.includes("router.delete('/tags/:tagId'"), '账户标签子路由必须保留标签删除入口')
   assert(tagsRouteSource.includes("router.patch('/:id/tags'"), '账户标签子路由必须保留标签更新入口')
   assert(tagsRouteSource.includes('AccountTagInUseError'), '账户标签子路由必须保留绑定标签删除约束错误处理')
+  assert(tagsRouteSource.includes('listAccountTagsAsync'), '账户标签列表路由必须使用 async repository')
+  assert(tagsRouteSource.includes('deleteAccountTagAsync'), '账户标签删除路由必须使用 async repository')
+  assert(tagsRouteSource.includes('updateAccountTagsAsync'), '账户标签更新路由必须使用 async repository')
+  assert(tagsRouteSource.includes('findAccountSummaryAsync'), '账户标签更新后的账户摘要读取必须使用 async repository')
+  assert(tagsRouteSource.includes('runLoggedOperationAsync'), '账户标签更新操作日志必须使用 async 包裹')
+  assert(!/import \{[^}]*\blistAccountTags\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(tagsRouteSource), '账户标签子路由不能重新导入同步 listAccountTags')
+  assert(!/import \{[^}]*\bdeleteAccountTag\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(tagsRouteSource), '账户标签子路由不能重新导入同步 deleteAccountTag')
+  assert(!/import \{[^}]*\bupdateAccountTags\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(tagsRouteSource), '账户标签子路由不能重新导入同步 updateAccountTags')
   assert(tagsRouteSource.includes("operationKey: 'accounts.update_tags'"), '账户标签子路由必须保留标签更新操作日志 key')
   assert(exportRouteSource.includes("operationKey: 'accounts.export'"), '账户导出子路由必须保留操作日志 key')
-  assert(exportRouteSource.includes('exportAccountsForRequest'), '账户导出子路由必须调用导出服务')
+  assert(exportRouteSource.includes('exportAccountsForRequestAsync'), '账户导出子路由必须调用 async 导出服务')
+  assert(exportRouteSource.includes('recordOperationLogAsync'), '账户导出子路由操作日志必须走 async 设置读取入口')
+  assert(!exportRouteSource.includes('recordOperationLog({'), '账户导出子路由不得重新调用同步操作日志入口')
+  assert(exportRequestSource.includes('listAccountsPageAsync'), '账户按筛选导出必须使用 async 账户列表')
+  assert(exportRequestSource.includes('exportAccountsAsImportDocumentAsync'), '账户导出请求层必须使用 async 导出文档服务')
+  assert(exportServiceSource.includes('findAccountSummaryAsync'), '账户按 ID 导出必须使用 async 账户摘要读取')
+  assert(exportServiceSource.includes('getProxyTestConfigAsync'), '账户导出代理解析必须使用 async 代理读取')
 }
 
 assertAccountTagsRouteBoundary()

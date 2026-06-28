@@ -3,8 +3,8 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
-import { createSessionAsync, findSessionByTokenAsync, findSystemAccountById, revokeOtherSessionsForAccount, revokeSessionAsync, touchSessionAsync, updateSystemAccount, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
-import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { createSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { consumeCaptchaIssueAllowance, createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
 import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recordSuccessfulLoginAsync } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
@@ -125,7 +125,7 @@ authRouter.get('/me', requireSessionContext, (_req, res) => {
   }))
 })
 
-authRouter.patch('/me', requireSessionContext, (req, res) => {
+authRouter.patch('/me', requireSessionContext, async (req, res, next) => {
   const context = getRequestAuthContext()
   if (!context) {
     res.status(401).json({ message: '请先登录' })
@@ -145,24 +145,24 @@ authRouter.patch('/me', requireSessionContext, (req, res) => {
     return
   }
   const displayName = parsed.data.displayName.trim()
-  const before = findSystemAccountById(context.systemAccountId)
-  if (!before) {
-    res.status(404).json({ message: '系统账户不存在' })
-    return
-  }
-  if (before.displayName === displayName) {
-    res.json(ok(currentUserSummary(before)))
-    return
-  }
   try {
-    const account = updateSystemAccount(context.systemAccountId, {
+    const before = await findSystemAccountByIdAsync(context.systemAccountId)
+    if (!before) {
+      res.status(404).json({ message: '系统账户不存在' })
+      return
+    }
+    if (before.displayName === displayName) {
+      res.json(ok(currentUserSummary(before)))
+      return
+    }
+    const account = await updateSystemAccountAsync(context.systemAccountId, {
       displayName
     })
     if (!account) {
       res.status(404).json({ message: '系统账户不存在' })
       return
     }
-    recordOperationLog({
+    await recordOperationLogAsync({
       operationScopeSystemAccountId: account.id,
       mode: 'self',
       module: 'system_accounts',
@@ -176,6 +176,10 @@ authRouter.patch('/me', requireSessionContext, (req, res) => {
     }, req)
     res.json(ok(currentUserSummary(account)))
   } catch (error) {
+    if (res.headersSent) {
+      next(error)
+      return
+    }
     res.status(409).json({ message: error instanceof Error ? error.message : '修改显示名称失败' })
   }
 })
@@ -216,7 +220,7 @@ authRouter.post('/change-password', requireSessionContext, async (req, res, next
       res.status(404).json({ message: '系统账户不存在' })
       return
     }
-    revokeOtherSessionsForAccount(context.systemAccountId, context.sessionId)
+    await revokeOtherSessionsForAccountAsync(context.systemAccountId, context.sessionId)
     res.json(ok(account))
   } catch (error) {
     next(error)

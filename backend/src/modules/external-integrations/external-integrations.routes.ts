@@ -23,23 +23,23 @@ import {
   externalIntegrationIpUsageReadScope,
   externalIntegrationSourceAuthDemoScope
 } from '../../storage/external-integration-source-constants.js'
-import { createOperationLog } from '../../storage/repositories.js'
+import { createOperationLogAsync } from '../../storage/repositories.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from '../api-keys/api-key-availability-schedule.schema.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
 import {
   addPublicWelfareAccount,
-  deletePublicWelfareAccount,
-  addPublicApiKey,
+  deletePublicWelfareAccountAsync,
+  addPublicApiKeyAsync,
   addPublicGroup,
-  deletePublicApiKey,
-  deletePublicGroup,
-  listPublicApiKeys,
-  listPublicGroups,
-  listPublicWelfareAccounts,
-  updatePublicWelfareAccount,
-  updatePublicApiKey,
-  updatePublicGroup,
+  deletePublicApiKeyAsync,
+  deletePublicGroupAsync,
+  listPublicApiKeysAsync,
+  listPublicGroupsAsync,
+  listPublicWelfareAccountsAsync,
+  updatePublicWelfareAccountAsync,
+  updatePublicApiKeyAsync,
+  updatePublicGroupAsync,
   type PublicAccountDeleteResponse,
   type PublicAccountPushResponse
 } from './external-public-account-push.service.js'
@@ -58,9 +58,9 @@ import {
 } from './external-public-account-push.mock.js'
 import {
   getPublicAccessInfo,
-  getPublicAccountUsage,
-  getPublicClientIpUsage,
-  getPublicConsumptionRanking
+  getPublicAccountUsageAsync,
+  getPublicClientIpUsageAsync,
+  getPublicConsumptionRankingAsync
 } from './external-public-welfare.service.js'
 
 export const externalIntegrationsRouter = Router()
@@ -287,42 +287,54 @@ externalIntegrationsRouter.get(
 externalIntegrationsRouter.get(
   '/ip/usage',
   requireExternalIntegrationSource(externalIntegrationIpUsageReadScope),
-  (req, res) => {
+  async (req, res, next) => {
     const parsed = ipUsageQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 聚合公开接口参数无效')))
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    res.json(ok(getPublicClientIpUsage(parsed.data, { mock: context.isTestToken })))
+    try {
+      res.json(ok(await getPublicClientIpUsageAsync(parsed.data, { mock: context.isTestToken })))
+    } catch (error) {
+      next(error)
+    }
   }
 )
 
 externalIntegrationsRouter.get(
   '/account/usage',
   requireExternalIntegrationSource(externalIntegrationAccountUsageReadScope),
-  (req, res) => {
+  async (req, res, next) => {
     const parsed = accountUsageQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号聚合公开接口参数无效')))
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    res.json(ok(getPublicAccountUsage(parsed.data, { mock: context.isTestToken })))
+    try {
+      res.json(ok(await getPublicAccountUsageAsync(parsed.data, { mock: context.isTestToken })))
+    } catch (error) {
+      next(error)
+    }
   }
 )
 
 externalIntegrationsRouter.get(
   '/consumption/ranking',
   requireExternalIntegrationSource(externalIntegrationConsumptionRankingReadScope),
-  (req, res) => {
+  async (req, res, next) => {
     const parsed = consumptionRankingQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'IP 消耗排行公开接口参数无效')))
       return
     }
     const context = getExternalIntegrationSourceContext(res)
-    res.json(ok(getPublicConsumptionRanking(parsed.data, { mock: context.isTestToken })))
+    try {
+      res.json(ok(await getPublicConsumptionRankingAsync(parsed.data, { mock: context.isTestToken })))
+    } catch (error) {
+      next(error)
+    }
   }
 )
 
@@ -338,7 +350,7 @@ externalIntegrationsRouter.get(
 externalIntegrationsRouter.get(
   '/group/list',
   requireExternalIntegrationSource(externalIntegrationGroupListReadScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = groupListQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组列表参数无效')))
@@ -350,7 +362,7 @@ externalIntegrationsRouter.get(
       return
     }
     try {
-      res.json(ok(listPublicGroups(parsed.data)))
+      res.json(ok(await listPublicGroupsAsync(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : '分组列表读取失败'
       res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
@@ -361,7 +373,7 @@ externalIntegrationsRouter.get(
 externalIntegrationsRouter.get(
   '/api-key/list',
   requireExternalIntegrationSource(externalIntegrationApiKeyListReadScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = apiKeyListQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 列表参数无效')))
@@ -373,7 +385,7 @@ externalIntegrationsRouter.get(
       return
     }
     try {
-      res.json(ok(listPublicApiKeys(parsed.data)))
+      res.json(ok(await listPublicApiKeysAsync(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'API Key 列表读取失败'
       res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
@@ -384,7 +396,7 @@ externalIntegrationsRouter.get(
 externalIntegrationsRouter.get(
   '/account/list',
   requireExternalIntegrationSource(externalIntegrationAccountListReadScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = accountListQuerySchema.safeParse(req.query)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号列表参数无效')))
@@ -396,7 +408,7 @@ externalIntegrationsRouter.get(
       return
     }
     try {
-      res.json(ok(listPublicWelfareAccounts(parsed.data)))
+      res.json(ok(await listPublicWelfareAccountsAsync(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : '账号列表读取失败'
       res.status(message.includes('不存在') ? 404 : 400).json(badRequest(message))
@@ -430,7 +442,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/group/update',
   requireExternalIntegrationSource(externalIntegrationGroupUpdateWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = groupUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组修改参数无效')))
@@ -442,7 +454,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      const result = updatePublicGroup(parsed.data)
+      const result = await updatePublicGroupAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '分组不存在' } : ok(result))
     } catch (error) {
       const message = error instanceof Error ? error.message : '分组修改失败'
@@ -454,7 +466,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/group/del',
   requireExternalIntegrationSource(externalIntegrationGroupDeleteWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = groupDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '分组删除参数无效')))
@@ -466,7 +478,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      const result = deletePublicGroup(parsed.data)
+      const result = await deletePublicGroupAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '分组不存在' } : ok(result))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '分组删除失败'))
@@ -477,7 +489,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/api-key/add',
   requireExternalIntegrationSource(externalIntegrationApiKeyAddWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = apiKeyAddSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 新增参数无效')))
@@ -489,7 +501,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      res.status(201).json(ok(addPublicApiKey(parsed.data)))
+      res.status(201).json(ok(await addPublicApiKeyAsync(parsed.data)))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'API Key 新增失败'
       res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
@@ -500,7 +512,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/api-key/update',
   requireExternalIntegrationSource(externalIntegrationApiKeyUpdateWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = apiKeyUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 修改参数无效')))
@@ -512,7 +524,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      const result = updatePublicApiKey(parsed.data)
+      const result = await updatePublicApiKeyAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: 'API Key 不存在' } : ok(result))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'API Key 修改失败'
@@ -524,7 +536,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/api-key/del',
   requireExternalIntegrationSource(externalIntegrationApiKeyDeleteWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = apiKeyDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 删除参数无效')))
@@ -536,7 +548,7 @@ externalIntegrationsRouter.post(
       return
     }
     try {
-      const result = deletePublicApiKey(parsed.data)
+      const result = await deletePublicApiKeyAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: 'API Key 不存在' } : ok(result))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : 'API Key 删除失败'))
@@ -561,7 +573,7 @@ externalIntegrationsRouter.post(
 
     try {
       const result = await addPublicWelfareAccount(parsed.data)
-      recordPublicWelfareAccountWriteOperation(context, result, req, 201)
+      await recordPublicWelfareAccountWriteOperation(context, result, req, 201)
       res.status(201).json(ok(result))
     } catch (error) {
       const message = error instanceof Error ? error.message : '账号新增失败'
@@ -573,7 +585,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/account/update',
   requireExternalIntegrationSource(externalIntegrationAccountUpdateWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = accountUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号修改参数无效')))
@@ -586,8 +598,8 @@ externalIntegrationsRouter.post(
     }
 
     try {
-      const result = updatePublicWelfareAccount(parsed.data)
-      recordPublicWelfareAccountWriteOperation(context, result, req, 200)
+      const result = await updatePublicWelfareAccountAsync(parsed.data)
+      await recordPublicWelfareAccountWriteOperation(context, result, req, 200)
       res.json(ok(result))
     } catch (error) {
       const message = error instanceof Error ? error.message : '账号修改失败'
@@ -599,7 +611,7 @@ externalIntegrationsRouter.post(
 externalIntegrationsRouter.post(
   '/account/del',
   requireExternalIntegrationSource(externalIntegrationAccountDeleteWriteScope),
-  (req, res) => {
+  async (req, res) => {
     const parsed = accountDeleteSchema.safeParse(req.body)
     if (!parsed.success) {
       res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账号删除参数无效')))
@@ -612,8 +624,8 @@ externalIntegrationsRouter.post(
     }
 
     try {
-      const result = deletePublicWelfareAccount(parsed.data)
-      recordPublicWelfareAccountDeleteOperation(context, result, req, 200)
+      const result = await deletePublicWelfareAccountAsync(parsed.data)
+      await recordPublicWelfareAccountDeleteOperation(context, result, req, 200)
       res.json(ok(result))
     } catch (error) {
       const message = error instanceof Error ? error.message : '账号删除失败'
@@ -622,15 +634,15 @@ externalIntegrationsRouter.post(
   }
 )
 
-function recordPublicWelfareAccountWriteOperation(
+async function recordPublicWelfareAccountWriteOperation(
   context: ExternalIntegrationSourceAuthContext,
   result: PublicAccountPushResponse,
   req: Request,
   statusCode: number
-): void {
+): Promise<void> {
   const created = result.action === 'created'
   try {
-    createOperationLog({
+    await createOperationLogAsync({
       actorSystemAccountId: `external:${context.sourceRefId}`,
       actorUsername: context.sourceName,
       actorDisplayName: `外部来源：${context.sourceName}`,
@@ -688,18 +700,18 @@ function recordPublicWelfareAccountWriteOperation(
   }
 }
 
-function recordPublicWelfareAccountDeleteOperation(
+async function recordPublicWelfareAccountDeleteOperation(
   context: ExternalIntegrationSourceAuthContext,
   result: PublicAccountDeleteResponse,
   req: Request,
   statusCode: number
-): void {
+): Promise<void> {
   if (result.action !== 'deleted' || !result.account) {
     return
   }
 
   try {
-    createOperationLog({
+    await createOperationLogAsync({
       actorSystemAccountId: `external:${context.sourceRefId}`,
       actorUsername: context.sourceName,
       actorDisplayName: `外部来源：${context.sourceName}`,

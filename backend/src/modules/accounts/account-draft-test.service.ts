@@ -11,13 +11,17 @@ import {
 } from '../../storage/account-availability-schedule.js'
 import {
   getAccountTestTaskRecord,
+  getAccountTestTaskRecordAsync,
+  type AccountTestTaskRecord,
   type AccountTestDraftSnapshot
 } from '../../storage/account-test-tasks.repository.js'
 import { newId } from '../../storage/database.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   findGroupSummary,
+  findGroupSummaryAsync,
   listProviders,
+  listProvidersAsync,
   normalizeAccountCredentialsForWrite,
   normalizeAccountModelMappingsForProvider
 } from '../../storage/repositories.js'
@@ -79,13 +83,63 @@ export function savedAccountDraftTestSnapshot(
   }
 }
 
+export async function savedAccountDraftTestSnapshotAsync(
+  account: AccountSummary,
+  accountInput: AccountDraftTestAccountRequest,
+  requestAccess: RequestAccessScope
+): Promise<AccountTestDraftSnapshot> {
+  if (account.accessType === 'authorized') {
+    throw new Error('授权账户测试不支持使用未保存表单配置')
+  }
+  if (accountInput.providerCode !== account.providerCode || accountInput.type !== account.type) {
+    throw new Error('账户测试草稿与当前账户不一致')
+  }
+  const preparedDraft = await prepareAccountDraftTestSnapshotAsync({
+    accountInput,
+    requestAccess,
+    draftAccountId: account.id
+  })
+  if (
+    account.providerProtocolProfileId
+    && preparedDraft.draftAccount.providerProtocolProfileId
+    && preparedDraft.draftAccount.providerProtocolProfileId !== account.providerProtocolProfileId
+  ) {
+    throw new Error('账户测试草稿与当前账户协议档案不一致')
+  }
+  return {
+    ...preparedDraft.draftAccount,
+    stateTargetAccountId: account.id
+  }
+}
+
 export function prepareAccountDraftTestSnapshot(input: {
   accountInput: AccountDraftTestAccountRequest
   requestAccess: RequestAccessScope
   draftAccountId?: string
 }): { account: AccountSummary; draftAccount: AccountTestDraftSnapshot } {
+  const group = findGroupSummary(input.accountInput.groupId, input.requestAccess)
+  return prepareAccountDraftTestSnapshotResolved(input, group, listProviders())
+}
+
+export async function prepareAccountDraftTestSnapshotAsync(input: {
+  accountInput: AccountDraftTestAccountRequest
+  requestAccess: RequestAccessScope
+  draftAccountId?: string
+}): Promise<{ account: AccountSummary; draftAccount: AccountTestDraftSnapshot }> {
+  const group = await findGroupSummaryAsync(input.accountInput.groupId, input.requestAccess)
+  return prepareAccountDraftTestSnapshotResolved(input, group, await listProvidersAsync())
+}
+
+function prepareAccountDraftTestSnapshotResolved(
+  input: {
+    accountInput: AccountDraftTestAccountRequest
+    requestAccess: RequestAccessScope
+    draftAccountId?: string
+  },
+  group: ReturnType<typeof findGroupSummary>,
+  providers: ReturnType<typeof listProviders>
+): { account: AccountSummary; draftAccount: AccountTestDraftSnapshot } {
   const accountInput = input.accountInput
-  const group = findGroupSummary(accountInput.groupId, input.requestAccess)
   if (!group || group.providerCode !== accountInput.providerCode || group.permissions?.canManageAccounts === false) {
     throw new Error('账户分组无效')
   }
@@ -93,7 +147,7 @@ export function prepareAccountDraftTestSnapshot(input: {
   if (!groupProviderProtocolProfileId) {
     throw new Error('账户分组协议档案无效')
   }
-  const provider = listProviders().find((item) => item.code === accountInput.providerCode)
+  const provider = providers.find((item) => item.code === accountInput.providerCode)
   let providerProtocolProfileId: string
   try {
     providerProtocolProfileId = resolveProviderProtocolProfileIdFromConnectionType({
@@ -216,6 +270,33 @@ export function accountCreateStatusFromActivationTest(input: {
   return 'active'
 }
 
+export async function accountCreateStatusFromActivationTestAsync(input: {
+  account: AccountCreateDraftActivationRequest
+  providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  group?: ReturnType<typeof findGroupSummary>
+  requestAccess?: RequestAccessScope
+}): Promise<AccountStatus> {
+  const requestedStatus = input.account.status
+  const activationTestTaskId = optionalText(input.account.activationTestTaskId)
+  if (!activationTestTaskId) {
+    if (requestedStatus === 'active') {
+      throw new Error('创建为正常状态需要先完成本次账户草稿测试')
+    }
+    return requestedStatus ?? 'pending_test'
+  }
+  if (requestedStatus && requestedStatus !== 'active') {
+    throw new Error('带测试任务创建账户时，状态只能为正常或留空')
+  }
+  await assertActivationTestTaskMatchesCreateAsync({
+    ...input,
+    activationTestTaskId
+  })
+  return 'active'
+}
+
 function draftAccountCredentials(account: AccountDraftTestAccountRequest, providerBaseUrl: string): Record<string, unknown> {
   const credentials = credentialsRecordValue(account.credentials) ?? {}
   if (account.type !== 'oauth' || hasCredentialText(credentials.base_url)) {
@@ -268,8 +349,49 @@ function assertActivationTestTaskMatchesCreate(input: {
   }
 }
 
+async function assertActivationTestTaskMatchesCreateAsync(input: {
+  account: AccountCreateDraftActivationRequest
+  activationTestTaskId: string
+  providerBaseUrl: string
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  group?: ReturnType<typeof findGroupSummary>
+  requestAccess?: RequestAccessScope
+}): Promise<void> {
+  if (!input.requestAccess) {
+    throw new Error('缺少系统账户上下文，无法确认账户草稿测试结果')
+  }
+  if (!input.group) {
+    throw new Error('账户分组无效，无法确认账户草稿测试结果')
+  }
+  const task = await getAccountTestTaskRecordAsync(input.activationTestTaskId)
+  if (!task || !sameAccountTestRequester(task, input.requestAccess)) {
+    throw new Error('账户草稿测试任务不存在或不属于当前创建上下文')
+  }
+  if (task.status !== 'success' || task.result?.success !== true || !task.draftAccount) {
+    throw new Error('账户草稿测试尚未成功，不能直接创建为正常状态')
+  }
+  const ownerSystemAccountId = input.group.ownerSystemAccountId
+    ?? input.group.systemAccountId
+    ?? input.requestAccess.systemAccountFilterId
+    ?? input.requestAccess.systemAccountId
+  const expected = accountCreateActivationFingerprintSnapshot({
+    account: input.account,
+    providerBaseUrl: input.providerBaseUrl,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    protocolCode: input.protocolCode,
+    protocolVersion: input.protocolVersion,
+    ownerSystemAccountId
+  })
+  const actual = draftActivationFingerprintSnapshot(task.draftAccount)
+  if (hashStableValue(expected) !== hashStableValue(actual)) {
+    throw new Error('账户草稿测试内容已变化，请重新测试后再创建为正常状态')
+  }
+}
+
 function sameAccountTestRequester(
-  task: NonNullable<ReturnType<typeof getAccountTestTaskRecord>>,
+  task: AccountTestTaskRecord,
   access: RequestAccessScope
 ): boolean {
   return task.requestSystemAccountId === access.systemAccountId

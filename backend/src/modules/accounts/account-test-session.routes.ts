@@ -2,17 +2,17 @@ import type { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
 import {
-  cancelAccountTestSession,
-  cancelAccountTestTask,
-  createAccountTestSession,
-  heartbeatAccountTestSession
+  cancelAccountTestSessionAsync,
+  cancelAccountTestTaskAsync,
+  createAccountTestSessionAsync,
+  heartbeatAccountTestSessionAsync
 } from '../../storage/account-test-tasks.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { dispatchAccountTestCancel } from './account-test-task-queue.service.js'
 
 export function registerAccountTestSessionRoutes(router: Router): void {
-  router.post('/test-sessions', (req, res) => {
+  router.post('/test-sessions', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -24,20 +24,20 @@ export function registerAccountTestSessionRoutes(router: Router): void {
       return
     }
     try {
-      res.status(201).json(ok(createAccountTestSession(requestAccess)))
+      res.status(201).json(ok(await createAccountTestSessionAsync(requestAccess)))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户测试会话失败'))
     }
   })
 
-  router.post('/test-sessions/:sessionId/heartbeat', (req, res) => {
+  router.post('/test-sessions/:sessionId/heartbeat', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const session = heartbeatAccountTestSession(req.params.sessionId, requestAccess)
+    const session = await heartbeatAccountTestSessionAsync(req.params.sessionId, requestAccess)
     if (!session) {
       res.status(404).json({ message: '账户测试会话不存在' })
       return
@@ -45,14 +45,14 @@ export function registerAccountTestSessionRoutes(router: Router): void {
     res.json(ok(session))
   })
 
-  router.post('/test-sessions/:sessionId/cancel', (req, res) => {
+  router.post('/test-sessions/:sessionId/cancel', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const result = cancelAccountTestSession(req.params.sessionId, requestAccess)
+    const result = await cancelAccountTestSessionAsync(req.params.sessionId, requestAccess)
     if (!result) {
       res.status(404).json({ message: '账户测试会话不存在' })
       return
@@ -63,14 +63,14 @@ export function registerAccountTestSessionRoutes(router: Router): void {
     res.json(ok(result.session))
   })
 
-  router.post('/test-tasks/:taskId/cancel', (req, res) => {
+  router.post('/test-tasks/:taskId/cancel', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const task = cancelAccountTestTask(req.params.taskId, requestAccess)
+    const task = await cancelAccountTestTaskAsync(req.params.taskId, requestAccess)
     if (!task) {
       res.status(404).json({ message: '账户测试任务不存在' })
       return

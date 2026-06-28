@@ -20,5 +20,7 @@ export function normalizeNameOrThrow(value: unknown, message: string, maxLengthM
 }
 
 export function isUniqueConstraintError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('UNIQUE constraint failed')
+  return error instanceof Error
+    && (error.message.includes('UNIQUE constraint failed')
+      || (error as { code?: unknown }).code === '23505')
 }

@@ -4,8 +4,12 @@ import type {
   ResourceAuthorizationSourceSummary,
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
-import { createAppCache } from '../shared/cache.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { createAppCache, createSharedJsonCache } from '../shared/cache.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { getBusinessDatabase } from './database.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 interface ResourceAuthorizationSourceRow {
@@ -45,6 +49,18 @@ const authorizationSourcesCache = createAppCache<string, ResourceAuthorizationSo
   max: 10_000,
   ttlMs: 5 * 60 * 1000,
   updateAgeOnGet: true
+})
+
+const authorizationStatsSharedCache = createSharedJsonCache<ResourceAuthorizationStats>({
+  name: 'lookup:resource-authorization-stats',
+  max: 10_000,
+  ttlMs: 5 * 60 * 1000
+})
+
+const authorizationSourcesSharedCache = createSharedJsonCache<ResourceAuthorizationSourceSummary[]>({
+  name: 'lookup:resource-authorization-sources',
+  max: 10_000,
+  ttlMs: 5 * 60 * 1000
 })
 
 const emptyAuthorizationStats: ResourceAuthorizationStats = {
@@ -92,7 +108,49 @@ export function loadResourceAuthorizationStatsByResourceIds(resourceType: Resour
   }]))
   for (const id of missingIds) {
     const stats = loaded.get(id) ?? emptyAuthorizationStats
-    authorizationStatsCache.set(resourceAuthorizationStatsCacheKey(resourceType, id), stats)
+    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+    authorizationStatsCache.set(cacheKey, stats)
+    setAuthorizationStatsSharedCacheEntry(cacheKey, stats)
+    result.set(id, stats)
+  }
+  return result
+}
+
+export async function loadResourceAuthorizationStatsByResourceIdsAsync(resourceType: ResourceAuthorizationResourceType, resourceIds: string[]): Promise<Map<string, ResourceAuthorizationStats>> {
+  const ids = uniqueIds(resourceIds)
+  if (!ids.length) return new Map()
+  const result = new Map<string, ResourceAuthorizationStats>()
+  const missingLocalIds: string[] = []
+  for (const id of ids) {
+    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+    const cached = authorizationStatsCache.get(cacheKey)
+    if (cached !== undefined) {
+      result.set(id, cached)
+    } else {
+      missingLocalIds.push(id)
+    }
+  }
+  if (!missingLocalIds.length) return result
+
+  const missingDatabaseIds: string[] = []
+  for (const id of missingLocalIds) {
+    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+    const sharedCached = await getAuthorizationStatsSharedCacheEntry(cacheKey)
+    if (sharedCached !== undefined) {
+      authorizationStatsCache.set(cacheKey, sharedCached)
+      result.set(id, sharedCached)
+    } else {
+      missingDatabaseIds.push(id)
+    }
+  }
+  if (!missingDatabaseIds.length) return result
+
+  const loaded = await loadResourceAuthorizationStatsFromDatabaseAsync(resourceType, missingDatabaseIds)
+  for (const id of missingDatabaseIds) {
+    const stats = loaded.get(id) ?? emptyAuthorizationStats
+    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+    authorizationStatsCache.set(cacheKey, stats)
+    await setAuthorizationStatsSharedCacheEntryAsync(cacheKey, stats)
     result.set(id, stats)
   }
   return result
@@ -147,6 +205,44 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
   for (const id of missingIds) {
     const sources = loaded.get(id) ?? []
     authorizationSourcesCache.set(id, sources)
+    setAuthorizationSourcesSharedCacheEntry(id, sources)
+    result.set(id, [...sources])
+  }
+  return result
+}
+
+export async function loadResourceAuthorizationSourcesByAuthorizationIdsAsync(authorizationIds: string[]): Promise<Map<string, ResourceAuthorizationSourceSummary[]>> {
+  const ids = uniqueIds(authorizationIds)
+  if (!ids.length) return new Map()
+  const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
+  const missingLocalIds: string[] = []
+  for (const id of ids) {
+    const cached = authorizationSourcesCache.get(id)
+    if (cached !== undefined) {
+      result.set(id, [...cached])
+    } else {
+      missingLocalIds.push(id)
+    }
+  }
+  if (!missingLocalIds.length) return result
+
+  const missingDatabaseIds: string[] = []
+  for (const id of missingLocalIds) {
+    const sharedCached = await getAuthorizationSourcesSharedCacheEntry(id)
+    if (sharedCached !== undefined) {
+      authorizationSourcesCache.set(id, sharedCached)
+      result.set(id, [...sharedCached])
+    } else {
+      missingDatabaseIds.push(id)
+    }
+  }
+  if (!missingDatabaseIds.length) return result
+
+  const loaded = await loadResourceAuthorizationSourcesFromDatabaseAsync(missingDatabaseIds)
+  for (const id of missingDatabaseIds) {
+    const sources = loaded.get(id) ?? []
+    authorizationSourcesCache.set(id, sources)
+    await setAuthorizationSourcesSharedCacheEntryAsync(id, sources)
     result.set(id, [...sources])
   }
   return result
@@ -155,28 +251,35 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
 export function invalidateResourceAuthorizationStatsCache(resourceType?: ResourceAuthorizationResourceType, resourceIds?: string | string[]): void {
   if (!resourceType || resourceIds === undefined) {
     authorizationStatsCache.clear()
+    clearAuthorizationStatsSharedCache()
     return
   }
   const ids = Array.isArray(resourceIds) ? resourceIds : [resourceIds]
   for (const id of uniqueIds(ids)) {
-    authorizationStatsCache.delete(resourceAuthorizationStatsCacheKey(resourceType, id))
+    const cacheKey = resourceAuthorizationStatsCacheKey(resourceType, id)
+    authorizationStatsCache.delete(cacheKey)
+    deleteAuthorizationStatsSharedCacheEntry(cacheKey)
   }
 }
 
 export function invalidateResourceAuthorizationSourceCache(authorizationIds?: string | string[]): void {
   if (authorizationIds === undefined) {
     authorizationSourcesCache.clear()
+    clearAuthorizationSourcesSharedCache()
     return
   }
   const ids = Array.isArray(authorizationIds) ? authorizationIds : [authorizationIds]
   for (const id of uniqueIds(ids)) {
     authorizationSourcesCache.delete(id)
+    deleteAuthorizationSourcesSharedCacheEntry(id)
   }
 }
 
 export function clearResourceAuthorizationLookupCaches(): void {
   authorizationStatsCache.clear()
   authorizationSourcesCache.clear()
+  clearAuthorizationStatsSharedCache()
+  clearAuthorizationSourcesSharedCache()
 }
 
 function resourceAuthorizationStatsCacheKey(resourceType: ResourceAuthorizationResourceType, resourceId: string): string {
@@ -199,4 +302,222 @@ function resourceAuthorizationSourceSelectColumns(alias: string): string {
     'revoked_at',
     'updated_at'
   ].map((column) => `${alias}.${column}`).join(', ')
+}
+
+async function loadResourceAuthorizationStatsFromDatabaseAsync(
+  resourceType: ResourceAuthorizationResourceType,
+  resourceIds: string[]
+): Promise<Map<string, ResourceAuthorizationStats>> {
+  const client = await authorizationReadLoaderDatabaseClient()
+  const resourceAuthorizationsTable = authorizationReadLoaderTable(client, 'resource_authorizations')
+  const resourceAuthorizationSourcesTable = authorizationReadLoaderTable(client, 'resource_authorization_sources')
+  const rows: Array<{ resource_id: string; authorization_count: number; authorization_team_count: number }> = []
+  for (const chunk of chunkValues(resourceIds, 500)) {
+    rows.push(...await client.query<{ resource_id: string; authorization_count: number; authorization_team_count: number }>(`
+      SELECT
+        ra.resource_id,
+        COUNT(DISTINCT ra.id) AS authorization_count,
+        COUNT(DISTINCT CASE WHEN ras.source_type = 'team' AND ras.status = 'active' THEN ras.source_team_id END) AS authorization_team_count
+      FROM ${resourceAuthorizationsTable} ra
+      LEFT JOIN ${resourceAuthorizationSourcesTable} ras
+        ON ras.authorization_id = ra.id
+        AND ras.source_type = 'team'
+        AND ras.status = 'active'
+      WHERE ra.resource_type = ?
+        AND ra.status = 'active'
+        AND ra.resource_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+      GROUP BY ra.resource_id
+    `, [resourceType, ...chunk]))
+  }
+  return new Map(rows.map((row) => [row.resource_id, {
+    authorizationCount: Number(row.authorization_count ?? 0),
+    authorizationTeamCount: Number(row.authorization_team_count ?? 0)
+  }]))
+}
+
+async function loadResourceAuthorizationSourcesFromDatabaseAsync(authorizationIds: string[]): Promise<Map<string, ResourceAuthorizationSourceSummary[]>> {
+  const client = await authorizationReadLoaderDatabaseClient()
+  const resourceAuthorizationSourcesTable = authorizationReadLoaderTable(client, 'resource_authorization_sources')
+  const systemTeamsTable = authorizationReadLoaderTable(client, 'system_teams')
+  const rows: Array<ResourceAuthorizationSourceRow & { team_name?: string | null }> = []
+  for (const chunk of chunkValues(authorizationIds, 500)) {
+    rows.push(...await client.query<ResourceAuthorizationSourceRow & { team_name?: string | null }>(`
+      SELECT ${resourceAuthorizationSourceSelectColumns('ras')}, system_teams.name AS team_name
+      FROM ${resourceAuthorizationSourcesTable} ras
+      LEFT JOIN ${systemTeamsTable} system_teams ON system_teams.id = ras.source_team_id
+      WHERE ras.authorization_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+      ORDER BY ras.status ASC, ras.created_at ASC, ras.id ASC
+    `, chunk))
+  }
+  return authorizationSourcesByAuthorizationIdFromRows(rows)
+}
+
+function authorizationSourcesByAuthorizationIdFromRows(rows: Array<ResourceAuthorizationSourceRow & { team_name?: string | null }>): Map<string, ResourceAuthorizationSourceSummary[]> {
+  const loaded = new Map<string, ResourceAuthorizationSourceSummary[]>()
+  for (const row of rows) {
+    const summary: ResourceAuthorizationSourceSummary = {
+      id: row.id,
+      authorizationId: row.authorization_id,
+      sourceType: row.source_type,
+      sourceTeamId: row.source_team_id ?? undefined,
+      sourceTeamName: row.team_name ?? undefined,
+      status: row.status,
+      activatedAt: row.activated_at ?? undefined,
+      endedAt: row.ended_at ?? undefined,
+      endedReason: row.ended_reason ?? undefined,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      revokedBy: row.revoked_by ?? undefined,
+      revokedAt: row.revoked_at ?? undefined,
+      updatedAt: row.updated_at
+    }
+    loaded.set(row.authorization_id, [...(loaded.get(row.authorization_id) ?? []), summary])
+  }
+  return loaded
+}
+
+async function authorizationReadLoaderDatabaseClient(): Promise<DatabaseClient> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return createPostgresDatabaseClient(await getPostgresPool())
+  }
+  return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function authorizationReadLoaderTable(client: DatabaseClient, tableName: string): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable('juhe_business', tableName)
+    : client.dialect.quoteIdentifier(tableName)
+}
+
+async function getAuthorizationStatsSharedCacheEntry(cacheKey: string): Promise<ResourceAuthorizationStats | undefined> {
+  try {
+    const value = await authorizationStatsSharedCache.get(cacheKey)
+    return normalizeAuthorizationStats(value)
+  } catch (error) {
+    logger.warn({
+      event: 'resource_authorization_stats_shared_cache_read_failed',
+      cacheKey,
+      err: errorLogFields(error)
+    }, '读取授权统计 Redis shared cache 失败，将回退数据库')
+    return undefined
+  }
+}
+
+function setAuthorizationStatsSharedCacheEntry(cacheKey: string, stats: ResourceAuthorizationStats): void {
+  void setAuthorizationStatsSharedCacheEntryAsync(cacheKey, stats)
+}
+
+async function setAuthorizationStatsSharedCacheEntryAsync(cacheKey: string, stats: ResourceAuthorizationStats): Promise<void> {
+  try {
+    await authorizationStatsSharedCache.set(cacheKey, cloneAuthorizationStats(stats))
+  } catch (error) {
+    logger.warn({
+      event: 'resource_authorization_stats_shared_cache_write_failed',
+      cacheKey,
+      err: errorLogFields(error)
+    }, '写入授权统计 Redis shared cache 失败')
+  }
+}
+
+function deleteAuthorizationStatsSharedCacheEntry(cacheKey: string): void {
+  void authorizationStatsSharedCache.delete(cacheKey).catch((error) => {
+    logger.warn({
+      event: 'resource_authorization_stats_shared_cache_delete_failed',
+      cacheKey,
+      err: errorLogFields(error)
+    }, '删除授权统计 Redis shared cache 失败')
+  })
+}
+
+function clearAuthorizationStatsSharedCache(): void {
+  void authorizationStatsSharedCache.clear().catch((error) => {
+    logger.warn({
+      event: 'resource_authorization_stats_shared_cache_clear_failed',
+      err: errorLogFields(error)
+    }, '清理授权统计 Redis shared cache 失败')
+  })
+}
+
+async function getAuthorizationSourcesSharedCacheEntry(authorizationId: string): Promise<ResourceAuthorizationSourceSummary[] | undefined> {
+  try {
+    const value = await authorizationSourcesSharedCache.get(authorizationId)
+    return Array.isArray(value) ? value.map(cloneAuthorizationSourceSummary).filter((item): item is ResourceAuthorizationSourceSummary => Boolean(item)) : undefined
+  } catch (error) {
+    logger.warn({
+      event: 'resource_authorization_sources_shared_cache_read_failed',
+      authorizationId,
+      err: errorLogFields(error)
+    }, '读取授权来源 Redis shared cache 失败，将回退数据库')
+    return undefined
+  }
+}
+
+function setAuthorizationSourcesSharedCacheEntry(authorizationId: string, sources: ResourceAuthorizationSourceSummary[]): void {
+  void setAuthorizationSourcesSharedCacheEntryAsync(authorizationId, sources)
+}
+
+async function setAuthorizationSourcesSharedCacheEntryAsync(authorizationId: string, sources: ResourceAuthorizationSourceSummary[]): Promise<void> {
+  try {
+    await authorizationSourcesSharedCache.set(authorizationId, sources.map((source) => ({ ...source })))
+  } catch (error) {
+    logger.warn({
+      event: 'resource_authorization_sources_shared_cache_write_failed',
+      authorizationId,
+      err: errorLogFields(error)
+    }, '写入授权来源 Redis shared cache 失败')
+  }
+}
+
+function deleteAuthorizationSourcesSharedCacheEntry(authorizationId: string): void {
+  void authorizationSourcesSharedCache.delete(authorizationId).catch((error) => {
+    logger.warn({
+      event: 'resource_authorization_sources_shared_cache_delete_failed',
+      authorizationId,
+      err: errorLogFields(error)
+    }, '删除授权来源 Redis shared cache 失败')
+  })
+}
+
+function clearAuthorizationSourcesSharedCache(): void {
+  void authorizationSourcesSharedCache.clear().catch((error) => {
+    logger.warn({
+      event: 'resource_authorization_sources_shared_cache_clear_failed',
+      err: errorLogFields(error)
+    }, '清理授权来源 Redis shared cache 失败')
+  })
+}
+
+function normalizeAuthorizationStats(value: ResourceAuthorizationStats | undefined): ResourceAuthorizationStats | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  return {
+    authorizationCount: Math.max(0, Number(value.authorizationCount ?? 0)),
+    authorizationTeamCount: Math.max(0, Number(value.authorizationTeamCount ?? 0))
+  }
+}
+
+function cloneAuthorizationStats(value: ResourceAuthorizationStats): ResourceAuthorizationStats {
+  return {
+    authorizationCount: Math.max(0, Number(value.authorizationCount ?? 0)),
+    authorizationTeamCount: Math.max(0, Number(value.authorizationTeamCount ?? 0))
+  }
+}
+
+function cloneAuthorizationSourceSummary(value: ResourceAuthorizationSourceSummary | undefined): ResourceAuthorizationSourceSummary | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  return {
+    id: value.id,
+    authorizationId: value.authorizationId,
+    sourceType: value.sourceType,
+    sourceTeamId: value.sourceTeamId,
+    sourceTeamName: value.sourceTeamName,
+    status: value.status,
+    activatedAt: value.activatedAt,
+    endedAt: value.endedAt,
+    endedReason: value.endedReason,
+    createdBy: value.createdBy,
+    createdAt: value.createdAt,
+    revokedBy: value.revokedBy,
+    revokedAt: value.revokedAt,
+    updatedAt: value.updatedAt
+  }
 }

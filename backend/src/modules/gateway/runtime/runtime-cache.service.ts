@@ -60,6 +60,10 @@ interface ProviderModelRouteIndexCacheEntry {
   index: Map<string, string[]>
 }
 
+interface ProviderModelRouteIndexSharedCacheEntry {
+  entries: Array<[string, string[]]>
+}
+
 interface CachedOpenAIAccountsForGroupOptions {
   requestedModel?: string
   requestedEndpointFamily?: GatewayRequestEndpointFamily
@@ -86,6 +90,12 @@ const gatewayRuntimeCache = createAppCache<string, GatewayRuntimeCacheEntry>({
 })
 
 const gatewaySettingsCache = createAppCache<string, GatewaySettings>({
+  name: 'gateway:settings',
+  max: 1,
+  ttlMs: gatewaySettingsTtlMs
+})
+
+const gatewaySettingsSharedCache = createSharedJsonCache<GatewaySettings>({
   name: 'gateway:settings',
   max: 1,
   ttlMs: gatewaySettingsTtlMs
@@ -122,6 +132,12 @@ const providerModelCatalogSharedCache = createSharedJsonCache<ProviderModelCatal
 })
 
 const providerModelRouteIndexCache = createAppCache<string, ProviderModelRouteIndexCacheEntry>({
+  name: 'gateway:provider-model-route-index',
+  max: 1000,
+  ttlMs: providerModelCatalogTtlMs
+})
+
+const providerModelRouteIndexSharedCache = createSharedJsonCache<ProviderModelRouteIndexSharedCacheEntry>({
   name: 'gateway:provider-model-route-index',
   max: 1000,
   ttlMs: providerModelCatalogTtlMs
@@ -165,9 +181,14 @@ export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings>
   if (cached) {
     return { ...cached }
   }
+  const sharedCached = await getGatewaySettingsSharedCacheEntry()
+  if (sharedCached) {
+    gatewaySettingsCache.set('current', cloneGatewaySettings(sharedCached))
+    return cloneGatewaySettings(sharedCached)
+  }
   const value = await requestDbService({ type: 'read_gateway_settings' })
-  gatewaySettingsCache.set('current', value)
-  return { ...value }
+  await setGatewaySettingsCacheEntryAsync(value)
+  return cloneGatewaySettings(value)
 }
 
 export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
@@ -366,14 +387,20 @@ export async function resolveCachedProviderModelRouteAsync(input: {
   })
   let cached = providerModelRouteIndexCache.get(cacheKey)
   if (!cached) {
-    cached = {
-      index: await buildProviderModelRouteIndex({
-        providerCodes,
-        systemAccountId: input.systemAccountId,
-        includeUnpriced: input.includeUnpriced
-      })
+    const sharedCached = await getProviderModelRouteIndexSharedCacheEntry(cacheKey)
+    if (sharedCached) {
+      cached = sharedCached
+      providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(sharedCached))
     }
-    providerModelRouteIndexCache.set(cacheKey, cached)
+  }
+  if (!cached) {
+    cached = providerModelRouteIndexCacheEntry(await buildProviderModelRouteIndex({
+      providerCodes,
+      systemAccountId: input.systemAccountId,
+      includeUnpriced: input.includeUnpriced
+    }))
+    providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(cached))
+    await setProviderModelRouteIndexSharedCacheEntry(cacheKey, cached)
   }
   const matchedProviderCodes = cached.index.get(modelKey) ?? []
   if (matchedProviderCodes.length === 1) {
@@ -481,8 +508,10 @@ export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean
   providerModelCatalogCache.clear()
   providerModelRouteIndexCache.clear()
   responseInspectionPolicyCache.clear()
+  clearGatewaySettingsSharedCache()
   clearGroupUsageAccessSharedCache()
   clearProviderModelCatalogSharedCache()
+  clearProviderModelRouteIndexSharedCache()
   clearResponseInspectionPolicySharedCache()
   if (options.clearSettings ?? true) {
     clearSettingsRepositoryCache()
@@ -557,6 +586,12 @@ async function buildProviderModelRouteIndex(input: {
   return index
 }
 
+function providerModelRouteIndexCacheEntry(index: Map<string, string[]>): ProviderModelRouteIndexCacheEntry {
+  return {
+    index: new Map([...index.entries()].map(([modelKey, providerCodes]) => [modelKey, [...providerCodes]]))
+  }
+}
+
 function normalizedProviderRouteCodes(providerCodes: string[]): string[] {
   return [...new Set(providerCodes.map(providerCode => providerCode.trim()).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right))
@@ -614,7 +649,7 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
       runtime: cloneStaticGatewayRuntime(runtime),
       revalidateAtMs: Date.now() + invalidGatewayRuntimeTtlMs
     }, { ttlMs: gatewayRuntimeRetainTtlMs })
-    gatewaySettingsCache.set('current', runtime.settings)
+    setGatewaySettingsCacheEntry(runtime.settings)
     return
   }
 
@@ -624,7 +659,7 @@ function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewa
     runtime: cloneStaticGatewayRuntime(runtime),
     revalidateAtMs: nowMs + runtimeTtlMs
   }, { ttlMs: gatewayRuntimeRetainTtlMs })
-  gatewaySettingsCache.set('current', runtime.settings)
+  setGatewaySettingsCacheEntry(runtime.settings)
   if (runtime.groupAccess) {
     const cacheKey = gatewayCacheKey(runtime.apiKey.selected_group_id, runtime.apiKey.system_account_id)
     const entry = groupUsageAccessCacheEntry(cloneGroupUsageAccessMetadata(runtime.groupAccess), nowMs)
@@ -721,6 +756,10 @@ function cloneGroupUsageAccessMetadata(value: GroupUsageAccessMetadata): GroupUs
     ...value,
     schedulingPolicy: value.schedulingPolicy ? { ...value.schedulingPolicy } : undefined
   }
+}
+
+function cloneGatewaySettings(settings: GatewaySettings): GatewaySettings {
+  return { ...settings }
 }
 
 function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
@@ -828,6 +867,10 @@ function cloneGroupUsageAccessCacheEntry(entry: GroupUsageAccessCacheEntry): Gro
     value: entry.value ? cloneGroupUsageAccessMetadata(entry.value) : false,
     revalidateAtMs: entry.revalidateAtMs
   }
+}
+
+function cloneProviderModelRouteIndexCacheEntry(entry: ProviderModelRouteIndexCacheEntry): ProviderModelRouteIndexCacheEntry {
+  return providerModelRouteIndexCacheEntry(entry.index)
 }
 
 function openAIAccountsCacheEntry(accounts: OpenAIAccountSecret[], now = Date.now()): OpenAIAccountsCacheEntry {
@@ -998,6 +1041,51 @@ function refreshOpenAIAccountsForGroupInBackground(
   pendingOpenAIAccountsRefreshes.set(cacheKey, refresh)
 }
 
+async function getGatewaySettingsSharedCacheEntry(): Promise<GatewaySettings | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const cached = await gatewaySettingsSharedCache.get('current')
+    return cached ? cloneGatewaySettings(cached) : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_settings_shared_cache_read_failed'
+    }), '读取网关设置 Redis 共享缓存失败，继续读取 DB service')
+    return undefined
+  }
+}
+
+function setGatewaySettingsCacheEntry(settings: GatewaySettings): void {
+  const cached = cloneGatewaySettings(settings)
+  gatewaySettingsCache.set('current', cached)
+  void setGatewaySettingsSharedCacheEntry(cached)
+}
+
+async function setGatewaySettingsCacheEntryAsync(settings: GatewaySettings): Promise<void> {
+  const cached = cloneGatewaySettings(settings)
+  gatewaySettingsCache.set('current', cached)
+  await setGatewaySettingsSharedCacheEntry(cached)
+}
+
+async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await gatewaySettingsSharedCache.set('current', cloneGatewaySettings(settings), { ttlMs: gatewaySettingsTtlMs })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_settings_shared_cache_write_failed'
+    }), '写入网关设置 Redis 共享缓存失败')
+  }
+}
+
+function clearGatewaySettingsSharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void gatewaySettingsSharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_settings_shared_cache_clear_failed'
+    }), '清理网关设置 Redis 共享缓存失败')
+  })
+}
+
 async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<GroupUsageAccessCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
   try {
@@ -1111,6 +1199,49 @@ function clearProviderModelCatalogSharedCache(): void {
       event: 'gateway_provider_model_catalog_shared_cache_clear_failed'
     }), '清理网关模型目录 Redis 共享缓存失败')
   })
+}
+
+async function getProviderModelRouteIndexSharedCacheEntry(cacheKey: string): Promise<ProviderModelRouteIndexCacheEntry | undefined> {
+  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  try {
+    const cached = await providerModelRouteIndexSharedCache.get(cacheKey)
+    return cached ? providerModelRouteIndexCacheEntryFromShared(cached) : undefined
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_provider_model_route_index_shared_cache_read_failed'
+    }), '读取网关模型路由索引 Redis 共享缓存失败，继续构建本地索引')
+    return undefined
+  }
+}
+
+async function setProviderModelRouteIndexSharedCacheEntry(cacheKey: string, entry: ProviderModelRouteIndexCacheEntry): Promise<void> {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  try {
+    await providerModelRouteIndexSharedCache.set(cacheKey, providerModelRouteIndexCacheEntryToShared(entry), { ttlMs: providerModelCatalogTtlMs })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_provider_model_route_index_shared_cache_write_failed'
+    }), '写入网关模型路由索引 Redis 共享缓存失败')
+  }
+}
+
+function clearProviderModelRouteIndexSharedCache(): void {
+  if (runtimeConfig.cacheDriver !== 'redis') return
+  void providerModelRouteIndexSharedCache.clear().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_provider_model_route_index_shared_cache_clear_failed'
+    }), '清理网关模型路由索引 Redis 共享缓存失败')
+  })
+}
+
+function providerModelRouteIndexCacheEntryFromShared(entry: ProviderModelRouteIndexSharedCacheEntry): ProviderModelRouteIndexCacheEntry {
+  return providerModelRouteIndexCacheEntry(new Map(entry.entries.map(([modelKey, providerCodes]) => [modelKey, providerCodes])))
+}
+
+function providerModelRouteIndexCacheEntryToShared(entry: ProviderModelRouteIndexCacheEntry): ProviderModelRouteIndexSharedCacheEntry {
+  return {
+    entries: [...entry.index.entries()].map(([modelKey, providerCodes]) => [modelKey, [...providerCodes]])
+  }
 }
 
 async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Promise<ResponseInspectionPolicyCacheEntry | undefined> {

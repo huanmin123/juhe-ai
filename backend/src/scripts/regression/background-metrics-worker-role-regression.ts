@@ -117,7 +117,7 @@ function assertRoleBlockContainsOnly(role: string, jobNames: string[]): void {
     assert(block.includes(`backgroundScheduledJobName('${jobName}')`), `${role} 必须注册 ${jobName}`)
   }
   const scheduledNames = [...new Set([...block.matchAll(/backgroundScheduledJobName\('([^']+)'\)/g)].map((match) => match[1]))]
-  assert.deepEqual(scheduledNames, jobNames, `${role} 注册任务必须和当前角色归属一致`)
+  assert.deepEqual([...scheduledNames].sort(), [...jobNames].sort(), `${role} 注册任务必须和当前角色归属一致`)
   for (const jobName of jobNames) {
     assert.equal(registryByName.get(jobName)?.defaultRole, role, `${jobName} registry defaultRole 必须和 ${role} 实际挂载一致`)
   }

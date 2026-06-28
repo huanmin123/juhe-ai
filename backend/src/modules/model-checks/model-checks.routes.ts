@@ -155,22 +155,22 @@ modelChecksRouter.post('/run/stream', async (req, res) => {
   }
 })
 
-modelChecksRouter.get('/runs', (req, res, next) => {
+modelChecksRouter.get('/runs', async (req, res, next) => {
   try {
-    res.json(ok(listModelCheckRunPage(getRequestAccessScope(req.query.systemAccountId), req.query)))
+    res.json(ok(await listModelCheckRunPage(getRequestAccessScope(req.query.systemAccountId), req.query)))
   } catch (error) {
     next(error)
   }
 })
 
-modelChecksRouter.get('/runs/:id', (req, res, next) => {
+modelChecksRouter.get('/runs/:id', async (req, res, next) => {
   try {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
       return
     }
-    const result = getModelCheckRun(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    const result = await getModelCheckRun(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!result) {
       sendNotFound(res, '模型检测记录不存在')
       return

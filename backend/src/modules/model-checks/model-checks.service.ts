@@ -12,10 +12,10 @@ import { logger } from '../../shared/logger.js'
 import { createTraceId } from '../../shared/request-context.js'
 import {
   accountTestUnavailableMessage,
-  findAccountForTest,
-  findOpenAIAccountForGroup,
-  getModelCheckRunDetail,
-  listModelCheckRuns,
+  findAccountForTestAsync,
+  listOpenAIAccountsForGroupResultAsync,
+  getModelCheckRunDetailAsync,
+  listModelCheckRunsAsync,
   type ModelCheckItemCreateInput,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
@@ -198,12 +198,12 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   if (trustedComparison && !trustedComparisonAccountId) {
     throw new ModelCheckRequestError(400, '请选择可信对比账户后再开启可信对比检测')
   }
-  const target = resolveModelCheckTarget({ ...input, model, targetId }, access)
+  const target = await resolveModelCheckTargetAsync({ ...input, model, targetId }, access)
   if (trustedComparisonAccountId && trustedComparisonAccountId === target.targetId) {
     throw new ModelCheckRequestError(400, '可信对比账户不能和检测目标相同')
   }
   const comparison = trustedComparisonAccountId
-    ? resolveTrustedComparisonTarget(trustedComparisonAccountId, access)
+    ? await resolveTrustedComparisonTargetAsync(trustedComparisonAccountId, access)
     : undefined
   emitModelCheckProgress(progress, {
     type: 'run_started',
@@ -331,7 +331,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     })
   }
 
-  const detail = getModelCheckRunDetail(run.id, access)
+  const detail = await getModelCheckRunDetailAsync(run.id, access)
   if (!detail) {
     throw new ModelCheckRequestError(500, '模型检测报告生成失败')
   }
@@ -348,8 +348,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   return detail
 }
 
-export function listModelCheckRunPage(access?: AccessScope, query: Record<string, unknown> = {}): ModelCheckRunListResult {
-  return listModelCheckRuns(access, {
+export async function listModelCheckRunPage(access?: AccessScope, query: Record<string, unknown> = {}): Promise<ModelCheckRunListResult> {
+  return await listModelCheckRunsAsync(access, {
     page: integerValue(query.page),
     pageSize: integerValue(query.pageSize),
     targetType: 'account',
@@ -362,19 +362,19 @@ export function listModelCheckRunPage(access?: AccessScope, query: Record<string
   })
 }
 
-export function getModelCheckRun(id: string, access?: AccessScope): ModelCheckRunDetail | undefined {
-  return getModelCheckRunDetail(id, access)
+export async function getModelCheckRun(id: string, access?: AccessScope): Promise<ModelCheckRunDetail | undefined> {
+  return await getModelCheckRunDetailAsync(id, access)
 }
 
-function resolveModelCheckTarget(input: ModelCheckRunRequest & { targetId: string }, access?: AccessScope): ModelCheckTarget {
+async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string }, access?: AccessScope): Promise<ModelCheckTarget> {
   if (input.targetType === 'account') {
-    return resolveAccountTarget(input.targetId, access)
+    return await resolveAccountTargetAsync(input.targetId, access)
   }
   throw new ModelCheckRequestError(400, '模型检测目标只能选择 AI 账户')
 }
 
-function resolveAccountTarget(accountId: string, access?: AccessScope): ModelCheckTarget {
-  const account = findAccountForTest(accountId, access)
+async function resolveAccountTargetAsync(accountId: string, access?: AccessScope): Promise<ModelCheckTarget> {
+  const account = await findAccountForTestAsync(accountId, access)
   if (!account) {
     throw new ModelCheckRequestError(404, '账户不存在或无权检测')
   }
@@ -392,7 +392,9 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
     throw new ModelCheckRequestError(400, '账户未绑定可用分组，无法按真实链路执行模型检测')
   }
   const systemAccountId = effectiveAccountTargetSystemAccountId(account, access)
-  const candidate = findOpenAIAccountForGroup(account.boundGroupId, account.id, systemAccountId, { ignoreAvailability: true })
+  const candidate = (await listOpenAIAccountsForGroupResultAsync(account.boundGroupId, systemAccountId, {
+    includeUnavailable: true
+  })).accounts.find((item) => item.id === account.id || item.credentialSourceAccountId === account.id)
   if (!candidate) {
     throw new ModelCheckRequestError(400, '账户不在当前分组或凭据不可用，无法执行模型检测')
   }
@@ -436,9 +438,9 @@ function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?:
   return systemAccountId
 }
 
-function resolveTrustedComparisonTarget(accountId: string, access?: AccessScope): ModelCheckTarget {
+async function resolveTrustedComparisonTargetAsync(accountId: string, access?: AccessScope): Promise<ModelCheckTarget> {
   try {
-    return resolveAccountTarget(accountId, access)
+    return await resolveAccountTargetAsync(accountId, access)
   } catch (error) {
     if (error instanceof ModelCheckRequestError) {
       const message = error.message

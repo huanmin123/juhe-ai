@@ -4,12 +4,12 @@ import { isAdminRole } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { accountExportRequestSchema, exportAccountsForRequest } from './account-export-request.js'
+import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { accountExportRequestSchema, exportAccountsForRequestAsync } from './account-export-request.js'
 import { accountImportMaxAccounts } from './account-import.service.js'
 
 export function registerAccountExportRoutes(router: Router): void {
-  router.post('/export', (req, res) => {
+  router.post('/export', async (req, res) => {
     const scopeQuery = parseRequestScopeQuery(req.query)
     if (!scopeQuery.success) {
       res.status(400).json(badRequest(scopeQuery.message))
@@ -26,11 +26,11 @@ export function registerAccountExportRoutes(router: Router): void {
       return
     }
     try {
-      const result = exportAccountsForRequest(parsed.data, requestAccess)
+      const result = await exportAccountsForRequestAsync(parsed.data, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
       const matchedText = typeof result.summary.matchedAccounts === 'number' ? `，匹配 ${result.summary.matchedAccounts} 条` : ''
       const truncatedText = result.summary.truncated ? `，仅处理前 ${accountImportMaxAccounts} 条` : ''
-      recordOperationLog({
+      await recordOperationLogAsync({
         operationScopeSystemAccountId: ownerSystemAccountId,
         mode: operationMode(requestAccess),
         module: 'accounts',

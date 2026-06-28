@@ -1,5 +1,6 @@
 import type { UsageRecordSummary } from './usage-records.repository.js'
-import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap } from './repository-lookups.js'
+import { loadAccountNameMap, loadAccountNameMapAsync, loadApiKeyNameMap, loadApiKeyNameMapAsync, loadGroupNameMap, loadGroupNameMapAsync } from './repository-lookups.js'
+import type { DatabaseClient } from './database-client.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
 export type UsageRecordRow = Record<string, unknown>
@@ -9,6 +10,21 @@ export function hydrateUsageRecordNames(rows: UsageRecordRow[]): UsageRecordRow[
   const apiKeyNames = loadApiKeyNameMap(rows.map((row) => optionalString(row.api_key_id) ?? ''))
   const groupNames = loadGroupNameMap(rows.map((row) => optionalString(row.group_id) ?? ''))
   const recordAccountNames = loadAccountNameMap(rows.map((row) => optionalString(row.account_id) ?? ''))
+  return rows.map((row) => ({
+    ...row,
+    api_key_name: optionalString(row.api_key_name) ?? (row.api_key_id ? apiKeyNames.get(String(row.api_key_id)) : undefined),
+    group_name: optionalString(row.group_name) ?? (row.group_id ? groupNames.get(String(row.group_id)) : undefined),
+    account_name: optionalString(row.account_name) ?? (row.account_id ? recordAccountNames.get(String(row.account_id)) : undefined)
+  }))
+}
+
+export async function hydrateUsageRecordNamesAsync(client: DatabaseClient, rows: UsageRecordRow[]): Promise<UsageRecordRow[]> {
+  if (!rows.length) return rows
+  const [apiKeyNames, groupNames, recordAccountNames] = await Promise.all([
+    loadApiKeyNameMapAsync(client, rows.map((row) => optionalString(row.api_key_id) ?? '')),
+    loadGroupNameMapAsync(client, rows.map((row) => optionalString(row.group_id) ?? '')),
+    loadAccountNameMapAsync(client, rows.map((row) => optionalString(row.account_id) ?? ''))
+  ])
   return rows.map((row) => ({
     ...row,
     api_key_name: optionalString(row.api_key_name) ?? (row.api_key_id ? apiKeyNames.get(String(row.api_key_id)) : undefined),

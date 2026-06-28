@@ -9,11 +9,13 @@ import type {
 import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
+import { latestUsageStatsLagSeconds, latestUsageStatsLagSecondsForRuntime } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
-import { loadUsageDailySeriesForScopeRequests, type UsageStatsDailySeries } from './usage-window-loaders.js'
+import { loadUsageDailySeriesForScopeRequests, loadUsageDailySeriesForScopeRequestsAsync, type UsageStatsDailySeries } from './usage-window-loaders.js'
 
 const accountUsageBusinessDatabaseAlias = 'account_usage_business'
 const accountUsageMaxListWindowRows = 1001
@@ -199,6 +201,110 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
   }
 }
 
+export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: AccountUsageStatsPageOptions): Promise<AccountUsageStatsOverview> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAccountUsageStatsOverviewPageFromWindows(input)
+  }
+  const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))
+  const maxPage = Math.max(1, Math.floor((accountUsageMaxListWindowRows - 1) / pageSize))
+  const page = Math.min(maxPage, Math.max(1, Math.trunc(input.page)))
+  const usageScope = accountUsageListScope(input.access)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const filter = await accountUsageFilterPredicateAsync(input, usageScope.scopeType, client)
+  const rows = await client.query<AccountUsageStatsSourceRow>(`
+    SELECT
+      usage_window.scope_id,
+      usage_window.request_count,
+      usage_window.input_tokens,
+      usage_window.output_tokens,
+      usage_window.cache_read_tokens,
+      CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
+      usage_window.last_used_at
+    FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')} usage_window
+    WHERE usage_window.system_account_id = ?
+      AND usage_window.scope_type = ?
+      AND usage_window.start_date = ?
+      AND usage_window.end_date = ?
+      AND (
+        usage_window.request_count > 0
+        OR usage_window.input_tokens > 0
+        OR usage_window.output_tokens > 0
+        OR usage_window.cache_read_tokens > 0
+        OR usage_window.total_cost_usd > 0
+        OR usage_window.last_used_at IS NOT NULL
+      )
+      ${filter.sql}
+    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+    LIMIT ? OFFSET ?
+  `, [
+    usageScope.systemAccountId,
+    usageScope.scopeType,
+    input.range.startDate,
+    input.range.endDate,
+    ...filter.params,
+    pageSize + 1,
+    (page - 1) * pageSize
+  ])
+  const pageRows = takePageRows(rows, pageSize)
+  const selectedRows = await loadSelectedAccountUsageRowsAsync({
+    client,
+    excludeAccountIds: pageRows.rows.map((row) => row.scope_id),
+    input,
+    usageScope
+  })
+  const sourceRows = mergeAccountUsageSourceRows(pageRows.rows, selectedRows)
+  const metadataRows = await loadAccountUsageMetadataRowsAsync(client, input.access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
+  const metadataById = new Map(metadataRows.map((row) => [row.id, row]))
+  const scopes = sourceRows.map((row): UsageScopeRequest => ({
+    rowKey: accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId: metadataById.get(row.scope_id)?.authorization_id ?? undefined }),
+    systemAccountId: usageScope.systemAccountId,
+    scopeType: usageScope.scopeType,
+    scopeId: row.scope_id
+  }))
+  const [dailySeriesByRowKey, summary, statsLagSeconds] = await Promise.all([
+    loadUsageDailySeriesForScopeRequestsAsync(scopes, input.range),
+    loadAccountUsageOverviewSummaryAsync(client, input.access, input.range),
+    latestUsageStatsLagSecondsForRuntime()
+  ])
+  const overviewRows = sourceRows.flatMap((row): AccountUsageStatsRow[] => {
+    const metadata = metadataById.get(row.scope_id)
+    if (!metadata) return []
+    const accountAuthorizationId = metadata.authorization_id ?? undefined
+    const rowKey = accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId })
+    const rangeUsage = usageSummaryFromAggregate(row)
+    return [{
+      id: metadata.id,
+      systemAccountId: canAccessAll(input.access) ? metadata.system_account_id : undefined,
+      systemAccountName: canAccessAll(input.access) ? metadata.system_account_name ?? undefined : undefined,
+      ownerSystemAccountId: metadata.system_account_id,
+      ownerSystemAccountName: metadata.system_account_name ?? undefined,
+      providerCode: metadata.provider_code,
+      name: metadata.name,
+      type: metadata.type,
+      status: metadata.status,
+      accessType: metadata.access_type,
+      rangeUsage,
+      dailyUsage: dailySeriesByRowKey.get(rowKey)?.dailyUsage ?? [],
+      authorizationUsageAvailable: false,
+      authorizationCount: 0,
+      authorizationTeamCount: 0
+    }]
+  })
+
+  return {
+    range: input.range,
+    summary,
+    rows: overviewRows,
+    defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
+    total: Math.max(pagedTotalUpperBound(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
+    hasMore: pageRows.hasMore,
+    page,
+    pageSize,
+    statsLagSeconds
+  }
+}
+
 function loadSelectedAccountUsageRows(input: {
   database: ReturnType<typeof getStatsDatabase>
   excludeAccountIds: string[]
@@ -233,6 +339,42 @@ function loadSelectedAccountUsageRows(input: {
     input.input.range.endDate,
     ...accountFilter.params
   ) as unknown as AccountUsageStatsSourceRow[]
+}
+
+async function loadSelectedAccountUsageRowsAsync(input: {
+  client: DatabaseClient
+  excludeAccountIds: string[]
+  input: AccountUsageStatsPageOptions
+  usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType }
+}): Promise<AccountUsageStatsSourceRow[]> {
+  const excludedIds = new Set(input.excludeAccountIds)
+  const accountIds = [...new Set((input.input.accountIds ?? []).filter((id) => id && !excludedIds.has(id)))].slice(0, accountUsageSelectedAccountLimit)
+  if (!accountIds.length) return []
+  const accountFilter = buildAccountUsageScopeIdFilter(accountIds)
+  return await input.client.query<AccountUsageStatsSourceRow>(`
+    SELECT
+      usage_window.scope_id,
+      usage_window.request_count,
+      usage_window.input_tokens,
+      usage_window.output_tokens,
+      usage_window.cache_read_tokens,
+      CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
+      usage_window.last_used_at
+    FROM ${accountUsageStatsTable(input.client, 'usage_scope_range_windows')} usage_window
+    WHERE usage_window.system_account_id = ?
+      AND usage_window.scope_type = ?
+      AND usage_window.start_date = ?
+      AND usage_window.end_date = ?
+      AND ${accountFilter.sql}
+    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+  `, [
+    input.usageScope.systemAccountId,
+    input.usageScope.scopeType,
+    input.input.range.startDate,
+    input.input.range.endDate,
+    ...accountFilter.params
+  ])
 }
 
 function mergeAccountUsageSourceRows(pageRows: AccountUsageStatsSourceRow[], selectedRows: AccountUsageStatsSourceRow[]): AccountUsageStatsSourceRow[] {
@@ -279,6 +421,35 @@ function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range:
     total_cost: number
     last_used_at: string | null
   } | undefined
+  return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
+}
+
+async function loadAccountUsageOverviewSummaryAsync(client: DatabaseClient, access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
+  const scope = accountUsageOverviewSummaryScope(access)
+  const row = await client.one<{
+    request_count: number
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_read_cost_usd: number
+    total_cost: number
+    last_used_at: string | null
+  }>(`
+    SELECT
+      request_count,
+      input_tokens,
+      output_tokens,
+      cache_read_tokens,
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      CAST(total_cost_usd AS double precision) AS total_cost,
+      last_used_at
+    FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')}
+    WHERE system_account_id = ?
+      AND scope_type = 'system_account'
+      AND scope_id = ?
+      AND start_date = ?
+      AND end_date = ?
+  `, [scope.systemAccountId, scope.scopeId, range.startDate, range.endDate])
   return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
 }
 
@@ -397,6 +568,48 @@ function accountUsageFilterPredicate(
   }
 }
 
+async function accountUsageFilterPredicateAsync(
+  input: Pick<AccountUsageStatsPageOptions, 'keyword' | 'type' | 'access'>,
+  scopeType: AccountUsageScopeType,
+  client: DatabaseClient
+): Promise<{ sql: string; params: string[] }> {
+  const type = input.type?.trim()
+  const normalizedType = type && type !== 'all' ? type : undefined
+  const keyword = input.keyword?.trim()
+  if (scopeType === 'account' && !normalizedType && !keyword) {
+    return { sql: '', params: [] }
+  }
+  if (keyword) {
+    const accountIds = await loadAccountUsageKeywordAccountIdsAsync(client, {
+      access: input.access,
+      keyword,
+      scopeType,
+      type: normalizedType
+    })
+    if (!accountIds.length) {
+      return { sql: 'AND 0 = 1', params: [] }
+    }
+    const scopeFilter = buildAccountUsageScopeIdFilter(accountIds)
+    return {
+      sql: `AND ${scopeFilter.sql}`,
+      params: scopeFilter.params
+    }
+  }
+
+  if (!normalizedType) {
+    return { sql: '', params: [] }
+  }
+  return {
+    sql: `AND EXISTS (
+      SELECT 1
+      FROM ${accountUsageBusinessTable(client, 'accounts')} accounts
+      WHERE accounts.id = usage_window.scope_id
+        AND accounts.type = ?
+    )`,
+    params: [normalizedType]
+  }
+}
+
 function loadAccountUsageKeywordAccountIds(input: {
   access?: AccessScope
   keyword: string
@@ -497,6 +710,105 @@ function loadAccountUsageKeywordAccountIds(input: {
   return ids
 }
 
+async function loadAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, input: {
+  access?: AccessScope
+  keyword: string
+  scopeType: AccountUsageScopeType
+  type?: string
+}): Promise<string[]> {
+  const keyword = input.keyword.trim()
+  if (!keyword) return []
+  const ids: string[] = []
+  const clauses: string[] = []
+  const params: string[] = []
+  const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
+  const keywordLower = keyword.toLowerCase()
+  const prefixKeyword = `${escapeLikePrefix(keywordLower)}%`
+  clauses.push(`(
+    LOWER(accounts.name) = ?
+    OR LOWER(accounts.name) LIKE ? ESCAPE '\\'
+    OR LOWER(accounts.provider_code) = ?
+    OR LOWER(accounts.provider_code) LIKE ? ESCAPE '\\'
+    OR LOWER(accounts.type) = ?
+    OR LOWER(accounts.type) LIKE ? ESCAPE '\\'
+    OR EXISTS (
+      SELECT 1
+      FROM ${accountUsageBusinessTable(client, 'group_accounts')} group_accounts
+      INNER JOIN ${accountUsageBusinessTable(client, 'groups')} groups
+        ON groups.id = group_accounts.group_id
+      WHERE group_accounts.account_id = accounts.id
+        AND group_accounts.system_account_id = ?
+        AND group_accounts.enabled = 1
+        AND (LOWER(groups.name) = ? OR LOWER(groups.name) LIKE ? ESCAPE '\\')
+    )
+  )`)
+  params.push(
+    keywordLower,
+    prefixKeyword,
+    keywordLower,
+    prefixKeyword,
+    keywordLower,
+    prefixKeyword,
+    viewerSystemAccountId,
+    keywordLower,
+    prefixKeyword
+  )
+  if (input.type) {
+    clauses.push('accounts.type = ?')
+    params.push(input.type)
+  }
+  if (input.scopeType === 'caller_account') {
+    clauses.push(`(
+      accounts.system_account_id = ?
+      OR EXISTS (
+        SELECT 1
+        FROM ${accountUsageBusinessTable(client, 'resource_authorizations')} visible_authorization
+        WHERE visible_authorization.resource_type = 'account'
+          AND visible_authorization.resource_id = accounts.id
+          AND visible_authorization.grantee_system_account_id = ?
+          AND visible_authorization.status = 'active'
+          AND (visible_authorization.expires_at IS NULL OR visible_authorization.expires_at > ?)
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${accountUsageBusinessTable(client, 'group_accounts')} visible_group_account
+        INNER JOIN ${accountUsageBusinessTable(client, 'resource_authorizations')} visible_group_authorization
+          ON visible_group_authorization.resource_type = 'group'
+          AND visible_group_authorization.resource_id = visible_group_account.group_id
+          AND visible_group_authorization.grantee_system_account_id = ?
+          AND visible_group_authorization.status = 'active'
+          AND (visible_group_authorization.expires_at IS NULL OR visible_group_authorization.expires_at > ?)
+        WHERE visible_group_account.account_id = accounts.id
+          AND visible_group_account.enabled = 1
+      )
+    )`)
+    params.push(viewerSystemAccountId, viewerSystemAccountId, nowIso(), viewerSystemAccountId, nowIso())
+  }
+  appendAccountUsageAccountIds(ids, await client.query<{ id?: string }>(`
+    SELECT accounts.id
+    FROM ${accountUsageBusinessTable(client, 'accounts')} accounts
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY LOWER(accounts.name) ASC, accounts.id ASC
+    LIMIT ?
+  `, [...params, accountUsageSelectedAccountLimit]))
+  appendAccountUsageAccountIds(ids, await loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(client, {
+    keywordLower,
+    prefixKeyword,
+    scopeType: input.scopeType,
+    type: input.type,
+    viewerSystemAccountId
+  }))
+  if (input.scopeType === 'caller_account') {
+    appendAccountUsageAccountIds(ids, await loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(client, {
+      keywordLower,
+      prefixKeyword,
+      type: input.type,
+      viewerSystemAccountId
+    }))
+  }
+  return ids
+}
+
 function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
   database: ReturnType<typeof getBusinessDatabase>,
   input: {
@@ -528,6 +840,37 @@ function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword(
       LIMIT ?
     `)
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
+}
+
+async function loadAccountUsageAuthorizedInstanceIdsForSourceKeywordAsync(
+  client: DatabaseClient,
+  input: {
+    keywordLower: string
+    prefixKeyword: string
+    scopeType: AccountUsageScopeType
+    type?: string
+    viewerSystemAccountId: string
+  }
+): Promise<Array<{ id?: string }>> {
+  const clauses = ["LOWER(source_accounts.name) = ? OR LOWER(source_accounts.name) LIKE ? ESCAPE '\\'"]
+  const params: string[] = [input.keywordLower, input.prefixKeyword]
+  if (input.scopeType === 'caller_account') {
+    clauses.push('instance_accounts.system_account_id = ?')
+    params.push(input.viewerSystemAccountId)
+  }
+  if (input.type) {
+    clauses.push('instance_accounts.type = ?')
+    params.push(input.type)
+  }
+  return await client.query<{ id?: string }>(`
+    SELECT instance_accounts.id
+    FROM ${accountUsageBusinessTable(client, 'accounts')} source_accounts
+    INNER JOIN ${accountUsageBusinessTable(client, 'accounts')} instance_accounts
+      ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+    WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
+    ORDER BY LOWER(source_accounts.name) ASC, instance_accounts.id ASC
+    LIMIT ?
+  `, [...params, accountUsageSelectedAccountLimit])
 }
 
 function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
@@ -563,6 +906,39 @@ function loadAccountUsageGroupAuthorizedAccountIdsForKeyword(
       LIMIT ?
     `)
     .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
+}
+
+async function loadAccountUsageGroupAuthorizedAccountIdsForKeywordAsync(
+  client: DatabaseClient,
+  input: {
+    keywordLower: string
+    prefixKeyword: string
+    type?: string
+    viewerSystemAccountId: string
+  }
+): Promise<Array<{ id?: string }>> {
+  const clauses = ["LOWER(accounts.name) = ? OR LOWER(accounts.name) LIKE ? ESCAPE '\\'"]
+  const params: string[] = [input.viewerSystemAccountId, nowIso(), input.keywordLower, input.prefixKeyword]
+  if (input.type) {
+    clauses.push('accounts.type = ?')
+    params.push(input.type)
+  }
+  return await client.query<{ id?: string }>(`
+    SELECT accounts.id
+    FROM ${accountUsageBusinessTable(client, 'accounts')} accounts
+    INNER JOIN ${accountUsageBusinessTable(client, 'group_accounts')} group_accounts
+      ON group_accounts.account_id = accounts.id
+      AND group_accounts.enabled = 1
+    INNER JOIN ${accountUsageBusinessTable(client, 'resource_authorizations')} group_authorization
+      ON group_authorization.resource_type = 'group'
+      AND group_authorization.resource_id = group_accounts.group_id
+      AND group_authorization.grantee_system_account_id = ?
+      AND group_authorization.status = 'active'
+      AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > ?)
+    WHERE ${clauses.map((clause) => `(${clause})`).join(' AND ')}
+    ORDER BY LOWER(accounts.name) ASC, accounts.id ASC
+    LIMIT ?
+  `, [...params, accountUsageSelectedAccountLimit])
 }
 
 function appendAccountUsageAccountIds(target: string[], rows: Array<{ id?: string }>): void {
@@ -642,4 +1018,62 @@ function loadAccountUsageMetadataRows(access: AccessScope | undefined, accountId
   }
   const order = new Map(ids.map((id, index) => [id, index]))
   return rows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+}
+
+async function loadAccountUsageMetadataRowsAsync(
+  client: DatabaseClient,
+  access: AccessScope | undefined,
+  accountIds: string[],
+  scopeType: AccountUsageScopeType
+): Promise<AccountUsageMetadataRow[]> {
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  if (!ids.length) return []
+  const viewerSystemAccountId = scopedSystemAccountId(access) ?? currentSystemAccountId(access)
+  const authorizationJoin = scopeType === 'caller_account'
+    ? `LEFT JOIN ${accountUsageBusinessTable(client, 'resource_authorizations')} usage_authorization
+        ON usage_authorization.resource_type = 'account'
+        AND usage_authorization.grantee_system_account_id = ?
+        AND usage_authorization.status = 'active'
+        AND (usage_authorization.expires_at IS NULL OR usage_authorization.expires_at > ?)
+        AND (
+          usage_authorization.id = accounts.authorization_instance_authorization_id
+          OR (
+            accounts.authorization_instance_authorization_id IS NULL
+            AND usage_authorization.resource_id = accounts.id
+          )
+        )`
+    : ''
+  const rows: AccountUsageMetadataRow[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    const queryParams = scopeType === 'caller_account'
+      ? [viewerSystemAccountId, viewerSystemAccountId, nowIso(), ...chunk]
+      : chunk
+    rows.push(...await client.query<AccountUsageMetadataRow>(`
+      SELECT
+        accounts.id,
+        accounts.system_account_id,
+        COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) AS system_account_name,
+        accounts.provider_code,
+        accounts.name,
+        accounts.type,
+        accounts.status,
+        ${scopeType === 'caller_account' ? "CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' WHEN accounts.system_account_id = ? THEN 'owner' ELSE 'authorized' END" : "'owner'"} AS access_type,
+        ${scopeType === 'caller_account' ? 'COALESCE(accounts.authorization_instance_authorization_id, usage_authorization.id)' : 'NULL'} AS authorization_id
+      FROM ${accountUsageBusinessTable(client, 'accounts')} accounts
+      LEFT JOIN ${accountUsageBusinessTable(client, 'system_accounts')} system_accounts
+        ON system_accounts.id = accounts.system_account_id
+      ${authorizationJoin}
+      WHERE accounts.id IN (${client.dialect.bindPlaceholders(chunk.length)})
+    `, queryParams))
+  }
+  const order = new Map(ids.map((id, index) => [id, index]))
+  return rows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+}
+
+function accountUsageStatsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
+}
+
+function accountUsageBusinessTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_business', tableName)
 }

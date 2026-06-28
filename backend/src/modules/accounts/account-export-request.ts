@@ -1,9 +1,9 @@
 import { z } from 'zod'
 
 import { queryTextList } from '../../shared/query-values.js'
-import { type AccountListOptions, listAccountsPage } from '../../storage/repositories.js'
+import { type AccountListOptions, listAccountsPage, listAccountsPageAsync } from '../../storage/repositories.js'
 import { accountImportMaxAccounts } from './account-import.service.js'
-import { exportAccountsAsImportDocument } from './account-export.service.js'
+import { exportAccountsAsImportDocument, exportAccountsAsImportDocumentAsync } from './account-export.service.js'
 import { accountListSortFieldValues, schedulableQueryValue, statusQueryValue } from './account-list-query.js'
 import type { RequestAccessScope } from '../auth/request-context.js'
 
@@ -53,6 +53,23 @@ export function exportAccountsForRequest(request: AccountExportRequest, access: 
     throw new Error('当前筛选条件下没有匹配的 AI 账户')
   }
   return exportAccountsAsImportDocument({
+    accountIds,
+    matchedAccounts: page.total,
+    truncated: page.hasMore
+  }, access)
+}
+
+export async function exportAccountsForRequestAsync(request: AccountExportRequest, access: RequestAccessScope) {
+  if ('accountIds' in request) {
+    return await exportAccountsAsImportDocumentAsync({ accountIds: request.accountIds }, access)
+  }
+
+  const page = await listAccountsPageAsync(access, accountExportListOptions(request.filters))
+  const accountIds = page.items.map((account) => account.id)
+  if (!accountIds.length) {
+    throw new Error('当前筛选条件下没有匹配的 AI 账户')
+  }
+  return await exportAccountsAsImportDocumentAsync({
     accountIds,
     matchedAccounts: page.total,
     truncated: page.hasMore

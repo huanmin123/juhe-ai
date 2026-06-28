@@ -7,7 +7,7 @@ import {
   accountTestUnavailableMessage,
   findRecentOpenAIRequestShapeForAccount,
   getAccountPrecheckMutationState,
-  resolveProxyUrlForProfile,
+  resolveProxyUrlForProfileAsync,
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
@@ -15,12 +15,10 @@ import { accountApiKeyEntries, selectAccountRuntimeApiKey } from '../../storage/
 import { getSettings } from '../../storage/settings.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
-  accountTestTaskCancelMessage,
   type AccountTestDraftSnapshot,
-  getAccountTestTaskRecord
 } from '../../storage/account-test-tasks.repository.js'
 import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
-import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
 import { preferredSystemAccountTestModel, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
@@ -423,7 +421,7 @@ async function accountTestTaskCancelMessageViaDbService(taskId: string): Promise
     type: 'read_account_test_task_cancel_message',
     taskId
   })
-  return result?.message ?? accountTestTaskCancelMessage(taskId)
+  return result?.message ?? '已停止测试'
 }
 
 async function recordAccountSuccessfulTestModelViaDbService(accountId: string, model: string, access: AccessScope): Promise<void> {
@@ -585,7 +583,7 @@ async function runOpenAIAccountTestWithSideEffects(
   if (result.accountStatusChanged) {
     const ownerSystemAccountId = authorizedLocalOperationOwner(account, access)
       ?? resolveOperationOwner(account as unknown as Record<string, unknown>, access)
-    recordOperationLog({
+    await recordOperationLogAsync({
       actorSystemAccountId: access.systemAccountId,
       actorRole: access.role,
       operationScopeSystemAccountId: ownerSystemAccountId,
@@ -755,7 +753,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
       status: (updatedAccount.accountStatus ?? latestAccount.status) as AccountSummary['status']
     }
     const changes = accountTestStatusLogChanges(latestAccount, nextAccount)
-    recordAccountTestPrecheckStatusChangedOperation(latestAccount, nextAccount, item.access, changes)
+    await recordAccountTestPrecheckStatusChangedOperation(latestAccount, nextAccount, item.access, changes)
   }
   logger.warn({
     event: 'manual_account_test_failure_precheck_marked',
@@ -773,7 +771,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
 }
 
 async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal: AbortSignal): Promise<OpenAIAccountSecret> {
-  const proxy = draftProxyProfile(draft.proxyProfileId)
+  const proxy = await draftProxyProfile(draft.proxyProfileId)
   let credentials = { ...draft.credentials }
   if (draft.type === 'oauth' && shouldRefreshOpenAIOAuthCredentials(credentials)) {
     const refreshToken = stringCredential(credentials.refresh_token)
@@ -888,9 +886,9 @@ function accountSummaryFromDraftSnapshot(draft: AccountTestDraftSnapshot): Accou
   }
 }
 
-function draftProxyProfile(proxyProfileId: string | undefined): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {
+async function draftProxyProfile(proxyProfileId: string | undefined): Promise<{ proxyUrl?: string; unavailable?: boolean; errorMessage?: string }> {
   try {
-    return { proxyUrl: resolveProxyUrlForProfile(proxyProfileId) }
+    return { proxyUrl: await resolveProxyUrlForProfileAsync(proxyProfileId) }
   } catch (error) {
     return {
       unavailable: true,
@@ -1102,10 +1100,10 @@ function recordAccountTestPrecheckStatusChangedOperation(
   after: AccountSummary,
   access: AccessScope,
   changes: ReturnType<typeof safeChange>[]
-): void {
+): Promise<void> {
   const ownerSystemAccountId = authorizedLocalOperationOwner(before, access)
     ?? resolveOperationOwner(before as unknown as Record<string, unknown>, access)
-  recordOperationLog({
+  return recordOperationLogAsync({
     actorSystemAccountId: access.systemAccountId,
     actorRole: access.role,
     operationScopeSystemAccountId: ownerSystemAccountId,

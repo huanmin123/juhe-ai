@@ -100,7 +100,7 @@ export async function runLoggedOperationAsync<T>(operation: () => Promise<Logged
   return outcome.result
 }
 
-async function recordOperationLogAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
+export async function recordOperationLogAsync(input: OperationLogRecordInput, req?: Request): Promise<void> {
   try {
     await recordOperationLogUnsafeAsync(input, req)
   } catch (error) {

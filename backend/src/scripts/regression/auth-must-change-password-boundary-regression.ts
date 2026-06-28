@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -19,6 +19,14 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const authRoutesSource = readFileSync(resolve('src/modules/auth/auth.routes.ts'), 'utf8')
+assert(authRoutesSource.includes('findSystemAccountByIdAsync'), '认证 /me 更新必须使用 async 系统账户读取')
+assert(authRoutesSource.includes('updateSystemAccountAsync'), '认证 /me 更新和改密必须使用 async 系统账户写入')
+assert(authRoutesSource.includes('revokeOtherSessionsForAccountAsync'), '改密后撤销其他会话必须使用 async 会话写入')
+assert(authRoutesSource.includes('recordOperationLogAsync'), '认证 /me 更新操作日志必须使用 async 写入')
+assert(!/import \{[^}]*\bfindSystemAccountById\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(authRoutesSource), '认证路由不能重新导入同步 findSystemAccountById')
+assert(!/import \{[^}]*\brevokeOtherSessionsForAccount\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(authRoutesSource), '认证路由不能重新导入同步 revokeOtherSessionsForAccount')
 
 const [
   { authRouter },

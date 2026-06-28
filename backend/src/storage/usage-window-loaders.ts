@@ -1,5 +1,8 @@
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getStatsDatabase } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import {
   dateKeysInRange,
@@ -128,6 +131,103 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
   return result
 }
 
+export async function loadUsageDailySeriesForScopeRequestsAsync(scopes: UsageStatsScopeRequest[], range: AccountUsageStatsRange): Promise<Map<string, UsageStatsDailySeries>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadUsageDailySeriesForScopeRequests(scopes, range)
+  }
+  const dateKeys = dateKeysInRange(range)
+  const validScopes = scopes.filter((scope) => scope.rowKey && scope.systemAccountId && scope.scopeType && scope.scopeId)
+  const result = new Map<string, UsageStatsDailySeries>()
+  const rowKeysByScopeMapKey = new Map<string, Set<string>>()
+  const scopeRowsByMapKey = new Map<string, UsageStatsScopeRequest>()
+  for (const scope of validScopes) {
+    result.set(scope.rowKey, emptyUsageDailySeries(dateKeys))
+    const mapKey = usageStatsScopeMapKey(scope)
+    scopeRowsByMapKey.set(mapKey, scope)
+    const rowKeys = rowKeysByScopeMapKey.get(mapKey) ?? new Set<string>()
+    rowKeys.add(scope.rowKey)
+    rowKeysByScopeMapKey.set(mapKey, rowKeys)
+  }
+  const normalizedScopes = [...scopeRowsByMapKey.values()]
+  if (!normalizedScopes.length || !dateKeys.length) return result
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows: UsageStatsScopeAggregateRow[] = []
+  const scopesBySystemAccountId = new Map<string, UsageStatsScopeRequest[]>()
+  for (const scope of normalizedScopes) {
+    scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
+  }
+
+  for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
+    const scopeTypes = [...new Set(systemScopes.map((scope) => scope.scopeType))]
+    const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
+    for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
+      rows.push(...await client.query<UsageStatsScopeAggregateRow>(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          stat_date,
+          request_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+          CAST(total_cost_usd AS double precision) AS total_cost,
+          last_used_at
+        FROM ${usageWindowStatsTable(client, 'usage_stats_daily')}
+        WHERE system_account_id = ?
+          AND scope_type IN (${client.dialect.bindPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${client.dialect.bindPlaceholders(scopeIdChunk.length)})
+          AND stat_date >= ?
+          AND stat_date <= ?
+      `, [systemAccountId, ...scopeTypes, ...scopeIdChunk, range.startDate, range.endDate]))
+      rows.push(...await client.query<UsageStatsScopeAggregateRow>(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          NULL AS stat_date,
+          request_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+          CAST(total_cost_usd AS double precision) AS total_cost,
+          last_used_at
+        FROM ${usageWindowStatsTable(client, 'usage_scope_range_windows')}
+        WHERE system_account_id = ?
+          AND scope_type IN (${client.dialect.bindPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${client.dialect.bindPlaceholders(scopeIdChunk.length)})
+          AND start_date = ?
+          AND end_date = ?
+      `, [systemAccountId, ...scopeTypes, ...scopeIdChunk, range.startDate, range.endDate]))
+    }
+  }
+
+  const dateIndex = new Map(dateKeys.map((statDate, index) => [statDate, index]))
+  for (const row of rows) {
+    const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
+    if (!rowKeys) continue
+    const rowUsage = usageSummaryFromAggregate(row)
+    for (const rowKey of rowKeys) {
+      const series = result.get(rowKey)
+      if (!series) continue
+      if (!row.stat_date) {
+        series.rangeUsage = rowUsage
+        continue
+      }
+      const index = dateIndex.get(row.stat_date)
+      if (index === undefined) continue
+      series.dailyUsage[index] = { statDate: row.stat_date, ...rowUsage }
+    }
+  }
+
+  return result
+}
+
 function emptyUsageDailySeries(dateKeys: string[]): UsageStatsDailySeries {
   return {
     rangeUsage: usageSummaryFromAggregate({
@@ -149,4 +249,8 @@ function usageStatsScopeMapKey(scope: Pick<UsageStatsScopeRequest, 'systemAccoun
 
 function usageStatsRowMapKey(row: { system_account_id: string; scope_type: string; scope_id: string }): string {
   return `${row.system_account_id}\u0000${row.scope_type}\u0000${row.scope_id}`
+}
+
+function usageWindowStatsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
 }

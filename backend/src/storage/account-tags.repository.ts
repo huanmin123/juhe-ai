@@ -62,6 +62,40 @@ export function listAccountTags(access?: AccessScope): AccountTagSummary[] {
   return rows.map(accountTagSummaryFromRow)
 }
 
+export async function listAccountTagsAsync(access?: AccessScope): Promise<AccountTagSummary[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listAccountTags(access)
+  }
+  const systemAccountId = accountTagOwnerSystemAccountId(access)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<AccountTagRow>(`
+    SELECT account_tags.id, account_tags.system_account_id, account_tags.name,
+      COUNT(CASE
+        WHEN active_accounts.id IS NOT NULL
+          AND (
+            active_accounts.authorization_instance_authorization_id IS NULL
+            OR visible_authorizations.id IS NOT NULL
+          )
+        THEN active_accounts.id
+      END) AS account_count,
+      account_tags.created_at, account_tags.updated_at
+    FROM ${accountTagsTable(client, 'account_tags')} account_tags
+    LEFT JOIN ${accountTagsTable(client, 'account_tag_bindings')} account_tag_bindings
+      ON account_tag_bindings.tag_id = account_tags.id
+    LEFT JOIN ${accountTagsTable(client, 'accounts')} active_accounts
+      ON active_accounts.id = account_tag_bindings.account_id
+      AND active_accounts.deleted_at IS NULL
+    LEFT JOIN ${accountTagsTable(client, 'resource_authorizations')} visible_authorizations
+      ON visible_authorizations.id = active_accounts.authorization_instance_authorization_id
+      AND visible_authorizations.grantee_system_account_id = active_accounts.system_account_id
+      AND visible_authorizations.status IN ('active', 'paused', 'expired')
+    WHERE account_tags.system_account_id = ?
+    GROUP BY account_tags.id, account_tags.system_account_id, account_tags.name, account_tags.created_at, account_tags.updated_at
+    ORDER BY lower(account_tags.name) ASC, account_tags.id ASC
+  `, [systemAccountId])
+  return rows.map(accountTagSummaryFromRow)
+}
+
 export function deleteAccountTag(tagId: string, access?: AccessScope): boolean {
   const id = tagId.trim()
   if (!id) return false
@@ -99,6 +133,48 @@ export function deleteAccountTag(tagId: string, access?: AccessScope): boolean {
   return Number(result.changes ?? 0) > 0
 }
 
+export async function deleteAccountTagAsync(tagId: string, access?: AccessScope): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deleteAccountTag(tagId, access)
+  }
+  const id = tagId.trim()
+  if (!id) return false
+  const systemAccountId = accountTagOwnerSystemAccountId(access)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${accountTagsTable(client, 'account_tags')}
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1
+  `, [id, systemAccountId])
+  if (!row?.id) return false
+  const activeBinding = await client.one<{ marker?: number }>(`
+    SELECT 1 AS marker
+    FROM ${accountTagsTable(client, 'account_tag_bindings')} account_tag_bindings
+    INNER JOIN ${accountTagsTable(client, 'accounts')} accounts
+      ON accounts.id = account_tag_bindings.account_id
+      AND accounts.deleted_at IS NULL
+    LEFT JOIN ${accountTagsTable(client, 'resource_authorizations')} visible_authorizations
+      ON visible_authorizations.id = accounts.authorization_instance_authorization_id
+      AND visible_authorizations.grantee_system_account_id = accounts.system_account_id
+      AND visible_authorizations.status IN ('active', 'paused', 'expired')
+    WHERE account_tag_bindings.tag_id = ?
+      AND (
+        accounts.authorization_instance_authorization_id IS NULL
+        OR visible_authorizations.id IS NOT NULL
+      )
+    LIMIT 1
+  `, [id])
+  if (activeBinding) {
+    throw new AccountTagInUseError()
+  }
+  const result = await client.execute(`
+    DELETE FROM ${accountTagsTable(client, 'account_tags')}
+    WHERE id = ? AND system_account_id = ?
+  `, [id, systemAccountId])
+  return result.changes > 0
+}
+
 export function updateAccountTags(accountId: string, tagNamesInput: unknown, access?: AccessScope): AccountTagSummary[] | undefined {
   const database = getBusinessDatabase()
   const account = database
@@ -116,6 +192,23 @@ export function updateAccountTags(accountId: string, tagNamesInput: unknown, acc
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
+}
+
+export async function updateAccountTagsAsync(accountId: string, tagNamesInput: unknown, access?: AccessScope): Promise<AccountTagSummary[] | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateAccountTags(accountId, tagNamesInput, access)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const account = await client.one<{ id?: string; system_account_id?: string }>(`
+    SELECT id, system_account_id
+    FROM ${accountTagsTable(client, 'accounts')}
+    WHERE id = ? AND deleted_at IS NULL
+    LIMIT 1
+  `, [accountId])
+  if (!account?.id || !account.system_account_id) return undefined
+  if (account.system_account_id !== accountTagOwnerSystemAccountId(access)) return undefined
+  const tagNames = normalizeAccountTagNamesInput(tagNamesInput) ?? []
+  return await client.transaction(async (tx) => replaceAccountTagsAsync(tx, account.id as string, account.system_account_id as string, tagNames, nowIso()))
 }
 
 export function replaceAccountTags(accountId: string, systemAccountId: string, tagNamesInput: unknown, now = nowIso(), database = getBusinessDatabase()): AccountTagSummary[] {

@@ -14,6 +14,7 @@ const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules
 const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
 const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
 const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storage/account-test-tasks.repository.ts'), 'utf8')
+const accountDraftTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-draft-test.service.ts'), 'utf8')
 const dbServiceHandlersSource = readFileSync(resolve(backendSrc, 'modules/db-service/db-service-handlers.ts'), 'utf8')
 const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
 const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background/background-ipc.ts'), 'utf8')
@@ -34,7 +35,7 @@ assert.equal(
   '账户路由不应直接等待 OpenAI 测试，应只创建后台任务'
 )
 assert(
-  accountTestDispatchRoutesSource.includes('createAccountTestTask({'),
+  accountTestDispatchRoutesSource.includes('createAccountTestTaskAsync({'),
   'POST /accounts/:id/test 应创建账号测试任务'
 )
 assert(
@@ -54,12 +55,12 @@ assert(
     && accountTestDispatchRoutesSource.includes('parseRequestScopeQuery(req.query)')
     && accountTestDispatchRoutesSource.includes("res.status(403).json({ message: '缺少系统账户上下文' })")
     && accountTestDispatchRoutesSource.includes('accountTestSchema.safeParse(req.body)')
-    && accountTestDispatchRoutesSource.includes('findAccountForTest(req.params.id, requestAccess)')
+    && accountTestDispatchRoutesSource.includes('findAccountForTestAsync(req.params.id, requestAccess)')
     && accountTestDispatchRoutesSource.includes('isGatewaySupportedProtocolProfile(account)')
     && accountTestDispatchRoutesSource.includes('accountTestUnavailableMessage(account)')
     && accountTestDispatchRoutesSource.includes("isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'")
-    && accountTestDispatchRoutesSource.includes('savedAccountDraftTestSnapshot(account, accountSnapshot, requestAccess)')
-    && accountTestDispatchRoutesSource.includes("failAccountTestTask(task.id, '后台 worker 暂不可用，账号测试任务未能投递')")
+    && accountTestDispatchRoutesSource.includes('savedAccountDraftTestSnapshotAsync(account, accountSnapshot, requestAccess)')
+    && accountTestDispatchRoutesSource.includes("failAccountTestTaskAsync(task.id, '后台 worker 暂不可用，账号测试任务未能投递')")
     && accountTestDispatchRoutesSource.includes("res.status(503).json({ message: '后台 worker 暂不可用，账号测试任务未能投递' })"),
   '账号测试调度子路由应保留 scope、权限、协议校验、诊断范围、草稿快照、任务失败和 503 边界'
 )
@@ -69,7 +70,7 @@ assert(
 )
 assert(
   accountsRoutesSource.includes('draftAccount')
-    && accountsRoutesSource.includes('createAccountTestTask({'),
+    && accountsRoutesSource.includes('createAccountTestTaskAsync({'),
   '草稿测试接口应创建携带草稿快照的后台任务'
 )
 
@@ -185,6 +186,14 @@ assert(
   '手动账号测试后台 worker 应使用系统设置控制并发，默认 100'
 )
 assert(
+  accountTestTaskQueueSource.includes('recordOperationLogAsync'),
+  '账号测试状态变更操作日志必须走 async 设置读取入口'
+)
+assert(
+  !accountTestTaskQueueSource.includes('recordOperationLog({'),
+  '账号测试队列不得重新调用同步操作日志入口'
+)
+assert(
   accountTestTaskQueueSource.includes("type: 'account_test_task_maintenance'")
     && accountTestTaskQueueSource.includes('refillLimit: manualAccountTestRefillBatchSize()')
     && accountTestTaskQueueSource.includes('manualAccountTestRefillMaxBatchSize = 1000'),
@@ -236,8 +245,47 @@ assert(
     && accountTestTaskQueueSource.includes('maxQueuedMs: manualAccountTestQueuedMaxWaitMs')
     && accountTestTaskQueueSource.includes('result.expiredQueuedTaskIds')
     && dbServiceHandlersSource.includes('failExpiredQueuedAccountTestTasks(operation.maxQueuedMs')
+    && dbServiceHandlersSource.includes('failExpiredQueuedAccountTestTasksAsync(operation.maxQueuedMs')
     && accountTestTaskQueueSource.includes('manualAccountTestQueuedMaxWaitMs = 10 * 60_000'),
   '未被 worker 消费的 queued 任务不应计算 60s 运行超时，但后台应按独立队列等待上限自动收口'
+)
+assert(
+  accountTestTaskRepositorySource.includes('createPostgresDatabaseClient(await getPostgresPool())')
+    && accountTestTaskRepositorySource.includes('function accountTestTable(client: DatabaseClient, tableName: string)')
+    && accountTestTaskRepositorySource.includes('createAccountTestTaskAsync')
+    && accountTestTaskRepositorySource.includes('listRunnableAccountTestTaskIdsAsync')
+    && accountTestTaskRepositorySource.includes('markAccountTestTaskRunningAsync')
+    && accountTestTaskRepositorySource.includes('completeAccountTestTaskAsync')
+    && accountTestTaskRepositorySource.includes('failAccountTestTaskAsync')
+    && accountTestTaskRepositorySource.includes('isAccountTestTaskCancelRequestedAsync')
+    && accountTestTaskRepositorySource.includes('accountTestTaskCancelMessageAsync'),
+  '账号测试任务 repository 在 PostgreSQL 模式下必须提供异步读写、维护和取消状态接口'
+)
+assert(
+  accountTestDispatchRoutesSource.includes('findAccountForTestAsync')
+    && accountTestDispatchRoutesSource.includes('createAccountTestTaskAsync')
+    && accountTestDispatchRoutesSource.includes('failAccountTestTaskAsync')
+    && accountTestStatusRoutesSource.includes('listAccountTestTasksAsync')
+    && accountTestStatusRoutesSource.includes('getAccountTestSessionAsync')
+    && accountTestStatusRoutesSource.includes('getAccountTestTaskAsync')
+    && accountTestSessionRoutesSource.includes('createAccountTestSessionAsync')
+    && accountTestSessionRoutesSource.includes('heartbeatAccountTestSessionAsync')
+    && accountTestSessionRoutesSource.includes('cancelAccountTestSessionAsync')
+    && accountTestSessionRoutesSource.includes('cancelAccountTestTaskAsync')
+    && accountsRoutesSource.includes('prepareAccountDraftTestSnapshotAsync')
+    && accountsRoutesSource.includes('accountCreateStatusFromActivationTestAsync')
+    && accountDraftTestServiceSource.includes('getAccountTestTaskRecordAsync'),
+  '账号测试 HTTP 请求路径必须使用异步 repository，避免高性能模式回退到 SQLite 同步连接'
+)
+assert(
+  dbServiceHandlersSource.includes('findAccountForTestAsync(operation.accountId, operation.access)')
+    && dbServiceHandlersSource.includes('handleAccountTestTaskMaintenanceAsync(operation)')
+    && dbServiceHandlersSource.includes('markAccountTestTaskRunningAsync(operation.taskId)')
+    && dbServiceHandlersSource.includes('completeAccountTestTaskAsync(operation.taskId, operation.result)')
+    && dbServiceHandlersSource.includes('failAccountTestTaskAsync(operation.taskId, operation.message, operation.result)')
+    && dbServiceHandlersSource.includes('recordAccountSuccessfulTestModelAsync(operation.accountId, operation.model')
+    && dbServiceHandlersSource.includes('markAccountTestTemporaryUnavailableAsync(account, operation.reason'),
+  'DB service 的账号测试链路在 PostgreSQL 模式下必须使用异步账户读取、任务维护和收尾写入'
 )
 assert(
   accountTestTaskRepositorySource.includes('draft_account_encrypted')

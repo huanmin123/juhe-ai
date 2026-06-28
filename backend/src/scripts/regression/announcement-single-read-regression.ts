@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import type { SQLInputValue } from 'node:sqlite'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -22,6 +22,18 @@ const [databaseModule, repositories] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js')
 ])
+
+const announcementsRoutesSource = readFileSync(resolve('src/modules/announcements/announcements.routes.ts'), 'utf8')
+assert.match(announcementsRoutesSource, /listPublicAnnouncementsAsync/, '公告公开列表路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /markPublicAnnouncementsReadAsync/, '公告已读路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /listAnnouncementsPageAsync/, '公告管理列表路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /findAnnouncementAsync/, '公告详情和变更 before 读取必须使用 async repository')
+assert.match(announcementsRoutesSource, /createAnnouncementAsync/, '公告创建路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /updateAnnouncementAsync/, '公告更新路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /deleteAnnouncementAsync/, '公告删除路由必须使用 async repository')
+assert.match(announcementsRoutesSource, /runLoggedOperationAsync/, '公告管理操作日志必须使用 async 包裹')
+assert.doesNotMatch(announcementsRoutesSource, /import \{[^}]*\bfindAnnouncement\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, '公告路由不能重新导入同步 findAnnouncement')
+assert.doesNotMatch(announcementsRoutesSource, /import \{[^}]*\bcreateAnnouncement\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, '公告路由不能重新导入同步 createAnnouncement')
 
 const actor = 'sys_admin'
 

@@ -1110,6 +1110,7 @@ export interface RouteStrategySummary {
   description?: string
   mode: RouteStrategyMode
   status: RouteStrategyStatus
+  isDefault: boolean
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
   apiKeyCount?: number
@@ -1124,6 +1125,7 @@ export interface RouteStrategyOptionSummary {
   name: string
   mode: RouteStrategyMode
   status: RouteStrategyStatus
+  isDefault: boolean
 }
 
 export interface RouteStrategyListResult {

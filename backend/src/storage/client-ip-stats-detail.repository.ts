@@ -1,11 +1,14 @@
 import type { AccountUsageStatsRange } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getStatsDatabase } from './database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
+import { getPostgresPool } from './postgres-client.js'
 import { normalizeIpHash } from './client-ip-normalization.js'
-import { clientIpUsageRangeWindowReady } from './client-ip-usage-range-windows.repository.js'
+import { clientIpUsageRangeWindowReady, clientIpUsageRangeWindowReadyAsync } from './client-ip-usage-range-windows.repository.js'
 import type { ClientIpStatsSortField, ClientIpUsageSummary } from './client-ip-stats-list.repository.js'
 import { pagedTotalUpperBound } from './query-utils.js'
-import { loadAccountLookupMap } from './repository-lookups.js'
-import { normalizeAccountUsageStatsRange, usageStatsTimezone } from './usage-stats-helpers.js'
+import { loadAccountLookupMap, loadAccountLookupMapAsync } from './repository-lookups.js'
+import { normalizeAccountUsageStatsRange, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 
 export interface ClientIpAccountUsageRow {
   accountId: string
@@ -37,6 +40,7 @@ export interface ClientIpStatsDetailResult {
 }
 
 const clientIpStatsDetailMaxWindowRows = 1001
+const statsSchemaName = 'juhe_stats'
 
 export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): ClientIpStatsDetailResult | undefined {
   const ipHash = normalizeIpHash(options.ipHash)
@@ -93,6 +97,85 @@ export function getClientIpStatsDetail(options: ClientIpStatsDetailOptions): Cli
   const pageRows = rows.slice(0, pageSize)
   const hasMore = rows.length > pageSize
   const accounts = loadAccountLookupMap(pageRows.map((row) => row.account_id))
+  return {
+    ipHash: registry.ip_hash,
+    aggregateIpKey: registry.aggregate_ip_key,
+    lastSeenAt: registry.last_seen_at ?? undefined,
+    items: pageRows.map((row) => {
+      const account = accounts.get(row.account_id)
+      return {
+        accountId: row.account_id,
+        accountName: account?.name,
+        rangeUsage: usageSummaryFromRow(row)
+      }
+    }),
+    pageUpperBound: pagedTotalUpperBound(page, pageSize, pageRows.length, hasMore),
+    hasMore,
+    page,
+    pageSize,
+    range,
+    rangeReady
+  }
+}
+
+export async function getClientIpStatsDetailAsync(options: ClientIpStatsDetailOptions): Promise<ClientIpStatsDetailResult | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getClientIpStatsDetail(options)
+  }
+  const ipHash = normalizeIpHash(options.ipHash)
+  if (!ipHash) return undefined
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const registry = await client.one<ClientIpRegistryRow>(`
+    SELECT ip_hash, aggregate_ip_key, last_seen_at
+    FROM ${statsTable(client, 'client_ip_registry')}
+    WHERE ip_hash = ?
+    LIMIT 1
+  `, [ipHash])
+  if (!registry) return undefined
+
+  const timezone = await usageStatsTimezoneAsync()
+  const range = normalizeAccountUsageStatsRange(options, timezone)
+  const rangeReady = await clientIpUsageRangeWindowReadyAsync(client, range.startDate, range.endDate)
+  const pageSize = boundedDetailPageSize(options.pageSize)
+  const page = boundedDetailPage(options.page, pageSize)
+  if (!rangeReady) {
+    return {
+      ipHash: registry.ip_hash,
+      aggregateIpKey: registry.aggregate_ip_key,
+      lastSeenAt: registry.last_seen_at ?? undefined,
+      items: [],
+      pageUpperBound: 0,
+      hasMore: false,
+      page,
+      pageSize,
+      range,
+      rangeReady
+    }
+  }
+
+  const offset = (page - 1) * pageSize
+  const orderBy = clientIpAccountStatsOrderBy(options.sortField, options.sortOrder)
+  const rows = await client.query<ClientIpAccountUsageRangeRow>(`
+    SELECT
+      account_id,
+      request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, total_cost_usd,
+      duration_ms_sum, duration_ms_count, duration_ms_max,
+      average_duration_ms,
+      first_token_ms_sum, first_token_ms_count,
+      average_first_token_ms,
+      active_days, last_used_at, last_error_at
+    FROM ${statsTable(client, 'client_ip_account_usage_range_windows')}
+    WHERE ip_hash = ?
+      AND start_date = ?
+      AND end_date = ?
+    ORDER BY ${orderBy}
+    LIMIT ? OFFSET ?
+  `, [ipHash, range.startDate, range.endDate, pageSize + 1, offset])
+  const pageRows = rows.slice(0, pageSize)
+  const hasMore = rows.length > pageSize
+  const accounts = await loadAccountLookupMapAsync(client, pageRows.map((row) => row.account_id))
   return {
     ipHash: registry.ip_hash,
     aggregateIpKey: registry.aggregate_ip_key,
@@ -182,6 +265,10 @@ function boundedDetailPage(value: unknown, pageSize: number): number {
 function boundedDetailPageSize(value: unknown): number {
   const number = Number(value)
   return Number.isFinite(number) ? Math.min(Math.max(1, Math.trunc(number)), 100) : 20
+}
+
+function statsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable(statsSchemaName, tableName)
 }
 
 interface ClientIpRegistryRow {

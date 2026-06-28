@@ -1,17 +1,23 @@
 import {
+  latestClientIpStatsLagSecondsAsync,
   latestClientIpStatsLagSeconds,
+  listClientIpStatsAsync,
   listClientIpStats,
   type ClientIpStatsSortField,
   type ClientIpUsageSummary
 } from '../../storage/client-ip-stats.repository.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { getBusinessDatabase, getStatsDatabase } from '../../storage/database.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from '../../storage/database-client.js'
+import { getPostgresPool } from '../../storage/postgres-client.js'
 import { chunkValues, normalizeListPage, pagedTotalUpperBound, sqlPlaceholders } from '../../storage/query-utils.js'
 import {
   dateKey,
   normalizeAccountUsageStatsRange,
-  usageStatsTimezone
+  usageStatsTimezone,
+  usageStatsTimezoneAsync
 } from '../../storage/usage-stats-helpers.js'
-import { latestUsageStatsLagSeconds } from '../../storage/usage-stats.repository.js'
+import { latestUsageStatsLagSeconds, latestUsageStatsLagSecondsForRuntime } from '../../storage/usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.js'
 import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
@@ -333,32 +339,50 @@ export function getPublicClientIpUsage(input: PublicClientIpUsageQuery = {}, opt
   }
 }
 
+export async function getPublicClientIpUsageAsync(input: PublicClientIpUsageQuery = {}, options: { mock?: boolean } = {}): Promise<PublicClientIpUsageResponse> {
+  const range = await resolvePublicRangeForRuntimeAsync(input)
+  const page = boundedInteger(input.page, 1, 1000, 1)
+  const pageSize = boundedInteger(input.pageSize, 1, 100, 20)
+  if (options.mock) {
+    return buildMockPublicClientIpUsage(range, page, pageSize)
+  }
+
+  const result = await listClientIpStatsAsync({
+    page,
+    pageSize,
+    keyword: input.keyword,
+    startDate: range.startDate,
+    endDate: range.endDate,
+    sortField: input.sortField,
+    sortOrder: input.sortOrder
+  })
+  const offset = (result.page - 1) * result.pageSize
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    statsLagSeconds: await latestClientIpStatsLagSecondsAsync(),
+    range: {
+      ...range,
+      startDate: result.range.startDate,
+      endDate: result.range.endDate,
+      days: result.range.days,
+      maxDays: result.range.maxDays
+    },
+    rangeReady: result.rangeReady,
+    page: result.page,
+    pageSize: result.pageSize,
+    pageUpperBound: result.pageUpperBound,
+    hasMore: result.hasMore,
+    items: result.items.map((item, index) => mapPublicClientIpUsageItem(item.aggregateIpKey, item.rangeUsage, offset + index + 1))
+  }
+}
+
 export function getPublicAccountUsage(input: PublicAccountUsageQuery, options: { mock?: boolean } = {}): PublicAccountUsageResponse {
   const range = resolvePublicRange(input)
   const page = boundedInteger(input.page, 1, 1000, 1)
   const pageSize = boundedInteger(input.pageSize, 1, 100, 20)
   if (options.mock) {
-    const offset = (page - 1) * pageSize
-    const filteredRows = filterMockAccountRows(input.keyword)
-    const items = filteredRows
-      .slice(offset, offset + pageSize)
-      .map((row, index) => mapPublicAccountUsageItem({
-        ...row.usage,
-        accountName: row.accountName,
-        providerCode: row.providerCode
-      }, offset + index + 1))
-    return {
-      source: 'mock',
-      generatedAt: new Date().toISOString(),
-      statsLagSeconds: 0,
-      range,
-      rangeReady: true,
-      page,
-      pageSize,
-      pageUpperBound: offset + items.length + (filteredRows.length > offset + pageSize ? 1 : 0),
-      hasMore: filteredRows.length > offset + pageSize,
-      items
-    }
+    return buildMockPublicAccountUsage(input, range, page, pageSize)
   }
 
   const result = listPublicAccountUsageStats({
@@ -386,6 +410,66 @@ export function getPublicAccountUsage(input: PublicAccountUsageQuery, options: {
 export function getPublicConsumptionRanking(input: PublicConsumptionRankingQuery = {}, options: { mock?: boolean } = {}): PublicConsumptionRankingResponse {
   const metric = input.metric ?? 'totalTokens'
   const usage = getPublicClientIpUsage({
+    range: input.range,
+    page: 1,
+    pageSize: boundedInteger(input.limit, 1, 100, 20),
+    sortField: consumptionMetricSortField(metric),
+    sortOrder: 'desc'
+  }, options)
+  return {
+    source: usage.source,
+    generatedAt: usage.generatedAt,
+    statsLagSeconds: usage.statsLagSeconds,
+    dimension: 'client_ip',
+    metric,
+    range: usage.range,
+    rangeReady: usage.rangeReady,
+    items: usage.items.map((item) => ({
+      ...item,
+      id: `ip:${item.ip}`,
+      name: item.ip,
+      metricValue: consumptionMetricValue(item, metric)
+    }))
+  }
+}
+
+export async function getPublicAccountUsageAsync(input: PublicAccountUsageQuery, options: { mock?: boolean } = {}): Promise<PublicAccountUsageResponse> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getPublicAccountUsage(input, options)
+  }
+
+  const range = await resolvePublicRangeForRuntimeAsync(input)
+  const page = boundedInteger(input.page, 1, 1000, 1)
+  const pageSize = boundedInteger(input.pageSize, 1, 100, 20)
+  if (options.mock) {
+    return buildMockPublicAccountUsage(input, range, page, pageSize)
+  }
+
+  const result = await listPublicAccountUsageStatsAsync({
+    range,
+    page,
+    pageSize,
+    keyword: input.keyword,
+    sortField: input.sortField,
+    sortOrder: input.sortOrder
+  })
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    statsLagSeconds: await latestUsageStatsLagSecondsForRuntime(),
+    range,
+    rangeReady: result.rangeReady,
+    page: result.page,
+    pageSize: result.pageSize,
+    pageUpperBound: result.pageUpperBound,
+    hasMore: result.hasMore,
+    items: result.items
+  }
+}
+
+export async function getPublicConsumptionRankingAsync(input: PublicConsumptionRankingQuery = {}, options: { mock?: boolean } = {}): Promise<PublicConsumptionRankingResponse> {
+  const metric = input.metric ?? 'totalTokens'
+  const usage = await getPublicClientIpUsageAsync({
     range: input.range,
     page: 1,
     pageSize: boundedInteger(input.limit, 1, 100, 20),
@@ -521,6 +605,17 @@ export function getPublicAccessInfo(options: { mock?: boolean } = {}): PublicAcc
 
 function resolvePublicRange(input: { range?: PublicWelfareRangePreset }): PublicWelfareRange {
   const timezone = usageStatsTimezone()
+  return resolvePublicRangeWithTimezone(input, timezone)
+}
+
+async function resolvePublicRangeForRuntimeAsync(input: { range?: PublicWelfareRangePreset }): Promise<PublicWelfareRange> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return resolvePublicRange(input)
+  }
+  return resolvePublicRangeWithTimezone(input, await usageStatsTimezoneAsync())
+}
+
+function resolvePublicRangeWithTimezone(input: { range?: PublicWelfareRangePreset }, timezone: string): PublicWelfareRange {
   const preset = input.range ?? 'today'
   const today = new Date()
   const days = preset === 'last31d' ? 31 : preset === 'last7d' ? 7 : 1
@@ -531,6 +626,52 @@ function resolvePublicRange(input: { range?: PublicWelfareRangePreset }): Public
     preset,
     label: publicRangeLabel(preset),
     ...range
+  }
+}
+
+function buildMockPublicClientIpUsage(range: PublicWelfareRange, page: number, pageSize: number): PublicClientIpUsageResponse {
+  const offset = (page - 1) * pageSize
+  const items = mockRows.slice(offset, offset + pageSize).map((row, index) => mapPublicClientIpUsageItem(row.ip, row.usage, offset + index + 1))
+  return {
+    source: 'mock',
+    generatedAt: new Date().toISOString(),
+    statsLagSeconds: 0,
+    range,
+    rangeReady: true,
+    page,
+    pageSize,
+    pageUpperBound: offset + items.length + (mockRows.length > offset + pageSize ? 1 : 0),
+    hasMore: mockRows.length > offset + pageSize,
+    items
+  }
+}
+
+function buildMockPublicAccountUsage(
+  input: Pick<PublicAccountUsageQuery, 'keyword'>,
+  range: PublicWelfareRange,
+  page: number,
+  pageSize: number
+): PublicAccountUsageResponse {
+  const offset = (page - 1) * pageSize
+  const filteredRows = filterMockAccountRows(input.keyword)
+  const items = filteredRows
+    .slice(offset, offset + pageSize)
+    .map((row, index) => mapPublicAccountUsageItem({
+      ...row.usage,
+      accountName: row.accountName,
+      providerCode: row.providerCode
+    }, offset + index + 1))
+  return {
+    source: 'mock',
+    generatedAt: new Date().toISOString(),
+    statsLagSeconds: 0,
+    range,
+    rangeReady: true,
+    page,
+    pageSize,
+    pageUpperBound: offset + items.length + (filteredRows.length > offset + pageSize ? 1 : 0),
+    hasMore: filteredRows.length > offset + pageSize,
+    items
   }
 }
 
@@ -643,6 +784,107 @@ function listPublicAccountUsageStats(input: {
   }
 }
 
+async function listPublicAccountUsageStatsAsync(input: {
+  range: PublicWelfareRange
+  page: number
+  pageSize: number
+  keyword?: string
+  sortField?: PublicAccountUsageSortField
+  sortOrder?: 'asc' | 'desc'
+}): Promise<Pick<PublicAccountUsageResponse, 'items' | 'page' | 'pageSize' | 'pageUpperBound' | 'hasMore' | 'rangeReady'>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listPublicAccountUsageStats(input)
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const pageSize = boundedInteger(input.pageSize, 1, 100, 20)
+  const page = normalizeListPage(input.page, pageSize)
+  const rangeReady = await publicAccountUsageRangeReadyAsync(client, input.range)
+  if (!rangeReady) {
+    return {
+      items: [],
+      page,
+      pageSize,
+      pageUpperBound: 0,
+      hasMore: false,
+      rangeReady
+    }
+  }
+
+  const keyword = input.keyword?.trim()
+  const accountIds = keyword ? await loadPublicAccountUsageKeywordAccountIdsAsync(client, keyword) : undefined
+  if (keyword && accountIds?.length === 0) {
+    return {
+      items: [],
+      page,
+      pageSize,
+      pageUpperBound: 0,
+      hasMore: false,
+      rangeReady
+    }
+  }
+
+  const offset = (page - 1) * pageSize
+  const accountFilter = accountIds ? buildPublicAccountUsageIdFilter(accountIds) : { sql: '', params: [] }
+  const orderBy = publicAccountUsageOrderBy(input.sortField, input.sortOrder)
+  const rows = await client.query<AccountUsageRangeRow>(`
+    SELECT
+      usage_window.scope_id,
+      usage_window.request_count,
+      usage_window.success_count,
+      usage_window.error_count,
+      usage_window.input_tokens,
+      usage_window.output_tokens,
+      usage_window.cache_read_tokens,
+      CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
+      CAST(usage_window.total_cost_usd AS double precision) AS total_cost_usd,
+      usage_window.duration_ms_sum,
+      usage_window.duration_ms_count,
+      usage_window.duration_ms_max,
+      usage_window.first_token_ms_sum,
+      usage_window.first_token_ms_count,
+      usage_window.first_token_ms_max,
+      usage_window.active_days,
+      usage_window.last_used_at,
+      usage_window.last_error_at
+    FROM ${publicStatsTable(client, 'usage_scope_range_windows')} usage_window
+    WHERE usage_window.system_account_id = ?
+      AND usage_window.scope_type = 'account'
+      AND usage_window.start_date = ?
+      AND usage_window.end_date = ?
+      ${accountFilter.sql}
+    ORDER BY ${orderBy}, usage_window.scope_id ASC
+    LIMIT ? OFFSET ?
+  `, [
+    GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
+    input.range.startDate,
+    input.range.endDate,
+    ...accountFilter.params,
+    pageSize + 1,
+    offset
+  ])
+  const pageRows = rows.slice(0, pageSize)
+  const hasMore = rows.length > pageSize
+  const metadataById = await loadPublicAccountUsageMetadataAsync(client, pageRows.map((row) => row.scope_id))
+  return {
+    items: pageRows.map((row, index) => {
+      const metadata = metadataById.get(row.scope_id)
+      return mapPublicAccountUsageItem({
+        ...row,
+        accountName: metadata?.name ?? row.scope_id,
+        providerCode: metadata?.provider_code,
+        type: metadata?.type,
+        status: metadata?.status
+      }, offset + index + 1)
+    }),
+    page,
+    pageSize,
+    pageUpperBound: pagedTotalUpperBound(page, pageSize, pageRows.length, hasMore),
+    hasMore,
+    rangeReady
+  }
+}
+
 function publicAccountUsageRangeReady(database: ReturnType<typeof getStatsDatabase>, range: PublicWelfareRange): boolean {
   const row = database.prepare(`
     SELECT 1
@@ -653,6 +895,19 @@ function publicAccountUsageRangeReady(database: ReturnType<typeof getStatsDataba
       AND end_date = ?
     LIMIT 1
   `).get(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, range.startDate, range.endDate) as unknown as { 1?: number } | undefined
+  return Boolean(row)
+}
+
+async function publicAccountUsageRangeReadyAsync(client: DatabaseClient, range: PublicWelfareRange): Promise<boolean> {
+  const row = await client.one<{ exists_flag?: number }>(`
+    SELECT 1 AS exists_flag
+    FROM ${publicStatsTable(client, 'usage_scope_range_windows')}
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND start_date = ?
+      AND end_date = ?
+    LIMIT 1
+  `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, range.startDate, range.endDate])
   return Boolean(row)
 }
 
@@ -692,6 +947,43 @@ function loadPublicAccountUsageKeywordAccountIds(keyword: string): string[] {
   return [...ids]
 }
 
+async function loadPublicAccountUsageKeywordAccountIdsAsync(client: DatabaseClient, keyword: string): Promise<string[]> {
+  const value = keyword.trim()
+  if (!value) return []
+  const ids = new Set<string>()
+  await collectPublicAccountUsageKeywordIdsAsync(client, ids, `
+    SELECT id
+    FROM ${publicBusinessTable(client, 'accounts')}
+    WHERE id >= ? AND id < ?
+    ORDER BY id ASC
+    LIMIT ?
+  `, [value, `${value}\uffff`])
+
+  const [lowerValue, lowerUpperBound] = publicAccountUsageLowerPrefixBounds(value)
+  await collectPublicAccountUsageKeywordIdsAsync(client, ids, `
+    SELECT id
+    FROM ${publicBusinessTable(client, 'accounts')}
+    WHERE lower(name) >= ? AND lower(name) < ? AND starts_with(lower(name), ?)
+    ORDER BY lower(name) ASC, id ASC
+    LIMIT ?
+  `, [lowerValue, lowerUpperBound, lowerValue])
+  await collectPublicAccountUsageKeywordIdsAsync(client, ids, `
+    SELECT id
+    FROM ${publicBusinessTable(client, 'accounts')}
+    WHERE lower(provider_code) >= ? AND lower(provider_code) < ? AND starts_with(lower(provider_code), ?)
+    ORDER BY lower(provider_code) ASC, id ASC
+    LIMIT ?
+  `, [lowerValue, lowerUpperBound, lowerValue])
+  await collectPublicAccountUsageKeywordIdsAsync(client, ids, `
+    SELECT id
+    FROM ${publicBusinessTable(client, 'accounts')}
+    WHERE lower(type) >= ? AND lower(type) < ? AND starts_with(lower(type), ?)
+    ORDER BY lower(type) ASC, id ASC
+    LIMIT ?
+  `, [lowerValue, lowerUpperBound, lowerValue])
+  return [...ids]
+}
+
 function collectPublicAccountUsageKeywordIds(
   database: ReturnType<typeof getBusinessDatabase>,
   ids: Set<string>,
@@ -705,6 +997,33 @@ function collectPublicAccountUsageKeywordIds(
     if (row.id) ids.add(row.id)
     if (ids.size >= 1000) break
   }
+}
+
+async function collectPublicAccountUsageKeywordIdsAsync(
+  client: DatabaseClient,
+  ids: Set<string>,
+  sql: string,
+  params: string[]
+): Promise<void> {
+  const remaining = 1000 - ids.size
+  if (remaining <= 0) return
+  const rows = await client.query<{ id?: string }>(sql, [...params, remaining])
+  for (const row of rows) {
+    if (row.id) ids.add(row.id)
+    if (ids.size >= 1000) break
+  }
+}
+
+function publicAccountUsageLowerPrefixBounds(value: string): [string, string] {
+  const lowerValue = value.toLowerCase()
+  if (!lowerValue) return ['', '\uffff']
+  const chars = [...lowerValue]
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const codePoint = chars[index].codePointAt(0)
+    if (codePoint === undefined || codePoint >= 0x10ffff) continue
+    return [lowerValue, `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`]
+  }
+  return [lowerValue, `${lowerValue}\uffff`]
 }
 
 function buildPublicAccountUsageIdFilter(accountIds: string[]): { sql: string; params: string[] } {
@@ -738,6 +1057,36 @@ function loadPublicAccountUsageMetadata(accountIds: string[]): Map<string, Accou
     }
   }
   return result
+}
+
+async function loadPublicAccountUsageMetadataAsync(client: DatabaseClient, accountIds: string[]): Promise<Map<string, AccountUsageMetadataRow>> {
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  const result = new Map<string, AccountUsageMetadataRow>()
+  if (!ids.length) return result
+  for (const chunk of chunkValues(ids, 400)) {
+    const rows = await client.query<AccountUsageMetadataRow>(`
+      SELECT
+        accounts.id,
+        accounts.name,
+        accounts.provider_code,
+        accounts.type,
+        accounts.status
+      FROM ${publicBusinessTable(client, 'accounts')} accounts
+      WHERE accounts.id IN (${sqlPlaceholders(chunk.length)})
+    `, chunk)
+    for (const row of rows) {
+      result.set(row.id, row)
+    }
+  }
+  return result
+}
+
+function publicStatsTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_stats', tableName)
+}
+
+function publicBusinessTable(client: DatabaseClient, tableName: string): string {
+  return client.dialect.qualifyTable('juhe_business', tableName)
 }
 
 function publicAccountUsageOrderBy(field: PublicAccountUsageSortField | undefined, order: 'asc' | 'desc' | undefined): string {

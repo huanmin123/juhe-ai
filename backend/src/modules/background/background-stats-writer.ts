@@ -3,10 +3,10 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import {
-  aggregateClientIpStatsBatch,
-  listActiveClientIpPolicies,
-  recordClientIpPolicyHits,
-  refreshClientIpUsageRangeWindows
+  aggregateClientIpStatsBatchAsync,
+  listActiveClientIpPoliciesAsync,
+  recordClientIpPolicyHitsAsync,
+  refreshClientIpUsageRangeWindowsAsync
 } from '../../storage/client-ip-stats.repository.js'
 import type {
   CollectTableStorageSnapshotOptions,
@@ -17,7 +17,9 @@ import {
   aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
   insertProcessEventLoopSample,
+  insertProcessEventLoopSampleAsync,
   insertSystemMetricsSample,
+  insertSystemMetricsSampleAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageQuotaHourlyWindowsCacheAsync,
@@ -188,9 +190,16 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'refresh_account_quality':
       return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit)
     case 'record_system_metrics_sample':
-      insertSystemMetricsSample(operation.sample)
-      for (const sample of operation.processEventLoopSamples) {
-        insertProcessEventLoopSample(processEventLoopSampleInput(sample))
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        await insertSystemMetricsSampleAsync(operation.sample)
+        for (const sample of operation.processEventLoopSamples) {
+          await insertProcessEventLoopSampleAsync(processEventLoopSampleInput(sample))
+        }
+      } else {
+        insertSystemMetricsSample(operation.sample)
+        for (const sample of operation.processEventLoopSamples) {
+          insertProcessEventLoopSample(processEventLoopSampleInput(sample))
+        }
       }
       return { recorded: true }
     case 'refresh_usage_rank_snapshots':
@@ -205,9 +214,9 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'collect_table_storage_snapshot':
       return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
-      return recordClientIpPolicyHits(operation.hits)
+      return await recordClientIpPolicyHitsAsync(operation.hits)
     case 'list_active_client_ip_policies':
-      return listActiveClientIpPolicies()
+      return await listActiveClientIpPoliciesAsync()
     case 'upsert_account_usage_snapshots':
       upsertAccountUsageSnapshots(operation.inputs)
       return { upsertedCount: operation.inputs.length }
@@ -282,15 +291,15 @@ async function aggregateClientIpStats(batchSize: number, maxBatches: number, max
   const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
   const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
-    const batchProcessed = aggregateClientIpStatsBatch(normalizedBatchSize)
+    const batchProcessed = await aggregateClientIpStatsBatchAsync(normalizedBatchSize)
     processed += batchProcessed
     if (batchProcessed < normalizedBatchSize) break
     if (Date.now() - startedAtMs >= boundedPositiveInteger(maxRunMs, 1, 60_000)) break
     await yieldToEventLoop()
     await pauseBetweenStatsAggregationBatches()
   }
-  refreshClientIpUsageRangeWindows()
-  const policies = listActiveClientIpPolicies()
+  await refreshClientIpUsageRangeWindowsAsync()
+  const policies = await listActiveClientIpPoliciesAsync()
   sendClientIpPolicySnapshotToServer(policies)
   return { processed, policies }
 }

@@ -2,26 +2,45 @@ import { randomBytes } from 'node:crypto'
 
 import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import type { AccountSummary, GroupSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '../../domain/types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import {
   createAccount,
+  createAccountAsync,
   createApiKeyRecord,
+  createApiKeyRecordAsync,
   createGroup,
+  createGroupAsync,
   deleteAccountWithRelatedCleanup,
+  deleteAccountWithRelatedCleanupAsync,
   deleteApiKeyWithRelatedCleanup,
+  deleteApiKeyWithRelatedCleanupAsync,
   deleteGroup,
+  deleteGroupAsync,
   findAccountSummary,
+  findAccountSummaryAsync,
   findApiKeySummary,
+  findApiKeySummaryAsync,
   findGroupSummary,
+  findGroupSummaryAsync,
   listAccountsPage,
+  listAccountsPageAsync,
   listApiKeysPage,
+  listApiKeysPageAsync,
   listGroupsPage,
+  listGroupsPageAsync,
   listProviders,
+  listProvidersAsync,
   updateAccount,
+  updateAccountAsync,
   updateApiKey,
-  updateGroup
+  updateApiKeyAsync,
+  updateGroup,
+  updateGroupAsync
 } from '../../storage/repositories.js'
 import { getBusinessDatabase, runInDatabaseTransaction } from '../../storage/database.js'
+import { createPostgresDatabaseClient } from '../../storage/database-client.js'
+import { getPostgresPool } from '../../storage/postgres-client.js'
 import { submitApiKeyRelatedCleanup } from '../api-keys/api-key-cleanup.service.js'
 import {
   accountCreateInputForPush,
@@ -46,14 +65,22 @@ import {
 import {
   assertTargetActive,
   ensureTargetGroup,
+  ensureTargetGroupAsync,
   ensureTargetSystemAccount,
+  ensureTargetSystemAccountAsync,
   findExistingTargetGroup,
+  findExistingTargetGroupAsync,
   findPublicTarget,
+  findPublicTargetAsync,
   normalizedText,
   requirePublicTarget,
+  requirePublicTargetAsync,
   resolveAccountListGroupId,
+  resolveAccountListGroupIdAsync,
   resolvePublicGroup,
+  resolvePublicGroupAsync,
   resolvePublicOwnedResourceTarget,
+  resolvePublicOwnedResourceTargetAsync,
   sameText,
   targetAccess
 } from './external-public-account-push.target.js'
@@ -105,11 +132,19 @@ export type {
 } from './external-public-account-push.types.js'
 
 export async function addPublicWelfareAccount(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
-  return writePublicWelfareAccount(input, await autoCreatedTargetPasswordHash())
+  const targetPasswordHash = await autoCreatedTargetPasswordHash()
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return writePublicWelfareAccount(input, targetPasswordHash)
+  }
+  return await writePublicWelfareAccountAsync(input, targetPasswordHash)
 }
 
 export function updatePublicWelfareAccount(input: PublicAccountUpdateInput): PublicAccountPushResponse {
   return updatePublicWelfareAccountById(input)
+}
+
+export async function updatePublicWelfareAccountAsync(input: PublicAccountUpdateInput): Promise<PublicAccountPushResponse> {
+  return await updatePublicWelfareAccountByIdAsync(input)
 }
 
 function writePublicWelfareAccount(input: PublicAccountPushInput, targetPasswordHash?: string): PublicAccountPushResponse {
@@ -158,6 +193,52 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, targetPassword
       account: sanitizeAccount(account)
     }
   }, getBusinessDatabase())
+}
+
+async function writePublicWelfareAccountAsync(input: PublicAccountPushInput, targetPasswordHash?: string): Promise<PublicAccountPushResponse> {
+  const providerCode = requiredProviderCode(input.providerCode)
+  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
+  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId, input.connectionType)
+  assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
+
+  const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
+  assertTargetActive(target.account)
+
+  const access = targetAccess(target.account.id)
+  const targetGroup = await ensureTargetGroupAsync({ access, providerCode, providerProtocolProfileId: providerProfile.id, groupName: input.targetGroupName })
+  const existing = await findTargetAccountAsync({
+    access,
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    groupId: targetGroup.group.id,
+    name: input.name
+  })
+  if (existing) {
+    throw new Error(`账号已存在：${existing.name}`)
+  }
+  const account = await createAccountAsync(accountCreateInputForPush(input, providerCode, providerProfile.id, targetGroup.group.id), access)
+
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    action: 'created',
+    target: {
+      username: target.account.username,
+      displayName: target.account.displayName,
+      systemAccountId: target.account.id,
+      created: target.created,
+      groupId: targetGroup.group.id,
+      groupName: targetGroup.group.name,
+      groupCreated: targetGroup.created
+    },
+    account: sanitizeAccount(account)
+  }
 }
 
 function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): PublicAccountPushResponse {
@@ -215,6 +296,59 @@ function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): Public
   }, getBusinessDatabase())
 }
 
+async function updatePublicWelfareAccountByIdAsync(input: PublicAccountUpdateInput): Promise<PublicAccountPushResponse> {
+  const accountId = normalizedText(input.accountId)
+  if (!accountId) {
+    throw new Error('账号修改必须提供 accountId')
+  }
+
+  const accountOwner = await findPublicAccountOwnerByIdAsync(accountId)
+  if (!accountOwner) {
+    throw new Error('账号不存在')
+  }
+  const target = await resolvePublicOwnedResourceTargetAsync(input.targetUsername, accountOwner.systemAccountId)
+  if (!target) {
+    throw new Error('账号不存在')
+  }
+  assertTargetActive(target.account)
+
+  const access = targetAccess(target.account.id)
+  const existing = await findAccountSummaryAsync(accountId, access)
+  if (!existing) {
+    throw new Error('账号不存在')
+  }
+  if (existing.type !== 'api_key') {
+    throw new Error('公开账号修改仅支持 API Key 账户')
+  }
+
+  const providerProfile = await assertProviderEnabledAsync(existing.providerCode, existing.providerProtocolProfileId)
+  if (hasPublicInput(input, 'type')) {
+    assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
+  }
+  const targetGroup = await resolvePublicAccountGroupFilterAsync(input, existing, access)
+  const payload = accountPartialUpdateInputForPush(input, existing)
+  const updated = await updateAccountAsync(existing.id, payload, access)
+  if (!updated) {
+    throw new Error('账号不存在')
+  }
+
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    action: 'updated',
+    target: {
+      username: target.account.username,
+      displayName: target.account.displayName,
+      systemAccountId: target.account.id,
+      created: false,
+      groupId: targetGroup?.id ?? updated.boundGroupId ?? '',
+      groupName: targetGroup?.name ?? updated.boundGroupName ?? '',
+      groupCreated: false
+    },
+    account: sanitizeAccount(updated)
+  }
+}
+
 export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): PublicAccountDeleteResponse {
   const accountId = normalizedText(input.accountId)
   if (!accountId) {
@@ -265,6 +399,56 @@ export function deletePublicWelfareAccount(input: PublicAccountDeleteInput): Pub
   }
 }
 
+export async function deletePublicWelfareAccountAsync(input: PublicAccountDeleteInput): Promise<PublicAccountDeleteResponse> {
+  const accountId = normalizedText(input.accountId)
+  if (!accountId) {
+    throw new Error('删除账号时必须提供 accountId')
+  }
+
+  const fallbackTarget = targetFromInput(input.targetUsername, input.targetGroupName)
+  const accountOwner = await findPublicAccountOwnerByIdAsync(accountId)
+  if (!accountOwner) {
+    return notFoundAccountDeleteResponse(fallbackTarget)
+  }
+  const target = await resolvePublicOwnedResourceTargetAsync(input.targetUsername, accountOwner.systemAccountId)
+  if (!target) {
+    return notFoundAccountDeleteResponse(fallbackTarget)
+  }
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const account = await findAccountSummaryAsync(accountId, access)
+  if (!account) {
+    return notFoundAccountDeleteResponse(fallbackTarget)
+  }
+  if (account.type !== 'api_key') {
+    throw new Error('公开账号删除仅支持 API Key 账户')
+  }
+  const targetGroup = await resolvePublicAccountGroupFilterAsync(input, account, access)
+  const resolvedTarget = {
+    username: target.account.username,
+    displayName: target.account.displayName,
+    systemAccountId: target.account.id,
+    created: false,
+    groupId: targetGroup?.id ?? account.boundGroupId ?? '',
+    groupName: targetGroup?.name ?? account.boundGroupName ?? normalizedText(input.targetGroupName) ?? '',
+    groupCreated: false
+  }
+
+  const deletedAccount = sanitizeAccount(account)
+  const deleteResult = await deleteAccountWithRelatedCleanupAsync(account.id, access)
+  if (!deleteResult.deleted) {
+    throw new Error('目标账号无法删除，可能正在作为授权实例使用')
+  }
+
+  return {
+    source: 'stats',
+    generatedAt: new Date().toISOString(),
+    action: 'deleted',
+    target: resolvedTarget,
+    account: deletedAccount
+  }
+}
+
 export function listPublicWelfareAccounts(input: PublicAccountListInput): PublicAccountListResponse {
   const target = requirePublicTarget(input.targetUsername)
   assertTargetActive(target.account)
@@ -301,28 +485,85 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
   })
 }
 
+export async function listPublicWelfareAccountsAsync(input: PublicAccountListInput): Promise<PublicAccountListResponse> {
+  const target = await requirePublicTargetAsync(input.targetUsername)
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const providerCode = normalizedText(input.providerCode)
+  const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode, input.providerProtocolProfileId, input.connectionType)
+  const groupId = await resolveAccountListGroupIdAsync(access, {
+    providerCode,
+    providerProtocolProfileId,
+    groupId: input.groupId,
+    targetGroupName: input.targetGroupName
+  })
+  const page = await listAccountsPageAsync(access, {
+    page: input.page,
+    pageSize: input.pageSize,
+    keyword: normalizedText(input.keyword),
+    providerCode,
+    providerProtocolProfileId,
+    groupId,
+    type: normalizedText(input.type),
+    status: normalizedText(input.status),
+    schedulable: input.schedulable
+  })
+  return publicAccountListResponse(target, {
+    page: page.page,
+    pageSize: page.pageSize,
+    pageUpperBound: page.total,
+    hasMore: page.hasMore,
+    items: page.items.map((account) => ({
+      ...sanitizeAccount(account),
+      concurrencyLimit: account.concurrencyLimit,
+      priority: account.priority
+    }))
+  })
+}
+
 export async function addPublicGroup(input: PublicGroupAddInput): Promise<PublicGroupResponse> {
   const providerCode = requiredProviderCode(input.providerCode)
-  const providerProfile = assertProviderEnabled(providerCode, input.providerProtocolProfileId, input.connectionType)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const providerProfile = assertProviderEnabled(providerCode, input.providerProtocolProfileId, input.connectionType)
+    const targetPasswordHash = await autoCreatedTargetPasswordHash()
+    return runInDatabaseTransaction(() => {
+      const target = ensureTargetSystemAccount(input, targetPasswordHash)
+      assertTargetActive(target.account)
+      const access = targetAccess(target.account.id)
+      const existing = resolvePublicGroup(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
+      if (existing) {
+        return publicGroupResponse('existing', target, sanitizeGroup(existing))
+      }
+      const group = createGroup({
+        name: input.name,
+        providerCode,
+        providerProtocolProfileId: providerProfile.id,
+        description: input.description,
+        enabled: input.enabled,
+        groupType: input.groupType ?? 'personal'
+      }, access)
+      return publicGroupResponse('created', target, sanitizeGroup(group))
+    }, getBusinessDatabase())
+  }
+
+  const providerProfile = await assertProviderEnabledAsync(providerCode, input.providerProtocolProfileId, input.connectionType)
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
-  return runInDatabaseTransaction(() => {
-    const target = ensureTargetSystemAccount(input, targetPasswordHash)
-    assertTargetActive(target.account)
-    const access = targetAccess(target.account.id)
-    const existing = resolvePublicGroup(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
-    if (existing) {
-      return publicGroupResponse('existing', target, sanitizeGroup(existing))
-    }
-    const group = createGroup({
-      name: input.name,
-      providerCode,
-      providerProtocolProfileId: providerProfile.id,
-      description: input.description,
-      enabled: input.enabled,
-      groupType: input.groupType ?? 'personal'
-    }, access)
-    return publicGroupResponse('created', target, sanitizeGroup(group))
-  }, getBusinessDatabase())
+  const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const existing = await resolvePublicGroupAsync(access, { name: input.name, providerCode, providerProtocolProfileId: providerProfile.id })
+  if (existing) {
+    return publicGroupResponse('existing', target, sanitizeGroup(existing))
+  }
+  const group = await createGroupAsync({
+    name: input.name,
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    description: input.description,
+    enabled: input.enabled,
+    groupType: input.groupType ?? 'personal'
+  }, access)
+  return publicGroupResponse('created', target, sanitizeGroup(group))
 }
 
 export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupResponse {
@@ -360,6 +601,41 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
   return publicGroupResponse('updated', target, sanitizeGroup(updated))
 }
 
+export async function updatePublicGroupAsync(input: PublicGroupUpdateInput): Promise<PublicGroupResponse> {
+  const groupId = normalizedText(input.groupId)
+  if (!groupId) {
+    throw new Error('分组修改必须提供 groupId')
+  }
+  const owner = await findPublicGroupOwnerByIdAsync(groupId)
+  if (!owner) {
+    return publicGroupNotFoundResponse(input.targetUsername)
+  }
+  const target = await resolvePublicOwnedResourceTargetAsync(input.targetUsername, owner.systemAccountId)
+  if (!target) {
+    return publicGroupNotFoundResponse(input.targetUsername)
+  }
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const group = await findGroupSummaryAsync(groupId, access)
+  if (!group) {
+    return publicGroupResponse('not_found', target, null)
+  }
+  if (input.connectionType && !input.providerCode) {
+    throw new Error('按接入类型修改分组时必须提供 providerCode')
+  }
+  const payloadInput = input.providerCode
+    ? {
+        ...input,
+        providerProtocolProfileId: (await assertProviderEnabledAsync(input.providerCode, input.providerProtocolProfileId, input.connectionType)).id
+      }
+    : input
+  const updated = await updateGroupAsync(group.id, publicGroupUpdatePayload(payloadInput), access)
+  if (!updated) {
+    return publicGroupResponse('not_found', target, null)
+  }
+  return publicGroupResponse('updated', target, sanitizeGroup(updated))
+}
+
 export function deletePublicGroup(input: PublicGroupDeleteInput): PublicGroupResponse {
   const groupId = normalizedText(input.groupId)
   if (!groupId) {
@@ -384,6 +660,30 @@ export function deletePublicGroup(input: PublicGroupDeleteInput): PublicGroupRes
   return publicGroupResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedGroup : null)
 }
 
+export async function deletePublicGroupAsync(input: PublicGroupDeleteInput): Promise<PublicGroupResponse> {
+  const groupId = normalizedText(input.groupId)
+  if (!groupId) {
+    throw new Error('分组删除必须提供 groupId')
+  }
+  const owner = await findPublicGroupOwnerByIdAsync(groupId)
+  if (!owner) {
+    return publicGroupNotFoundResponse(input.targetUsername)
+  }
+  const target = await resolvePublicOwnedResourceTargetAsync(input.targetUsername, owner.systemAccountId)
+  if (!target) {
+    return publicGroupNotFoundResponse(input.targetUsername)
+  }
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const group = await findGroupSummaryAsync(groupId, access)
+  if (!group) {
+    return publicGroupResponse('not_found', target, null)
+  }
+  const deletedGroup = sanitizeGroup(group)
+  const result = await deleteGroupAsync(group.id, access)
+  return publicGroupResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedGroup : null)
+}
+
 export function listPublicGroups(input: PublicGroupListInput): PublicGroupListResponse {
   const target = requirePublicTarget(input.targetUsername)
   assertTargetActive(target.account)
@@ -393,6 +693,26 @@ export function listPublicGroups(input: PublicGroupListInput): PublicGroupListRe
     keyword: normalizedText(input.keyword),
     providerCode: normalizedText(input.providerCode),
     providerProtocolProfileId: resolveOptionalProviderProtocolProfileId(input.providerCode, input.providerProtocolProfileId, input.connectionType),
+    manageableOnly: true
+  })
+  return publicGroupListResponse(target, {
+    page: page.page,
+    pageSize: page.pageSize,
+    pageUpperBound: page.total,
+    hasMore: page.hasMore,
+    items: page.items.map(sanitizeGroup)
+  })
+}
+
+export async function listPublicGroupsAsync(input: PublicGroupListInput): Promise<PublicGroupListResponse> {
+  const target = await requirePublicTargetAsync(input.targetUsername)
+  assertTargetActive(target.account)
+  const page = await listGroupsPageAsync(targetAccess(target.account.id), {
+    page: input.page,
+    pageSize: input.pageSize,
+    keyword: normalizedText(input.keyword),
+    providerCode: normalizedText(input.providerCode),
+    providerProtocolProfileId: await resolveOptionalProviderProtocolProfileIdAsync(input.providerCode, input.providerProtocolProfileId, input.connectionType),
     manageableOnly: true
   })
   return publicGroupListResponse(target, {
@@ -416,6 +736,18 @@ export function addPublicApiKey(input: PublicApiKeyAddInput): PublicApiKeyRespon
   return publicApiKeyResponse('created', target, sanitizeApiKey(apiKey, { includeSecret: true }))
 }
 
+export async function addPublicApiKeyAsync(input: PublicApiKeyAddInput): Promise<PublicApiKeyResponse> {
+  const target = await findPublicTargetAsync(input.targetUsername)
+  if (!target) {
+    throw new Error(`目标用户不存在：${input.targetUsername}`)
+  }
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const payload = publicApiKeyPayload(input)
+  const apiKey = await createApiKeyRecordAsync(payload, access)
+  return publicApiKeyResponse('created', target, sanitizeApiKey(apiKey, { includeSecret: true }))
+}
+
 export function updatePublicApiKey(input: PublicApiKeyUpdateInput): PublicApiKeyResponse {
   const apiKeyId = normalizedText(input.apiKeyId)
   if (!apiKeyId) {
@@ -436,6 +768,29 @@ export function updatePublicApiKey(input: PublicApiKeyUpdateInput): PublicApiKey
     return publicApiKeyResponse('not_found', target, null)
   }
   const updated = updateApiKey(apiKey.id, publicApiKeyPayload(input, true), access)
+  return publicApiKeyResponse(updated ? 'updated' : 'not_found', target, updated ? sanitizeApiKey(updated) : null)
+}
+
+export async function updatePublicApiKeyAsync(input: PublicApiKeyUpdateInput): Promise<PublicApiKeyResponse> {
+  const apiKeyId = normalizedText(input.apiKeyId)
+  if (!apiKeyId) {
+    throw new Error('API Key 修改必须提供 apiKeyId')
+  }
+  const owner = await findPublicApiKeyOwnerByIdAsync(apiKeyId)
+  if (!owner) {
+    return publicApiKeyNotFoundResponse(input.targetUsername)
+  }
+  const target = await resolvePublicOwnedResourceTargetAsync(input.targetUsername, owner.systemAccountId)
+  if (!target) {
+    return publicApiKeyNotFoundResponse(input.targetUsername)
+  }
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const apiKey = await findApiKeySummaryAsync(apiKeyId, access)
+  if (!apiKey) {
+    return publicApiKeyResponse('not_found', target, null)
+  }
+  const updated = await updateApiKeyAsync(apiKey.id, publicApiKeyPayload(input, true), access)
   return publicApiKeyResponse(updated ? 'updated' : 'not_found', target, updated ? sanitizeApiKey(updated) : null)
 }
 
@@ -466,6 +821,33 @@ export function deletePublicApiKey(input: PublicApiKeyDeleteInput): PublicApiKey
   return publicApiKeyResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedApiKey : null)
 }
 
+export async function deletePublicApiKeyAsync(input: PublicApiKeyDeleteInput): Promise<PublicApiKeyResponse> {
+  const apiKeyId = normalizedText(input.apiKeyId)
+  if (!apiKeyId) {
+    throw new Error('API Key 删除必须提供 apiKeyId')
+  }
+  const owner = await findPublicApiKeyOwnerByIdAsync(apiKeyId)
+  if (!owner) {
+    return publicApiKeyNotFoundResponse(input.targetUsername)
+  }
+  const target = await resolvePublicOwnedResourceTargetAsync(input.targetUsername, owner.systemAccountId)
+  if (!target) {
+    return publicApiKeyNotFoundResponse(input.targetUsername)
+  }
+  assertTargetActive(target.account)
+  const access = targetAccess(target.account.id)
+  const apiKey = await findApiKeySummaryAsync(apiKeyId, access)
+  if (!apiKey) {
+    return publicApiKeyResponse('not_found', target, null)
+  }
+  const deletedApiKey = sanitizeApiKey(apiKey)
+  const result = await deleteApiKeyWithRelatedCleanupAsync(apiKey.id, access)
+  if (result.cleanupTarget) {
+    submitApiKeyRelatedCleanup(result.cleanupTarget)
+  }
+  return publicApiKeyResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedApiKey : null)
+}
+
 export function listPublicApiKeys(input: PublicApiKeyListInput): PublicApiKeyListResponse {
   const target = requirePublicTarget(input.targetUsername)
   assertTargetActive(target.account)
@@ -485,8 +867,38 @@ export function listPublicApiKeys(input: PublicApiKeyListInput): PublicApiKeyLis
   })
 }
 
+export async function listPublicApiKeysAsync(input: PublicApiKeyListInput): Promise<PublicApiKeyListResponse> {
+  const target = await requirePublicTargetAsync(input.targetUsername)
+  assertTargetActive(target.account)
+  const page = await listApiKeysPageAsync(targetAccess(target.account.id), {
+    page: input.page,
+    pageSize: input.pageSize,
+    keyword: normalizedText(input.keyword),
+    status: input.status,
+    groupId: normalizedText(input.groupId)
+  })
+  return publicApiKeyListResponse(target, {
+    page: page.page,
+    pageSize: page.pageSize,
+    pageUpperBound: page.total,
+    hasMore: page.hasMore,
+    items: page.items.map((apiKey) => sanitizeApiKey(apiKey))
+  })
+}
+
 function assertProviderEnabled(providerCode: string, providerProtocolProfileId?: string, connectionType?: string): ProviderProtocolProfileDefinition {
   const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (!provider.enabled) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType)
+}
+
+async function assertProviderEnabledAsync(providerCode: string, providerProtocolProfileId?: string, connectionType?: string): Promise<ProviderProtocolProfileDefinition> {
+  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
   }
@@ -539,6 +951,21 @@ function resolveOptionalProviderProtocolProfileId(providerCodeInput?: string, pr
   return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType).id
 }
 
+async function resolveOptionalProviderProtocolProfileIdAsync(providerCodeInput?: string, providerProtocolProfileIdInput?: string, connectionTypeInput?: string): Promise<string | undefined> {
+  const providerCode = normalizedText(providerCodeInput)
+  const providerProtocolProfileId = normalizedText(providerProtocolProfileIdInput)
+  const connectionType = normalizedText(connectionTypeInput)
+  if (!providerCode && !providerProtocolProfileId && !connectionType) return undefined
+  if (!providerCode) {
+    throw new Error('按协议档案查询时必须提供 providerCode')
+  }
+  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
+  if (!provider) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType).id
+}
+
 async function autoCreatedTargetPasswordHash(): Promise<string> {
   return hashPasswordAsync(randomBytes(18).toString('base64url'))
 }
@@ -575,6 +1002,44 @@ function findTargetAccountById(input: {
   return row?.id ? findAccountSummary(row.id, input.access) : undefined
 }
 
+async function findTargetAccountByIdAsync(input: {
+  access: ReturnType<typeof targetAccess>
+  providerCode: string
+  providerProtocolProfileId?: string
+  groupId: string
+  accountId?: string
+}): Promise<AccountSummary | undefined> {
+  const accountId = normalizedText(input.accountId)
+  if (!accountId) {
+    return undefined
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findTargetAccountById(input)
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ id?: string }>(`
+    SELECT accounts.id AS id
+    FROM juhe_business.accounts accounts
+    INNER JOIN juhe_business.group_accounts group_accounts ON group_accounts.account_id = accounts.id
+    WHERE accounts.id = ?
+      AND accounts.system_account_id = ?
+      AND accounts.provider_code = ?
+      AND (? IS NULL OR accounts.provider_protocol_profile_id = ?)
+      AND group_accounts.group_id = ?
+      AND accounts.deleted_at IS NULL
+    LIMIT 1
+  `, [
+    accountId,
+    input.access.systemAccountId,
+    input.providerCode,
+    input.providerProtocolProfileId ?? null,
+    input.providerProtocolProfileId ?? null,
+    input.groupId
+  ])
+  return row?.id ? await findAccountSummaryAsync(row.id, input.access) : undefined
+}
+
 function findPublicAccountOwnerById(accountId: string): { id: string; systemAccountId: string } | undefined {
   return getBusinessDatabase().prepare(`
     SELECT id, system_account_id AS systemAccountId
@@ -583,6 +1048,21 @@ function findPublicAccountOwnerById(accountId: string): { id: string; systemAcco
       AND deleted_at IS NULL
     LIMIT 1
   `).get(accountId) as { id: string; systemAccountId: string } | undefined
+}
+
+async function findPublicAccountOwnerByIdAsync(accountId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findPublicAccountOwnerById(accountId)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ id: string; systemAccountId: string }>(`
+    SELECT id, system_account_id AS "systemAccountId"
+    FROM juhe_business.accounts
+    WHERE id = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `, [accountId])
+  return row ? { id: row.id, systemAccountId: row.systemAccountId } : undefined
 }
 
 function findPublicGroupOwnerById(groupId: string): { id: string; systemAccountId: string } | undefined {
@@ -594,6 +1074,20 @@ function findPublicGroupOwnerById(groupId: string): { id: string; systemAccountI
   `).get(groupId) as { id: string; systemAccountId: string } | undefined
 }
 
+async function findPublicGroupOwnerByIdAsync(groupId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findPublicGroupOwnerById(groupId)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ id: string; systemAccountId: string }>(`
+    SELECT id, system_account_id AS "systemAccountId"
+    FROM juhe_business.groups
+    WHERE id = ?
+    LIMIT 1
+  `, [groupId])
+  return row ? { id: row.id, systemAccountId: row.systemAccountId } : undefined
+}
+
 function findPublicApiKeyOwnerById(apiKeyId: string): { id: string; systemAccountId: string } | undefined {
   return getBusinessDatabase().prepare(`
     SELECT id, system_account_id AS systemAccountId
@@ -601,6 +1095,20 @@ function findPublicApiKeyOwnerById(apiKeyId: string): { id: string; systemAccoun
     WHERE id = ?
     LIMIT 1
   `).get(apiKeyId) as { id: string; systemAccountId: string } | undefined
+}
+
+async function findPublicApiKeyOwnerByIdAsync(apiKeyId: string): Promise<{ id: string; systemAccountId: string } | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findPublicApiKeyOwnerById(apiKeyId)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ id: string; systemAccountId: string }>(`
+    SELECT id, system_account_id AS "systemAccountId"
+    FROM juhe_business.api_keys
+    WHERE id = ?
+    LIMIT 1
+  `, [apiKeyId])
+  return row ? { id: row.id, systemAccountId: row.systemAccountId } : undefined
 }
 
 function resolvePublicAccountGroupFilter(
@@ -644,6 +1152,47 @@ function resolvePublicAccountGroupFilter(
   return group
 }
 
+async function resolvePublicAccountGroupFilterAsync(
+  input: { targetGroupName?: string; providerCode?: string; providerProtocolProfileId?: string; connectionType?: string },
+  account: AccountSummary,
+  access: ReturnType<typeof targetAccess>
+): Promise<GroupSummary | undefined> {
+  const providerCode = normalizedText(input.providerCode)
+  if (providerCode && providerCode !== account.providerCode) {
+    throw new Error('账号不存在')
+  }
+  const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode || account.providerCode, input.providerProtocolProfileId, input.connectionType)
+  if (providerProtocolProfileId && providerProtocolProfileId !== account.providerProtocolProfileId) {
+    throw new Error('账号不存在')
+  }
+
+  const groupName = normalizedText(input.targetGroupName)
+  if (!groupName) {
+    return account.boundGroupId ? await findGroupSummaryAsync(account.boundGroupId, access) : undefined
+  }
+
+  const group = await findExistingTargetGroupAsync({
+    access,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    groupName
+  })
+  if (!group) {
+    throw new Error('账号不存在')
+  }
+  const accountInGroup = await findTargetAccountByIdAsync({
+    access,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId ?? '',
+    groupId: group.id,
+    accountId: account.id
+  })
+  if (!accountInGroup) {
+    throw new Error('账号不存在')
+  }
+  return group
+}
+
 function findTargetAccount(input: {
   access: ReturnType<typeof targetAccess>
   providerCode: string
@@ -663,6 +1212,28 @@ function findTargetAccount(input: {
     page: 1,
     pageSize: 20
   }).items.find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, name))
+}
+
+async function findTargetAccountAsync(input: {
+  access: ReturnType<typeof targetAccess>
+  providerCode: string
+  providerProtocolProfileId: string
+  groupId: string
+  name: string
+}): Promise<AccountSummary | undefined> {
+  const name = normalizedText(input.name)
+  if (!name) {
+    throw new Error('账户名称不能为空')
+  }
+  const page = await listAccountsPageAsync(input.access, {
+    keyword: name,
+    providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    groupId: input.groupId,
+    page: 1,
+    pageSize: 20
+  })
+  return page.items.find((item) => item.providerCode === input.providerCode && item.providerProtocolProfileId === input.providerProtocolProfileId && sameText(item.name, name))
 }
 
 function assertSupportedPushAccountType(value: unknown, providerAccountTypes: readonly string[]): void {

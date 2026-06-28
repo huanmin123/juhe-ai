@@ -290,7 +290,7 @@ async function respondToStatsWriteRequest(requestId: string, operation: unknown)
 
 async function respondToDatasetWriteRequest(requestId: string, operation: unknown): Promise<void> {
   try {
-    const result = handleDatasetWriteOperation(operation as BackgroundDatasetWriteOperation)
+    const result = await handleDatasetWriteOperation(operation as BackgroundDatasetWriteOperation)
     sendWorkerMessage({
       type: 'background_worker_dataset_write_response',
       requestId,

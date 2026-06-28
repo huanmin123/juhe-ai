@@ -82,6 +82,20 @@ interface AccountApiKeyRuntimeTarget {
   keyIndex: number
 }
 
+interface AccountApiKeyRuntimeProbeRow {
+  account_id: string
+  key_fingerprint: string
+  key_index: number
+  status: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+  next_probe_at: string | null
+  account_name: string
+  provider_code: string
+  protocol_code: string
+  protocol_version: string
+  type: string
+  credentials_encrypted: string
+}
+
 const initialProbeBackoffSeconds = 3
 const maxProbeBackoffSeconds = 60 * 60
 const businessSchemaName = 'juhe_business'
@@ -181,19 +195,38 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
       ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
       LIMIT ?
     `)
-    .all(now, now, normalizedLimit * 3) as unknown as Array<{
-      account_id: string
-      key_fingerprint: string
-      key_index: number
-      status: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
-      next_probe_at: string | null
-      account_name: string
-      provider_code: string
-      protocol_code: string
-      protocol_version: string
-      type: string
-      credentials_encrypted: string
-    }>
+    .all(now, now, normalizedLimit * 3) as unknown as AccountApiKeyRuntimeProbeRow[]
+  return accountApiKeyRuntimeProbeCandidatesFromRows(rows, normalizedLimit)
+}
+
+export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20): Promise<AccountApiKeyRuntimeProbeCandidate[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listAccountApiKeyRuntimeStatesDueForProbe(limit)
+  }
+  const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
+  const now = nowIso()
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const rows = await client.query<AccountApiKeyRuntimeProbeRow>(`
+    SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
+      accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
+      accounts.type, accounts.credentials_encrypted
+    FROM ${accountApiKeyRuntimeStatesTable(client)} states
+    JOIN ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} accounts ON accounts.id = states.account_id
+    WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
+      AND states.next_probe_at IS NOT NULL
+      AND states.next_probe_at <= ?
+      AND accounts.deleted_at IS NULL
+      AND accounts.status = 'active'
+      AND accounts.schedulable = 1
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+    ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
+    LIMIT ?
+  `, [now, now, normalizedLimit * 3])
+  return accountApiKeyRuntimeProbeCandidatesFromRows(rows, normalizedLimit)
+}
+
+function accountApiKeyRuntimeProbeCandidatesFromRows(rows: AccountApiKeyRuntimeProbeRow[], limit: number): AccountApiKeyRuntimeProbeCandidate[] {
+  const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
   const output: AccountApiKeyRuntimeProbeCandidate[] = []
   for (const row of rows) {
     let credentials: Record<string, unknown>
@@ -447,6 +480,87 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   return { changed }
 }
 
+export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKeyRuntimeFailureInput): Promise<AccountApiKeyRuntimeWriteResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordAccountApiKeyRuntimeFailure(input)
+  }
+  const target = accountApiKeyRuntimeTarget(input.account)
+  if (!target) {
+    return { changed: false, skippedReason: 'not_api_key_pool_account' }
+  }
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const existing = await client.one<AccountApiKeyRuntimeRow>(`
+    SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds
+    FROM ${accountApiKeyRuntimeStatesTable(client)}
+    WHERE account_id = ?
+      AND key_fingerprint = ?
+    LIMIT 1
+  `, [target.accountId, target.keyFingerprint])
+  if (existing?.status === 'disabled') {
+    return { changed: false, skippedReason: 'key_disabled' }
+  }
+
+  const now = nowIso()
+  const nextBackoffSeconds = nextProbeBackoffSeconds(existing?.probe_backoff_seconds)
+  const status = normalizeFailureStatus(input.status)
+  const nextProbeAt = input.cooldownUntil && status === 'rate_limited'
+    ? input.cooldownUntil
+    : new Date(Date.now() + nextBackoffSeconds * 1000).toISOString()
+  const errorCode = input.errorCode ?? (typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
+  const errorMessage = sanitizeRuntimeErrorMessage(input.errorMessage ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
+  const table = accountApiKeyRuntimeStatesTable(client)
+
+  const result = await client.execute(`
+    INSERT INTO ${table} AS current_state (
+      id, system_account_id, account_id, key_fingerprint, key_index,
+      status, failure_count, consecutive_failures, success_count,
+      cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
+      last_attempt_at, last_failure_at, last_error_code, last_error_message,
+      created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (account_id, key_fingerprint) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      key_index = excluded.key_index,
+      status = excluded.status,
+      failure_count = current_state.failure_count + 1,
+      consecutive_failures = current_state.consecutive_failures + 1,
+      cooldown_until = excluded.cooldown_until,
+      next_probe_at = excluded.next_probe_at,
+      probe_backoff_seconds = excluded.probe_backoff_seconds,
+      recovery_started_at = COALESCE(current_state.recovery_started_at, excluded.recovery_started_at),
+      last_attempt_at = excluded.last_attempt_at,
+      last_failure_at = excluded.last_failure_at,
+      last_error_code = excluded.last_error_code,
+      last_error_message = excluded.last_error_message,
+      updated_at = excluded.updated_at
+    WHERE current_state.status <> 'disabled'
+  `, [
+    newId('account_api_key_runtime_state'),
+    target.systemAccountId,
+    target.accountId,
+    target.keyFingerprint,
+    target.keyIndex,
+    status,
+    nextProbeAt,
+    nextProbeAt,
+    nextBackoffSeconds,
+    now,
+    now,
+    now,
+    errorCode,
+    errorMessage,
+    now,
+    now
+  ])
+
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    await markRuntimeStateChangedAsync(client, target.accountId)
+  }
+  return { changed }
+}
+
 export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret): AccountApiKeyRuntimeWriteResult {
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
@@ -486,6 +600,51 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret):
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     markRuntimeStateChanged(target.accountId)
+  }
+  return { changed }
+}
+
+export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret): Promise<AccountApiKeyRuntimeWriteResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordAccountApiKeyRuntimeSuccess(account)
+  }
+  const target = accountApiKeyRuntimeTarget(account)
+  if (!target) {
+    return { changed: false, skippedReason: 'not_api_key_pool_account' }
+  }
+  const now = nowIso()
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const result = await client.execute(`
+    UPDATE ${accountApiKeyRuntimeStatesTable(client)}
+    SET system_account_id = ?,
+        key_index = ?,
+        status = 'active',
+        consecutive_failures = 0,
+        success_count = success_count + 1,
+        cooldown_until = NULL,
+        next_probe_at = NULL,
+        probe_backoff_seconds = 0,
+        recovery_started_at = NULL,
+        last_attempt_at = ?,
+        last_success_at = ?,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        updated_at = ?
+    WHERE account_id = ?
+      AND key_fingerprint = ?
+      AND status <> 'disabled'
+      AND (
+        status <> 'active'
+        OR consecutive_failures <> 0
+        OR cooldown_until IS NOT NULL
+        OR next_probe_at IS NOT NULL
+        OR last_error_code IS NOT NULL
+        OR last_error_message IS NOT NULL
+      )
+  `, [target.systemAccountId, target.keyIndex, now, now, now, target.accountId, target.keyFingerprint])
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    await markRuntimeStateChangedAsync(client, target.accountId)
   }
   return { changed }
 }
@@ -609,14 +768,24 @@ async function getAccountApiKeyRuntimeStateDatabaseClient(): Promise<DatabaseCli
 }
 
 function accountApiKeyRuntimeStatesTable(client: DatabaseClient): string {
+  return accountApiKeyRuntimeBusinessTable(client, 'account_api_key_runtime_states')
+}
+
+function accountApiKeyRuntimeBusinessTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
-    ? client.dialect.qualifyTable(businessSchemaName, 'account_api_key_runtime_states')
-    : client.dialect.quoteIdentifier('account_api_key_runtime_states')
+    ? client.dialect.qualifyTable(businessSchemaName, tableName)
+    : client.dialect.quoteIdentifier(tableName)
 }
 
 function markRuntimeStateChanged(sourceAccountId: string): void {
   const affectedAccountIds = accountIdsAffectedBySourceAccount(sourceAccountId)
   markGroupAccountStatsDirtyByAccountIds(affectedAccountIds.length ? affectedAccountIds : [sourceAccountId], 'account_api_key_runtime')
+  notifyGatewayRuntimeCacheInvalidation('account_api_key_runtime')
+}
+
+async function markRuntimeStateChangedAsync(client: DatabaseClient, sourceAccountId: string): Promise<void> {
+  const affectedAccountIds = await accountIdsAffectedBySourceAccountAsync(client, sourceAccountId)
+  await markGroupAccountStatsDirtyByAccountIdsAsync(client, affectedAccountIds.length ? affectedAccountIds : [sourceAccountId], 'account_api_key_runtime')
   notifyGatewayRuntimeCacheInvalidation('account_api_key_runtime')
 }
 
@@ -630,6 +799,46 @@ function accountIdsAffectedBySourceAccount(sourceAccountId: string): string[] {
     `)
     .all(sourceAccountId, sourceAccountId) as unknown as Array<{ id: string }>
   return rows.map((row) => row.id).filter(Boolean)
+}
+
+async function accountIdsAffectedBySourceAccountAsync(client: DatabaseClient, sourceAccountId: string): Promise<string[]> {
+  const rows = await client.query<{ id: string }>(`
+    SELECT id
+    FROM ${accountApiKeyRuntimeBusinessTable(client, 'accounts')}
+    WHERE id = ?
+       OR authorization_instance_source_account_id = ?
+  `, [sourceAccountId, sourceAccountId])
+  return rows.map((row) => row.id).filter(Boolean)
+}
+
+async function markGroupAccountStatsDirtyByAccountIdsAsync(
+  client: DatabaseClient,
+  accountIds: Array<string | null | undefined>,
+  reason = 'account_write'
+): Promise<void> {
+  const ids = [...new Set(accountIds.map((id) => id?.trim()).filter((id): id is string => Boolean(id)))]
+  if (!ids.length) return
+  const groupIds: string[] = []
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = await client.query<{ group_id: string }>(`
+      SELECT DISTINCT group_id
+      FROM ${accountApiKeyRuntimeBusinessTable(client, 'group_accounts')}
+      WHERE account_id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
+    groupIds.push(...rows.map((row) => row.group_id))
+  }
+  const uniqueGroupIds = [...new Set(groupIds.map((id) => id?.trim()).filter((id): id is string => Boolean(id)))]
+  if (!uniqueGroupIds.length) return
+  const updatedAt = nowIso()
+  for (const groupId of uniqueGroupIds) {
+    await client.execute(`
+      INSERT INTO ${accountApiKeyRuntimeBusinessTable(client, 'group_account_stats_dirty')} (group_id, reason, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT (group_id) DO UPDATE SET
+        reason = excluded.reason,
+        updated_at = excluded.updated_at
+    `, [groupId, reason, updatedAt])
+  }
 }
 
 function normalizeFailureStatus(status: AccountApiKeyRuntimeFailureInput['status']): Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'> {

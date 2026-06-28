@@ -11,12 +11,12 @@ import { bodyField, mutationGuard, normalizedText, queryField } from '../dedupli
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import {
-  createAccountTestTask,
-  failAccountTestTask,
+  createAccountTestTaskAsync,
+  failAccountTestTaskAsync,
 } from '../../storage/account-test-tasks.repository.js'
 import {
-  accountCreateStatusFromActivationTest,
-  prepareAccountDraftTestSnapshot
+  accountCreateStatusFromActivationTestAsync,
+  prepareAccountDraftTestSnapshotAsync
 } from './account-draft-test.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import {
@@ -67,12 +67,12 @@ accountsRouter.post('/test-draft', async (req, res) => {
     return
   }
   try {
-    const preparedDraft = prepareAccountDraftTestSnapshot({
+    const preparedDraft = await prepareAccountDraftTestSnapshotAsync({
       accountInput: parsed.data.account,
       requestAccess
     })
     const { prompt: _ignoredPrompt, testSessionId, ...testOptions } = parsed.data
-    const task = createAccountTestTask({
+    const task = await createAccountTestTaskAsync({
       account: preparedDraft.account,
       access: requestAccess,
       diagnostics: 'full',
@@ -82,7 +82,7 @@ accountsRouter.post('/test-draft', async (req, res) => {
       draftAccount: preparedDraft.draftAccount
     })
     if (!dispatchAccountTestTasks([task.id])) {
-      failAccountTestTask(task.id, '后台 worker 暂不可用，账号草稿测试任务未能投递')
+      await failAccountTestTaskAsync(task.id, '后台 worker 暂不可用，账号草稿测试任务未能投递')
       res.status(503).json({ message: '后台 worker 暂不可用，账号草稿测试任务未能投递' })
       return
     }
@@ -177,7 +177,7 @@ accountsRouter.post('/', mutationGuard({
 
   let createStatus: AccountStatus
   try {
-    createStatus = accountCreateStatusFromActivationTest({
+    createStatus = await accountCreateStatusFromActivationTestAsync({
       account: { ...parsed.data, providerProtocolProfileId: providerProfile.id },
       providerBaseUrl: providerProfile.baseUrl,
       providerProtocolProfileId: providerProfile.id,

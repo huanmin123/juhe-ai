@@ -1,5 +1,5 @@
 import type { AccountType, ProviderDefinition } from '@/types/domain'
-import { defaultProviderProtocolProfileId, preferredDefaultProviderCode } from '@/shared/providerProtocol'
+import { defaultProviderProtocolProfileId, isHybridProviderCode, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import { defaultAccountEndpointModes } from './accountEndpointModes'
 import { defaultAccountClientCompatibilityForProvider } from './accountProviderCapabilities'
@@ -45,7 +45,7 @@ export function defaultAccountForm(
     apiKeys: [''],
     apiKeyStrategy: 'round_robin',
     apiKeyWeights: [1],
-    baseUrl: profile?.baseUrl ?? provider?.baseUrl ?? '',
+    baseUrl: isHybridProviderCode(resolvedProviderCode) ? '' : profile?.baseUrl ?? provider?.baseUrl ?? '',
     accessToken: '',
     refreshToken: '',
     oauthMode: 'manual',

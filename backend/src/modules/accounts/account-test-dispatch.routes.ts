@@ -3,15 +3,15 @@ import type { Router } from 'express'
 import { isAdminRole } from '../../domain/types.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { accountTestUnavailableMessage, findAccountForTest } from '../../storage/repositories.js'
+import { accountTestUnavailableMessage, findAccountForTestAsync } from '../../storage/repositories.js'
 import {
-  createAccountTestTask,
-  failAccountTestTask,
+  createAccountTestTaskAsync,
+  failAccountTestTaskAsync,
 } from '../../storage/account-test-tasks.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { accountTestSchema } from './account-request.schemas.js'
-import { savedAccountDraftTestSnapshot } from './account-draft-test.service.js'
+import { savedAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 
 export function registerAccountTestDispatchRoutes(router: Router): void {
@@ -31,7 +31,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       res.status(400).json(badRequest('账户测试参数无效'))
       return
     }
-    const account = findAccountForTest(req.params.id, requestAccess)
+    const account = await findAccountForTestAsync(req.params.id, requestAccess)
     if (!account) {
       res.status(404).json({ message: '账户不存在' })
       return
@@ -51,9 +51,9 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       const testRequest = parsed.data ?? {}
       const { prompt: _ignoredPrompt, account: accountSnapshot, testSessionId, ...testOptions } = testRequest
       const draftAccount = accountSnapshot
-        ? savedAccountDraftTestSnapshot(account, accountSnapshot, requestAccess)
+        ? await savedAccountDraftTestSnapshotAsync(account, accountSnapshot, requestAccess)
         : undefined
-      const task = createAccountTestTask({
+      const task = await createAccountTestTaskAsync({
         account,
         access: requestAccess,
         diagnostics,
@@ -63,7 +63,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
         draftAccount
       })
       if (!dispatchAccountTestTasks([task.id])) {
-        failAccountTestTask(task.id, '后台 worker 暂不可用，账号测试任务未能投递')
+        await failAccountTestTaskAsync(task.id, '后台 worker 暂不可用，账号测试任务未能投递')
         res.status(503).json({ message: '后台 worker 暂不可用，账号测试任务未能投递' })
         return
       }

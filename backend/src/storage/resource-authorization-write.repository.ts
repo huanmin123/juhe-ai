@@ -891,6 +891,115 @@ async function activeTeamMemberRowsAsync(teamId: string, client: DatabaseClient)
   return rows
 }
 
+async function activeTeamGrantRowsAsync(teamId: string, client: DatabaseClient): Promise<ResourceAuthorizationGrantRow[]> {
+  const rows = await client.query<ResourceAuthorizationGrantRow>(`
+    SELECT *
+    FROM ${resourceAuthorizationWriteTable(client, 'resource_authorization_grants')}
+    WHERE grantee_type = 'team'
+      AND grantee_team_id = ?
+      AND status = 'active'
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `, [teamId, maxSystemTeamActiveGrantCount + 1])
+  if (rows.length > maxSystemTeamActiveGrantCount) {
+    throw new Error(`单个授权团队最多支持 ${maxSystemTeamActiveGrantCount} 条有效授权，请先回收或停用部分授权`)
+  }
+  return rows
+}
+
+export async function applyActiveTeamGrantsToMemberAsync(teamId: string, systemAccountId: string, access: AccessScope | undefined, client: DatabaseClient, now: string): Promise<void> {
+  const grants = await activeTeamGrantRowsAsync(teamId, client)
+  const actor = currentSystemAccountId(access)
+  for (const grant of grants) {
+    if (grant.resource_owner_system_account_id === systemAccountId) continue
+    await upsertResourceAuthorizationForUserAsync({
+      resourceType: grant.resource_type,
+      resourceId: grant.resource_id,
+      ownerSystemAccountId: grant.resource_owner_system_account_id,
+      granteeSystemAccountId: systemAccountId,
+      sourceType: 'team',
+      sourceTeamId: teamId,
+      remark: grant.remark ?? undefined,
+      expiresAt: grant.expires_at,
+      limits: parseRequestQuotaLimitsJson(grant.limits_json),
+      actor,
+      now,
+      client
+    })
+  }
+}
+
+export async function revokeTeamSourcesForMemberAsync(teamId: string, systemAccountId: string, actor: string, client: DatabaseClient, now: string): Promise<void> {
+  const rows = await client.query<{ authorization_id: string }>(`
+    SELECT ras.authorization_id
+    FROM ${resourceAuthorizationWriteTable(client, 'resource_authorization_sources')} ras
+    INNER JOIN ${resourceAuthorizationWriteTable(client, 'resource_authorizations')} ra ON ra.id = ras.authorization_id
+    WHERE ras.source_type = 'team'
+      AND ras.source_team_id = ?
+      AND ras.status = 'active'
+      AND ra.grantee_system_account_id = ?
+    ORDER BY ras.authorization_id ASC
+    LIMIT ?
+  `, [teamId, systemAccountId, maxSystemTeamActiveGrantCount + 1])
+  if (rows.length > maxSystemTeamActiveGrantCount) {
+    throw new Error(`单个授权团队最多支持 ${maxSystemTeamActiveGrantCount} 条有效授权，请先回收或停用部分授权`)
+  }
+  for (const row of rows) {
+    await client.execute(`
+      UPDATE ${resourceAuthorizationWriteTable(client, 'resource_authorization_sources')}
+      SET status = 'revoked',
+          ended_at = COALESCE(ended_at, ?),
+          ended_reason = COALESCE(ended_reason, 'member_removed'),
+          revoked_by = ?,
+          revoked_at = ?,
+          updated_at = ?
+      WHERE authorization_id = ?
+        AND source_type = 'team'
+        AND source_team_id = ?
+        AND status = 'active'
+    `, [now, actor, now, now, row.authorization_id, teamId])
+    await refreshResourceAuthorizationEffectiveSourceAsync(row.authorization_id, actor, now, client)
+  }
+}
+
+export async function revokeAllTeamSourcesAsync(teamId: string, actor: string, client: DatabaseClient, now: string, reason: string): Promise<void> {
+  const rows = await client.query<{ authorization_id: string }>(`
+    SELECT DISTINCT authorization_id
+    FROM ${resourceAuthorizationWriteTable(client, 'resource_authorization_sources')}
+    WHERE source_type = 'team'
+      AND source_team_id = ?
+      AND status = 'active'
+    ORDER BY authorization_id ASC
+    LIMIT ?
+  `, [teamId, maxSystemTeamMembersPerTeam * maxSystemTeamActiveGrantCount + 1])
+  if (rows.length > maxSystemTeamMembersPerTeam * maxSystemTeamActiveGrantCount) {
+    throw new Error(`授权团队来源展开超过当前系统上限，请先拆分团队或回收部分授权`)
+  }
+  for (const row of rows) {
+    await client.execute(`
+      UPDATE ${resourceAuthorizationWriteTable(client, 'resource_authorization_sources')}
+      SET status = 'revoked',
+          ended_at = COALESCE(ended_at, ?),
+          ended_reason = COALESCE(ended_reason, ?),
+          revoked_by = ?,
+          revoked_at = ?,
+          updated_at = ?
+      WHERE authorization_id = ?
+        AND source_type = 'team'
+        AND source_team_id = ?
+        AND status = 'active'
+    `, [now, reason, actor, now, now, row.authorization_id, teamId])
+    await refreshResourceAuthorizationEffectiveSourceAsync(row.authorization_id, actor, now, client)
+  }
+}
+
+export async function reactivateTeamGrantSourcesAsync(teamId: string, access: AccessScope | undefined, client: DatabaseClient, now: string): Promise<void> {
+  const memberRows = await activeTeamMemberRowsAsync(teamId, client)
+  for (const member of memberRows) {
+    await applyActiveTeamGrantsToMemberAsync(teamId, member.system_account_id, access, client, now)
+  }
+}
+
 async function assertActiveTeamGrantFanoutWithinLimitAsync(teamId: string, client: DatabaseClient): Promise<void> {
   const rows = await client.query<{ id?: string }>(`
     SELECT id

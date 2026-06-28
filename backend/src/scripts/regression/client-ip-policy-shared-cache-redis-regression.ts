@@ -1,0 +1,165 @@
+import assert from 'node:assert/strict'
+import { mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import type { ActiveClientIpPolicy } from '../../storage/client-ip-stats.repository.js'
+
+const cacheUrl = optionalEnv('JUHE_CLIENT_IP_POLICY_SHARED_CACHE_REDIS_URL') ?? optionalEnv('JUHE_AI_REDIS_CACHE_URL')
+
+if (!cacheUrl) {
+  throw new Error('客户端 IP 封禁策略 Redis shared cache 回归需要配置 JUHE_AI_REDIS_CACHE_URL 或 JUHE_CLIENT_IP_POLICY_SHARED_CACHE_REDIS_URL')
+}
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-client-ip-policy-shared-cache-redis-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+mkdirSync(tempRoot, { recursive: true })
+
+runtimeConfig.cacheDriver = 'redis'
+runtimeConfig.redis.cacheUrl = cacheUrl
+runtimeConfig.processRole = 'worker'
+runtimeConfig.workerRole = 'stats-worker'
+runtimeConfig.databaseDriver = 'sqlite'
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+
+const [
+  { createDedicatedRedisClient, closeRedisClients },
+  { logger },
+  databaseModule,
+  clientIpStats,
+  clientIpPolicyCache
+] = await Promise.all([
+  import('../../shared/redis-client.js'),
+  import('../../shared/logger.js'),
+  import('../../storage/database.js'),
+  import('../../storage/client-ip-stats.repository.js'),
+  import('../../modules/gateway/runtime/client-ip-policy-cache.service.js')
+])
+
+logger.level = 'silent'
+
+const redisClient = await createDedicatedRedisClient(cacheUrl)
+const cacheKeyPattern = 'juhe-ai:cache:gateway:client-ip-policy-snapshot:*'
+const cacheVersionKey = 'juhe-ai:cache-version:gateway:client-ip-policy-snapshot'
+
+try {
+  await cleanupRedisKeys()
+
+  const normalizedIp = clientIpStats.normalizeClientIpForStats('203.0.113.222')
+  assert(normalizedIp, '测试 IPv4 应可规范化')
+  const policy: ActiveClientIpPolicy = {
+    id: `policy_shared_cache_${Date.now()}`,
+    ipHash: normalizedIp.ipHash,
+    aggregateIpKey: normalizedIp.aggregateIpKey,
+    clientIp: normalizedIp.clientIp,
+    reason: 'redis shared cache regression'
+  }
+
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal([policy])
+  await waitFor(async () => (await countRedisKeys(cacheKeyPattern)) > 0, 'IP 封禁策略快照应写入 Redis shared cache')
+
+  clientIpPolicyCache.replaceClientIpPolicyCacheLocal([], { skipSharedCache: true })
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blocked,
+    false,
+    '清空本地快照后，请求路径不应自己读取 Redis shared cache'
+  )
+
+  await clientIpPolicyCache.reloadClientIpPolicyCacheLocal()
+  assert.equal(
+    (await clientIpPolicyCache.inspectClientIpPolicy(normalizedIp.clientIp, { cacheOnly: true })).blacklistPolicy?.id,
+    policy.id,
+    '重载本地快照应从 Redis shared cache 恢复 active IP 封禁策略'
+  )
+
+  await cleanupRedisKeys()
+  console.log('客户端 IP 封禁策略 Redis shared cache 回归通过：快照可跨本地清空恢复，请求热路径仍只读 server 本地快照')
+} finally {
+  await cleanupRedisKeys().catch(() => undefined)
+  try {
+    databaseModule.closeStorageDatabases()
+  } catch {
+  }
+  await closeRedisClient(redisClient)
+  await closeRedisClients()
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+async function cleanupRedisKeys(): Promise<void> {
+  await deleteRedisKeysByPattern(cacheKeyPattern)
+  await redisClient.del(cacheVersionKey)
+}
+
+async function countRedisKeys(pattern: string): Promise<number> {
+  let cursor = '0'
+  let count = 0
+  do {
+    const response = await redisClient.sendCommand(['SCAN', cursor, 'MATCH', pattern, 'COUNT', '200'])
+    const [nextCursor, keys] = parseScanResponse(response)
+    cursor = nextCursor
+    count += keys.length
+  } while (cursor !== '0')
+  return count
+}
+
+async function deleteRedisKeysByPattern(pattern: string): Promise<number> {
+  let cursor = '0'
+  let deletedCount = 0
+  do {
+    const response = await redisClient.sendCommand(['SCAN', cursor, 'MATCH', pattern, 'COUNT', '200'])
+    const [nextCursor, keys] = parseScanResponse(response)
+    cursor = nextCursor
+    for (let index = 0; index < keys.length; index += 100) {
+      const chunk = keys.slice(index, index + 100)
+      if (chunk.length === 0) continue
+      deletedCount += numericRedisResult(await redisClient.sendCommand(['DEL', ...chunk]))
+    }
+  } while (cursor !== '0')
+  return deletedCount
+}
+
+async function waitFor(predicate: () => Promise<boolean>, message: string): Promise<void> {
+  const deadline = Date.now() + 3000
+  let lastError: unknown
+  while (Date.now() < deadline) {
+    try {
+      if (await predicate()) return
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(20)
+  }
+  assert.fail(lastError instanceof Error ? `${message}: ${lastError.message}` : message)
+}
+
+function parseScanResponse(value: unknown): [string, string[]] {
+  if (!Array.isArray(value)) return ['0', []]
+  const cursor = String(value[0] ?? '0')
+  const keys = Array.isArray(value[1]) ? value[1].map(String) : []
+  return [cursor, keys]
+}
+
+async function closeRedisClient(client: typeof redisClient): Promise<void> {
+  if (client.quit) {
+    await client.quit().catch(() => undefined)
+    return
+  }
+  client.destroy?.()
+}
+
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim()
+  return value ? value : undefined
+}
+
+function numericRedisResult(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'bigint') return Number(value)
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}

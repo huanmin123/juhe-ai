@@ -3,10 +3,10 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 
 import type { ProviderDefinition } from '../../domain/types.js'
-import { listProviders } from '../../storage/provider.repository.js'
+import { listProvidersAsync } from '../../storage/provider.repository.js'
 import {
-  getProxyTestConfig,
-  listEnabledProxyTestConfigs,
+  getProxyTestConfigAsync,
+  listEnabledProxyTestConfigsAsync,
   type ProxyProfileTestConfig
 } from '../../storage/proxy.repository.js'
 import type { updateProxyTestState } from '../../storage/proxy.repository.js'
@@ -72,7 +72,7 @@ const outboundProbeTargets = [
 ] as const
 
 export async function testProxyById(id: string, options: { persist?: boolean; deadlineMs?: number } = {}): Promise<ProxyTestReport | undefined> {
-  const proxy = getProxyTestConfig(id)
+  const proxy = await getProxyTestConfigAsync(id)
   if (!proxy) return undefined
   return testProxy(proxy, {
     persist: options.persist ?? true,
@@ -82,7 +82,7 @@ export async function testProxyById(id: string, options: { persist?: boolean; de
 }
 
 export async function refreshProxyLatencyBatch(limit: number): Promise<void> {
-  const proxies = listEnabledProxyTestConfigs(limit)
+  const proxies = await listEnabledProxyTestConfigsAsync(limit)
   for (const proxy of proxies) {
     try {
       await testProxy(proxy, { persist: true, includeOutboundInfo: false })
@@ -98,7 +98,7 @@ export async function refreshProxyLatencyBatch(limit: number): Promise<void> {
 
 async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: boolean; includeOutboundInfo: boolean; deadlineAtMs?: number }): Promise<ProxyTestReport> {
   const testedAt = new Date().toISOString()
-  const enabledProviders = listProviders().filter((provider) => provider.enabled)
+  const enabledProviders = (await listProvidersAsync()).filter((provider) => provider.enabled)
   const outboundInfoPromise = options.includeOutboundInfo ? probeOutboundInfo(proxy, options.deadlineAtMs) : Promise.resolve(undefined)
   const providerItems: ProxyTestItem[] = []
   for (const provider of enabledProviders) {

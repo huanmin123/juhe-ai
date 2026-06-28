@@ -17,20 +17,18 @@
           @dropdown-visible-change="handleSystemAccountOptionsDropdown"
           @search="handleSystemAccountOptionsSearch"
         />
-        <GroupSelect
-          v-model:value="groupFilter"
-          v-model:selected-group="groupFilterSelection"
+        <a-select
+          v-model:value="routeStrategyFilter"
           allow-clear
+          show-search
           class="toolbar-select responsive-list-inline-filter"
-          :disabled="groupFilterDisabled"
           :filter-option="false"
-          :groups="groups"
-          :loading="groupOptionsLoading"
-          show-provider-label
-          placeholder="策略分组"
-          @change="handleGroupFilterChange"
-          @dropdown-visible-change="handleGroupOptionsDropdown"
-          @search="handleGroupOptionsSearch"
+          :loading="routeStrategyOptionsLoading"
+          :options="routeStrategyOptions"
+          placeholder="策略路由"
+          @change="handleRouteStrategyFilterChange"
+          @dropdown-visible-change="handleRouteStrategyOptionsDropdown"
+          @search="handleRouteStrategyOptionsSearch"
         />
       </template>
       <template #actions>
@@ -53,20 +51,18 @@
           <a-select v-model:value="statusFilter" :options="listStatusOptions" />
         </label>
         <label class="mobile-filter-field">
-          <span>策略分组</span>
-          <GroupSelect
-            v-model:value="groupFilter"
-            v-model:selected-group="groupFilterSelection"
+          <span>策略路由</span>
+          <a-select
+            v-model:value="routeStrategyFilter"
             allow-clear
-            :disabled="groupFilterDisabled"
+            show-search
             :filter-option="false"
-            :groups="groups"
-            :loading="groupOptionsLoading"
-            show-provider-label
-            placeholder="策略分组"
-            @change="handleGroupFilterChange"
-            @dropdown-visible-change="handleGroupOptionsDropdown"
-            @search="handleGroupOptionsSearch"
+            :loading="routeStrategyOptionsLoading"
+            :options="routeStrategyOptions"
+            placeholder="策略路由"
+            @change="handleRouteStrategyFilterChange"
+            @dropdown-visible-change="handleRouteStrategyOptionsDropdown"
+            @search="handleRouteStrategyOptionsSearch"
           />
         </label>
         <label v-if="isManagementView" class="mobile-filter-field">
@@ -147,32 +143,30 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
-import GroupSelect from '@/components/GroupSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { useScopedApiKeysApi, useScopedGroupsApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
+import { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
-import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import type { ApiKeySummary } from '@/types/domain'
+import type { ApiKeySummary, RouteStrategyMode, RouteStrategyOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
-import { defaultApiKeysPageState, type ApiKeysPageState } from './apiKeyPageState'
+import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type ApiKeysPageState } from './apiKeyPageState'
 import {
   apiKeyColumnStorageKey,
   apiKeyListStatusOptions as listStatusOptions,
   buildApiKeyTableColumns
 } from './apiKeyTableConfig'
+import type { ApiKeyScopeParams } from './apiKeyScope'
 import ApiKeyCreatedSecretModal from './ApiKeyCreatedSecretModal.vue'
 import ApiKeyEditModal from './ApiKeyEditModal.vue'
 import ApiKeyHelpModal from './ApiKeyHelpModal.vue'
 import ApiKeyResponsiveList from './ApiKeyResponsiveList.vue'
-import { useApiKeyGroupOptions, type ApiKeyScopeParams } from './useApiKeyGroupOptions'
 import { useApiKeyRowActions } from './useApiKeyRowActions'
 
 const createdKeyOpen = ref(false)
@@ -186,43 +180,37 @@ const pageStateCache = usePageStateCache<ApiKeysPageState>(undefined, () => defa
 const initialPageState = pageStateCache.read()
 const keywordFilter = ref(initialPageState.keywordFilter)
 const statusFilter = ref(initialPageState.statusFilter)
-const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
+const routeStrategyFilterSelection = ref<ApiKeyRouteStrategyFilterSelection | undefined>(initialPageState.routeStrategyFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
-const groupsApi = useScopedGroupsApi(isManagementView)
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
+const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
+const routeStrategyOptionsLoading = ref(false)
+let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let routeStrategyOptionsKeyword = ''
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
-const {
-  clearGroupOptionsSearchTimer,
-  groups,
-  groupOptionsLoading,
-  handleGroupOptionsDropdown,
-  handleGroupOptionsSearch,
-  resetGroupOptionsSearch,
-  selectedGroupSelection,
-  syncSelectedGroupSelections
-} = useApiKeyGroupOptions({
-  groupsApi,
-  isManagementView,
-  listScopeParams: apiKeyScopeParams,
-  groupFilterSelection,
-  onGroupFilterCleared: () => {
-    resetPagination()
-    void loadData({ forceOptions: true })
+const routeStrategyFilter = computed({
+  get: () => routeStrategyFilterSelection.value?.id,
+  set: (id: string | undefined) => {
+    routeStrategyFilterSelection.value = selectedRouteStrategySelection(id)
   }
 })
-const groupFilter = computed({
-  get: () => groupFilterSelection.value?.id,
-  set: (id: string | undefined) => {
-    groupFilterSelection.value = selectedGroupSelection(id)
-  }
+const routeStrategyOptions = computed(() => {
+  const selected = routeStrategyFilterSelection.value
+  const options = selected && !routeStrategyOptionsRaw.value.some((item) => item.id === selected.id)
+    ? [routeStrategyOptionFromSelection(selected), ...routeStrategyOptionsRaw.value]
+    : routeStrategyOptionsRaw.value
+  return options.map((strategy) => ({
+    label: routeStrategyOptionLabel(strategy),
+    value: strategy.id
+  }))
 })
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -236,9 +224,9 @@ const {
     if (!ids.includes(systemAccountFilter.value)) return
     systemAccountFilter.value = allSystemAccountsValue
     systemAccountFilterSelection.value = undefined
-    groupFilterSelection.value = undefined
+    routeStrategyFilterSelection.value = undefined
     resetSystemAccountOptionsSearch()
-    resetGroupOptionsSearch()
+    resetRouteStrategyOptionsSearch()
     resetPagination()
     void loadData({ forceOptions: true })
   },
@@ -313,11 +301,10 @@ const {
 
 const filteredApiKeys = computed(() => apiKeys.value)
 const mobileApiKeys = computed(() => apiKeys.value)
-const groupFilterDisabled = computed(() => false)
 const activeFilterCount = computed(() => [
   keywordFilter.value.trim(),
   statusFilter.value !== 'all',
-  groupFilter.value,
+  routeStrategyFilter.value,
   isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue
 ].filter(Boolean).length)
 const advancedFilterCount = computed(() => 0)
@@ -348,19 +335,110 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
     return
   }
 
+  await loadRouteStrategyOptions('', force)
   apiKeyOptionsLoaded.value = true
   apiKeyOptionsScopeKey.value = scopeKey
+}
+
+async function loadRouteStrategyOptions(keyword = routeStrategyOptionsKeyword, force = false): Promise<void> {
+  routeStrategyOptionsKeyword = keyword
+  const requestKeyword = keyword.trim()
+  routeStrategyOptionsLoading.value = true
+  try {
+    routeStrategyOptionsRaw.value = await routeStrategiesApi.options({
+      keyword: requestKeyword || undefined,
+      limit: 100,
+      activeOnly: false,
+      systemAccountId: apiKeyScopeParams.value?.systemAccountId
+    })
+    if (force) {
+      routeStrategyFilterSelection.value = selectedRouteStrategySelection(routeStrategyFilterSelection.value?.id)
+    }
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
+  } finally {
+    routeStrategyOptionsLoading.value = false
+  }
+}
+
+function handleRouteStrategyOptionsDropdown(open: boolean) {
+  if (open && !routeStrategyOptionsRaw.value.length) void loadRouteStrategyOptions()
+}
+
+function handleRouteStrategyOptionsSearch(value: string) {
+  routeStrategyOptionsKeyword = value
+  clearRouteStrategyOptionsSearchTimer()
+  routeStrategyOptionsSearchTimer = window.setTimeout(() => {
+    routeStrategyOptionsSearchTimer = undefined
+    void loadRouteStrategyOptions(routeStrategyOptionsKeyword)
+  }, 250)
+}
+
+function resetRouteStrategyOptionsSearch() {
+  routeStrategyOptionsKeyword = ''
+  clearRouteStrategyOptionsSearchTimer()
+}
+
+function clearRouteStrategyOptionsSearchTimer() {
+  if (routeStrategyOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(routeStrategyOptionsSearchTimer)
+    routeStrategyOptionsSearchTimer = undefined
+  }
+}
+
+function selectedRouteStrategySelection(id: string | undefined): ApiKeyRouteStrategyFilterSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const strategy = routeStrategyOptionsRaw.value.find((item) => item.id === normalizedId)
+  if (strategy) return routeStrategySelectionFromOption(strategy)
+  return routeStrategyFilterSelection.value?.id === normalizedId ? routeStrategyFilterSelection.value : undefined
+}
+
+function routeStrategySelectionFromOption(strategy: RouteStrategyOptionSummary): ApiKeyRouteStrategyFilterSelection {
+  return {
+    id: strategy.id,
+    name: strategy.name,
+    mode: strategy.mode,
+    status: strategy.status,
+    isDefault: strategy.isDefault,
+    systemAccountName: strategy.systemAccountName
+  }
+}
+
+function routeStrategyOptionFromSelection(selection: ApiKeyRouteStrategyFilterSelection): RouteStrategyOptionSummary {
+  return {
+    id: selection.id,
+    name: selection.name,
+    mode: selection.mode,
+    status: selection.status ?? 'active',
+    isDefault: selection.isDefault ?? false,
+    systemAccountName: selection.systemAccountName
+  }
+}
+
+function routeStrategyOptionLabel(strategy: RouteStrategyOptionSummary): string {
+  const ownerPrefix = isManagementView.value && strategy.systemAccountName ? `${strategy.systemAccountName} / ` : ''
+  const suffix = strategy.isDefault ? '默认' : routeStrategyModeText(strategy.mode)
+  return `${ownerPrefix}${strategy.name}（${suffix}）`
+}
+
+function routeStrategyModeText(mode: RouteStrategyMode): string {
+  if (mode === 'hybrid_smart') return '混合智能路由'
+  if (mode === 'weighted') return '权重调度路由'
+  if (mode === 'round_robin') return '轮询路由'
+  if (mode === 'failover') return '故障回退路由'
+  return '普通路由'
 }
 
 function resetFilters() {
   const defaults = defaultApiKeysPageState(pageSize)
   keywordFilter.value = defaults.keywordFilter
   statusFilter.value = defaults.statusFilter
-  groupFilterSelection.value = defaults.groupFilter
+  routeStrategyFilterSelection.value = defaults.routeStrategyFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   resetSystemAccountOptionsSearch()
-  resetGroupOptionsSearch()
+  resetRouteStrategyOptionsSearch()
   resetPagination()
   pageStateCache.clear()
   void loadData({ forceOptions: true })
@@ -373,39 +451,39 @@ function applyFilters() {
 
 function refreshApiKeys() {
   resetSystemAccountOptionsSearch()
-  resetGroupOptionsSearch()
+  resetRouteStrategyOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
-  groupFilterSelection.value = undefined
+  routeStrategyFilterSelection.value = undefined
   if (systemAccountFilter.value === allSystemAccountsValue) {
     systemAccountFilterSelection.value = undefined
   }
   resetSystemAccountOptionsSearch()
-  resetGroupOptionsSearch()
+  resetRouteStrategyOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
 }
 
 async function refreshMobileApiKeys() {
   resetSystemAccountOptionsSearch()
-  resetGroupOptionsSearch()
+  resetRouteStrategyOptionsSearch()
   resetPagination()
   await loadData({ forceOptions: true })
 }
 
-function handleGroupFilterChange() {
-  resetGroupOptionsSearch()
+function handleRouteStrategyFilterChange() {
+  resetRouteStrategyOptionsSearch()
   applyFilters()
 }
 
 function snapshotPageState(): ApiKeysPageState {
   return {
-    groupFilter: groupFilterSelection.value,
     keywordFilter: keywordFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    routeStrategyFilter: routeStrategyFilterSelection.value,
     statusFilter: statusFilter.value,
     systemAccountFilter: systemAccountFilter.value,
     systemAccountFilterSelection: systemAccountFilterSelection.value
@@ -419,7 +497,7 @@ function apiKeyListParams(systemAccountId: string | undefined, pageState: { curr
     pageSize: pageState.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
     status: statusFilter.value,
-    groupId: groupFilter.value
+    routeStrategyId: routeStrategyFilter.value
   }
 }
 
@@ -539,14 +617,10 @@ function buildMinimalHttpRequestExample(input: {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-watch(apiKeys, () => {
-  rememberGroupSelection(groupFilterSelection.value)
-  rememberPrincipalSelection(systemAccountFilterSelection.value)
-  syncSelectedGroupSelections()
-}, { immediate: true })
+watch(apiKeys, () => rememberPrincipalSelection(systemAccountFilterSelection.value), { immediate: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
-onBeforeUnmount(clearGroupOptionsSearchTimer)
+onBeforeUnmount(clearRouteStrategyOptionsSearchTimer)
 
 onMounted(loadData)
 </script>
