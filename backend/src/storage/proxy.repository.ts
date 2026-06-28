@@ -560,7 +560,7 @@ export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[
       SELECT ${proxyTestConfigSelectColumns()}
       FROM proxy_profiles
       WHERE enabled = 1
-      ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC, id ASC
+      ORDER BY (last_tested_at IS NOT NULL) ASC, last_tested_at ASC, updated_at DESC, id ASC
       LIMIT ?
     `)
     .all(Math.max(1, Math.trunc(limit))) as unknown as ProxyRow[]
@@ -576,7 +576,7 @@ export async function listEnabledProxyTestConfigsAsync(limit = 20): Promise<Prox
     SELECT ${proxyTestConfigSelectColumns()}
     FROM ${proxyProfilesTable(client)}
     WHERE enabled = 1
-    ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC, id ASC
+    ORDER BY (last_tested_at IS NOT NULL) ASC, last_tested_at ASC, updated_at DESC, id ASC
     LIMIT ?
   `, [Math.max(1, Math.trunc(limit))])
   return rows.map((row) => ({ ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) }))

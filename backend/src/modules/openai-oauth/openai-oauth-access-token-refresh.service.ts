@@ -10,7 +10,9 @@ import {
   clearAccountFailureStateResult,
   findAccountForTest,
   getSettings,
+  getSettingsAsync,
   listOpenAIOAuthAccountsDueForAccessTokenRefresh,
+  listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync,
   markAccountException,
   resolveProxyUrlForProfile,
   updateAccount
@@ -32,6 +34,7 @@ export interface OpenAIOAuthAccessTokenRefreshOptions {
   batchSize?: number
   retryBackoffSeconds?: number
   persistMode?: 'sync' | 'db-service'
+  accountIds?: string[]
 }
 
 export interface OpenAIOAuthAccessTokenRefreshResult {
@@ -71,6 +74,10 @@ type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<Ac
   proxyUrl?: string
 }
 type OpenAIOAuthTokenRefresher = (input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }) => Promise<OpenAITokenInfo>
+type OpenAIOAuthDbServiceRequester = <T extends DbServiceOperation>(
+  operation: T,
+  persistMode?: 'sync' | 'db-service'
+) => Promise<DbServiceOperationResult<T>>
 type OpenAIOAuthAccountRefreshCallOptions = {
   access?: AccessScope
   signal?: AbortSignal
@@ -82,6 +89,12 @@ type OpenAIOAuthAccountRefreshCallOptions = {
 
 export function setOpenAIOAuthTokenRefresherForTest(refresher?: OpenAIOAuthTokenRefresher): void {
   openAIOAuthTokenRefresher = refresher ?? refreshOpenAIOAuthToken
+}
+
+let openAIOAuthDbServiceRequesterForTest: OpenAIOAuthDbServiceRequester | undefined
+
+export function setOpenAIOAuthDbServiceRequesterForTest(requester?: OpenAIOAuthDbServiceRequester): void {
+  openAIOAuthDbServiceRequesterForTest = requester
 }
 
 export function clearOpenAIOAuthRecentRefreshCache(): void {
@@ -143,7 +156,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
         ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
       }
       if (persistMode === 'db-service') {
-        const updated = await persistOpenAIOAuthCredentialsViaDbService(current.id, nextCredentials)
+        const updated = await persistOpenAIOAuthCredentialsViaDbService(current.id, nextCredentials, persistMode)
         if (!updated) {
           throw new Error('OpenAI OAuth 账户不存在或无法更新')
         }
@@ -192,12 +205,12 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
   throw new Error('OpenAI OAuth 访问令牌刷新失败')
 }
 
-async function persistOpenAIOAuthCredentialsViaDbService(accountId: string, credentials: Record<string, unknown>): Promise<boolean> {
-  const result = await requestDbService({
+async function persistOpenAIOAuthCredentialsViaDbService(accountId: string, credentials: Record<string, unknown>, persistMode: 'sync' | 'db-service'): Promise<boolean> {
+  const result = await requestOpenAIOAuthDbService({
     type: 'update_openai_oauth_credentials',
     accountId,
     credentials
-  })
+  }, persistMode)
   if (result.updated) {
     clearGatewayRuntimeCache()
   }
@@ -208,7 +221,9 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   options: OpenAIOAuthAccessTokenRefreshOptions = {}
 ): Promise<OpenAIOAuthAccessTokenRefreshResult> {
   const persistMode = effectivePersistMode({ persistMode: options.persistMode })
-  const settings = getSettings()
+  const settings = runtimeConfig.databaseDriver === 'postgres'
+    ? await getSettingsAsync()
+    : getSettings()
   const leadSeconds = options.leadSeconds === undefined
     ? settingsInteger(settings, 'oauthAccessTokenRefreshLeadSeconds', 60, 86400)
     : optionInteger(options.leadSeconds, 'leadSeconds', 60, 86400)
@@ -223,12 +238,23 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const retryBackoffMs = retryBackoffSeconds * 1000
   const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
+  const accountIdFilter = normalizedRefreshAccountIdSet(options.accountIds)
 
-  const dueAccounts = listOpenAIOAuthAccountsDueForAccessTokenRefresh({
+  const dueAccounts = (runtimeConfig.databaseDriver === 'postgres'
+    ? await listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync({
+      leadSeconds,
+      limit: batchSize + refreshFailureStateByAccountId.size,
+      stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+    })
+    : listOpenAIOAuthAccountsDueForAccessTokenRefresh({
     leadSeconds,
     limit: batchSize + refreshFailureStateByAccountId.size,
     stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
-  }).filter((account) => isExistingOpenAIOAuthAccountWithRefreshToken(account) && shouldPreRefreshAccessToken(account.credentials, now, leadMs))
+    })).filter((account) =>
+    (!accountIdFilter || accountIdFilter.has(account.id)) &&
+    isExistingOpenAIOAuthAccountWithRefreshToken(account) &&
+    shouldPreRefreshAccessToken(account.credentials, now, leadMs)
+  )
 
   const result: OpenAIOAuthAccessTokenRefreshResult = {
     scanned: dueAccounts.length,
@@ -504,10 +530,19 @@ function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 's
   return options.persistMode ?? (runtimeConfig.processRole === 'server' || runtimeConfig.processRole === 'worker' ? 'db-service' : 'sync')
 }
 
+function normalizedRefreshAccountIdSet(accountIds: string[] | undefined): Set<string> | undefined {
+  if (!accountIds) return undefined
+  const ids = accountIds.map((id) => id.trim()).filter(Boolean)
+  return ids.length ? new Set(ids) : undefined
+}
+
 async function requestOpenAIOAuthDbService<T extends DbServiceOperation>(
   operation: T,
   persistMode: 'sync' | 'db-service' = effectivePersistMode({})
 ): Promise<import('../db-service/db-service-types.js').DbServiceOperationResult<T>> {
+  if (openAIOAuthDbServiceRequesterForTest) {
+    return openAIOAuthDbServiceRequesterForTest(operation, persistMode)
+  }
   if (persistMode === 'sync') {
     return runLocalOpenAIOAuthDbServiceOperation(operation)
   }

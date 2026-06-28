@@ -71,6 +71,7 @@ try {
 
   const enabledConfigs = await listEnabledProxyTestConfigsAsync(50)
   assert.ok(enabledConfigs.some((proxy) => proxy.id === created.id), 'PG 启用代理检测候选应包含刚创建的代理')
+  await assertLatencyRefreshCandidateExplainUsesIndex()
 
   const deleted = await deleteProxyAsync(created.id)
   assert.equal(deleted, true, 'PG deleteProxyAsync 应删除未被账号引用的代理')
@@ -82,12 +83,36 @@ try {
     createdProxyId: created.id,
     listChecked: true,
     optionChecked: true,
-    testStateChecked: true
+    testStateChecked: true,
+    explainIndexed: true
   }))
 } finally {
   await cleanupSmokeRows()
   await closeRedisClients()
   await closePostgresPool()
+}
+
+async function assertLatencyRefreshCandidateExplainUsesIndex(): Promise<void> {
+  const pool = await getPostgresPool()
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query('SET LOCAL enable_seqscan = off')
+    const planRows = await client.query(`
+      EXPLAIN (COSTS OFF)
+      SELECT id
+      FROM juhe_business.proxy_profiles
+      WHERE enabled = 1
+      ORDER BY (last_tested_at IS NOT NULL) ASC, last_tested_at ASC, updated_at DESC, id ASC
+      LIMIT 20
+    `)
+    const plan = planRows.rows.map((row) => String(row['QUERY PLAN'] ?? '')).join('\n')
+    assert.match(plan, /idx_proxy_profiles_latency_refresh_due/, 'PG 代理延迟刷新候选查询应命中 due 索引')
+    assert.doesNotMatch(plan, /\bSeq Scan\b/, 'PG 代理延迟刷新候选查询不应出现 Seq Scan')
+  } finally {
+    await client.query('ROLLBACK').catch(() => undefined)
+    client.release()
+  }
 }
 
 async function cleanupSmokeRows(): Promise<void> {
