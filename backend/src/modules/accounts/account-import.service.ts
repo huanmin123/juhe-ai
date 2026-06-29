@@ -57,7 +57,6 @@ export interface AccountImportItem {
   name?: string
   providerCode?: string
   providerProtocolProfileId?: string
-  connectionType?: string
   protocolCode?: string
   protocolVersion?: string
   accountType?: AccountType

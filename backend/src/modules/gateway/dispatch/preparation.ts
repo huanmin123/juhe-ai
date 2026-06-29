@@ -442,6 +442,11 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   }
 
   if (areOpenAIHighConcurrencyAccountsBusyForLane(accounts, laneAwareDispatchOrderingOptions)) {
+    const fallback = await input.attemptFallback('high_concurrency_group_busy')
+    if (fallback.attempted) {
+      releaseClientIpConcurrency()
+      return { outcome: 'fallback', context: fallback.context }
+    }
     const statusCode = 429
     const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
     releaseClientIpConcurrency()

@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto'
 
-import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import type { AccountSummary, GroupSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
@@ -156,7 +155,7 @@ function writePublicWelfareAccount(input: PublicAccountPushInput, targetPassword
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${providerCode}`)
   }
-  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId, input.connectionType)
+  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId)
   assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
 
   return runInDatabaseTransaction(() => {
@@ -204,7 +203,7 @@ async function writePublicWelfareAccountAsync(input: PublicAccountPushInput, tar
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${providerCode}`)
   }
-  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId, input.connectionType)
+  const providerProfile = requireProviderProtocolProfile(provider, input.providerProtocolProfileId)
   assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
 
   const target = await ensureTargetSystemAccountAsync(input, targetPasswordHash)
@@ -454,7 +453,7 @@ export function listPublicWelfareAccounts(input: PublicAccountListInput): Public
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const providerCode = normalizedText(input.providerCode)
-  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode, input.providerProtocolProfileId, input.connectionType)
+  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode, input.providerProtocolProfileId)
   const groupId = resolveAccountListGroupId(access, {
     providerCode,
     providerProtocolProfileId,
@@ -490,7 +489,7 @@ export async function listPublicWelfareAccountsAsync(input: PublicAccountListInp
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
   const providerCode = normalizedText(input.providerCode)
-  const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode, input.providerProtocolProfileId, input.connectionType)
+  const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode, input.providerProtocolProfileId)
   const groupId = await resolveAccountListGroupIdAsync(access, {
     providerCode,
     providerProtocolProfileId,
@@ -583,13 +582,10 @@ export function updatePublicGroup(input: PublicGroupUpdateInput): PublicGroupRes
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
-  if (input.connectionType && !input.providerCode) {
-    throw new Error('按接入类型修改分组时必须提供 providerCode')
-  }
   const payloadInput = input.providerCode
     ? {
         ...input,
-        providerProtocolProfileId: assertProviderEnabled(input.providerCode, input.providerProtocolProfileId, input.connectionType).id
+        providerProtocolProfileId: assertProviderEnabled(input.providerCode, input.providerProtocolProfileId).id
       }
     : input
   const updated = updateGroup(group.id, publicGroupUpdatePayload(payloadInput), access)
@@ -618,13 +614,10 @@ export async function updatePublicGroupAsync(input: PublicGroupUpdateInput): Pro
   if (!group) {
     return publicGroupResponse('not_found', target, null)
   }
-  if (input.connectionType && !input.providerCode) {
-    throw new Error('按接入类型修改分组时必须提供 providerCode')
-  }
   const payloadInput = input.providerCode
     ? {
         ...input,
-        providerProtocolProfileId: (await assertProviderEnabledAsync(input.providerCode, input.providerProtocolProfileId, input.connectionType)).id
+        providerProtocolProfileId: (await assertProviderEnabledAsync(input.providerCode, input.providerProtocolProfileId)).id
       }
     : input
   const updated = await updateGroupAsync(group.id, publicGroupUpdatePayload(payloadInput), access)
@@ -882,7 +875,7 @@ export async function listPublicApiKeysAsync(input: PublicApiKeyListInput): Prom
   })
 }
 
-function assertProviderEnabled(providerCode: string, providerProtocolProfileId?: string, connectionType?: string): ProviderProtocolProfileDefinition {
+function assertProviderEnabled(providerCode: string, providerProtocolProfileId?: string): ProviderProtocolProfileDefinition {
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
@@ -890,10 +883,10 @@ function assertProviderEnabled(providerCode: string, providerProtocolProfileId?:
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${providerCode}`)
   }
-  return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType)
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId)
 }
 
-async function assertProviderEnabledAsync(providerCode: string, providerProtocolProfileId?: string, connectionType?: string): Promise<ProviderProtocolProfileDefinition> {
+async function assertProviderEnabledAsync(providerCode: string, providerProtocolProfileId?: string): Promise<ProviderProtocolProfileDefinition> {
   const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
@@ -901,25 +894,15 @@ async function assertProviderEnabledAsync(providerCode: string, providerProtocol
   if (!provider.enabled) {
     throw new Error(`供应商已停用：${providerCode}`)
   }
-  return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType)
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId)
 }
 
-function requireProviderProtocolProfile(provider: ProviderDefinition, providerProtocolProfileId?: string, connectionType?: string): ProviderProtocolProfileDefinition {
-  let profileId: string | undefined
-  try {
-    profileId = resolveProviderProtocolProfileIdFromConnectionType({
-      providerCode: provider.code,
-      providerProtocolProfileId: normalizedText(providerProtocolProfileId),
-      connectionType
-    })
-  } catch (error) {
-    throw new Error(error instanceof Error ? error.message : '供应商接入类型无效')
+function requireProviderProtocolProfile(provider: ProviderDefinition, providerProtocolProfileId?: string): ProviderProtocolProfileDefinition {
+  const profileId = normalizedText(providerProtocolProfileId)
+  if (!profileId) {
+    throw new Error('providerProtocolProfileId 不能为空')
   }
-  const profile = profileId
-    ? provider.protocolProfiles.find((item) => item.id === profileId)
-    : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
-      ?? provider.protocolProfiles.find((item) => item.enabled)
-      ?? provider.protocolProfiles[0]
+  const profile = provider.protocolProfiles.find((item) => item.id === profileId)
   if (!profile) {
     throw new Error(`供应商未配置协议档案：${provider.code}`)
   }
@@ -932,34 +915,38 @@ function requireProviderProtocolProfile(provider: ProviderDefinition, providerPr
   return profile
 }
 
-function resolveOptionalProviderProtocolProfileId(providerCodeInput?: string, providerProtocolProfileIdInput?: string, connectionTypeInput?: string): string | undefined {
+function resolveOptionalProviderProtocolProfileId(providerCodeInput?: string, providerProtocolProfileIdInput?: string): string | undefined {
   const providerCode = normalizedText(providerCodeInput)
   const providerProtocolProfileId = normalizedText(providerProtocolProfileIdInput)
-  const connectionType = normalizedText(connectionTypeInput)
-  if (!providerCode && !providerProtocolProfileId && !connectionType) return undefined
+  if (!providerCode && !providerProtocolProfileId) return undefined
   if (!providerCode) {
     throw new Error('按协议档案查询时必须提供 providerCode')
+  }
+  if (!providerProtocolProfileId) {
+    return undefined
   }
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
   }
-  return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType).id
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId).id
 }
 
-async function resolveOptionalProviderProtocolProfileIdAsync(providerCodeInput?: string, providerProtocolProfileIdInput?: string, connectionTypeInput?: string): Promise<string | undefined> {
+async function resolveOptionalProviderProtocolProfileIdAsync(providerCodeInput?: string, providerProtocolProfileIdInput?: string): Promise<string | undefined> {
   const providerCode = normalizedText(providerCodeInput)
   const providerProtocolProfileId = normalizedText(providerProtocolProfileIdInput)
-  const connectionType = normalizedText(connectionTypeInput)
-  if (!providerCode && !providerProtocolProfileId && !connectionType) return undefined
+  if (!providerCode && !providerProtocolProfileId) return undefined
   if (!providerCode) {
     throw new Error('按协议档案查询时必须提供 providerCode')
+  }
+  if (!providerProtocolProfileId) {
+    return undefined
   }
   const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
   if (!provider) {
     throw new Error(`不支持的供应商：${providerCode}`)
   }
-  return requireProviderProtocolProfile(provider, providerProtocolProfileId, connectionType).id
+  return requireProviderProtocolProfile(provider, providerProtocolProfileId).id
 }
 
 async function autoCreatedTargetPasswordHash(): Promise<string> {
@@ -1108,7 +1095,7 @@ async function findPublicApiKeyOwnerByIdAsync(apiKeyId: string): Promise<{ id: s
 }
 
 function resolvePublicAccountGroupFilter(
-  input: { targetGroupName?: string; providerCode?: string; providerProtocolProfileId?: string; connectionType?: string },
+  input: { targetGroupName?: string; providerCode?: string; providerProtocolProfileId?: string },
   account: AccountSummary,
   access: ReturnType<typeof targetAccess>
 ): GroupSummary | undefined {
@@ -1116,7 +1103,7 @@ function resolvePublicAccountGroupFilter(
   if (providerCode && providerCode !== account.providerCode) {
     throw new Error('账号不存在')
   }
-  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode || account.providerCode, input.providerProtocolProfileId, input.connectionType)
+  const providerProtocolProfileId = resolveOptionalProviderProtocolProfileId(providerCode || account.providerCode, input.providerProtocolProfileId)
   if (providerProtocolProfileId && providerProtocolProfileId !== account.providerProtocolProfileId) {
     throw new Error('账号不存在')
   }
@@ -1148,7 +1135,7 @@ function resolvePublicAccountGroupFilter(
 }
 
 async function resolvePublicAccountGroupFilterAsync(
-  input: { targetGroupName?: string; providerCode?: string; providerProtocolProfileId?: string; connectionType?: string },
+  input: { targetGroupName?: string; providerCode?: string; providerProtocolProfileId?: string },
   account: AccountSummary,
   access: ReturnType<typeof targetAccess>
 ): Promise<GroupSummary | undefined> {
@@ -1156,7 +1143,7 @@ async function resolvePublicAccountGroupFilterAsync(
   if (providerCode && providerCode !== account.providerCode) {
     throw new Error('账号不存在')
   }
-  const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode || account.providerCode, input.providerProtocolProfileId, input.connectionType)
+  const providerProtocolProfileId = await resolveOptionalProviderProtocolProfileIdAsync(providerCode || account.providerCode, input.providerProtocolProfileId)
   if (providerProtocolProfileId && providerProtocolProfileId !== account.providerProtocolProfileId) {
     throw new Error('账号不存在')
   }

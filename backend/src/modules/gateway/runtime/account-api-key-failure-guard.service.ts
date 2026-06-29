@@ -70,8 +70,7 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
   reason:
     | 'not_selected_api_key'
     | 'non_gateway_traffic'
-    | 'policy_error'
-    | 'same_account_success_confirmed'
+    | 'gateway_local_only'
     | 'failure_storm_confirmed'
     | 'failure_storm_pending'
   failureCount?: number
@@ -126,12 +125,7 @@ export function recordGatewayAccountApiKeyFailureGuard(
   }
 
   rememberLocalApiKeySuppression(target, status, input.errorMessage)
-  if (status === 'error') {
-    return { persist: true, reason: 'policy_error' }
-  }
-  if (input.source === 'same_account_api_key_failover_confirmed') {
-    return { persist: true, reason: 'same_account_success_confirmed' }
-  }
+  return { persist: false, reason: 'gateway_local_only' }
 
   const storm = rememberApiKeyFailureStorm(target, status, input)
   const decision = shouldPersistApiKeyFailureStorm(target, storm)

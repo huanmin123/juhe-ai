@@ -8,9 +8,6 @@ import {
   type UpstreamAttempt
 } from '../upstream/attempt.js'
 import {
-  accountErrorPolicyReason,
-  decideAccountErrorPolicy,
-  type AccountErrorPolicyDecision,
   type GatewaySettings
 } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
@@ -18,7 +15,7 @@ import {
   applyAccountErrorHandlingWithCacheInvalidation,
   persistOpenAICodexHeadersIfNeeded
 } from '../runtime/account-effects.js'
-import { recordGatewayAccountApiKeyFailure, recordGatewayAccountApiKeyLocalFailure } from '../runtime/account-api-key-effects.service.js'
+import { recordGatewayAccountApiKeyLocalFailure } from '../runtime/account-api-key-effects.service.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import {
@@ -248,9 +245,6 @@ export async function handleFailedUpstreamResponse(
       }
     }
   }
-  const policyDecision = responseBodyRead.truncated
-    ? undefined
-    : decideAccountErrorPolicy(account, response.status, response.headers, Buffer.from(responseBodyText), settings)
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   const endpointCapabilityFailure = isEndpointCapabilityFailure(req, account, response.status)
@@ -289,25 +283,8 @@ export async function handleFailedUpstreamResponse(
     && isolateAccountApiKeyFailure
     && !isCooldownRetestTrafficSource(usageContext.trafficSource)
     && isRealUpstreamUrl(upstreamUrl)
-  const apiKeyFailureStatus = accountApiKeyFailureStatusFromPolicyDecision(policyDecision)
-  const keyFailureStateMutationEnabled = accountStateMutationEnabled
-    && isolateAccountApiKeyFailure
-    && Boolean(policyDecision)
-    && !isCooldownRetestTrafficSource(usageContext.trafficSource)
-    && isRealUpstreamUrl(upstreamUrl)
-  if (keyFailureStateMutationEnabled) {
-    recordGatewayAccountApiKeyFailure(account, {
-      status: apiKeyFailureStatus,
-      statusCode: response.status,
-      errorCode: stringValue(parsedError.code) || undefined,
-      errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
-      cooldownUntil: policyDecision?.cooldownUntil,
-      trafficSource: usageContext.trafficSource,
-      clientIp: usageContext.clientIp,
-      apiKeyId: usageContext.apiKeyId,
-      source: 'upstream_response_failed'
-    })
-  } else if (responseKeyFailoverEligible) {
+  const apiKeyFailureStatus = 'temporary_unavailable'
+  if (responseKeyFailoverEligible) {
     recordGatewayAccountApiKeyLocalFailure(account, {
       status: apiKeyFailureStatus,
       errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined
@@ -319,7 +296,7 @@ export async function handleFailedUpstreamResponse(
   if (accountStateMutationEnabled && !isCooldownRetestTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
-      : errorPolicyFailureReason(response.status, policyDecision, parsedErrorMessage || diagnosticErrorMessage)
+      : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
     const localSuppression = suppressGatewayAccountLocally(
       account,
       settings,
@@ -334,7 +311,6 @@ export async function handleFailedUpstreamResponse(
         endpoint: requestEndpoint(req),
         reason,
         statusCode: response.status,
-        errorPolicyDecision: policyDecision,
         forcePrecheck: localSuppression.action === 'precheck_required'
       })
     } else {
@@ -357,40 +333,16 @@ export async function handleFailedUpstreamResponse(
     action: 'skip_account',
     lastAttempt,
     keyScopedFailure: responseKeyFailoverEligible,
-    pendingApiKeyFailure: responseKeyFailoverEligible && !keyFailureStateMutationEnabled
+    pendingApiKeyFailure: responseKeyFailoverEligible
       ? {
           account,
           status: apiKeyFailureStatus,
           statusCode: response.status,
           errorCode: stringValue(parsedError.code) || undefined,
           errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
-          cooldownUntil: policyDecision?.cooldownUntil
         }
       : undefined
   }
-}
-
-function errorPolicyFailureReason(
-  statusCode: number,
-  decision: AccountErrorPolicyDecision | undefined,
-  fallbackMessage: string | undefined
-): string {
-  if (decision) {
-    return accountErrorPolicyReason(statusCode, decision, fallbackMessage)
-  }
-  return fallbackMessage || `上游账号返回非成功状态：HTTP ${statusCode}`
-}
-
-function accountApiKeyFailureStatusFromPolicyDecision(
-  decision: AccountErrorPolicyDecision | undefined
-): 'temporary_unavailable' | 'rate_limited' | 'error' {
-  if (decision?.action === 'disable') {
-    return 'error'
-  }
-  if (decision?.action === 'cooldown' && decision.cooldownStatus === 'rate_limited') {
-    return 'rate_limited'
-  }
-  return 'temporary_unavailable'
 }
 
 function isEndpointCapabilityFailure(

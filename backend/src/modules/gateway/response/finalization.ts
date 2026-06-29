@@ -38,10 +38,7 @@ import {
   forgetOpenAIAccountForSession
 } from '../runtime/session-affinity.service.js'
 import {
-  gatewayErrorPayload,
-  gatewayErrorPayloadForProtocol,
   isOpenAIJsonResponseContentType,
-  sendGatewayErrorResponse,
   writeGatewayStreamFailureEvent,
   type GatewayErrorProtocol
 } from './responses.js'
@@ -175,16 +172,15 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   const responseEndpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(req, account)
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(req, account)
   if (!upstreamResponse.body) {
-    const responsePayload = gatewayErrorPayload('上游响应体为空', 'upstream_response_error')
-    const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)
-    sendGatewayErrorResponse(res, upstreamResponse.status, responsePayload, { protocol: clientErrorProtocol })
+    const errorMessage = '上游响应体为空'
     forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
     auditCapture.completeAttempt(auditAttemptId, {
       statusCode: upstreamResponse.status,
       responseHeaders: upstreamResponse.headers,
       success: false,
       errorPhase: 'upstream_response',
-      errorMessage: '上游响应体为空'
+      errorCode: 'upstream_empty_body',
+      errorMessage
     })
     recordCompletedUpstreamAttempt(req, {
       ...usageContext,
@@ -199,22 +195,41 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         upstreamUrl,
         statusCode: upstreamResponse.status,
         headers: upstreamResponse.headers,
-        errorMessage: '上游响应体为空'
+        errorMessage
       }),
-      errorMessage: '上游响应体为空'
+      errorCode: 'upstream_empty_body',
+      errorMessage
     })
-    auditCapture.finalize({
-      outcome: 'stream_failed',
-      success: false,
+    rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
       statusCode: upstreamResponse.status,
-      responseHeaders: responseHeadersToObject(res),
-      responseBody: JSON.stringify(clientPayload),
-      responsePartType: 'gateway_response',
+      errorCode: 'upstream_empty_body',
       errorPhase: 'upstream_response',
-      errorMessage: '上游响应体为空',
-      accountId: account.id
+      errorMessage,
+      endpoint: usageContext.endpoint
     })
-    return { alreadyFinalized: true }
+    if (accountStateMutationEnabled !== false) {
+      const localSuppression = suppressGatewayAccountLocally(account, settings, errorMessage)
+      if (usageContext.trafficSource === 'gateway') {
+        recordGatewayAccountFailureForPrecheck(account, settings, {
+          systemAccountId: usageContext.systemAccountId,
+          groupId: usageContext.groupId,
+          apiKeyId: usageContext.apiKeyId,
+          clientIp: usageContext.clientIp,
+          endpoint: usageContext.endpoint,
+          reason: errorMessage,
+          statusCode: upstreamResponse.status,
+          forcePrecheck: localSuppression.action === 'precheck_required'
+        })
+      }
+    }
+    return {
+      alreadyFinalized: false,
+      retryUpstream: true,
+      retryReason: 'upstream_protocol_failure',
+      excludeCurrentAccount: true,
+      message: errorMessage,
+      errorCode: 'upstream_empty_body'
+    }
   }
 
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>

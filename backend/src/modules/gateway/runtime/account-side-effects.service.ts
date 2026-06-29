@@ -2,7 +2,7 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
-import type { AccountErrorPolicyDecision, GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../../shared/retry-policy.js'
 import {
   getAccountCurrentConcurrency,
@@ -77,7 +77,6 @@ export interface GatewayAccountFailurePrecheckInput {
   endpoint?: string
   reason: string
   statusCode?: number
-  errorPolicyDecision?: AccountErrorPolicyDecision
   forcePrecheck?: boolean
 }
 
@@ -116,7 +115,6 @@ interface PrecheckState {
   attemptCount: number
   failureCount: number
   reason: string
-  errorPolicyDecision?: AccountErrorPolicyDecision
   distinctClientIpCount: number
   distinctApiKeyCount: number
   running: boolean
@@ -251,7 +249,6 @@ export async function completeGatewayAccountPrecheckForTest(
     attemptCount: precheckMaxAttempts,
     failureCount: failureStormThresholdCount,
     reason: input.reason,
-    errorPolicyDecision: input.errorPolicyDecision,
     distinctClientIpCount: input.clientIp ? 1 : 0,
     distinctApiKeyCount: input.apiKeyId ? 1 : 0,
     running: false
@@ -313,7 +310,6 @@ function recordGatewayAccountFailureForPrecheckInternal(
     attemptCount: 0,
     failureCount: entry.failureCount,
     reason,
-    errorPolicyDecision: input.errorPolicyDecision,
     distinctClientIpCount: entry.clientIps.size,
     distinctApiKeyCount: entry.apiKeyIds.size,
     running: false
@@ -844,8 +840,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       type: 'mark_account_precheck_temporary_unavailable',
       account: finalState.account,
       reason,
-      precheckStartedAt: new Date(finalState.startedAtMs).toISOString(),
-      errorPolicyDecision: finalState.errorPolicyDecision
+      precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
     })
     if (markResult.updated) {
       clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)

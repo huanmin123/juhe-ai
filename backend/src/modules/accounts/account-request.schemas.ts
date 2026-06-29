@@ -10,8 +10,7 @@ export const accountModelMappingSchema = z.object({
 
 export const accountCreateSchema = z.object({
   providerCode: z.string().trim().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
-  connectionType: z.string().trim().min(1).optional(),
+  providerProtocolProfileId: z.string().trim().min(1),
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
@@ -56,8 +55,7 @@ export const accountUpdateSchema = z.object({
 
 export const accountDraftTestAccountSchema = z.object({
   providerCode: z.string().trim().min(1),
-  providerProtocolProfileId: z.string().trim().min(1).optional(),
-  connectionType: z.string().trim().min(1).optional(),
+  providerProtocolProfileId: z.string().trim().min(1),
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),

@@ -722,24 +722,6 @@ export async function handleOpenAIGatewayRequest(
               errorCode: handledResponse.errorCode
             }
           })
-          if (streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)) {
-            confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'stream_client_total_wait_timeout')
-            sendStreamServerRetryExhaustedResponse({
-              req,
-              res,
-              auditCapture,
-              usageContext: gatewayUsageContext,
-              startedAt,
-              retryReason: handledResponse.retryReason,
-              decision: handledResponse.responseInspection,
-              message: streamClientTotalWaitTimeoutMessage(activeGatewaySettings),
-              errorCode: handledResponse.errorCode,
-              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
-              accountId: account.id,
-              clientStrategy
-            })
-            return
-          }
           if (streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length === 0) {
             for (const accountId of streamServerRetryExcludedAccountIds) {
               exhaustedAccountIds.add(accountId)
@@ -752,7 +734,8 @@ export async function handleOpenAIGatewayRequest(
               }
               continue
             }
-            confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'stream_server_retry_exhausted')
+            const totalWaitTimedOut = streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)
+            confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, totalWaitTimedOut ? 'stream_client_total_wait_timeout' : 'stream_server_retry_exhausted')
             sendStreamServerRetryExhaustedResponse({
               req,
               res,
@@ -761,7 +744,7 @@ export async function handleOpenAIGatewayRequest(
               startedAt,
               retryReason: handledResponse.retryReason,
               decision: handledResponse.responseInspection,
-              message: handledResponse.message,
+              message: totalWaitTimedOut ? streamClientTotalWaitTimeoutMessage(activeGatewaySettings) : handledResponse.message,
               errorCode: handledResponse.errorCode,
               uncommittedResponseBody: handledResponse.uncommittedResponseBody,
               accountId: account.id,

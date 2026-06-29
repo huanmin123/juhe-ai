@@ -37,9 +37,6 @@ export const anthropicV1ProtocolDriver: GatewayProtocolDriver = {
   endpointModeForRequestShape: anthropicEndpointModeForRequestShape,
   isNativeRequest: isAnthropicNativeRequest,
   isModelsRequest: isAnthropicModelsRequest,
-  isEndpointCapabilityFailure: (req, statusCode) =>
-    (statusCode === 404 || statusCode === 405)
-    && anthropicResponseEndpointFamilyFromPath(req.originalUrl || req.path) === 'message_token_counting',
   responseEndpointFamilyForRequest: (req) =>
     anthropicResponseEndpointFamilyFromPath(req.originalUrl || req.path),
   extractJsonSemanticFrames: (value, req) =>

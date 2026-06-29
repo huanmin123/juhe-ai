@@ -8,7 +8,6 @@ import {
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
 import {
-  filterLocallySuppressedGatewayAccounts,
   orderGatewayAccountsByRuntimeDegradation
 } from '../runtime/account-side-effects.service.js'
 import {
@@ -112,14 +111,6 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
     const orderedQuotaAllowedAccounts = runtimeDegradationOrder.accounts
     if ((input.reason === 'high_concurrency_group_busy' || input.reason === 'group_capacity_busy')
       && areGatewayAccountsCapacityBusyForLane(orderedQuotaAllowedAccounts, input.requestLane, groupAccess.schedulingPolicy)) {
-      continue
-    }
-    if ((input.reason === 'local_account_suppressed'
-      || input.reason === 'runtime_degraded'
-      || input.reason === 'upstream_accounts_exhausted'
-      || input.reason === 'response_inspection_server_retry_exhausted'
-      || input.reason === 'stream_server_retry_exhausted')
-      && filterLocallySuppressedGatewayAccounts(orderedQuotaAllowedAccounts).allSuppressed) {
       continue
     }
     const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesAsync({

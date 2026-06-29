@@ -103,7 +103,6 @@ const consumptionRankingQuerySchema = z.object({
 })
 const providerCodeSchema = z.string({ required_error: '供应商编码不能为空' }).trim().min(1, '供应商编码不能为空').max(60)
 const providerProtocolProfileIdSchema = z.string().trim().min(1).max(120)
-const connectionTypeSchema = z.string().trim().min(1).max(80)
 const publicAccountTypeSchema = z.custom<'api_key'>((value) => value === 'api_key', {
   message: '公开账号接口仅支持 API Key 账户'
 })
@@ -112,8 +111,7 @@ const accountPushSchema = z.object({
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
   targetGroupName: z.string().trim().min(1).max(80),
   providerCode: providerCodeSchema,
-  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
+  providerProtocolProfileId: providerProtocolProfileIdSchema,
   name: z.string().trim().min(1).max(120),
   type: publicAccountTypeSchema,
   baseUrl: z.string().trim().min(1).max(500),
@@ -142,7 +140,6 @@ const accountUpdateSchema = z.object({
   targetGroupName: z.string().trim().min(1).max(80).optional(),
   providerCode: providerCodeSchema.optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
   name: z.string().trim().min(1).max(120).optional(),
   type: publicAccountTypeSchema.optional(),
   baseUrl: z.string().trim().min(1).max(500).optional(),
@@ -163,14 +160,12 @@ const accountDeleteSchema = z.object({
   targetGroupName: z.string().trim().min(1).max(80).optional(),
   providerCode: providerCodeSchema.optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
 }).strict()
 const accountListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   targetGroupName: z.string().trim().min(1).max(80).optional(),
   providerCode: z.string().trim().min(1).max(60).optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
   groupId: z.string().trim().min(1).max(120).optional(),
   keyword: z.string().trim().max(120).optional(),
   type: z.string().trim().max(60).optional(),
@@ -184,20 +179,18 @@ const groupAddSchema = z.object({
   targetDisplayName: z.string().trim().min(1).max(80).optional(),
   name: z.string().trim().min(1).max(80),
   providerCode: providerCodeSchema,
-  providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
+  providerProtocolProfileId: providerProtocolProfileIdSchema,
   description: z.string().trim().max(500).optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
 }).strict()
-const groupUpdateMutableFields = ['name', 'providerCode', 'providerProtocolProfileId', 'connectionType', 'description', 'enabled', 'groupType'] as const
+const groupUpdateMutableFields = ['name', 'providerCode', 'providerProtocolProfileId', 'description', 'enabled', 'groupType'] as const
 const groupUpdateSchema = z.object({
   targetUsername: z.string().trim().min(2).max(80).optional(),
   groupId: z.string().trim().min(1).max(120),
   name: z.string().trim().min(1).max(80).optional(),
   providerCode: z.string().trim().min(1).max(60).optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
   description: z.string().trim().max(500).nullable().optional(),
   enabled: z.boolean().optional(),
   groupType: z.enum(['personal', 'high_concurrency']).optional()
@@ -213,7 +206,6 @@ const groupListQuerySchema = z.object({
   targetUsername: z.string().trim().min(2).max(80),
   providerCode: z.string().trim().min(1).max(60).optional(),
   providerProtocolProfileId: providerProtocolProfileIdSchema.optional(),
-  connectionType: connectionTypeSchema.optional(),
   keyword: z.string().trim().max(80).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional()

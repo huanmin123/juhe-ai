@@ -1,5 +1,4 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
@@ -33,8 +32,7 @@ import { hashStableValue } from '../deduplication/deduplication.service.js'
 
 export interface AccountDraftTestAccountRequest {
   providerCode: string
-  providerProtocolProfileId?: string
-  connectionType?: string
+  providerProtocolProfileId: string
   name: string
   type: string
   credentials?: Record<string, unknown>
@@ -147,18 +145,11 @@ function prepareAccountDraftTestSnapshotResolved(
     throw new Error('账户分组无效')
   }
   const provider = providers.find((item) => item.code === accountInput.providerCode)
-  let providerProtocolProfileId: string
-  try {
-    providerProtocolProfileId = resolveProviderProtocolProfileIdFromConnectionType({
-      providerCode: accountInput.providerCode,
-      providerProtocolProfileId: accountInput.providerProtocolProfileId,
-      connectionType: accountInput.connectionType
-    }) ?? provider?.defaultProtocolProfileId ?? ''
-  } catch (error) {
-    throw new Error(error instanceof Error ? error.message : '账户接入类型无效')
+  const providerProtocolProfileId = optionalText(accountInput.providerProtocolProfileId)
+  if (!providerProtocolProfileId) {
+    throw new Error('账户 providerProtocolProfileId 不能为空')
   }
   const providerProfile = provider?.protocolProfiles.find((item) => item.id === providerProtocolProfileId)
-    ?? provider?.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
   if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type as AccountSummary['type'])) {
     throw new Error(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`)
   }
@@ -541,7 +532,6 @@ function accountDraftRequestFromCreate(account: AccountCreateDraftActivationRequ
   return {
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
-    connectionType: account.connectionType,
     name: account.name,
     type: account.type,
     credentials: account.credentials,

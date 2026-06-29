@@ -2,6 +2,9 @@ import {
   ANTHROPIC_PROVIDER_CODE,
   DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
+  GLM_CODING_ANTHROPIC_V1_PROFILE_ID,
+  GLM_CODING_OPENAI_V1_PROFILE_ID,
+  GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE,
   GPT_VENDOR_CODE,
   HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
@@ -13,7 +16,6 @@ interface ImportTemplateAccount {
   ref?: string
   providerCode?: string
   providerProtocolProfileId?: string
-  connectionType?: string
   clientCompatibility?: string
   type?: string
   credentials?: Record<string, unknown>
@@ -57,11 +59,12 @@ const apiKeyAccount = template.accounts?.find((account) => account.type === 'api
 const oauthAccount = template.accounts?.find((account) => account.type === 'oauth')
 const deepSeekOpenAIAccount = template.accounts?.find((account) => account.ref === 'deepseek-key-001')
 const deepSeekClaudeCodeAccount = template.accounts?.find((account) => account.ref === 'deepseek-claude-code-001')
-const glmGeneralAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.connectionType === 'general_api_key')
-const glmCodingAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.connectionType === 'coding_api_key')
-const glmCodingAnthropicAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.connectionType === 'coding_anthropic_api_key')
+const glmGeneralAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID)
+const glmCodingAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID)
+const glmCodingAnthropicAccount = template.accounts?.find((account) => account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID)
 const anthropicAccount = template.accounts?.find((account) => account.providerCode === ANTHROPIC_PROVIDER_CODE)
 const hybridAccount = template.accounts?.find((account) => account.providerCode === HYBRID_PROVIDER_CODE)
+const deprecatedGlmProfileField = ['connection', 'Type'].join('')
 assertDefined(apiKeyAccount, '导入模板应包含 API Key 账号示例')
 assertDefined(oauthAccount, '导入模板应包含 OAuth 账号示例')
 assertDefined(deepSeekOpenAIAccount, '导入模板应包含 DeepSeek OpenAI-compatible API Key 账号示例')
@@ -89,9 +92,12 @@ assertEqual(deepSeekClaudeCodeAccount.credentials?.base_url, 'https://api.deepse
 assertEqual(JSON.stringify(deepSeekClaudeCodeAccount.credentials?.supported_endpoint_modes), JSON.stringify(['messages_json', 'messages_sse']), 'DeepSeek Claude Code 示例应只启用 Messages JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(glmGeneralAccount, 'clientCompatibility'), 'GLM 通用示例不应暴露客户端兼容字段')
 assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAccount, 'clientCompatibility'), 'GLM Coding 示例不应暴露客户端兼容字段')
+assertFalse(Object.prototype.hasOwnProperty.call(glmGeneralAccount, deprecatedGlmProfileField), 'GLM 通用示例不应暴露已废弃的接入类型字段')
+assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAccount, deprecatedGlmProfileField), 'GLM Coding 示例不应暴露已废弃的接入类型字段')
 assertEqual(JSON.stringify(glmGeneralAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse']), 'GLM 通用示例应只启用 Chat Completions JSON/Streaming')
 assertEqual(JSON.stringify(glmCodingAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse']), 'GLM Coding 示例应只启用 Chat Completions JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAnthropicAccount, 'clientCompatibility'), 'GLM Coding Anthropic 示例不应暴露客户端兼容字段')
+assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAnthropicAccount, deprecatedGlmProfileField), 'GLM Coding Anthropic 示例不应暴露已废弃的接入类型字段')
 assertEqual(glmCodingAnthropicAccount.credentials?.base_url, 'https://open.bigmodel.cn/api/anthropic', 'GLM Coding Anthropic 示例应使用 Anthropic-compatible base URL')
 assertEqual(JSON.stringify(glmCodingAnthropicAccount.credentials?.supported_endpoint_modes), JSON.stringify(['messages_json', 'messages_sse']), 'GLM Coding Anthropic 示例应只启用 Messages JSON/Streaming')
 assertEqual(typeof anthropicAccount.credentials?.api_key, 'string', 'Anthropic 示例必须保留 credentials.api_key')
@@ -125,7 +131,8 @@ assertMatch(accountImportProtocolMarkdown, /\| `tags` \| 否 \| string\[\] \|/, 
 assertMatch(accountImportProtocolMarkdown, /`active`、`pending_test` 或 `disabled`/, '协议 Markdown 应说明导入状态支持 pending_test')
 assertMatch(accountImportProtocolMarkdown, /`status: "active"` 会转为 `pending_test`/, '协议 Markdown 应说明 active 导入创建会转为待测试')
 assertMatch(accountImportProtocolMarkdown, /下游客户端画像由网关运行时自动识别/, '协议 Markdown 应说明客户端画像由网关内部识别')
-assertMatch(accountImportProtocolMarkdown, /`connectionType: "coding_anthropic_api_key"`/, '协议 Markdown 应说明 GLM Coding Anthropic 接入类型')
+assertFalse(new RegExp(deprecatedGlmProfileField).test(accountImportProtocolMarkdown), '协议 Markdown 不应再暴露已废弃的 GLM 接入类型字段')
+assertMatch(accountImportProtocolMarkdown, /`providerProtocolProfileId: "profile_glm_coding_anthropic_v1"`/, '协议 Markdown 应说明 GLM Coding Anthropic profile')
 assertMatch(accountImportProtocolMarkdown, /DeepSeek Claude Code 必须显式填写 `providerProtocolProfileId: "profile_deepseek_anthropic_v1"`/, '协议 Markdown 应说明 DeepSeek Claude Code profile')
 assertMatch(accountImportProtocolMarkdown, /`modelMappings` 只做账号模型别名/, '协议 Markdown 应说明 modelMappings 只做账号模型别名')
 assertMatch(accountImportProtocolMarkdown, /混合供应商账户的 `modelMappings` 用于声明跨协议入口/, '协议 Markdown 应说明混合供应商账户使用 modelMappings 声明跨协议入口')

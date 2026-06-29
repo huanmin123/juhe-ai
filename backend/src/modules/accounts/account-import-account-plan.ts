@@ -1,6 +1,5 @@
 import { type AccountAvailabilitySchedule, type AccountClientCompatibility, type AccountModelMapping, type AccountType } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { resolveProviderProtocolProfileIdFromConnectionType } from '../../domain/provider-connection-type.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
@@ -47,7 +46,6 @@ export interface NormalizedImportAccount {
   name: string
   providerCode: string
   providerProtocolProfileId?: string
-  connectionType?: string
   protocolCode?: string
   protocolVersion?: string
   clientCompatibility?: AccountClientCompatibility
@@ -159,7 +157,6 @@ function prepareImportAccountPlan(
   source.name = optionalTextField(value, 'name', '账户名称', item.messages) ?? ''
   source.providerCode = optionalTextField(value, 'providerCode', '账户 providerCode', item.messages) ?? ''
   source.providerProtocolProfileId = optionalTextField(value, 'providerProtocolProfileId', '账户 providerProtocolProfileId', item.messages)
-  source.connectionType = optionalTextField(value, 'connectionType', '账户 connectionType', item.messages)
   if (!source.providerCode) {
     item.messages.push('账户 providerCode 不能为空')
   }
@@ -227,7 +224,6 @@ function prepareImportAccountPlan(
   item.ref = source.ref
   item.name = source.name
   item.providerCode = source.providerCode
-  item.connectionType = source.connectionType
   item.groupName = source.groupName
   item.groupId = source.groupId
   item.proxyRef = source.proxyRef
@@ -293,22 +289,12 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
 function applyImportAccountProtocolProfileDefaults(account: NormalizedImportAccount, context: AccountImportProviderContext): void {
   const provider = context.providerByCode.get(account.providerCode)
   if (!provider) return
-  let requestedProfileId: string | undefined
-  try {
-    requestedProfileId = resolveProviderProtocolProfileIdFromConnectionType({
-      providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId,
-      connectionType: account.connectionType
-    })
-  } catch (error) {
-    account.messages.push(errorMessage(error))
+  const requestedProfileId = account.providerProtocolProfileId?.trim()
+  if (!requestedProfileId) {
+    account.messages.push('账户 providerProtocolProfileId 不能为空')
     return
   }
-  const profile = requestedProfileId
-    ? provider.protocolProfiles.find((item) => item.id === requestedProfileId)
-    : provider.protocolProfiles.find((item) => item.id === provider.defaultProtocolProfileId)
-      ?? provider.protocolProfiles.find((item) => item.enabled)
-      ?? provider.protocolProfiles[0]
+  const profile = provider.protocolProfiles.find((item) => item.id === requestedProfileId)
   if (!profile || profile.providerCode !== account.providerCode) return
   account.providerProtocolProfileId = profile.id
   account.protocolCode = profile.protocolCode

@@ -16,7 +16,6 @@ import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
-import { recordClientIpRequestErrorSample } from '../request/local-request-errors.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
 
 export interface RequestCandidateFallbackResult {
@@ -80,21 +79,9 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     if (fallback.attempted) {
       return { outcome: 'fallback', context: fallback.context }
     }
-    const statusCode = 400
+    const statusCode = 503
     const message = requestCapabilityMismatchMessage(reason)
-    const responsePayload = gatewayErrorPayload(message, 'invalid_request_error', reason)
-    recordClientIpRequestErrorSample({
-      auditCapture: input.auditCapture,
-      systemAccountId: input.systemAccountId,
-      apiKeyId: input.apiKeyId,
-      groupId: input.groupId,
-      clientIp: input.clientIp,
-      endpoint: input.endpoint,
-      reason: 'request_capability_mismatch',
-      signature: reason === 'request_capability_mismatch'
-        ? `${input.req.method.toUpperCase()} ${input.req.path || input.req.originalUrl.split('?')[0] || '/'}`
-        : reason
-    })
+    const responsePayload = gatewayErrorPayload(message, 'service_unavailable', reason)
     sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
@@ -105,7 +92,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       responsePayload,
       audit: {
         outcome: 'gateway_failed',
-        errorPhase: 'request_validation',
+        errorPhase: 'dispatch',
         errorCode: reason,
         errorMessage: message
       }
@@ -163,19 +150,9 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     if (fallback.attempted) {
       return { outcome: 'fallback', context: fallback.context }
     }
-    const statusCode = 400
+    const statusCode = 503
     const message = gatewayModelFilterFailureMessage(modelFilter)
-    const responsePayload = gatewayErrorPayload(message, 'invalid_request_error')
-    recordClientIpRequestErrorSample({
-      auditCapture: input.auditCapture,
-      systemAccountId: input.systemAccountId,
-      apiKeyId: input.apiKeyId,
-      groupId: input.groupId,
-      clientIp: input.clientIp,
-      endpoint: input.endpoint,
-      reason: 'unsupported_model',
-      signature: modelFilter.reason ?? modelFilter.requestedModel ?? 'unsupported_model'
-    })
+    const responsePayload = gatewayErrorPayload(message, 'service_unavailable', modelFilter.reason ?? 'unsupported_model')
     sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
@@ -186,7 +163,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
       responsePayload,
       audit: {
         outcome: 'gateway_failed',
-        errorPhase: 'request_validation',
+        errorPhase: 'dispatch',
         errorCode: modelFilter.reason ?? 'unsupported_model',
         errorMessage: message
       }

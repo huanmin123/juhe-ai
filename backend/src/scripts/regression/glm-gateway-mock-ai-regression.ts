@@ -14,10 +14,6 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GLM_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
-import {
-  GLM_CODING_CONNECTION_TYPE,
-  GLM_GENERAL_CONNECTION_TYPE
-} from '../../domain/provider-connection-type.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { listProviderModelCatalog } from '../../modules/model-pricing/model-catalog.service.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
@@ -360,7 +356,7 @@ function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccou
         ref: 'glm-preview-general',
         name: 'GLM 导入预览通用账号',
         providerCode: GLM_PROVIDER_CODE,
-        connectionType: GLM_GENERAL_CONNECTION_TYPE,
+        providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'disabled',
         groupId: generalGroupId,
@@ -373,7 +369,7 @@ function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccou
         ref: 'glm-preview-coding',
         name: 'GLM 导入预览 Coding 账号',
         providerCode: GLM_PROVIDER_CODE,
-        connectionType: GLM_CODING_CONNECTION_TYPE,
+        providerProtocolProfileId: GLM_CODING_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'disabled',
         groupId: generalGroupId,
@@ -393,8 +389,8 @@ function assertGlmImportAndExportRoundTrip(generalAccountId: string, codingAccou
   }, access).document
   const general = exported.accounts.find((account) => account.ref === generalAccountId)
   const coding = exported.accounts.find((account) => account.ref === codingAccountId)
-  assert.equal(general?.connectionType, GLM_GENERAL_CONNECTION_TYPE, '导出通用 GLM 账号应保留 general_api_key')
-  assert.equal(coding?.connectionType, GLM_CODING_CONNECTION_TYPE, '导出 GLM Coding 账号应保留 coding_api_key')
+  assert.equal(general?.providerProtocolProfileId, GLM_GENERAL_OPENAI_V1_PROFILE_ID, '导出通用 GLM 账号应保留协议档案')
+  assert.equal(coding?.providerProtocolProfileId, GLM_CODING_OPENAI_V1_PROFILE_ID, '导出 GLM Coding 账号应保留协议档案')
   assert.equal('clientCompatibility' in (general ?? {}), false, '导出通用 GLM 账号不应再携带账号客户端兼容')
   assert.equal('clientCompatibility' in (coding ?? {}), false, '导出 GLM Coding 账号不应再携带账号客户端兼容')
 }

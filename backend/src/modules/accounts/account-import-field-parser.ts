@@ -27,7 +27,6 @@ export const importAccountKeys: ReadonlySet<string> = new Set([
   'name',
   'providerCode',
   'providerProtocolProfileId',
-  'connectionType',
   'type',
   'status',
   'credentials',

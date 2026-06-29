@@ -41,13 +41,15 @@ export function filterGatewayAccountsByRequestedModel(
   let mappingMatchedCount = 0
   const directMatchedAccounts: UpstreamAccount[] = []
   const mappingMatchedAccounts: UpstreamAccount[] = []
+  const unrestrictedAccounts: UpstreamAccount[] = []
   const rankByAccountId = new Map<string, number>()
 
   for (const account of accounts) {
     const supportedModels = account.supportedModels ?? []
     if (!supportedModels.length) {
-      skippedCount += 1
-      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unsupported)
+      unrestrictedAccountCount += 1
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unrestricted)
+      unrestrictedAccounts.push(account)
       continue
     }
     limitedAccountCount += 1
@@ -70,7 +72,8 @@ export function filterGatewayAccountsByRequestedModel(
   }
   const filtered = [
     ...directMatchedAccounts,
-    ...mappingMatchedAccounts
+    ...mappingMatchedAccounts,
+    ...unrestrictedAccounts
   ]
 
   return {

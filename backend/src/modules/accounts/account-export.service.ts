@@ -1,5 +1,4 @@
 import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
-import { connectionTypeForProviderProtocolProfile } from '../../domain/provider-connection-type.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   findAccountSummaryAsync,
@@ -39,7 +38,6 @@ export interface AccountExportAccount {
   name: string
   providerCode: string
   providerProtocolProfileId?: string
-  connectionType?: string
   type: AccountType
   status: AccountExportStatus
   groupId?: string
@@ -207,7 +205,6 @@ function buildExportAccount(account: AccountSummary, proxyRef: string | undefine
     name: account.name,
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
-    ...(connectionTypeForExport(account) ? { connectionType: connectionTypeForExport(account) } : {}),
     type: account.type,
     status,
     credentials: exportCredentials(account.type, account.credentials)
@@ -231,13 +228,6 @@ function buildExportAccount(account: AccountSummary, proxyRef: string | undefine
   if (account.availabilitySchedule) output.availabilitySchedule = account.availabilitySchedule
   if (account.notes) output.notes = account.notes
   return output
-}
-
-function connectionTypeForExport(account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId'>): string | undefined {
-  return connectionTypeForProviderProtocolProfile({
-    providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId
-  })
 }
 
 function exportAccountStatus(account: AccountSummary): AccountExportStatus {

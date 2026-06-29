@@ -48,7 +48,7 @@ assert(
   '接口能力展示应覆盖 OpenAI、Anthropic 和 token 计数能力'
 )
 
-console.log('策略路由前端分组绑定回归通过：API Key 不再维护分组绑定，分组、优先级、权重和状态已迁移到策略路由页面与接口')
+console.log('策略路由前端分组绑定回归通过：API Key 只选择路由策略，分组、优先级、权重和状态由策略路由页面与接口维护')
 
 function readSource(path: string): string {
   return readFileSync(resolve(repoRoot, path), 'utf8')

@@ -6,8 +6,6 @@ export type GatewayPreAuthFailureReason = 'missing_bearer_token' | 'invalid_api_
 
 export type GatewayClientIpErrorCircuitReason =
   | 'invalid_json'
-  | 'request_capability_mismatch'
-  | 'unsupported_model'
   | 'adapter_request_validation'
 
 export interface GatewayClientIpCircuitScope {
